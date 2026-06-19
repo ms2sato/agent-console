@@ -8,7 +8,7 @@ import type { WorktreeService } from './worktree-service.js';
 /** Narrow subset of WorktreeService methods needed by the deletion service. */
 type DeleteWorktreeServiceDeps = Pick<
   WorktreeService,
-  'isWorktreeOf' | 'listWorktrees' | 'executeHookCommand' | 'removeWorktree'
+  'isWorktreeOf' | 'listWorktrees' | 'executeHookCommand' | 'removeWorktree' | 'removeOrphanedWorktree'
 >;
 import type { SessionManager } from './session-manager.js';
 
@@ -125,6 +125,117 @@ export interface DeleteWorktreeResult {
   sessionIds?: string[];
 }
 
+// ---------- Orphan recovery ----------
+
+/**
+ * Clean up an orphaned worktree whose repository row is no longer registered
+ * in memory.
+ *
+ * Same shape as the main `deleteWorktree` path but git-less: no cleanup
+ * command (the repository row is gone, so there is no `cleanupCommand` to
+ * read), no open-PR check (no repo means no `gh` context), no main-worktree
+ * check based on the registry (we rely on the per-session invariant).
+ *
+ * Security boundary still applies: the worktreePath must resolve under
+ * `getRepositoriesDir()`. The main-worktree invariant still applies via the
+ * matching sessions' `isMainWorktree` flag. The concurrency guard still
+ * applies via `markDeletionInProgress`.
+ *
+ * `force` is intentionally not a parameter here: with no repository row,
+ * there is no data to protect, so unconditional cleanup is the correct
+ * default per #815.
+ */
+async function cleanupOrphanedWorktree(
+  params: { repoId: string; worktreePath: string },
+  deps: DeleteWorktreeDeps,
+): Promise<DeleteWorktreeResult> {
+  const { repoId, worktreePath } = params;
+  const { worktreeService, sessionManager } = deps;
+
+  // 1. Security boundary check — same as validateWorktreePath, but without
+  //    the repo-bound `isWorktreeOf` step (no registered repo to bind to).
+  const canonicalPath = resolvePath(worktreePath);
+  const repositoriesDir = resolvePath(getRepositoriesDir());
+  if (!canonicalPath.startsWith(repositoriesDir + pathSep)) {
+    return { success: false, error: 'Worktree path is outside managed directory', errorType: 'validation' };
+  }
+
+  // 2. Find matching sessions (same pattern as the registered path).
+  const matchingSessions = sessionManager.getAllSessions().filter(
+    (session: Session) => session.locationPath === worktreePath,
+  );
+  const sessionIds = matchingSessions.map(s => s.id);
+
+  // 2a. Main-worktree protection: even on the orphan path, do not allow
+  //     removing the main worktree of a registered worktree-session.
+  for (const session of matchingSessions) {
+    if (session.type === 'worktree' && session.isMainWorktree) {
+      return {
+        success: false,
+        error: 'Cannot remove the main worktree. Only added worktrees can be removed.',
+        errorType: 'validation',
+      };
+    }
+  }
+
+  // 3. Concurrency guard.
+  if (!markDeletionInProgress(worktreePath)) {
+    return { success: false, error: 'Deletion already in progress', errorType: 'conflict' };
+  }
+
+  try {
+    // 4. Kill PTYs — best-effort, do not fail the deletion on these errors.
+    const killResults = await Promise.allSettled(
+      sessionIds.map((sid) => sessionManager.killSessionWorkers(sid)),
+    );
+    const killErrors: Array<{ sessionId: string; error: string }> = [];
+    for (let i = 0; i < killResults.length; i++) {
+      const result = killResults[i];
+      if (result.status === 'rejected') {
+        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        logger.warn({ sessionId: sessionIds[i], error: msg }, 'PTY kill failed, proceeding with orphan cleanup');
+        killErrors.push({ sessionId: sessionIds[i], error: msg });
+      }
+    }
+
+    // 5. Remove the worktree dir + DB row via the git-less helper.
+    //    Idempotent — fs.rm with force does not throw on missing paths,
+    //    and deleteByPath does not throw on missing rows.
+    await worktreeService.removeOrphanedWorktree(canonicalPath);
+
+    // 6. Delete sessions.
+    let sessionDeleteError: string | undefined;
+    if (sessionIds.length > 0) {
+      const deleteErrors: string[] = [];
+      for (const sid of sessionIds) {
+        try {
+          await sessionManager.deleteSession(sid);
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : String(error);
+          logger.error({ repoId, worktreePath, sessionId: sid, error }, 'Failed to delete session after orphan cleanup');
+          deleteErrors.push(`${sid}: ${msg}`);
+        }
+      }
+      if (deleteErrors.length > 0) {
+        sessionDeleteError = deleteErrors.join('; ');
+      }
+    }
+
+    logger.info(
+      { repoId, worktreePath, sessionIds },
+      'Orphaned worktree cleaned up (repository row unregistered)',
+    );
+    return {
+      success: true,
+      ...(killErrors.length > 0 ? { killErrors } : {}),
+      sessionDeleteError,
+      sessionIds,
+    };
+  } finally {
+    clearDeletionInProgress(worktreePath);
+  }
+}
+
 // ---------- Main entry point ----------
 
 export interface DeleteWorktreeParams {
@@ -151,10 +262,18 @@ export async function deleteWorktree(
   const { repoId, worktreePath, force } = params;
   const { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch } = deps;
 
-  // 1. Look up repository
+  // 1. Look up repository.
+  //
+  // If the repository row is not in memory the worktree has lost its anchor:
+  // RepositoryManager.initialize() skips missing repository directories at
+  // startup, but persisted sessions and worktree DB rows referencing the
+  // missing repo can still load. Returning "not-found" here would leave the
+  // orphaned rows un-removable from the UI (see #815). Instead, route into
+  // the git-less orphan cleanup path — "if the underlying data doesn't
+  // exist, just clean up nicely rather than giving up partway".
   const repo = repositoryManager.getRepository(repoId);
   if (!repo) {
-    return { success: false, error: `Repository not found: ${repoId}`, errorType: 'not-found' };
+    return cleanupOrphanedWorktree({ repoId, worktreePath }, deps);
   }
 
   // 2. Validate worktree path

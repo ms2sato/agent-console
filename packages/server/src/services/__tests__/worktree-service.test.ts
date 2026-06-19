@@ -521,6 +521,74 @@ detached
     });
   });
 
+  describe('removeOrphanedWorktree', () => {
+    // Refs #815. The named helper is called directly by the deletion
+    // service when the repository row itself is unregistered. The helper
+    // must be pure best-effort (no git, idempotent).
+
+    it('should remove both the worktree directory and the DB row', async () => {
+      fs.mkdirSync('/worktrees/orphan-direct', { recursive: true });
+      mockRepo.records.push({
+        id: 'wt-direct',
+        repositoryId: 'repo-unregistered',
+        path: '/worktrees/orphan-direct',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      await service.removeOrphanedWorktree('/worktrees/orphan-direct');
+
+      expect(fs.existsSync('/worktrees/orphan-direct')).toBe(false);
+      expect(mockRepo.records.find((r) => r.path === '/worktrees/orphan-direct')).toBeUndefined();
+      expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+    });
+
+    it('should be idempotent when the directory is already missing', async () => {
+      // No fs.mkdirSync — the directory does not exist on disk.
+      mockRepo.records.push({
+        id: 'wt-missing-dir',
+        repositoryId: 'repo-unregistered',
+        path: '/worktrees/no-dir',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      // Must not throw — fs.rm with force is a no-op on missing paths.
+      await service.removeOrphanedWorktree('/worktrees/no-dir');
+
+      expect(mockRepo.records.find((r) => r.path === '/worktrees/no-dir')).toBeUndefined();
+    });
+
+    it('should be idempotent when the DB row is already missing', async () => {
+      fs.mkdirSync('/worktrees/no-row', { recursive: true });
+      // No mockRepo.records.push — the row does not exist.
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      // Must not throw — deleteByPath is a no-op on missing rows.
+      await service.removeOrphanedWorktree('/worktrees/no-row');
+
+      expect(fs.existsSync('/worktrees/no-row')).toBe(false);
+    });
+
+    it('should be idempotent when both the directory and the DB row are already missing', async () => {
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      // Pure no-op call: nothing to remove.
+      await service.removeOrphanedWorktree('/worktrees/all-gone');
+
+      expect(mockRepo.records.length).toBe(0);
+    });
+  });
+
   describe('listBranches', () => {
     it('should list local and remote branches', async () => {
       const WorktreeService = await getWorktreeService();

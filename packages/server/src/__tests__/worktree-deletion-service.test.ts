@@ -16,12 +16,14 @@ const mockIsWorktreeOf = mock(() => Promise.resolve(true));
 const mockRemoveWorktree = mock(() => Promise.resolve({ success: true }));
 const mockListWorktrees = mock(() => Promise.resolve([]));
 const mockExecuteHookCommand = mock(() => Promise.resolve({ success: true }));
+const mockRemoveOrphanedWorktree = mock(() => Promise.resolve());
 
 const mockWorktreeService = {
   isWorktreeOf: mockIsWorktreeOf,
   removeWorktree: mockRemoveWorktree,
   listWorktrees: mockListWorktrees,
   executeHookCommand: mockExecuteHookCommand,
+  removeOrphanedWorktree: mockRemoveOrphanedWorktree,
 };
 
 function createMockSession(id: string, locationPath: string): Session {

@@ -346,10 +346,9 @@ export class WorktreeService {
         // Primary repo is gone: the worktree is already orphaned. Recover without
         // git, unconditionally (no `force` required) — recovery of an orphaned
         // worktree is always defensible, and this also satisfies "at minimum force
-        // must work". rm on a missing path and deleteByPath on a missing row are
-        // both no-ops, so this branch is idempotent.
-        await fsPromises.rm(worktreePath, { recursive: true, force: true });
-        await this.worktreeRepository.deleteByPath(worktreePath);
+        // must work". The helper is idempotent and is also used by the deletion
+        // service when the repository row itself is unregistered (#815).
+        await this.removeOrphanedWorktree(worktreePath);
         logger.warn(
           { worktreePath, repoPath },
           'Primary repo dir missing; removed orphaned worktree without git'
@@ -369,6 +368,26 @@ export class WorktreeService {
       logger.error({ err: error, message, worktreePath }, 'Failed to remove worktree');
       return { success: false, error: message };
     }
+  }
+
+  /**
+   * Remove an orphaned worktree without invoking git.
+   *
+   * Used when a worktree has lost its anchor — either the primary repo
+   * directory is gone (see #811), or the repository row itself is no longer
+   * registered in memory (see #815). In both cases there is no git context
+   * to drive `git worktree remove`, so the recovery is a pure best-effort
+   * filesystem + DB cleanup:
+   *
+   * - `fs.rm` with `force: true` — no-op if the directory is already gone.
+   * - `worktreeRepository.deleteByPath` — no-op if the row is already gone.
+   *
+   * Idempotent. Callers are responsible for any concurrency guard and any
+   * security boundary check on `worktreePath`.
+   */
+  async removeOrphanedWorktree(worktreePath: string): Promise<void> {
+    await fsPromises.rm(worktreePath, { recursive: true, force: true });
+    await this.worktreeRepository.deleteByPath(worktreePath);
   }
 
   /**

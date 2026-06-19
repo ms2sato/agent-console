@@ -5,6 +5,7 @@ import { api } from '../api.js';
 import type { AppBindings } from '../../app-context.js';
 import type { WorktreeService } from '../../services/worktree-service.js';
 import type { RepositoryManager } from '../../services/repository-manager.js';
+import type { SessionManager } from '../../services/session-manager.js';
 import type { AppServerMessage, Repository } from '@agent-console/shared';
 import { asAppContext } from '../../__tests__/test-utils.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
@@ -40,6 +41,7 @@ function createMockWorktreeService() {
     listRemoteBranches: mock(() => Promise.resolve([])),
     executeHookCommand: mock(() => Promise.resolve(null)),
     removeWorktree: mock(() => Promise.resolve({ success: true })),
+    removeOrphanedWorktree: mock(() => Promise.resolve()),
     getWorktreeIndexNumber: mock(() => Promise.resolve(null)),
   } as unknown as WorktreeService;
 }
@@ -410,18 +412,33 @@ describe('Worktrees API', () => {
       expect(body.error).toContain('required');
     });
 
-    it('should broadcast worktree-deletion-failed with empty sessionIds when repository is not found (async path)', async () => {
-      // Async DELETE for a repoId the registry does not know.
-      // The handler must emit exactly one worktree-deletion-failed broadcast
-      // with sessionIds: [] (rather than zero broadcasts, which would leave the
-      // client-side WorktreeDeletionTask stuck on 'deleting' forever).
+    it('should broadcast worktree-deletion-completed with empty sessionIds when repository is unregistered (orphan async path, refs #815)', async () => {
+      // Refs #815. When the repository row is missing from the in-memory
+      // registry (e.g., the primary repo dir was deleted out-of-band so
+      // RepositoryManager.initialize() skipped it), the worktree has lost
+      // its anchor. The deletion service routes into git-less orphan
+      // cleanup and the route must emit a SUCCESS broadcast — not failure
+      // — with the worktree's session IDs (here: [] because no sessions
+      // were registered against this orphaned worktree).
+      //
+      // This replaces an earlier regression test (PR #816) that asserted
+      // a worktree-deletion-failed broadcast. That contract is obsolete:
+      // the deletion service no longer gives up partway when the repo is
+      // unregistered.
       const broadcasts: AppServerMessage[] = [];
+
+      const mockSessionManager = {
+        getAllSessions: () => [],
+        killSessionWorkers: mock(() => Promise.resolve()),
+        deleteSession: mock(() => Promise.resolve(true)),
+      } as unknown as SessionManager;
 
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
         c.set('appContext', asAppContext({
           repositoryManager: mockRepositoryManager,
           worktreeService: mockWorktreeService,
+          sessionManager: mockSessionManager,
           broadcastToApp: (msg) => { broadcasts.push(msg); },
         }));
         await next();
@@ -431,7 +448,7 @@ describe('Worktrees API', () => {
 
       const unknownRepoId = 'non-existent-repo-id';
       const res = await app.request(
-        `/api/repositories/${unknownRepoId}/worktrees/${encodedPath(WORKTREE_PATH)}?taskId=test-not-found-task`,
+        `/api/repositories/${unknownRepoId}/worktrees/${encodedPath(WORKTREE_PATH)}?taskId=test-orphan-task`,
         { method: 'DELETE' },
       );
 
@@ -441,13 +458,22 @@ describe('Worktrees API', () => {
       // Wait for the background fire-and-forget task to complete
       await new Promise((resolve) => setTimeout(resolve, 100));
 
-      const failedBroadcasts = broadcasts.filter(
-        (b): b is Extract<AppServerMessage, { type: 'worktree-deletion-failed' }> =>
-          b.type === 'worktree-deletion-failed' && b.taskId === 'test-not-found-task',
+      const completedBroadcasts = broadcasts.filter(
+        (b): b is Extract<AppServerMessage, { type: 'worktree-deletion-completed' }> =>
+          b.type === 'worktree-deletion-completed' && b.taskId === 'test-orphan-task',
       );
-      expect(failedBroadcasts.length).toBe(1);
-      expect(failedBroadcasts[0].sessionIds).toEqual([]);
-      expect(failedBroadcasts[0].error).toContain('Repository not found');
+      expect(completedBroadcasts.length).toBe(1);
+      expect(completedBroadcasts[0].sessionIds).toEqual([]);
+
+      // No failure should be emitted for the orphan path.
+      const failedBroadcasts = broadcasts.filter(
+        (b) => b.type === 'worktree-deletion-failed' && b.taskId === 'test-orphan-task',
+      );
+      expect(failedBroadcasts.length).toBe(0);
+
+      // The git-less helper must be the one that ran (not the git-bound removeWorktree).
+      expect(mockWorktreeService.removeOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH);
+      expect(mockWorktreeService.removeWorktree).not.toHaveBeenCalled();
     });
   });
 });
