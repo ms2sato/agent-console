@@ -1,0 +1,22 @@
+[Unit]
+Description=Agent Console Server (Multi-User)
+After=network.target
+
+[Service]
+Type=simple
+User=agentconsole
+Group=agentconsole
+WorkingDirectory={{HOME}}/agent-console
+ExecStart={{BUN_PATH}} run start
+Restart=on-failure
+RestartSec=5
+
+Environment=PATH={{HOME}}/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=AUTH_MODE=multi-user
+Environment=PORT={{PORT}}
+Environment=HOST=0.0.0.0
+Environment=NODE_ENV=production
+Environment=AUTH_COOKIE_SECURE={{AUTH_COOKIE_SECURE}}
+
+[Install]
+WantedBy=multi-user.target

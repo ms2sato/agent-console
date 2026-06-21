@@ -218,34 +218,35 @@ sudo -u agentconsole bun run build
 
 Create a systemd unit file so the server starts automatically and restarts on failure.
 
+Render the unit from the bundled template at `scripts/agent-console-multiuser.service.template`:
+
 ```bash
-sudo tee /etc/systemd/system/agent-console.service > /dev/null << 'EOF'
-[Unit]
-Description=Agent Console Server
-After=network.target
-
-[Service]
-Type=simple
-User=agentconsole
-Group=agentconsole
-WorkingDirectory=/home/agentconsole/agent-console
-Environment=AUTH_MODE=multi-user
-Environment=PORT=8080
-Environment=HOST=0.0.0.0
-Environment=NODE_ENV=production
-ExecStart=/home/agentconsole/.bun/bin/bun run start
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
+sudo bash -c '
+sed -e "s|{{HOME}}|/home/agentconsole|g" \
+    -e "s|{{BUN_PATH}}|/home/agentconsole/.bun/bin/bun|g" \
+    -e "s|{{PORT}}|8080|g" \
+    -e "s|{{AUTH_COOKIE_SECURE}}|false|g" \
+    /home/agentconsole/agent-console/scripts/agent-console-multiuser.service.template \
+    > /etc/systemd/system/agent-console.service
+'
 ```
 
-> `NODE_ENV=production` enables the web UI and makes the auth cookie `Secure`.
-> The cookie then requires a secure context — HTTPS, or `http://localhost` (e.g.
-> via an SSH tunnel). See
-> [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts).
+Adjust the four placeholder values for your environment:
+
+- `{{HOME}}` — the service user's home directory (typically `/home/agentconsole`). If you installed Agent Console under a different path, update `{{HOME}}` so both `WorkingDirectory` and the `PATH` environment entry resolve correctly.
+- `{{BUN_PATH}}` — the absolute path to the `bun` executable for the service user (typically `/home/agentconsole/.bun/bin/bun`). Run `sudo -u agentconsole which bun` to confirm.
+- `{{PORT}}` — the TCP port the server listens on (e.g. `8080`).
+- `{{AUTH_COOKIE_SECURE}}` — `true` or `false`. Set to `true` if all access is over HTTPS or via `http://localhost`; set to `false` for plain-HTTP access on a trusted network. See [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts).
+
+> `NODE_ENV=production` is set unconditionally by the template and enables the
+> web UI. The auth cookie's `Secure` attribute is controlled separately by
+> `AUTH_COOKIE_SECURE` above.
+
+> **Note**: A separate per-user systemd template
+> (`scripts/agent-console.service.template`) exists for single-user
+> deployments that run under `systemctl --user`. The multi-user template
+> here is for system-wide deployments that run as the `agentconsole` service
+> user and spawn per-user PTYs via `sudo -u <user>`.
 
 Enable and start:
 
