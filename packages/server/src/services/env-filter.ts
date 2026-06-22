@@ -49,7 +49,11 @@ export function getChildProcessEnv(): Record<string, string> {
   // Ensure color support for PTY processes
   env['TERM'] = 'xterm-256color';
   env['COLORTERM'] = 'truecolor';
-  env['FORCE_COLOR'] = '1';
+  // FORCE_COLOR=3 instructs Node-based agents and chalk-style libraries to use
+  // truecolor (24-bit) output. xterm.js renders truecolor end-to-end, so anything
+  // less caps the color depth unnecessarily — including the Claude Code banner,
+  // which renders white when the agent only sees 16- or 256-color support.
+  env['FORCE_COLOR'] = '3';
 
   return env;
 }

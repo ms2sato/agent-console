@@ -490,7 +490,14 @@ export class MultiUserMode implements UserMode {
 
     return this.ptyProvider.spawn(
       'sudo',
-      ['-u', request.username, '-i', 'sh', '-c', innerCommand],
+      // --preserve-env=FORCE_COLOR survives `sudo -i`'s environment reset, which
+      // otherwise strips FORCE_COLOR (it is not in the sudoers env_keep defaults
+      // on most distros). Without this flag the target user's PTY sees only
+      // TERM/COLORTERM, and Node-based agents like Claude Code render their
+      // banner in plain white because chalk falls back to 256-color support.
+      // TERM and COLORTERM are kept by sudo's default env_keep, so they do not
+      // need explicit preservation here.
+      ['-u', request.username, '--preserve-env=FORCE_COLOR', '-i', 'sh', '-c', innerCommand],
       {
         name: 'xterm-256color',
         cols: request.cols,
