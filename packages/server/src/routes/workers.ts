@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import * as v from 'valibot';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { mkdir, unlink } from 'fs/promises';
+import { lstat, mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
   CreateWorkerRequestSchema,
@@ -39,18 +39,56 @@ async function ensureUploadDir(): Promise<string> {
   const dir = resolveUploadDir();
   let ready = uploadDirReady.get(dir);
   if (!ready) {
-    ready = mkdir(dir, { recursive: true, mode: 0o700 })
-      .then(() => undefined)
-      .catch((err) => {
-        uploadDirReady.delete(dir);
-        logger.error({ err, dir }, 'Failed to create upload directory');
-        throw err;
-      });
+    // TOCTOU defense (security review HIGH, #821 follow-up): POSIX mkdir is a
+    // no-op when the target already exists, so a pre-created symlink or a
+    // world-readable dir would silently slip past `mkdir(..., { mode: 0o700 })`.
+    // After mkdir, lstat the path (no symlink follow) and reject anything we
+    // did not just create ourselves with the expected owner and mode.
+    ready = (async () => {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const st = await lstat(dir);
+      if (st.isSymbolicLink()) {
+        throw new Error(`Upload directory is a symlink: ${dir}`);
+      }
+      if (!st.isDirectory()) {
+        throw new Error(`Upload directory path is not a directory: ${dir}`);
+      }
+      // POSIX-only ownership check; on Windows (or any platform without
+      // geteuid) the fallback path is the shared 'shared' suffix and there is
+      // no uid to compare against.
+      if (typeof process.geteuid === 'function' && st.uid !== process.geteuid()) {
+        throw new Error(
+          `Upload directory has unexpected owner uid=${st.uid} (expected ${process.geteuid()}): ${dir}`,
+        );
+      }
+      if ((st.mode & 0o777) !== 0o700) {
+        throw new Error(
+          `Upload directory has unexpected mode ${(st.mode & 0o777).toString(8)} (expected 700): ${dir}`,
+        );
+      }
+    })().catch((err) => {
+      uploadDirReady.delete(dir);
+      logger.error({ err, dir }, 'Upload directory verification failed');
+      throw err;
+    });
     uploadDirReady.set(dir, ready);
   }
   await ready;
   return dir;
 }
+
+/**
+ * @internal Exported for testing. The upload-directory readiness cache is
+ * process-global so that the route only pays the mkdir + verification cost
+ * once per uid per process. Tests need a way to invalidate the cache when
+ * they want to re-exercise the verification path with a different on-disk
+ * (memfs) state.
+ */
+export const __TESTING__ = {
+  resetUploadDirCache: (): void => {
+    uploadDirReady.clear();
+  },
+};
 
 const workers = new Hono<AppBindings>()
   // Get workers for a session

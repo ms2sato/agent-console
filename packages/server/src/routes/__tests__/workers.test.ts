@@ -299,6 +299,155 @@ describe('Workers API', () => {
       }
     });
 
+    // TOCTOU defense (security review HIGH, #821 follow-up): a pre-created
+    // symlink at the upload-dir path would silently slip past
+    // `mkdir(..., { mode: 0o700 })`, so the route must lstat after mkdir and
+    // reject the symlink before any Bun.write touches real disk.
+    it('should reject a pre-existing symlink at the upload directory path (#821 TOCTOU defense)', async () => {
+      const { __TESTING__ } = await import('../workers.js');
+      __TESTING__.resetUploadDirCache();
+
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const euid: number | 'shared' =
+        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+
+      const { vol } = await import('memfs');
+      // The earlier mode-0700 test may have created the dir; remove it before
+      // symlinking. Either way we end up with a symlink at the path.
+      try {
+        vol.rmdirSync(expectedUploadDir);
+      } catch {
+        // ignore: not present
+      }
+      // The symlink's parent directory must exist in memfs for symlinkSync to
+      // succeed. The OS tmpdir is real, but memfs is a separate volume.
+      vol.mkdirSync(os.tmpdir(), { recursive: true });
+      // The symlink target must also exist in memfs.
+      vol.symlinkSync(TEST_CONFIG_DIR, expectedUploadDir);
+
+      // Count Bun.write calls to assert the route rejected BEFORE any write —
+      // without this, a generic Bun.write failure (e.g. ENOENT) could pass an
+      // any-5xx assertion and the test would not actually exercise the lstat
+      // verification path.
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        // Return a rejected promise so that if verification fails to block
+        // the write, the route still surfaces a 5xx but our paths-count
+        // assertion exposes the bypass.
+        return Promise.reject(new Error('Bun.write must not be called'));
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', worker!.id);
+        formData.append('content', 'msg');
+        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        // Production code rejects with a thrown Error; the global error
+        // handler maps unhandled errors to 5xx.
+        expect(res.status).toBeGreaterThanOrEqual(500);
+        // The TOCTOU guard rejects before any file is written. Without the
+        // guard, Bun.write would be invoked once per attached file.
+        expect(writtenPaths).toEqual([]);
+      } finally {
+        Bun.write = originalBunWrite;
+        try {
+          vol.unlinkSync(expectedUploadDir);
+        } catch {
+          // ignore
+        }
+        __TESTING__.resetUploadDirCache();
+      }
+    });
+
+    // TOCTOU defense (security review HIGH, #821 follow-up): a pre-existing
+    // dir with a wider mode (e.g. 0o777) lets other users on the same host
+    // read buffered upload contents. mkdir is a no-op when the path exists,
+    // so the route must lstat-verify the actual mode.
+    it('should reject a pre-existing upload directory with the wrong mode (#821 TOCTOU defense)', async () => {
+      const { __TESTING__ } = await import('../workers.js');
+      __TESTING__.resetUploadDirCache();
+
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const euid: number | 'shared' =
+        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+
+      const { vol } = await import('memfs');
+      try {
+        vol.rmdirSync(expectedUploadDir);
+      } catch {
+        // ignore
+      }
+      // Pre-create with world-writable mode. mkdir(..., {mode: 0o700}) is a
+      // POSIX no-op for an existing dir, so the mode stays 0o777.
+      vol.mkdirSync(os.tmpdir(), { recursive: true });
+      vol.mkdirSync(expectedUploadDir, { recursive: true, mode: 0o777 });
+
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        return Promise.reject(new Error('Bun.write must not be called'));
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', worker!.id);
+        formData.append('content', 'msg');
+        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        expect(res.status).toBeGreaterThanOrEqual(500);
+        // The TOCTOU guard rejects before any file is written.
+        expect(writtenPaths).toEqual([]);
+      } finally {
+        Bun.write = originalBunWrite;
+        try {
+          vol.rmdirSync(expectedUploadDir);
+        } catch {
+          // ignore
+        }
+        __TESTING__.resetUploadDirCache();
+      }
+    });
+
     it('should sanitize path traversal in filenames', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
