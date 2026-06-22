@@ -345,10 +345,7 @@ else
     echo "    $SUDOERS_TARGET is already up to date."
   else
     if [ -f "$SUDOERS_TARGET" ] && [ "$FORCE" -eq 0 ]; then
-      # Re-validate via visudo as a sanity check before overwrite.
-      echo "    $SUDOERS_TARGET exists and differs from the rendered template;"
-      echo "    overwriting (this is the documented update path; re-run with"
-      echo "    --force to suppress this message)."
+      err "$SUDOERS_TARGET exists and differs from the rendered template; re-run with --force to overwrite"
     fi
     run install -m 0440 -o root -g root "$TMP_SUDOERS" "$SUDOERS_TARGET"
     # Re-verify final state.
@@ -373,7 +370,11 @@ if [ -d "$DATA_ROOT" ]; then
   echo "    $DATA_ROOT exists (owner=$CURRENT_OWNER mode=$CURRENT_MODE)"
   if [ "$CURRENT_OWNER" != "$EXPECTED_OWNER" ] || [ "$CURRENT_MODE" != "2775" ]; then
     if [ "$FORCE" -eq 0 ]; then
-      echo "    expected owner=$EXPECTED_OWNER mode=2775; pass --force to fix in-place"
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "    (would abort: $DATA_ROOT has owner/mode drift; re-run with --force to repair)"
+      else
+        err "$DATA_ROOT has owner/mode drift (expected owner=$EXPECTED_OWNER mode=2775); re-run with --force to repair"
+      fi
     else
       run chown "$EXPECTED_OWNER" "$DATA_ROOT"
       run chmod 2775 "$DATA_ROOT"
@@ -448,6 +449,9 @@ else
   if [ -f "$SYSTEMD_TARGET" ] && diff -q "$TMP_UNIT" "$SYSTEMD_TARGET" >/dev/null 2>&1; then
     echo "    $SYSTEMD_TARGET is already up to date."
   else
+    if [ -f "$SYSTEMD_TARGET" ] && [ "$FORCE" -eq 0 ]; then
+      err "$SYSTEMD_TARGET exists and differs from the rendered template; re-run with --force to overwrite"
+    fi
     run install -m 0644 -o root -g root "$TMP_UNIT" "$SYSTEMD_TARGET"
   fi
 fi

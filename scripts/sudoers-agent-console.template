@@ -8,8 +8,8 @@
 # usr-merge layout (/bin -> /usr/bin); sudo matches the resolved command path.
 #
 # The leading identifier is rendered by the bootstrap script
-# (scripts/setup-multiuser-for-ubuntu.sh) from the SERVICE_USER placeholder
-# before this file is installed to /etc/sudoers.d/agent-console. Render
-# manually with:
-#   sed 's|SERVICE_USER_PLACEHOLDER|<your-user>|g' scripts/sudoers-agent-console.template
+# (scripts/setup-multiuser-for-ubuntu.sh) from the {{SERVICE_USER}}
+# placeholder before this file is installed to /etc/sudoers.d/agent-console.
+# Render manually with:
+#   sed 's|{{SERVICE_USER}}|<your-user>|g' scripts/sudoers-agent-console.template
 {{SERVICE_USER}} ALL=(ALL,!root) NOPASSWD: /bin/sh, /bin/bash, /usr/bin/sh, /usr/bin/bash
