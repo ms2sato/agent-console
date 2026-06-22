@@ -406,7 +406,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     const terminal = new XTerm({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
+      fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "DejaVu Sans Mono", Menlo, Monaco, "Courier New", monospace',
       theme: {
         background: '#1a1a2e',
         foreground: '#eee',
