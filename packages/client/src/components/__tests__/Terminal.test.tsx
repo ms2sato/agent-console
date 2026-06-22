@@ -1391,3 +1391,38 @@ describe('Terminal cache-save payload contract', () => {
   });
 });
 
+/**
+ * Tests for the xterm.js fontFamily stack configured in Terminal.tsx.
+ *
+ * Background (#818): The original fontFamily only named Mac fonts (Menlo, Monaco,
+ * Courier New). On Linux and Windows browsers without those fonts installed,
+ * the terminal fell back to the OS default monospace, which is hard to read on
+ * Ubuntu in the Model B (multi-user) deploy. The fix prepends popular cross-
+ * platform monospace fonts (JetBrains Mono, Fira Code, Cascadia Code,
+ * Source Code Pro, DejaVu Sans Mono) so installed monospace fonts are picked
+ * first on each OS.
+ *
+ * The Terminal component cannot be rendered in unit tests (xterm.js mocking
+ * pollutes global state), so we cannot intercept the XTerm constructor options
+ * directly. Instead, we pin the contract by reading the production source file
+ * and asserting the fontFamily string contains at least one of the prepended
+ * Linux-friendly fonts. This fails if someone reverts the widening change.
+ */
+describe('Terminal fontFamily stack', () => {
+  it('should configure Linux-friendly monospace fonts in the font stack', async () => {
+    // Source-text introspection: the fontFamily value is hard-coded inline at
+    // the XTerm constructor call site, so we cannot import it. Reading the
+    // production source file pins the user-visible contract.
+    const terminalSourcePath = new URL('../Terminal.tsx', import.meta.url);
+    const source = await Bun.file(terminalSourcePath).text();
+
+    const fontFamilyMatch = source.match(/fontFamily:\s*'([^']+)'/);
+    expect(fontFamilyMatch).not.toBeNull();
+    const fontFamily = fontFamilyMatch![1];
+
+    // The fix (#818) prepends these fonts so Linux/Windows browsers render
+    // a readable monospace before falling back to the original Mac fonts.
+    expect(fontFamily).toContain('"JetBrains Mono"');
+  });
+});
+
