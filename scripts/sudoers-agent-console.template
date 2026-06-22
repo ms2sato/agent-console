@@ -7,9 +7,7 @@
 # Both /bin/* and /usr/bin/* forms are listed because Ubuntu uses the
 # usr-merge layout (/bin -> /usr/bin); sudo matches the resolved command path.
 #
-# The leading identifier is rendered by the bootstrap script
-# (scripts/setup-multiuser-for-ubuntu.sh) from the {{SERVICE_USER}}
-# placeholder before this file is installed to /etc/sudoers.d/agent-console.
-# Render manually with:
-#   sed 's|{{SERVICE_USER}}|<your-user>|g' scripts/sudoers-agent-console.template
+# The leading identifier on the rule line below is the dedicated service
+# user. To rename it after install, edit BOTH this file's rule line and
+# the matching User= directive in /etc/systemd/system/agent-console.service.
 {{SERVICE_USER}} ALL=(ALL,!root) NOPASSWD: /bin/sh, /bin/bash, /usr/bin/sh, /usr/bin/bash
