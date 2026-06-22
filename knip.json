@@ -38,6 +38,7 @@
     "packages/server": {
       "entry": [
         "src/index.ts!",
+        "src/shim.ts!",
         "build.ts",
         "src/app-context.ts",
         "src/**/__tests__/**/*.test.ts",
