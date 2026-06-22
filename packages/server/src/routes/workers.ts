@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import * as v from 'valibot';
 import { join } from 'path';
+import { tmpdir } from 'os';
 import { mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
@@ -14,21 +15,31 @@ import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
-import { getConfigDir } from '../lib/config.js';
 
 const logger = createLogger('api:workers');
 
-// Upload directory is resolved lazily under AGENT_CONSOLE_HOME so that each
-// install (each Model B service user, each dev worktree) owns its own
-// directory instead of fighting over a host-wide path like /tmp/agent-console-uploads.
+// Upload directory is per-uid under the OS temp directory so that:
+//   1. Different users on the same host (e.g. Model B service user `agentconsole`
+//      vs. an interactive dev user) do not collide on a single host-wide
+//      `/tmp/agent-console-uploads` (the original EACCES symptom of issue #821).
+//   2. Uploads remain transient: /tmp is reaped by the OS (systemd-tmpfiles,
+//      tmpwatch, reboot), so abandoned upload buffers do not accumulate. The
+//      server has no read-completion signal for `injectMessage`, so a
+//      persistent location (e.g. AGENT_CONSOLE_HOME) would leak disk over time.
+// Mode 0700 prevents other users from reading buffered file contents.
 // See issue #821.
 const uploadDirReady = new Map<string, Promise<void>>();
 
+function resolveUploadDir(): string {
+  const uid = typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+  return join(tmpdir(), `agent-console-uploads-${uid}`);
+}
+
 async function ensureUploadDir(): Promise<string> {
-  const dir = join(getConfigDir(), 'uploads');
+  const dir = resolveUploadDir();
   let ready = uploadDirReady.get(dir);
   if (!ready) {
-    ready = mkdir(dir, { recursive: true })
+    ready = mkdir(dir, { recursive: true, mode: 0o700 })
       .then(() => undefined)
       .catch((err) => {
         uploadDirReady.delete(dir);

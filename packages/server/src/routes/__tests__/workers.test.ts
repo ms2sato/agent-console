@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'os';
 import { join as pathJoin } from 'path';
-import { randomUUID } from 'crypto';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
@@ -22,11 +21,13 @@ import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 
-// Upload paths are resolved against real disk by Bun.write (native API, not
-// trapped by memfs). We therefore use a real per-test directory under
-// os.tmpdir() rather than a fixed memfs-only path.
-const TEST_CONFIG_BASE = pathJoin(os.tmpdir(), 'agent-console-workers-test');
-let TEST_CONFIG_DIR: string;
+// Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
+// memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
+// inspect for the requested mode via memfs's `vol.statSync`. (Bun.write is
+// native and would land on real disk, but its parent-dir auto-creation uses
+// the default mode and would shadow the route's mkdir mode contract — so we
+// do not rely on real-disk stat for the mode assertion.)
+const TEST_CONFIG_DIR = '/test/config';
 
 const ptyFactory = createMockPtyFactory(20000);
 
@@ -37,8 +38,6 @@ describe('Workers API', () => {
 
   beforeEach(async () => {
     await closeDatabase();
-
-    TEST_CONFIG_DIR = pathJoin(TEST_CONFIG_BASE, randomUUID());
 
     resetGitMocks();
     setupMemfs({
@@ -88,8 +87,10 @@ describe('Workers API', () => {
     await closeDatabase();
     cleanupMemfs();
     resetProcessMock();
-    // Clean up the per-test upload directory written to real disk by Bun.write.
-    await Bun.spawn(['rm', '-rf', TEST_CONFIG_DIR]).exited;
+    // Note: per-uid upload dir under os.tmpdir() is intentionally NOT cleaned
+    // up here — the production design relies on OS-level /tmp reapers
+    // (systemd-tmpfiles / tmpwatch / reboot) and the path is shared across
+    // every test run for this uid. See #821.
   });
 
   // ===========================================================================
@@ -225,6 +226,79 @@ describe('Workers API', () => {
       expect(body.error).toContain('Total file size exceeds limit');
     });
 
+    // NOTE: This test must run BEFORE any other test that triggers an upload,
+    // because the route caches its `mkdir(..., { mode: 0o700 })` result in a
+    // process-level Map. Only the first upload in the process actually invokes
+    // mkdir; subsequent uploads short-circuit on the cache. We rely on that
+    // first call to leave a memfs entry whose mode we can inspect.
+    it('should save uploaded files under /tmp/agent-console-uploads-<uid>/ with mode 0700 (#821)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      // Spy on Bun.write to capture the actual file path the route writes to.
+      // Bun.write is a native API and is not trapped by the memfs fs/promises
+      // mock, so a path-based assertion via the spy is the cleanest cross-check
+      // for the destination path.
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        return originalBunWrite(
+          dest as Parameters<typeof originalBunWrite>[0],
+          input as Parameters<typeof originalBunWrite>[1],
+          options as Parameters<typeof originalBunWrite>[2],
+        );
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', worker!.id);
+        formData.append('content', 'msg');
+        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+        expect(res.status).toBe(201);
+
+        expect(writtenPaths.length).toBeGreaterThan(0);
+
+        const euid: number | 'shared' =
+          typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+        const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+        const hostSharedLegacy = pathJoin(os.tmpdir(), 'agent-console-uploads');
+        for (const filePath of writtenPaths) {
+          // Path scoping: per-uid dir under os.tmpdir(), never the host-shared
+          // legacy bare dir.
+          expect(filePath.startsWith(expectedUploadDir + '/')).toBe(true);
+          expect(filePath === hostSharedLegacy).toBe(false);
+          expect(filePath.startsWith(hostSharedLegacy + '/')).toBe(false);
+        }
+
+        // Verify mode 0700 on the upload directory via memfs's vol — the
+        // route's `mkdir(..., { mode: 0o700 })` is intercepted by memfs and
+        // recorded with mode preserved.
+        const { vol } = await import('memfs');
+        const stat = vol.statSync(expectedUploadDir);
+        // mode includes the file-type bits; mask to perm bits only.
+        const perm = (stat.mode & 0o777).toString(8);
+        expect(perm).toBe('700');
+      } finally {
+        Bun.write = originalBunWrite;
+      }
+    });
+
     it('should sanitize path traversal in filenames', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
@@ -266,56 +340,6 @@ describe('Workers API', () => {
           expect(filePath).not.toContain('..');
           expect(filePath).not.toMatch(/[/\\]\.\.[/\\]/);
         }
-      }
-    });
-
-    it('should save uploaded files under AGENT_CONSOLE_HOME/uploads, not os.tmpdir() (#821)', async () => {
-      const session = await sessionManager.createSession({
-        type: 'quick',
-        locationPath: '/test/path',
-        agentId: 'claude-code',
-      });
-      const worker = await sessionManager.createWorker(session.id, {
-        type: 'agent',
-        agentId: 'claude-code',
-      });
-      expect(worker).not.toBeNull();
-
-      // Spy on Bun.write to capture the actual file path the route writes to.
-      // Bun.write is a native API and is not trapped by the memfs fs/promises mock,
-      // so a path-based assertion is the cleanest cross-check.
-      const writtenPaths: string[] = [];
-      const originalBunWrite = Bun.write;
-      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
-        if (typeof dest === 'string') {
-          writtenPaths.push(dest);
-        }
-        return originalBunWrite(dest as Parameters<typeof originalBunWrite>[0], input as Parameters<typeof originalBunWrite>[1], options as Parameters<typeof originalBunWrite>[2]);
-      }) as typeof Bun.write;
-
-      try {
-        const formData = new FormData();
-        formData.append('toWorkerId', worker!.id);
-        formData.append('content', 'msg');
-        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
-
-        const res = await app.request(`/api/sessions/${session.id}/messages`, {
-          method: 'POST',
-          body: formData,
-        });
-        expect(res.status).toBe(201);
-
-        expect(writtenPaths.length).toBeGreaterThan(0);
-
-        const expectedUploadDir = pathJoin(TEST_CONFIG_DIR, 'uploads');
-        const hostSharedLegacy = pathJoin(os.tmpdir(), 'agent-console-uploads');
-        for (const filePath of writtenPaths) {
-          expect(filePath.startsWith(expectedUploadDir + '/')).toBe(true);
-          // Negative: must not regress to the old host-shared /tmp directory.
-          expect(filePath.startsWith(hostSharedLegacy + '/')).toBe(false);
-        }
-      } finally {
-        Bun.write = originalBunWrite;
       }
     });
 
