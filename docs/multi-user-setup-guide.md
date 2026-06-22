@@ -36,7 +36,58 @@ Browser (User: alice) ──> Agent Console Server (agentconsole)
 > (`scripts/verify-multiuser-docker.sh`). Use it to see the whole setup working
 > before reproducing it on a real host.
 
-## Step 0: Install pamtester (Linux only)
+## Quick Setup with the Bootstrap Script (Linux)
+
+For Ubuntu / Debian hosts, the canonical happy path is the one-shot bootstrap
+script `scripts/setup-multiuser-for-ubuntu.sh` (Issue
+[#830](https://github.com/ms2sato/agent-console/issues/830)). It performs all
+the prerequisite steps below — pamtester install, service user, shared group,
+sudoers, data root, application install, systemd unit — as a single idempotent
+operation.
+
+```bash
+# 1. Clone the repo wherever the operator wants it (the script installs the
+#    application under the service user's HOME).
+git clone https://github.com/ms2sato/agent-console.git
+cd agent-console
+
+# 2. Run the bootstrap script. Defaults: service user 'agentconsole',
+#    shared group 'agent-console-users', data root '/var/lib/agent-console',
+#    port 8080. Override with --port, --user, --group, --data-root, etc.
+sudo scripts/setup-multiuser-for-ubuntu.sh --port 8080 \
+  --add-user alice --add-user bob
+
+# 3. Open the URL printed at the end. Default: http://<host>:8080/
+```
+
+The script is **idempotent**: a second invocation with the same parameters is
+a no-op. To preview what it would do without modifying the system, pass
+`--dry-run`:
+
+```bash
+sudo scripts/setup-multiuser-for-ubuntu.sh --dry-run
+```
+
+To add more users to the shared group after the initial setup, use the
+companion helper:
+
+```bash
+sudo scripts/add-multiuser-user.sh <username>
+```
+
+The sections that follow describe the underlying steps the bootstrap script
+performs. Read them when troubleshooting or when adapting the setup to a
+non-Ubuntu host.
+
+## Manual Setup (what the bootstrap script does, step by step)
+
+The remaining Step 0 through Step 4 sections explain what
+`setup-multiuser-for-ubuntu.sh` does internally. On a supported Ubuntu /
+Debian host they are not normally followed by hand; they are provided so the
+behaviour of the script is fully transparent and so the setup can be
+reproduced on other distributions.
+
+### Step 0: Install pamtester (Linux only)
 
 On Linux, Agent Console validates OS credentials by shelling out to
 `pamtester login <user> authenticate`. This binary is **not** part of the OS
@@ -58,7 +109,7 @@ images may need the `login` / `libpam-modules` packages).
 
 > **macOS** uses `dscl -authonly` instead and does **not** require `pamtester`.
 
-## Step 1: Create the Service User
+### Step 1: Create the Service User
 
 The service user (`agentconsole`) runs the server process. It is a system account with a HOME directory but no login shell.
 
@@ -157,7 +208,7 @@ ls -la /var/agentconsole
 # Output: drwxr-xr-x  2 agentconsole  staff  64 ... .
 ```
 
-## Step 2: Configure sudoers
+### Step 2: Configure sudoers
 
 The service user needs permission to run shells as other users. This is the **only privilege** it gets — no root access.
 
@@ -196,7 +247,7 @@ sudo -u agentconsole sudo -u root /bin/sh -c 'whoami'
 # Output: "Sorry, user agentconsole is not allowed to execute ..."
 ```
 
-## Step 3: Install Agent Console for the Service User
+### Step 3: Install Agent Console for the Service User
 
 Install Agent Console in the service user's home directory. The exact steps depend on your installation method, but the key is that the `agentconsole` user must be able to run the server binary.
 
@@ -214,7 +265,7 @@ sudo -u agentconsole bun run build
 
 > **Note**: `sudo -u agentconsole` runs the command as the service user. Since the service user has `/usr/sbin/nologin` as its shell, you may need to use `sudo -u agentconsole -s /bin/sh -c '...'` or `sudo -u agentconsole bash -c '...'` for multi-command sequences.
 
-## Step 4: Configure the Service (Linux)
+### Step 4: Configure the Service (Linux)
 
 Create a systemd unit file so the server starts automatically and restarts on failure.
 
@@ -371,7 +422,7 @@ curl -X POST http://localhost:8080/api/auth/login \
 | `AUTH_MODE` | `none` | `none` for single-user, `multi-user` for multi-user mode |
 | `PORT` | `3457` | Server port. `3457` is the dev fallback; pick any port for production (this guide uses `8080`). |
 | `HOST` | `0.0.0.0` | Bind address. Defaults to all interfaces; set to `127.0.0.1` to restrict to localhost. |
-| `AGENT_CONSOLE_HOME` | `~/.agent-console` | Config and database directory. The SQLite database is `<AGENT_CONSOLE_HOME>/data.db`; the JWT signing secret is `<AGENT_CONSOLE_HOME>/jwt-secret` (auto-generated, mode 0600, on first start). |
+| `AGENT_CONSOLE_HOME` | `~/.agent-console` (single-user); `/var/lib/agent-console` (multi-user, Issue [#830](https://github.com/ms2sato/agent-console/issues/830)) | Config and database directory. The SQLite database is `<AGENT_CONSOLE_HOME>/data.db`; the JWT signing secret is `<AGENT_CONSOLE_HOME>/jwt-secret` (auto-generated, mode 0600, on first start). Under multi-user, the bootstrap script sets this explicitly on the systemd unit. |
 | `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and**, by default, marks the auth cookie `Secure`. The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
 | `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 

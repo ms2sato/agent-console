@@ -122,6 +122,18 @@ The dedicated OS account (typically `agentconsole`) that runs the server process
 - **Aliases:** Server service user, agentconsole service user, server process user
 - **See:** [Terminology in multi-user-shared-setup.md](design/multi-user-shared-setup.md#terminology)
 
+### agent-console-users
+Shared system group used in multi-user mode (Issue [#830](https://github.com/ms2sato/agent-console/issues/830)) to grant cross-user access to the data root and all worktrees. Every interactive user joins this group; the service user is also a member. Data root and worktrees are owned `<service-user>:agent-console-users` with mode `2775` (setgid + group-writable). The bootstrap script `scripts/setup-multiuser-for-ubuntu.sh` creates and populates the group.
+- **See:** [Architecture Decisions in multi-user-shared-setup.md](design/multi-user-shared-setup.md#architecture-decisions)
+
+### AGENT_CONSOLE_HOME
+Environment variable selecting the agent-console data root. Defaults:
+- `AUTH_MODE=none` (single-user): `~/.agent-console`.
+- `AUTH_MODE=multi-user`: `/var/lib/agent-console` (system-wide, group-traversable).
+
+An explicit value overrides both defaults. The multi-user bootstrap script sets it explicitly on the systemd unit.
+- **See:** [Architecture Decisions in multi-user-shared-setup.md](design/multi-user-shared-setup.md#architecture-decisions), [Environment Variables in multi-user-setup-guide.md](multi-user-setup-guide.md#environment-variables)
+
 ### Shared Account
 A dedicated OS account distinct from service user and individual users, used for shared sessions.
 - **Aliases:** Shared session account, shared service account (historical, briefly used in PR #682 draft)

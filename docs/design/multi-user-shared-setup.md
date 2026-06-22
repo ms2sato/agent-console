@@ -19,6 +19,12 @@ Agent Console is currently single-user. When started by one OS user, all session
 - **`createdBy` is nullable** — Backwards-compatible with existing sessions (pre-multi-user). References `users.id` (UUID).
 - **All sessions remain visible** — No server-side filtering. Client filters by user (localStorage-persisted preference).
 - **Repositories are shared globally** — All registered repositories and their settings (env_vars, setup_command, default_agent, etc.) are shared across all users. Both the server operator and users can register repositories.
+- **System-wide data root in multi-user mode (Issue [#830](https://github.com/ms2sato/agent-console/issues/830))** — The `AUTH_MODE=multi-user` default for `AGENT_CONSOLE_HOME` is `/var/lib/agent-console`, not `$HOME/.agent-console`. The service user's HOME on Debian / Ubuntu defaults to mode `0750` and is not traversable by other OS users, so a repository worktree under it cannot be reached by the per-user PTY (which runs as the logged-in user, not the service user). Single-user mode (`AUTH_MODE=none`) preserves the historical `$HOME/.agent-console` default so existing installs are unaffected.
+- **Shared system group `agent-console-users` (Issue [#830](https://github.com/ms2sato/agent-console/issues/830))** — The data root and its subtree (including all worktrees) are owned `<service-user>:agent-console-users` with mode `2775` (setgid + group-writable). The setgid bit ensures new entries inherit the group automatically. The systemd unit sets `UMask=0002` so files the server writes are group-writable; the per-user PTY's inner shell prepends `umask 0002` for the same reason. Every interactive user joins this group; the service user is also a member.
+- **Upload buffer kept in `/tmp` (Issue [#830](https://github.com/ms2sato/agent-console/issues/830))** — Even under multi-user mode, the per-uid upload buffer at `/tmp/agent-console-uploads-<uid>/` introduced by Issue [#821](https://github.com/ms2sato/agent-console/issues/821) remains in `/tmp` rather than moving under the data root. Rationale: the server has no read-completion signal for `injectMessage`, so abandoned upload buffers rely on OS-level `/tmp` reaping (`systemd-tmpfiles` / reboot) to avoid leaking disk over time. A persistent location would accumulate. Two changes for multi-user reachability:
+  1. Under `AUTH_MODE=multi-user` the directory mode is `2750` (setgid + group-rx) and the group is the shared group (the server process's primary gid, set by `Group=` on the systemd unit). Under `AUTH_MODE=none` the existing `0700` / euid-owned behaviour is preserved.
+  2. The in-process readiness cache is dropped so that if `/tmp` is reaped by `systemd-tmpfiles` during long-running server uptime, the next upload re-creates the directory on demand with the same mode / group invariants.
+- **Concurrent worktree edits accepted; conflict resolution AI-mediated (Issue [#830](https://github.com/ms2sato/agent-console/issues/830))** — All worktrees are flat (`<data-root>/repositories/<org>/<repo>/worktrees/wt-NNN-XXXX/`), owned `<service-user>:agent-console-users` mode `2775`. Any group member can read and write. There is no per-worktree owner concept and no DB schema change for worktrees. Concurrent edits are accepted; conflict resolution is delegated to the AI agents using the worktree. The project policy is that AI-mediated edits do not race in practice.
 
 ### Why This Approach (PTY User Isolation)
 
@@ -180,6 +186,10 @@ agentconsole ALL=(ALL) NOPASSWD: /bin/sh, /bin/bash, /bin/zsh
 ```
 
 This gives the service user the minimum privilege needed: the ability to start a shell as another user. The server itself runs as a regular user with no elevated privileges.
+
+### Bootstrap script
+
+The canonical entry point for new Ubuntu / Debian hosts is `scripts/setup-multiuser-for-ubuntu.sh` (Issue [#830](https://github.com/ms2sato/agent-console/issues/830)). It is idempotent and performs all 8 prerequisite steps from `docs/multi-user-setup-guide.md` in a single invocation. Identifiers (service user, shared group, data root, port) accept CLI / environment overrides. The companion helper `scripts/add-multiuser-user.sh <username>` adds an existing OS user to the shared group post-install.
 
 ## Implementation Phases
 

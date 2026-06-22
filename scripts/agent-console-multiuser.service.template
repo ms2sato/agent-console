@@ -4,8 +4,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=agentconsole
-Group=agentconsole
+User={{SERVICE_USER}}
+Group={{SERVICE_GROUP}}
+UMask=0002
 WorkingDirectory={{HOME}}/agent-console
 ExecStart={{BUN_PATH}} run start
 Restart=on-failure
@@ -13,6 +14,7 @@ RestartSec=5
 
 Environment=PATH={{HOME}}/.bun/bin:/usr/local/bin:/usr/bin:/bin
 Environment=AUTH_MODE=multi-user
+Environment=AGENT_CONSOLE_HOME={{DATA_ROOT}}
 Environment=PORT={{PORT}}
 Environment=HOST=0.0.0.0
 Environment=NODE_ENV=production

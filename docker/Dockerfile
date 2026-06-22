@@ -63,14 +63,24 @@ RUN apt-get update \
  && bun --version \
  && test -f /etc/pam.d/login
 
+# --- Shared system group (Issue #830) ---
+# In multi-user mode the data root lives at a system-wide path
+# (/var/lib/agent-console) owned <service-user>:agent-console-users mode 2775
+# so the per-user PTY (running as the logged-in user) can traverse into
+# worktrees. Every interactive user joins this group; the service user is
+# also a member.
+RUN groupadd --system agent-console-users
+
 # --- Service user (runs the server process; non-root) ---
 # Added to the `shadow` group so pam_unix can read /etc/shadow and verify any
 # user's password in-process. Without this, a non-root caller falls back to the
 # unix_chkpwd helper, which only permits verifying the caller's OWN password —
 # so every login would 401. (Discovered via this verification environment;
 # documented in docs/multi-user-setup-guide.md.)
+# Also a member of agent-console-users so it can write under the shared root.
 RUN useradd --create-home --shell /usr/sbin/nologin agentconsole \
- && usermod -aG shadow agentconsole
+ && usermod -aG shadow agentconsole \
+ && usermod -aG agent-console-users agentconsole
 
 # --- sudoers: allow the service user to launch login shells as other users ---
 COPY docker/sudoers-agentconsole /etc/sudoers.d/agentconsole
@@ -90,11 +100,16 @@ RUN chmod 0440 /etc/sudoers.d/agentconsole \
 # to the inner shell that runs AS the target user. Keeping the test homes at the
 # default 0700 means the CI E2E job permanently exercises that fixed path so a
 # regression resurfaces as a failing build (issue #808).
+#
+# Test users are added to agent-console-users so the multi-user shared-root
+# layout (Issue #830) is exercised in this verification environment.
 RUN useradd --create-home --shell /bin/bash alice \
  && useradd --create-home --shell /bin/bash bob \
  && echo 'alice:alice-password' | chpasswd \
  && echo 'bob:bob-password' | chpasswd \
- && chmod 0700 /home/alice /home/bob
+ && chmod 0700 /home/alice /home/bob \
+ && usermod -aG agent-console-users alice \
+ && usermod -aG agent-console-users bob
 
 # --- Application bundle ---
 WORKDIR /app
@@ -102,10 +117,14 @@ COPY --from=builder /app/dist ./dist
 # Install the native bun-pty binary for this platform into the dist bundle.
 RUN cd dist && bun install
 
-# Data directory (DB, jwt-secret, worker output) owned by the service user.
-ENV AGENT_CONSOLE_HOME=/home/agentconsole/.agent-console
-RUN mkdir -p "${AGENT_CONSOLE_HOME}" \
- && chown -R agentconsole:agentconsole "${AGENT_CONSOLE_HOME}" /app/dist
+# Data directory (DB, jwt-secret, worker output, worktrees).
+# Issue #830: in multi-user mode, the data root lives at /var/lib/agent-console
+# owned agentconsole:agent-console-users mode 2775 (setgid + group-writable)
+# so per-user PTYs can traverse into worktrees. The bootstrap script does
+# this on a real host; here we replicate it inline.
+ENV AGENT_CONSOLE_HOME=/var/lib/agent-console
+RUN install -d -o agentconsole -g agent-console-users -m 2775 "${AGENT_CONSOLE_HOME}" \
+ && chown -R agentconsole:agent-console-users /app/dist
 
 # Server configuration.
 # NOTE: NODE_ENV is intentionally left UNSET. NODE_ENV=production makes the auth
@@ -121,6 +140,10 @@ ENV AUTH_MODE=multi-user \
 # Run from inside dist/ so bun-pty resolves its native library relative to the
 # bundle's node_modules (the documented standalone layout: `cd dist && bun start`).
 WORKDIR /app/dist
-USER agentconsole
+# Issue #830: run with the shared group as the process's primary gid so that
+# `process.getgid()` returns the shared group (matching the bootstrap script's
+# `Group=<shared-group>` on the systemd unit). The upload-buffer multi-user
+# contract in packages/server/src/routes/workers.ts compares against this gid.
+USER agentconsole:agent-console-users
 EXPOSE 8080
 CMD ["bun", "index.js"]

@@ -4,26 +4,30 @@ import * as path from 'path';
 import { getConfigDir, getRepositoriesDir, getRepositoryDir, getServerPid } from '../config.js';
 
 describe('config', () => {
-  const originalEnv = process.env.AGENT_CONSOLE_HOME;
+  const originalHome = process.env.AGENT_CONSOLE_HOME;
+  const originalAuthMode = process.env.AUTH_MODE;
 
   beforeEach(() => {
-    // Clear the env var to test default behavior
+    // Clear both env vars to test default behavior in each test.
     delete process.env.AGENT_CONSOLE_HOME;
+    delete process.env.AUTH_MODE;
   });
 
   afterEach(() => {
-    // Restore original env var
-    if (originalEnv !== undefined) {
-      process.env.AGENT_CONSOLE_HOME = originalEnv;
+    if (originalHome !== undefined) {
+      process.env.AGENT_CONSOLE_HOME = originalHome;
     } else {
       delete process.env.AGENT_CONSOLE_HOME;
+    }
+    if (originalAuthMode !== undefined) {
+      process.env.AUTH_MODE = originalAuthMode;
+    } else {
+      delete process.env.AUTH_MODE;
     }
   });
 
   describe('getConfigDir', () => {
-    it('should return default path when AGENT_CONSOLE_HOME is not set', () => {
-      delete process.env.AGENT_CONSOLE_HOME;
-
+    it('should return default path under HOME when neither env var is set', () => {
       const expected = path.join(os.homedir(), '.agent-console');
       expect(getConfigDir()).toBe(expected);
     });
@@ -41,6 +45,29 @@ describe('config', () => {
       process.env.AGENT_CONSOLE_HOME = '/path/two';
       expect(getConfigDir()).toBe('/path/two');
     });
+
+    // Issue #830: AUTH_MODE=multi-user relocates the default data root to a
+    // system-wide path so that the per-user PTY (running as the logged-in
+    // user, not the service user) can traverse into it.
+    it('should return /var/lib/agent-console under AUTH_MODE=multi-user when AGENT_CONSOLE_HOME is unset (#830)', () => {
+      process.env.AUTH_MODE = 'multi-user';
+
+      expect(getConfigDir()).toBe('/var/lib/agent-console');
+    });
+
+    it('should honour AGENT_CONSOLE_HOME precedence over the multi-user default (#830)', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      process.env.AGENT_CONSOLE_HOME = '/srv/agent-console-data';
+
+      expect(getConfigDir()).toBe('/srv/agent-console-data');
+    });
+
+    it('should not apply the multi-user default for any other AUTH_MODE value (#830)', () => {
+      process.env.AUTH_MODE = 'none';
+
+      const expected = path.join(os.homedir(), '.agent-console');
+      expect(getConfigDir()).toBe(expected);
+    });
   });
 
   describe('getServerPid', () => {
@@ -52,8 +79,6 @@ describe('config', () => {
 
   describe('getRepositoriesDir', () => {
     it('should return repositories subdirectory of config dir', () => {
-      delete process.env.AGENT_CONSOLE_HOME;
-
       const expected = path.join(os.homedir(), '.agent-console', 'repositories');
       expect(getRepositoriesDir()).toBe(expected);
     });
@@ -63,12 +88,16 @@ describe('config', () => {
 
       expect(getRepositoriesDir()).toBe('/custom/path/repositories');
     });
+
+    it('should follow the multi-user data root under AUTH_MODE=multi-user (#830)', () => {
+      process.env.AUTH_MODE = 'multi-user';
+
+      expect(getRepositoriesDir()).toBe('/var/lib/agent-console/repositories');
+    });
   });
 
   describe('getRepositoryDir', () => {
     it('should return repository-specific directory', () => {
-      delete process.env.AGENT_CONSOLE_HOME;
-
       const expected = path.join(os.homedir(), '.agent-console', 'repositories', 'owner/repo');
       expect(getRepositoryDir('owner/repo')).toBe(expected);
     });
