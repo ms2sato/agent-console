@@ -72,15 +72,21 @@ RUN apt-get update \
 RUN groupadd --system agent-console-users
 
 # --- Service user (runs the server process; non-root) ---
-# Added to the `shadow` group so pam_unix can read /etc/shadow and verify any
-# user's password in-process. Without this, a non-root caller falls back to the
-# unix_chkpwd helper, which only permits verifying the caller's OWN password —
-# so every login would 401. (Discovered via this verification environment;
-# documented in docs/multi-user-setup-guide.md.)
-# Also a member of agent-console-users so it can write under the shared root.
-RUN useradd --create-home --shell /usr/sbin/nologin agentconsole \
- && usermod -aG shadow agentconsole \
- && usermod -aG agent-console-users agentconsole
+# Primary group = agent-console-users (Issue #830) so that at runtime the
+# server's primary gid IS the shared group, matching what `Group=<shared-group>`
+# does on the systemd unit on a real host. The upload-buffer multi-user
+# contract in packages/server/src/routes/workers.ts compares the upload dir's
+# gid against `process.getgid()`; primary group = shared group makes that
+# comparison pass under Docker too.
+#
+# Added to the `shadow` group as a supplementary group so pam_unix can read
+# /etc/shadow and verify any user's password in-process. Without this, a
+# non-root caller falls back to the unix_chkpwd helper, which only permits
+# verifying the caller's OWN password — so every login would 401.
+# (Discovered via this verification environment; documented in
+# docs/multi-user-setup-guide.md.)
+RUN useradd --create-home --shell /usr/sbin/nologin --gid agent-console-users agentconsole \
+ && usermod -aG shadow agentconsole
 
 # --- sudoers: allow the service user to launch login shells as other users ---
 COPY docker/sudoers-agentconsole /etc/sudoers.d/agentconsole
@@ -140,10 +146,16 @@ ENV AUTH_MODE=multi-user \
 # Run from inside dist/ so bun-pty resolves its native library relative to the
 # bundle's node_modules (the documented standalone layout: `cd dist && bun start`).
 WORKDIR /app/dist
-# Issue #830: run with the shared group as the process's primary gid so that
-# `process.getgid()` returns the shared group (matching the bootstrap script's
-# `Group=<shared-group>` on the systemd unit). The upload-buffer multi-user
-# contract in packages/server/src/routes/workers.ts compares against this gid.
-USER agentconsole:agent-console-users
+# Issue #830: `USER agentconsole` (no explicit `:group`) so Docker calls
+# initgroups() on container start and loads agentconsole's supplementary
+# groups — most importantly the `shadow` group required by pam_unix to read
+# /etc/shadow for OS authentication. agentconsole's PRIMARY group is
+# `agent-console-users` (set by the useradd `--gid` above), so
+# `process.getgid()` returns the shared group's gid, satisfying the
+# upload-buffer multi-user contract in packages/server/src/routes/workers.ts.
+# Using `USER agentconsole:agent-console-users` here would override the gid
+# AND skip initgroups() — supplementary groups would be lost, pam_unix would
+# lose shadow access, and every login would 401 (CI reproduction: PR #831).
+USER agentconsole
 EXPOSE 8080
 CMD ["bun", "index.js"]
