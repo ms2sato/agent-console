@@ -116,6 +116,25 @@ describe('server-config', () => {
       expect(serverConfig.AGENT_CONSOLE_SHARED_USERNAME).toBe('agent-console-shared');
     });
 
+    it("should default PTY_PROVIDER to 'bun-pty' when not set", async () => {
+      delete process.env.PTY_PROVIDER;
+      const { serverConfig } = await importServerConfig();
+      expect(serverConfig.PTY_PROVIDER).toBe('bun-pty');
+    });
+
+    it("should accept PTY_PROVIDER='bun-terminal'", async () => {
+      process.env.PTY_PROVIDER = 'bun-terminal';
+      const { serverConfig } = await importServerConfig();
+      expect(serverConfig.PTY_PROVIDER).toBe('bun-terminal');
+    });
+
+    it('should throw for invalid PTY_PROVIDER value', async () => {
+      process.env.PTY_PROVIDER = 'wterm';
+      await expect(importServerConfig()).rejects.toThrow(
+        "Invalid PTY_PROVIDER: 'wterm'. Must be 'bun-pty' or 'bun-terminal'."
+      );
+    });
+
     it('should default AUTH_COOKIE_SECURE to undefined when not set', async () => {
       delete process.env.AUTH_COOKIE_SECURE;
 

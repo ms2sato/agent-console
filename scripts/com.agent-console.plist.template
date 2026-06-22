@@ -23,6 +23,7 @@
         <string>{{APP_URL}}</string>
         <key>PATH</key>
         <string>{{PATH}}</string>
+        <!-- PTY_PROVIDER_BLOCK_PLACEHOLDER -->
     </dict>
 
     <key>RunAtLoad</key>
