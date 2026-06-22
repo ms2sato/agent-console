@@ -356,6 +356,42 @@ describe('MultiUserMode', () => {
     });
   });
 
+  describe('spawnPty - sudo path preserves FORCE_COLOR', () => {
+    // Mirror of the multi-user-mode.test.ts coverage so the sibling test for
+    // user-mode.ts is touched in the same PR that introduces the
+    // --preserve-env=FORCE_COLOR sudo arg (Issue #821 / PR #825 follow-up).
+    // sudo -i resets the env to the sudoers env_keep defaults, which strips
+    // FORCE_COLOR. Node-based agents (chalk) then fall back to 256-color even
+    // when COLORTERM=truecolor is exported in the inner command. Passing
+    // --preserve-env=FORCE_COLOR restores truecolor output across the privilege
+    // boundary.
+    it('should include --preserve-env=FORCE_COLOR between -u <user> and -i when spawning via sudo', async () => {
+      const { provider, lastCall } = createCapturingPtyProvider();
+      const userRepository = new SqliteUserRepository(db);
+      const mode = await MultiUserMode.create(provider, userRepository);
+
+      const request: TerminalPtySpawnRequest = {
+        type: 'terminal',
+        // Use a username that cannot match os.userInfo().username so we always
+        // take the spawnSudoPty branch regardless of the host the test runs on.
+        username: 'definitely-not-the-server-user',
+        cwd: '/workspace',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args] = lastCall();
+      expect(cmd).toBe('sudo');
+      expect(args[0]).toBe('-u');
+      expect(args[1]).toBe('definitely-not-the-server-user');
+      expect(args[2]).toBe('--preserve-env=FORCE_COLOR');
+      expect(args[3]).toBe('-i');
+    });
+  });
+
   describe('validateLinux uses Bun.spawn with array args', () => {
     it('should call pamtester with array args and write password to stdin', async () => {
       platformSpy = spyOn(os, 'platform').mockReturnValue('linux');
