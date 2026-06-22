@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import * as v from 'valibot';
-import { tmpdir } from 'os';
 import { join } from 'path';
-import { mkdir, unlink } from 'fs/promises';
+import { tmpdir } from 'os';
+import { lstat, mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
 import {
   CreateWorkerRequestSchema,
@@ -18,10 +18,77 @@ import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('api:workers');
 
-const FILE_UPLOAD_DIR = join(tmpdir(), 'agent-console-uploads');
-const uploadDirReady = mkdir(FILE_UPLOAD_DIR, { recursive: true }).catch((err) => {
-  logger.error({ err, dir: FILE_UPLOAD_DIR }, 'Failed to create upload directory');
-});
+// Upload directory is per-uid under the OS temp directory so that:
+//   1. Different users on the same host (e.g. Model B service user `agentconsole`
+//      vs. an interactive dev user) do not collide on a single host-wide
+//      `/tmp/agent-console-uploads` (the original EACCES symptom of issue #821).
+//   2. Uploads remain transient: /tmp is reaped by the OS (systemd-tmpfiles,
+//      tmpwatch, reboot), so abandoned upload buffers do not accumulate. The
+//      server has no read-completion signal for `injectMessage`, so a
+//      persistent location (e.g. AGENT_CONSOLE_HOME) would leak disk over time.
+// Mode 0700 prevents other users from reading buffered file contents.
+// See issue #821.
+const uploadDirReady = new Map<string, Promise<void>>();
+
+function resolveUploadDir(): string {
+  const uid = typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+  return join(tmpdir(), `agent-console-uploads-${uid}`);
+}
+
+async function ensureUploadDir(): Promise<string> {
+  const dir = resolveUploadDir();
+  let ready = uploadDirReady.get(dir);
+  if (!ready) {
+    // TOCTOU defense (security review HIGH, #821 follow-up): POSIX mkdir is a
+    // no-op when the target already exists, so a pre-created symlink or a
+    // world-readable dir would silently slip past `mkdir(..., { mode: 0o700 })`.
+    // After mkdir, lstat the path (no symlink follow) and reject anything we
+    // did not just create ourselves with the expected owner and mode.
+    ready = (async () => {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      const st = await lstat(dir);
+      if (st.isSymbolicLink()) {
+        throw new Error(`Upload directory is a symlink: ${dir}`);
+      }
+      if (!st.isDirectory()) {
+        throw new Error(`Upload directory path is not a directory: ${dir}`);
+      }
+      // POSIX-only ownership check; on Windows (or any platform without
+      // geteuid) the fallback path is the shared 'shared' suffix and there is
+      // no uid to compare against.
+      if (typeof process.geteuid === 'function' && st.uid !== process.geteuid()) {
+        throw new Error(
+          `Upload directory has unexpected owner uid=${st.uid} (expected ${process.geteuid()}): ${dir}`,
+        );
+      }
+      if ((st.mode & 0o777) !== 0o700) {
+        throw new Error(
+          `Upload directory has unexpected mode ${(st.mode & 0o777).toString(8)} (expected 700): ${dir}`,
+        );
+      }
+    })().catch((err) => {
+      uploadDirReady.delete(dir);
+      logger.error({ err, dir }, 'Upload directory verification failed');
+      throw err;
+    });
+    uploadDirReady.set(dir, ready);
+  }
+  await ready;
+  return dir;
+}
+
+/**
+ * @internal Exported for testing. The upload-directory readiness cache is
+ * process-global so that the route only pays the mkdir + verification cost
+ * once per uid per process. Tests need a way to invalidate the cache when
+ * they want to re-exercise the verification path with a different on-disk
+ * (memfs) state.
+ */
+export const __TESTING__ = {
+  resetUploadDirCache: (): void => {
+    uploadDirReady.clear();
+  },
+};
 
 const workers = new Hono<AppBindings>()
   // Get workers for a session
@@ -87,7 +154,7 @@ const workers = new Hono<AppBindings>()
     }
 
     // Ensure upload directory is ready before writing files
-    await uploadDirReady;
+    const uploadDir = await ensureUploadDir();
 
     // Save files to disk
     const savedPaths: string[] = [];
@@ -95,7 +162,7 @@ const workers = new Hono<AppBindings>()
       // Sanitize filename: remove directory separators to prevent path traversal
       const sanitizedName = file.name.replace(/[/\\]/g, '_');
       const uniqueName = `${randomUUID()}-${sanitizedName}`;
-      const filePath = join(FILE_UPLOAD_DIR, uniqueName);
+      const filePath = join(uploadDir, uniqueName);
       const buffer = Buffer.from(await file.arrayBuffer());
       await Bun.write(filePath, buffer);
       savedPaths.push(filePath);

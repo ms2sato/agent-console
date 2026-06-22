@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as os from 'os';
+import { join as pathJoin } from 'path';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
@@ -19,6 +21,12 @@ import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 
+// Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
+// memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
+// inspect for the requested mode via memfs's `vol.statSync`. (Bun.write is
+// native and would land on real disk, but its parent-dir auto-creation uses
+// the default mode and would shadow the route's mkdir mode contract — so we
+// do not rely on real-disk stat for the mode assertion.)
 const TEST_CONFIG_DIR = '/test/config';
 
 const ptyFactory = createMockPtyFactory(20000);
@@ -79,6 +87,10 @@ describe('Workers API', () => {
     await closeDatabase();
     cleanupMemfs();
     resetProcessMock();
+    // Note: per-uid upload dir under os.tmpdir() is intentionally NOT cleaned
+    // up here — the production design relies on OS-level /tmp reapers
+    // (systemd-tmpfiles / tmpwatch / reboot) and the path is shared across
+    // every test run for this uid. See #821.
   });
 
   // ===========================================================================
@@ -212,6 +224,228 @@ describe('Workers API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Total file size exceeds limit');
+    });
+
+    // NOTE: This test must run BEFORE any other test that triggers an upload,
+    // because the route caches its `mkdir(..., { mode: 0o700 })` result in a
+    // process-level Map. Only the first upload in the process actually invokes
+    // mkdir; subsequent uploads short-circuit on the cache. We rely on that
+    // first call to leave a memfs entry whose mode we can inspect.
+    it('should save uploaded files under /tmp/agent-console-uploads-<uid>/ with mode 0700 (#821)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      // Spy on Bun.write to capture the actual file path the route writes to.
+      // Bun.write is a native API and is not trapped by the memfs fs/promises
+      // mock, so a path-based assertion via the spy is the cleanest cross-check
+      // for the destination path.
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        return originalBunWrite(
+          dest as Parameters<typeof originalBunWrite>[0],
+          input as Parameters<typeof originalBunWrite>[1],
+          options as Parameters<typeof originalBunWrite>[2],
+        );
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', worker!.id);
+        formData.append('content', 'msg');
+        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+        expect(res.status).toBe(201);
+
+        expect(writtenPaths.length).toBeGreaterThan(0);
+
+        const euid: number | 'shared' =
+          typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+        const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+        const hostSharedLegacy = pathJoin(os.tmpdir(), 'agent-console-uploads');
+        for (const filePath of writtenPaths) {
+          // Path scoping: per-uid dir under os.tmpdir(), never the host-shared
+          // legacy bare dir.
+          expect(filePath.startsWith(expectedUploadDir + '/')).toBe(true);
+          expect(filePath === hostSharedLegacy).toBe(false);
+          expect(filePath.startsWith(hostSharedLegacy + '/')).toBe(false);
+        }
+
+        // Verify mode 0700 on the upload directory via memfs's vol — the
+        // route's `mkdir(..., { mode: 0o700 })` is intercepted by memfs and
+        // recorded with mode preserved.
+        const { vol } = await import('memfs');
+        const stat = vol.statSync(expectedUploadDir);
+        // mode includes the file-type bits; mask to perm bits only.
+        const perm = (stat.mode & 0o777).toString(8);
+        expect(perm).toBe('700');
+      } finally {
+        Bun.write = originalBunWrite;
+      }
+    });
+
+    // TOCTOU defense (security review HIGH, #821 follow-up): a pre-created
+    // symlink at the upload-dir path would silently slip past
+    // `mkdir(..., { mode: 0o700 })`, so the route must lstat after mkdir and
+    // reject the symlink before any Bun.write touches real disk.
+    it('should reject a pre-existing symlink at the upload directory path (#821 TOCTOU defense)', async () => {
+      const { __TESTING__ } = await import('../workers.js');
+      __TESTING__.resetUploadDirCache();
+
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const euid: number | 'shared' =
+        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+
+      const { vol } = await import('memfs');
+      // The earlier mode-0700 test may have created the dir; remove it before
+      // symlinking. Either way we end up with a symlink at the path.
+      try {
+        vol.rmdirSync(expectedUploadDir);
+      } catch {
+        // ignore: not present
+      }
+      // The symlink's parent directory must exist in memfs for symlinkSync to
+      // succeed. The OS tmpdir is real, but memfs is a separate volume.
+      vol.mkdirSync(os.tmpdir(), { recursive: true });
+      // The symlink target must also exist in memfs.
+      vol.symlinkSync(TEST_CONFIG_DIR, expectedUploadDir);
+
+      // Count Bun.write calls to assert the route rejected BEFORE any write —
+      // without this, a generic Bun.write failure (e.g. ENOENT) could pass an
+      // any-5xx assertion and the test would not actually exercise the lstat
+      // verification path.
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        // Return a rejected promise so that if verification fails to block
+        // the write, the route still surfaces a 5xx but our paths-count
+        // assertion exposes the bypass.
+        return Promise.reject(new Error('Bun.write must not be called'));
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', worker!.id);
+        formData.append('content', 'msg');
+        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        // Production code rejects with a thrown Error; the global error
+        // handler maps unhandled errors to 5xx.
+        expect(res.status).toBeGreaterThanOrEqual(500);
+        // The TOCTOU guard rejects before any file is written. Without the
+        // guard, Bun.write would be invoked once per attached file.
+        expect(writtenPaths).toEqual([]);
+      } finally {
+        Bun.write = originalBunWrite;
+        try {
+          vol.unlinkSync(expectedUploadDir);
+        } catch {
+          // ignore
+        }
+        __TESTING__.resetUploadDirCache();
+      }
+    });
+
+    // TOCTOU defense (security review HIGH, #821 follow-up): a pre-existing
+    // dir with a wider mode (e.g. 0o777) lets other users on the same host
+    // read buffered upload contents. mkdir is a no-op when the path exists,
+    // so the route must lstat-verify the actual mode.
+    it('should reject a pre-existing upload directory with the wrong mode (#821 TOCTOU defense)', async () => {
+      const { __TESTING__ } = await import('../workers.js');
+      __TESTING__.resetUploadDirCache();
+
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const euid: number | 'shared' =
+        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+
+      const { vol } = await import('memfs');
+      try {
+        vol.rmdirSync(expectedUploadDir);
+      } catch {
+        // ignore
+      }
+      // Pre-create with world-writable mode. mkdir(..., {mode: 0o700}) is a
+      // POSIX no-op for an existing dir, so the mode stays 0o777.
+      vol.mkdirSync(os.tmpdir(), { recursive: true });
+      vol.mkdirSync(expectedUploadDir, { recursive: true, mode: 0o777 });
+
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        return Promise.reject(new Error('Bun.write must not be called'));
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', worker!.id);
+        formData.append('content', 'msg');
+        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        expect(res.status).toBeGreaterThanOrEqual(500);
+        // The TOCTOU guard rejects before any file is written.
+        expect(writtenPaths).toEqual([]);
+      } finally {
+        Bun.write = originalBunWrite;
+        try {
+          vol.rmdirSync(expectedUploadDir);
+        } catch {
+          // ignore
+        }
+        __TESTING__.resetUploadDirCache();
+      }
     });
 
     it('should sanitize path traversal in filenames', async () => {
