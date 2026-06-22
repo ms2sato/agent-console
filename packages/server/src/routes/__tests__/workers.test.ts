@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as os from 'os';
+import { join as pathJoin } from 'path';
+import { randomUUID } from 'crypto';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
@@ -19,7 +22,11 @@ import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 
-const TEST_CONFIG_DIR = '/test/config';
+// Upload paths are resolved against real disk by Bun.write (native API, not
+// trapped by memfs). We therefore use a real per-test directory under
+// os.tmpdir() rather than a fixed memfs-only path.
+const TEST_CONFIG_BASE = pathJoin(os.tmpdir(), 'agent-console-workers-test');
+let TEST_CONFIG_DIR: string;
 
 const ptyFactory = createMockPtyFactory(20000);
 
@@ -30,6 +37,8 @@ describe('Workers API', () => {
 
   beforeEach(async () => {
     await closeDatabase();
+
+    TEST_CONFIG_DIR = pathJoin(TEST_CONFIG_BASE, randomUUID());
 
     resetGitMocks();
     setupMemfs({
@@ -79,6 +88,8 @@ describe('Workers API', () => {
     await closeDatabase();
     cleanupMemfs();
     resetProcessMock();
+    // Clean up the per-test upload directory written to real disk by Bun.write.
+    await Bun.spawn(['rm', '-rf', TEST_CONFIG_DIR]).exited;
   });
 
   // ===========================================================================
@@ -255,6 +266,56 @@ describe('Workers API', () => {
           expect(filePath).not.toContain('..');
           expect(filePath).not.toMatch(/[/\\]\.\.[/\\]/);
         }
+      }
+    });
+
+    it('should save uploaded files under AGENT_CONSOLE_HOME/uploads, not os.tmpdir() (#821)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      // Spy on Bun.write to capture the actual file path the route writes to.
+      // Bun.write is a native API and is not trapped by the memfs fs/promises mock,
+      // so a path-based assertion is the cleanest cross-check.
+      const writtenPaths: string[] = [];
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
+        if (typeof dest === 'string') {
+          writtenPaths.push(dest);
+        }
+        return originalBunWrite(dest as Parameters<typeof originalBunWrite>[0], input as Parameters<typeof originalBunWrite>[1], options as Parameters<typeof originalBunWrite>[2]);
+      }) as typeof Bun.write;
+
+      try {
+        const formData = new FormData();
+        formData.append('toWorkerId', worker!.id);
+        formData.append('content', 'msg');
+        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+        expect(res.status).toBe(201);
+
+        expect(writtenPaths.length).toBeGreaterThan(0);
+
+        const expectedUploadDir = pathJoin(TEST_CONFIG_DIR, 'uploads');
+        const hostSharedLegacy = pathJoin(os.tmpdir(), 'agent-console-uploads');
+        for (const filePath of writtenPaths) {
+          expect(filePath.startsWith(expectedUploadDir + '/')).toBe(true);
+          // Negative: must not regress to the old host-shared /tmp directory.
+          expect(filePath.startsWith(hostSharedLegacy + '/')).toBe(false);
+        }
+      } finally {
+        Bun.write = originalBunWrite;
       }
     });
 

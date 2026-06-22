@@ -1,6 +1,5 @@
 import { Hono } from 'hono';
 import * as v from 'valibot';
-import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdir, unlink } from 'fs/promises';
 import { randomUUID } from 'crypto';
@@ -15,13 +14,32 @@ import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
+import { getConfigDir } from '../lib/config.js';
 
 const logger = createLogger('api:workers');
 
-const FILE_UPLOAD_DIR = join(tmpdir(), 'agent-console-uploads');
-const uploadDirReady = mkdir(FILE_UPLOAD_DIR, { recursive: true }).catch((err) => {
-  logger.error({ err, dir: FILE_UPLOAD_DIR }, 'Failed to create upload directory');
-});
+// Upload directory is resolved lazily under AGENT_CONSOLE_HOME so that each
+// install (each Model B service user, each dev worktree) owns its own
+// directory instead of fighting over a host-wide path like /tmp/agent-console-uploads.
+// See issue #821.
+const uploadDirReady = new Map<string, Promise<void>>();
+
+async function ensureUploadDir(): Promise<string> {
+  const dir = join(getConfigDir(), 'uploads');
+  let ready = uploadDirReady.get(dir);
+  if (!ready) {
+    ready = mkdir(dir, { recursive: true })
+      .then(() => undefined)
+      .catch((err) => {
+        uploadDirReady.delete(dir);
+        logger.error({ err, dir }, 'Failed to create upload directory');
+        throw err;
+      });
+    uploadDirReady.set(dir, ready);
+  }
+  await ready;
+  return dir;
+}
 
 const workers = new Hono<AppBindings>()
   // Get workers for a session
@@ -87,7 +105,7 @@ const workers = new Hono<AppBindings>()
     }
 
     // Ensure upload directory is ready before writing files
-    await uploadDirReady;
+    const uploadDir = await ensureUploadDir();
 
     // Save files to disk
     const savedPaths: string[] = [];
@@ -95,7 +113,7 @@ const workers = new Hono<AppBindings>()
       // Sanitize filename: remove directory separators to prevent path traversal
       const sanitizedName = file.name.replace(/[/\\]/g, '_');
       const uniqueName = `${randomUUID()}-${sanitizedName}`;
-      const filePath = join(FILE_UPLOAD_DIR, uniqueName);
+      const filePath = join(uploadDir, uniqueName);
       const buffer = Buffer.from(await file.arrayBuffer());
       await Bun.write(filePath, buffer);
       savedPaths.push(filePath);
