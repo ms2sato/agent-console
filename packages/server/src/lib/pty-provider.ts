@@ -91,6 +91,13 @@ class BunTerminalPtyAdapter implements IPty {
   private readonly terminal: Bun.Terminal;
   private dataListener: ((data: string) => void) | null = null;
   private exitListener: ((event: IExitEvent) => void) | null = null;
+  /**
+   * Guards against double-fire of the exit listener when the listener is
+   * attached AFTER subprocess.exited has already resolved: in that race the
+   * constructor's `.then()` callback and `onExit()`'s synchronous-replay
+   * microtask both target the same listener. Set true on the first fire.
+   */
+  private exitFired = false;
 
   constructor(args: {
     subprocess: Bun.Subprocess;
@@ -110,16 +117,21 @@ class BunTerminalPtyAdapter implements IPty {
     // signals PTY stream close, not process exit. The real exit code lives on
     // subprocess.exited / subprocess.exitCode.
     void this.subprocess.exited.then((exitCode) => {
-      const listener = this.exitListener;
-      if (listener) {
-        const signal = this.subprocess.signalCode;
-        listener({
-          exitCode,
-          // IExitEvent.signal: number | string | undefined. signalCode is the
-          // POSIX signal name (e.g. 'SIGTERM') or null.
-          signal: signal ?? undefined,
-        });
-      }
+      this.fireExit(exitCode);
+    });
+  }
+
+  private fireExit(exitCode: number): void {
+    if (this.exitFired) return;
+    const listener = this.exitListener;
+    if (!listener) return;
+    this.exitFired = true;
+    const signal = this.subprocess.signalCode;
+    listener({
+      exitCode,
+      // IExitEvent.signal: number | string | undefined. signalCode is the
+      // POSIX signal name (e.g. 'SIGTERM') or null.
+      signal: signal ?? undefined,
     });
   }
 
@@ -143,13 +155,14 @@ class BunTerminalPtyAdapter implements IPty {
     // If the process has already exited before onExit was attached, fire
     // synchronously so callers (e.g. worker-manager's exit-wait race) don't
     // hang. Subprocess.exitCode is non-null after exit.
+    //
+    // fireExit() guards against double-fire: the constructor's `.then()`
+    // callback may also be queued for this same listener; the exitFired flag
+    // ensures only the first one wins.
     const code = this.subprocess.exitCode;
-    if (code !== null) {
-      const signal = this.subprocess.signalCode;
+    if (code !== null && !this.exitFired) {
       queueMicrotask(() => {
-        if (this.exitListener === listener) {
-          listener({ exitCode: code, signal: signal ?? undefined });
-        }
+        this.fireExit(code);
       });
     }
     return {

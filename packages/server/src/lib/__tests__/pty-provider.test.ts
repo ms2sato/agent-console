@@ -41,29 +41,40 @@ describe('pty-provider', () => {
       };
     };
 
-    let originalSpawn: typeof Bun.spawn;
-    let lastSpawn: SpawnArgs | null;
-    let mockTerminal: {
+    type MockTerminal = {
       write: ReturnType<typeof mock>;
       resize: ReturnType<typeof mock>;
       close: ReturnType<typeof mock>;
     };
-    let mockSubprocess: {
+    type MockSubprocess = {
       pid: number;
       exitCode: number | null;
       signalCode: NodeJS.Signals | null;
       kill: ReturnType<typeof mock>;
-      terminal: typeof mockTerminal;
+      terminal: MockTerminal;
       exited: Promise<number>;
       _resolveExited: (code: number) => void;
     };
+    /**
+     * Narrow Bun shape exposing only the (cmd[], options) spawn overload the
+     * adapter actually invokes. Used to install a typed test fake on the
+     * global Bun object without casting through `any`/`unknown as T`.
+     */
+    type SpawnableBun = {
+      spawn: (cmd: string[], options: SpawnArgs['options']) => MockSubprocess;
+    };
 
-    function makeMockSubprocess(pid: number): typeof mockSubprocess {
+    let originalSpawn: typeof Bun.spawn;
+    let lastSpawn: SpawnArgs | null;
+    let mockTerminal: MockTerminal;
+    let mockSubprocess: MockSubprocess;
+
+    function makeMockSubprocess(pid: number): MockSubprocess {
       let resolveExited: (code: number) => void = () => {};
       const exited = new Promise<number>((resolve) => {
         resolveExited = resolve;
       });
-      return {
+      const sub: MockSubprocess = {
         pid,
         exitCode: null,
         signalCode: null,
@@ -71,10 +82,11 @@ describe('pty-provider', () => {
         terminal: mockTerminal,
         exited,
         _resolveExited: (code: number) => {
-          mockSubprocess.exitCode = code;
+          sub.exitCode = code;
           resolveExited(code);
         },
       };
+      return sub;
     }
 
     beforeEach(() => {
@@ -87,17 +99,19 @@ describe('pty-provider', () => {
       };
       mockSubprocess = makeMockSubprocess(99999);
 
-      // Replace Bun.spawn for this test. The adapter calls Bun.spawn with a
-      // single options object containing `terminal`; capture both and return
-      // the mock subprocess so the adapter constructs against it.
-      const fakeSpawn = (cmd: string[], options: SpawnArgs['options']) => {
+      // View Bun through the narrow SpawnableBun shape so we can install a
+      // typed fake without `as unknown as typeof Bun.spawn`. The narrow shape
+      // matches the only overload the adapter calls; restoring in afterEach
+      // returns the full typed Bun.spawn.
+      const spawnable = Bun as unknown as SpawnableBun;
+      spawnable.spawn = (cmd, options) => {
         lastSpawn = { cmd, options };
         return mockSubprocess;
       };
-      (Bun as { spawn: typeof Bun.spawn }).spawn = fakeSpawn as unknown as typeof Bun.spawn;
     });
 
     afterEach(() => {
+      // Restore the original (fully-typed) Bun.spawn via the same narrow view.
       (Bun as unknown as { spawn: typeof Bun.spawn }).spawn = originalSpawn;
     });
 
@@ -191,6 +205,27 @@ describe('pty-provider', () => {
       await Promise.resolve();
 
       expect(events[0]!.exitCode).toBe(137);
+    });
+
+    it('adapter onExit fires exactly once when listener attaches AFTER subprocess.exited resolves (double-fire race guard)', async () => {
+      // This is the race the exitFired flag guards against: the constructor's
+      // `.then(fireExit)` is enqueued on exit, and onExit()'s synchronous
+      // replay also enqueues fireExit for the same listener. Both targeting
+      // the same listener must NOT call it twice.
+      const pty = bunTerminalProvider.spawn('sh', [], {});
+      mockSubprocess._resolveExited(7);
+      await mockSubprocess.exited;
+      // Do NOT flush microtasks yet — attach the listener while .then() is
+      // still pending in the microtask queue.
+      const events: Array<{ exitCode: number; signal?: number | string }> = [];
+      pty.onExit((event) => events.push(event));
+      // Now flush.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(events.length).toBe(1);
+      expect(events[0]!.exitCode).toBe(7);
     });
 
     it('adapter onExit fires synchronously (via microtask) if process already exited before listener attached', async () => {
