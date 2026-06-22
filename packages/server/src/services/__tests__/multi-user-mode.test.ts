@@ -571,11 +571,15 @@ describe('MultiUserMode', () => {
       expect(cmd).toBe('sudo');
       expect(args[0]).toBe('-u');
       expect(args[1]).toBe('other-user');
-      expect(args[2]).toBe('-i');
-      expect(args[3]).toBe('sh');
-      expect(args[4]).toBe('-c');
+      // --preserve-env=FORCE_COLOR keeps FORCE_COLOR across sudo -i's env reset
+      // so Node-based agents (chalk, etc.) see truecolor (FORCE_COLOR=3) and
+      // render their banner in color rather than plain white.
+      expect(args[2]).toBe('--preserve-env=FORCE_COLOR');
+      expect(args[3]).toBe('-i');
+      expect(args[4]).toBe('sh');
+      expect(args[5]).toBe('-c');
       // The inner command should contain cd, export, and the agent command
-      const innerCommand = args[5];
+      const innerCommand = args[6];
       expect(innerCommand).toContain("cd '/workspace/project'");
       expect(innerCommand).toContain('AGENT_CONSOLE_BASE_URL');
       expect(innerCommand).toContain('AGENT_CONSOLE_SESSION_ID');
@@ -586,6 +590,36 @@ describe('MultiUserMode', () => {
       expect(opts.env).toBeUndefined();
       expect(opts.cols).toBe(120);
       expect(opts.rows).toBe(30);
+    });
+
+    it('should pass --preserve-env=FORCE_COLOR to sudo so truecolor flag survives sudo -i', async () => {
+      // Model B (multi-user) bug: sudo -i resets the env to the sudoers env_keep
+      // defaults, which strips FORCE_COLOR. Node-based agents then fall back to
+      // 256-color output (chalk/getColorDepth match TERM=xterm-256color before
+      // checking COLORTERM=truecolor), and the Claude Code banner renders white.
+      // Preserving FORCE_COLOR via --preserve-env restores truecolor output.
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'other-user',
+        cwd: '/workspace',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args] = getLastSpawnCall();
+      expect(cmd).toBe('sudo');
+      expect(args).toContain('--preserve-env=FORCE_COLOR');
     });
 
     it('should spawn via sudo when username differs from server process user (terminal)', async () => {
@@ -605,7 +639,7 @@ describe('MultiUserMode', () => {
       const [cmd, args] = getLastSpawnCall();
       expect(cmd).toBe('sudo');
       expect(args[1]).toBe('other-user');
-      const innerCommand = args[5];
+      const innerCommand = args[6];
       expect(innerCommand).toContain("cd '/workspace'");
       expect(innerCommand).toContain('exec $SHELL -l');
       // Terminal should NOT have AGENT_CONSOLE_* vars in the command
@@ -641,7 +675,7 @@ describe('MultiUserMode', () => {
       mode.spawnPty(request);
 
       const [, args] = getLastSpawnCall();
-      const innerCommand = args[5];
+      const innerCommand = args[6];
 
       // All values should be enclosed in single quotes to prevent shell interpretation.
       // Single quotes within values should be escaped as '\''
@@ -679,7 +713,7 @@ describe('MultiUserMode', () => {
       mode.spawnPty(request);
 
       const [, args] = getLastSpawnCall();
-      const innerCommand = args[5];
+      const innerCommand = args[6];
 
       // Single quotes in values should be escaped: ' -> '\''
       expect(innerCommand).toContain("SPECIAL='value with '\\''single'\\'' quotes'");
@@ -702,7 +736,7 @@ describe('MultiUserMode', () => {
       mode.spawnPty(request);
 
       const [, args] = getLastSpawnCall();
-      const innerCommand = args[5];
+      const innerCommand = args[6];
       // cwd with single quote should be properly escaped
       expect(innerCommand).toContain("cd '/workspace/it'\\''s a path'");
     });
@@ -731,7 +765,7 @@ describe('MultiUserMode', () => {
       mode.spawnPty(request);
 
       const [, args] = getLastSpawnCall();
-      const innerCommand = args[5];
+      const innerCommand = args[6];
       expect(innerCommand).toContain("AGENT_CONSOLE_REPOSITORY_ID='repo-42'");
       expect(innerCommand).toContain("AGENT_CONSOLE_PARENT_SESSION_ID='parent-sess'");
       expect(innerCommand).toContain("AGENT_CONSOLE_PARENT_WORKER_ID='parent-wkr'");
@@ -766,7 +800,7 @@ describe('MultiUserMode', () => {
       mode.spawnPty(request);
 
       const [, args] = getLastSpawnCall();
-      const innerCommand = args[5];
+      const innerCommand = args[6];
 
       // Valid keys should appear in the export string
       expect(innerCommand).toContain("VALID_KEY='good'");
@@ -795,7 +829,7 @@ describe('MultiUserMode', () => {
       mode.spawnPty(request);
 
       const [, args] = getLastSpawnCall();
-      const innerCommand = args[5];
+      const innerCommand = args[6];
       // With no env vars and terminal type, should just cd and exec shell
       expect(innerCommand).toContain("cd '/workspace'");
       expect(innerCommand).toContain('exec $SHELL -l');
@@ -833,7 +867,7 @@ describe('MultiUserMode', () => {
       // Outer cwd must be neutral, not the private home dir.
       expect(opts.cwd).toBe('/');
       // Inner command must still cd into the actual working dir (landing guarantee).
-      const innerCommand = args[5];
+      const innerCommand = args[6];
       expect(innerCommand).toContain("cd '/home/alice'");
     });
 
@@ -854,7 +888,7 @@ describe('MultiUserMode', () => {
       const [cmd, args, opts] = getLastSpawnCall();
       expect(cmd).toBe('sudo');
       expect(opts.cwd).toBe('/');
-      const innerCommand = args[5];
+      const innerCommand = args[6];
       expect(innerCommand).toContain("cd '/home/alice'");
     });
   });

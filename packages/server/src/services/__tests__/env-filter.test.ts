@@ -87,7 +87,10 @@ describe('env-filter', () => {
 
       expect(childEnv.TERM).toBe('xterm-256color');
       expect(childEnv.COLORTERM).toBe('truecolor');
-      expect(childEnv.FORCE_COLOR).toBe('1');
+      // FORCE_COLOR=3 requests truecolor (24-bit) output from Node-based agents
+      // and chalk-style libraries; matches the truecolor capability that xterm.js
+      // renders end-to-end.
+      expect(childEnv.FORCE_COLOR).toBe('3');
     });
 
     it('should override existing TERM with xterm-256color', () => {
