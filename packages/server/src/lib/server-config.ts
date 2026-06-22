@@ -106,6 +106,21 @@ export const serverConfig = {
       throw new Error(`Invalid AUTH_COOKIE_SECURE: ${(e as Error).message}`);
     }
   })(),
+  /**
+   * PTY backend selector.
+   * - 'bun-pty' (default): use the bun-pty native shared library.
+   * - 'bun-terminal': use `Bun.spawn({ terminal: ... })` (Bun >= 1.3.5).
+   *
+   * See docs in `lib/pty-provider.ts` and Issue #824 for the migration
+   * evaluation. Default preserves historical behavior.
+   */
+  PTY_PROVIDER: (() => {
+    const value = process.env.PTY_PROVIDER ?? 'bun-pty';
+    if (value !== 'bun-pty' && value !== 'bun-terminal') {
+      throw new Error(`Invalid PTY_PROVIDER: '${value}'. Must be 'bun-pty' or 'bun-terminal'.`);
+    }
+    return value as 'bun-pty' | 'bun-terminal';
+  })(),
 } as const;
 
 /**

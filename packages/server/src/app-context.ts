@@ -51,7 +51,7 @@ import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
 import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { SharedAccountRegistry } from './services/shared-account-registry.js';
-import { bunPtyProvider } from './lib/pty-provider.js';
+import { bunPtyProvider, getPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
 import { TimerManager as TimerManagerClass } from './services/timer-manager.js';
@@ -222,10 +222,14 @@ export async function createAppContext(
 
   // 5.5. Create user mode (determines auth + PTY spawning strategy)
   const userRepository = new SqliteUserRepository(db);
+  const ptyProvider = getPtyProvider(serverConfig.PTY_PROVIDER);
   const userMode = serverConfig.AUTH_MODE === 'multi-user'
-    ? await MultiUserMode.create(bunPtyProvider, userRepository)
-    : await SingleUserMode.create(bunPtyProvider, userRepository);
-  logger.info({ authMode: serverConfig.AUTH_MODE }, 'User mode initialized');
+    ? await MultiUserMode.create(ptyProvider, userRepository)
+    : await SingleUserMode.create(ptyProvider, userRepository);
+  logger.info(
+    { authMode: serverConfig.AUTH_MODE, ptyProvider: serverConfig.PTY_PROVIDER },
+    'User mode initialized',
+  );
 
   // 5.6. Create shared account registry. Only honours
   // AGENT_CONSOLE_SHARED_USERNAME when AUTH_MODE=multi-user; in AUTH_MODE=none
