@@ -26,11 +26,28 @@ echo ""
 echo "  Port: $PORT"
 echo "  URL:  $APP_URL"
 echo ""
+
+# Opt-in: emit a PTY_PROVIDER env entry only when the operator explicitly sets it.
+# Unset -> the placeholder line is replaced by an empty string (no entry), so the
+# server falls back to its compiled default. Used for dogfooding bun-terminal
+# before stage-2 default flip (issues #824 / #827).
+if [ -n "${PTY_PROVIDER:-}" ]; then
+    # Single-line XML: literal newlines in the sed substitution pattern are
+    # rejected by BSD sed (macOS). The plist parser is whitespace-insensitive,
+    # so the collapsed form is semantically identical.
+    PTY_PROVIDER_BLOCK="<key>PTY_PROVIDER</key><string>$PTY_PROVIDER</string>"
+    echo "  PTY_PROVIDER: $PTY_PROVIDER"
+    echo ""
+else
+    PTY_PROVIDER_BLOCK=""
+fi
+
 sed -e "s|{{HOME}}|$HOME|g" \
     -e "s|{{COMMAND_PATH}}|$COMMAND_PATH|g" \
     -e "s|{{PORT}}|$PORT|g" \
     -e "s|{{APP_URL}}|$APP_URL|g" \
     -e "s|{{PATH}}|$PATH|g" \
+    -e "s|<!-- PTY_PROVIDER_BLOCK_PLACEHOLDER -->|${PTY_PROVIDER_BLOCK}|" \
     "$SCRIPT_DIR/com.agent-console.plist.template" \
     > ~/Library/LaunchAgents/com.agent-console.plist
 
