@@ -14,6 +14,7 @@ import type { Kysely } from 'kysely';
 import type { Database } from './database/schema.js';
 import type { JobQueue } from './jobs/job-queue.js';
 import type { SessionRepository } from './repositories/session-repository.js';
+import type { UserRepository } from './repositories/user-repository.js';
 import type { SessionManager } from './services/session-manager.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
@@ -112,6 +113,14 @@ export interface AppContext {
 
   /** User authentication and PTY spawning mode */
   userMode: UserMode;
+
+  /**
+   * User identity repository — resolves a `users.id` UUID back to an OS
+   * username / home dir. Exposed on AppContext so that MCP `delegate_to_worktree`
+   * can resolve the parent session's `createdBy` for `runAsUser`
+   * elevation (Issue #844).
+   */
+  userRepository: UserRepository;
 
   /** Registry of configured shared OS accounts (for shared-session creation) */
   sharedAccountRegistry: SharedAccountRegistry;
@@ -479,6 +488,7 @@ export async function createAppContext(
     interSessionMessageService,
     suggestSessionMetadata,
     userMode,
+    userRepository,
     sharedAccountRegistry,
     timerManager,
     conditionalWakeupManager,
@@ -663,6 +673,7 @@ export async function createTestContext(
     interSessionMessageService,
     suggestSessionMetadata,
     userMode,
+    userRepository,
     sharedAccountRegistry,
     timerManager,
     conditionalWakeupManager,

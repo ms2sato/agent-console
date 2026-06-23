@@ -24,6 +24,7 @@ import { sendAnnotationsToClient } from '../websocket/git-diff-handler.js';
 import type { DeleteWorktreeFn } from '../services/worktree-deletion-service.js';
 import type { CreateWorktreeWithSessionFn } from '../services/worktree-creation-service.js';
 import type { OpenPrInfo } from '../services/github-pr-service.js';
+import type { UserRepository } from '../repositories/user-repository.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
@@ -166,6 +167,14 @@ export interface McpDependencies {
   suggestSessionMetadata: SuggestSessionMetadataFn;
   createWorktreeWithSession: CreateWorktreeWithSessionFn;
   deleteWorktree: DeleteWorktreeFn;
+  /**
+   * User repository used by `delegate_to_worktree` to resolve the parent
+   * session's `createdBy` (a user UUID) to its OS `username`, which is then
+   * threaded down to `createWorktreeWithSession` as `requestUsername` so that
+   * `git worktree add` runs as the requesting user in multi-user mode
+   * (Issue #844, extending the REST path established by Issue #838 / PR #843).
+   */
+  userRepository: UserRepository;
   broadcastToApp: (msg: AppServerMessage) => void;
   fetchPullRequestUrl: (branch: string, cwd: string) => Promise<string | null>;
   findOpenPullRequest: (branch: string, cwd: string) => Promise<OpenPrInfo | null>;
@@ -179,7 +188,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp, findOpenPullRequest } = deps;
+  const { sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp, findOpenPullRequest } = deps;
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.
@@ -643,18 +652,25 @@ export function createMcpApp(deps: McpDependencies): Hono {
           ? sessionManager.getSession(parentSessionId)?.createdBy
           : undefined;
 
-        // NOTE: Issue #838 routes `git worktree add` through `runAsUser` so
-        // worktree files become user-owned. The MCP delegation path does
-        // not currently resolve `parentCreatedBy` (a user UUID) back to an
-        // OS username — that requires plumbing `userRepository` through
-        // `McpDependencies`. In multi-user mode, MCP-delegated worktrees
-        // are therefore created with `runAsUser({ username: undefined })`
-        // -> server user ownership. The subsequent agent worker still
-        // spawns as the parent session's user via `resolveSpawnUsername`
-        // in SessionManager, so the user will hit `dubious ownership` on
-        // git commands inside MCP-delegated worktrees. Tracked as a
-        // follow-up; the REST `/api/repositories/:id/worktrees` path is
-        // the primary user-visible entry point and is covered by this PR.
+        // Resolve parent's createdBy (a users.id UUID) to its OS username so
+        // `git worktree add` runs as the requesting user in multi-user mode
+        // (Issue #844, extending Issue #838 / PR #843 from REST to MCP).
+        // When `parentCreatedBy` is unset, or the UUID does not resolve
+        // (legacy / orphan sessions), `requestUsername` is null and
+        // `runAsUser` bypasses elevation — current behaviour preserved.
+        let requestUsername: string | null = null;
+        if (parentCreatedBy) {
+          const parentUser = await userRepository.findById(parentCreatedBy);
+          if (parentUser) {
+            requestUsername = parentUser.username;
+          } else {
+            logger.warn(
+              { parentCreatedBy, repositoryId },
+              'delegate_to_worktree: parent createdBy does not resolve to a user; running git worktree add without elevation',
+            );
+          }
+        }
+
         const result = await createWorktreeWithSession({
           repoPath: repo.path,
           repoId: repositoryId,
@@ -673,6 +689,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
             createdBy: parentCreatedBy,
             templateVars,
           },
+          requestUsername,
         }, sessionManager, worktreeService);
 
         if (!result.success) {
