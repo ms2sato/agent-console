@@ -124,14 +124,13 @@ async function ensureUploadDir(): Promise<string> {
   // not match the expected owner / mode / group.
   try {
     await mkdir(dir, { recursive: true, mode: contract.mode });
-    // Bun 1.3.10 strips setgid / setuid / sticky in its fs.mkdir JS
-    // layer before the syscall; for the multi-user 2750 contract we
-    // re-apply the bit via chmod(1). See the file header comment for
-    // the upstream-gap rationale.
-    if ((contract.mode & ~0o777) !== 0) {
-      await applyModeViaSpawnChmod(dir, contract.mode);
-    }
-    const st = await lstat(dir);
+    // Validate the path BEFORE any chmod(1) shell-out. chmod(2) follows
+    // symlinks, so applying it on a pre-created symlink would mutate the
+    // symlink target's mode before we ever reject the symlink. Lstat
+    // first, confirm symlink / dir / owner / gid, THEN re-apply setgid
+    // via chmod (which is now operating on a path we have just
+    // verified). CodeRabbit #831-review TOCTOU finding.
+    let st = await lstat(dir);
     if (st.isSymbolicLink()) {
       throw new Error(`Upload directory is a symlink: ${dir}`);
     }
@@ -146,15 +145,38 @@ async function ensureUploadDir(): Promise<string> {
         `Upload directory has unexpected owner uid=${st.uid} (expected ${process.geteuid()}): ${dir}`,
       );
     }
+    if (contract.expectedGid !== null && st.gid !== contract.expectedGid) {
+      throw new Error(
+        `Upload directory has unexpected group gid=${st.gid} (expected ${contract.expectedGid}): ${dir}`,
+      );
+    }
+
+    // Bun 1.3.10 strips setgid / setuid / sticky in its fs.mkdir JS
+    // layer before the syscall; for the multi-user 2750 contract we
+    // re-apply the bit via chmod(1) — now that we have lstat-confirmed
+    // the path is the expected directory. Skip when the contract has
+    // no special bits (single-user 0o700) OR when the existing mode
+    // already matches (idempotent recovery of a previously-prepared
+    // directory). See the file header comment for the upstream-gap
+    // rationale.
+    if ((contract.mode & ~0o777) !== 0 && (st.mode & 0o7777) !== contract.mode) {
+      await applyModeViaSpawnChmod(dir, contract.mode);
+      // Re-stat (no symlink follow) to guard against a rename race
+      // between the validating lstat and the chmod spawn; if anything
+      // unexpected happened, surface it now rather than handing the
+      // directory back to the caller.
+      st = await lstat(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) {
+        throw new Error(
+          `Upload directory changed unexpectedly during mode apply: ${dir}`,
+        );
+      }
+    }
+
     const actualMode = st.mode & 0o7777;
     if (actualMode !== contract.mode) {
       throw new Error(
         `Upload directory has unexpected mode ${actualMode.toString(8)} (expected ${contract.mode.toString(8)}): ${dir}`,
-      );
-    }
-    if (contract.expectedGid !== null && st.gid !== contract.expectedGid) {
-      throw new Error(
-        `Upload directory has unexpected group gid=${st.gid} (expected ${contract.expectedGid}): ${dir}`,
       );
     }
   } catch (err) {

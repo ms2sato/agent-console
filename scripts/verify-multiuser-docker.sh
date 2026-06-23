@@ -146,8 +146,9 @@ session_code="$(curl -s -o "$SESSION_RESP" -w '%{http_code}' -b "$COOKIE_JAR" -c
   -d '{"type":"quick","locationPath":"/home/alice"}')"
 echo "  POST /api/sessions (quick, /home/alice) -> HTTP ${session_code}"
 session_id="$(grep -o '"id":"[^"]*"' "$SESSION_RESP" | head -n1 | cut -d'"' -f4)"
-[ "$session_code" = "201" ] && [ -n "$session_id" ]
-check "alice can create a session" $?
+session_ok=1
+[ "$session_code" = "201" ] && [ -n "$session_id" ] && session_ok=0
+check "alice can create a session" "$session_ok"
 
 if [ -n "$session_id" ]; then
   worker_code="$(curl -s -o "$WORKER_RESP" -w '%{http_code}' -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
@@ -156,8 +157,9 @@ if [ -n "$session_id" ]; then
     -d '{"type":"terminal"}')"
   echo "  POST /api/sessions/<id>/workers (terminal) -> HTTP ${worker_code}"
   worker_id="$(grep -o '"id":"[^"]*"' "$WORKER_RESP" | head -n1 | cut -d'"' -f4)"
-  [ "$worker_code" = "201" ] && [ -n "$worker_id" ]
-  check "alice can create a worker" $?
+  worker_ok=1
+  [ "$worker_code" = "201" ] && [ -n "$worker_id" ] && worker_ok=0
+  check "alice can create a worker" "$worker_ok"
 
   if [ -n "$worker_id" ]; then
     message_code="$(curl -s -o "$MESSAGE_RESP" -w '%{http_code}' -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
@@ -166,8 +168,9 @@ if [ -n "$session_id" ]; then
       -F "content=hello from upload regression" \
       -F "files=@${UPLOAD_PAYLOAD};filename=upload-probe.txt;type=text/plain")"
     echo "  POST /api/sessions/<id>/messages (multipart with file) -> HTTP ${message_code}"
-    [ "$message_code" = "201" ]
-    check "multipart message with file upload returns 201" $?
+    message_ok=1
+    [ "$message_code" = "201" ] && message_ok=0
+    check "multipart message with file upload returns 201" "$message_ok"
   fi
 fi
 
@@ -178,8 +181,9 @@ echo "  server uid in container: ${SERVER_UID}"
 UPLOAD_DIR="/tmp/agent-console-uploads-${SERVER_UID}"
 UPLOAD_STAT="$(compose exec -T agent-console stat -c '%a:%G' "$UPLOAD_DIR" 2>/dev/null | tr -d '\r' || echo MISSING)"
 echo "  stat ${UPLOAD_DIR} -> ${UPLOAD_STAT}"
-[ "$UPLOAD_STAT" = "2750:agent-console-users" ]
-check "upload dir is mode 2750 owned by agent-console-users (#830 setgid regression)" $?
+upload_ok=1
+[ "$UPLOAD_STAT" = "2750:agent-console-users" ] && upload_ok=0
+check "upload dir is mode 2750 owned by agent-console-users (#830 setgid regression)" "$upload_ok"
 
 rm -f "$COOKIE_JAR" "$ALICE_RESP" "$SESSION_RESP" "$WORKER_RESP" "$MESSAGE_RESP" "$UPLOAD_PAYLOAD"
 
