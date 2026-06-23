@@ -596,30 +596,59 @@ ls -la ~   # Should be accessible
 
 ## Source Repo Group-Writability (Linux multi-user)
 
-When Issue #838 lands, `git worktree add` runs as the requesting user. For
-this to succeed against a source repo owned by the service user
-(`agentconsole`), two things must be true:
+When `git worktree add` runs as the requesting user (Issue #838 / PR #843),
+two things must be true for it to succeed against a source repo owned by
+the service user (`agentconsole`):
 
 1. The user's gitconfig must trust the source repo path. The server
    bootstraps this automatically (`git config --global --add safe.directory
    <repoPath>`, mitigation A from Issue #838); operators do not need to
    configure it.
 2. The user must be able to **write** to `.git/refs/`, `.git/packed-refs`,
-   etc. (Issue's mitigation C — group writability). The bootstrap script
-   sets `core.sharedRepository=group` on cloned repos, but operators
-   who add source repos manually (e.g., by cloning as `agentconsole`)
-   must apply equivalent config:
+   etc. (Issue #838's mitigation C — group writability).
+   **As of Issue #845, `registerRepository` automatically applies this
+   configuration in multi-user mode** at repository-registration time. The
+   server runs the equivalent of the four commands below as the service
+   user, idempotently (re-registering a configured repo is a no-op):
+
+```bash
+# Applied automatically by the server in multi-user mode (Issue #845).
+git -C <repo-path> config core.sharedRepository group
+find <repo-path>/.git -type d -exec chmod g+rwxs {} +
+chmod -R g+rw <repo-path>/.git
+chgrp -R agent-console-users <repo-path>/.git
+```
+
+### Manual fallback (operator step)
+
+The auto-apply step requires the server process (`agentconsole`) to either
+own the repo or be in its group. When neither holds — e.g., the repo was
+cloned by a different operator account whose primary group differs — the
+auto-apply logs a `WARN` (with the exact remediation commands embedded)
+and proceeds with registration. Apply the same commands manually as a
+privileged user:
 
 ```bash
 sudo -u agentconsole bash -lc 'cd <repo-path> && git config core.sharedRepository group'
 sudo find <repo-path>/.git -type d -exec chmod g+rwxs {} +
 sudo chmod -R g+rw <repo-path>/.git
+sudo chgrp -R agent-console-users <repo-path>/.git
 ```
 
-These are operator steps for source repos that pre-date the multi-user-
-ready setup. When [Issue #834](https://github.com/ms2sato/agent-console/issues/834)
+### Pre-#845 source repos
+
+Source repos registered before Issue #845 landed retain the registration
+record but were not touched by the auto-apply step. Two options:
+
+- **Re-register**: unregister and re-register through the UI (or
+  `DELETE /api/repositories/:id` + `POST /api/repositories`) to trigger the
+  new auto-apply.
+- **Run the manual fallback commands** above once per affected repo.
+
+When [Issue #834](https://github.com/ms2sato/agent-console/issues/834)
 (clone-as-user) lands, repos cloned via the in-app flow are owned by the
-requesting user directly and neither step is required.
+requesting user directly and neither the auto-apply nor the manual fallback
+is required.
 
 ## Migrating Pre-#838 Worktrees (Linux multi-user)
 
