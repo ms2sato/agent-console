@@ -35,7 +35,9 @@
 #   AGENT_CONSOLE_SERVICE_USER, AGENT_CONSOLE_SERVICE_GROUP,
 #   AGENT_CONSOLE_DATA_ROOT, AGENT_CONSOLE_PORT,
 #   AGENT_CONSOLE_AUTH_COOKIE_SECURE, AGENT_CONSOLE_INITIAL_USERS
-#   (whitespace-separated list of usernames; equivalent to repeated --add-user).
+#   (whitespace-separated list of usernames; equivalent to repeated --add-user),
+#   AGENT_CONSOLE_PTY_PROVIDER (opt-in PTY backend override; unset = server
+#   default; valid values: 'bun-pty' | 'bun-terminal'; Issues #832 / #824).
 #
 # Documentation: docs/multi-user-setup-guide.md
 
@@ -56,6 +58,12 @@ SERVICE_GROUP="${AGENT_CONSOLE_SERVICE_GROUP:-$DEFAULT_SERVICE_GROUP}"
 DATA_ROOT="${AGENT_CONSOLE_DATA_ROOT:-$DEFAULT_DATA_ROOT}"
 PORT="${AGENT_CONSOLE_PORT:-$DEFAULT_PORT}"
 AUTH_COOKIE_SECURE="${AGENT_CONSOLE_AUTH_COOKIE_SECURE:-$DEFAULT_AUTH_COOKIE_SECURE}"
+# Opt-in PTY backend override. Unset (default) -> rendered unit omits the env
+# entry entirely and the server falls back to its compiled default ('bun-pty').
+# Set to 'bun-terminal' to dogfood the Bun.spawn-based provider before the
+# stage-2 default flip (Issues #832 / #824 / #827). The macOS deploy script
+# (update-and-deploy-for-mac.sh) provides the analogous slot.
+PTY_PROVIDER="${AGENT_CONSOLE_PTY_PROVIDER:-}"
 
 # Initial users: env var holds a whitespace-separated list; CLI --add-user
 # extends it (repeatable).
@@ -87,6 +95,11 @@ Options:
   --data-root <path>     Data root (default: /var/lib/agent-console)
   --port <num>           Server port (default: 8080)
   --cookie-secure <bool> AUTH_COOKIE_SECURE (true|false, default: false)
+  --pty-provider <name>  Opt-in PTY backend override (bun-pty|bun-terminal).
+                         Unset (default) leaves the rendered unit without a
+                         PTY_PROVIDER entry; the server uses its compiled
+                         default ('bun-pty'). Used for dogfooding the
+                         alternative provider (Issues #832 / #824).
   --add-user <username>  OS user to add to the shared group (repeatable)
   --repo-source <ref>    Local path or git URL to install from
                          (default: https://github.com/ms2sato/agent-console.git)
@@ -98,7 +111,8 @@ Options:
 Environment overrides (env vars are used when the matching flag is omitted):
   AGENT_CONSOLE_SERVICE_USER, AGENT_CONSOLE_SERVICE_GROUP,
   AGENT_CONSOLE_DATA_ROOT, AGENT_CONSOLE_PORT,
-  AGENT_CONSOLE_AUTH_COOKIE_SECURE, AGENT_CONSOLE_INITIAL_USERS
+  AGENT_CONSOLE_AUTH_COOKIE_SECURE, AGENT_CONSOLE_INITIAL_USERS,
+  AGENT_CONSOLE_PTY_PROVIDER
 EOF
 }
 
@@ -119,6 +133,9 @@ while [ "$#" -gt 0 ]; do
     --cookie-secure)
       [ "$#" -ge 2 ] || err "--cookie-secure requires an argument"
       AUTH_COOKIE_SECURE="$2"; shift 2 ;;
+    --pty-provider)
+      [ "$#" -ge 2 ] || err "--pty-provider requires an argument"
+      PTY_PROVIDER="$2"; shift 2 ;;
     --add-user)
       [ "$#" -ge 2 ] || err "--add-user requires an argument"
       INITIAL_USERS+=("$2"); shift 2 ;;
@@ -153,6 +170,15 @@ case "$AUTH_COOKIE_SECURE" in
   true|false) ;;
   *) err "invalid --cookie-secure '$AUTH_COOKIE_SECURE' (must be 'true' or 'false')" ;;
 esac
+# PTY_PROVIDER is opt-in: unset = no env entry in the rendered unit (server
+# default). When set, must match one of the values accepted by
+# packages/server/src/lib/server-config.ts:117-123.
+if [ -n "$PTY_PROVIDER" ]; then
+  case "$PTY_PROVIDER" in
+    bun-pty|bun-terminal) ;;
+    *) err "invalid --pty-provider '$PTY_PROVIDER' (must be 'bun-pty' or 'bun-terminal')" ;;
+  esac
+fi
 case "$DATA_ROOT" in
   /*) ;;
   *) err "invalid --data-root '$DATA_ROOT' (must be an absolute path)" ;;
@@ -221,6 +247,17 @@ render_systemd_unit() {
   fi
   local bun_path
   bun_path="$service_home/.bun/bin/bun"
+  # PTY_PROVIDER opt-in slot (Issue #832). When set, replace the placeholder
+  # comment with a real Environment= entry. When unset, delete the placeholder
+  # line so the rendered unit stays byte-equivalent with prior installs (which
+  # had no PTY_PROVIDER handling at all) -- preserves the unit-comparison
+  # idempotency check at the install step.
+  local pty_provider_sed
+  if [ -n "$PTY_PROVIDER" ]; then
+    pty_provider_sed="s|^# PTY_PROVIDER_BLOCK_PLACEHOLDER\$|Environment=PTY_PROVIDER=$PTY_PROVIDER|"
+  else
+    pty_provider_sed="/^# PTY_PROVIDER_BLOCK_PLACEHOLDER\$/d"
+  fi
   sed \
     -e "s|{{SERVICE_USER}}|$SERVICE_USER|g" \
     -e "s|{{SERVICE_GROUP}}|$SERVICE_GROUP|g" \
@@ -229,6 +266,7 @@ render_systemd_unit() {
     -e "s|{{DATA_ROOT}}|$DATA_ROOT|g" \
     -e "s|{{PORT}}|$PORT|g" \
     -e "s|{{AUTH_COOKIE_SECURE}}|$AUTH_COOKIE_SECURE|g" \
+    -e "$pty_provider_sed" \
     "$SYSTEMD_TEMPLATE"
 }
 
@@ -243,6 +281,11 @@ echo "  shared group        : $SERVICE_GROUP"
 echo "  data root           : $DATA_ROOT"
 echo "  port                : $PORT"
 echo "  AUTH_COOKIE_SECURE  : $AUTH_COOKIE_SECURE"
+if [ -n "$PTY_PROVIDER" ]; then
+  echo "  PTY_PROVIDER        : $PTY_PROVIDER"
+else
+  echo "  PTY_PROVIDER        : (unset, server default)"
+fi
 if [ "${#INITIAL_USERS[@]}" -gt 0 ]; then
   echo "  initial users       : ${INITIAL_USERS[*]}"
 else

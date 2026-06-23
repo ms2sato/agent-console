@@ -19,6 +19,7 @@ Environment=PORT={{PORT}}
 Environment=HOST=0.0.0.0
 Environment=NODE_ENV=production
 Environment=AUTH_COOKIE_SECURE={{AUTH_COOKIE_SECURE}}
+# PTY_PROVIDER_BLOCK_PLACEHOLDER
 
 [Install]
 WantedBy=multi-user.target
