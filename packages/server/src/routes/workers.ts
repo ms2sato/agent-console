@@ -26,69 +26,165 @@ const logger = createLogger('api:workers');
 //      tmpwatch, reboot), so abandoned upload buffers do not accumulate. The
 //      server has no read-completion signal for `injectMessage`, so a
 //      persistent location (e.g. AGENT_CONSOLE_HOME) would leak disk over time.
-// Mode 0700 prevents other users from reading buffered file contents.
-// See issue #821.
-const uploadDirReady = new Map<string, Promise<void>>();
+//
+// Mode and group depend on AUTH_MODE (Issue #830):
+//   - AUTH_MODE=none (single-user): mode 0700, owner-only. Prevents other
+//     users on the same host from reading buffered file contents.
+//   - AUTH_MODE=multi-user: mode 2750 (setgid + group-rx), owner = service
+//     user, group = shared group (the server process's primary gid — the
+//     bootstrap script sets `Group=<shared-group>` on the systemd unit, so
+//     `process.getgid()` is the shared group at runtime). This lets the
+//     per-user PTY (running as the logged-in user, who is also a member of
+//     the shared group) traverse into the buffer to read attachments.
+//
+// Setgid is applied via an explicit chmod(1) AFTER mkdir (#830 follow-up):
+//   - Bun 1.3.10 strips the special bits (setgid 0o2000 / setuid 0o4000 /
+//     sticky 0o1000) in its JS layer BEFORE the syscall, for both
+//     `fs.mkdir({ mode })` and `fs.chmod(dir, mode)`. Verified by strace:
+//     `await mkdir(dir, { mode: 0o2750 })` issues `mkdirat(..., 0750)`
+//     (setgid dropped) and `await chmod(dir, 0o2750)` issues
+//     `fchmodat(..., 0750)` (likewise). The kernel and the underlying
+//     filesystem both honour setgid when called directly (e.g. shell
+//     `mkdir --mode=2750` or `chmod 2750` produce `drwxr-s---`), but the
+//     Bun bindings never pass the bit through.
+//   - GNU chmod (coreutils) does pass the bit through. We therefore shell
+//     out to /bin/chmod via Bun.spawn under the multi-user (mode > 0o777)
+//     branch only. Cost is one spawn per upload on the multi-user
+//     multipart path, which is already disk-bound. The single-user 0o700
+//     path does not need this and stays mkdir-only.
+//   - If a future Bun release fixes its JS-layer mode stripping, the
+//     `workers-upload-dir-real-fs.test.ts` kernel-level probe will flag
+//     the change and the in-process chmod step can replace the shell-out.
+//
+// No in-process readiness cache (Issue #830): the directory is re-verified
+// on every upload so that if /tmp is reaped by systemd-tmpfiles during a
+// long-running server's uptime, the next upload recreates the directory.
+// `mkdir(..., { recursive: true })` is a cheap idempotent no-op when the
+// directory exists, and the per-upload cost is one mkdir + one lstat —
+// negligible at upload frequency.
+const SINGLE_USER_UPLOAD_DIR_MODE = 0o700;
+const MULTI_USER_UPLOAD_DIR_MODE = 0o2750;
+
+interface UploadDirContract {
+  mode: number;
+  expectedGid: number | null;
+}
 
 function resolveUploadDir(): string {
   const uid = typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
   return join(tmpdir(), `agent-console-uploads-${uid}`);
 }
 
-async function ensureUploadDir(): Promise<string> {
-  const dir = resolveUploadDir();
-  let ready = uploadDirReady.get(dir);
-  if (!ready) {
-    // TOCTOU defense (security review HIGH, #821 follow-up): POSIX mkdir is a
-    // no-op when the target already exists, so a pre-created symlink or a
-    // world-readable dir would silently slip past `mkdir(..., { mode: 0o700 })`.
-    // After mkdir, lstat the path (no symlink follow) and reject anything we
-    // did not just create ourselves with the expected owner and mode.
-    ready = (async () => {
-      await mkdir(dir, { recursive: true, mode: 0o700 });
-      const st = await lstat(dir);
-      if (st.isSymbolicLink()) {
-        throw new Error(`Upload directory is a symlink: ${dir}`);
-      }
-      if (!st.isDirectory()) {
-        throw new Error(`Upload directory path is not a directory: ${dir}`);
-      }
-      // POSIX-only ownership check; on Windows (or any platform without
-      // geteuid) the fallback path is the shared 'shared' suffix and there is
-      // no uid to compare against.
-      if (typeof process.geteuid === 'function' && st.uid !== process.geteuid()) {
-        throw new Error(
-          `Upload directory has unexpected owner uid=${st.uid} (expected ${process.geteuid()}): ${dir}`,
-        );
-      }
-      if ((st.mode & 0o777) !== 0o700) {
-        throw new Error(
-          `Upload directory has unexpected mode ${(st.mode & 0o777).toString(8)} (expected 700): ${dir}`,
-        );
-      }
-    })().catch((err) => {
-      uploadDirReady.delete(dir);
-      logger.error({ err, dir }, 'Upload directory verification failed');
-      throw err;
-    });
-    uploadDirReady.set(dir, ready);
+function resolveUploadDirContract(): UploadDirContract {
+  if (process.env.AUTH_MODE === 'multi-user' && typeof process.getgid === 'function') {
+    return { mode: MULTI_USER_UPLOAD_DIR_MODE, expectedGid: process.getgid() };
   }
-  await ready;
-  return dir;
+  return { mode: SINGLE_USER_UPLOAD_DIR_MODE, expectedGid: null };
 }
 
 /**
- * @internal Exported for testing. The upload-directory readiness cache is
- * process-global so that the route only pays the mkdir + verification cost
- * once per uid per process. Tests need a way to invalidate the cache when
- * they want to re-exercise the verification path with a different on-disk
- * (memfs) state.
+ * Apply a mode containing special bits (setgid / setuid / sticky) via the
+ * external chmod(1) program.
+ *
+ * Bun 1.3.10 strips special bits in its JS layer for both `fs.mkdir` and
+ * `fs.chmod` (verified via strace: setgid / setuid / sticky never reach
+ * the syscall). GNU chmod does pass them through. coreutils chmod is
+ * present on every Debian / Ubuntu / RHEL / Alpine host the server is
+ * expected to run on.
+ *
+ * See the file-header comment block and the kernel-level probe in
+ * `workers-upload-dir-real-fs.test.ts` for the empirical assumptions
+ * this workaround locks in.
  */
-export const __TESTING__ = {
-  resetUploadDirCache: (): void => {
-    uploadDirReady.clear();
-  },
-};
+async function applyModeViaSpawnChmod(dir: string, mode: number): Promise<void> {
+  // chmod accepts an octal string (e.g. "2750"); pass full mode including
+  // special bits, masked at 0o7777 to defend against accidental higher-bit
+  // garbage in the caller.
+  const modeStr = (mode & 0o7777).toString(8);
+  const proc = Bun.spawn(['chmod', modeStr, dir], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(
+      `chmod ${modeStr} failed (exit=${exitCode}) for ${dir}: ${stderr.trim()}`,
+    );
+  }
+}
+
+async function ensureUploadDir(): Promise<string> {
+  const dir = resolveUploadDir();
+  const contract = resolveUploadDirContract();
+  // TOCTOU defense (security review HIGH, #821 follow-up): POSIX mkdir is a
+  // no-op when the target already exists, so a pre-created symlink or a
+  // wider-mode dir would silently slip past `mkdir(..., { mode })`. After
+  // mkdir, lstat the path (no symlink follow) and reject anything that does
+  // not match the expected owner / mode / group.
+  try {
+    await mkdir(dir, { recursive: true, mode: contract.mode });
+    // Validate the path BEFORE any chmod(1) shell-out. chmod(2) follows
+    // symlinks, so applying it on a pre-created symlink would mutate the
+    // symlink target's mode before we ever reject the symlink. Lstat
+    // first, confirm symlink / dir / owner / gid, THEN re-apply setgid
+    // via chmod (which is now operating on a path we have just
+    // verified). CodeRabbit #831-review TOCTOU finding.
+    let st = await lstat(dir);
+    if (st.isSymbolicLink()) {
+      throw new Error(`Upload directory is a symlink: ${dir}`);
+    }
+    if (!st.isDirectory()) {
+      throw new Error(`Upload directory path is not a directory: ${dir}`);
+    }
+    // POSIX-only ownership check; on Windows (or any platform without
+    // geteuid) the fallback path is the shared 'shared' suffix and there is
+    // no uid to compare against.
+    if (typeof process.geteuid === 'function' && st.uid !== process.geteuid()) {
+      throw new Error(
+        `Upload directory has unexpected owner uid=${st.uid} (expected ${process.geteuid()}): ${dir}`,
+      );
+    }
+    if (contract.expectedGid !== null && st.gid !== contract.expectedGid) {
+      throw new Error(
+        `Upload directory has unexpected group gid=${st.gid} (expected ${contract.expectedGid}): ${dir}`,
+      );
+    }
+
+    // Bun 1.3.10 strips setgid / setuid / sticky in its fs.mkdir JS
+    // layer before the syscall; for the multi-user 2750 contract we
+    // re-apply the bit via chmod(1) — now that we have lstat-confirmed
+    // the path is the expected directory. Skip when the contract has
+    // no special bits (single-user 0o700) OR when the existing mode
+    // already matches (idempotent recovery of a previously-prepared
+    // directory). See the file header comment for the upstream-gap
+    // rationale.
+    if ((contract.mode & ~0o777) !== 0 && (st.mode & 0o7777) !== contract.mode) {
+      await applyModeViaSpawnChmod(dir, contract.mode);
+      // Re-stat (no symlink follow) to guard against a rename race
+      // between the validating lstat and the chmod spawn; if anything
+      // unexpected happened, surface it now rather than handing the
+      // directory back to the caller.
+      st = await lstat(dir);
+      if (st.isSymbolicLink() || !st.isDirectory()) {
+        throw new Error(
+          `Upload directory changed unexpectedly during mode apply: ${dir}`,
+        );
+      }
+    }
+
+    const actualMode = st.mode & 0o7777;
+    if (actualMode !== contract.mode) {
+      throw new Error(
+        `Upload directory has unexpected mode ${actualMode.toString(8)} (expected ${contract.mode.toString(8)}): ${dir}`,
+      );
+    }
+  } catch (err) {
+    logger.error({ err, dir }, 'Upload directory verification failed');
+    throw err;
+  }
+  return dir;
+}
 
 const workers = new Hono<AppBindings>()
   // Get workers for a session
@@ -298,3 +394,14 @@ const workers = new Hono<AppBindings>()
   });
 
 export { workers };
+
+/**
+ * @internal Exported for the real-fs regression test in
+ * `workers-upload-dir-real-fs.test.ts` (Issue #830 follow-up). Production
+ * callers should never reach for these; they go through the route handler.
+ */
+export const __TESTING__ = {
+  ensureUploadDir,
+  resolveUploadDir,
+  resolveUploadDirContract,
+};

@@ -226,11 +226,9 @@ describe('Workers API', () => {
       expect(body.error).toContain('Total file size exceeds limit');
     });
 
-    // NOTE: This test must run BEFORE any other test that triggers an upload,
-    // because the route caches its `mkdir(..., { mode: 0o700 })` result in a
-    // process-level Map. Only the first upload in the process actually invokes
-    // mkdir; subsequent uploads short-circuit on the cache. We rely on that
-    // first call to leave a memfs entry whose mode we can inspect.
+    // Issue #830 removed the in-process readiness cache; ensureUploadDir() now
+    // mkdir+lstat-verifies on every upload, so the order of tests within this
+    // describe block no longer matters.
     it('should save uploaded files under /tmp/agent-console-uploads-<uid>/ with mode 0700 (#821)', async () => {
       const session = await sessionManager.createSession({
         type: 'quick',
@@ -304,9 +302,6 @@ describe('Workers API', () => {
     // `mkdir(..., { mode: 0o700 })`, so the route must lstat after mkdir and
     // reject the symlink before any Bun.write touches real disk.
     it('should reject a pre-existing symlink at the upload directory path (#821 TOCTOU defense)', async () => {
-      const { __TESTING__ } = await import('../workers.js');
-      __TESTING__.resetUploadDirCache();
-
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
@@ -376,7 +371,6 @@ describe('Workers API', () => {
         } catch {
           // ignore
         }
-        __TESTING__.resetUploadDirCache();
       }
     });
 
@@ -385,9 +379,6 @@ describe('Workers API', () => {
     // read buffered upload contents. mkdir is a no-op when the path exists,
     // so the route must lstat-verify the actual mode.
     it('should reject a pre-existing upload directory with the wrong mode (#821 TOCTOU defense)', async () => {
-      const { __TESTING__ } = await import('../workers.js');
-      __TESTING__.resetUploadDirCache();
-
       const session = await sessionManager.createSession({
         type: 'quick',
         locationPath: '/test/path',
@@ -444,7 +435,101 @@ describe('Workers API', () => {
         } catch {
           // ignore
         }
-        __TESTING__.resetUploadDirCache();
+      }
+    });
+
+    // Issue #830 follow-up: the regression test for Bun's JS-layer mode
+    // stripping (which causes fs.mkdir({ mode: 0o2750 }) to issue
+    // mkdirat(..., 0750)) lives in workers-upload-dir-real-fs.test.ts —
+    // a separate file that does NOT import the memfs hook. mock.module is
+    // process-global and irreversible in bun:test (see testing.md
+    // "Module-Level Mocking" anti-pattern), so the only way to exercise
+    // the real Bun fs binding is via a sibling test file with no memfs
+    // hook AND via Bun.spawn-based shell probes that bypass fs/promises
+    // altogether.
+    //
+    // The memfs-based multi-user test that previously lived here passed
+    // for the wrong reason: memfs's mkdir honours the mode arg literally,
+    // including special bits, so the Bun JS-layer setgid stripping was
+    // never exercised and the production bug shipped to a real Ubuntu
+    // host.
+
+    // Issue #830: the in-process readiness cache was removed so that a long-
+    // running multi-user deployment recovers if /tmp is reaped by
+    // systemd-tmpfiles during uptime. After a successful upload, remove the
+    // directory and verify the next upload re-creates it (no stale-cache
+    // short-circuit).
+    it('should re-create the upload directory if it is reaped during runtime (#830)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const euid: number | 'shared' =
+        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
+      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
+
+      const { vol } = await import('memfs');
+
+      const originalBunWrite = Bun.write;
+      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
+        return originalBunWrite(
+          dest as Parameters<typeof originalBunWrite>[0],
+          input as Parameters<typeof originalBunWrite>[1],
+          options as Parameters<typeof originalBunWrite>[2],
+        );
+      }) as typeof Bun.write;
+
+      try {
+        // First upload — creates the directory.
+        const firstForm = new FormData();
+        firstForm.append('toWorkerId', worker!.id);
+        firstForm.append('content', 'first');
+        firstForm.append('files', new File(['a'], 'first.txt', { type: 'text/plain' }));
+        const first = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: firstForm,
+        });
+        expect(first.status).toBe(201);
+
+        // Simulate systemd-tmpfiles reaping /tmp under us.
+        // Remove file children first so rmdirSync succeeds.
+        const entries = vol.readdirSync(expectedUploadDir);
+        for (const entry of entries) {
+          vol.unlinkSync(pathJoin(expectedUploadDir, String(entry)));
+        }
+        vol.rmdirSync(expectedUploadDir);
+        // Confirm the dir is actually gone before the second upload.
+        let removed = false;
+        try {
+          vol.statSync(expectedUploadDir);
+        } catch {
+          removed = true;
+        }
+        expect(removed).toBe(true);
+
+        // Second upload — must re-create the directory (no stale cache).
+        const secondForm = new FormData();
+        secondForm.append('toWorkerId', worker!.id);
+        secondForm.append('content', 'second');
+        secondForm.append('files', new File(['b'], 'second.txt', { type: 'text/plain' }));
+        const second = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: secondForm,
+        });
+        expect(second.status).toBe(201);
+
+        // The directory must exist again.
+        const stat = vol.statSync(expectedUploadDir);
+        expect(stat.isDirectory()).toBe(true);
+      } finally {
+        Bun.write = originalBunWrite;
       }
     });
 
