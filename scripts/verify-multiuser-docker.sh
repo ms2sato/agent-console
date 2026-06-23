@@ -200,21 +200,33 @@ echo "=== 7. worktree creation runs as the requesting user (#838) ==="
 # bootstraps `safe.directory` for alice via `runAsUser` so git accepts the
 # server-owned source repo from alice's elevated context.
 SOURCE_REPO_PATH="/var/lib/agent-console/source-repos/wt-issue-838"
+# Bootstrap a multi-user-ready source repo: owned by agentconsole but
+# configured with `core.sharedRepository=group` and group-writable `.git`
+# so members of `agent-console-users` (alice) can write refs / lock files
+# during `git worktree add`. This mirrors the operational expectation for
+# multi-user source repos -- the umbrella design assumes the repo is
+# either user-owned (#834 clone-as-user) or group-writable; this PR's
+# mitigation A (safe.directory bootstrap) handles the OWNERSHIP check but
+# not WRITABILITY. Production operator setups should apply equivalent
+# config when adding source repos to a multi-user install.
 compose exec -T --user agentconsole agent-console sh -lc "
   set -e
   mkdir -p ${SOURCE_REPO_PATH}
   cd ${SOURCE_REPO_PATH}
   if [ ! -d .git ]; then
-    git init -q -b main
+    git init -q -b main --shared=group
     git config user.email 'agentconsole@example.com'
     git config user.name 'agentconsole'
     echo hello > README.md
     git add README.md
     git commit -q -m 'initial commit'
   fi
+  # Ensure setgid on every directory so files inherit the shared group.
+  find .git -type d -exec chmod g+rwxs '{}' +
+  chmod -R g+rw .git
 " >/dev/null 2>&1
 source_repo_ok=$?
-check "source repo bootstrapped inside container" "$source_repo_ok"
+check "source repo bootstrapped inside container (shared=group)" "$source_repo_ok"
 
 ALICE_COOKIE_JAR="$(mktemp)"
 ALICE_LOGIN_RESP="$(mktemp)"

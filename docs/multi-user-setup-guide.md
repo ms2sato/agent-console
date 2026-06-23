@@ -594,6 +594,33 @@ id         # Should show the user's UID and groups
 ls -la ~   # Should be accessible
 ```
 
+## Source Repo Group-Writability (Linux multi-user)
+
+When Issue #838 lands, `git worktree add` runs as the requesting user. For
+this to succeed against a source repo owned by the service user
+(`agentconsole`), two things must be true:
+
+1. The user's gitconfig must trust the source repo path. The server
+   bootstraps this automatically (`git config --global --add safe.directory
+   <repoPath>`, mitigation A from Issue #838); operators do not need to
+   configure it.
+2. The user must be able to **write** to `.git/refs/`, `.git/packed-refs`,
+   etc. (Issue's mitigation C — group writability). The bootstrap script
+   sets `core.sharedRepository=group` on cloned repos, but operators
+   who add source repos manually (e.g., by cloning as `agentconsole`)
+   must apply equivalent config:
+
+```bash
+sudo -u agentconsole bash -lc 'cd <repo-path> && git config core.sharedRepository group'
+sudo find <repo-path>/.git -type d -exec chmod g+rwxs {} +
+sudo chmod -R g+rw <repo-path>/.git
+```
+
+These are operator steps for source repos that pre-date the multi-user-
+ready setup. When [Issue #834](https://github.com/ms2sato/agent-console/issues/834)
+(clone-as-user) lands, repos cloned via the in-app flow are owned by the
+requesting user directly and neither step is required.
+
 ## Migrating Pre-#838 Worktrees (Linux multi-user)
 
 Issue #838 changes worktree creation so the resulting files are owned by the
