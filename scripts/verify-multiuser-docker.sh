@@ -262,6 +262,13 @@ if [ -n "$repo_id" ]; then
   wt_listed_ok=1
   [ -n "$WT_PATH" ] && wt_listed_ok=0
   check "worktree appears in repo's worktree list" "$wt_listed_ok"
+  if [ "$wt_listed_ok" -ne 0 ]; then
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  ---- DIAGNOSTIC: worktree list response ----"
+    sed 's/^/    /' "$WT_LIST_RESP" || true
+    echo "  -------------------------------------------------"
+  fi
 
   if [ -n "$WT_PATH" ]; then
     # Worktree dir owner must be alice (root cause of #838). The owner field
