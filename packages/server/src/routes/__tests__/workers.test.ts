@@ -438,84 +438,21 @@ describe('Workers API', () => {
       }
     });
 
-    // Issue #830: AUTH_MODE=multi-user changes the upload directory mode to
-    // 2750 (setgid + group-rx) and pins the expected group to the server
-    // process's primary gid (set by `Group=<shared-group>` on the systemd
-    // unit). Verifies that ensureUploadDir() applies the conditional mode
-    // when AUTH_MODE=multi-user is set in the environment.
-    it('should use mode 2750 under AUTH_MODE=multi-user (#830)', async () => {
-      const originalAuthMode = process.env.AUTH_MODE;
-      process.env.AUTH_MODE = 'multi-user';
-
-      const session = await sessionManager.createSession({
-        type: 'quick',
-        locationPath: '/test/path',
-        agentId: 'claude-code',
-      });
-      const worker = await sessionManager.createWorker(session.id, {
-        type: 'agent',
-        agentId: 'claude-code',
-      });
-      expect(worker).not.toBeNull();
-
-      const euid: number | 'shared' =
-        typeof process.geteuid === 'function' ? process.geteuid() : 'shared';
-      const expectedUploadDir = pathJoin(os.tmpdir(), `agent-console-uploads-${euid}`);
-
-      const { vol } = await import('memfs');
-      // Remove any prior state so the route's mkdir creates a fresh memfs
-      // entry whose mode reflects the multi-user contract.
-      try {
-        vol.rmdirSync(expectedUploadDir);
-      } catch {
-        // ignore: not present
-      }
-
-      const originalBunWrite = Bun.write;
-      Bun.write = ((dest: unknown, input: unknown, options?: unknown) => {
-        return originalBunWrite(
-          dest as Parameters<typeof originalBunWrite>[0],
-          input as Parameters<typeof originalBunWrite>[1],
-          options as Parameters<typeof originalBunWrite>[2],
-        );
-      }) as typeof Bun.write;
-
-      try {
-        const formData = new FormData();
-        formData.append('toWorkerId', worker!.id);
-        formData.append('content', 'msg');
-        formData.append('files', new File(['data'], 'test.txt', { type: 'text/plain' }));
-
-        const res = await app.request(`/api/sessions/${session.id}/messages`, {
-          method: 'POST',
-          body: formData,
-        });
-        expect(res.status).toBe(201);
-
-        const stat = vol.statSync(expectedUploadDir);
-        // mode includes file-type bits; mask to the full permission + setid
-        // bits (4 octal digits) so that the setgid bit (0o2000) is visible.
-        const perm = (stat.mode & 0o7777).toString(8);
-        expect(perm).toBe('2750');
-        // Group should match the server process's primary gid (which under
-        // multi-user is the shared group, set by the systemd unit).
-        if (typeof process.getgid === 'function') {
-          expect(stat.gid).toBe(process.getgid());
-        }
-      } finally {
-        Bun.write = originalBunWrite;
-        try {
-          vol.rmdirSync(expectedUploadDir);
-        } catch {
-          // ignore
-        }
-        if (originalAuthMode === undefined) {
-          delete process.env.AUTH_MODE;
-        } else {
-          process.env.AUTH_MODE = originalAuthMode;
-        }
-      }
-    });
+    // Issue #830 follow-up: the regression test for Bun's JS-layer mode
+    // stripping (which causes fs.mkdir({ mode: 0o2750 }) to issue
+    // mkdirat(..., 0750)) lives in workers-upload-dir-real-fs.test.ts —
+    // a separate file that does NOT import the memfs hook. mock.module is
+    // process-global and irreversible in bun:test (see testing.md
+    // "Module-Level Mocking" anti-pattern), so the only way to exercise
+    // the real Bun fs binding is via a sibling test file with no memfs
+    // hook AND via Bun.spawn-based shell probes that bypass fs/promises
+    // altogether.
+    //
+    // The memfs-based multi-user test that previously lived here passed
+    // for the wrong reason: memfs's mkdir honours the mode arg literally,
+    // including special bits, so the Bun JS-layer setgid stripping was
+    // never exercised and the production bug shipped to a real Ubuntu
+    // host.
 
     // Issue #830: the in-process readiness cache was removed so that a long-
     // running multi-user deployment recovers if /tmp is reaped by
