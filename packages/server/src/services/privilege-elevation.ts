@@ -236,7 +236,15 @@ export async function runAsUser(
       spawnOptions.cwd = opts.cwd;
     }
     if (opts.env !== undefined) {
-      spawnOptions.env = opts.env;
+      // Bun.spawn's `env` option REPLACES the child environment (it does not
+      // merge with process.env), so we must layer `opts.env` over the parent
+      // environment ourselves. Without this, callers that pass a single
+      // override (e.g., GIT_TERMINAL_PROMPT=0) lose PATH/HOME/etc. and the
+      // command typically fails to resolve. Matches the pattern used by
+      // repository-description-generator.ts:110-115. The elevated branch
+      // does not need this because `export K=v` inside the inner shell
+      // augments the login shell's environment rather than replacing it.
+      spawnOptions.env = { ...process.env, ...opts.env };
     }
   }
 

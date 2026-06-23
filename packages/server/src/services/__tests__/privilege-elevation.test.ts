@@ -14,6 +14,36 @@ interface CapturedSpawn {
 }
 
 /**
+ * The subset of Bun's `Subprocess` shape that `runAsUser` actually consumes.
+ * Declaring it explicitly lets the fake be typed without casting through
+ * `unknown` (which the repo's TypeScript guideline prohibits).
+ *
+ * NOTE on `exited`: Bun's `.d.ts` declares `Promise<number>`, but at runtime
+ * a signal-killed process resolves to `null` (with `signalCode` carrying the
+ * signal name). The fake intentionally models that runtime semantics so the
+ * helper's null-normalization path is genuinely exercised; we therefore type
+ * `exited` as `Promise<number | null>` here, which is the truer shape.
+ * `runAsUser` is the layer responsible for re-narrowing back to `number`.
+ */
+interface FakeProc {
+  exited: Promise<number | null>;
+  stdout: ReadableStream<Uint8Array>;
+  stderr: ReadableStream<Uint8Array>;
+  kill: () => void;
+}
+
+/**
+ * `SpawnFn` is typed to match `Bun.spawn`'s return value (`Subprocess`), but
+ * `runAsUser` only touches the four properties on `FakeProc`. We bridge the
+ * two via a single, deliberate cast at the fake's boundary -- this is a
+ * structural-subtype escape that is allowed (no `unknown` intermediate).
+ */
+type FakeSpawnFn = (
+  args: string[],
+  options: Parameters<typeof Bun.spawn>[1],
+) => FakeProc;
+
+/**
  * Build a fake spawn that records the invocation and returns the canned
  * stdout/stderr/exitCode. Mirrors the runtime shape `Bun.spawn` returns so
  * `runAsUser` consumes it identically.
@@ -38,11 +68,9 @@ function makeFakeSpawn(
   const stderrText = opts.stderr ?? '';
   const exitCode = opts.exitCode ?? 0;
 
-  return ((args: string[], options: Parameters<typeof Bun.spawn>[1]) => {
+  const fakeFn: FakeSpawnFn = (args, options) => {
     captured.push({ args, options });
 
-    // exited is typed as `Promise<number>` in Bun's d.ts, but at runtime it
-    // resolves to `null` for signal-killed processes. We model that here.
     let resolveExited!: (value: number | null) => void;
     const exited = new Promise<number | null>((resolve) => {
       resolveExited = resolve;
@@ -51,8 +79,8 @@ function makeFakeSpawn(
       resolveExited(exitCode);
     }
 
-    return {
-      exited: exited as unknown as Promise<number>,
+    const fake: FakeProc = {
+      exited,
       stdout: new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode(stdoutText));
@@ -73,8 +101,15 @@ function makeFakeSpawn(
           resolveExited(null);
         }
       },
-    } as unknown as ReturnType<typeof Bun.spawn>;
-  }) as SpawnFn;
+    };
+    return fake;
+  };
+
+  // Bridge FakeSpawnFn -> SpawnFn (which expects the full Subprocess return
+  // shape). Single direct cast, no `unknown` intermediate -- allowed because
+  // the helper only consumes the FakeProc subset and the cast happens once
+  // at the fake's boundary.
+  return fakeFn as SpawnFn;
 }
 
 const serverUsername = os.userInfo().username;
@@ -466,26 +501,48 @@ describe('privilege-elevation', () => {
       expect(captured[0].args.some((a) => a.startsWith('--preserve-env'))).toBe(false);
     });
 
-    it('non-elevated: forwards cwd and env via spawn options', async () => {
+    it('non-elevated: forwards cwd via spawn options AND merges opts.env over process.env (does not replace PATH/HOME)', async () => {
+      // CodeRabbit MAJOR regression: Bun.spawn `env` REPLACES the child env
+      // rather than merging, so passing a single override (e.g. FOO=bar)
+      // without layering it over `process.env` would drop PATH/HOME and
+      // typically break command resolution. The helper must merge.
       process.env.AUTH_MODE = 'none';
-      const captured: CapturedSpawn[] = [];
-      const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
+      // Pin a known parent-env entry the helper must preserve.
+      const sentinelKey = '__PRIVILEGE_ELEVATION_TEST_SENTINEL__';
+      const sentinelValue = 'parent-env-survives';
+      process.env[sentinelKey] = sentinelValue;
+      try {
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
 
-      await runAsUser(
-        {
-          username: null,
-          command: 'pwd',
-          cwd: '/some/dir',
-          env: { FOO: 'bar' },
-        },
-        fakeSpawn,
-      );
+        await runAsUser(
+          {
+            username: null,
+            command: 'pwd',
+            cwd: '/some/dir',
+            env: { FOO: 'bar' },
+          },
+          fakeSpawn,
+        );
 
-      const opts = captured[0].options as { cwd?: string; env?: Record<string, string> };
-      expect(opts.cwd).toBe('/some/dir');
-      expect(opts.env).toEqual({ FOO: 'bar' });
-      // And the command itself is unmodified (no interpolation).
-      expect(captured[0].args).toEqual(['sh', '-c', 'pwd']);
+        const opts = captured[0].options as { cwd?: string; env?: Record<string, string> };
+        expect(opts.cwd).toBe('/some/dir');
+        // Caller override is present.
+        expect(opts.env?.FOO).toBe('bar');
+        // Parent-env entry survived the merge (would be undefined if the
+        // helper assigned `opts.env` directly instead of merging).
+        expect(opts.env?.[sentinelKey]).toBe(sentinelValue);
+        // PATH is the canonical example of what Bun's env-replacement would
+        // drop. It is virtually always set in the parent process, so we
+        // assert its presence to lock in the merge behavior.
+        if (process.env.PATH !== undefined) {
+          expect(opts.env?.PATH).toBe(process.env.PATH);
+        }
+        // The command itself is unmodified (no interpolation).
+        expect(captured[0].args).toEqual(['sh', '-c', 'pwd']);
+      } finally {
+        delete process.env[sentinelKey];
+      }
     });
 
     it('elevated: interpolates cwd/env into the inner command AND pins spawn cwd to / (does NOT forward opts.env)', async () => {
