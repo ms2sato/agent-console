@@ -8,18 +8,26 @@
  *
  * Semantics:
  * - `AUTH_MODE === 'multi-user'` AND `username` is set AND `username` differs
- *   from the server-process user -> invoke the same `sudo -u <user>
- *   --preserve-env=... -i sh -c <command>` shape established by the PTY worker
- *   at `packages/server/src/services/user-mode.ts:493-500`.
+ *   from the server-process user -> elevate via `sudo -u <user>
+ *   --preserve-env=... -i sh -c <innerCommand>`. Because `sudo -i` resets the
+ *   environment and chdirs to the target user's HOME, `cwd` and `env` cannot
+ *   travel through the outer spawn options; they MUST be interpolated into
+ *   `innerCommand` itself (`cd <cwd> && export KEY=val ...; <command>`). This
+ *   mirrors the canonical PTY worker pattern at
+ *   `packages/server/src/services/user-mode.ts:493-500`.
  * - Otherwise (single-user mode, no username, or same-user) -> invoke
- *   `['sh', '-c', command]` directly with no elevation.
+ *   `['sh', '-c', command]` directly with no elevation. In that branch `cwd`
+ *   and `env` are passed via spawn options (the outer shell is not reset).
  *
  * `preserveEnv` defaults to `['FORCE_COLOR']` (mirroring the PTY worker's
  * default so Node-based agents retain truecolor support across the
  * environment reset that `sudo -i` performs). When `preserveEnv` is passed
  * explicitly the provided list REPLACES the default — callers that want to
  * add to the default should pass `['FORCE_COLOR', 'NO_COLOR', ...]`. Passing
- * `[]` means no preservation flags are emitted.
+ * `[]` means no preservation flags are emitted. `preserveEnv` only governs
+ * which OUTER env vars the elevated shell inherits via the `--preserve-env`
+ * flag; the per-call `opts.env` map is delivered separately via `export`
+ * statements inside the inner command.
  */
 import * as os from 'node:os';
 import { createLogger } from '../lib/logger.js';
@@ -27,6 +35,34 @@ import { createLogger } from '../lib/logger.js';
 const logger = createLogger('service:privilege-elevation');
 
 const DEFAULT_PRESERVE_ENV = ['FORCE_COLOR'] as const;
+
+/**
+ * `sudo -i` chdirs into the target user's HOME, but the outer `sudo` process
+ * still inherits this `chdir(2)` before exec. If the launching process'
+ * effective cwd happens to be unreadable by the service user, the spawn
+ * aborts with EACCES. `/` is always traversable, so we pin the outer spawn
+ * there and let the inner `cd <cwd>` (which runs AS the target user) handle
+ * the real landing. Identical reasoning to user-mode.ts:SUDO_NEUTRAL_CWD.
+ */
+const SUDO_NEUTRAL_CWD = '/';
+
+/**
+ * POSIX-conformant env var name: leading letter or underscore, then
+ * letters / digits / underscores. Any key that does not match is skipped
+ * to prevent shell injection via crafted env-var key names. Mirrors the
+ * filter applied at user-mode.ts:528-534.
+ */
+const VALID_ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Exit code we surface when the helper kills the child due to timeout.
+ * Bun (and POSIX in general) reports signal-killed processes with
+ * `exitCode === null` and `signalCode === 'SIGKILL'`. We normalize to the
+ * conventional 128 + 9 = 137 so consumers can keep `RunAsUserResult.exitCode`
+ * narrowly typed as `number` and check `=== 0` for success; the canonical
+ * "did we time out?" signal is the separate `timedOut` boolean.
+ */
+const TIMEOUT_EXIT_CODE = 137;
 
 export interface RunAsUserOpts {
   /**
@@ -51,6 +87,10 @@ export interface RunAsUserOpts {
 export interface RunAsUserResult {
   stdout: string;
   stderr: string;
+  /**
+   * Process exit code. When `timedOut === true`, normalized to 137
+   * (= 128 + SIGKILL). Otherwise the OS-reported exit code.
+   */
   exitCode: number;
   timedOut: boolean;
 }
@@ -65,6 +105,59 @@ export type SpawnFn = (
 ) => ReturnType<typeof Bun.spawn>;
 
 /**
+ * Escape a string for safe use inside a single-quoted shell context.
+ * Identical implementation to user-mode.ts:shellEscape.
+ * @internal Exported for testing.
+ */
+export function shellEscape(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+/**
+ * Build the `cd <cwd> && export K=v ...; <command>` inner shell string used
+ * when elevation is in play. Returns `command` unchanged when there is
+ * nothing to prepend. Keys that do not match POSIX env-var naming are
+ * silently dropped (with a warn log) to prevent shell injection via crafted
+ * key names.
+ * @internal Exported for testing.
+ */
+export function buildInnerCommand(
+  command: string,
+  cwd: string | undefined,
+  env: Record<string, string> | undefined,
+): string {
+  const exportPairs: string[] = [];
+  if (env !== undefined) {
+    for (const [key, value] of Object.entries(env)) {
+      if (!VALID_ENV_KEY.test(key)) {
+        logger.warn({ key }, 'runAsUser: skipping env var with invalid key name');
+        continue;
+      }
+      exportPairs.push(`${key}=${shellEscape(value)}`);
+    }
+  }
+
+  const parts: string[] = [];
+  if (cwd !== undefined) {
+    parts.push(`cd ${shellEscape(cwd)}`);
+  }
+  if (exportPairs.length > 0) {
+    // `export K1=v1 K2=v2` in one statement; ';' between cd and export so the
+    // export still runs even if `cd` fails to set up the env for diagnostic
+    // visibility -- but we prefer `&&` to fail fast on cwd error. Match
+    // user-mode.ts:478-480 which uses `&& export ...; <command>`.
+    parts.push(`export ${exportPairs.join(' ')}`);
+  }
+  if (parts.length === 0) {
+    return command;
+  }
+  // user-mode.ts pattern: `cd X && export A=1 B=2; <command>`
+  // -- `&&` between cd and export (fail fast on bad cwd),
+  //    `;` before the user command (so `export` warnings do not block).
+  return `${parts.join(' && ')}; ${command}`;
+}
+
+/**
  * Build the argv that will actually be spawned. Pure function so tests can
  * assert the shape without spawning a real process.
  * @internal Exported for testing.
@@ -75,6 +168,8 @@ export function buildSpawnArgs(
   preserveEnv: readonly string[],
   serverUsername: string,
   authMode: string | undefined,
+  cwd: string | undefined,
+  env: Record<string, string> | undefined,
 ): { args: string[]; elevated: boolean } {
   const shouldElevate =
     authMode === 'multi-user' &&
@@ -83,16 +178,20 @@ export function buildSpawnArgs(
     username !== serverUsername;
 
   if (!shouldElevate) {
+    // Non-elevated branch: spawn options carry cwd/env directly (no
+    // environment reset), so the inner command stays as-is.
     return { args: ['sh', '-c', command], elevated: false };
   }
 
-  // Mirror of packages/server/src/services/user-mode.ts:493-500
-  // The --preserve-env flag survives `sudo -i`'s environment reset.
+  // Elevated branch: `sudo -i` resets env and chdirs to target HOME, so cwd
+  // and env MUST be interpolated into the inner command. Mirror of
+  // user-mode.ts:493-500.
+  const innerCommand = buildInnerCommand(command, cwd, env);
   const args: string[] = ['sudo', '-u', username];
   if (preserveEnv.length > 0) {
     args.push(`--preserve-env=${preserveEnv.join(',')}`);
   }
-  args.push('-i', 'sh', '-c', command);
+  args.push('-i', 'sh', '-c', innerCommand);
   return { args, elevated: true };
 }
 
@@ -115,17 +214,30 @@ export async function runAsUser(
     preserveEnv,
     serverUsername,
     authMode,
+    opts.cwd,
+    opts.env,
   );
 
+  // When elevated: cwd / env were embedded into the inner command. The outer
+  // spawn pins to a neutral cwd (see SUDO_NEUTRAL_CWD docs) and does not
+  // forward `opts.env` (it would be reset by `sudo -i` anyway and could only
+  // confuse readers of the spawn options).
+  //
+  // When NOT elevated: the outer shell is the one that runs the command, so
+  // cwd / env flow through spawn options as usual.
   const spawnOptions: Parameters<typeof Bun.spawn>[1] = {
     stdout: 'pipe',
     stderr: 'pipe',
   };
-  if (opts.cwd !== undefined) {
-    spawnOptions.cwd = opts.cwd;
-  }
-  if (opts.env !== undefined) {
-    spawnOptions.env = opts.env;
+  if (elevated) {
+    spawnOptions.cwd = SUDO_NEUTRAL_CWD;
+  } else {
+    if (opts.cwd !== undefined) {
+      spawnOptions.cwd = opts.cwd;
+    }
+    if (opts.env !== undefined) {
+      spawnOptions.env = opts.env;
+    }
   }
 
   const proc = spawn(args, spawnOptions);
@@ -139,10 +251,19 @@ export async function runAsUser(
     }, opts.timeoutMs);
   }
 
-  const exitCode = await proc.exited;
+  // Bun resolves `proc.exited` to `null` for signal-killed processes; the
+  // helper normalizes that to TIMEOUT_EXIT_CODE so the public type stays
+  // `number`. `timedOut` is the canonical signal -- consumers should branch
+  // on it, not on the exit code, to decide "did we hit the timeout?".
+  const rawExitCode = await proc.exited;
   if (timeoutHandle !== undefined) {
     clearTimeout(timeoutHandle);
   }
+  const exitCode = timedOut
+    ? TIMEOUT_EXIT_CODE
+    : typeof rawExitCode === 'number'
+      ? rawExitCode
+      : TIMEOUT_EXIT_CODE;
 
   // stdout/stderr are guaranteed ReadableStream because we requested 'pipe'
   // above; Bun's discriminated return type also admits `number` (fd) for the
