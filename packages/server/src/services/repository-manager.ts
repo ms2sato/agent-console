@@ -40,6 +40,27 @@ function getSharedGroupName(): string {
 }
 
 /**
+ * Build the manual remediation commands documented in
+ * `docs/multi-user-setup-guide.md` "Source Repo Group-Writability" as the
+ * fallback when the auto-apply step cannot complete. Embedded in the WARN
+ * log so an operator can copy-paste them, and exported so tests can assert
+ * the exact shape without depending on log capture.
+ *
+ * @internal Exported for testing.
+ */
+export function buildManualFallbackCommands(
+  repoPath: string,
+  sharedGroup: string,
+): string[] {
+  return [
+    `sudo -u agentconsole bash -lc 'cd ${repoPath} && git config core.sharedRepository group'`,
+    `sudo find ${repoPath}/.git -type d -exec chmod g+rwxs {} +`,
+    `sudo chmod -R g+rw ${repoPath}/.git`,
+    `sudo chgrp -R ${sharedGroup} ${repoPath}/.git`,
+  ];
+}
+
+/**
  * Callbacks for resolving dependencies without circular imports.
  * Injected by index.ts after both SessionManager and RepositoryManager are initialized.
  */
@@ -286,18 +307,27 @@ export class RepositoryManager {
     const gitDir = path.join(absolutePath, '.git');
     const sharedGroup = getSharedGroupName();
 
-    // Cheap idempotent-skip probe: when `.git/` already has the right group
-    // and the group-write + setgid mode bits, AND core.sharedRepository is
-    // 'group', skip the apply chain. Both halves of the probe are needed —
-    // mode/group can drift independently of the git config setting.
+    // Cheap idempotent-skip probe: when `.git/` already has the shared
+    // group's gid + the group-write + setgid mode bits, AND
+    // `core.sharedRepository` is 'group', skip the apply chain. Both halves
+    // of the probe are needed -- mode / group can drift independently of
+    // the git-config setting.
+    //
+    // The shared group's gid is resolved at probe time via `getent group
+    // <name>`. The service user is a SUPPLEMENTARY member of the shared
+    // group (see `scripts/setup-multiuser-for-ubuntu.sh:346`'s
+    // `usermod -aG`), so `process.getgid()` (the service user's PRIMARY
+    // group) does NOT equal the shared group's gid after a real apply.
+    // Without `getent`, the lstat short-circuit would always miss and the
+    // documented idempotent-skip optimization would be dead in production.
+    const sharedGid = await this.resolveSharedGroupGid(sharedGroup);
     let alreadyConfigured = false;
     try {
       const stat = await lstat(gitDir);
       const mode = stat.mode & 0o7777;
       const hasGroupWrite = (mode & 0o020) === 0o020;
       const hasSetgid = (mode & 0o2000) === 0o2000;
-      const gidMatches =
-        typeof process.getgid === 'function' && stat.gid === process.getgid();
+      const gidMatches = sharedGid !== null && stat.gid === sharedGid;
       if (gidMatches && hasGroupWrite && hasSetgid) {
         // Mode/group look right -- confirm git config to be sure.
         const probe = await this._runAsUser({
@@ -351,7 +381,7 @@ export class RepositoryManager {
           err,
           repoPath: absolutePath,
           sharedGroup,
-          manualFallback: this.buildManualFallbackCommands(absolutePath, sharedGroup),
+          manualFallback: buildManualFallbackCommands(absolutePath, sharedGroup),
         },
         'Multi-user shared-repo config spawn failed; continuing with registration. ' +
           'Apply the manualFallback commands as an operator if worktree creation later fails.',
@@ -367,7 +397,7 @@ export class RepositoryManager {
           exitCode: result.exitCode,
           timedOut: result.timedOut,
           stderr: result.stderr.trim(),
-          manualFallback: this.buildManualFallbackCommands(absolutePath, sharedGroup),
+          manualFallback: buildManualFallbackCommands(absolutePath, sharedGroup),
         },
         'Multi-user shared-repo config returned non-zero; continuing with registration. ' +
           'Apply the manualFallback commands as an operator if worktree creation later fails.',
@@ -382,19 +412,38 @@ export class RepositoryManager {
   }
 
   /**
-   * Build the same manual remediation commands that
-   * `docs/multi-user-setup-guide.md` "Source Repo Group-Writability"
-   * documents, embedded in the warn log so an operator can copy-paste them
-   * when the auto-apply step cannot complete (e.g., the repo is owned by a
-   * different user the server cannot chgrp on behalf of).
+   * Resolve the shared group's numeric gid via `getent group <name>`.
+   * Returns null when the group is not configured or `getent` exits
+   * non-zero -- in that case the caller skips the lstat short-circuit and
+   * applies the chain unconditionally (the chgrp leg will surface a
+   * clearer error if the group truly does not exist).
+   *
+   * The `getent group` output format is: `<name>:<password>:<gid>:<member1>,...`
    */
-  private buildManualFallbackCommands(repoPath: string, sharedGroup: string): string[] {
-    return [
-      `sudo -u agentconsole bash -lc 'cd ${repoPath} && git config core.sharedRepository group'`,
-      `sudo find ${repoPath}/.git -type d -exec chmod g+rwxs {} +`,
-      `sudo chmod -R g+rw ${repoPath}/.git`,
-      `sudo chgrp -R ${sharedGroup} ${repoPath}/.git`,
-    ];
+  private async resolveSharedGroupGid(sharedGroup: string): Promise<number | null> {
+    try {
+      const result = await this._runAsUser({
+        username: null,
+        command: `getent group ${shellEscape(sharedGroup)}`,
+        timeoutMs: SHARED_REPO_APPLY_TIMEOUT_MS,
+      });
+      if (result.exitCode !== 0) {
+        return null;
+      }
+      // Output: `name:password:gid:members`. Split on `:` and take field 3.
+      const parts = result.stdout.trim().split(':');
+      if (parts.length < 3) {
+        return null;
+      }
+      const gid = Number.parseInt(parts[2], 10);
+      return Number.isFinite(gid) ? gid : null;
+    } catch (err) {
+      logger.debug(
+        { err, sharedGroup },
+        'getent group resolution failed; skipping idempotent-skip probe',
+      );
+      return null;
+    }
   }
 
   /**
