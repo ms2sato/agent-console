@@ -10,6 +10,10 @@
 #   5. PTY identity isolation: alice's terminal whoami => alice,
 #                              bob's   terminal whoami => bob
 #      (not the agentconsole service user) -> proves sudo -u <user> isolation
+#   6. file upload as alice creates /tmp/agent-console-uploads-<uid>/ with
+#      mode 2750 (setgid + group-rx) -> proves ensureUploadDir() applies
+#      setgid on the real Linux filesystem (Issue #830 follow-up regression
+#      for the JS-layer mode stripping in Bun fs.mkdir / fs.chmod).
 #
 # Usage (from repo root):
 #   scripts/verify-multiuser-docker.sh            # build + verify + tear down
@@ -113,6 +117,71 @@ bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" alice alice-password alic
 check "alice terminal runs as alice" $?
 bun "${REPO_ROOT}/docker/verify-client.ts" "$BASE_URL" bob bob-password bob /home/bob
 check "bob terminal runs as bob" $?
+
+echo
+echo "=== 6. file upload as alice creates upload dir with mode 2750 (#830 regression) ==="
+# Login as alice, capture the auth cookie, create a session + worker, send a
+# multipart message with a small file attachment, then inspect the upload
+# directory's mode inside the container. Verifies the production
+# ensureUploadDir() path under AUTH_MODE=multi-user against the real Linux
+# filesystem — the path the unit suite cannot exercise because fs/promises
+# is mocked to memfs in workers.test.ts.
+COOKIE_JAR="$(mktemp)"
+ALICE_RESP="$(mktemp)"
+SESSION_RESP="$(mktemp)"
+WORKER_RESP="$(mktemp)"
+MESSAGE_RESP="$(mktemp)"
+UPLOAD_PAYLOAD="$(mktemp)"
+echo "alice upload payload" > "$UPLOAD_PAYLOAD"
+
+curl -s -o "$ALICE_RESP" -c "$COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}'
+
+# Create a Quick Session in alice's HOME so the route does not have to
+# traverse anywhere with restrictive perms.
+session_code="$(curl -s -o "$SESSION_RESP" -w '%{http_code}' -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+  -X POST "${BASE_URL}/api/sessions" \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"quick","locationPath":"/home/alice"}')"
+echo "  POST /api/sessions (quick, /home/alice) -> HTTP ${session_code}"
+session_id="$(grep -o '"id":"[^"]*"' "$SESSION_RESP" | head -n1 | cut -d'"' -f4)"
+[ "$session_code" = "201" ] && [ -n "$session_id" ]
+check "alice can create a session" $?
+
+if [ -n "$session_id" ]; then
+  worker_code="$(curl -s -o "$WORKER_RESP" -w '%{http_code}' -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/sessions/${session_id}/workers" \
+    -H 'Content-Type: application/json' \
+    -d '{"type":"terminal"}')"
+  echo "  POST /api/sessions/<id>/workers (terminal) -> HTTP ${worker_code}"
+  worker_id="$(grep -o '"id":"[^"]*"' "$WORKER_RESP" | head -n1 | cut -d'"' -f4)"
+  [ "$worker_code" = "201" ] && [ -n "$worker_id" ]
+  check "alice can create a worker" $?
+
+  if [ -n "$worker_id" ]; then
+    message_code="$(curl -s -o "$MESSAGE_RESP" -w '%{http_code}' -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+      -X POST "${BASE_URL}/api/sessions/${session_id}/messages" \
+      -F "toWorkerId=${worker_id}" \
+      -F "content=hello from upload regression" \
+      -F "files=@${UPLOAD_PAYLOAD};filename=upload-probe.txt;type=text/plain")"
+    echo "  POST /api/sessions/<id>/messages (multipart with file) -> HTTP ${message_code}"
+    [ "$message_code" = "201" ]
+    check "multipart message with file upload returns 201" $?
+  fi
+fi
+
+# Inspect the upload directory's mode inside the container. The server runs
+# as `agentconsole` (uid resolved at runtime) so look it up via docker exec.
+SERVER_UID="$(compose exec -T agent-console id -u 2>/dev/null | tr -d '\r' || true)"
+echo "  server uid in container: ${SERVER_UID}"
+UPLOAD_DIR="/tmp/agent-console-uploads-${SERVER_UID}"
+UPLOAD_STAT="$(compose exec -T agent-console stat -c '%a:%G' "$UPLOAD_DIR" 2>/dev/null | tr -d '\r' || echo MISSING)"
+echo "  stat ${UPLOAD_DIR} -> ${UPLOAD_STAT}"
+[ "$UPLOAD_STAT" = "2750:agent-console-users" ]
+check "upload dir is mode 2750 owned by agent-console-users (#830 setgid regression)" $?
+
+rm -f "$COOKIE_JAR" "$ALICE_RESP" "$SESSION_RESP" "$WORKER_RESP" "$MESSAGE_RESP" "$UPLOAD_PAYLOAD"
 
 echo
 echo "=================================================="
