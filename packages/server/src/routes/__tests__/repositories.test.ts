@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import type { GenerateRepositoryDescriptionFn } from '../../services/repository-description-generator.js';
 
-const mockGenerateDescription = mock(() => Promise.resolve({ description: 'test' }));
+const mockGenerateDescription = mock<GenerateRepositoryDescriptionFn>(() =>
+  Promise.resolve({ description: 'test' })
+);
 
 import type { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
@@ -149,12 +152,9 @@ describe('Repositories API', () => {
 
       expect(res.status).toBe(200);
       expect(mockGenerateDescription).toHaveBeenCalledTimes(1);
-      const call = mockGenerateDescription.mock.calls[0][0] as {
-        repositoryPath: string;
-        requestUser: string | null;
-      };
-      expect(call.repositoryPath).toBe('/repo');
-      expect(call.requestUser).toBe('testuser');
+      const firstArg = mockGenerateDescription.mock.calls[0][0];
+      expect(firstArg.repositoryPath).toBe('/repo');
+      expect(firstArg.requestUser).toBe('testuser');
     });
 
     it('should return 400 for concurrent description generation', async () => {
