@@ -188,6 +188,130 @@ check "upload dir is mode 2750 owned by agent-console-users (#830 setgid regress
 rm -f "$COOKIE_JAR" "$ALICE_RESP" "$SESSION_RESP" "$WORKER_RESP" "$MESSAGE_RESP" "$UPLOAD_PAYLOAD"
 
 echo
+echo "=== 7. worktree creation runs as the requesting user (#838) ==="
+# Verifies the umbrella #837 / Issue #838 fix: in multi-user mode, the server
+# routes `git worktree add` through `runAsUser` so the resulting worktree
+# files are owned by the requesting user. Without this fix, a subsequent
+# `git status` inside the worktree (running as the user) would hit
+# `fatal: detected dubious ownership in repository`.
+#
+# Bootstrap a small source repo inside the container (owned by `agentconsole`,
+# matching the documented multi-user source-repo ownership). The server
+# bootstraps `safe.directory` for alice via `runAsUser` so git accepts the
+# server-owned source repo from alice's elevated context.
+SOURCE_REPO_PATH="/var/lib/agent-console/source-repos/wt-issue-838"
+# Bootstrap a multi-user-ready source repo: owned by agentconsole but
+# configured with `core.sharedRepository=group` and group-writable `.git`
+# so members of `agent-console-users` (alice) can write refs / lock files
+# during `git worktree add`. This mirrors the operational expectation for
+# multi-user source repos -- the umbrella design assumes the repo is
+# either user-owned (#834 clone-as-user) or group-writable; this PR's
+# mitigation A (safe.directory bootstrap) handles the OWNERSHIP check but
+# not WRITABILITY. Production operator setups should apply equivalent
+# config when adding source repos to a multi-user install.
+compose exec -T --user agentconsole agent-console sh -lc "
+  set -e
+  mkdir -p ${SOURCE_REPO_PATH}
+  cd ${SOURCE_REPO_PATH}
+  if [ ! -d .git ]; then
+    git init -q -b main --shared=group
+    git config user.email 'agentconsole@example.com'
+    git config user.name 'agentconsole'
+    echo hello > README.md
+    git add README.md
+    git commit -q -m 'initial commit'
+  fi
+  # Ensure setgid on every directory so files inherit the shared group.
+  find .git -type d -exec chmod g+rwxs '{}' +
+  chmod -R g+rw .git
+" >/dev/null 2>&1
+source_repo_ok=$?
+check "source repo bootstrapped inside container (shared=group)" "$source_repo_ok"
+
+ALICE_COOKIE_JAR="$(mktemp)"
+ALICE_LOGIN_RESP="$(mktemp)"
+REPO_RESP="$(mktemp)"
+WT_TASK_RESP="$(mktemp)"
+WT_LIST_RESP="$(mktemp)"
+GIT_STATUS_OUT="$(mktemp)"
+
+curl -s -o "$ALICE_LOGIN_RESP" -c "$ALICE_COOKIE_JAR" -X POST "${BASE_URL}/api/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"alice","password":"alice-password"}' >/dev/null
+
+# Register the source repo as alice.
+repo_code="$(curl -s -o "$REPO_RESP" -w '%{http_code}' -b "$ALICE_COOKIE_JAR" -c "$ALICE_COOKIE_JAR" \
+  -X POST "${BASE_URL}/api/repositories" \
+  -H 'Content-Type: application/json' \
+  -d "{\"path\":\"${SOURCE_REPO_PATH}\"}")"
+echo "  POST /api/repositories (path=${SOURCE_REPO_PATH}) -> HTTP ${repo_code}"
+repo_id="$(grep -o '"id":"[^"]*"' "$REPO_RESP" | head -n1 | cut -d'"' -f4)"
+repo_ok=1
+[ "$repo_code" = "201" ] && [ -n "$repo_id" ] && repo_ok=0
+check "alice can register source repo" "$repo_ok"
+
+if [ -n "$repo_id" ]; then
+  # Create a worktree from `main` via the API.
+  task_id="$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)"
+  wt_code="$(curl -s -o "$WT_TASK_RESP" -w '%{http_code}' -b "$ALICE_COOKIE_JAR" -c "$ALICE_COOKIE_JAR" \
+    -X POST "${BASE_URL}/api/repositories/${repo_id}/worktrees" \
+    -H 'Content-Type: application/json' \
+    -d "{\"taskId\":\"${task_id}\",\"mode\":\"custom\",\"branch\":\"issue-838-wt\",\"baseBranch\":\"main\",\"useRemote\":false,\"autoStartSession\":false}")"
+  echo "  POST /api/repositories/<id>/worktrees -> HTTP ${wt_code}"
+  wt_accept_ok=1
+  [ "$wt_code" = "202" ] && wt_accept_ok=0
+  check "worktree creation accepted (202)" "$wt_accept_ok"
+
+  # Worktree creation is async; poll for the new path to appear in the list.
+  WT_PATH=""
+  for _ in $(seq 1 30); do
+    sleep 1
+    curl -s -o "$WT_LIST_RESP" -b "$ALICE_COOKIE_JAR" \
+      "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null
+    WT_PATH="$(grep -o '"path":"[^"]*wt-[0-9]\{3\}-[a-z0-9]\{4\}"' "$WT_LIST_RESP" | head -n1 | cut -d'"' -f4)"
+    if [ -n "$WT_PATH" ]; then break; fi
+  done
+  wt_listed_ok=1
+  [ -n "$WT_PATH" ] && wt_listed_ok=0
+  check "worktree appears in repo's worktree list" "$wt_listed_ok"
+  if [ "$wt_listed_ok" -ne 0 ]; then
+    echo "  ---- DIAGNOSTIC: server logs (last 60 lines) ----"
+    compose logs --tail 60 agent-console 2>&1 | sed 's/^/    /' || true
+    echo "  ---- DIAGNOSTIC: worktree list response ----"
+    sed 's/^/    /' "$WT_LIST_RESP" || true
+    echo "  -------------------------------------------------"
+  fi
+
+  if [ -n "$WT_PATH" ]; then
+    # Worktree dir owner must be alice (root cause of #838). The owner field
+    # is the primary signal; the safe.directory bootstrap is the secondary
+    # mitigation that lets the user's git accept the server-owned SOURCE repo.
+    WT_OWNER="$(compose exec -T agent-console stat -c '%U' "$WT_PATH" 2>/dev/null | tr -d '\r' || echo MISSING)"
+    echo "  stat ${WT_PATH} -> owner=${WT_OWNER}"
+    owner_ok=1
+    [ "$WT_OWNER" = "alice" ] && owner_ok=0
+    check "new worktree dir is owned by alice (Issue #838 root fix)" "$owner_ok"
+
+    # Run `git status` AS alice (the shipping path: alice's PTY runs as alice
+    # via sudo -i). With #838 in place, the worktree is owned by alice and
+    # the safe.directory entry for the source repo is in alice's gitconfig,
+    # so this should NOT report dubious ownership.
+    compose exec -T --user alice agent-console sh -lc "git -C '${WT_PATH}' status" \
+      > "$GIT_STATUS_OUT" 2>&1
+    git_status_exit=$?
+    echo "  git status (as alice) exit=${git_status_exit}; first line: $(head -n1 "$GIT_STATUS_OUT" | tr -d '\r')"
+    git_status_ok=1
+    if [ "$git_status_exit" -eq 0 ] && ! grep -q 'dubious ownership' "$GIT_STATUS_OUT"; then
+      git_status_ok=0
+    fi
+    check "git status as alice does NOT report dubious ownership (#838 E2E)" "$git_status_ok"
+  fi
+fi
+
+rm -f "$ALICE_COOKIE_JAR" "$ALICE_LOGIN_RESP" "$REPO_RESP" \
+  "$WT_TASK_RESP" "$WT_LIST_RESP" "$GIT_STATUS_OUT"
+
+echo
 echo "=================================================="
 echo "  RESULT: ${PASS} passed, ${FAIL} failed"
 echo "=================================================="

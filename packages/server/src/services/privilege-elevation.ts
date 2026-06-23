@@ -82,6 +82,14 @@ export interface RunAsUserOpts {
    * array suppresses the flag entirely. Ignored when elevation is bypassed.
    */
   preserveEnv?: string[];
+  /**
+   * Optional bytes to feed to the child's stdin. Use when the command is a
+   * sink that reads stdin (e.g. `sh -c 'cat > <dst>'` to materialize a file
+   * as the target user, see worktree-service.ts template materialization).
+   * String values are encoded as UTF-8; pass a `Uint8Array` for binary
+   * content. When omitted, stdin is left as the default (inherit / no pipe).
+   */
+  stdin?: string | Uint8Array;
 }
 
 export interface RunAsUserResult {
@@ -158,6 +166,28 @@ export function buildInnerCommand(
 }
 
 /**
+ * Decide whether `runAsUser` would actually elevate for the given username
+ * under the current `AUTH_MODE`. Callers use this to gate companion logic
+ * that only makes sense when running as a different OS user (e.g., the
+ * source-repo `safe.directory` bootstrap in `worktree-service.ts`).
+ *
+ * Reads `process.env.AUTH_MODE` and `os.userInfo().username` at call time so
+ * the result reflects the same runtime conditions `runAsUser` itself sees.
+ */
+export function shouldElevateForUser(
+  username: string | null | undefined,
+): boolean {
+  const authMode = process.env.AUTH_MODE;
+  const serverUsername = os.userInfo().username;
+  return (
+    authMode === 'multi-user' &&
+    typeof username === 'string' &&
+    username.length > 0 &&
+    username !== serverUsername
+  );
+}
+
+/**
  * Build the argv that will actually be spawned. Pure function so tests can
  * assert the shape without spawning a real process.
  * @internal Exported for testing.
@@ -229,6 +259,16 @@ export async function runAsUser(
     stdout: 'pipe',
     stderr: 'pipe',
   };
+  if (opts.stdin !== undefined) {
+    // Caller provided stdin bytes -- normalize string to UTF-8 and hand
+    // Bun.spawn the Uint8Array. Bun's `stdin` option accepts Uint8Array,
+    // Blob, ReadableStream, etc.; Uint8Array is the simplest contract.
+    const stdinBytes =
+      typeof opts.stdin === 'string'
+        ? new TextEncoder().encode(opts.stdin)
+        : opts.stdin;
+    spawnOptions.stdin = stdinBytes;
+  }
   if (elevated) {
     spawnOptions.cwd = SUDO_NEUTRAL_CWD;
   } else {

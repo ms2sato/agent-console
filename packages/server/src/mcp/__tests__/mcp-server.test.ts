@@ -154,6 +154,24 @@ describe('MCP Server Tools', () => {
   let nextId: number;
 
   /**
+   * Capture of the `runAsUser` invocation made by the injected stub on the
+   * `WorktreeService`. The `setupDelegateEnvironment` helper reads
+   * `capturedWorktreePath` to drive `listWorktrees` so the orchestration
+   * tests see the just-created worktree. Tests that need to simulate
+   * `git worktree add` failing can override `responseOverride`. Reset in
+   * each `beforeEach`.
+   */
+  const mcpRunAsUserCapture: {
+    lastCommand: string;
+    capturedWorktreePath: string;
+    responseOverride: { stdout: string; stderr: string; exitCode: number; timedOut: boolean } | null;
+  } = {
+    lastCommand: '',
+    capturedWorktreePath: '',
+    responseOverride: null,
+  };
+
+  /**
    * Re-create the MCP app and initialize a new MCP session.
    * Call this after replacing the repositoryManager to ensure
    * the MCP tools see the updated dependencies.
@@ -190,6 +208,12 @@ describe('MCP Server Tools', () => {
 
     // Reset git mocks to defaults
     resetGitMocks();
+
+    // Reset the runAsUser capture (used by setupDelegateEnvironment to
+    // resolve the worktree path captured from the spawned git command).
+    mcpRunAsUserCapture.lastCommand = '';
+    mcpRunAsUserCapture.capturedWorktreePath = '';
+    mcpRunAsUserCapture.responseOverride = null;
 
     // Reset session metadata suggester mock
     mockSuggestSessionMetadata.mockReset();
@@ -249,8 +273,38 @@ describe('MCP Server Tools', () => {
     // Create InteractiveProcessManager (no-op callbacks for tests)
     interactiveProcessManager = new InteractiveProcessManager(() => {}, () => {});
 
-    // Create WorktreeService with in-memory database
-    worktreeService = new WorktreeService({ db });
+    // Create WorktreeService with in-memory database. Inject a stub
+    // `runAsUser` that pretends `git worktree add` succeeded. The
+    // `delegate_to_worktree` tests below also need to capture the worktree
+    // path from the spawn command (the path is generated with a random
+    // suffix), so the stub parses the command and shares the captured value
+    // via `mcpRunAsUserCapture` for the per-test `setupDelegateEnvironment`
+    // helper. The detailed `git worktree add` shape is verified by
+    // worktree-service.test.ts and privilege-elevation.test.ts.
+    worktreeService = new WorktreeService({
+      db,
+      runAsUserImpl: async (opts) => {
+        mcpRunAsUserCapture.lastCommand = opts.command;
+        // The command shape is: `'git' 'worktree' 'add' ['-b' '<branch>'] '<path>' [<branch>|<base>]`
+        // with single-quote escaped args. The worktree path is the first
+        // (and only) token containing `/worktrees/wt-`. The test data does
+        // not include single quotes inside arg values, so a simple
+        // `'[^']*'` pattern is sufficient -- shell single-quote escaping
+        // (real form: `'\''` = end-quote, literal-quote, start-quote) is
+        // not exercised here.
+        const tokens = Array.from(opts.command.matchAll(/'([^']*)'/g)).map(
+          (m) => m[1],
+        );
+        const wtPath = tokens.find((t) => t.includes('/worktrees/wt-'));
+        if (wtPath) {
+          mcpRunAsUserCapture.capturedWorktreePath = wtPath;
+        }
+        if (mcpRunAsUserCapture.responseOverride) {
+          return mcpRunAsUserCapture.responseOverride;
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      },
+    });
 
     // Create MCP app with injected dependencies and initialize MCP session
     await remountMcpApp();
@@ -1213,27 +1267,18 @@ describe('MCP Server Tools', () => {
       });
       process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
-      // Configure git mocks for worktree operations
+      // Configure git mocks for worktree operations.
+      // The `git worktree add` invocation itself is captured by the
+      // `runAsUserImpl` stub injected on the WorktreeService at the
+      // top-level `beforeEach`; the captured path then feeds `listWorktrees`
+      // below so the orchestration sees the newly-created worktree.
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
       mockGit.getDefaultBranch.mockImplementation(async () => 'main');
-      mockGit.createWorktree.mockImplementation(async () => {
-        // Simulate git creating the worktree directory - noop since we mock listWorktrees
-      });
-
-      // listWorktrees must return the created worktree. Since the actual worktree path
-      // includes a random suffix, we configure listWorktrees dynamically:
-      // After createWorktree is called, we know the path from the index store.
-      // However, the simpler approach is to return a porcelain output that includes
-      // both the main repo and a worktree at a known path.
-      // We intercept createWorktree to capture the path, then use it in listWorktrees.
-      let capturedWorktreePath = '';
-      mockGit.createWorktree.mockImplementation(async (...args: unknown[]) => {
-        capturedWorktreePath = args[0] as string;
-      });
 
       mockGit.listWorktrees.mockImplementation(async () => {
-        if (capturedWorktreePath) {
-          return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${capturedWorktreePath}\nHEAD def456\nbranch refs/heads/${worktreeBranch}\n`;
+        const captured = mcpRunAsUserCapture.capturedWorktreePath;
+        if (captured) {
+          return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n\nworktree ${captured}\nHEAD def456\nbranch refs/heads/${worktreeBranch}\n`;
         }
         return `worktree ${TEST_REPO_PATH}\nHEAD abc123\nbranch refs/heads/main\n`;
       });
@@ -1457,7 +1502,9 @@ describe('MCP Server Tools', () => {
     });
 
     it('should return error when worktree creation fails', async () => {
-      // Setup environment but make createWorktree fail
+      // Setup environment but make `git worktree add` fail. The runAsUser
+      // stub returns a non-zero exit (with the same stderr the real git
+      // would emit), which the WorktreeService surfaces via GitError.
       setupMemfs({
         [`${TEST_CONFIG_DIR}/.keep`]: '',
         [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
@@ -1467,11 +1514,12 @@ describe('MCP Server Tools', () => {
       mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
       mockGit.getDefaultBranch.mockImplementation(async () => 'main');
 
-      // Make createWorktree throw a GitError
-      const { GitError } = await import('../../lib/git.js');
-      mockGit.createWorktree.mockImplementation(async () => {
-        throw new GitError('fatal: branch already exists', 128, 'fatal: branch already exists');
-      });
+      mcpRunAsUserCapture.responseOverride = {
+        stdout: '',
+        stderr: 'fatal: branch already exists',
+        exitCode: 128,
+        timedOut: false,
+      };
 
       await setupDelegateRepoManager([{
         id: 'test-repo',

@@ -43,6 +43,9 @@ function createMockWorktreeService() {
     removeWorktree: mock(() => Promise.resolve({ success: true })),
     removeOrphanedWorktree: mock(() => Promise.resolve()),
     getWorktreeIndexNumber: mock(() => Promise.resolve(null)),
+    // Default no-op for createWorktree; overridden in tests that exercise
+    // the POST /worktrees route.
+    createWorktree: mock(() => Promise.resolve({ worktreePath: '', error: 'not implemented in mock' })),
   } as unknown as WorktreeService;
 }
 
@@ -130,6 +133,95 @@ describe('Worktrees API', () => {
       const body = (await res.json()) as { worktrees: unknown[] };
       expect(body.worktrees).toBeArray();
       expect(body.worktrees).toHaveLength(1);
+    });
+  });
+
+  // =========================================================================
+  // POST /api/repositories/:id/worktrees  (Issue #838: requestUsername plumbing)
+  // =========================================================================
+
+  describe('POST /api/repositories/:id/worktrees (Issue #838 requestUsername plumbing)', () => {
+    /**
+     * The route handler kicks worktree creation off in a fire-and-forget
+     * background promise; the HTTP response returns 202 immediately. To
+     * deterministically observe the inner `worktreeService.createWorktree`
+     * call, the mock resolves a promise the test awaits before asserting.
+     */
+    function createCapturingWorktreeMock() {
+      let resolveCall!: (args: unknown[]) => void;
+      const captured = new Promise<unknown[]>((resolve) => {
+        resolveCall = resolve;
+      });
+      const mockFn = mock((...args: unknown[]) => {
+        resolveCall(args);
+        // Return error so the route's success-broadcast path is skipped --
+        // the test only needs to observe the createWorktree call args.
+        return Promise.resolve({ worktreePath: '', error: 'short-circuit for test' });
+      });
+      return { mockFn, captured };
+    }
+
+    it("forwards authUser.username as requestUsername to worktreeService.createWorktree", async () => {
+      // Mock the agent manager so the route passes the agent validation.
+      const mockAgentManager = {
+        getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
+      } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+
+      const { mockFn: createCapture, captured } = createCapturingWorktreeMock();
+      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+
+      // Re-mount the app with the augmented appContext (agentManager +
+      // sessionManager + broadcastToApp + suggestSessionMetadata). The
+      // default suggestSessionMetadata is not invoked because we use
+      // `mode: 'custom'`, which uses the explicit branch verbatim.
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          // sessionManager is invoked downstream by createWorktreeWithSession
+          // only when the worktree creation succeeds; the short-circuit error
+          // above ensures it never runs.
+          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-838',
+            mode: 'custom',
+            branch: 'issue-838-feature',
+            baseBranch: 'main',
+            useRemote: false,
+            autoStartSession: false,
+            agentId: 'claude-code-builtin',
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+
+      // The route's fire-and-forget call MUST run before the test ends.
+      // The promise resolves the moment createWorktree is invoked.
+      const args = await captured;
+      // Signature: (repoPath, branch, repoId, baseBranch, requestUsername)
+      expect(args[0]).toBe(REPO_PATH);
+      expect(args[1]).toBe('issue-838-feature');
+      expect(args[2]).toBe(TEST_REPO.id);
+      // The default SingleUserMode used by asAppContext is constructed with
+      // TEST_AUTH_USER (username='testuser'), so the route MUST forward
+      // 'testuser' as the 5th positional arg.
+      expect(args[4]).toBe('testuser');
     });
   });
 

@@ -6,7 +6,6 @@ import {
   getRemoteUrl,
   parseOrgRepo,
   listWorktrees as gitListWorktrees,
-  createWorktree as gitCreateWorktree,
   removeWorktree as gitRemoveWorktree,
   listLocalBranches,
   listRemoteBranches,
@@ -17,12 +16,38 @@ import {
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
+import {
+  runAsUser,
+  shellEscape,
+  shouldElevateForUser,
+  type RunAsUserResult,
+} from './privilege-elevation.js';
 import type { Kysely } from 'kysely';
 import type { Database } from '../database/schema.js';
 import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
 
 const logger = createLogger('worktree-service');
+
+/**
+ * Timeout for `git worktree add` invocations that route through `runAsUser`.
+ * Mirrors `HEAVY_GIT_TIMEOUT_MS` from `lib/git.ts` so the multi-user path has
+ * the same wall-clock budget as the direct-spawn single-user path.
+ */
+const WORKTREE_ADD_TIMEOUT_MS = 120000;
+
+/**
+ * Timeout for the per-user `safe.directory` bootstrap. Short — the command is
+ * a pure local gitconfig write with no network or fs traversal.
+ */
+const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
+
+/**
+ * Timeout for each template file materialization step (one `mkdir -p` or
+ * `cat > <dst>` invocation) when the worktree is user-owned (Issue #838
+ * elevated branch). Local fs only, short content -- 10s is generous.
+ */
+const TEMPLATE_MATERIALIZE_TIMEOUT_MS = 10000;
 
 /**
  * Generate a random alphanumeric suffix
@@ -67,12 +92,46 @@ async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<stri
 }
 
 /**
- * Copy template files to worktree with variable substitution
+ * Sink for template file materialization. Production uses a sink that
+ * routes writes through `runAsUser` when the worktree is user-owned
+ * (Issue #838) so template files land owned by the requesting user
+ * rather than the server process. Tests use the in-process sink that
+ * writes via `fsPromises` directly.
+ */
+interface TemplateFileSink {
+  mkdir(dirPath: string): Promise<void>;
+  writeFile(filePath: string, content: string): Promise<void>;
+}
+
+/**
+ * In-process sink used when the worktree is server-owned (single-user
+ * mode, or multi-user with no `requestUsername`). Equivalent to the
+ * original pre-#838 behaviour.
+ */
+const directFsSink: TemplateFileSink = {
+  async mkdir(dirPath) {
+    await fsPromises.mkdir(dirPath, { recursive: true });
+  },
+  async writeFile(filePath, content) {
+    await fsPromises.writeFile(filePath, content);
+  },
+};
+
+/**
+ * Copy template files to worktree with variable substitution.
+ *
+ * The reader side (substitution) always runs in-process because templates
+ * live under server-controlled paths (`<repo>/.agent-console/` or
+ * `<AGENT_CONSOLE_HOME>/repositories/<org>/<repo>/templates/`). Only the
+ * writer side is potentially elevated, via the injected `sink`, so that
+ * template files in a user-owned worktree end up owned by the requesting
+ * user rather than the server process (Issue #838).
  */
 async function copyTemplateFiles(
   templatesDir: string,
   worktreePath: string,
-  vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string }
+  vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string },
+  sink: TemplateFileSink,
 ): Promise<string[]> {
   const copiedFiles: string[] = [];
 
@@ -87,7 +146,7 @@ async function copyTemplateFiles(
       const destPath = path.join(destDir, entry.name);
 
       if (entry.isDirectory()) {
-        await fsPromises.mkdir(destPath, { recursive: true });
+        await sink.mkdir(destPath);
         await copyRecursive(srcPath, destPath);
       } else {
         // Read, substitute, and write
@@ -96,9 +155,9 @@ async function copyTemplateFiles(
 
         // Ensure parent directory exists
         const destParent = path.dirname(destPath);
-        await fsPromises.mkdir(destParent, { recursive: true });
+        await sink.mkdir(destParent);
 
-        await fsPromises.writeFile(destPath, substituted);
+        await sink.writeFile(destPath, substituted);
         copiedFiles.push(path.relative(worktreePath, destPath));
       }
     }
@@ -133,19 +192,30 @@ async function getOrgRepoFromRemote(repoPath: string): Promise<string | null> {
 }
 
 /**
+ * Type of the privilege-elevation helper, exposed for dependency injection
+ * in tests. Production code uses the real `runAsUser` import.
+ */
+type RunAsUserFn = typeof runAsUser;
+
+/**
  * Discriminated union for WorktreeService dependencies.
  * Either provide a `db` (and the service creates its own repository),
  * or provide a `worktreeRepository` directly (e.g. in tests).
+ *
+ * `runAsUserImpl` is an optional injection point used only by tests; in
+ * production it defaults to the real `runAsUser`.
  */
 export type WorktreeServiceDeps =
-  | { db: Kysely<Database>; worktreeRepository?: never }
-  | { db?: never; worktreeRepository: WorktreeRepository };
+  | { db: Kysely<Database>; worktreeRepository?: never; runAsUserImpl?: RunAsUserFn }
+  | { db?: never; worktreeRepository: WorktreeRepository; runAsUserImpl?: RunAsUserFn };
 
 export class WorktreeService {
   private readonly _worktreeRepository: WorktreeRepository;
+  private readonly _runAsUser: RunAsUserFn;
 
   constructor(deps: WorktreeServiceDeps) {
     this._worktreeRepository = deps.worktreeRepository ?? new SqliteWorktreeRepository(deps.db);
+    this._runAsUser = deps.runAsUserImpl ?? runAsUser;
   }
 
   private get worktreeRepository(): WorktreeRepository {
@@ -247,13 +317,30 @@ export class WorktreeService {
   }
 
   /**
-   * Create a new worktree
+   * Create a new worktree.
+   *
+   * When `requestUsername` is provided and the server is in `AUTH_MODE=multi-user`,
+   * `git worktree add` is invoked via `runAsUser` so the resulting worktree
+   * files are owned by the requesting user. This eliminates the
+   * `dubious ownership` error users hit when running git commands inside the
+   * worktree's PTY (Issue #838 / umbrella #837).
+   *
+   * In `AUTH_MODE=none` or when `requestUsername` is null/undefined, the call
+   * still routes through `runAsUser` (which bypasses elevation in that case),
+   * preserving the original single-user behaviour.
+   *
+   * When elevating, the server also runs `git config --global --add
+   * safe.directory <repoPath>` as the requesting user once, so git's owner
+   * check passes against the source repo (which remains owned by the server
+   * user). The bootstrap is idempotent thanks to `git config --get-all`
+   * checking for an existing entry first.
    */
   async createWorktree(
     repoPath: string,
     branch: string,
     repositoryId: string,
-    baseBranch?: string
+    baseBranch?: string,
+    requestUsername?: string | null,
   ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
     // Generate worktree path: repositories/{org}/{repo}/worktrees/wt-{index}-{suffix}
     // Directory name is independent of branch name to avoid path issues with branch names containing slashes
@@ -273,7 +360,27 @@ export class WorktreeService {
     const worktreePath = path.join(repoWorktreeDir, dirName);
 
     try {
-      await gitCreateWorktree(worktreePath, branch, repoPath, { baseBranch });
+      // Determine whether elevation will actually engage. `runAsUser` itself
+      // checks the same conditions; we replicate the check locally so we can
+      // also gate the safe.directory bootstrap (only meaningful when running
+      // as a non-server user).
+      const willElevate = shouldElevateForUser(requestUsername);
+
+      if (willElevate) {
+        // Bootstrap the user's gitconfig so `git worktree add` (running as
+        // the user) accepts the server-owned source repo. Idempotent —
+        // `git config --get-all safe.directory` is checked first so we only
+        // add the entry if it is not already present.
+        await this.bootstrapSafeDirectoryForUser(requestUsername!, repoPath);
+      }
+
+      await this.invokeGitWorktreeAdd({
+        worktreePath,
+        branch,
+        repoPath,
+        baseBranch,
+        requestUsername: willElevate ? requestUsername! : null,
+      });
 
       // Save record to DB
       await this.worktreeRepository.save({
@@ -284,20 +391,36 @@ export class WorktreeService {
         createdAt: new Date().toISOString(),
       });
 
-      logger.info({ worktreePath, index: newIndex }, 'Worktree created');
+      logger.info(
+        { worktreePath, index: newIndex, elevated: willElevate },
+        'Worktree created',
+      );
 
-      // Copy template files
+      // Copy template files. When the worktree is user-owned (Issue #838
+      // elevated branch), template files must also be materialized as the
+      // requesting user so the ownership of the entire worktree subtree is
+      // consistent. The sink wraps `runAsUser` for that case; the
+      // non-elevated branch uses direct fs writes (server-owned worktree
+      // matches server-owned templates).
       const templatesDir = await findTemplatesDir(repoPath, orgRepo);
       let copiedFiles: string[] = [];
 
       if (templatesDir) {
         const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
-        copiedFiles = await copyTemplateFiles(templatesDir, worktreePath, {
-          worktreeNum: newIndex,
-          branch,
-          repo: repoName,
+        const sink = willElevate
+          ? this.makeUserOwnedTemplateSink(requestUsername!)
+          : directFsSink;
+        copiedFiles = await copyTemplateFiles(
+          templatesDir,
           worktreePath,
-        });
+          {
+            worktreeNum: newIndex,
+            branch,
+            repo: repoName,
+            worktreePath,
+          },
+          sink,
+        );
         if (copiedFiles.length > 0) {
           logger.info({ copiedFiles }, 'Template files copied');
         }
@@ -309,6 +432,159 @@ export class WorktreeService {
       logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }
+  }
+
+  /**
+   * Invoke `git worktree add` via `runAsUser`. When `requestUsername` is null
+   * or in `AUTH_MODE=none`, `runAsUser` bypasses elevation and runs the
+   * command as the server user (the same effective behaviour as the prior
+   * `Bun.spawn(['git', ...])` call in `lib/git.ts`). When elevation engages,
+   * the worktree files end up owned by the requesting user, eliminating the
+   * `dubious ownership` issue (#838).
+   *
+   * Throws a `GitError`-compatible error on non-zero exit so callers can
+   * keep their existing `instanceof GitError` branching (via
+   * `extractErrorMessage`).
+   */
+  private async invokeGitWorktreeAdd(opts: {
+    worktreePath: string;
+    branch: string;
+    repoPath: string;
+    baseBranch?: string;
+    requestUsername: string | null;
+  }): Promise<void> {
+    // Build the git invocation as a shell command. Every interpolated value
+    // is shell-escaped — branch names and worktree paths originate from
+    // server-controlled / DB-driven sources but routing them through
+    // `shellEscape` keeps the contract uniform (no value reaches sh -c
+    // unquoted).
+    const args = ['git', 'worktree', 'add'];
+    if (opts.baseBranch !== undefined) {
+      args.push('-b', opts.branch, opts.worktreePath, opts.baseBranch);
+    } else {
+      args.push(opts.worktreePath, opts.branch);
+    }
+    const command = args.map(shellEscape).join(' ');
+
+    const result = await this._runAsUser({
+      username: opts.requestUsername,
+      command,
+      cwd: opts.repoPath,
+      timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
+    });
+
+    if (result.timedOut || result.exitCode !== 0) {
+      const stderr = result.stderr.trim();
+      const detail = stderr || `exit code ${result.exitCode}`;
+      throw new GitError(`git worktree failed: ${detail}`, result.exitCode, stderr);
+    }
+  }
+
+  /**
+   * Append `<repoPath>` to the requesting user's `safe.directory` list when
+   * not already present. Required because the source repo is owned by the
+   * server user (`agentconsole`), so `git worktree add` running as the
+   * requesting user would otherwise hit `fatal: detected dubious ownership`.
+   * Mitigation A from Issue #838.
+   *
+   * Idempotent — checks `git config --get-all safe.directory` first and only
+   * adds the entry when this exact `repoPath` is missing. Failure is logged
+   * but not thrown, so a misconfigured gitconfig does not block worktree
+   * creation; the subsequent `git worktree add` will surface a clearer
+   * `dubious ownership` error if the bootstrap was actually needed.
+   */
+  private async bootstrapSafeDirectoryForUser(
+    username: string,
+    repoPath: string,
+  ): Promise<void> {
+    const escapedPath = shellEscape(repoPath);
+    // `--get-all` returns one line per entry, exit 0 even if none match the
+    // value. We post-filter rather than relying on `--get` (which would only
+    // return the first match and could mis-report when the user has multiple
+    // entries).
+    const command = `if ! git config --global --get-all safe.directory 2>/dev/null | grep -Fxq ${escapedPath}; then git config --global --add safe.directory ${escapedPath}; fi`;
+    let result: RunAsUserResult;
+    try {
+      result = await this._runAsUser({
+        username,
+        command,
+        timeoutMs: SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS,
+      });
+    } catch (error) {
+      logger.warn(
+        { err: error, username, repoPath },
+        'safe.directory bootstrap spawn failed; continuing with worktree creation',
+      );
+      return;
+    }
+
+    if (result.timedOut || result.exitCode !== 0) {
+      logger.warn(
+        {
+          username,
+          repoPath,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          stderr: result.stderr.trim(),
+        },
+        'safe.directory bootstrap returned non-zero; continuing with worktree creation',
+      );
+      return;
+    }
+
+    logger.info({ username, repoPath }, 'safe.directory bootstrap completed for user');
+  }
+
+  /**
+   * Build a template-file sink that materializes directories and files as
+   * the requesting user via `runAsUser`. Used by `copyTemplateFiles` so
+   * that template entries in a user-owned worktree (Issue #838 elevated
+   * branch) inherit the same ownership as the worktree itself.
+   *
+   * The reader side (template content + variable substitution) stays
+   * in-process; only the writer side is elevated. Files are materialized
+   * by piping the substituted content through `sh -c 'cat > <dst>'` as
+   * the user. Directories are created via `mkdir -p <dir>` as the user.
+   *
+   * Failure modes: a non-zero exit from the spawn causes the function to
+   * throw, which propagates up through `copyTemplateFiles` and is caught
+   * by `createWorktree`'s outer try/catch (returns `{ error }` and logs).
+   */
+  private makeUserOwnedTemplateSink(username: string): TemplateFileSink {
+    const runAsUser = this._runAsUser;
+    return {
+      async mkdir(dirPath: string): Promise<void> {
+        const escaped = shellEscape(dirPath);
+        const result = await runAsUser({
+          username,
+          command: `mkdir -p ${escaped}`,
+          timeoutMs: TEMPLATE_MATERIALIZE_TIMEOUT_MS,
+        });
+        if (result.timedOut || result.exitCode !== 0) {
+          const detail = result.stderr.trim() || `exit ${result.exitCode}`;
+          throw new Error(`mkdir as ${username} failed for ${dirPath}: ${detail}`);
+        }
+      },
+      async writeFile(filePath: string, content: string): Promise<void> {
+        const escaped = shellEscape(filePath);
+        // `cat > <dst>` is the canonical "write stdin to file" shell
+        // idiom. The user's shell receives the bytes via the stdin
+        // pipe (runAsUser plumbs `opts.stdin` through Bun.spawn) and
+        // creates `<dst>` owned by the user with the user's umask.
+        // Production umask=0002 + setgid parent → mode 0664 group
+        // agent-console-users, matching the rest of the worktree.
+        const result = await runAsUser({
+          username,
+          command: `cat > ${escaped}`,
+          stdin: content,
+          timeoutMs: TEMPLATE_MATERIALIZE_TIMEOUT_MS,
+        });
+        if (result.timedOut || result.exitCode !== 0) {
+          const detail = result.stderr.trim() || `exit ${result.exitCode}`;
+          throw new Error(`writeFile as ${username} failed for ${filePath}: ${detail}`);
+        }
+      },
+    };
   }
 
   /**

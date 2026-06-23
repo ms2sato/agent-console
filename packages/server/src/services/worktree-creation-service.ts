@@ -42,6 +42,15 @@ export interface CreateWorktreeParams {
   title?: string;
   autoStartSession?: boolean;  // Defaults to true. When false, skip session creation.
   context?: SessionCreationContext;
+  /**
+   * OS username of the user who requested this worktree (typically
+   * `authUser.username` from the route handler). Threaded down to
+   * `WorktreeService.createWorktree` -> `runAsUser` so multi-user mode
+   * creates the worktree files owned by the requesting user (Issue #838).
+   * `null` / `undefined` -> no elevation (single-user mode, or any path that
+   * has no authenticated user context).
+   */
+  requestUsername?: string | null;
 }
 
 export interface CreateWorktreeResult {
@@ -71,6 +80,7 @@ export async function createWorktreeWithSession(
     useRemote, agentId, initialPrompt, title,
     autoStartSession = true,
     context,
+    requestUsername,
   } = params;
 
   // 1. Handle remote fetch if requested
@@ -94,7 +104,13 @@ export async function createWorktreeWithSession(
   }
 
   // 2. Create worktree
-  const wtResult = await worktreeService.createWorktree(repoPath, branch, repoId, effectiveBaseBranch);
+  const wtResult = await worktreeService.createWorktree(
+    repoPath,
+    branch,
+    repoId,
+    effectiveBaseBranch,
+    requestUsername,
+  );
 
   if (wtResult.error) {
     return { success: false, error: wtResult.error };

@@ -5,6 +5,7 @@ import {
   buildSpawnArgs,
   buildInnerCommand,
   shellEscape,
+  shouldElevateForUser,
   type SpawnFn,
 } from '../privilege-elevation.js';
 
@@ -136,6 +137,32 @@ describe('privilege-elevation', () => {
     it('escapes embedded single quotes', () => {
       // foo'bar -> 'foo'\''bar'
       expect(shellEscape("foo'bar")).toBe("'foo'\\''bar'");
+    });
+  });
+
+  describe('shouldElevateForUser', () => {
+    it('returns false when AUTH_MODE is unset (single-user)', () => {
+      // AUTH_MODE deleted by beforeEach
+      expect(shouldElevateForUser('alice')).toBe(false);
+      expect(shouldElevateForUser(serverUsername)).toBe(false);
+    });
+
+    it('returns false when AUTH_MODE is set but username is null/undefined/empty', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      expect(shouldElevateForUser(null)).toBe(false);
+      expect(shouldElevateForUser(undefined)).toBe(false);
+      expect(shouldElevateForUser('')).toBe(false);
+    });
+
+    it('returns false in multi-user mode when username equals the server user', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      expect(shouldElevateForUser(serverUsername)).toBe(false);
+    });
+
+    it('returns true in multi-user mode for a different OS username', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const otherUser = `${serverUsername}-not-the-server-user`;
+      expect(shouldElevateForUser(otherUser)).toBe(true);
     });
   });
 
@@ -576,6 +603,56 @@ describe('privilege-elevation', () => {
       const opts = captured[0].options as { cwd?: string; env?: Record<string, string> };
       expect(opts.cwd).toBe('/');
       expect(opts.env).toBeUndefined();
+    });
+
+    it('forwards opts.stdin as Uint8Array to spawn options (string is UTF-8 encoded)', async () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
+
+      await runAsUser(
+        {
+          username: null,
+          command: 'cat > /tmp/out',
+          stdin: 'hello, world',
+        },
+        fakeSpawn,
+      );
+
+      const opts = captured[0].options as { stdin?: Uint8Array };
+      expect(opts.stdin).toBeInstanceOf(Uint8Array);
+      expect(new TextDecoder().decode(opts.stdin)).toBe('hello, world');
+    });
+
+    it('forwards a Uint8Array stdin verbatim (no re-encoding for binary payloads)', async () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
+      const bytes = new Uint8Array([0x00, 0x01, 0x02, 0xff]);
+
+      await runAsUser(
+        {
+          username: null,
+          command: 'cat > /tmp/binary',
+          stdin: bytes,
+        },
+        fakeSpawn,
+      );
+
+      const opts = captured[0].options as { stdin?: Uint8Array };
+      // Same reference (no copy) is acceptable; assert bytes equality.
+      expect(opts.stdin).toEqual(bytes);
+    });
+
+    it('omits the stdin spawn option when opts.stdin is not set', async () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
+
+      await runAsUser({ username: null, command: 'echo hi' }, fakeSpawn);
+
+      const opts = captured[0].options as { stdin?: unknown };
+      expect(opts.stdin).toBeUndefined();
     });
   });
 });

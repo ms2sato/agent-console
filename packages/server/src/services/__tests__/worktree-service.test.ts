@@ -4,6 +4,33 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { mockGit, GitError } from '../../__tests__/utils/mock-git-helper.js';
 import type { Worktree } from '@agent-console/shared';
 import type { WorktreeRepository, WorktreeRecord } from '../../repositories/worktree-repository.js';
+import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
+
+/**
+ * Capture-and-respond fake for `runAsUser`. The worktree-service routes
+ * `git worktree add` (and the per-user `safe.directory` bootstrap on the
+ * elevated path) through `runAsUser`, so tests inject this fake via the
+ * `runAsUserImpl` constructor option and assert on the captured opts.
+ *
+ * Default response: success (exitCode 0, empty stdout/stderr). Per-test
+ * scenarios can replace the responder via `responder.fn = ...`.
+ */
+function createRunAsUserMock() {
+  const calls: RunAsUserOpts[] = [];
+  const responder = {
+    fn: async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    }),
+  };
+  const runAsUserImpl = (opts: RunAsUserOpts) => {
+    calls.push(opts);
+    return responder.fn(opts);
+  };
+  return { calls, runAsUserImpl, responder };
+}
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -65,6 +92,9 @@ function createMockWorktreeRepository(): WorktreeRepository & { records: Worktre
 
 describe('WorktreeService', () => {
   let mockRepo: ReturnType<typeof createMockWorktreeRepository>;
+  // Top-level capture mock for `runAsUser`. All sub-describes share the
+  // same instance; the top-level beforeEach creates a fresh one per test.
+  let runAsUserMock: ReturnType<typeof createRunAsUserMock>;
 
   beforeEach(() => {
     // Setup memfs with config directory structure
@@ -75,12 +105,15 @@ describe('WorktreeService', () => {
 
     // Create fresh mock repository for each test
     mockRepo = createMockWorktreeRepository();
+    // Fresh runAsUser capture for each test (default: success response).
+    runAsUserMock = createRunAsUserMock();
 
-    // Reset mocks
+    // Reset mocks. `createWorktree` is no longer mocked at the lib/git layer
+    // because the service now routes through `runAsUser` -- the
+    // `runAsUserMock` defined above is the capture point for the create path.
     mockGit.getRemoteUrl.mockReset();
     mockGit.parseOrgRepo.mockReset();
     mockGit.listWorktrees.mockReset();
-    mockGit.createWorktree.mockReset();
     mockGit.removeWorktree.mockReset();
     mockGit.listLocalBranches.mockReset();
     mockGit.listRemoteBranches.mockReset();
@@ -97,7 +130,6 @@ worktree /worktrees/feature-1
 HEAD def456
 branch refs/heads/feature-1
 `));
-    mockGit.createWorktree.mockImplementation(() => Promise.resolve());
     mockGit.removeWorktree.mockImplementation(() => Promise.resolve());
     mockGit.listLocalBranches.mockImplementation(() => Promise.resolve(['main', 'feature-1', 'feature-2']));
     mockGit.listRemoteBranches.mockImplementation(() => Promise.resolve(['origin/main', 'origin/develop']));
@@ -211,9 +243,34 @@ detached
   });
 
   describe('createWorktree', () => {
-    it('should create worktree with existing branch', async () => {
+    // `runAsUser` is now the single execution point for `git worktree add`,
+    // so the tests inject a capture mock via `runAsUserImpl` rather than
+    // relying on the lib/git module mock for the create path. The lib/git
+    // mock is still used for sibling operations (list, listBranches, etc.).
+    let originalAuthMode: string | undefined;
+
+    beforeEach(() => {
+      // Default tests run as a single-user environment (no elevation, no
+      // safe.directory bootstrap). Multi-user behaviour is exercised by its
+      // own describe block below.
+      originalAuthMode = process.env.AUTH_MODE;
+      delete process.env.AUTH_MODE;
+    });
+
+    afterEach(() => {
+      if (originalAuthMode === undefined) {
+        delete process.env.AUTH_MODE;
+      } else {
+        process.env.AUTH_MODE = originalAuthMode;
+      }
+    });
+
+    it('should create worktree with existing branch (single-user: no elevation)', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -221,45 +278,231 @@ detached
       // Directory name is wt-XXX-xxxx format, independent of branch name
       expect(result.worktreePath).toMatch(/wt-\d{3}-[a-z0-9]{4}$/);
       expect(result.index).toBeDefined();
-      // Verify createWorktree was called with correct arguments
-      expect(mockGit.createWorktree).toHaveBeenCalledWith(
-        expect.stringMatching(/wt-\d{3}-[a-z0-9]{4}$/),
-        'feature-branch',
-        '/repo',
-        { baseBranch: undefined }
-      );
+      // Verify runAsUser was invoked with the correct git command, cwd, and
+      // a null username (no elevation in single-user mode).
+      expect(runAsUserMock.calls.length).toBe(1);
+      const call = runAsUserMock.calls[0];
+      expect(call.username).toBeNull();
+      expect(call.cwd).toBe('/repo');
+      // Command is `'git' 'worktree' 'add' '<path>' 'feature-branch'` with
+      // each value single-quote escaped. No `-b` flag when no baseBranch.
+      expect(call.command).toMatch(/^'git' 'worktree' 'add' '.*wt-\d{3}-[a-z0-9]{4}' 'feature-branch'$/);
       // Verify record was saved to mock repository
       expect(mockRepo.records.length).toBe(1);
       expect(mockRepo.records[0].repositoryId).toBe('repo-1');
       expect(mockRepo.records[0].path).toBe(result.worktreePath);
     });
 
-    it('should create worktree with new branch from base', async () => {
+    it('should create worktree with new branch from base (uses -b flag)', async () => {
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       await service.createWorktree('/repo', 'new-feature', 'repo-1', 'main');
 
-      expect(mockGit.createWorktree).toHaveBeenCalledWith(
-        expect.stringMatching(/wt-\d{3}-[a-z0-9]{4}$/),
-        'new-feature',
-        '/repo',
-        { baseBranch: 'main' }
+      expect(runAsUserMock.calls.length).toBe(1);
+      const call = runAsUserMock.calls[0];
+      // With baseBranch, command is `git worktree add -b <branch> <path> <baseBranch>`
+      expect(call.command).toMatch(
+        /^'git' 'worktree' 'add' '-b' 'new-feature' '.*wt-\d{3}-[a-z0-9]{4}' 'main'$/,
       );
     });
 
-    it('should return error on failure', async () => {
-      mockGit.createWorktree.mockImplementation(() =>
-        Promise.reject(new GitError('branch already exists', 128, 'fatal: branch already exists'))
-      );
+    it('should return error on failure (non-zero exit code from runAsUser)', async () => {
+      runAsUserMock.responder.fn = async () => ({
+        stdout: '',
+        stderr: 'fatal: branch already exists',
+        exitCode: 128,
+        timedOut: false,
+      });
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.createWorktree('/repo', 'existing-branch', 'repo-1');
 
       expect(result.error).toBeDefined();
+      expect(result.error).toContain('branch already exists');
       expect(result.worktreePath).toBe('');
+      // Verify no DB record was saved on failure
+      expect(mockRepo.records.length).toBe(0);
+    });
+
+    describe('multi-user mode (Issue #838)', () => {
+      beforeEach(() => {
+        process.env.AUTH_MODE = 'multi-user';
+      });
+
+      it('routes git worktree add through runAsUser with requestUsername', async () => {
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        // Use a non-server username so elevation actually engages. Hardcoding
+        // an unlikely-collision value avoids dependence on the host's user.
+        const result = await service.createWorktree(
+          '/repo',
+          'feature-x',
+          'repo-1',
+          undefined,
+          'alice-multiuser-test',
+        );
+
+        expect(result.error).toBeUndefined();
+        // Two calls: safe.directory bootstrap, then git worktree add.
+        expect(runAsUserMock.calls.length).toBe(2);
+
+        // Call ordering: bootstrap MUST precede the worktree add so the
+        // user's gitconfig has the safe.directory entry before git runs.
+        const bootstrap = runAsUserMock.calls[0];
+        expect(bootstrap.username).toBe('alice-multiuser-test');
+        expect(bootstrap.command).toContain('safe.directory');
+        expect(bootstrap.command).toContain("'/repo'");
+
+        const worktreeAdd = runAsUserMock.calls[1];
+        expect(worktreeAdd.username).toBe('alice-multiuser-test');
+        expect(worktreeAdd.cwd).toBe('/repo');
+        expect(worktreeAdd.command).toMatch(
+          /^'git' 'worktree' 'add' '.*wt-\d{3}-[a-z0-9]{4}' 'feature-x'$/,
+        );
+      });
+
+      it('skips safe.directory bootstrap when no requestUsername is supplied (backward compat)', async () => {
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        // No requestUsername -> no elevation -> only one call (worktree add
+        // with username=null, which the helper bypasses).
+        const result = await service.createWorktree('/repo', 'feature-y', 'repo-1');
+
+        expect(result.error).toBeUndefined();
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect(runAsUserMock.calls[0].username).toBeNull();
+        // The DB record is saved with the server-user-owned worktree path.
+        expect(mockRepo.records.length).toBe(1);
+      });
+
+      it('materializes template files as the requesting user (Issue #838 ownership-consistency)', async () => {
+        // Templates live under <repo>/.agent-console/ ; create one. Without
+        // the user-owned-sink behaviour, the template would be written by
+        // the server process. With it, the sink shells out to `mkdir -p`
+        // and `cat > <dst>` as the user, so both ownership and the writes
+        // are routed through runAsUser.
+        fs.mkdirSync('/repo/.agent-console', { recursive: true });
+        fs.writeFileSync(
+          '/repo/.agent-console/CLAUDE.md',
+          'branch={{BRANCH}} num={{WORKTREE_NUM}}',
+        );
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.createWorktree(
+          '/repo',
+          'feature-templates',
+          'repo-1',
+          undefined,
+          'alice-multiuser-test',
+        );
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('CLAUDE.md');
+
+        // Expected runAsUser calls (order matters):
+        //   [0] safe.directory bootstrap
+        //   [1] git worktree add
+        //   [2] mkdir -p <worktreePath>  (the file's parent dir)
+        //   [3] cat > <worktreePath>/CLAUDE.md (with substituted content as stdin)
+        expect(runAsUserMock.calls.length).toBe(4);
+
+        const mkdirCall = runAsUserMock.calls[2];
+        expect(mkdirCall.username).toBe('alice-multiuser-test');
+        expect(mkdirCall.command).toMatch(/^mkdir -p '.*wt-\d{3}-[a-z0-9]{4}'$/);
+
+        const writeCall = runAsUserMock.calls[3];
+        expect(writeCall.username).toBe('alice-multiuser-test');
+        expect(writeCall.command).toMatch(
+          /^cat > '.*wt-\d{3}-[a-z0-9]{4}\/CLAUDE\.md'$/,
+        );
+        // Stdin carries the substituted content. WORKTREE_NUM is the
+        // allocated index (1 for a fresh DB).
+        expect(writeCall.stdin).toBe('branch=feature-templates num=1');
+      });
+
+      it('uses direct fs writes for templates when worktree is server-owned (no requestUsername)', async () => {
+        // No requestUsername -> sink falls back to direct fs writes.
+        // This preserves the original pre-#838 single-user behaviour.
+        fs.mkdirSync('/repo/.agent-console', { recursive: true });
+        fs.writeFileSync('/repo/.agent-console/hello.txt', 'hi');
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.createWorktree('/repo', 'feature-no-user', 'repo-1');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('hello.txt');
+        // Only one runAsUser call: the `git worktree add` invocation with
+        // username=null. The template write went through fsPromises, not
+        // runAsUser.
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect(runAsUserMock.calls[0].username).toBeNull();
+      });
+
+      it('does not abort worktree creation when the safe.directory bootstrap returns non-zero', async () => {
+        let callCount = 0;
+        runAsUserMock.responder.fn = async () => {
+          callCount += 1;
+          // First call is the bootstrap; simulate a non-zero exit. Second
+          // call is `git worktree add`; respond success so creation proceeds.
+          if (callCount === 1) {
+            return {
+              stdout: '',
+              stderr: 'unable to write config',
+              exitCode: 1,
+              timedOut: false,
+            };
+          }
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        };
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.createWorktree(
+          '/repo',
+          'feature-z',
+          'repo-1',
+          undefined,
+          'alice-multiuser-test',
+        );
+
+        // Bootstrap failure is logged but not fatal; the worktree add still
+        // ran and DB record was saved. If `git worktree add` itself fails
+        // because of the missing safe.directory entry, the error from THAT
+        // call surfaces to the caller (covered by the "non-zero exit" test).
+        expect(result.error).toBeUndefined();
+        expect(runAsUserMock.calls.length).toBe(2);
+      });
     });
 
     describe('template copying', () => {
@@ -269,7 +512,10 @@ detached
         fs.writeFileSync('/repo/.agent-console/CLAUDE.md', 'hello world');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService({ worktreeRepository: mockRepo });
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
 
         const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -289,7 +535,10 @@ detached
         fs.writeFileSync(`${globalTemplatesDir}/setup.sh`, '#!/bin/bash\necho setup');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService({ worktreeRepository: mockRepo });
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
 
         const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -307,7 +556,10 @@ detached
         );
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService({ worktreeRepository: mockRepo });
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
 
         const result = await service.createWorktree('/repo', 'my-feature', 'repo-1');
 
@@ -326,7 +578,10 @@ detached
         fs.writeFileSync('/repo/.agent-console/root-file.txt', 'root');
 
         const WorktreeService = await getWorktreeService();
-        const service = new WorktreeService({ worktreeRepository: mockRepo });
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
 
         const result = await service.createWorktree('/repo', 'feature-branch', 'repo-1');
 
@@ -744,7 +999,10 @@ detached
       );
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.createWorktree('/repo', 'feature-gap', 'repo-1');
 
@@ -764,7 +1022,10 @@ detached
       }
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.createWorktree('/repo', 'feature-next', 'repo-1');
 
@@ -776,7 +1037,10 @@ detached
       // mockRepo.records is empty
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.createWorktree('/repo', 'first-worktree', 'repo-1');
 

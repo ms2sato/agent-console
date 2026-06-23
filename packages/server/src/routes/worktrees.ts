@@ -129,6 +129,11 @@ const worktrees = new Hono<AppBindings>()
           title: effectiveTitle,
           autoStartSession,
           context: { createdBy: authUser.id },
+          // Thread the authenticated OS username down to `git worktree add`
+          // so multi-user installs create the worktree as the requesting
+          // user (Issue #838). In single-user mode, `runAsUser` reads this
+          // value but `AUTH_MODE` gates the elevation to a no-op.
+          requestUsername: authUser.username,
         }, sessionManager, worktreeService);
 
         if (!result.success) {
