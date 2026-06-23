@@ -20,6 +20,7 @@ import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repositor
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
+import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { TimerManager } from '../../services/timer-manager.js';
@@ -148,6 +149,7 @@ describe('MCP Server Tools', () => {
   let interactiveProcessManager: InteractiveProcessManager;
   let worktreeService: WorktreeService;
   let annotationService: AnnotationService;
+  let userRepository: SqliteUserRepository;
   let testJobQueue: JobQueue;
   let mcpSessionId: string;
   // Track unique IDs for tool calls to avoid collisions in the shared transport
@@ -177,7 +179,7 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -237,6 +239,12 @@ describe('MCP Server Tools', () => {
     // Create AgentManager for dependency injection
     const db = getDatabase();
     agentManager = await AgentManager.create(new SqliteAgentRepository(db));
+
+    // Create UserRepository for delegate_to_worktree's username resolution.
+    // Tests that exercise the resolved-username path seed entries via
+    // `userRepository.upsertByOsUid(...)`; tests that exercise the null
+    // fallback rely on findById returning null for unknown UUIDs.
+    userRepository = new SqliteUserRepository(db);
 
     // Create AnnotationService
     annotationService = new AnnotationService();
@@ -1972,6 +1980,141 @@ describe('MCP Server Tools', () => {
       const childSession = sessionManager.getSession(data.sessionId);
       expect(childSession).toBeDefined();
       expect(childSession!.createdBy).toBe('parent-user-abc');
+    });
+
+    // -------------------------------------------------------------------------
+    // Issue #844: OS username plumbing through delegate_to_worktree
+    // -------------------------------------------------------------------------
+    //
+    // delegate_to_worktree must resolve the parent session's createdBy (a
+    // users.id UUID) to its OS `username` via `userRepository.findById` and
+    // pass that username down to `worktreeService.createWorktree` as the
+    // `requestUsername` parameter. `runAsUser` then either elevates (multi-user
+    // mode) or bypasses elevation (AUTH_MODE=none / null username).
+    //
+    // The tests below spy on `worktreeService.createWorktree` to capture the
+    // exact `requestUsername` argument the MCP path passes through, covering:
+    //   1. Resolved username path (parent user exists in userRepository)
+    //   2. No parentSessionId -> null
+    //   3. Parent exists but createdBy is null/undefined -> null
+    //   4. Parent createdBy is a UUID that does not resolve -> null
+    describe('Issue #844: OS username plumbing', () => {
+      /**
+       * Spy on `worktreeService.createWorktree` and return the spy so tests
+       * can read the captured arguments. The wrapped implementation delegates
+       * to the real method so the rest of the orchestration still runs.
+       */
+      function spyCreateWorktree(): ReturnType<typeof jest.spyOn> {
+        return jest.spyOn(worktreeService, 'createWorktree');
+      }
+
+      it('plumbs resolved OS username when parent createdBy resolves to a registered user', async () => {
+        await setupDelegateEnvironment('feat/username-resolved');
+
+        // Seed userRepository with an OS user; upsertByOsUid returns the
+        // assigned UUID which we then thread through as the parent session's
+        // createdBy. This mirrors the production wiring where authentication
+        // assigns the same UUID and stores it on `sessions.created_by`.
+        const aliceOsUid = 9001;
+        const alice = await userRepository.upsertByOsUid(aliceOsUid, 'alice', '/home/alice');
+
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        }, { createdBy: alice.id });
+
+        const createWorktreeSpy = spyCreateWorktree();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Test username plumbing',
+          branch: 'feat/username-resolved',
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        // createWorktree(repoPath, branch, repositoryId, baseBranch?, requestUsername?)
+        expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
+        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
+        expect(callArgs[4]).toBe('alice');
+      });
+
+      it('passes null requestUsername when delegate_to_worktree is called without parentSessionId', async () => {
+        await setupDelegateEnvironment('feat/no-parent-username');
+
+        const createWorktreeSpy = spyCreateWorktree();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Direct delegation with no parent context',
+          branch: 'feat/no-parent-username',
+          // parentSessionId intentionally omitted
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
+        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
+        expect(callArgs[4]).toBeNull();
+      });
+
+      it('passes null requestUsername when parent session has no createdBy (legacy)', async () => {
+        await setupDelegateEnvironment('feat/legacy-parent');
+
+        // Create a parent session WITHOUT createdBy - legacy / pre-multi-user
+        // sessions saved before `sessions.created_by` was populated.
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        });
+
+        const createWorktreeSpy = spyCreateWorktree();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Delegation from a legacy parent',
+          branch: 'feat/legacy-parent',
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
+        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
+        expect(callArgs[4]).toBeNull();
+      });
+
+      it('passes null requestUsername when parent createdBy UUID does not resolve to a user', async () => {
+        await setupDelegateEnvironment('feat/orphan-uuid');
+
+        // Parent has a createdBy that does not correspond to any
+        // userRepository entry. This is the orphan case — the foreign-key-
+        // less DB layout permits a session whose createdBy was deleted from
+        // (or never inserted into) the users table.
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        }, { createdBy: 'orphan-uuid-not-in-users-table' });
+
+        const createWorktreeSpy = spyCreateWorktree();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Delegation from an orphan parent',
+          branch: 'feat/orphan-uuid',
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
+        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
+        expect(callArgs[4]).toBeNull();
+      });
     });
 
     it('should accept optional templateVars parameter and create session successfully', async () => {

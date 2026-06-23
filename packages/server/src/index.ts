@@ -143,6 +143,7 @@ const mcpApp = createMcpApp({
   suggestSessionMetadata: appContext.suggestSessionMetadata,
   createWorktreeWithSession,
   deleteWorktree,
+  userRepository: appContext.userRepository,
   broadcastToApp: appContext.broadcastToApp,
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,
