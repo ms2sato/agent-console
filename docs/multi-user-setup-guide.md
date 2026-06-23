@@ -53,7 +53,8 @@ cd agent-console
 
 # 2. Run the bootstrap script. Defaults: service user 'agentconsole',
 #    shared group 'agent-console-users', data root '/var/lib/agent-console',
-#    port 8080. Override with --port, --user, --group, --data-root, etc.
+#    source-repos dir '<data-root>/source-repos', port 8080. Override with
+#    --port, --user, --group, --data-root, --source-repos-dir, etc.
 sudo scripts/setup-multiuser-for-ubuntu.sh --port 8080 \
   --add-user alice --add-user bob
 
@@ -649,6 +650,77 @@ When [Issue #834](https://github.com/ms2sato/agent-console/issues/834)
 (clone-as-user) lands, repos cloned via the in-app flow are owned by the
 requesting user directly and neither the auto-apply nor the manual fallback
 is required.
+
+## Shared source-repos directory (Linux multi-user)
+
+The bootstrap script (`scripts/setup-multiuser-for-ubuntu.sh`) creates an
+empty shared directory at `${DATA_ROOT}/source-repos` (default
+`/var/lib/agent-console/source-repos`) during Step 5, owned
+`<service-user>:<shared-group>` with mode `2775` (setgid + group-writable).
+This is the recommended location for cloning source repositories that
+multiple OS users will share through Agent Console (Issue
+[#833](https://github.com/ms2sato/agent-console/issues/833)).
+
+### Why a shared location
+
+The alternatives are operationally fragile:
+
+- **An interactive user's `~/dev/<repo>`** works only when that home is
+  world-traversable; it usually is not, and other interactive users in the
+  shared group cannot read it.
+- **An ad-hoc system path** (e.g., `/srv/repos/...`) works if perms are set
+  by hand, but every operator invents their own convention.
+- **The data root itself** is conflated with the worktree subtree that
+  agent-console manages, making manual operator action there risky.
+
+Cloning into `${DATA_ROOT}/source-repos` gives every interactive group
+member and the service user a consistent place to read, fetch, and update
+refs.
+
+### Recommended clone procedure
+
+The operator's interactive user (e.g., `alice`) must be in the
+`agent-console-users` group **before** cloning so newly created files
+inherit the shared group via the directory's setgid bit:
+
+```bash
+# Verify group membership first.
+id -nG alice | tr ' ' '\n' | grep -Fxq agent-console-users \
+  || sudo scripts/add-multiuser-user.sh alice  # then re-login
+
+cd /var/lib/agent-console/source-repos
+
+# Either: set the umask for this one shell so new files are 0664 / dirs 0775
+( umask 0002 && git clone <upstream-url> <repo-name> )
+
+# Or: let git apply the equivalent permission policy per-repo
+git clone --config core.sharedRepository=group <upstream-url> <repo-name>
+```
+
+The `umask 0002` / `--config core.sharedRepository=group` step matters
+because default umask `0022` produces files at mode `0644` — the service
+user can read them, but the `git fetch` / ref-update path will not be able
+to refresh `.git/refs/*` after the first push from another group member.
+
+After the clone, register the absolute path through the UI's "Register
+Repository" form (or `POST /api/repositories`). At registration time the
+server runs the same `core.sharedRepository=group` + group-writable `.git`
+configuration automatically (Issue #845 / PR #848) — see [Source Repo
+Group-Writability (Linux multi-user)](#source-repo-group-writability-linux-multi-user)
+for what gets applied and the manual fallback when the server cannot apply
+it itself.
+
+### Customizing the location
+
+Operators who prefer a different absolute path can pass
+`--source-repos-dir <path>` to the bootstrap script (or set
+`AGENT_CONSOLE_SOURCE_REPOS_DIR`). The script applies the same owner /
+group / mode and is idempotent. If a different layout already exists,
+re-run with `--force` to reconcile owner / group / mode drift.
+
+```bash
+sudo scripts/setup-multiuser-for-ubuntu.sh --source-repos-dir /srv/agent-console-repos
+```
 
 ## Migrating Pre-#838 Worktrees (Linux multi-user)
 
