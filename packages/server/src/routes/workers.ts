@@ -37,6 +37,25 @@ const logger = createLogger('api:workers');
 //     per-user PTY (running as the logged-in user, who is also a member of
 //     the shared group) traverse into the buffer to read attachments.
 //
+// Setgid is applied via an explicit chmod(1) AFTER mkdir (#830 follow-up):
+//   - Bun 1.3.10 strips the special bits (setgid 0o2000 / setuid 0o4000 /
+//     sticky 0o1000) in its JS layer BEFORE the syscall, for both
+//     `fs.mkdir({ mode })` and `fs.chmod(dir, mode)`. Verified by strace:
+//     `await mkdir(dir, { mode: 0o2750 })` issues `mkdirat(..., 0750)`
+//     (setgid dropped) and `await chmod(dir, 0o2750)` issues
+//     `fchmodat(..., 0750)` (likewise). The kernel and the underlying
+//     filesystem both honour setgid when called directly (e.g. shell
+//     `mkdir --mode=2750` or `chmod 2750` produce `drwxr-s---`), but the
+//     Bun bindings never pass the bit through.
+//   - GNU chmod (coreutils) does pass the bit through. We therefore shell
+//     out to /bin/chmod via Bun.spawn under the multi-user (mode > 0o777)
+//     branch only. Cost is one spawn per upload on the multi-user
+//     multipart path, which is already disk-bound. The single-user 0o700
+//     path does not need this and stays mkdir-only.
+//   - If a future Bun release fixes its JS-layer mode stripping, the
+//     `workers-upload-dir-real-fs.test.ts` kernel-level probe will flag
+//     the change and the in-process chmod step can replace the shell-out.
+//
 // No in-process readiness cache (Issue #830): the directory is re-verified
 // on every upload so that if /tmp is reaped by systemd-tmpfiles during a
 // long-running server's uptime, the next upload recreates the directory.
@@ -63,6 +82,38 @@ function resolveUploadDirContract(): UploadDirContract {
   return { mode: SINGLE_USER_UPLOAD_DIR_MODE, expectedGid: null };
 }
 
+/**
+ * Apply a mode containing special bits (setgid / setuid / sticky) via the
+ * external chmod(1) program.
+ *
+ * Bun 1.3.10 strips special bits in its JS layer for both `fs.mkdir` and
+ * `fs.chmod` (verified via strace: setgid / setuid / sticky never reach
+ * the syscall). GNU chmod does pass them through. coreutils chmod is
+ * present on every Debian / Ubuntu / RHEL / Alpine host the server is
+ * expected to run on.
+ *
+ * See the file-header comment block and the kernel-level probe in
+ * `workers-upload-dir-real-fs.test.ts` for the empirical assumptions
+ * this workaround locks in.
+ */
+async function applyModeViaSpawnChmod(dir: string, mode: number): Promise<void> {
+  // chmod accepts an octal string (e.g. "2750"); pass full mode including
+  // special bits, masked at 0o7777 to defend against accidental higher-bit
+  // garbage in the caller.
+  const modeStr = (mode & 0o7777).toString(8);
+  const proc = Bun.spawn(['chmod', modeStr, dir], {
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(
+      `chmod ${modeStr} failed (exit=${exitCode}) for ${dir}: ${stderr.trim()}`,
+    );
+  }
+}
+
 async function ensureUploadDir(): Promise<string> {
   const dir = resolveUploadDir();
   const contract = resolveUploadDirContract();
@@ -73,6 +124,13 @@ async function ensureUploadDir(): Promise<string> {
   // not match the expected owner / mode / group.
   try {
     await mkdir(dir, { recursive: true, mode: contract.mode });
+    // Bun 1.3.10 strips setgid / setuid / sticky in its fs.mkdir JS
+    // layer before the syscall; for the multi-user 2750 contract we
+    // re-apply the bit via chmod(1). See the file header comment for
+    // the upstream-gap rationale.
+    if ((contract.mode & ~0o777) !== 0) {
+      await applyModeViaSpawnChmod(dir, contract.mode);
+    }
     const st = await lstat(dir);
     if (st.isSymbolicLink()) {
       throw new Error(`Upload directory is a symlink: ${dir}`);
@@ -314,3 +372,14 @@ const workers = new Hono<AppBindings>()
   });
 
 export { workers };
+
+/**
+ * @internal Exported for the real-fs regression test in
+ * `workers-upload-dir-real-fs.test.ts` (Issue #830 follow-up). Production
+ * callers should never reach for these; they go through the route handler.
+ */
+export const __TESTING__ = {
+  ensureUploadDir,
+  resolveUploadDir,
+  resolveUploadDirContract,
+};
