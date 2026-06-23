@@ -264,7 +264,7 @@ if [ -n "$repo_id" ]; then
 
   # Worktree creation is async; poll for the new path to appear in the list.
   WT_PATH=""
-  for i in $(seq 1 30); do
+  for _ in $(seq 1 30); do
     sleep 1
     curl -s -o "$WT_LIST_RESP" -b "$ALICE_COOKIE_JAR" \
       "${BASE_URL}/api/repositories/${repo_id}/worktrees" >/dev/null

@@ -43,6 +43,13 @@ const WORKTREE_ADD_TIMEOUT_MS = 120000;
 const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
 
 /**
+ * Timeout for each template file materialization step (one `mkdir -p` or
+ * `cat > <dst>` invocation) when the worktree is user-owned (Issue #838
+ * elevated branch). Local fs only, short content -- 10s is generous.
+ */
+const TEMPLATE_MATERIALIZE_TIMEOUT_MS = 10000;
+
+/**
  * Generate a random alphanumeric suffix
  */
 function generateRandomSuffix(length: number): string {
@@ -85,12 +92,46 @@ async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<stri
 }
 
 /**
- * Copy template files to worktree with variable substitution
+ * Sink for template file materialization. Production uses a sink that
+ * routes writes through `runAsUser` when the worktree is user-owned
+ * (Issue #838) so template files land owned by the requesting user
+ * rather than the server process. Tests use the in-process sink that
+ * writes via `fsPromises` directly.
+ */
+interface TemplateFileSink {
+  mkdir(dirPath: string): Promise<void>;
+  writeFile(filePath: string, content: string): Promise<void>;
+}
+
+/**
+ * In-process sink used when the worktree is server-owned (single-user
+ * mode, or multi-user with no `requestUsername`). Equivalent to the
+ * original pre-#838 behaviour.
+ */
+const directFsSink: TemplateFileSink = {
+  async mkdir(dirPath) {
+    await fsPromises.mkdir(dirPath, { recursive: true });
+  },
+  async writeFile(filePath, content) {
+    await fsPromises.writeFile(filePath, content);
+  },
+};
+
+/**
+ * Copy template files to worktree with variable substitution.
+ *
+ * The reader side (substitution) always runs in-process because templates
+ * live under server-controlled paths (`<repo>/.agent-console/` or
+ * `<AGENT_CONSOLE_HOME>/repositories/<org>/<repo>/templates/`). Only the
+ * writer side is potentially elevated, via the injected `sink`, so that
+ * template files in a user-owned worktree end up owned by the requesting
+ * user rather than the server process (Issue #838).
  */
 async function copyTemplateFiles(
   templatesDir: string,
   worktreePath: string,
-  vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string }
+  vars: { worktreeNum: number; branch: string; repo: string; worktreePath: string },
+  sink: TemplateFileSink,
 ): Promise<string[]> {
   const copiedFiles: string[] = [];
 
@@ -105,7 +146,7 @@ async function copyTemplateFiles(
       const destPath = path.join(destDir, entry.name);
 
       if (entry.isDirectory()) {
-        await fsPromises.mkdir(destPath, { recursive: true });
+        await sink.mkdir(destPath);
         await copyRecursive(srcPath, destPath);
       } else {
         // Read, substitute, and write
@@ -114,9 +155,9 @@ async function copyTemplateFiles(
 
         // Ensure parent directory exists
         const destParent = path.dirname(destPath);
-        await fsPromises.mkdir(destParent, { recursive: true });
+        await sink.mkdir(destParent);
 
-        await fsPromises.writeFile(destPath, substituted);
+        await sink.writeFile(destPath, substituted);
         copiedFiles.push(path.relative(worktreePath, destPath));
       }
     }
@@ -355,18 +396,31 @@ export class WorktreeService {
         'Worktree created',
       );
 
-      // Copy template files
+      // Copy template files. When the worktree is user-owned (Issue #838
+      // elevated branch), template files must also be materialized as the
+      // requesting user so the ownership of the entire worktree subtree is
+      // consistent. The sink wraps `runAsUser` for that case; the
+      // non-elevated branch uses direct fs writes (server-owned worktree
+      // matches server-owned templates).
       const templatesDir = await findTemplatesDir(repoPath, orgRepo);
       let copiedFiles: string[] = [];
 
       if (templatesDir) {
         const repoName = orgRepo.includes('/') ? orgRepo.split('/')[1] : orgRepo;
-        copiedFiles = await copyTemplateFiles(templatesDir, worktreePath, {
-          worktreeNum: newIndex,
-          branch,
-          repo: repoName,
+        const sink = willElevate
+          ? this.makeUserOwnedTemplateSink(requestUsername!)
+          : directFsSink;
+        copiedFiles = await copyTemplateFiles(
+          templatesDir,
           worktreePath,
-        });
+          {
+            worktreeNum: newIndex,
+            branch,
+            repo: repoName,
+            worktreePath,
+          },
+          sink,
+        );
         if (copiedFiles.length > 0) {
           logger.info({ copiedFiles }, 'Template files copied');
         }
@@ -479,6 +533,58 @@ export class WorktreeService {
     }
 
     logger.info({ username, repoPath }, 'safe.directory bootstrap completed for user');
+  }
+
+  /**
+   * Build a template-file sink that materializes directories and files as
+   * the requesting user via `runAsUser`. Used by `copyTemplateFiles` so
+   * that template entries in a user-owned worktree (Issue #838 elevated
+   * branch) inherit the same ownership as the worktree itself.
+   *
+   * The reader side (template content + variable substitution) stays
+   * in-process; only the writer side is elevated. Files are materialized
+   * by piping the substituted content through `sh -c 'cat > <dst>'` as
+   * the user. Directories are created via `mkdir -p <dir>` as the user.
+   *
+   * Failure modes: a non-zero exit from the spawn causes the function to
+   * throw, which propagates up through `copyTemplateFiles` and is caught
+   * by `createWorktree`'s outer try/catch (returns `{ error }` and logs).
+   */
+  private makeUserOwnedTemplateSink(username: string): TemplateFileSink {
+    const runAsUser = this._runAsUser;
+    return {
+      async mkdir(dirPath: string): Promise<void> {
+        const escaped = shellEscape(dirPath);
+        const result = await runAsUser({
+          username,
+          command: `mkdir -p ${escaped}`,
+          timeoutMs: TEMPLATE_MATERIALIZE_TIMEOUT_MS,
+        });
+        if (result.timedOut || result.exitCode !== 0) {
+          const detail = result.stderr.trim() || `exit ${result.exitCode}`;
+          throw new Error(`mkdir as ${username} failed for ${dirPath}: ${detail}`);
+        }
+      },
+      async writeFile(filePath: string, content: string): Promise<void> {
+        const escaped = shellEscape(filePath);
+        // `cat > <dst>` is the canonical "write stdin to file" shell
+        // idiom. The user's shell receives the bytes via the stdin
+        // pipe (runAsUser plumbs `opts.stdin` through Bun.spawn) and
+        // creates `<dst>` owned by the user with the user's umask.
+        // Production umask=0002 + setgid parent → mode 0664 group
+        // agent-console-users, matching the rest of the worktree.
+        const result = await runAsUser({
+          username,
+          command: `cat > ${escaped}`,
+          stdin: content,
+          timeoutMs: TEMPLATE_MATERIALIZE_TIMEOUT_MS,
+        });
+        if (result.timedOut || result.exitCode !== 0) {
+          const detail = result.stderr.trim() || `exit ${result.exitCode}`;
+          throw new Error(`writeFile as ${username} failed for ${filePath}: ${detail}`);
+        }
+      },
+    };
   }
 
   /**

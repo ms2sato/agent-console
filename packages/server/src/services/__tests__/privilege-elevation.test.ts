@@ -604,5 +604,55 @@ describe('privilege-elevation', () => {
       expect(opts.cwd).toBe('/');
       expect(opts.env).toBeUndefined();
     });
+
+    it('forwards opts.stdin as Uint8Array to spawn options (string is UTF-8 encoded)', async () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
+
+      await runAsUser(
+        {
+          username: null,
+          command: 'cat > /tmp/out',
+          stdin: 'hello, world',
+        },
+        fakeSpawn,
+      );
+
+      const opts = captured[0].options as { stdin?: Uint8Array };
+      expect(opts.stdin).toBeInstanceOf(Uint8Array);
+      expect(new TextDecoder().decode(opts.stdin)).toBe('hello, world');
+    });
+
+    it('forwards a Uint8Array stdin verbatim (no re-encoding for binary payloads)', async () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
+      const bytes = new Uint8Array([0x00, 0x01, 0x02, 0xff]);
+
+      await runAsUser(
+        {
+          username: null,
+          command: 'cat > /tmp/binary',
+          stdin: bytes,
+        },
+        fakeSpawn,
+      );
+
+      const opts = captured[0].options as { stdin?: Uint8Array };
+      // Same reference (no copy) is acceptable; assert bytes equality.
+      expect(opts.stdin).toEqual(bytes);
+    });
+
+    it('omits the stdin spawn option when opts.stdin is not set', async () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawn(captured, { stdout: '', exitCode: 0 });
+
+      await runAsUser({ username: null, command: 'echo hi' }, fakeSpawn);
+
+      const opts = captured[0].options as { stdin?: unknown };
+      expect(opts.stdin).toBeUndefined();
+    });
   });
 });

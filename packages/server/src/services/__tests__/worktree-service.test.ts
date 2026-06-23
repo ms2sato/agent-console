@@ -392,6 +392,79 @@ detached
         expect(mockRepo.records.length).toBe(1);
       });
 
+      it('materializes template files as the requesting user (Issue #838 ownership-consistency)', async () => {
+        // Templates live under <repo>/.agent-console/ ; create one. Without
+        // the user-owned-sink behaviour, the template would be written by
+        // the server process. With it, the sink shells out to `mkdir -p`
+        // and `cat > <dst>` as the user, so both ownership and the writes
+        // are routed through runAsUser.
+        fs.mkdirSync('/repo/.agent-console', { recursive: true });
+        fs.writeFileSync(
+          '/repo/.agent-console/CLAUDE.md',
+          'branch={{BRANCH}} num={{WORKTREE_NUM}}',
+        );
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.createWorktree(
+          '/repo',
+          'feature-templates',
+          'repo-1',
+          undefined,
+          'alice-multiuser-test',
+        );
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('CLAUDE.md');
+
+        // Expected runAsUser calls (order matters):
+        //   [0] safe.directory bootstrap
+        //   [1] git worktree add
+        //   [2] mkdir -p <worktreePath>  (the file's parent dir)
+        //   [3] cat > <worktreePath>/CLAUDE.md (with substituted content as stdin)
+        expect(runAsUserMock.calls.length).toBe(4);
+
+        const mkdirCall = runAsUserMock.calls[2];
+        expect(mkdirCall.username).toBe('alice-multiuser-test');
+        expect(mkdirCall.command).toMatch(/^mkdir -p '.*wt-\d{3}-[a-z0-9]{4}'$/);
+
+        const writeCall = runAsUserMock.calls[3];
+        expect(writeCall.username).toBe('alice-multiuser-test');
+        expect(writeCall.command).toMatch(
+          /^cat > '.*wt-\d{3}-[a-z0-9]{4}\/CLAUDE\.md'$/,
+        );
+        // Stdin carries the substituted content. WORKTREE_NUM is the
+        // allocated index (1 for a fresh DB).
+        expect(writeCall.stdin).toBe('branch=feature-templates num=1');
+      });
+
+      it('uses direct fs writes for templates when worktree is server-owned (no requestUsername)', async () => {
+        // No requestUsername -> sink falls back to direct fs writes.
+        // This preserves the original pre-#838 single-user behaviour.
+        fs.mkdirSync('/repo/.agent-console', { recursive: true });
+        fs.writeFileSync('/repo/.agent-console/hello.txt', 'hi');
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.createWorktree('/repo', 'feature-no-user', 'repo-1');
+
+        expect(result.error).toBeUndefined();
+        expect(result.copiedFiles).toContain('hello.txt');
+        // Only one runAsUser call: the `git worktree add` invocation with
+        // username=null. The template write went through fsPromises, not
+        // runAsUser.
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect(runAsUserMock.calls[0].username).toBeNull();
+      });
+
       it('does not abort worktree creation when the safe.directory bootstrap returns non-zero', async () => {
         let callCount = 0;
         runAsUserMock.responder.fn = async () => {

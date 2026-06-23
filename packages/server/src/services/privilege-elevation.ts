@@ -82,6 +82,14 @@ export interface RunAsUserOpts {
    * array suppresses the flag entirely. Ignored when elevation is bypassed.
    */
   preserveEnv?: string[];
+  /**
+   * Optional bytes to feed to the child's stdin. Use when the command is a
+   * sink that reads stdin (e.g. `sh -c 'cat > <dst>'` to materialize a file
+   * as the target user, see worktree-service.ts template materialization).
+   * String values are encoded as UTF-8; pass a `Uint8Array` for binary
+   * content. When omitted, stdin is left as the default (inherit / no pipe).
+   */
+  stdin?: string | Uint8Array;
 }
 
 export interface RunAsUserResult {
@@ -251,6 +259,16 @@ export async function runAsUser(
     stdout: 'pipe',
     stderr: 'pipe',
   };
+  if (opts.stdin !== undefined) {
+    // Caller provided stdin bytes -- normalize string to UTF-8 and hand
+    // Bun.spawn the Uint8Array. Bun's `stdin` option accepts Uint8Array,
+    // Blob, ReadableStream, etc.; Uint8Array is the simplest contract.
+    const stdinBytes =
+      typeof opts.stdin === 'string'
+        ? new TextEncoder().encode(opts.stdin)
+        : opts.stdin;
+    spawnOptions.stdin = stdinBytes;
+  }
   if (elevated) {
     spawnOptions.cwd = SUDO_NEUTRAL_CWD;
   } else {

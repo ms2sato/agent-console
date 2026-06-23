@@ -9,7 +9,13 @@ const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Wor
   Promise.resolve([]),
 );
 const mockCreateWorktree = mock<
-  (repoPath: string, branch: string, repoId: string, baseBranch?: string) => Promise<{ worktreePath: string; error?: string }>
+  (
+    repoPath: string,
+    branch: string,
+    repoId: string,
+    baseBranch?: string,
+    requestUsername?: string | null,
+  ) => Promise<{ worktreePath: string; error?: string }>
 >(() => Promise.resolve({ worktreePath: '/repos/my-repo/worktrees/wt-new' }));
 const mockRemoveWorktree = mock<
   (repoPath: string, path: string, force: boolean) => Promise<{ success: boolean; error?: string }>

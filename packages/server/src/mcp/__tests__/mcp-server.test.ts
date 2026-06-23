@@ -286,9 +286,13 @@ describe('MCP Server Tools', () => {
       runAsUserImpl: async (opts) => {
         mcpRunAsUserCapture.lastCommand = opts.command;
         // The command shape is: `'git' 'worktree' 'add' ['-b' '<branch>'] '<path>' [<branch>|<base>]`
-        // with single-quote escaped args. The worktree path is the longest
-        // token in the command — it includes the absolute config dir path.
-        const tokens = Array.from(opts.command.matchAll(/'((?:[^']|'\\'')*)'/g)).map(
+        // with single-quote escaped args. The worktree path is the first
+        // (and only) token containing `/worktrees/wt-`. The test data does
+        // not include single quotes inside arg values, so a simple
+        // `'[^']*'` pattern is sufficient -- shell single-quote escaping
+        // (real form: `'\''` = end-quote, literal-quote, start-quote) is
+        // not exercised here.
+        const tokens = Array.from(opts.command.matchAll(/'([^']*)'/g)).map(
           (m) => m[1],
         );
         const wtPath = tokens.find((t) => t.includes('/worktrees/wt-'));
