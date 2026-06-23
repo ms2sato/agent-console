@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import type { AgentDefinition } from '@agent-console/shared';
 import { expandTemplate, TemplateExpansionError } from '../lib/template.js';
 import { createLogger } from '../lib/logger.js';
+import { runAsUser } from './privilege-elevation.js';
 
 const logger = createLogger('service:description-generator');
 
@@ -18,6 +19,15 @@ const TIMEOUT_MS = 30000;
 interface RepositoryDescriptionRequest {
   repositoryPath: string;
   agent: AgentDefinition;
+  /**
+   * The OS username that requested the generation. In multi-user mode this is
+   * threaded down so the agent's headless command (e.g. `claude -p ...`) runs
+   * with the requesting user's PATH and per-user auth credentials via the
+   * `runAsUser` privilege-elevation helper. In single-user mode `runAsUser`
+   * bypasses elevation regardless of this value; pass the authenticated
+   * username (auth middleware always provides one).
+   */
+  requestUser: string | null;
 }
 
 interface RepositoryDescriptionResponse {
@@ -67,7 +77,7 @@ Rules:
 export async function generateRepositoryDescription(
   request: RepositoryDescriptionRequest,
 ): Promise<RepositoryDescriptionResponse> {
-  const { repositoryPath, agent } = request;
+  const { repositoryPath, agent, requestUser } = request;
 
   // Check if agent supports headless mode
   if (!agent.capabilities.supportsHeadlessMode) {
@@ -101,29 +111,23 @@ export async function generateRepositoryDescription(
       cwd: repositoryPath,
     });
 
-    // Spawn via shell with the expanded command
-    // The prompt is safely passed via environment variable to prevent injection
-    const proc = Bun.spawn(['sh', '-c', command], {
+    // Route through the privilege-elevation helper so multi-user mode runs the
+    // agent's headless command (e.g. `claude -p ...`) as the requesting user --
+    // i.e. with that user's PATH and per-user auth credentials. The prompt is
+    // safely passed via environment variable to prevent injection.
+    // In single-user mode (or when requestUser equals the server user) the
+    // helper bypasses sudo and spawns directly, preserving prior behavior.
+    const { stdout, stderr, exitCode, timedOut } = await runAsUser({
+      username: requestUser,
+      command,
       cwd: repositoryPath,
-      stdout: 'pipe',
-      stderr: 'pipe',
       env: {
-        ...process.env,
         ...templateEnv,
         // Ensure we don't inherit any interactive settings
         TERM: 'dumb',
       },
+      timeoutMs: TIMEOUT_MS,
     });
-
-    // Set up timeout with a flag to distinguish timeout from other failures
-    let timedOut = false;
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      proc.kill();
-    }, TIMEOUT_MS);
-
-    const exitCode = await proc.exited;
-    clearTimeout(timeoutId);
 
     if (exitCode !== 0) {
       if (timedOut) {
@@ -131,14 +135,12 @@ export async function generateRepositoryDescription(
           error: `Description generation timed out after ${TIMEOUT_MS / 1000} seconds`,
         };
       }
-      const stderr = await new Response(proc.stderr).text();
       return {
         error: `Agent command failed: ${stderr.trim() || `exit code ${exitCode}`}`,
       };
     }
 
-    const result = await new Response(proc.stdout).text();
-    const trimmedResult = result.trim();
+    const trimmedResult = stdout.trim();
 
     if (!trimmedResult) {
       return {

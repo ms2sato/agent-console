@@ -158,6 +158,7 @@ const repositories = new Hono<AppBindings>()
   .post('/:id/generate-description', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, agentManager, generateRepositoryDescription } = c.get('appContext');
+    const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -176,9 +177,14 @@ const repositories = new Hono<AppBindings>()
 
     descriptionGenerationsInProgress.add(repoId);
     try {
+      // Thread the authenticated username so multi-user mode runs the agent's
+      // headless command (e.g. `claude -p ...`) as the requesting user via
+      // `runAsUser` (Issue #835). In single-user mode `runAsUser` bypasses
+      // sudo because the username matches the server-process user.
       const result = await generateRepositoryDescription({
         repositoryPath: repo.path,
         agent,
+        requestUser: authUser.username,
       });
 
       if (result.error) {
