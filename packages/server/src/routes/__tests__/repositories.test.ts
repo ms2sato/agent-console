@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import type { GenerateRepositoryDescriptionFn } from '../../services/repository-description-generator.js';
 
-const mockGenerateDescription = mock(() => Promise.resolve({ description: 'test' }));
+const mockGenerateDescription = mock<GenerateRepositoryDescriptionFn>(() =>
+  Promise.resolve({ description: 'test' })
+);
 
 import type { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
@@ -131,6 +134,29 @@ describe('Repositories API', () => {
   // =========================================================================
 
   describe('POST /api/repositories/:id/generate-description', () => {
+    it('should thread the authenticated username as requestUser (Issue #835)', async () => {
+      // In multi-user mode the generator must run the agent's headless command
+      // as the requesting user (via runAsUser). The route is responsible for
+      // forwarding `authUser.username` -> `requestUser`. The default test app
+      // wires SingleUserMode with TEST_AUTH_USER ('testuser'), so we assert
+      // the value lands on the generator call.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      agentManager.getAgent.mockReturnValue({ id: 'claude-code-builtin', command: 'claude' });
+      mockGenerateDescription.mockImplementationOnce(() =>
+        Promise.resolve({ description: 'A test description.' })
+      );
+
+      const res = await app.request('/api/repositories/repo1/generate-description', {
+        method: 'POST',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockGenerateDescription).toHaveBeenCalledTimes(1);
+      const firstArg = mockGenerateDescription.mock.calls[0][0];
+      expect(firstArg.repositoryPath).toBe('/repo');
+      expect(firstArg.requestUser).toBe('testuser');
+    });
+
     it('should return 400 for concurrent description generation', async () => {
       let resolveGeneration!: (value: any) => void;
       mockGenerateDescription.mockImplementationOnce(

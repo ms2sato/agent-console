@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, afterEach } from 'bun:test';
+import * as os from 'node:os';
 import type { AgentDefinition } from '@agent-console/shared';
 
 // Mock Bun.spawn for agent command execution
@@ -56,10 +57,16 @@ const mockAgentWithoutHeadless: AgentDefinition = {
 
 let importCounter = 0;
 
+const originalAuthMode = process.env.AUTH_MODE;
+
 describe('repository-description-generator', () => {
   beforeEach(() => {
     spawnCalls = [];
     mockFileContents = new Map();
+    // Default to single-user mode for the existing test set; the
+    // multi-user tests below set AUTH_MODE explicitly and rely on
+    // afterEach to restore the original value.
+    delete process.env.AUTH_MODE;
 
     // Reset mock spawn result
     mockSpawnResult = {
@@ -100,6 +107,14 @@ describe('repository-description-generator', () => {
       }
       return originalBunFile(...(args as Parameters<typeof Bun.file>));
     }) as typeof Bun.file;
+  });
+
+  afterEach(() => {
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
   });
 
   // Restore originals after all tests
@@ -143,6 +158,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.description).toBe('A web application for managing AI agents.');
@@ -161,6 +177,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgentWithoutHeadless,
+        requestUser: null,
       });
 
       expect(result.description).toBeUndefined();
@@ -174,6 +191,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.description).toBeUndefined();
@@ -190,6 +208,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.description).toBe('A plain text project.');
@@ -206,6 +225,7 @@ describe('repository-description-generator', () => {
       await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       // Verify the prompt uses the README.md content
@@ -225,6 +245,7 @@ describe('repository-description-generator', () => {
       await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       const options = spawnCalls[0].options as { env?: Record<string, string> };
@@ -244,6 +265,7 @@ describe('repository-description-generator', () => {
       await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       const options = spawnCalls[0].options as { env?: Record<string, string> };
@@ -261,6 +283,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.description).toBeUndefined();
@@ -276,6 +299,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.description).toBeUndefined();
@@ -291,6 +315,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.description).toBe('A project description.');
@@ -305,6 +330,7 @@ describe('repository-description-generator', () => {
       await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       // Verify env contains the prompt
@@ -324,6 +350,7 @@ describe('repository-description-generator', () => {
       await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       const options = spawnCalls[0].options as { env?: Record<string, string> };
@@ -340,6 +367,7 @@ describe('repository-description-generator', () => {
       await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       const options = spawnCalls[0].options as { env?: Record<string, string> };
@@ -365,6 +393,7 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: agentMissingTemplate,
+        requestUser: null,
       });
 
       expect(result.description).toBeUndefined();
@@ -414,6 +443,7 @@ describe('repository-description-generator', () => {
         const result = await generateRepositoryDescription({
           repositoryPath: '/repo',
           agent: mockAgent,
+          requestUser: null,
         });
 
         expect(killCalled).toBe(true);
@@ -434,9 +464,116 @@ describe('repository-description-generator', () => {
       const result = await generateRepositoryDescription({
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.description).toBe('An rst project.');
+    });
+
+    // -- Privilege-elevation branch (Issue #835) --
+    //
+    // The runAsUser helper inspects AUTH_MODE + requestUser to decide whether
+    // to elevate via sudo. These assertions exercise the resulting spawn argv
+    // shape so a regression in routing back to the elevated branch fails the
+    // test rather than only manifesting at runtime in multi-user deployments.
+
+    it('AUTH_MODE=none: bypasses elevation even when requestUser is set', async () => {
+      process.env.AUTH_MODE = 'none';
+      mockFileContents.set('/repo/README.md', '# Project');
+      setMockSpawnResult('A project.');
+
+      const { generateRepositoryDescription } = await getModule();
+
+      const result = await generateRepositoryDescription({
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: 'alice',
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args[0]).toBe('sh');
+      expect(spawnCalls[0].args[1]).toBe('-c');
+      expect(spawnCalls[0].args[2]).toContain('test-cli -p --format text');
+    });
+
+    it('AUTH_MODE=multi-user with non-server requestUser: elevates via sudo as that user', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const targetUser = `${os.userInfo().username}-someone-else`;
+      mockFileContents.set('/repo/README.md', '# Project');
+      setMockSpawnResult('A project.');
+
+      const { generateRepositoryDescription } = await getModule();
+
+      const result = await generateRepositoryDescription({
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: targetUser,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(spawnCalls.length).toBe(1);
+      // Elevated argv: ['sudo', '-u', <user>, '--preserve-env=FORCE_COLOR', '-i', 'sh', '-c', <inner>]
+      const args = spawnCalls[0].args;
+      expect(args[0]).toBe('sudo');
+      expect(args[1]).toBe('-u');
+      expect(args[2]).toBe(targetUser);
+      expect(args[3]).toBe('--preserve-env=FORCE_COLOR');
+      expect(args[4]).toBe('-i');
+      expect(args[5]).toBe('sh');
+      expect(args[6]).toBe('-c');
+      // `sudo -i` resets env + chdirs to target HOME, so cwd / env MUST be
+      // interpolated into the inner command. The inner shell should contain
+      // the cd to the repo path, the agent command, and the env exports
+      // (`export K1=v1 K2=v2; <command>`) carrying both __AGENT_PROMPT__ and
+      // TERM=dumb.
+      const inner = args[7];
+      expect(inner).toContain("cd '/repo'");
+      expect(inner).toMatch(/export\b[^;]*\bTERM='dumb'/);
+      expect(inner).toContain("__AGENT_PROMPT__=");
+      expect(inner).toContain('test-cli -p --format text');
+    });
+
+    it('AUTH_MODE=multi-user with requestUser == server user: bypasses elevation', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      mockFileContents.set('/repo/README.md', '# Project');
+      setMockSpawnResult('A project.');
+
+      const { generateRepositoryDescription } = await getModule();
+
+      const result = await generateRepositoryDescription({
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: os.userInfo().username,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(spawnCalls.length).toBe(1);
+      // Direct spawn, no sudo prefix.
+      expect(spawnCalls[0].args[0]).toBe('sh');
+      expect(spawnCalls[0].args[1]).toBe('-c');
+      expect(spawnCalls[0].args[2]).toContain('test-cli -p --format text');
+    });
+
+    it('AUTH_MODE=multi-user with non-server requestUser: surfaces stderr when sudo exits non-zero', async () => {
+      // Real-world failure shape: `claude` not on the elevated user's PATH.
+      // The helper returns a non-zero exitCode and captured stderr; the
+      // description generator surfaces it via the error path.
+      process.env.AUTH_MODE = 'multi-user';
+      mockFileContents.set('/repo/README.md', '# Project');
+      setMockSpawnResult('', 127, 'sh: 1: claude: not found');
+
+      const { generateRepositoryDescription } = await getModule();
+
+      const result = await generateRepositoryDescription({
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: `${os.userInfo().username}-someone-else`,
+      });
+
+      expect(result.description).toBeUndefined();
+      expect(result.error).toContain('Agent command failed');
+      expect(result.error).toContain('claude: not found');
     });
   });
 });
