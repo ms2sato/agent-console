@@ -158,4 +158,12 @@ WORKDIR /app/dist
 # lose shadow access, and every login would 401 (CI reproduction: PR #831).
 USER agentconsole
 EXPOSE 8080
-CMD ["bun", "index.js"]
+# Set umask=0002 to match the production systemd unit
+# (scripts/agent-console-multiuser.service.template's `UMask=0002`). Without
+# this, server-created dirs inside the shared data root (e.g., the
+# `worktrees/` parent dir created by WorktreeService.createWorktree) land
+# at mode 0755 -- the group lacks write permission, and a non-server user
+# running `git worktree add` via runAsUser cannot create the worktree
+# leading directories. Production systemd already handles this; the
+# verification image must mirror it. (Issue #838 E2E regression.)
+CMD ["sh", "-c", "umask 0002 && exec bun index.js"]
