@@ -112,9 +112,11 @@ describe('createWorktreeWithSession', () => {
 
     // Verify fetch was called with remote branch
     expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', '/repos/my-repo');
-    // Verify createWorktree used origin/ prefix
+    // Verify createWorktree used origin/ prefix. `requestUsername` is
+    // forwarded from `CreateWorktreeParams` -- undefined here because
+    // DEFAULT_PARAMS does not set it (single-user defaults).
     expect(mockCreateWorktree).toHaveBeenCalledWith(
-      '/repos/my-repo', 'feature-new', 'repo-1', 'origin/main',
+      '/repos/my-repo', 'feature-new', 'repo-1', 'origin/main', undefined,
     );
     expect(sm.createSession).toHaveBeenCalledTimes(1);
   });
@@ -131,7 +133,7 @@ describe('createWorktreeWithSession', () => {
     expect(mockGit.fetchRemote).not.toHaveBeenCalled();
     // baseBranch is passed as-is (no origin/ prefix)
     expect(mockCreateWorktree).toHaveBeenCalledWith(
-      '/repos/my-repo', 'feature-new', 'repo-1', 'main',
+      '/repos/my-repo', 'feature-new', 'repo-1', 'main', undefined,
     );
   });
 
@@ -155,7 +157,7 @@ describe('createWorktreeWithSession', () => {
     expect(result.fetchError).toBe('Failed to fetch remote branch, created from local branch instead');
     // baseBranch should remain local (no origin/ prefix)
     expect(mockCreateWorktree).toHaveBeenCalledWith(
-      '/repos/my-repo', 'feature-new', 'repo-1', 'main',
+      '/repos/my-repo', 'feature-new', 'repo-1', 'main', undefined,
     );
   });
 
@@ -236,6 +238,21 @@ describe('createWorktreeWithSession', () => {
     expect(sessionRequest.templateVars).toEqual({ model: 'opus' });
     // createdBy is passed via the context parameter
     expect(passedContext).toEqual(context);
+  });
+
+  it('threads requestUsername to WorktreeService.createWorktree (Issue #838)', async () => {
+    const sm = createMockSessionManager();
+    await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, requestUsername: 'alice' },
+      sm,
+      mockWorktreeService,
+    );
+
+    // The username arrives at WorktreeService as the 5th positional arg so
+    // multi-user installs create the worktree as the requesting user.
+    expect(mockCreateWorktree).toHaveBeenCalledWith(
+      '/repos/my-repo', 'feature-new', 'repo-1', 'origin/main', 'alice',
+    );
   });
 
   it('returns original error even when rollback fails', async () => {

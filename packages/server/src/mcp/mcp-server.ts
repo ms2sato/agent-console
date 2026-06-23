@@ -643,6 +643,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
           ? sessionManager.getSession(parentSessionId)?.createdBy
           : undefined;
 
+        // NOTE: Issue #838 routes `git worktree add` through `runAsUser` so
+        // worktree files become user-owned. The MCP delegation path does
+        // not currently resolve `parentCreatedBy` (a user UUID) back to an
+        // OS username — that requires plumbing `userRepository` through
+        // `McpDependencies`. In multi-user mode, MCP-delegated worktrees
+        // are therefore created with `runAsUser({ username: undefined })`
+        // -> server user ownership. The subsequent agent worker still
+        // spawns as the parent session's user via `resolveSpawnUsername`
+        // in SessionManager, so the user will hit `dubious ownership` on
+        // git commands inside MCP-delegated worktrees. Tracked as a
+        // follow-up; the REST `/api/repositories/:id/worktrees` path is
+        // the primary user-visible entry point and is covered by this PR.
         const result = await createWorktreeWithSession({
           repoPath: repo.path,
           repoId: repositoryId,

@@ -158,6 +158,28 @@ export function buildInnerCommand(
 }
 
 /**
+ * Decide whether `runAsUser` would actually elevate for the given username
+ * under the current `AUTH_MODE`. Callers use this to gate companion logic
+ * that only makes sense when running as a different OS user (e.g., the
+ * source-repo `safe.directory` bootstrap in `worktree-service.ts`).
+ *
+ * Reads `process.env.AUTH_MODE` and `os.userInfo().username` at call time so
+ * the result reflects the same runtime conditions `runAsUser` itself sees.
+ */
+export function shouldElevateForUser(
+  username: string | null | undefined,
+): boolean {
+  const authMode = process.env.AUTH_MODE;
+  const serverUsername = os.userInfo().username;
+  return (
+    authMode === 'multi-user' &&
+    typeof username === 'string' &&
+    username.length > 0 &&
+    username !== serverUsername
+  );
+}
+
+/**
  * Build the argv that will actually be spawned. Pure function so tests can
  * assert the shape without spawning a real process.
  * @internal Exported for testing.

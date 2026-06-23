@@ -593,3 +593,35 @@ whoami     # Should show the logged-in user
 id         # Should show the user's UID and groups
 ls -la ~   # Should be accessible
 ```
+
+## Migrating Pre-#838 Worktrees (Linux multi-user)
+
+Issue #838 changes worktree creation so the resulting files are owned by the
+requesting user (not the service user). New worktrees created after the
+upgrade are owned correctly automatically; **existing worktrees created
+before the upgrade remain owned by the service user** and will continue to
+trigger `fatal: detected dubious ownership in repository` when the user runs
+any git command inside them.
+
+The fix is a one-time `chown` per pre-existing worktree. For each affected
+worktree path:
+
+```bash
+sudo chown -R <user>:agent-console-users \
+  /var/lib/agent-console/repositories/<org>/<repo>/worktrees/wt-NNN-XXXX
+```
+
+`<user>` is the OS username of the person who originally created the
+worktree. If the session is still listed in the Agent Console UI, the
+worktree row's owner can be inferred from the session's creator; otherwise
+ask the user who has been working in that worktree.
+
+After the chown, the user can run `git status` inside the worktree from
+their PTY without further configuration. No restart of the server is
+required.
+
+This documentation-based migration is intentional: production multi-user
+installs at the time of #838 had a small number of pre-existing worktrees
+(per the bootstrap-script-era setup window), so a per-path operator step
+costs less than a database-aware migration script. A scripted variant can
+be added later if installs in the wild accumulate many pre-#838 worktrees.

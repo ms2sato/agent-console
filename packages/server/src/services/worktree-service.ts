@@ -6,7 +6,6 @@ import {
   getRemoteUrl,
   parseOrgRepo,
   listWorktrees as gitListWorktrees,
-  createWorktree as gitCreateWorktree,
   removeWorktree as gitRemoveWorktree,
   listLocalBranches,
   listRemoteBranches,
@@ -17,12 +16,31 @@ import {
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
+import {
+  runAsUser,
+  shellEscape,
+  shouldElevateForUser,
+  type RunAsUserResult,
+} from './privilege-elevation.js';
 import type { Kysely } from 'kysely';
 import type { Database } from '../database/schema.js';
 import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktree-repository.js';
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
 
 const logger = createLogger('worktree-service');
+
+/**
+ * Timeout for `git worktree add` invocations that route through `runAsUser`.
+ * Mirrors `HEAVY_GIT_TIMEOUT_MS` from `lib/git.ts` so the multi-user path has
+ * the same wall-clock budget as the direct-spawn single-user path.
+ */
+const WORKTREE_ADD_TIMEOUT_MS = 120000;
+
+/**
+ * Timeout for the per-user `safe.directory` bootstrap. Short — the command is
+ * a pure local gitconfig write with no network or fs traversal.
+ */
+const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
 
 /**
  * Generate a random alphanumeric suffix
@@ -133,19 +151,30 @@ async function getOrgRepoFromRemote(repoPath: string): Promise<string | null> {
 }
 
 /**
+ * Type of the privilege-elevation helper, exposed for dependency injection
+ * in tests. Production code uses the real `runAsUser` import.
+ */
+type RunAsUserFn = typeof runAsUser;
+
+/**
  * Discriminated union for WorktreeService dependencies.
  * Either provide a `db` (and the service creates its own repository),
  * or provide a `worktreeRepository` directly (e.g. in tests).
+ *
+ * `runAsUserImpl` is an optional injection point used only by tests; in
+ * production it defaults to the real `runAsUser`.
  */
 export type WorktreeServiceDeps =
-  | { db: Kysely<Database>; worktreeRepository?: never }
-  | { db?: never; worktreeRepository: WorktreeRepository };
+  | { db: Kysely<Database>; worktreeRepository?: never; runAsUserImpl?: RunAsUserFn }
+  | { db?: never; worktreeRepository: WorktreeRepository; runAsUserImpl?: RunAsUserFn };
 
 export class WorktreeService {
   private readonly _worktreeRepository: WorktreeRepository;
+  private readonly _runAsUser: RunAsUserFn;
 
   constructor(deps: WorktreeServiceDeps) {
     this._worktreeRepository = deps.worktreeRepository ?? new SqliteWorktreeRepository(deps.db);
+    this._runAsUser = deps.runAsUserImpl ?? runAsUser;
   }
 
   private get worktreeRepository(): WorktreeRepository {
@@ -247,13 +276,30 @@ export class WorktreeService {
   }
 
   /**
-   * Create a new worktree
+   * Create a new worktree.
+   *
+   * When `requestUsername` is provided and the server is in `AUTH_MODE=multi-user`,
+   * `git worktree add` is invoked via `runAsUser` so the resulting worktree
+   * files are owned by the requesting user. This eliminates the
+   * `dubious ownership` error users hit when running git commands inside the
+   * worktree's PTY (Issue #838 / umbrella #837).
+   *
+   * In `AUTH_MODE=none` or when `requestUsername` is null/undefined, the call
+   * still routes through `runAsUser` (which bypasses elevation in that case),
+   * preserving the original single-user behaviour.
+   *
+   * When elevating, the server also runs `git config --global --add
+   * safe.directory <repoPath>` as the requesting user once, so git's owner
+   * check passes against the source repo (which remains owned by the server
+   * user). The bootstrap is idempotent thanks to `git config --get-all`
+   * checking for an existing entry first.
    */
   async createWorktree(
     repoPath: string,
     branch: string,
     repositoryId: string,
-    baseBranch?: string
+    baseBranch?: string,
+    requestUsername?: string | null,
   ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
     // Generate worktree path: repositories/{org}/{repo}/worktrees/wt-{index}-{suffix}
     // Directory name is independent of branch name to avoid path issues with branch names containing slashes
@@ -273,7 +319,27 @@ export class WorktreeService {
     const worktreePath = path.join(repoWorktreeDir, dirName);
 
     try {
-      await gitCreateWorktree(worktreePath, branch, repoPath, { baseBranch });
+      // Determine whether elevation will actually engage. `runAsUser` itself
+      // checks the same conditions; we replicate the check locally so we can
+      // also gate the safe.directory bootstrap (only meaningful when running
+      // as a non-server user).
+      const willElevate = shouldElevateForUser(requestUsername);
+
+      if (willElevate) {
+        // Bootstrap the user's gitconfig so `git worktree add` (running as
+        // the user) accepts the server-owned source repo. Idempotent —
+        // `git config --get-all safe.directory` is checked first so we only
+        // add the entry if it is not already present.
+        await this.bootstrapSafeDirectoryForUser(requestUsername!, repoPath);
+      }
+
+      await this.invokeGitWorktreeAdd({
+        worktreePath,
+        branch,
+        repoPath,
+        baseBranch,
+        requestUsername: willElevate ? requestUsername! : null,
+      });
 
       // Save record to DB
       await this.worktreeRepository.save({
@@ -284,7 +350,10 @@ export class WorktreeService {
         createdAt: new Date().toISOString(),
       });
 
-      logger.info({ worktreePath, index: newIndex }, 'Worktree created');
+      logger.info(
+        { worktreePath, index: newIndex, elevated: willElevate },
+        'Worktree created',
+      );
 
       // Copy template files
       const templatesDir = await findTemplatesDir(repoPath, orgRepo);
@@ -309,6 +378,107 @@ export class WorktreeService {
       logger.error({ err: error, message }, 'Failed to create worktree');
       return { worktreePath: '', error: message };
     }
+  }
+
+  /**
+   * Invoke `git worktree add` via `runAsUser`. When `requestUsername` is null
+   * or in `AUTH_MODE=none`, `runAsUser` bypasses elevation and runs the
+   * command as the server user (the same effective behaviour as the prior
+   * `Bun.spawn(['git', ...])` call in `lib/git.ts`). When elevation engages,
+   * the worktree files end up owned by the requesting user, eliminating the
+   * `dubious ownership` issue (#838).
+   *
+   * Throws a `GitError`-compatible error on non-zero exit so callers can
+   * keep their existing `instanceof GitError` branching (via
+   * `extractErrorMessage`).
+   */
+  private async invokeGitWorktreeAdd(opts: {
+    worktreePath: string;
+    branch: string;
+    repoPath: string;
+    baseBranch?: string;
+    requestUsername: string | null;
+  }): Promise<void> {
+    // Build the git invocation as a shell command. Every interpolated value
+    // is shell-escaped — branch names and worktree paths originate from
+    // server-controlled / DB-driven sources but routing them through
+    // `shellEscape` keeps the contract uniform (no value reaches sh -c
+    // unquoted).
+    const args = ['git', 'worktree', 'add'];
+    if (opts.baseBranch !== undefined) {
+      args.push('-b', opts.branch, opts.worktreePath, opts.baseBranch);
+    } else {
+      args.push(opts.worktreePath, opts.branch);
+    }
+    const command = args.map(shellEscape).join(' ');
+
+    const result = await this._runAsUser({
+      username: opts.requestUsername,
+      command,
+      cwd: opts.repoPath,
+      timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
+    });
+
+    if (result.timedOut || result.exitCode !== 0) {
+      const stderr = result.stderr.trim();
+      const detail = stderr || `exit code ${result.exitCode}`;
+      throw new GitError(`git worktree failed: ${detail}`, result.exitCode, stderr);
+    }
+  }
+
+  /**
+   * Append `<repoPath>` to the requesting user's `safe.directory` list when
+   * not already present. Required because the source repo is owned by the
+   * server user (`agentconsole`), so `git worktree add` running as the
+   * requesting user would otherwise hit `fatal: detected dubious ownership`.
+   * Mitigation A from Issue #838.
+   *
+   * Idempotent — checks `git config --get-all safe.directory` first and only
+   * adds the entry when this exact `repoPath` is missing. Failure is logged
+   * but not thrown, so a misconfigured gitconfig does not block worktree
+   * creation; the subsequent `git worktree add` will surface a clearer
+   * `dubious ownership` error if the bootstrap was actually needed.
+   */
+  private async bootstrapSafeDirectoryForUser(
+    username: string,
+    repoPath: string,
+  ): Promise<void> {
+    const escapedPath = shellEscape(repoPath);
+    // `--get-all` returns one line per entry, exit 0 even if none match the
+    // value. We post-filter rather than relying on `--get` (which would only
+    // return the first match and could mis-report when the user has multiple
+    // entries).
+    const command = `if ! git config --global --get-all safe.directory 2>/dev/null | grep -Fxq ${escapedPath}; then git config --global --add safe.directory ${escapedPath}; fi`;
+    let result: RunAsUserResult;
+    try {
+      result = await this._runAsUser({
+        username,
+        command,
+        timeoutMs: SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS,
+      });
+    } catch (error) {
+      logger.warn(
+        { err: error, username, repoPath },
+        'safe.directory bootstrap spawn failed; continuing with worktree creation',
+      );
+      return;
+    }
+
+    if (result.timedOut || result.exitCode !== 0) {
+      logger.warn(
+        {
+          username,
+          repoPath,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          stderr: result.stderr.trim(),
+        },
+        'safe.directory bootstrap returned non-zero; continuing with worktree creation',
+      );
+      return;
+    }
+
+    logger.info({ username, repoPath }, 'safe.directory bootstrap completed for user');
   }
 
   /**

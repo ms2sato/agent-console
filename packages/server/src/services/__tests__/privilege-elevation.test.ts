@@ -5,6 +5,7 @@ import {
   buildSpawnArgs,
   buildInnerCommand,
   shellEscape,
+  shouldElevateForUser,
   type SpawnFn,
 } from '../privilege-elevation.js';
 
@@ -136,6 +137,32 @@ describe('privilege-elevation', () => {
     it('escapes embedded single quotes', () => {
       // foo'bar -> 'foo'\''bar'
       expect(shellEscape("foo'bar")).toBe("'foo'\\''bar'");
+    });
+  });
+
+  describe('shouldElevateForUser', () => {
+    it('returns false when AUTH_MODE is unset (single-user)', () => {
+      // AUTH_MODE deleted by beforeEach
+      expect(shouldElevateForUser('alice')).toBe(false);
+      expect(shouldElevateForUser(serverUsername)).toBe(false);
+    });
+
+    it('returns false when AUTH_MODE is set but username is null/undefined/empty', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      expect(shouldElevateForUser(null)).toBe(false);
+      expect(shouldElevateForUser(undefined)).toBe(false);
+      expect(shouldElevateForUser('')).toBe(false);
+    });
+
+    it('returns false in multi-user mode when username equals the server user', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      expect(shouldElevateForUser(serverUsername)).toBe(false);
+    });
+
+    it('returns true in multi-user mode for a different OS username', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const otherUser = `${serverUsername}-not-the-server-user`;
+      expect(shouldElevateForUser(otherUser)).toBe(true);
     });
   });
 
