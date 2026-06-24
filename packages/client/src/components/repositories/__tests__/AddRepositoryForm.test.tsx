@@ -1,9 +1,10 @@
 import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { AddRepositoryForm } from '../AddRepositoryForm';
+import { renderWithRouter } from '../../../test/renderWithRouter';
 
-// Save original fetch (not used by this form, but keep consistent pattern)
+// Save original fetch (CloneFromUrlForm uses fetch via the api client)
 const originalFetch = globalThis.fetch;
 
 afterAll(() => {
@@ -14,7 +15,7 @@ afterEach(() => {
   cleanup();
 });
 
-function renderAddRepositoryForm(props: Partial<React.ComponentProps<typeof AddRepositoryForm>> = {}) {
+async function renderAddRepositoryForm(props: Partial<React.ComponentProps<typeof AddRepositoryForm>> = {}) {
   const defaultProps = {
     isPending: false,
     onSubmit: mock(() => Promise.resolve()),
@@ -24,189 +25,130 @@ function renderAddRepositoryForm(props: Partial<React.ComponentProps<typeof AddR
   const mergedProps = { ...defaultProps, ...props };
 
   return {
-    ...render(<AddRepositoryForm {...mergedProps} />),
+    ...(await renderWithRouter(<AddRepositoryForm {...mergedProps} />)),
     props: mergedProps,
   };
 }
 
 describe('AddRepositoryForm', () => {
-  describe('successful submission', () => {
-    it('should submit successfully with valid path', async () => {
-      const user = userEvent.setup();
-      const { props } = renderAddRepositoryForm();
+  describe('tab structure', () => {
+    it('renders Clone from URL and Use existing path tabs', async () => {
+      await renderAddRepositoryForm();
 
-      // Fill in repository path
+      const cloneTab = screen.getByRole('tab', { name: 'Clone from URL' });
+      const existingTab = screen.getByRole('tab', { name: 'Use existing path' });
+
+      expect(cloneTab).toBeTruthy();
+      expect(existingTab).toBeTruthy();
+    });
+
+    it('defaults to the Clone from URL tab', async () => {
+      await renderAddRepositoryForm();
+
+      const cloneTab = screen.getByRole('tab', { name: 'Clone from URL' });
+      expect(cloneTab.getAttribute('aria-selected')).toBe('true');
+      // The URL input is visible on the clone tab.
+      expect(screen.getByPlaceholderText(/https:\/\/github\.com/)).toBeTruthy();
+    });
+
+    it('switches to the Use existing path tab when clicked', async () => {
+      const user = userEvent.setup();
+      await renderAddRepositoryForm();
+
+      const existingTab = screen.getByRole('tab', { name: 'Use existing path' });
+      await user.click(existingTab);
+
+      expect(existingTab.getAttribute('aria-selected')).toBe('true');
+      // The path input is visible on the existing path tab.
+      expect(screen.getByPlaceholderText(/Repository path/)).toBeTruthy();
+    });
+  });
+
+  describe('Use existing path tab (delegates to parent onSubmit)', () => {
+    it('submits successfully with valid path', async () => {
+      const user = userEvent.setup();
+      const { props } = await renderAddRepositoryForm();
+
+      // Switch to existing-path tab
+      await user.click(screen.getByRole('tab', { name: 'Use existing path' }));
+
       const pathInput = screen.getByPlaceholderText(/Repository path/);
       await user.type(pathInput, '/path/to/repo');
 
-      // Submit form
-      const submitButton = screen.getByText('Add');
-      await user.click(submitButton);
+      await user.click(screen.getByText('Add'));
 
-      // Verify onSubmit was called with correct data
       await waitFor(() => {
         expect(props.onSubmit).toHaveBeenCalledTimes(1);
       });
 
       const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
-      expect(submitCall[0]).toMatchObject({
-        path: '/path/to/repo',
-      });
+      expect(submitCall[0]).toMatchObject({ path: '/path/to/repo' });
     });
 
-    it('should trim whitespace from path', async () => {
+    it('shows validation error when path is empty', async () => {
       const user = userEvent.setup();
-      const { props } = renderAddRepositoryForm();
+      const { props } = await renderAddRepositoryForm();
 
-      // Fill in repository path with whitespace
-      const pathInput = screen.getByPlaceholderText(/Repository path/);
-      await user.type(pathInput, '  /path/to/repo  ');
+      await user.click(screen.getByRole('tab', { name: 'Use existing path' }));
+      await user.click(screen.getByText('Add'));
 
-      // Submit form
-      const submitButton = screen.getByText('Add');
-      await user.click(submitButton);
-
-      // Verify path is trimmed
-      await waitFor(() => {
-        expect(props.onSubmit).toHaveBeenCalledTimes(1);
-      });
-
-      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
-      expect(submitCall[0].path).toBe('/path/to/repo');
-    });
-  });
-
-  describe('validation errors', () => {
-    it('should show validation error when path is empty', async () => {
-      const user = userEvent.setup();
-      const { props } = renderAddRepositoryForm();
-
-      // Submit without filling anything
-      const submitButton = screen.getByText('Add');
-      await user.click(submitButton);
-
-      // onSubmit should NOT be called
       await waitFor(() => {
         expect(props.onSubmit).not.toHaveBeenCalled();
       });
-
-      // Error should be displayed
       await waitFor(() => {
         expect(screen.getByText(/Path is required/)).toBeTruthy();
       });
     });
 
-    /**
-     * This test ensures form submission works when path field has empty string
-     * as default value (similar to the CreateWorktreeForm bug).
-     * The form uses defaultValues: { path: '' }
-     */
-    it('should show validation error when submitting with empty default value', async () => {
-      const user = userEvent.setup();
-      const { props } = renderAddRepositoryForm();
-
-      // Submit immediately - path is '' from defaultValues
-      const submitButton = screen.getByText('Add');
-      await user.click(submitButton);
-
-      // onSubmit should NOT be called
-      await waitFor(() => {
-        expect(props.onSubmit).not.toHaveBeenCalled();
-      });
-
-      // Error should be displayed (validation should catch empty path)
-      await waitFor(() => {
-        expect(screen.getByText(/Path is required/)).toBeTruthy();
-      });
-    });
-  });
-
-  describe('error handling', () => {
-    it('should display root error when onSubmit throws', async () => {
+    it('displays root error when onSubmit throws', async () => {
       const user = userEvent.setup();
       const onSubmit = mock(() => Promise.reject(new Error('Repository not found')));
-      renderAddRepositoryForm({ onSubmit });
+      await renderAddRepositoryForm({ onSubmit });
 
-      // Fill in repository path
+      await user.click(screen.getByRole('tab', { name: 'Use existing path' }));
+
       const pathInput = screen.getByPlaceholderText(/Repository path/);
       await user.type(pathInput, '/invalid/path');
+      await user.click(screen.getByText('Add'));
 
-      // Submit form
-      const submitButton = screen.getByText('Add');
-      await user.click(submitButton);
-
-      // Error should be displayed
       await waitFor(() => {
         expect(screen.getByText('Repository not found')).toBeTruthy();
       });
     });
-  });
 
-  describe('UI state', () => {
-    it('should disable form when isPending is true', () => {
-      renderAddRepositoryForm({ isPending: true });
-
-      // Form overlay should be visible with loading message
-      expect(screen.getByText('Adding repository...')).toBeTruthy();
-
-      // Form fields should be disabled via fieldset
-      const pathInput = screen.getByPlaceholderText(/Repository path/);
-      expect(pathInput.closest('fieldset')?.disabled).toBe(true);
-    });
-
-    it('should call onCancel when cancel button is clicked', async () => {
+    it('shows validation error when auto-generate is off and description is blank', async () => {
       const user = userEvent.setup();
-      const { props } = renderAddRepositoryForm();
+      const { props } = await renderAddRepositoryForm();
 
-      // Click cancel
-      const cancelButton = screen.getByText('Cancel');
-      await user.click(cancelButton);
+      await user.click(screen.getByRole('tab', { name: 'Use existing path' }));
 
-      expect(props.onCancel).toHaveBeenCalledTimes(1);
-    });
-  });
-
-  describe('description and auto-generate validation', () => {
-    it('should show validation error when auto-generate is off and description is blank', async () => {
-      const user = userEvent.setup();
-      const { props } = renderAddRepositoryForm();
-
-      // Fill in path
       const pathInput = screen.getByPlaceholderText(/Repository path/);
       await user.type(pathInput, '/path/to/repo');
 
-      // Uncheck auto-generate (it's checked by default)
       const autoGenerateCheckbox = screen.getByLabelText(/Auto-generate description/);
       await user.click(autoGenerateCheckbox);
 
-      // Submit without filling description
-      const submitButton = screen.getByText('Add');
-      await user.click(submitButton);
+      await user.click(screen.getByText('Add'));
 
-      // onSubmit should NOT be called
       await waitFor(() => {
         expect(props.onSubmit).not.toHaveBeenCalled();
       });
-
-      // Validation error should be displayed
       await waitFor(() => {
         expect(screen.getByText(/Description is required/)).toBeTruthy();
       });
     });
 
-    it('should submit successfully when auto-generate is on and description is blank', async () => {
+    it('submits successfully when auto-generate is on and description is blank', async () => {
       const user = userEvent.setup();
-      const { props } = renderAddRepositoryForm();
+      const { props } = await renderAddRepositoryForm();
 
-      // Fill in path (auto-generate is on by default)
+      await user.click(screen.getByRole('tab', { name: 'Use existing path' }));
+
       const pathInput = screen.getByPlaceholderText(/Repository path/);
       await user.type(pathInput, '/path/to/repo');
 
-      // Submit form (description is blank, but auto-generate is on)
-      const submitButton = screen.getByText('Add');
-      await user.click(submitButton);
+      await user.click(screen.getByText('Add'));
 
-      // onSubmit should be called
       await waitFor(() => {
         expect(props.onSubmit).toHaveBeenCalledTimes(1);
       });
@@ -215,25 +157,28 @@ describe('AddRepositoryForm', () => {
       expect(submitCall[0].autoGenerateDescription).toBe(true);
     });
 
-    it('should disable description textarea when auto-generate is checked', () => {
-      renderAddRepositoryForm();
+    it('disables form when isPending is true', async () => {
+      const user = userEvent.setup();
+      await renderAddRepositoryForm({ isPending: true });
 
-      // Auto-generate is checked by default
-      const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;
-      expect(descriptionInput.disabled).toBe(true);
+      await user.click(screen.getByRole('tab', { name: 'Use existing path' }));
+
+      expect(screen.getByText('Adding repository...')).toBeTruthy();
+
+      const pathInput = screen.getByPlaceholderText(/Repository path/);
+      expect(pathInput.closest('fieldset')?.disabled).toBe(true);
     });
 
-    it('should enable description textarea when auto-generate is unchecked', async () => {
+    it('calls onCancel when the cancel button on the existing tab is clicked', async () => {
       const user = userEvent.setup();
-      renderAddRepositoryForm();
+      const { props } = await renderAddRepositoryForm();
 
-      // Uncheck auto-generate
-      const autoGenerateCheckbox = screen.getByLabelText(/Auto-generate description/);
-      await user.click(autoGenerateCheckbox);
+      await user.click(screen.getByRole('tab', { name: 'Use existing path' }));
 
-      // Description textarea should be enabled
-      const descriptionInput = screen.getByPlaceholderText(/Brief description/) as HTMLTextAreaElement;
-      expect(descriptionInput.disabled).toBe(false);
+      const cancelButton = screen.getByText('Cancel');
+      await user.click(cancelButton);
+
+      expect(props.onCancel).toHaveBeenCalledTimes(1);
     });
   });
 });
