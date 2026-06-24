@@ -14,7 +14,10 @@
 #      scripts/sudoers-agent-console.template. Print the rendered file,
 #      validate with `visudo -cf`, then `install -m 0440 -o root -g root`.
 #   5. Create the data root (default /var/lib/agent-console) with
-#      <service-user>:<shared-group> mode 2775.
+#      <service-user>:<shared-group> mode 2775. Also create the shared
+#      source-repos directory at <data-root>/source-repos (default) with
+#      the same owner / group / mode so operators can clone shared source
+#      repos into a known, group-writable location (Issue #833).
 #   6. Clone (or rsync) the application into the service user's home;
 #      `bun install --production`.
 #   7. Render the systemd unit from scripts/agent-console-multiuser.service.template
@@ -33,7 +36,8 @@
 #
 # CLI flags > env vars > built-in defaults. Env vars:
 #   AGENT_CONSOLE_SERVICE_USER, AGENT_CONSOLE_SERVICE_GROUP,
-#   AGENT_CONSOLE_DATA_ROOT, AGENT_CONSOLE_PORT,
+#   AGENT_CONSOLE_DATA_ROOT, AGENT_CONSOLE_SOURCE_REPOS_DIR,
+#   AGENT_CONSOLE_PORT,
 #   AGENT_CONSOLE_AUTH_COOKIE_SECURE, AGENT_CONSOLE_INITIAL_USERS
 #   (whitespace-separated list of usernames; equivalent to repeated --add-user),
 #   AGENT_CONSOLE_PTY_PROVIDER (opt-in PTY backend override; unset = server
@@ -56,6 +60,10 @@ DEFAULT_AUTH_COOKIE_SECURE="false"
 SERVICE_USER="${AGENT_CONSOLE_SERVICE_USER:-$DEFAULT_SERVICE_USER}"
 SERVICE_GROUP="${AGENT_CONSOLE_SERVICE_GROUP:-$DEFAULT_SERVICE_GROUP}"
 DATA_ROOT="${AGENT_CONSOLE_DATA_ROOT:-$DEFAULT_DATA_ROOT}"
+# Shared source-repos directory (Issue #833). Default interpolation is deferred
+# until after CLI parsing so it tracks the final resolved DATA_ROOT. Empty
+# sentinel here means "not explicitly set; derive from DATA_ROOT later".
+SOURCE_REPOS_DIR="${AGENT_CONSOLE_SOURCE_REPOS_DIR:-}"
 PORT="${AGENT_CONSOLE_PORT:-$DEFAULT_PORT}"
 AUTH_COOKIE_SECURE="${AGENT_CONSOLE_AUTH_COOKIE_SECURE:-$DEFAULT_AUTH_COOKIE_SECURE}"
 # Opt-in PTY backend override. Unset (default) -> rendered unit omits the env
@@ -93,6 +101,13 @@ Options:
   --user <name>          Service user (default: agentconsole)
   --group <name>         Shared group (default: agent-console-users)
   --data-root <path>     Data root (default: /var/lib/agent-console)
+  --source-repos-dir <path>
+                         Shared source-repos directory for clone-once /
+                         register-everywhere operator workflow (Issue #833).
+                         Default: <data-root>/source-repos. Operators clone
+                         source repos here so every interactive group member
+                         and the service user share read/write access via
+                         setgid + mode 2775.
   --port <num>           Server port (default: 8080)
   --cookie-secure <bool> AUTH_COOKIE_SECURE (true|false, default: false)
   --pty-provider <name>  Opt-in PTY backend override (bun-pty|bun-terminal).
@@ -110,7 +125,8 @@ Options:
 
 Environment overrides (env vars are used when the matching flag is omitted):
   AGENT_CONSOLE_SERVICE_USER, AGENT_CONSOLE_SERVICE_GROUP,
-  AGENT_CONSOLE_DATA_ROOT, AGENT_CONSOLE_PORT,
+  AGENT_CONSOLE_DATA_ROOT, AGENT_CONSOLE_SOURCE_REPOS_DIR,
+  AGENT_CONSOLE_PORT,
   AGENT_CONSOLE_AUTH_COOKIE_SECURE, AGENT_CONSOLE_INITIAL_USERS,
   AGENT_CONSOLE_PTY_PROVIDER
 EOF
@@ -127,6 +143,9 @@ while [ "$#" -gt 0 ]; do
     --data-root)
       [ "$#" -ge 2 ] || err "--data-root requires an argument"
       DATA_ROOT="$2"; shift 2 ;;
+    --source-repos-dir)
+      [ "$#" -ge 2 ] || err "--source-repos-dir requires an argument"
+      SOURCE_REPOS_DIR="$2"; shift 2 ;;
     --port)
       [ "$#" -ge 2 ] || err "--port requires an argument"
       PORT="$2"; shift 2 ;;
@@ -189,6 +208,27 @@ fi
 DATA_ROOT_PARENT="$(dirname "$DATA_ROOT")"
 if [ ! -d "$DATA_ROOT_PARENT" ]; then
   err "parent directory '$DATA_ROOT_PARENT' of --data-root does not exist"
+fi
+# Resolve the source-repos directory default now that DATA_ROOT is finalized.
+# When the operator did not pass --source-repos-dir / AGENT_CONSOLE_SOURCE_REPOS_DIR,
+# default to <data-root>/source-repos (Issue #833).
+if [ -z "$SOURCE_REPOS_DIR" ]; then
+  SOURCE_REPOS_DIR="$DATA_ROOT/source-repos"
+fi
+case "$SOURCE_REPOS_DIR" in
+  /*) ;;
+  *) err "invalid --source-repos-dir '$SOURCE_REPOS_DIR' (must be an absolute path)" ;;
+esac
+if echo "$SOURCE_REPOS_DIR" | grep -q '\.\.'; then
+  err "invalid --source-repos-dir '$SOURCE_REPOS_DIR' (path traversal pattern '..' not allowed)"
+fi
+SOURCE_REPOS_DIR_PARENT="$(dirname "$SOURCE_REPOS_DIR")"
+# Parent existence: when the parent is DATA_ROOT itself (the default case),
+# DATA_ROOT will be created at Step 5 before the source-repos directory is
+# touched, so a missing DATA_ROOT here is fine. Reject only when the parent
+# is neither DATA_ROOT nor an existing directory.
+if [ "$SOURCE_REPOS_DIR_PARENT" != "$DATA_ROOT" ] && [ ! -d "$SOURCE_REPOS_DIR_PARENT" ]; then
+  err "parent directory '$SOURCE_REPOS_DIR_PARENT' of --source-repos-dir does not exist"
 fi
 for u in "${INITIAL_USERS[@]+"${INITIAL_USERS[@]}"}"; do
   if ! echo "$u" | grep -Eq "$USERNAME_REGEX"; then
@@ -279,6 +319,7 @@ echo "----------------------------------"
 echo "  service user        : $SERVICE_USER"
 echo "  shared group        : $SERVICE_GROUP"
 echo "  data root           : $DATA_ROOT"
+echo "  source-repos dir    : $SOURCE_REPOS_DIR"
 echo "  port                : $PORT"
 echo "  AUTH_COOKIE_SECURE  : $AUTH_COOKIE_SECURE"
 if [ -n "$PTY_PROVIDER" ]; then
@@ -425,6 +466,31 @@ if [ -d "$DATA_ROOT" ]; then
   fi
 else
   run install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 2775 "$DATA_ROOT"
+fi
+
+# Shared source-repos directory (Issue #833). Same owner / group / mode as
+# the data root so any interactive user in the shared group can clone repos
+# in, and the service user can read + fetch + update refs.
+echo "    source-repos dir: $SOURCE_REPOS_DIR"
+if [ -d "$SOURCE_REPOS_DIR" ]; then
+  CURRENT_SRC_OWNER="$(stat -c '%U:%G' "$SOURCE_REPOS_DIR" 2>/dev/null || echo unknown)"
+  CURRENT_SRC_MODE="$(stat -c '%a' "$SOURCE_REPOS_DIR" 2>/dev/null || echo unknown)"
+  EXPECTED_SRC_OWNER="$SERVICE_USER:$SERVICE_GROUP"
+  echo "    $SOURCE_REPOS_DIR exists (owner=$CURRENT_SRC_OWNER mode=$CURRENT_SRC_MODE)"
+  if [ "$CURRENT_SRC_OWNER" != "$EXPECTED_SRC_OWNER" ] || [ "$CURRENT_SRC_MODE" != "2775" ]; then
+    if [ "$FORCE" -eq 0 ]; then
+      if [ "$DRY_RUN" -eq 1 ]; then
+        echo "    (would abort: $SOURCE_REPOS_DIR has owner/mode drift; re-run with --force to repair)"
+      else
+        err "$SOURCE_REPOS_DIR has owner/mode drift (expected owner=$EXPECTED_SRC_OWNER mode=2775); re-run with --force to repair"
+      fi
+    else
+      run chown "$EXPECTED_SRC_OWNER" "$SOURCE_REPOS_DIR"
+      run chmod 2775 "$SOURCE_REPOS_DIR"
+    fi
+  fi
+else
+  run install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 2775 "$SOURCE_REPOS_DIR"
 fi
 
 # ---------------------------------------------------------------------------

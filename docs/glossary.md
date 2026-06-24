@@ -126,6 +126,12 @@ The dedicated OS account (typically `agentconsole`) that runs the server process
 Shared system group used in multi-user mode (Issue [#830](https://github.com/ms2sato/agent-console/issues/830)) to grant cross-user access to the data root and all worktrees. Every interactive user joins this group; the service user is also a member. Data root and worktrees are owned `<service-user>:agent-console-users` with mode `2775` (setgid + group-writable). The bootstrap script `scripts/setup-multiuser-for-ubuntu.sh` creates and populates the group.
 - **See:** [Architecture Decisions in multi-user-shared-setup.md](design/multi-user-shared-setup.md#architecture-decisions)
 
+### source-repos directory
+Shared directory under the data root (`${DATA_ROOT}/source-repos` by default, e.g. `/var/lib/agent-console/source-repos`) where operators clone source repositories that multiple OS users will register through Agent Console (Issue [#833](https://github.com/ms2sato/agent-console/issues/833)). Created by `scripts/setup-multiuser-for-ubuntu.sh` Step 5 with owner `<service-user>:agent-console-users` and mode `2775` so any interactive group member can `git clone` into it and the service user can fetch / update refs. Operators clone with `umask 0002` or `--config core.sharedRepository=group` so newly created files preserve group write access. The location is overridable via `--source-repos-dir <path>` or `AGENT_CONSOLE_SOURCE_REPOS_DIR`.
+- **Aliases:** shared source-repos directory, source repos dir
+- **Contrast:** the worktree subtree `<data-root>/repositories/<org>/<repo>/worktrees/...` is created and managed by agent-console; the source-repos directory is the operator-facing clone target.
+- **See:** [Shared source-repos directory in multi-user-setup-guide.md](multi-user-setup-guide.md#shared-source-repos-directory-linux-multi-user)
+
 ### AGENT_CONSOLE_HOME
 Environment variable selecting the agent-console data root. Defaults:
 - `AUTH_MODE=none` (single-user): `~/.agent-console`.
