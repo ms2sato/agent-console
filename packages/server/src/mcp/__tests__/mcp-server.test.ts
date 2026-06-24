@@ -1813,6 +1813,13 @@ describe('MCP Server Tools', () => {
      * instead of being indirected through env.__AGENT_PROMPT__.
      */
     function getAgentPromptForSession(sessionId: string): string {
+      // `bun:test`'s `mock(() => ...)` (see __tests__/utils/mock-pty.ts)
+      // infers `mock.calls` as `[][]` because the factory has no declared
+      // parameters; a direct tuple cast fails with TS2352 ("Source has 0
+      // element(s) but target requires 3 — convert the expression to 'unknown'
+      // first"). The `as unknown as ...` step is therefore required, and
+      // matches the pre-existing shape used by `findSpawnCallByCommand` and
+      // the activity-detector probe in this file.
       const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
       const matchingCall = calls.find((call) =>
         call[2]?.env?.AGENT_CONSOLE_SESSION_ID === sessionId,
