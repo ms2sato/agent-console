@@ -49,7 +49,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# REPO_ROOT defaults to the script's containing repo (the typical case where
+# the developer cd-d into a single worktree and runs `bash scripts/...`).
+# Overridable via env so a developer can deploy a different worktree's code
+# without copying this script — useful for testing pre-merge PR branches:
+#   REPO_ROOT=/path/to/other/worktree bash scripts/dev-multiuser.sh
+REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 
 # --- Configurable defaults (override via env) -------------------------------
 SERVICE_USER="${SERVICE_USER:-agentconsole}"
