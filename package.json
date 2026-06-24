@@ -9,6 +9,7 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "dev": "./scripts/dev.sh",
+    "dev:multiuser": "./scripts/dev-multiuser.sh",
     "build": "bun run --filter '@agent-console/shared' build && bun run --filter '@agent-console/client' build && bun run --filter '@agent-console/server' build",
     "start": "NODE_ENV=production bun dist/index.js",
     "typecheck": "bun run --filter '*' typecheck",

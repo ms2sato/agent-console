@@ -803,3 +803,127 @@ The motivating regression (Issue #866) was a case where the service-account
 user's `PATH` leaked into the elevated session and broke `claude` resolution
 with `sh: 1: claude: Permission denied`. Future smoke checks land as sibling
 scripts under `scripts/smoke/`.
+
+## Local Multi-User Dev Mode
+
+`scripts/dev-multiuser.sh` (also runnable as `bun run dev:multiuser`) starts
+a hot-reloading dev instance that **mirrors production multi-user ownership**
+without touching the production data root. Unlike `bun run dev`
+(single-user, runs as the developer under `~/.agent-console-dev`), this
+script runs the server as the production service user (`agentconsole`) with
+a parallel `/var/lib/agent-console-dev` data root.
+
+Use this when:
+
+- Verifying a feature that depends on the privilege-elevation chain
+  (`runAsUser`, shared-group ownership, setgid inheritance,
+  `sharedRepository=group`, server-side `safe.directory`).
+- Iterating on UI code while preserving production-mirrored server-side
+  ownership semantics. The developer's worktree is rsynced to
+  `/home/agentconsole/agent-console-dev/` so the service user has its own
+  source tree (mirroring production's `/home/agentconsole/agent-console/`).
+  Client-side HMR (vite) works against the worktree as usual; server-side
+  edits require re-running this script to re-sync.
+
+### Prerequisites (one-time)
+
+`scripts/setup-multiuser-for-ubuntu.sh` must have run on the host to create
+the service user (`agentconsole`), the shared group (`agent-console-users`),
+the sudoers configuration, and install the production systemd unit. The dev
+script reuses all of these. In addition the developer's user must be a
+member of the shared group:
+
+```bash
+sudo gpasswd -a $(whoami) agent-console-users
+# start a NEW login session (or use `newgrp agent-console-users`) so the
+# group is effective in the running shell
+```
+
+`rsync` must be installed (standard on most distros; `sudo apt install -y rsync`
+if missing).
+
+### Path layout
+
+```text
+/var/lib/agent-console-dev/              agentconsole:agent-console-users  drwxrwsr-x (2775)
+/var/lib/agent-console-dev/source-repos/  same -- cloned repos land here
+/var/lib/agent-console-dev/repositories/  same -- per-repo worktrees
+/var/lib/agent-console-dev/uploads/        same -- uploaded files
+```
+
+Created idempotently on each run via `sudo install -d`, owned by
+`agentconsole:agent-console-users` with mode `2775` (setgid + group-writable).
+The developer accesses files through their membership in
+`agent-console-users` plus setgid + `sharedRepository=group` -- the **same**
+access path used in production.
+
+### Ports
+
+Default `3457` (server) / `5173` (client) mirror `bun run dev`. The
+production systemd instance on `8080` is untouched. Only one dev instance
+can run at a time (single-user `bun run dev` OR `bun run dev:multiuser`,
+not both).
+
+### How it works
+
+1. **Pre-flight:** validate service user, shared group, current shell's
+   effective group membership (caught via `id -nG` no-arg), `rsync`
+   availability, and locate the service user's `bun` binary.
+2. **Data root setup (idempotent):** ensure `/var/lib/agent-console-dev/`
+   subtree exists with `agentconsole:agent-console-users` ownership and
+   mode `2775`. Subsequent runs verify ownership AND mode; drifted entries
+   (e.g., `0755` from a previous manual touch) are repaired in-place.
+3. **Source rsync to service-user target:** `sudo rsync -a --delete
+   --chown=agentconsole:agent-console-users` copies the worktree to
+   `/home/agentconsole/agent-console-dev/`, owned by the service user.
+   Excludes `node_modules`, `dist`, `.git`, `.claude/worktrees` (target gets
+   its own node_modules via `bun install`). The developer's home directory
+   permissions are NEVER modified.
+4. **`bun install` in target** (as `agentconsole`): ensures the service user
+   has its own dependency tree (correct platform binaries, matches what
+   `agentconsole` can exec).
+5. **Start vite client** (as the developer, from the worktree, port 5173).
+6. **Start server** (as `agentconsole`, from the target, port 3457) with env
+   mirroring the production systemd unit (`AUTH_MODE=multi-user`,
+   `AGENT_CONSOLE_HOME=/var/lib/agent-console-dev`,
+   `AUTH_COOKIE_SECURE=false`, `NODE_ENV=development`, `UMask=0002` via
+   shell, `PATH=$SERVICE_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin`).
+7. **Cleanup on Ctrl+C** — both processes terminate.
+
+### Iteration loop
+
+- **Client edits** (anything under `packages/client/`) propagate to the
+  running UI via vite HMR. No re-run needed.
+- **Server / shared edits** (anything under `packages/server/` or
+  `packages/shared/`) require **re-running this script** to re-rsync into
+  `$TARGET_HOME`. The re-sync is fast (rsync only transfers changed files);
+  the server's `bun --watch` then restarts.
+
+### Comparison: single-user dev vs multi-user dev
+
+| | `bun run dev` (single) | `bun run dev:multiuser` |
+|---|---|---|
+| Server runs as | developer (current user) | `agentconsole` |
+| Data root | `$HOME/.agent-console-dev` | `/var/lib/agent-console-dev` |
+| Data owner | developer | `agentconsole:agent-console-users` (mode 2775 setgid) |
+| `AUTH_MODE` | unset (single) | `multi-user` |
+| PAM auth on login | bypassed | required |
+| Privilege elevation (`runAsUser`) | bypassed | active |
+| `sharedRepository=group` applied | no | yes (`#845`) |
+| Server-side `safe.directory` bootstrap (`#853`) | no | yes |
+| Use when | iterating on UI / logic | testing features that depend on multi-user semantics |
+
+### Configurable overrides
+
+```bash
+SERVICE_USER=otheruser \
+SHARED_GROUP=other-shared \
+DEV_DATA_ROOT=/var/lib/agent-console-dev-alt \
+TARGET_HOME=/home/otheruser/agent-console-dev \
+PORT=3458 CLIENT_PORT=5174 \
+bun run dev:multiuser
+```
+
+`SERVICE_BUN=/path/to/bun` overrides the auto-detected bun binary location
+when it lives outside the production-mirrored search path
+(`$SERVICE_HOME/.bun/bin/bun`, `/usr/local/bin/bun`, `/usr/bin/bun`).
