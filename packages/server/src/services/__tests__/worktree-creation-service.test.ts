@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import type { HookCommandResult, Worktree } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
-import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { GitError, mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 // --- Mock worktreeService (now passed as parameter, no mock.module needed) ---
 
 const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
@@ -271,5 +271,78 @@ describe('createWorktreeWithSession', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('original error');
+  });
+
+  // --- Issue #854: surface listWorktrees git errors instead of the generic
+  // "could not be found in the list" message. ---
+  //
+  // Note: WorktreeService.listWorktrees currently swallows GitError and returns
+  // []. These tests inject the post-swallow behavior we want once the upstream
+  // service propagates correctly (companion Issue #853 addresses the
+  // dubious-ownership root cause); they ensure the creation-service handler
+  // surfaces stderr the moment listWorktrees does throw.
+
+  it('surfaces GitError stderr when listWorktrees throws (Issue #854)', async () => {
+    mockListWorktrees.mockImplementation(() =>
+      Promise.reject(
+        new GitError(
+          'git worktree failed: fatal: detected dubious ownership in repository at /repo',
+          128,
+          "fatal: detected dubious ownership in repository at '/repo'",
+        ),
+      ),
+    );
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(
+      "Worktree verification failed (git list): fatal: detected dubious ownership in repository at '/repo'",
+    );
+    // Rollback was still attempted so the orphaned worktree is removed.
+    expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true);
+    // Session creation must NOT happen when verification failed.
+    expect(sm.createSession).not.toHaveBeenCalled();
+  });
+
+  it('falls back to GitError exit code when stderr is empty', async () => {
+    mockListWorktrees.mockImplementation(() =>
+      Promise.reject(new GitError('git worktree failed', 128, '   ')),
+    );
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Worktree verification failed (git list): git exit code 128');
+  });
+
+  it('surfaces plain Error message when listWorktrees throws non-GitError (Issue #854)', async () => {
+    mockListWorktrees.mockImplementation(() => Promise.reject(new Error('unexpected boom')));
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Worktree verification failed (git list): unexpected boom');
+    expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true);
+  });
+
+  it('returns listWorktrees error even when rollback also fails (Issue #854)', async () => {
+    mockListWorktrees.mockImplementation(() =>
+      Promise.reject(
+        new GitError('git worktree failed: fatal: bad config', 128, 'fatal: bad config'),
+      ),
+    );
+    // The rollback step itself fails; the original listWorktrees error must
+    // still surface (rollback failure is logged separately, not propagated).
+    mockRemoveWorktree.mockImplementation(() => Promise.reject(new Error('rollback exploded')));
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Worktree verification failed (git list): fatal: bad config');
   });
 });

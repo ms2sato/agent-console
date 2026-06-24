@@ -9,7 +9,7 @@ type CreateWorktreeServiceDeps = Pick<
   WorktreeService,
   'createWorktree' | 'listWorktrees' | 'removeWorktree' | 'executeHookCommand'
 >;
-import { fetchRemote } from '../lib/git.js';
+import { fetchRemote, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worktree-creation-service');
@@ -118,9 +118,35 @@ export async function createWorktreeWithSession(
 
   const createdWorktreePath = wtResult.worktreePath;
 
+  // 3. Verify the new worktree appears in git's view.
+  //
+  // Distinguish two failure modes that previously both surfaced as the
+  // generic "could not be found in the list" message (Issue #854):
+  //   (a) listWorktrees throws -> surface the underlying stderr so operators
+  //       see the real cause (e.g. `fatal: detected dubious ownership`).
+  //   (b) listWorktrees succeeds but the path is absent -> a genuine
+  //       worktree-state inconsistency; keep the original message.
+  let worktrees: Worktree[];
   try {
-    // 3. Find created worktree info
-    const worktrees = await worktreeService.listWorktrees(repoPath, repoId);
+    worktrees = await worktreeService.listWorktrees(repoPath, repoId);
+  } catch (listErr) {
+    logger.warn(
+      { worktreePath: createdWorktreePath, err: listErr },
+      'listWorktrees failed during post-create verification, rolling back',
+    );
+    await rollbackWorktree(worktreeService, repoPath, createdWorktreePath);
+    const detail = listErr instanceof GitError
+      ? (listErr.stderr.trim() || `git exit code ${listErr.exitCode}`)
+      : listErr instanceof Error
+        ? listErr.message
+        : String(listErr);
+    return {
+      success: false,
+      error: `Worktree verification failed (git list): ${detail}`,
+    };
+  }
+
+  try {
     const worktree = worktrees.find(wt => wt.path === createdWorktreePath);
 
     if (!worktree) {
