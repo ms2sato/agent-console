@@ -92,10 +92,17 @@ if ! getent group "$SHARED_GROUP" >/dev/null; then
   exit 2
 fi
 
-if ! id -nG "$CURRENT_USER" | tr ' ' '\n' | grep -qx "$SHARED_GROUP"; then
-  echo "ERROR: current user '$CURRENT_USER' is not in '$SHARED_GROUP' (checked via passwd DB)." >&2
+# `id -nG` (no arg) queries the CURRENT shell's effective groups via
+# getgroups(2), so it catches the "added to group but session not refreshed"
+# case. `id -nG "$CURRENT_USER"` would consult passwd DB and pass even when
+# the running shell does not yet have the group effective, leaving later
+# permission failures unexplained. CodeRabbit Major on PR #868.
+if ! id -nG | tr ' ' '\n' | grep -qx "$SHARED_GROUP"; then
+  echo "ERROR: current shell session does not have '$SHARED_GROUP' as an effective group." >&2
+  echo "  Either the user is not in the group yet, OR the user was added but the running" >&2
+  echo "  shell session was started before the change took effect." >&2
   echo "  Fix: sudo gpasswd -a $CURRENT_USER $SHARED_GROUP" >&2
-  echo "  Then start a NEW login session (or use 'newgrp $SHARED_GROUP') so the group is effective." >&2
+  echo "  Then start a NEW login session (or run 'newgrp $SHARED_GROUP' in this shell)." >&2
   exit 2
 fi
 
@@ -130,17 +137,27 @@ echo "[pre-flight] service user bun: $SERVICE_BUN (override with SERVICE_BUN=...
 echo "[1/4] Ensuring dev data root at $DEV_DATA_ROOT (owned by $SERVICE_USER:$SHARED_GROUP, mode 2775)..."
 ensure_shared_dir() {
   local target="$1"
-  if [ -d "$target" ]; then
-    # Verify ownership; warn (not fail) if drifted.
-    local owner_group
-    owner_group="$(stat -c '%U:%G' "$target")"
-    if [ "$owner_group" != "$SERVICE_USER:$SHARED_GROUP" ]; then
-      echo "  WARN: $target is $owner_group (expected $SERVICE_USER:$SHARED_GROUP). Continuing." >&2
-    fi
+  if [ ! -d "$target" ]; then
+    sudo install -d -o "$SERVICE_USER" -g "$SHARED_GROUP" -m 2775 "$target"
+    echo "  created $target"
     return 0
   fi
-  sudo install -d -o "$SERVICE_USER" -g "$SHARED_GROUP" -m 2775 "$target"
-  echo "  created $target"
+  # Existing dir: repair ownership + mode if drifted. The 2775 setgid +
+  # group-writable mode is the security contract that ms2sato accesses
+  # files through (group membership + setgid inheritance). A stale 0755
+  # or non-setgid silently breaks the production-mirrored ownership model.
+  # CodeRabbit Major on PR #868.
+  local owner_group mode
+  owner_group="$(stat -c '%U:%G' "$target")"
+  mode="$(stat -c '%a' "$target")"
+  if [ "$owner_group" != "$SERVICE_USER:$SHARED_GROUP" ]; then
+    echo "  repairing $target: owner $owner_group -> $SERVICE_USER:$SHARED_GROUP" >&2
+    sudo chown "$SERVICE_USER:$SHARED_GROUP" "$target"
+  fi
+  if [ "$mode" != "2775" ]; then
+    echo "  repairing $target: mode $mode -> 2775 (setgid + group-writable)" >&2
+    sudo chmod 2775 "$target"
+  fi
 }
 ensure_shared_dir "$DEV_DATA_ROOT"
 ensure_shared_dir "$DEV_DATA_ROOT/source-repos"
@@ -175,9 +192,15 @@ echo "  source rsync complete"
 # `preinstall` script invokes `bun scripts/check-bun-version.mjs` via the
 # package manager's PATH lookup, and `bash -c` does not load login profiles.
 echo "[3/5] Running bun install in $TARGET_HOME (as $SERVICE_USER)..."
+# Pass TARGET_HOME / SERVICE_BUN via the environment (NOT interpolated into
+# the bash -c string), then dereference them inside a single-quoted body.
+# A path containing `'` would otherwise break the command and could execute
+# unintended shell syntax under the service user. CodeRabbit Major on #868.
 sudo -u "$SERVICE_USER" env \
   PATH="$SERVICE_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin" \
-  bash -c "cd '$TARGET_HOME' && '$SERVICE_BUN' install" 2>&1 | sed 's/^/  /'
+  TARGET_HOME="$TARGET_HOME" \
+  SERVICE_BUN="$SERVICE_BUN" \
+  bash -c 'cd "$TARGET_HOME" && "$SERVICE_BUN" install' 2>&1 | sed 's/^/  /'
 
 # --- 3. Cleanup handlers ---------------------------------------------------
 SERVER_PID=""
@@ -203,9 +226,15 @@ trap cleanup INT TERM EXIT
 # edits propagate through HMR as usual. The vite dev server proxies API
 # requests to localhost:$PORT (server below), so the client/server boundary
 # is identical to production from the browser's perspective.
+#
+# Output piping: use process substitution so `$!` is the actual child PID
+# (vite / bun), not the PID of the `sed` filter. With `cmd | sed &` bash's
+# `$!` is the last process in the pipeline (sed), so a later `kill $!`
+# would terminate only sed and leave the dev process orphaned. CodeRabbit
+# Major on #868.
 echo "[4/5] Starting vite client (as $CURRENT_USER, from worktree) on port $CLIENT_PORT..."
-(cd "$REPO_ROOT/packages/client" && CLIENT_PORT="$CLIENT_PORT" bun run dev --port "$CLIENT_PORT") 2>&1 \
-  | sed -u 's/^/[client] /' &
+( cd "$REPO_ROOT/packages/client" && CLIENT_PORT="$CLIENT_PORT" bun run dev --port "$CLIENT_PORT" ) \
+  > >(sed -u 's/^/[client] /') 2> >(sed -u 's/^/[client] /' >&2) &
 VITE_PID=$!
 
 # --- 6. Start server (bun, as service user, from rsync target) -------------
@@ -216,6 +245,10 @@ VITE_PID=$!
 # Server runs against $TARGET_HOME (NOT the worktree) -- edits to server code
 # in the worktree do NOT propagate until you re-run this script. Vite's HMR
 # only covers client-side; server is read at process start.
+#
+# Path safety: TARGET_HOME / SERVICE_BUN are passed via env (NOT interpolated
+# into the bash -c string) to avoid command-injection on paths containing
+# single quotes. CodeRabbit Major on #868.
 echo "[5/5] Starting server (as $SERVICE_USER, from $TARGET_HOME) on port $PORT..."
 sudo -u "$SERVICE_USER" env \
   PATH="$SERVICE_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin" \
@@ -225,8 +258,10 @@ sudo -u "$SERVICE_USER" env \
   AGENT_CONSOLE_HOME="$DEV_DATA_ROOT" \
   AUTH_COOKIE_SECURE=false \
   NODE_ENV=development \
-  bash -c "umask 0002 && cd '$TARGET_HOME/packages/server' && '$SERVICE_BUN' --watch src/index.ts" 2>&1 \
-  | sed -u 's/^/[server] /' &
+  TARGET_HOME="$TARGET_HOME" \
+  SERVICE_BUN="$SERVICE_BUN" \
+  bash -c 'umask 0002 && cd "$TARGET_HOME/packages/server" && "$SERVICE_BUN" --watch src/index.ts' \
+  > >(sed -u 's/^/[server] /') 2> >(sed -u 's/^/[server] /' >&2) &
 SERVER_PID=$!
 
 echo ""

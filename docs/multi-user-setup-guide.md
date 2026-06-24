@@ -844,7 +844,7 @@ if missing).
 
 ### Path layout
 
-```
+```text
 /var/lib/agent-console-dev/              agentconsole:agent-console-users  drwxrwsr-x (2775)
 /var/lib/agent-console-dev/source-repos/  same -- cloned repos land here
 /var/lib/agent-console-dev/repositories/  same -- per-repo worktrees
@@ -866,11 +866,13 @@ not both).
 
 ### How it works
 
-1. **Pre-flight:** validate service user, shared group, group membership,
-   `setfacl`, and locate the service user's `bun` binary.
+1. **Pre-flight:** validate service user, shared group, current shell's
+   effective group membership (caught via `id -nG` no-arg), `rsync`
+   availability, and locate the service user's `bun` binary.
 2. **Data root setup (idempotent):** ensure `/var/lib/agent-console-dev/`
    subtree exists with `agentconsole:agent-console-users` ownership and
-   mode `2775`. Subsequent runs only verify ownership.
+   mode `2775`. Subsequent runs verify ownership AND mode; drifted entries
+   (e.g., `0755` from a previous manual touch) are repaired in-place.
 3. **Source rsync to service-user target:** `sudo rsync -a --delete
    --chown=agentconsole:agent-console-users` copies the worktree to
    `/home/agentconsole/agent-console-dev/`, owned by the service user.
