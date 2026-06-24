@@ -59,6 +59,9 @@ export {
 // Repository schemas
 export {
   CreateRepositoryRequestSchema,
+  CloneRepositoryRequestSchema,
+  CLONE_JOB_STATUS,
+  CLONE_ERROR_CODES,
   CreateWorktreePromptRequestSchema,
   CreateWorktreeCustomRequestSchema,
   CreateWorktreeExistingRequestSchema,
@@ -71,6 +74,12 @@ export {
   RefreshDefaultBranchResponseSchema,
   RemoteBranchStatusSchema,
   type CreateRepositoryRequest,
+  type CloneRepositoryRequest,
+  type CloneRepositoryResponse,
+  type CloneJobStatus,
+  type CloneJobStatusResponse,
+  type CloneJobError,
+  type CloneErrorCode,
   type CreateWorktreePromptRequest,
   type CreateWorktreeCustomRequest,
   type CreateWorktreeExistingRequest,

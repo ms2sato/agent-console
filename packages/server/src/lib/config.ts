@@ -48,6 +48,25 @@ export function getRepositoriesDir(): string {
 }
 
 /**
+ * Get the shared source-repos base directory where the clone-and-register
+ * action (Issue #834) places new clones. The bootstrap script
+ * (`scripts/setup-multiuser-for-ubuntu.sh`, Issue #833 / PR #849) creates this
+ * directory at install time with owner `<service-user>:agent-console-users`
+ * and mode `2775` so any interactive group member can `git clone` into it and
+ * the service user can fetch / update refs.
+ *
+ * Resolution precedence (mirroring the bootstrap script's flag handling):
+ *   1. `AGENT_CONSOLE_SOURCE_REPOS_DIR` environment variable, if set.
+ *   2. `<config-dir>/source-repos` (the bootstrap script's default location).
+ */
+export function getSourceReposDir(): string {
+  if (process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR) {
+    return process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR;
+  }
+  return path.join(getConfigDir(), 'source-repos');
+}
+
+/**
  * Get the directory for a specific repository.
  * Structure: <config-dir>/repositories/{org}/{repo}/
  * @param orgRepo - Organization and repository name (e.g., "owner/repo-name")
