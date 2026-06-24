@@ -70,6 +70,8 @@ import { BranchWatcherService } from './services/branch-watcher-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
 import { generateRepositoryDescription } from './services/repository-description-generator.js';
+import { RepositoryCloneService } from './services/repository-clone-service.js';
+import { getSourceReposDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
 
 const logger = createLogger('app-context');
@@ -157,6 +159,14 @@ export interface AppContext {
 
   /** Generate AI-powered repository description */
   generateRepositoryDescription: GenerateRepositoryDescriptionFn;
+
+  /**
+   * Clone-and-register repository service (Issue #834). Owns the in-memory
+   * job state for `POST /api/repositories/clone` and the matching status
+   * endpoint. Singleton across the process so polling sees the same state
+   * the enqueue call mutated.
+   */
+  repositoryCloneService: RepositoryCloneService;
 
   /** Message template CRUD repository */
   messageTemplateRepository: MessageTemplateRepository;
@@ -453,6 +463,13 @@ export async function createAppContext(
       sessionManager.getSessionsUsingRepository(repoId),
   });
 
+  // 7.1. Construct the clone-and-register service (Issue #834). Singleton so
+  // background jobs and polling share the same in-memory state map.
+  const repositoryCloneService = new RepositoryCloneService({
+    sourceReposDir: getSourceReposDir(),
+    registrar: repositoryManager,
+  });
+
   // Wire notification callbacks
   notificationManager.setSessionExistsCallback((sessionId) =>
     sessionManager.getSession(sessionId) !== undefined
@@ -498,6 +515,7 @@ export async function createAppContext(
     fetchPullRequestUrl,
     findOpenPullRequest,
     generateRepositoryDescription,
+    repositoryCloneService,
     messageTemplateRepository,
     branchWatcherService,
   };
@@ -616,6 +634,12 @@ export async function createTestContext(
       sessionManager.getSessionsUsingRepository(repoId),
   });
 
+  // Clone-and-register service for the test context (Issue #834).
+  const repositoryCloneService = new RepositoryCloneService({
+    sourceReposDir: getSourceReposDir(),
+    registrar: repositoryManager,
+  });
+
   notificationManager.setSessionExistsCallback((sessionId) =>
     sessionManager.getSession(sessionId) !== undefined
   );
@@ -683,6 +707,7 @@ export async function createTestContext(
     fetchPullRequestUrl,
     findOpenPullRequest,
     generateRepositoryDescription,
+    repositoryCloneService,
     messageTemplateRepository,
     branchWatcherService: new BranchWatcherService(async () => {}),
   };
@@ -703,6 +728,11 @@ export async function shutdownAppContext(
   context.conditionalWakeupManager.disposeAll();
   context.interactiveProcessManager.disposeAll();
   context.branchWatcherService.stopAll();
+
+  // Cancel any pending clone-job eviction timers (Issue #834). Keeping a
+  // pending setTimeout alive after the process tries to exit would block the
+  // event loop; the eviction is purely an in-memory bookkeeping concern.
+  context.repositoryCloneService.dispose();
 
   // Stop job queue
   await context.jobQueue.stop();

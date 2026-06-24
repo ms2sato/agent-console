@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { GenerateRepositoryDescriptionFn } from '../../services/repository-description-generator.js';
+import {
+  CloneNameConflictError,
+  CloneValidationError,
+} from '../../services/repository-clone-service.js';
+import { CLONE_ERROR_CODES, CLONE_JOB_STATUS } from '@agent-console/shared';
 
 const mockGenerateDescription = mock<GenerateRepositoryDescriptionFn>(() =>
   Promise.resolve({ description: 'test' })
@@ -37,6 +42,16 @@ const agentManager = {
   getAgent: mock(() => undefined as any),
 };
 
+// Mock of the clone-and-register service (Issue #834). Captures enqueueClone
+// arguments + lets each test stub the resolved/rejected value per-call. The
+// real service maintains in-memory state; tests can either drive that state
+// directly via getJob.mockReturnValue or via enqueueClone returning a jobId
+// the test seeds.
+const repositoryCloneService = {
+  enqueueClone: mock((_request: unknown) => Promise.resolve('mock-job-id')),
+  getJob: mock((_jobId: string) => undefined as any),
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -55,6 +70,9 @@ function resetAllMocks(): void {
   agentManager.getAgent.mockReset();
   mockGenerateDescription.mockReset();
   mockGenerateDescription.mockImplementation(() => Promise.resolve({ description: 'test' }));
+  repositoryCloneService.enqueueClone.mockReset();
+  repositoryCloneService.enqueueClone.mockImplementation(() => Promise.resolve('mock-job-id'));
+  repositoryCloneService.getJob.mockReset();
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +91,7 @@ describe('Repositories API', () => {
       repositorySlackIntegrationService: repositorySlackIntegrationService as any,
       agentManager: agentManager as any,
       generateRepositoryDescription: mockGenerateDescription as any,
+      repositoryCloneService: repositoryCloneService as any,
     });
   });
 
@@ -217,6 +236,149 @@ describe('Repositories API', () => {
       const body = (await res.json()) as { behind: number; ahead: number };
       expect(body.behind).toBe(3);
       expect(body.ahead).toBe(1);
+    });
+  });
+
+  // =========================================================================
+  // POST /api/repositories/clone (Issue #834)
+  // =========================================================================
+  describe('POST /api/repositories/clone', () => {
+    it('returns 202 with jobId, forwarding authUser.username as requestUser', async () => {
+      repositoryCloneService.enqueueClone.mockImplementationOnce(() =>
+        Promise.resolve('job-abc'),
+      );
+
+      const res = await app.request('/api/repositories/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: 'https://github.com/org/repo.git',
+          description: 'an example',
+        }),
+      });
+
+      expect(res.status).toBe(202);
+      const body = (await res.json()) as { jobId: string; repositoryId: null };
+      expect(body.jobId).toBe('job-abc');
+      expect(body.repositoryId).toBe(null);
+
+      expect(repositoryCloneService.enqueueClone).toHaveBeenCalledTimes(1);
+      const firstArg = repositoryCloneService.enqueueClone.mock.calls[0][0] as any;
+      expect(firstArg.url).toBe('https://github.com/org/repo.git');
+      expect(firstArg.description).toBe('an example');
+      // TEST_AUTH_USER.username from test-utils.ts is 'testuser'.
+      expect(firstArg.requestUser).toBe('testuser');
+    });
+
+    it('returns 400 when the schema rejects the URL (no service call)', async () => {
+      const res = await app.request('/api/repositories/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // Leading dash gets rejected by the schema before the route handler
+        // body validation -- the service must never be invoked.
+        body: JSON.stringify({ url: '--upload-pack=evil' }),
+      });
+      expect(res.status).toBe(400);
+      expect(repositoryCloneService.enqueueClone).toHaveBeenCalledTimes(0);
+    });
+
+    it('returns 409 when the service throws CloneNameConflictError', async () => {
+      repositoryCloneService.enqueueClone.mockImplementationOnce(() => {
+        throw new CloneNameConflictError(
+          'Target directory already exists: /var/lib/agent-console/source-repos/repo',
+        );
+      });
+
+      const res = await app.request('/api/repositories/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://github.com/org/repo.git' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('already exists');
+    });
+
+    it('returns 400 when the service throws CloneValidationError', async () => {
+      repositoryCloneService.enqueueClone.mockImplementationOnce(() => {
+        throw new CloneValidationError('Could not derive a directory name from the URL');
+      });
+
+      const res = await app.request('/api/repositories/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.com/something' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Could not derive');
+    });
+  });
+
+  // =========================================================================
+  // GET /api/repositories/clone/:jobId (Issue #834)
+  // =========================================================================
+  describe('GET /api/repositories/clone/:jobId', () => {
+    it('returns 404 when the jobId is unknown', async () => {
+      repositoryCloneService.getJob.mockReturnValueOnce(undefined);
+      const res = await app.request('/api/repositories/clone/missing-job');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns the pending/cloning status with no repositoryId or error', async () => {
+      repositoryCloneService.getJob.mockReturnValueOnce({
+        id: 'job-1',
+        status: CLONE_JOB_STATUS.CLONING,
+        createdAt: 1,
+        updatedAt: 2,
+      });
+      const res = await app.request('/api/repositories/clone/job-1');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.jobId).toBe('job-1');
+      expect(body.status).toBe(CLONE_JOB_STATUS.CLONING);
+      expect(body.repositoryId).toBeUndefined();
+      expect(body.error).toBeUndefined();
+    });
+
+    it('returns repositoryId on succeeded', async () => {
+      repositoryCloneService.getJob.mockReturnValueOnce({
+        id: 'job-2',
+        status: CLONE_JOB_STATUS.SUCCEEDED,
+        repositoryId: 'repo-xyz',
+        createdAt: 1,
+        updatedAt: 3,
+      });
+      const res = await app.request('/api/repositories/clone/job-2');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.status).toBe(CLONE_JOB_STATUS.SUCCEEDED);
+      expect(body.repositoryId).toBe('repo-xyz');
+    });
+
+    it('returns error code + message on failed', async () => {
+      repositoryCloneService.getJob.mockReturnValueOnce({
+        id: 'job-3',
+        status: CLONE_JOB_STATUS.FAILED,
+        error: {
+          code: CLONE_ERROR_CODES.AUTH_FAILED,
+          message: 'git@github.com: Permission denied (publickey).',
+        },
+        createdAt: 1,
+        updatedAt: 4,
+      });
+      const res = await app.request('/api/repositories/clone/job-3');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        jobId: string;
+        status: string;
+        error: { code: string; message: string };
+      };
+      expect(body.status).toBe(CLONE_JOB_STATUS.FAILED);
+      expect(body.error.code).toBe(CLONE_ERROR_CODES.AUTH_FAILED);
+      expect(body.error.message).toContain('Permission denied');
     });
   });
 });

@@ -1,9 +1,12 @@
 import { Hono } from 'hono';
 import type {
   GitHubIssueSummary,
+  CloneRepositoryResponse,
+  CloneJobStatusResponse,
 } from '@agent-console/shared';
 import {
   CreateRepositoryRequestSchema,
+  CloneRepositoryRequestSchema,
   UpdateRepositoryRequestSchema,
   FetchGitHubIssueRequestSchema,
   RepositorySlackIntegrationInputSchema,
@@ -16,6 +19,10 @@ import { getRemoteUrl, parseOrgRepo, fetchAllRemote, getCommitsBehind, getCommit
 import { withRepositoryRemote } from '../lib/repository-remote.js';
 import { createLogger } from '../lib/logger.js';
 import type { AppBindings } from '../app-context.js';
+import {
+  CloneValidationError,
+  CloneNameConflictError,
+} from '../services/repository-clone-service.js';
 
 const logger = createLogger('api:repositories');
 
@@ -44,6 +51,55 @@ const repositories = new Hono<AppBindings>()
       const message = error instanceof Error ? error.message : 'Unknown error';
       throw new ValidationError(message);
     }
+  })
+  // Clone a repository and register it (Issue #834). Returns 202 Accepted with
+  // a jobId; the client polls GET /api/repositories/clone/:jobId for the
+  // final status. The clone runs as the authenticated user via the
+  // privilege-elevation helper (umbrella #837) when AUTH_MODE=multi-user.
+  .post('/clone', vValidator(CloneRepositoryRequestSchema), async (c) => {
+    const body = c.req.valid('json');
+    const { repositoryCloneService } = c.get('appContext');
+    const authUser = c.get('authUser');
+
+    try {
+      const jobId = await repositoryCloneService.enqueueClone({
+        url: body.url,
+        name: body.name,
+        description: body.description,
+        requestUser: authUser.username,
+      });
+      logger.info(
+        { jobId, requestUser: authUser.username },
+        'Clone job enqueued',
+      );
+      const response: CloneRepositoryResponse = { jobId, repositoryId: null };
+      return c.json(response, 202);
+    } catch (error) {
+      if (error instanceof CloneNameConflictError) {
+        throw new ConflictError(error.message);
+      }
+      if (error instanceof CloneValidationError) {
+        throw new ValidationError(error.message);
+      }
+      throw error;
+    }
+  })
+  // Poll the status of a previously-enqueued clone job (Issue #834).
+  // Returns 404 if the jobId is unknown (e.g., expired or never existed).
+  .get('/clone/:jobId', async (c) => {
+    const jobId = c.req.param('jobId');
+    const { repositoryCloneService } = c.get('appContext');
+    const state = repositoryCloneService.getJob(jobId);
+    if (!state) {
+      throw new NotFoundError('Clone job');
+    }
+    const response: CloneJobStatusResponse = {
+      jobId: state.id,
+      status: state.status,
+      ...(state.repositoryId ? { repositoryId: state.repositoryId } : {}),
+      ...(state.error ? { error: state.error } : {}),
+    };
+    return c.json(response);
   })
   // Redirect to repository GitHub URL
   .get('/:id/github', async (c) => {

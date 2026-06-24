@@ -2,6 +2,7 @@ import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
 import {
   CreateRepositoryRequestSchema,
+  CloneRepositoryRequestSchema,
   CreateWorktreeRequestSchema,
   CreateWorktreePromptRequestSchema,
   CreateWorktreeCustomRequestSchema,
@@ -49,6 +50,117 @@ describe('CreateRepositoryRequestSchema', () => {
       path: '   ',
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe('CloneRepositoryRequestSchema (Issue #834)', () => {
+  describe('URL acceptance', () => {
+    const accepted = [
+      'https://github.com/org/repo.git',
+      'git://github.com/org/repo.git',
+      'ssh://git@github.com:22/org/repo.git',
+      'git@github.com:org/repo.git',
+    ];
+    for (const url of accepted) {
+      it(`accepts ${url}`, () => {
+        const result = v.safeParse(CloneRepositoryRequestSchema, { url });
+        expect(result.success).toBe(true);
+      });
+    }
+  });
+
+  describe('URL rejection (defense-in-depth boundary)', () => {
+    const rejected: { name: string; url: string }[] = [
+      // Cleartext HTTP rejected per CodeRabbit feedback on PR #862 -- no
+      // credential-bearing clone over an unencrypted channel.
+      { name: 'cleartext http://', url: 'http://example.com/org/repo' },
+      // Leading dash -- argv-injection guard.
+      { name: 'leading dash (argv injection)', url: '--upload-pack=evil' },
+      // Absolute filesystem path -- not a valid clone source for this endpoint.
+      { name: 'absolute filesystem path', url: '/etc/passwd' },
+      // Whitespace in URL -- shell-injection guard.
+      { name: 'embedded whitespace', url: 'https://example.com/org/repo with space' },
+      // Empty.
+      { name: 'empty string', url: '' },
+      // Shell metacharacters (CodeRabbit reviewer asked for explicit coverage).
+      { name: 'semicolon (command separator)', url: 'https://example.com/repo;touch%20x' },
+      { name: 'command substitution $(...)', url: 'https://example.com/repo$(whoami)' },
+      { name: 'backtick command substitution', url: 'https://example.com/repo`whoami`' },
+      { name: 'pipe', url: 'https://example.com/repo|cat' },
+      { name: 'ampersand background', url: 'https://example.com/repo&id' },
+      { name: 'greater-than redirect', url: 'https://example.com/repo>x' },
+      { name: 'control character (0x01)', url: 'https://example.com/repo' + String.fromCharCode(0x01) + 'bad' },
+      { name: 'DEL character (0x7F)', url: 'https://example.com/repo' + String.fromCharCode(0x7F) + 'bad' },
+    ];
+    for (const { name, url } of rejected) {
+      it(`rejects ${name}`, () => {
+        const result = v.safeParse(CloneRepositoryRequestSchema, { url });
+        expect(result.success).toBe(false);
+      });
+    }
+  });
+
+  describe('name validation', () => {
+    it('accepts a valid name', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, {
+        url: 'https://github.com/org/repo.git',
+        name: 'my-repo_1.0',
+      });
+      expect(result.success).toBe(true);
+    });
+    it('rejects a name starting with -', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, {
+        url: 'https://github.com/org/repo.git',
+        name: '-rf',
+      });
+      expect(result.success).toBe(false);
+    });
+    it('rejects `.`', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, {
+        url: 'https://github.com/org/repo.git',
+        name: '.',
+      });
+      expect(result.success).toBe(false);
+    });
+    it('rejects `..`', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, {
+        url: 'https://github.com/org/repo.git',
+        name: '..',
+      });
+      expect(result.success).toBe(false);
+    });
+    it('rejects a name containing `..`', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, {
+        url: 'https://github.com/org/repo.git',
+        name: 'a..b',
+      });
+      expect(result.success).toBe(false);
+    });
+    it('rejects whitespace in name', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, {
+        url: 'https://github.com/org/repo.git',
+        name: 'has space',
+      });
+      expect(result.success).toBe(false);
+    });
+    it('rejects > 100 chars', () => {
+      const result = v.safeParse(CloneRepositoryRequestSchema, {
+        url: 'https://github.com/org/repo.git',
+        name: 'a'.repeat(101),
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  it('accepts optional description', () => {
+    const result = v.safeParse(CloneRepositoryRequestSchema, {
+      url: 'https://github.com/org/repo.git',
+      description: '  trimmed  ',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.description).toBe('trimmed');
+    }
   });
 });
 
