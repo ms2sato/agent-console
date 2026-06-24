@@ -490,18 +490,17 @@ export class MultiUserMode implements UserMode {
 
     return this.ptyProvider.spawn(
       'sudo',
-      // `sudo -i` strips most of the env it inherits from the parent. We do
-      // NOT rely on `--preserve-env=...` here for color env: the bun server
-      // process does not carry FORCE_COLOR / TERM / COLORTERM in its own env,
-      // so there is nothing for sudo to preserve. Instead, those values are
-      // inserted into the inner shell's export list (see `buildEnvExportString`,
-      // which merges env-filter's curated child env), so they reach the
-      // spawned process regardless of sudo's env_keep policy. The
-      // `--preserve-env=FORCE_COLOR` flag is retained for harmless safety
-      // (in case a future deploy injects FORCE_COLOR at the systemd unit
-      // level). Issue #863 corrected the previous incorrect assumption that
-      // sudo's env_keep defaults retain TERM/COLORTERM (they do not on
-      // Ubuntu sudo); claude rendered in plain white as a result.
+      // `sudo -i` strips most of the env it inherits from the parent. The
+      // target user's natural env (PATH / HOME / USER / SHELL / LOGNAME /
+      // LANG / etc.) is set by the elevated login shell init. The color env
+      // (TERM / COLORTERM / FORCE_COLOR) — which sudo strips and login init
+      // does not restore — is injected via the inner shell's export list
+      // (see `buildEnvExportString`). The `--preserve-env=FORCE_COLOR` flag
+      // is retained as harmless safety (in case a future deploy injects
+      // FORCE_COLOR at the bun process / systemd unit level, sudo would
+      // preserve it; today the bun process does not carry it). Issues #863
+      // (original misdiagnosis) and #866 (regression fix and design
+      // correction).
       ['-u', request.username, '--preserve-env=FORCE_COLOR', '-i', 'sh', '-c', innerCommand],
       {
         name: 'xterm-256color',
@@ -515,16 +514,36 @@ export class MultiUserMode implements UserMode {
   }
 
   /**
-   * Build export string from env-filter's curated system env (TERM,
-   * COLORTERM, FORCE_COLOR, AGENT_CONSOLE_* unset prefix, etc.) merged
-   * with additionalEnvVars (repository + template env vars). Without
-   * env-filter, `sudo -i` would strip TERM and the inner shell would
-   * land on TERM=unknown — chalk-based CLIs (claude, etc.) then
-   * suppress color output. additionalEnvVars wins on key collision,
-   * preserving per-spawn overrides. Issue #863.
+   * Build the inner-shell export string for a privilege-elevated PTY spawn.
+   *
+   * `sudo -i` runs the target user's login shell init (.bashrc / .bash_profile /
+   * /etc/profile / system-wide), which sets the user's natural PATH / HOME /
+   * USER / SHELL / LOGNAME / PWD / LANG / etc. We do NOT inherit bun server's
+   * env (the server runs as `agentconsole`); doing so would override the
+   * elevated user's natural env and break PATH lookup, HOME-relative config
+   * loading, etc. Issue #866 (regression of PR #864 / Issue #863).
+   *
+   * The only env vars we inject across the privilege boundary are the ones
+   * sudo strips AND the login shell init does not restore — empirically just
+   * the color trinity (TERM / COLORTERM / FORCE_COLOR). Linux sudo defaults do
+   * not preserve them in env_keep; no shell init script sets them (terminals
+   * are detection-driven, but here the terminal is xterm.js via our PTY
+   * allocation — we know the capability and pass it explicitly).
+   *
+   * `additionalEnvVars` (per-spawn repo / template env) wins on key collision,
+   * preserving spawn-specific overrides.
+   *
+   * Sync contract: changes to this set must be mirrored in
+   * `scripts/smoke/check-multiuser-pty-env.sh` so post-deploy verification
+   * matches the production code path.
    */
   private buildEnvExportString(request: PtySpawnRequest): string {
-    const combined = { ...getCleanChildProcessEnv(), ...request.additionalEnvVars };
+    const colorEnv: Record<string, string> = {
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      FORCE_COLOR: '3',
+    };
+    const combined = { ...colorEnv, ...request.additionalEnvVars };
     return this.buildExportString(combined);
   }
 

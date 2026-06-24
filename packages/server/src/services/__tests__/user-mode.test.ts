@@ -419,6 +419,21 @@ describe('MultiUserMode', () => {
       expect(innerCommand).toContain("TERM='xterm-256color'");
       expect(innerCommand).toContain("COLORTERM='truecolor'");
       expect(innerCommand).toContain("FORCE_COLOR='3'");
+
+      // Negative assertions (Issue #866): bun server's env (PATH / HOME /
+      // USER / SHELL / LOGNAME — agentconsole's values when the server runs
+      // multi-user) must NOT cross the privilege boundary. The elevated
+      // user's natural login env (established by `sudo -i`'s shell init) is
+      // the source of truth for those vars; overriding them broke PATH
+      // lookup and surfaced as `sh: 1: claude: Permission denied` on the
+      // dogfood host. The previous Issue #863 fix attempt inadvertently
+      // injected them via `getCleanChildProcessEnv()`; this assertion locks
+      // in that they are no longer exported from this path.
+      expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bPATH=/);
+      expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bHOME=/);
+      expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bUSER=/);
+      expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bSHELL=/);
+      expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bLOGNAME=/);
     });
   });
 
