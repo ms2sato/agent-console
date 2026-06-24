@@ -31,6 +31,50 @@ const COLOR_ENV: Readonly<Record<string, string>> = Object.freeze({
   FORCE_COLOR: '3',
 });
 
+/**
+ * Env vars whose values must come from the elevated user's natural login
+ * shell init -- never from per-spawn additionalEnvVars (repository / template
+ * env). If a caller (e.g., a malicious or careless repository config)
+ * supplies any of these in `additionalEnvVars`, the helper silently strips
+ * them before exporting, so the elevated user's PATH lookup, HOME-relative
+ * config loading, library preload chain, etc. cannot be overridden across
+ * the privilege boundary.
+ *
+ * COLOR env (TERM / COLORTERM / FORCE_COLOR) is intentionally NOT in this
+ * list -- a template legitimately may want to force, e.g., TERM=dumb for a
+ * non-interactive headless command. Color env overrides are scoped to
+ * presentation, not to security-critical resolution.
+ *
+ * Mirrors `PROTECTED_ENV_VARS` in `env-filter.ts` minus the color trinity.
+ * CodeRabbit Major finding on PR #867 surfaced the gap that the previous
+ * "additionalEnvVars wins" rule was too permissive at the privilege
+ * boundary.
+ */
+const PRIVILEGE_BOUNDARY_PROTECTED: readonly string[] = Object.freeze([
+  // Security-sensitive: library injection
+  'LD_PRELOAD',           // Linux: preload shared library
+  'LD_LIBRARY_PATH',      // Linux: library search path
+  'DYLD_INSERT_LIBRARIES', // macOS: preload dynamic library
+  'DYLD_LIBRARY_PATH',    // macOS: library search path
+  'DYLD_FRAMEWORK_PATH',  // macOS: framework search path
+  // System-critical: must come from login shell init
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+]);
+
+function stripPrivilegeBoundaryProtected(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!PRIVILEGE_BOUNDARY_PROTECTED.includes(key)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 export interface ElevationArgsInput {
   /**
    * Target OS user the privilege-elevation chain should land in.
@@ -42,7 +86,10 @@ export interface ElevationArgsInput {
   cwd: string;
   /**
    * Per-spawn additional env (repository / template env). Wins on key
-   * collision with the color env.
+   * collision with the color env, EXCEPT for privilege-boundary-protected
+   * keys (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `LD_PRELOAD`, etc. --
+   * see `PRIVILEGE_BOUNDARY_PROTECTED`), which are silently stripped so a
+   * caller cannot override the elevated user's natural login env.
    */
   additionalEnvVars: Record<string, string>;
   /**
@@ -78,9 +125,14 @@ export interface ElevationArgs {
  * contract.
  */
 export function buildElevationArgs(input: ElevationArgsInput): ElevationArgs {
+  // Strip privilege-boundary-protected vars from additionalEnvVars BEFORE
+  // merging. This prevents a malicious / careless repository config from
+  // overriding the elevated user's PATH, HOME, LD_PRELOAD, etc. via per-spawn
+  // env. CodeRabbit Security/Major finding on PR #867.
+  const filteredAdditional = stripPrivilegeBoundaryProtected(input.additionalEnvVars);
   const combined: Record<string, string> = {
     ...COLOR_ENV,
-    ...input.additionalEnvVars,
+    ...filteredAdditional,
     ...(input.agentConsoleVars ?? {}),
   };
   const exports = buildExportString(combined);
