@@ -43,6 +43,7 @@
  */
 
 import { spawn } from 'bun';
+import { existsSync } from 'fs';
 import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';
 
 const targetUser = process.argv[2];
@@ -51,11 +52,26 @@ if (!targetUser) {
   process.exit(2);
 }
 
+// Resolve absolute paths for the system binaries this script spawns. The
+// invoking process's PATH cannot be trusted -- when the script is run via
+// `sudo -u <service-account>`, the inherited PATH may point to directories
+// the service account cannot exec, producing surprising EACCES errors at
+// posix_spawn time (observed during initial dogfood test of #866). Use
+// absolute paths so we never depend on PATH lookup for sub-process spawns.
+function resolveBin(name: string, candidates: string[]): string {
+  for (const path of candidates) {
+    if (existsSync(path)) return path;
+  }
+  throw new Error(`Could not find ${name} in any of: ${candidates.join(', ')}`);
+}
+const GETENT_BIN = resolveBin('getent', ['/usr/bin/getent', '/bin/getent']);
+const SUDO_BIN = resolveBin('sudo', ['/usr/bin/sudo', '/bin/sudo']);
+
 // Resolve the target user's actual home from passwd, rather than assuming
 // `/home/<user>`. Distro / config variations (e.g., /Users on macOS, or
 // `useradd -d` with a custom path) would otherwise produce false-failure
 // assertions. CodeRabbit feedback on PR #867.
-const getentProc = spawn(['getent', 'passwd', targetUser], { stdout: 'pipe', stderr: 'pipe' });
+const getentProc = spawn([GETENT_BIN, 'passwd', targetUser], { stdout: 'pipe', stderr: 'pipe' });
 const getentStdout = await new Response(getentProc.stdout).text();
 const getentExit = await getentProc.exited;
 if (getentExit !== 0 || !getentStdout.trim()) {
@@ -81,8 +97,8 @@ const { argv } = buildElevationArgs({
   command: 'env',
 });
 
-// Real sudo invocation.
-const proc = spawn(['sudo', ...argv], { stdout: 'pipe', stderr: 'pipe' });
+// Real privilege-elevation invocation (absolute path; see resolveBin above).
+const proc = spawn([SUDO_BIN, ...argv], { stdout: 'pipe', stderr: 'pipe' });
 const stdout = await new Response(proc.stdout).text();
 const stderr = await new Response(proc.stderr).text();
 const exitCode = await proc.exited;
