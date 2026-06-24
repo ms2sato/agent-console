@@ -1,3 +1,4 @@
+import { promises as fsPromises } from 'fs';
 import type { Worktree, HookCommandResult } from '@agent-console/shared';
 import type { Session } from '@agent-console/shared';
 import type { SessionManager } from './session-manager.js';
@@ -7,9 +8,9 @@ import type { WorktreeService } from './worktree-service.js';
 /** Narrow subset of WorktreeService methods needed by the creation service. */
 type CreateWorktreeServiceDeps = Pick<
   WorktreeService,
-  'createWorktree' | 'listWorktrees' | 'removeWorktree' | 'executeHookCommand'
+  'verifyRepoAccessible' | 'createWorktree' | 'removeWorktree' | 'executeHookCommand'
 >;
-import { fetchRemote } from '../lib/git.js';
+import { fetchRemote, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('worktree-creation-service');
@@ -83,7 +84,27 @@ export async function createWorktreeWithSession(
     requestUsername,
   } = params;
 
-  // 1. Handle remote fetch if requested
+  // 1. Pre-probe: verify the source repo is git-accessible BEFORE any
+  // filesystem side effects. Surfaces failures like `dubious ownership`,
+  // missing remote, or corrupt `.git/` with the underlying git stderr so
+  // operators see the real cause instead of a misleading post-create
+  // "could not be found in the list" message (Issue #854).
+  try {
+    await worktreeService.verifyRepoAccessible(repoPath);
+  } catch (probeErr) {
+    const detail = probeErr instanceof GitError
+      ? (probeErr.stderr.trim() || `git exit code ${probeErr.exitCode}`)
+      : probeErr instanceof Error
+        ? probeErr.message
+        : String(probeErr);
+    logger.warn(
+      { repoId, repoPath, err: probeErr },
+      'Source repo accessibility probe failed; aborting worktree create',
+    );
+    return { success: false, error: `Cannot access repository: ${detail}` };
+  }
+
+  // 2. Handle remote fetch if requested
   let effectiveBaseBranch = baseBranch;
   let fetchFailed = false;
   let fetchError: string | undefined;
@@ -103,7 +124,7 @@ export async function createWorktreeWithSession(
     }
   }
 
-  // 2. Create worktree
+  // 3. Create worktree
   const wtResult = await worktreeService.createWorktree(
     repoPath,
     branch,
@@ -118,17 +139,38 @@ export async function createWorktreeWithSession(
 
   const createdWorktreePath = wtResult.worktreePath;
 
+  // 4. Sanity safety net: confirm the directory actually exists. `git worktree
+  // add` is reliable -- exit 0 means the worktree is registered -- so this
+  // check is expected to fire approximately never. Kept defensively so a
+  // genuinely unexpected failure (e.g., filesystem race, out-of-band deletion)
+  // does not silently propagate into session creation.
   try {
-    // 3. Find created worktree info
-    const worktrees = await worktreeService.listWorktrees(repoPath, repoId);
-    const worktree = worktrees.find(wt => wt.path === createdWorktreePath);
+    await fsPromises.stat(createdWorktreePath);
+  } catch (statErr) {
+    logger.warn(
+      { worktreePath: createdWorktreePath, err: statErr },
+      'createWorktree reported success but stat failed; rolling back',
+    );
+    await rollbackWorktree(worktreeService, repoPath, createdWorktreePath);
+    return {
+      success: false,
+      error: `Worktree create reported success but directory is missing: ${createdWorktreePath}`,
+    };
+  }
 
-    if (!worktree) {
-      await rollbackWorktree(worktreeService, repoPath, createdWorktreePath);
-      return { success: false, error: 'Worktree was created but could not be found in the list' };
-    }
+  // The freshly-created worktree's authoritative description. `branch` here
+  // is the requested branch name (the same string `createWorktree` was called
+  // with); `path` is what `git worktree add` actually produced.
+  const worktree: Worktree = {
+    path: createdWorktreePath,
+    branch,
+    isMain: false,
+    repositoryId: repoId,
+    index: wtResult.index,
+  };
 
-    // 4. Execute setup command if configured
+  try {
+    // 5. Execute setup command if configured
     let setupCommandResult: HookCommandResult | undefined;
     if (setupCommand && wtResult.index !== undefined) {
       setupCommandResult = await worktreeService.executeHookCommand(
@@ -142,7 +184,7 @@ export async function createWorktreeWithSession(
       );
     }
 
-    // 5. Create session (unless explicitly skipped)
+    // 6. Create session (unless explicitly skipped)
     let session: Session | undefined;
     if (autoStartSession) {
       session = await sessionManager.createSession({

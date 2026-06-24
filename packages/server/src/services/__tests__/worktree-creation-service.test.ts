@@ -1,12 +1,13 @@
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import type { HookCommandResult, Worktree } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
-import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { GitError, mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 // --- Mock worktreeService (now passed as parameter, no mock.module needed) ---
 
-const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Worktree[]>>(() =>
-  Promise.resolve([]),
+const mockVerifyRepoAccessible = mock<(repoPath: string) => Promise<void>>(() =>
+  Promise.resolve(),
 );
 const mockCreateWorktree = mock<
   (
@@ -15,7 +16,7 @@ const mockCreateWorktree = mock<
     repoId: string,
     baseBranch?: string,
     requestUsername?: string | null,
-  ) => Promise<{ worktreePath: string; error?: string }>
+  ) => Promise<{ worktreePath: string; error?: string; index?: number }>
 >(() => Promise.resolve({ worktreePath: '/repos/my-repo/worktrees/wt-new' }));
 const mockRemoveWorktree = mock<
   (repoPath: string, path: string, force: boolean) => Promise<{ success: boolean; error?: string }>
@@ -25,7 +26,7 @@ const mockExecuteHookCommand = mock<
 >(() => Promise.resolve({ success: true }));
 
 const mockWorktreeService = {
-  listWorktrees: mockListWorktrees,
+  verifyRepoAccessible: mockVerifyRepoAccessible,
   createWorktree: mockCreateWorktree,
   removeWorktree: mockRemoveWorktree,
   executeHookCommand: mockExecuteHookCommand,
@@ -48,7 +49,10 @@ const { createWorktreeWithSession } = await import('../worktree-creation-service
 
 const CREATED_PATH = '/repos/my-repo/worktrees/wt-new';
 
-const WORKTREE: Worktree = {
+// The orchestration no longer derives the worktree from `listWorktrees`; it
+// builds it directly from the create call's result + the request params.
+// The expected shape mirrors that construction.
+const EXPECTED_WORKTREE: Worktree = {
   path: CREATED_PATH,
   branch: 'feature-new',
   isMain: false,
@@ -85,22 +89,44 @@ const DEFAULT_PARAMS = {
 };
 
 describe('createWorktreeWithSession', () => {
+  // `fs.promises.stat` is called by the production code as a sanity safety
+  // net after `createWorktree` reports success. The default spy resolves so
+  // the happy-path tests succeed without a real filesystem; the sanity-net
+  // test overrides it to reject. `mockRestore` runs after each test so the
+  // spy never leaks into sibling test files.
+  let statSpy: ReturnType<typeof spyOn> | undefined;
+
   beforeEach(() => {
     resetGitMocks();
-    mockListWorktrees.mockReset();
+    mockVerifyRepoAccessible.mockReset();
     mockCreateWorktree.mockReset();
     mockRemoveWorktree.mockReset();
     mockExecuteHookCommand.mockReset();
 
     // Default implementations
+    mockVerifyRepoAccessible.mockImplementation(() => Promise.resolve());
     mockCreateWorktree.mockImplementation(() =>
       Promise.resolve({ worktreePath: CREATED_PATH, index: 2 }),
     );
-    mockListWorktrees.mockImplementation(() => Promise.resolve([WORKTREE]));
     mockRemoveWorktree.mockImplementation(() => Promise.resolve({ success: true }));
     mockExecuteHookCommand.mockImplementation(() =>
       Promise.resolve({ success: true, output: 'setup done' }),
     );
+
+    // Default fs.promises.stat spy: resolve so the sanity check passes.
+    // The production call site uses the single-arg form `fsPromises.stat(path)`
+    // which always returns Promise<Stats>; the rejected-promise pattern below
+    // (used by the sanity-net failure test) mirrors the same cast already
+    // present in worktree-service.test.ts.
+    statSpy = spyOn(fs.promises, 'stat').mockImplementation(
+      ((_p: fs.PathLike) =>
+        Promise.resolve({ isDirectory: () => true } as fs.Stats)) as typeof fs.promises.stat,
+    );
+  });
+
+  afterEach(() => {
+    statSpy?.mockRestore();
+    statSpy = undefined;
   });
 
   it('happy path: fetch, create worktree, setup command, create session', async () => {
@@ -112,7 +138,7 @@ describe('createWorktreeWithSession', () => {
     );
 
     expect(result.success).toBe(true);
-    expect(result.worktree).toEqual(WORKTREE);
+    expect(result.worktree).toEqual(EXPECTED_WORKTREE);
     expect(result.session).toEqual(MOCK_SESSION);
     expect(result.setupCommandResult).toEqual({ success: true, output: 'setup done' });
 
@@ -180,18 +206,75 @@ describe('createWorktreeWithSession', () => {
     expect(sm.createSession).not.toHaveBeenCalled();
   });
 
-  it('rolls back worktree and returns failure when worktree not found after creation', async () => {
-    // listWorktrees returns empty — the created worktree is not found
-    mockListWorktrees.mockImplementation(() => Promise.resolve([]));
+  // --- Issue #854: pre-probe + sanity-net (replaces the old post-create
+  // listWorktrees-find-rollback branch which was removed in favour of a
+  // pre-create accessibility probe). ---
+
+  it('returns "Cannot access repository" when pre-probe throws GitError (Issue #854)', async () => {
+    mockVerifyRepoAccessible.mockImplementation(() =>
+      Promise.reject(
+        new GitError(
+          'git worktree failed: fatal: detected dubious ownership in repository at /repo',
+          128,
+          "fatal: detected dubious ownership in repository at '/repo'",
+        ),
+      ),
+    );
 
     const sm = createMockSessionManager();
     const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('Worktree was created but could not be found in the list');
+    expect(result.error).toBe(
+      "Cannot access repository: fatal: detected dubious ownership in repository at '/repo'",
+    );
+    // Pre-probe failure aborts BEFORE any filesystem side effect.
+    expect(mockCreateWorktree).not.toHaveBeenCalled();
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+    expect(sm.createSession).not.toHaveBeenCalled();
+  });
 
-    // Rollback should have been called
+  it('falls back to git exit code when probe GitError stderr is empty (Issue #854)', async () => {
+    mockVerifyRepoAccessible.mockImplementation(() =>
+      Promise.reject(new GitError('git worktree failed', 128, '   ')),
+    );
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Cannot access repository: git exit code 128');
+    expect(mockCreateWorktree).not.toHaveBeenCalled();
+  });
+
+  it('surfaces plain Error message when pre-probe throws non-GitError (Issue #854)', async () => {
+    mockVerifyRepoAccessible.mockImplementation(() => Promise.reject(new Error('unexpected boom')));
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Cannot access repository: unexpected boom');
+    expect(mockCreateWorktree).not.toHaveBeenCalled();
+  });
+
+  it('rolls back and returns "directory is missing" when sanity-net stat fails (Issue #854)', async () => {
+    // createWorktree reports success but the path does not actually exist
+    // on disk -- the sanity-net stat catches it and triggers rollback.
+    statSpy?.mockRestore();
+    statSpy = spyOn(fs.promises, 'stat').mockImplementation((() =>
+      Promise.reject(Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' }))
+    ) as typeof fs.promises.stat);
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(
+      `Worktree create reported success but directory is missing: ${CREATED_PATH}`,
+    );
     expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true);
+    expect(sm.createSession).not.toHaveBeenCalled();
   });
 
   it('rolls back worktree and returns failure when session creation fails', async () => {
@@ -216,7 +299,7 @@ describe('createWorktreeWithSession', () => {
     );
 
     expect(result.success).toBe(true);
-    expect(result.worktree).toEqual(WORKTREE);
+    expect(result.worktree).toEqual(EXPECTED_WORKTREE);
     expect(result.session).toBeUndefined();
     expect(sm.createSession).not.toHaveBeenCalled();
   });

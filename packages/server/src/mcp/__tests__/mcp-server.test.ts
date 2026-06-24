@@ -307,6 +307,13 @@ describe('MCP Server Tools', () => {
         const wtPath = tokens.find((t) => t.includes('/worktrees/wt-'));
         if (wtPath) {
           mcpRunAsUserCapture.capturedWorktreePath = wtPath;
+          // Mirror what real `git worktree add` does on disk so the
+          // post-create sanity-net `fsPromises.stat` (Issue #854) finds
+          // the directory. The stub still bypasses real git, but the
+          // creation-service contract assumes the directory exists after
+          // a successful exitCode 0.
+          const fs = await import('fs');
+          fs.mkdirSync(wtPath, { recursive: true });
         }
         if (mcpRunAsUserCapture.responseOverride) {
           return mcpRunAsUserCapture.responseOverride;
