@@ -17,8 +17,17 @@
 #   /var/lib/agent-console-dev/repositories/  same
 #   /var/lib/agent-console-dev/uploads/        same
 #
-# Source code: served from the current git checkout (worktree). The service
-# user gets read-only ACL access so hot reload works without rsync.
+# Source-code deployment:
+#   The script rsyncs the current git checkout to
+#   /home/agentconsole/agent-console-dev/ (owned by agentconsole). This
+#   mirrors production's deploy pattern (`/home/agentconsole/agent-console/`)
+#   so the service user can read the code without ACL grants on the
+#   developer's home tree.
+#
+#   Trade-off: edits to the developer's worktree do NOT propagate to the
+#   running server automatically. Re-run this script to re-sync. (Vite's
+#   client-side HMR works as usual because vite runs from the developer's
+#   worktree.)
 #
 # Ports: defaults match `scripts/dev.sh` (3457 / 5173) so the production
 # instance on 8080 stays undisturbed. Only one dev instance can run at a
@@ -30,7 +39,7 @@
 #   - current developer user is a member of agent-console-users
 #   - sudoers config permits agentconsole -> developer-user without password
 #   - agentconsole has bun installed (typically /home/agentconsole/.bun/bin/bun)
-#   - acl package installed (`setfacl`)
+#   - rsync installed
 #
 # Usage:
 #   bash scripts/dev-multiuser.sh
@@ -85,8 +94,8 @@ if ! id -nG "$CURRENT_USER" | tr ' ' '\n' | grep -qx "$SHARED_GROUP"; then
   exit 2
 fi
 
-if ! command -v setfacl >/dev/null 2>&1; then
-  echo "ERROR: setfacl not found. Install with: sudo apt install -y acl" >&2
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "ERROR: rsync not found. Install with: sudo apt install -y rsync" >&2
   exit 2
 fi
 
@@ -98,17 +107,19 @@ if [ -z "$SERVICE_HOME" ]; then
   echo "ERROR: cannot resolve home dir for $SERVICE_USER." >&2
   exit 2
 fi
-SERVICE_BUN=""
-for candidate in "$SERVICE_HOME/.bun/bin/bun" /usr/local/bin/bun /usr/bin/bun; do
-  if [ -x "$candidate" ]; then SERVICE_BUN="$candidate"; break; fi
-done
-if [ -z "$SERVICE_BUN" ]; then
-  echo "ERROR: bun not found in $SERVICE_USER's expected paths." >&2
-  echo "  Looked at: $SERVICE_HOME/.bun/bin/bun, /usr/local/bin/bun, /usr/bin/bun" >&2
-  echo "  Override with SERVICE_BUN=/path/to/bun" >&2
-  exit 2
-fi
-echo "[pre-flight] service user bun: $SERVICE_BUN"
+# Resolve the service user's bun binary. We cannot reliably probe it from
+# the developer's session: the binary typically lives in $SERVICE_HOME/.bun/
+# (mode 700/755 on the user's home), so `[ -x ]` and even `stat` may fail
+# for the developer. Using `sudo -n test` requires NOPASSWD which the
+# developer rarely has against $SERVICE_USER, so a probe would either fail
+# (false negative) or block on a password prompt (unfriendly).
+#
+# Pragmatic strategy: default to the production install path
+# (`$SERVICE_HOME/.bun/bin/bun`) and let the user override with SERVICE_BUN.
+# If the path is wrong at server-start time, the elevated `bun` invocation
+# will fail with a clear "no such file" error, surfacing the misconfiguration.
+SERVICE_BUN="${SERVICE_BUN:-$SERVICE_HOME/.bun/bin/bun}"
+echo "[pre-flight] service user bun: $SERVICE_BUN (override with SERVICE_BUN=... if wrong)"
 
 # --- 1. Idempotent dev data root setup (production-mirrored ownership) -----
 echo "[1/4] Ensuring dev data root at $DEV_DATA_ROOT (owned by $SERVICE_USER:$SHARED_GROUP, mode 2775)..."
@@ -131,16 +142,31 @@ ensure_shared_dir "$DEV_DATA_ROOT/source-repos"
 ensure_shared_dir "$DEV_DATA_ROOT/repositories"
 ensure_shared_dir "$DEV_DATA_ROOT/uploads"
 
-# --- 2. ACL grant on worktree so the service user can read source code -----
-echo "[2/4] Ensuring $SERVICE_USER can read $REPO_ROOT (ACL)..."
-if ! sudo -u "$SERVICE_USER" test -r "$REPO_ROOT/package.json"; then
-  echo "  granting ACL (one-time setup)..."
-  sudo setfacl -R -m "u:$SERVICE_USER:rX" "$REPO_ROOT"
-  sudo setfacl -R -d -m "u:$SERVICE_USER:rX" "$REPO_ROOT" 2>/dev/null || true
-  echo "  ACL granted recursively (default ACL set so new files inherit)"
-else
-  echo "  already accessible"
-fi
+# --- 2. Deploy source to a directory the service user owns (rsync) ---------
+# Mirrors production's deploy pattern: production rsyncs to
+# /home/agentconsole/agent-console; we rsync to
+# /home/agentconsole/agent-console-dev so the production tree stays intact.
+TARGET_HOME="${TARGET_HOME:-$SERVICE_HOME/agent-console-dev}"
+echo "[2/5] Deploying source to $TARGET_HOME via rsync (as $SERVICE_USER)..."
+sudo install -d -o "$SERVICE_USER" -g "$SHARED_GROUP" -m 0755 "$TARGET_HOME"
+sudo rsync -a --delete \
+  --chown="$SERVICE_USER:$SHARED_GROUP" \
+  --exclude='/.git' \
+  --exclude='/.git/' \
+  --exclude='/node_modules' \
+  --exclude='/packages/*/node_modules' \
+  --exclude='/dist' \
+  --exclude='/packages/*/dist' \
+  --exclude='/.claude/worktrees' \
+  --exclude='*.log' \
+  "$REPO_ROOT/" "$TARGET_HOME/"
+echo "  source rsync complete"
+
+# --- 3. Ensure target's node_modules exist (bun install) -------------------
+# Skipped only if a previous run left a complete install. bun install is
+# idempotent + fast on no-change, so we run unconditionally for safety.
+echo "[3/5] Running bun install in $TARGET_HOME (as $SERVICE_USER)..."
+sudo -u "$SERVICE_USER" bash -c "cd '$TARGET_HOME' && '$SERVICE_BUN' install" 2>&1 | sed 's/^/  /'
 
 # --- 3. Cleanup handlers ---------------------------------------------------
 SERVER_PID=""
@@ -161,18 +187,25 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-# --- 4. Start client (vite, as developer) ----------------------------------
-echo "[3/4] Starting vite client (as $CURRENT_USER) on port $CLIENT_PORT..."
+# --- 5. Start client (vite, as developer, from the worktree) ---------------
+# Vite runs against the developer's worktree (NOT $TARGET_HOME), so client
+# edits propagate through HMR as usual. The vite dev server proxies API
+# requests to localhost:$PORT (server below), so the client/server boundary
+# is identical to production from the browser's perspective.
+echo "[4/5] Starting vite client (as $CURRENT_USER, from worktree) on port $CLIENT_PORT..."
 (cd "$REPO_ROOT/packages/client" && CLIENT_PORT="$CLIENT_PORT" bun run dev --port "$CLIENT_PORT") 2>&1 \
   | sed -u 's/^/[client] /' &
 VITE_PID=$!
 
-# --- 5. Start server (bun, as service user, multi-user env) ----------------
-echo "[4/4] Starting server (as $SERVICE_USER) on port $PORT with multi-user env..."
+# --- 6. Start server (bun, as service user, from rsync target) -------------
 # Mirror production systemd unit env (see scripts/agent-console-multiuser.service.template).
 # UMask 0002 is set via shell so setgid + sharedRepository=group inheritance works.
 # NODE_ENV=development (vs production) so dev-only conveniences (verbose logs,
 # HMR) remain available. AUTH_COOKIE_SECURE=false so cookies work over http.
+# Server runs against $TARGET_HOME (NOT the worktree) -- edits to server code
+# in the worktree do NOT propagate until you re-run this script. Vite's HMR
+# only covers client-side; server is read at process start.
+echo "[5/5] Starting server (as $SERVICE_USER, from $TARGET_HOME) on port $PORT..."
 sudo -u "$SERVICE_USER" env \
   PATH="$SERVICE_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin" \
   PORT="$PORT" \
@@ -181,7 +214,7 @@ sudo -u "$SERVICE_USER" env \
   AGENT_CONSOLE_HOME="$DEV_DATA_ROOT" \
   AUTH_COOKIE_SECURE=false \
   NODE_ENV=development \
-  bash -c "umask 0002 && cd '$REPO_ROOT/packages/server' && '$SERVICE_BUN' --watch src/index.ts" 2>&1 \
+  bash -c "umask 0002 && cd '$TARGET_HOME/packages/server' && '$SERVICE_BUN' --watch src/index.ts" 2>&1 \
   | sed -u 's/^/[server] /' &
 SERVER_PID=$!
 

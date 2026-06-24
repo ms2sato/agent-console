@@ -818,9 +818,12 @@ Use this when:
 - Verifying a feature that depends on the privilege-elevation chain
   (`runAsUser`, shared-group ownership, setgid inheritance,
   `sharedRepository=group`, server-side `safe.directory`).
-- Iterating on UI / API code while preserving production-mirrored ownership
-  semantics. Hot reload works because the service user gets a read-only ACL
-  on the current git checkout rather than a separate rsync target.
+- Iterating on UI code while preserving production-mirrored server-side
+  ownership semantics. The developer's worktree is rsynced to
+  `/home/agentconsole/agent-console-dev/` so the service user has its own
+  source tree (mirroring production's `/home/agentconsole/agent-console/`).
+  Client-side HMR (vite) works against the worktree as usual; server-side
+  edits require re-running this script to re-sync.
 
 ### Prerequisites (one-time)
 
@@ -836,7 +839,8 @@ sudo gpasswd -a $(whoami) agent-console-users
 # group is effective in the running shell
 ```
 
-`setfacl` (Ubuntu: `acl` package) must be installed.
+`rsync` must be installed (standard on most distros; `sudo apt install -y rsync`
+if missing).
 
 ### Path layout
 
@@ -867,17 +871,31 @@ not both).
 2. **Data root setup (idempotent):** ensure `/var/lib/agent-console-dev/`
    subtree exists with `agentconsole:agent-console-users` ownership and
    mode `2775`. Subsequent runs only verify ownership.
-3. **ACL grant on the worktree:** if `agentconsole` cannot already read the
-   checkout, recursively grant `u:agentconsole:rX` (read + traverse) on the
-   tree, with a default ACL so newly-created files inherit. One-time per
-   worktree; subsequent runs detect access and skip.
-4. **Start vite client** (as the developer, port 5173).
-5. **Start server** (as `agentconsole`, port 3457) with env mirroring the
-   production systemd unit (`AUTH_MODE=multi-user`,
+3. **Source rsync to service-user target:** `sudo rsync -a --delete
+   --chown=agentconsole:agent-console-users` copies the worktree to
+   `/home/agentconsole/agent-console-dev/`, owned by the service user.
+   Excludes `node_modules`, `dist`, `.git`, `.claude/worktrees` (target gets
+   its own node_modules via `bun install`). The developer's home directory
+   permissions are NEVER modified.
+4. **`bun install` in target** (as `agentconsole`): ensures the service user
+   has its own dependency tree (correct platform binaries, matches what
+   `agentconsole` can exec).
+5. **Start vite client** (as the developer, from the worktree, port 5173).
+6. **Start server** (as `agentconsole`, from the target, port 3457) with env
+   mirroring the production systemd unit (`AUTH_MODE=multi-user`,
    `AGENT_CONSOLE_HOME=/var/lib/agent-console-dev`,
    `AUTH_COOKIE_SECURE=false`, `NODE_ENV=development`, `UMask=0002` via
    shell, `PATH=$SERVICE_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin`).
-6. **Cleanup on Ctrl+C** — both processes terminate.
+7. **Cleanup on Ctrl+C** — both processes terminate.
+
+### Iteration loop
+
+- **Client edits** (anything under `packages/client/`) propagate to the
+  running UI via vite HMR. No re-run needed.
+- **Server / shared edits** (anything under `packages/server/` or
+  `packages/shared/`) require **re-running this script** to re-rsync into
+  `$TARGET_HOME`. The re-sync is fast (rsync only transfers changed files);
+  the server's `bun --watch` then restarts.
 
 ### Comparison: single-user dev vs multi-user dev
 
@@ -899,6 +917,7 @@ not both).
 SERVICE_USER=otheruser \
 SHARED_GROUP=other-shared \
 DEV_DATA_ROOT=/var/lib/agent-console-dev-alt \
+TARGET_HOME=/home/otheruser/agent-console-dev \
 PORT=3458 CLIENT_PORT=5174 \
 bun run dev:multiuser
 ```
