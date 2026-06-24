@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, afterEach } from 'bun:test';
 import * as os from 'node:os';
 import type { AgentDefinition } from '@agent-console/shared';
+import { extractPromptFromSpawnCommand } from '../../__tests__/utils/extract-prompt-from-command.js';
 
 // Mock Bun.spawn for agent command execution
 let mockSpawnResult = {
@@ -228,9 +229,10 @@ describe('repository-description-generator', () => {
         requestUser: null,
       });
 
-      // Verify the prompt uses the README.md content
-      const options = spawnCalls[0].options as { env?: Record<string, string> };
-      const prompt = options.env!.__AGENT_PROMPT__;
+      // Verify the prompt uses the README.md content. After Issue #851, the
+      // prompt is embedded directly in the spawn command via shellEscape
+      // (no longer indirected through env.__AGENT_PROMPT__).
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
       expect(prompt).toContain('# Markdown README');
       expect(prompt).not.toContain('Plain README');
     });
@@ -248,8 +250,7 @@ describe('repository-description-generator', () => {
         requestUser: null,
       });
 
-      const options = spawnCalls[0].options as { env?: Record<string, string> };
-      const prompt = options.env!.__AGENT_PROMPT__;
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
       expect(prompt).toContain('...(truncated)');
       // The truncated content should be ~8000 chars, not 10000
       expect(prompt.length).toBeLessThan(10000);
@@ -268,8 +269,7 @@ describe('repository-description-generator', () => {
         requestUser: null,
       });
 
-      const options = spawnCalls[0].options as { env?: Record<string, string> };
-      const prompt = options.env!.__AGENT_PROMPT__;
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
       expect(prompt).not.toContain('...(truncated)');
       expect(prompt).toContain(shortContent);
     });
@@ -321,7 +321,7 @@ describe('repository-description-generator', () => {
       expect(result.description).toBe('A project description.');
     });
 
-    it('should pass prompt via environment variable', async () => {
+    it('should pass prompt embedded in the spawn command (Issue #851)', async () => {
       mockFileContents.set('/repo/README.md', '# My Project');
       setMockSpawnResult('A project.');
 
@@ -333,12 +333,14 @@ describe('repository-description-generator', () => {
         requestUser: null,
       });
 
-      // Verify env contains the prompt
+      // Verify the prompt is embedded in the spawn command (no longer via env).
       expect(spawnCalls.length).toBe(1);
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
+      expect(prompt).toContain('repository description generator');
+      expect(prompt).toContain('# My Project');
+      // env must NOT carry the prompt anymore.
       const options = spawnCalls[0].options as { env?: Record<string, string> };
-      expect(options.env).toBeDefined();
-      expect(options.env!.__AGENT_PROMPT__).toContain('repository description generator');
-      expect(options.env!.__AGENT_PROMPT__).toContain('# My Project');
+      expect(options.env?.__AGENT_PROMPT__).toBeUndefined();
     });
 
     it('should include language instruction in prompt', async () => {
@@ -353,8 +355,7 @@ describe('repository-description-generator', () => {
         requestUser: null,
       });
 
-      const options = spawnCalls[0].options as { env?: Record<string, string> };
-      const prompt = options.env!.__AGENT_PROMPT__;
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
       expect(prompt).toContain('same language as the README');
     });
 
@@ -370,8 +371,7 @@ describe('repository-description-generator', () => {
         requestUser: null,
       });
 
-      const options = spawnCalls[0].options as { env?: Record<string, string> };
-      const prompt = options.env!.__AGENT_PROMPT__;
+      const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
       expect(prompt).toContain('ONLY the description text');
     });
 
@@ -524,14 +524,25 @@ describe('repository-description-generator', () => {
       expect(args[6]).toBe('-c');
       // `sudo -i` resets env + chdirs to target HOME, so cwd / env MUST be
       // interpolated into the inner command. The inner shell should contain
-      // the cd to the repo path, the agent command, and the env exports
-      // (`export K1=v1 K2=v2; <command>`) carrying both __AGENT_PROMPT__ and
-      // TERM=dumb.
+      // the cd to the repo path, the env exports (`export K=v; <command>`
+      // carrying TERM=dumb), and the agent command. After Issue #851, the
+      // prompt is embedded directly into the agent command via shellEscape
+      // (single-quoted literal), not exported as __AGENT_PROMPT__. The
+      // env-var indirection is incompatible with `sudo -u <user> -i`'s
+      // double-quote wrapping of the inner command, which would expand
+      // "$__AGENT_PROMPT__" against the empty login-shell environment
+      // before the inner shell sees it.
       const inner = args[7];
       expect(inner).toContain("cd '/repo'");
       expect(inner).toMatch(/export\b[^;]*\bTERM='dumb'/);
-      expect(inner).toContain("__AGENT_PROMPT__=");
+      expect(inner).not.toContain('__AGENT_PROMPT__');
       expect(inner).toContain('test-cli -p --format text');
+      // The prompt is now embedded as the last single-quoted segment of
+      // the inner command (after the headless template's trailing
+      // {{prompt}} placeholder).
+      const prompt = extractPromptFromSpawnCommand(inner);
+      expect(prompt).toContain('repository description generator');
+      expect(prompt).toContain('# Project');
     });
 
     it('AUTH_MODE=multi-user with requestUser == server user: bypasses elevation', async () => {

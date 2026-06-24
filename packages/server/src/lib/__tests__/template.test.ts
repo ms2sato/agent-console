@@ -1,21 +1,20 @@
 import { describe, it, expect } from 'bun:test';
 import {
   expandTemplate,
-  getPromptEnvVar,
   TemplateExpansionError,
 } from '../template.js';
 
 describe('expandTemplate', () => {
   describe('basic expansion', () => {
-    it('should expand {{prompt}} placeholder with environment variable reference', () => {
+    it('should expand {{prompt}} placeholder with shell-escaped inline prompt', () => {
       const result = expandTemplate({
         template: 'test-cli {{prompt}}',
         prompt: 'Hello World',
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('test-cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('Hello World');
+      expect(result.command).toBe("test-cli 'Hello World'");
+      expect(result.env).toEqual({});
     });
 
     it('should expand {{cwd}} placeholder with shell-escaped path', () => {
@@ -25,9 +24,9 @@ describe('expandTemplate', () => {
         cwd: '/path/to/repo',
       });
 
-      // cwd is shell-escaped (single-quoted) for safety
-      expect(result.command).toBe("cd '/path/to/repo' && run \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('test');
+      // cwd and prompt are both shell-escaped (single-quoted) for safety
+      expect(result.command).toBe("cd '/path/to/repo' && run 'test'");
+      expect(result.env).toEqual({});
     });
 
     it('should expand both {{prompt}} and {{cwd}} placeholders', () => {
@@ -37,9 +36,8 @@ describe('expandTemplate', () => {
         cwd: '/workspace',
       });
 
-      // cwd is shell-escaped (single-quoted) for safety
-      expect(result.command).toBe("cd '/workspace' && test-cli \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('my task');
+      expect(result.command).toBe("cd '/workspace' && test-cli 'my task'");
+      expect(result.env).toEqual({});
     });
 
     it('should handle multiple {{prompt}} placeholders', () => {
@@ -49,8 +47,8 @@ describe('expandTemplate', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('cmd "$__AGENT_PROMPT__" --extra "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('test');
+      expect(result.command).toBe("cmd 'test' --extra 'test'");
+      expect(result.env).toEqual({});
     });
 
     it('should handle multiple {{cwd}} placeholders', () => {
@@ -61,8 +59,8 @@ describe('expandTemplate', () => {
       });
 
       // Each cwd is shell-escaped (single-quoted) for safety
-      expect(result.command).toBe("cd '/repo' && ls '/repo' && run \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('test');
+      expect(result.command).toBe("cd '/repo' && ls '/repo' && run 'test'");
+      expect(result.env).toEqual({});
     });
   });
 
@@ -112,14 +110,14 @@ describe('expandTemplate', () => {
   });
 
   describe('no prompt provided', () => {
-    it('should expand {{prompt}} with empty string when no prompt provided', () => {
+    it('should expand {{prompt}} with empty shell-escaped string when no prompt provided', () => {
       const result = expandTemplate({
         template: 'test-cli {{prompt}}',
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('test-cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('');
+      expect(result.command).toBe("test-cli ''");
+      expect(result.env).toEqual({});
     });
 
     it('should allow starting agents interactively without initial prompt', () => {
@@ -129,8 +127,8 @@ describe('expandTemplate', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('test-cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('');
+      expect(result.command).toBe("test-cli ''");
+      expect(result.env).toEqual({});
     });
   });
 
@@ -142,9 +140,9 @@ describe('expandTemplate', () => {
         cwd: '/repo',
       });
 
-      // The prompt is passed via environment variable, so special characters are safe
-      expect(result.command).toBe('test-cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('test; rm -rf /');
+      // Single-quoted: every metacharacter is a literal, no command substitution.
+      expect(result.command).toBe("test-cli 'test; rm -rf /'");
+      expect(result.env).toEqual({});
     });
 
     it('should safely handle prompts with quotes', () => {
@@ -154,8 +152,10 @@ describe('expandTemplate', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('test-cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('Say "hello" and \'goodbye\'');
+      // Double quotes pass through inside single-quoted literal;
+      // embedded single quote is escaped via '\''.
+      expect(result.command).toBe("test-cli 'Say \"hello\" and '\\''goodbye'\\'''");
+      expect(result.env).toEqual({});
     });
 
     it('should safely handle prompts with newlines', () => {
@@ -165,8 +165,9 @@ describe('expandTemplate', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('test-cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('Line 1\nLine 2\nLine 3');
+      // Newlines are preserved literally inside single-quoted shell literals.
+      expect(result.command).toBe("test-cli 'Line 1\nLine 2\nLine 3'");
+      expect(result.env).toEqual({});
     });
 
     it('should safely handle prompts with dollar signs', () => {
@@ -176,8 +177,9 @@ describe('expandTemplate', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('test-cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('$HOME and $(whoami)');
+      // Single quotes suppress all expansion (no $VAR, no $(...) substitution).
+      expect(result.command).toBe("test-cli '$HOME and $(whoami)'");
+      expect(result.env).toEqual({});
     });
   });
 
@@ -190,8 +192,8 @@ describe('expandTemplate', () => {
       });
 
       // Paths with spaces are safely handled by single-quoting
-      expect(result.command).toBe("cd '/path/with spaces/repo' && run \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('test');
+      expect(result.command).toBe("cd '/path/with spaces/repo' && run 'test'");
+      expect(result.env).toEqual({});
     });
 
     it('should handle paths with special characters', () => {
@@ -202,15 +204,9 @@ describe('expandTemplate', () => {
       });
 
       // Single quotes in paths are escaped using the '\'' technique
-      expect(result.command).toBe("cd '/path/with'\\''quote/repo' && run \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('test');
+      expect(result.command).toBe("cd '/path/with'\\''quote/repo' && run 'test'");
+      expect(result.env).toEqual({});
     });
-  });
-});
-
-describe('getPromptEnvVar', () => {
-  it('should return the environment variable name used for prompts', () => {
-    expect(getPromptEnvVar()).toBe('__AGENT_PROMPT__');
   });
 });
 
@@ -223,8 +219,8 @@ describe('custom template variables', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe("cli --model 'claude-opus-4-6' \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('do stuff');
+      expect(result.command).toBe("cli --model 'claude-opus-4-6' 'do stuff'");
+      expect(result.env).toEqual({});
     });
 
     it('should expand {{model}} (no default) to empty string when no templateVars provided', () => {
@@ -234,7 +230,7 @@ describe('custom template variables', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe('cli --model  "$__AGENT_PROMPT__"');
+      expect(result.command).toBe("cli --model  'do stuff'");
     });
   });
 
@@ -247,7 +243,7 @@ describe('custom template variables', () => {
         templateVars: { model: 'gpt-4' },
       });
 
-      expect(result.command).toBe("cli --model 'gpt-4' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cli --model 'gpt-4' 'do stuff'");
     });
 
     it('should override no-default variable when templateVars provides a value', () => {
@@ -258,7 +254,7 @@ describe('custom template variables', () => {
         templateVars: { model: 'gpt-4' },
       });
 
-      expect(result.command).toBe("cli --model 'gpt-4' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cli --model 'gpt-4' 'do stuff'");
     });
   });
 
@@ -272,7 +268,7 @@ describe('custom template variables', () => {
       });
 
       // model overridden, temperature uses default
-      expect(result.command).toBe("cli --model 'gpt-4' --temp '0.7' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cli --model 'gpt-4' --temp '0.7' 'test'");
     });
   });
 
@@ -285,8 +281,8 @@ describe('custom template variables', () => {
         templateVars: { model: 'sonnet' },
       });
 
-      expect(result.command).toBe("cd '/workspace' && cli --model 'sonnet' \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('my task');
+      expect(result.command).toBe("cd '/workspace' && cli --model 'sonnet' 'my task'");
+      expect(result.env).toEqual({});
     });
 
     it('should NOT allow templateVars to override {{prompt}} expansion', () => {
@@ -297,9 +293,9 @@ describe('custom template variables', () => {
         templateVars: { prompt: 'hacked' },
       });
 
-      // {{prompt}} should still expand to env var reference, not the templateVars value
-      expect(result.command).toBe('cli "$__AGENT_PROMPT__"');
-      expect(result.env.__AGENT_PROMPT__).toBe('real prompt');
+      // {{prompt}} should still expand to the real prompt, not the templateVars value
+      expect(result.command).toBe("cli 'real prompt'");
+      expect(result.env).toEqual({});
     });
 
     it('should NOT allow templateVars to override {{cwd}} expansion', () => {
@@ -310,7 +306,7 @@ describe('custom template variables', () => {
         templateVars: { cwd: '/hacked/path' },
       });
 
-      expect(result.command).toBe("cd '/real/path' && cli \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cd '/real/path' && cli 'test'");
     });
   });
 
@@ -345,8 +341,8 @@ describe('custom template variables', () => {
         templateVars: { model: 'haiku' },
       });
 
-      expect(result.command).toBe("cli --model 'haiku' -p \"$__AGENT_PROMPT__\"");
-      expect(result.env.__AGENT_PROMPT__).toBe('headless task');
+      expect(result.command).toBe("cli --model 'haiku' -p 'headless task'");
+      expect(result.env).toEqual({});
     });
   });
 
@@ -359,7 +355,7 @@ describe('custom template variables', () => {
         templateVars: { model: 'my model name' },
       });
 
-      expect(result.command).toBe("cli --model 'my model name' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cli --model 'my model name' 'test'");
     });
 
     it('should shell-escape values with single quotes', () => {
@@ -370,7 +366,7 @@ describe('custom template variables', () => {
         templateVars: { model: "it's-a-model" },
       });
 
-      expect(result.command).toBe("cli --model 'it'\\''s-a-model' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cli --model 'it'\\''s-a-model' 'test'");
     });
 
     it('should shell-escape values with double quotes and semicolons', () => {
@@ -381,7 +377,7 @@ describe('custom template variables', () => {
         templateVars: { note: 'say "hello"; rm -rf /' },
       });
 
-      expect(result.command).toBe("cli --note 'say \"hello\"; rm -rf /' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cli --note 'say \"hello\"; rm -rf /' 'test'");
     });
 
     it('should shell-escape default values with special characters', () => {
@@ -391,7 +387,7 @@ describe('custom template variables', () => {
         cwd: '/repo',
       });
 
-      expect(result.command).toBe("cli --flag 'value with spaces' \"$__AGENT_PROMPT__\"");
+      expect(result.command).toBe("cli --flag 'value with spaces' 'test'");
     });
   });
 });
