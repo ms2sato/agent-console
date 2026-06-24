@@ -242,6 +242,45 @@ detached
     });
   });
 
+  describe('verifyRepoAccessible', () => {
+    // Unlike `listWorktrees` (which swallows GitError and returns `[]` for
+    // UI listing callers), `verifyRepoAccessible` must propagate the
+    // underlying GitError so the pre-create probe in
+    // `createWorktreeWithSession` can surface stderr to the operator
+    // (Issue #854).
+    it('propagates GitError instead of swallowing it', async () => {
+      const cause = new GitError(
+        'git worktree failed: fatal: detected dubious ownership in repository',
+        128,
+        "fatal: detected dubious ownership in repository at '/repo'",
+      );
+      mockGit.listWorktrees.mockImplementation(() => Promise.reject(cause));
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.verifyRepoAccessible('/repo');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBe(cause);
+      expect(caught).toBeInstanceOf(GitError);
+    });
+
+    it('resolves with no value when git accepts the repo', async () => {
+      // The top-level beforeEach already wires `mockGit.listWorktrees` to a
+      // resolving implementation; the probe should resolve to undefined.
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.verifyRepoAccessible('/repo/main');
+      expect(result).toBeUndefined();
+    });
+  });
+
   describe('createWorktree', () => {
     // `runAsUser` is now the single execution point for `git worktree add`,
     // so the tests inject a capture mock via `runAsUserImpl` rather than

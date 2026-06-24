@@ -223,6 +223,27 @@ export class WorktreeService {
   }
 
   /**
+   * Probe the source repo's git accessibility. Runs `git worktree list`
+   * against the source repo and **throws** on git failure (does not swallow).
+   *
+   * This is the verification that `listWorktrees` was conceptually doing,
+   * preserved as a separate method so the swallow contract of `listWorktrees`
+   * (used by UI / API listings that expect `[]` on transient errors) stays
+   * intact for its other callers.
+   *
+   * Used as a pre-create probe by `createWorktreeWithSession` so failures
+   * such as `dubious ownership`, corrupt `.git/`, or missing remote surface
+   * as actionable errors before any filesystem side effect is performed
+   * (Issue #854).
+   *
+   * @throws GitError when the underlying `git worktree list` fails.
+   */
+  async verifyRepoAccessible(repoPath: string): Promise<void> {
+    // We discard the return value; only the throw-or-not signal is needed.
+    await gitListWorktrees(repoPath);
+  }
+
+  /**
    * List all worktrees for a repository.
    * Includes git-tracked worktrees registered in DB and orphaned DB records
    * (worktrees that exist in DB but are no longer tracked by git).

@@ -35,6 +35,10 @@ const WORKTREE_PATH = `${REPO_PATH}/worktrees/wt-1`;
 function createMockWorktreeService() {
   return {
     listWorktrees: mock(() => Promise.resolve([])),
+    // Pre-create accessibility probe (Issue #854). Default to success so
+    // tests that don't care about the probe see the legacy behaviour;
+    // probe-failure tests override per-call.
+    verifyRepoAccessible: mock(() => Promise.resolve()),
     isWorktreeOf: mock(() => Promise.resolve(true)),
     getDefaultBranch: mock(() => Promise.resolve('main')),
     listLocalBranches: mock(() => Promise.resolve([])),
