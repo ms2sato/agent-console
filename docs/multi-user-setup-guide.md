@@ -784,7 +784,14 @@ real login shell init, real OS env):
 - The target user's PATH includes their own home tree (typical for npm global
   or nvm setups where claude is installed under the user's home).
 
-Exit `0` on success; `1` on any assertion failure (details on stderr).
+Exit codes:
+
+- `0` -- all assertions passed
+- `1` -- one or more assertions failed (details on stderr)
+- `2` -- bad usage (missing target-user argument) or the smoke could not run
+  (target user not in passwd, no home directory field, etc.). Distinct from `1`
+  so operators can tell apart "the smoke ran and found a real problem" vs "the
+  smoke could not even start".
 
 The script imports `buildElevationArgs` directly from
 `packages/server/src/services/elevation-args.ts`, the same helper production

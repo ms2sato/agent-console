@@ -51,6 +51,23 @@ if (!targetUser) {
   process.exit(2);
 }
 
+// Resolve the target user's actual home from passwd, rather than assuming
+// `/home/<user>`. Distro / config variations (e.g., /Users on macOS, or
+// `useradd -d` with a custom path) would otherwise produce false-failure
+// assertions. CodeRabbit feedback on PR #867.
+const getentProc = spawn(['getent', 'passwd', targetUser], { stdout: 'pipe', stderr: 'pipe' });
+const getentStdout = await new Response(getentProc.stdout).text();
+const getentExit = await getentProc.exited;
+if (getentExit !== 0 || !getentStdout.trim()) {
+  console.error(`could not resolve passwd entry for: ${targetUser}`);
+  process.exit(2);
+}
+const targetHome = getentStdout.trim().split(':')[5];
+if (!targetHome) {
+  console.error(`passwd entry for ${targetUser} has empty home directory field`);
+  process.exit(2);
+}
+
 // Use the production helper to build argv. command='env' makes the inner
 // shell dump its env once login init has run, so we observe the actual env
 // the elevated process sees.
@@ -116,8 +133,8 @@ console.log('==> elevated user natural env (from sudo -i login shell init)');
 expect(envMap.get('USER') === targetUser, `USER=${targetUser}`, `got: ${envMap.get('USER') ?? '(unset)'}`);
 expect(envMap.get('LOGNAME') === targetUser, `LOGNAME=${targetUser}`, `got: ${envMap.get('LOGNAME') ?? '(unset)'}`);
 expect(
-  envMap.get('HOME') === `/home/${targetUser}` || envMap.get('HOME')?.endsWith(`/${targetUser}`) === true,
-  `HOME under target's home`,
+  envMap.get('HOME') === targetHome,
+  `HOME matches target account (${targetHome})`,
   `got: ${envMap.get('HOME') ?? '(unset)'}`,
 );
 expect((envMap.get('PATH') ?? '').length > 0, 'PATH is set', `got: ${envMap.get('PATH') ?? '(unset)'}`);
@@ -127,12 +144,12 @@ console.log("==> no bun-server env leak (target user's tree in PATH)");
 const targetPath = envMap.get('PATH') ?? '';
 const includesTargetHome = targetPath
   .split(':')
-  .some((p) => p.startsWith(`/home/${targetUser}`) || p === '');
+  .some((p) => p === targetHome || p.startsWith(`${targetHome}/`));
 if (includesTargetHome) {
-  console.log(`  OK    PATH includes /home/${targetUser}/* (target user's tree)`);
+  console.log(`  OK    PATH includes ${targetHome} (target user's tree)`);
   passes++;
 } else {
-  console.warn(`  WARN  PATH does not include /home/${targetUser}/* -- this is`);
+  console.warn(`  WARN  PATH does not include ${targetHome} -- this is`);
   console.warn(`        acceptable if the target user has no per-user bin tree`);
   console.warn(`        configured, but if claude was installed under their`);
   console.warn(`        home (npm global / nvm typical), claude will not`);
