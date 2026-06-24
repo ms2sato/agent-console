@@ -165,8 +165,14 @@ echo "  source rsync complete"
 # --- 3. Ensure target's node_modules exist (bun install) -------------------
 # Skipped only if a previous run left a complete install. bun install is
 # idempotent + fast on no-change, so we run unconditionally for safety.
+#
+# PATH must include the service user's bun dir because the project's
+# `preinstall` script invokes `bun scripts/check-bun-version.mjs` via the
+# package manager's PATH lookup, and `bash -c` does not load login profiles.
 echo "[3/5] Running bun install in $TARGET_HOME (as $SERVICE_USER)..."
-sudo -u "$SERVICE_USER" bash -c "cd '$TARGET_HOME' && '$SERVICE_BUN' install" 2>&1 | sed 's/^/  /'
+sudo -u "$SERVICE_USER" env \
+  PATH="$SERVICE_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin" \
+  bash -c "cd '$TARGET_HOME' && '$SERVICE_BUN' install" 2>&1 | sed 's/^/  /'
 
 # --- 3. Cleanup handlers ---------------------------------------------------
 SERVER_PID=""
