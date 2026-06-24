@@ -80,11 +80,17 @@ const worktrees = new Hono<AppBindings>()
 
         switch (mode) {
           case 'prompt': {
-            // Generate branch name from prompt using the selected agent
+            // Generate branch name from prompt using the selected agent.
+            // Thread the authenticated OS username down so the headless agent
+            // command runs as the requesting user in multi-user mode (Issue
+            // #856 -- mirrors Issue #835 / PR #842 for description gen). In
+            // single-user mode `runAsUser` reads this value but `AUTH_MODE`
+            // gates the elevation to a no-op.
             const suggestion = await suggestSessionMetadata({
               prompt: body.initialPrompt!.trim(),
               repositoryPath: repo.path,
               agent,
+              requestUser: authUser.username,
             });
             if (suggestion.error || !suggestion.branch) {
               // Fallback: use timestamp-based branch name, empty title

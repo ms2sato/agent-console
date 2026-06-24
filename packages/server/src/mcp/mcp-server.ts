@@ -623,11 +623,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
           // Explicit branch name provided
           effectiveBranch = branch;
         } else {
-          // Auto-generate branch name from prompt
+          // Auto-generate branch name from prompt.
+          // MCP-side privilege elevation for the suggestion call is tracked
+          // separately (Issue #856 Out-of-Scope note). For now pass `null`
+          // so `runAsUser` bypasses elevation; this preserves prior MCP
+          // behaviour. A future issue (modelled on #844) can resolve the
+          // parent session's createdBy -> OS username and thread it here.
           const suggestion = await suggestSessionMetadata({
             prompt: prompt.trim(),
             repositoryPath: repo.path,
             agent,
+            requestUser: null,
           });
           if (suggestion.error || !suggestion.branch) {
             effectiveBranch = `task-${Date.now()}`;

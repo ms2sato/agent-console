@@ -223,6 +223,80 @@ describe('Worktrees API', () => {
       // 'testuser' as the 5th positional arg.
       expect(args[4]).toBe('testuser');
     });
+
+    it("forwards authUser.username as requestUser to suggestSessionMetadata (Issue #856)", async () => {
+      // For `mode: 'prompt'`, the route invokes `suggestSessionMetadata` to
+      // auto-generate a branch name + title. After Issue #856 the route must
+      // thread `authUser.username` down so the headless agent command runs
+      // as the requesting user in multi-user mode (via runAsUser inside the
+      // suggester). The default SingleUserMode used by asAppContext is
+      // constructed with TEST_AUTH_USER (username='testuser'), so we assert
+      // the route forwards 'testuser' as `requestUser`.
+      const mockAgentManager = {
+        getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
+      } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+
+      // Capture the args the suggester receives. Resolve to an error so the
+      // downstream worktree creation falls back to `task-<timestamp>` and we
+      // do not need to mock the success-broadcast path further.
+      let resolveSuggestionCall!: (args: unknown[]) => void;
+      const suggestionCaptured = new Promise<unknown[]>((resolve) => {
+        resolveSuggestionCall = resolve;
+      });
+      const suggestionMock = mock((...args: unknown[]) => {
+        resolveSuggestionCall(args);
+        return Promise.resolve({ branch: undefined, title: undefined, error: 'short-circuit for test' });
+      });
+
+      // Short-circuit the worktree creation so we do not exercise the full
+      // pipeline; we only care that the suggester was called with the right
+      // requestUser.
+      const { mockFn: createCapture } = createCapturingWorktreeMock();
+      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: suggestionMock as unknown as Parameters<typeof asAppContext>[0]['suggestSessionMetadata'],
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-856',
+            mode: 'prompt',
+            initialPrompt: 'Add a dark mode toggle',
+            baseBranch: 'main',
+            useRemote: false,
+            autoStartSession: false,
+            agentId: 'claude-code-builtin',
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+
+      // The suggester is invoked from the fire-and-forget IIFE; await the
+      // captured-args promise so we observe the call deterministically.
+      const args = await suggestionCaptured;
+      const req = args[0] as { prompt: string; repositoryPath: string; requestUser: string | null };
+      expect(req.prompt).toBe('Add a dark mode toggle');
+      expect(req.repositoryPath).toBe(REPO_PATH);
+      // Primary assertion: requestUser must equal the authenticated OS user.
+      expect(req.requestUser).toBe('testuser');
+    });
   });
 
   // =========================================================================
