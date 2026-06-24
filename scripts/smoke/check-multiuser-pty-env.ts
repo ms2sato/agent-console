@@ -43,7 +43,7 @@
  */
 
 import { spawn } from 'bun';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';
 
 const targetUser = process.argv[2];
@@ -52,35 +52,38 @@ if (!targetUser) {
   process.exit(2);
 }
 
-// Resolve absolute paths for the system binaries this script spawns. The
-// invoking process's PATH cannot be trusted -- when the script is run via
-// `sudo -u <service-account>`, the inherited PATH may point to directories
-// the service account cannot exec, producing surprising EACCES errors at
-// posix_spawn time (observed during initial dogfood test of #866). Use
-// absolute paths so we never depend on PATH lookup for sub-process spawns.
+// Resolve the elevation binary by absolute path. The invoking process's PATH
+// cannot be trusted -- when the script is run via "... -u <service-account>",
+// the inherited PATH may point to directories the service account cannot
+// exec, producing surprising EACCES errors at posix_spawn time (observed
+// during initial dogfood test of #866).
 function resolveBin(name: string, candidates: string[]): string {
   for (const path of candidates) {
     if (existsSync(path)) return path;
   }
   throw new Error(`Could not find ${name} in any of: ${candidates.join(', ')}`);
 }
-const GETENT_BIN = resolveBin('getent', ['/usr/bin/getent', '/bin/getent']);
-const SUDO_BIN = resolveBin('sudo', ['/usr/bin/sudo', '/bin/sudo']);
+const SUDO_BIN = resolveBin('elevation binary', ['/usr/bin/sudo', '/bin/sudo']);
 
-// Resolve the target user's actual home from passwd, rather than assuming
-// `/home/<user>`. Distro / config variations (e.g., /Users on macOS, or
-// `useradd -d` with a custom path) would otherwise produce false-failure
-// assertions. CodeRabbit feedback on PR #867.
-const getentProc = spawn([GETENT_BIN, 'passwd', targetUser], { stdout: 'pipe', stderr: 'pipe' });
-const getentStdout = await new Response(getentProc.stdout).text();
-const getentExit = await getentProc.exited;
-if (getentExit !== 0 || !getentStdout.trim()) {
-  console.error(`could not resolve passwd entry for: ${targetUser}`);
+// Resolve the target user's actual home from /etc/passwd directly. Reading
+// /etc/passwd avoids spawning `getent` -- which on the initial dogfood run
+// hit a Bun-side posix_spawn EACCES quirk specific to "... -u
+// <service-account>" without a full login session. /etc/passwd is
+// world-readable on standard Linux installs, and for this project's local-OS
+// account model (no LDAP / NIS), reading it directly is functionally
+// equivalent to getent.
+const passwdEntries = readFileSync('/etc/passwd', 'utf-8').split('\n');
+const passwdEntry = passwdEntries.find((line) => {
+  const idx = line.indexOf(':');
+  return idx > 0 && line.slice(0, idx) === targetUser;
+});
+if (!passwdEntry) {
+  console.error(`could not find ${targetUser} in /etc/passwd`);
   process.exit(2);
 }
-const targetHome = getentStdout.trim().split(':')[5];
+const targetHome = passwdEntry.split(':')[5];
 if (!targetHome) {
-  console.error(`passwd entry for ${targetUser} has empty home directory field`);
+  console.error(`/etc/passwd entry for ${targetUser} has empty home directory field`);
   process.exit(2);
 }
 
