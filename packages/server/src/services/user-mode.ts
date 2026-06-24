@@ -490,13 +490,18 @@ export class MultiUserMode implements UserMode {
 
     return this.ptyProvider.spawn(
       'sudo',
-      // --preserve-env=FORCE_COLOR survives `sudo -i`'s environment reset, which
-      // otherwise strips FORCE_COLOR (it is not in the sudoers env_keep defaults
-      // on most distros). Without this flag the target user's PTY sees only
-      // TERM/COLORTERM, and Node-based agents like Claude Code render their
-      // banner in plain white because chalk falls back to 256-color support.
-      // TERM and COLORTERM are kept by sudo's default env_keep, so they do not
-      // need explicit preservation here.
+      // `sudo -i` strips most of the env it inherits from the parent. We do
+      // NOT rely on `--preserve-env=...` here for color env: the bun server
+      // process does not carry FORCE_COLOR / TERM / COLORTERM in its own env,
+      // so there is nothing for sudo to preserve. Instead, those values are
+      // inserted into the inner shell's export list (see `buildEnvExportString`,
+      // which merges env-filter's curated child env), so they reach the
+      // spawned process regardless of sudo's env_keep policy. The
+      // `--preserve-env=FORCE_COLOR` flag is retained for harmless safety
+      // (in case a future deploy injects FORCE_COLOR at the systemd unit
+      // level). Issue #863 corrected the previous incorrect assumption that
+      // sudo's env_keep defaults retain TERM/COLORTERM (they do not on
+      // Ubuntu sudo); claude rendered in plain white as a result.
       ['-u', request.username, '--preserve-env=FORCE_COLOR', '-i', 'sh', '-c', innerCommand],
       {
         name: 'xterm-256color',
@@ -510,10 +515,17 @@ export class MultiUserMode implements UserMode {
   }
 
   /**
-   * Build export string from additionalEnvVars (repository + template env vars).
+   * Build export string from env-filter's curated system env (TERM,
+   * COLORTERM, FORCE_COLOR, AGENT_CONSOLE_* unset prefix, etc.) merged
+   * with additionalEnvVars (repository + template env vars). Without
+   * env-filter, `sudo -i` would strip TERM and the inner shell would
+   * land on TERM=unknown — chalk-based CLIs (claude, etc.) then
+   * suppress color output. additionalEnvVars wins on key collision,
+   * preserving per-spawn overrides. Issue #863.
    */
   private buildEnvExportString(request: PtySpawnRequest): string {
-    return this.buildExportString(request.additionalEnvVars);
+    const combined = { ...getCleanChildProcessEnv(), ...request.additionalEnvVars };
+    return this.buildExportString(combined);
   }
 
   /**

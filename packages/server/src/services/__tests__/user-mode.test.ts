@@ -390,6 +390,36 @@ describe('MultiUserMode', () => {
       expect(args[2]).toBe('--preserve-env=FORCE_COLOR');
       expect(args[3]).toBe('-i');
     });
+
+    // Issue #863 — env-filter's curated child env (TERM=xterm-256color,
+    // COLORTERM=truecolor, FORCE_COLOR=3, ...) must be exported in the
+    // inner shell so chalk-based CLIs (claude) render in color. The
+    // previous design relied on sudo's env_keep defaults, which on
+    // Ubuntu sudo strip TERM and leave it as 'unknown' — observed on
+    // the dogfood host as all-white claude output.
+    it('exports TERM=xterm-256color, COLORTERM=truecolor, and FORCE_COLOR=3 in the inner shell command (Issue #863)', async () => {
+      const { provider, lastCall } = createCapturingPtyProvider();
+      const userRepository = new SqliteUserRepository(db);
+      const mode = await MultiUserMode.create(provider, userRepository);
+
+      const request: TerminalPtySpawnRequest = {
+        type: 'terminal',
+        username: 'definitely-not-the-server-user',
+        cwd: '/workspace',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+      };
+
+      mode.spawnPty(request);
+
+      const [, args] = lastCall();
+      // sudo arg shape: -u <user> --preserve-env=FORCE_COLOR -i sh -c <innerCommand>
+      const innerCommand = args[6] as string;
+      expect(innerCommand).toContain("TERM='xterm-256color'");
+      expect(innerCommand).toContain("COLORTERM='truecolor'");
+      expect(innerCommand).toContain("FORCE_COLOR='3'");
+    });
   });
 
   describe('validateLinux uses Bun.spawn with array args', () => {
