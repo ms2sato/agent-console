@@ -284,7 +284,10 @@ describe('RepositoryManager', () => {
         // Replace the responder so `getent group` returns FAKE_SHARED_GID
         // (matching the synthesised dir gid) AND the `git config --get
         // core.sharedRepository` probe returns 'group'. The apply call
-        // MUST NOT run -- enforce by throwing if it's invoked.
+        // MUST NOT run -- enforce by throwing if it's invoked. The
+        // server-side safe.directory bootstrap (Issue #853) is a separate,
+        // unrelated runAsUser call and MUST be permitted (it always runs
+        // in multi-user mode regardless of the shared-repo apply state).
         runAsUserMock.responder.fn = async (opts) => {
           if (opts.command.startsWith('getent group ')) {
             return {
@@ -302,6 +305,10 @@ describe('RepositoryManager', () => {
               timedOut: false,
             };
           }
+          if (opts.command.includes('safe.directory')) {
+            // Server-side safe.directory bootstrap (Issue #853); permitted.
+            return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+          }
           throw new Error(
             `apply should not run when already configured; got command: ${opts.command}`,
           );
@@ -311,13 +318,15 @@ describe('RepositoryManager', () => {
         const repo = await manager.registerRepository(TEST_REPO_DIR);
         expect(repo.path).toBe(TEST_REPO_DIR);
 
-        // Exactly two runAsUser calls -- the `getent` resolve + the
-        // `git config --get core.sharedRepository` probe -- AND no apply
-        // call. The probe-first contract ensures we tightly assert the
-        // idempotent-skip path was actually taken (not bypassed early).
-        expect(runAsUserMock.calls.length).toBe(2);
+        // Three runAsUser calls -- the `getent` resolve + the
+        // `git config --get core.sharedRepository` probe + the server-side
+        // safe.directory bootstrap (Issue #853) -- AND no apply call. The
+        // probe-first contract ensures we tightly assert the idempotent-skip
+        // path was actually taken (not bypassed early).
+        expect(runAsUserMock.calls.length).toBe(3);
         expect(runAsUserMock.calls[0].command).toContain('getent group ');
         expect(runAsUserMock.calls[1].command).toContain('--get core.sharedRepository');
+        expect(runAsUserMock.calls[2].command).toContain('safe.directory');
         const applyCalls = runAsUserMock.calls.filter((c) =>
           c.command.includes('chgrp -R '),
         );
@@ -419,6 +428,144 @@ describe('RepositoryManager', () => {
             process.env.AGENT_CONSOLE_SERVICE_GROUP = originalGroup;
           }
         }
+      });
+    });
+
+    // Issue #853: bootstrap safe.directory into the SERVER's gitconfig at
+    // registration so subsequent server-initiated git operations (listWorktrees,
+    // getRemoteUrl, fetch, ...) against an operator-cloned source repo do not
+    // hit `fatal: detected dubious ownership`. Mirror of #838 / PR #843 for the
+    // per-user side but with `username: null`.
+    describe('multi-user mode server-side safe.directory bootstrap (Issue #853)', () => {
+      let originalAuthMode: string | undefined;
+
+      const FAKE_SHARED_GID = 9876;
+
+      // Same default responder as the #845 block: `getent` returns the
+      // synthetic shared gid, everything else returns success. The new
+      // safe.directory bootstrap call will land in the catch-all branch
+      // (success).
+      function defaultResponder(opts: RunAsUserOpts): Promise<RunAsUserResult> {
+        if (opts.command.startsWith('getent group ')) {
+          return Promise.resolve({
+            stdout: `agent-console-users:x:${FAKE_SHARED_GID}:agentconsole\n`,
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          });
+        }
+        return Promise.resolve({
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        });
+      }
+
+      beforeEach(() => {
+        originalAuthMode = process.env.AUTH_MODE;
+        runAsUserMock.responder.fn = defaultResponder;
+      });
+
+      afterEach(() => {
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it('invokes a single server-side safe.directory bootstrap call in multi-user mode', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const manager = await getRepositoryManager();
+
+        await manager.registerRepository(TEST_REPO_DIR);
+
+        // Exactly one bootstrap call -- identified by the `safe.directory`
+        // substring -- should have been issued. The command shape is the
+        // idempotent grep-guarded `git config --global --add` pattern that
+        // mirrors `bootstrapSafeDirectoryForUser` in worktree-service.ts.
+        const bootstrapCalls = runAsUserMock.calls.filter((c) =>
+          c.command.includes('safe.directory'),
+        );
+        expect(bootstrapCalls.length).toBe(1);
+        const bootstrap = bootstrapCalls[0];
+        // Run as the SERVER process (username: null) -- writing the server's
+        // own gitconfig, not a user's. This is the distinguishing
+        // characteristic versus #838's per-user bootstrap.
+        expect(bootstrap.username).toBeNull();
+        // Idempotent guard: the grep -Fxq check against the existing
+        // entries, with a conditional `git config --global --add` only when
+        // the value is missing. The repo path is shell-escaped via single
+        // quotes by `shellEscape`.
+        expect(bootstrap.command).toContain(
+          `git config --global --get-all safe.directory`,
+        );
+        expect(bootstrap.command).toContain(`grep -Fxq '${TEST_REPO_DIR}'`);
+        expect(bootstrap.command).toContain(
+          `git config --global --add safe.directory '${TEST_REPO_DIR}'`,
+        );
+      });
+
+      it('does not invoke the safe.directory bootstrap in single-user mode', async () => {
+        delete process.env.AUTH_MODE;
+        const manager = await getRepositoryManager();
+
+        await manager.registerRepository(TEST_REPO_DIR);
+
+        // Single-user mode: neither the #845 apply chain nor the #853
+        // bootstrap should fire. The entire multi-user branch is gated on
+        // AUTH_MODE.
+        expect(runAsUserMock.calls.length).toBe(0);
+      });
+
+      it('registration succeeds with a warn log when the bootstrap returns non-zero', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+
+        // Replace the responder so the safe.directory bootstrap returns
+        // non-zero (e.g. the server's gitconfig is read-only, or the inner
+        // grep pipeline produced an unexpected exit code). Other commands
+        // (getent / chgrp apply) keep default success behaviour so the test
+        // isolates the bootstrap failure.
+        runAsUserMock.responder.fn = async (opts) => {
+          if (opts.command.startsWith('getent group ')) {
+            return {
+              stdout: `agent-console-users:x:${FAKE_SHARED_GID}:agentconsole\n`,
+              stderr: '',
+              exitCode: 0,
+              timedOut: false,
+            };
+          }
+          if (opts.command.includes('safe.directory')) {
+            return {
+              stdout: '',
+              stderr: 'error: could not lock config file /home/agentconsole/.gitconfig: Permission denied',
+              exitCode: 255,
+              timedOut: false,
+            };
+          }
+          // chgrp apply etc.: success
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        };
+
+        const manager = await getRepositoryManager();
+        // Must not throw -- bootstrap failure is non-fatal so registration
+        // proceeds. The contract mirrors the #845 apply chain's
+        // failure-tolerance: warn + continue rather than abort.
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        // The DB record was still saved.
+        const savedRepos = await repositoryRepository.findAll();
+        expect(savedRepos.length).toBe(1);
+        expect(savedRepos[0].path).toBe(TEST_REPO_DIR);
+        expect(savedRepos[0].id).toBe(repo.id);
+
+        // Verify the bootstrap was actually attempted (so this test fails
+        // if the bootstrap call site is removed from registerRepository).
+        const bootstrapCalls = runAsUserMock.calls.filter((c) =>
+          c.command.includes('safe.directory'),
+        );
+        expect(bootstrapCalls.length).toBe(1);
       });
     });
   });

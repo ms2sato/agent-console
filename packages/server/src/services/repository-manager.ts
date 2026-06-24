@@ -29,6 +29,15 @@ const DEFAULT_SHARED_GROUP = 'agent-console-users';
 const SHARED_REPO_APPLY_TIMEOUT_MS = 30000;
 
 /**
+ * Timeout for the server-side `safe.directory` bootstrap (Issue #853). Short --
+ * the command is a pure local gitconfig write with no network or fs traversal.
+ * Mirrors `SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS` in `worktree-service.ts`, which
+ * implements the per-user side of the same idempotent bootstrap pattern
+ * (Issue #838 / PR #843).
+ */
+const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
+
+/**
  * Type of the privilege-elevation helper, exposed for dependency injection
  * in tests. Production code uses the real `runAsUser` import.
  * @internal Exported for testing.
@@ -203,6 +212,15 @@ export class RepositoryManager {
     // warning but does not block registration (the operator can still apply
     // the documented manual fallback). Issue #845.
     await this.applyMultiUserSharedRepoConfig(absolutePath);
+
+    // In multi-user mode, also bootstrap `safe.directory` into the SERVER's
+    // own gitconfig so subsequent server-initiated git operations
+    // (`listWorktrees`, `getRemoteUrl`, `fetch`, ...) against a source repo
+    // cloned by a different OS user do not hit `dubious ownership`. Mirror of
+    // `bootstrapSafeDirectoryForUser` in worktree-service.ts but with
+    // `username: null` (run as the server itself, writing the server's
+    // gitconfig). Issue #853.
+    await this.bootstrapSafeDirectoryForServer(absolutePath);
 
     const id = crypto.randomUUID();
     const name = path.basename(absolutePath);
@@ -409,6 +427,69 @@ export class RepositoryManager {
       { repoPath: absolutePath, sharedGroup },
       'Multi-user shared-repo config applied',
     );
+  }
+
+  /**
+   * Append `<repoPath>` to the SERVER user's `safe.directory` list when not
+   * already present. Required because, in multi-user mode, an operator may
+   * have cloned the source repo as their own OS user. git's CVE-2022-24765
+   * owner check then refuses any server-initiated git operation against
+   * that repo with `fatal: detected dubious ownership`. The previous
+   * `applyMultiUserSharedRepoConfig` step targets filesystem mode + group
+   * ownership but does NOT change file OWNER uid, so safe.directory is the
+   * minimum-trust-expansion mitigation. Mirror of
+   * `bootstrapSafeDirectoryForUser` in worktree-service.ts (Issue #838 /
+   * PR #843), but with `username: null` so the bootstrap writes the SERVER's
+   * gitconfig rather than a user's. Issue #853.
+   *
+   * Idempotent -- checks `git config --get-all safe.directory` first and only
+   * adds the entry when this exact `repoPath` is missing. Failure is logged
+   * but not thrown, so a misconfigured gitconfig does not block registration;
+   * subsequent server-initiated git operations will surface a clearer
+   * `dubious ownership` error if the bootstrap was actually needed. In
+   * `AUTH_MODE=none` (or unset), no-op.
+   */
+  private async bootstrapSafeDirectoryForServer(repoPath: string): Promise<void> {
+    if (process.env.AUTH_MODE !== 'multi-user') {
+      return;
+    }
+
+    const escapedPath = shellEscape(repoPath);
+    // `--get-all` returns one line per entry, exit 0 even if none match the
+    // value. We post-filter rather than relying on `--get` (which would only
+    // return the first match and could mis-report when the server has
+    // multiple entries).
+    const command = `if ! git config --global --get-all safe.directory 2>/dev/null | grep -Fxq ${escapedPath}; then git config --global --add safe.directory ${escapedPath}; fi`;
+
+    let result;
+    try {
+      result = await this._runAsUser({
+        username: null, // run as the server process user (e.g. agentconsole)
+        command,
+        timeoutMs: SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS,
+      });
+    } catch (err) {
+      logger.warn(
+        { err, repoPath },
+        'server-side safe.directory bootstrap spawn failed; continuing with registration',
+      );
+      return;
+    }
+
+    if (result.timedOut || result.exitCode !== 0) {
+      logger.warn(
+        {
+          repoPath,
+          exitCode: result.exitCode,
+          timedOut: result.timedOut,
+          stderr: result.stderr.trim(),
+        },
+        'server-side safe.directory bootstrap returned non-zero; continuing with registration',
+      );
+      return;
+    }
+
+    logger.info({ repoPath }, 'server-side safe.directory bootstrap completed');
   }
 
   /**
