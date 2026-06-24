@@ -23,6 +23,7 @@ import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-rep
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
+import { extractPromptFromSpawnCommand } from '../../__tests__/utils/extract-prompt-from-command.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { ConditionalWakeupManager } from '../../services/conditional-wakeup-manager.js';
 import { InteractiveProcessManager } from '../../services/interactive-process-manager.js';
@@ -1806,8 +1807,10 @@ describe('MCP Server Tools', () => {
     // -----------------------------------------------------------------------
 
     /**
-     * Extract the __AGENT_PROMPT__ env var from the PTY spawn call
-     * that matches the given session ID.
+     * Extract the embedded prompt from the PTY spawn call that matches the
+     * given session ID. After Issue #851, the prompt is embedded directly
+     * into the spawn command via shellEscape (single-quoted literal),
+     * instead of being indirected through env.__AGENT_PROMPT__.
      */
     function getAgentPromptForSession(sessionId: string): string {
       const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
@@ -1815,9 +1818,12 @@ describe('MCP Server Tools', () => {
         call[2]?.env?.AGENT_CONSOLE_SESSION_ID === sessionId,
       );
       expect(matchingCall).toBeDefined();
-      const agentPrompt = matchingCall![2].env!.__AGENT_PROMPT__;
-      expect(agentPrompt).toBeDefined();
-      return agentPrompt!;
+      // PTY spawn shape: ('sh', ['-c', '<unsetPrefix><command>'], options).
+      // The shell-escaped prompt is the trailing single-quoted segment of
+      // the second arg.
+      const shellCommand = matchingCall![1][1];
+      expect(shellCommand).toBeDefined();
+      return extractPromptFromSpawnCommand(shellCommand);
     }
 
     it('should append callback instructions to prompt when parent IDs are provided', async () => {

@@ -2,8 +2,6 @@
  * Template expansion utilities for agent commands
  */
 
-const PROMPT_ENV_VAR = '__AGENT_PROMPT__';
-
 /**
  * Escape a string for safe use in shell commands (single-quoted context).
  * This handles paths with special characters safely.
@@ -40,8 +38,8 @@ export class TemplateExpansionError extends Error {
  * Expand a command template by replacing placeholders
  *
  * Placeholders:
- * - {{prompt}} - Replaced with environment variable reference (safe from injection)
- * - {{cwd}} - Replaced with the working directory path (direct substitution)
+ * - {{prompt}} - Replaced with the shell-escaped prompt string (direct substitution)
+ * - {{cwd}} - Replaced with the shell-escaped working directory path (direct substitution)
  *
  * @param options - Template expansion options
  * @returns The expanded command and environment variables
@@ -64,12 +62,20 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
     command = command.replace(/\{\{cwd\}\}/g, shellEscape(cwd));
   }
 
-  // Expand {{prompt}} - via environment variable (user input, must be protected)
-  // When no prompt is provided, the placeholder is replaced with an empty string
-  // This allows starting agents interactively without a pre-filled prompt
+  // Expand {{prompt}} - shell-escaped and embedded directly into the command,
+  // matching how {{cwd}} and custom {{varName}} placeholders are handled.
+  // The historical env-var indirection (via "$__AGENT_PROMPT__") is incompatible
+  // with the `sudo -u <user> -i` privilege-elevation path used by runAsUser:
+  // sudo wraps the inner command in double quotes when forwarding it to the
+  // login shell, which then expands `"$VAR"` against its own (empty)
+  // environment before the inner shell sees the command. Direct shell-escaped
+  // embedding is injection-safe (single-quote enclosed, embedded single quotes
+  // escaped) and works uniformly under elevation. When no prompt is provided,
+  // the placeholder is replaced with an empty shell-escaped string, which
+  // allows starting agents interactively without a pre-filled prompt.
+  // See Issue #851.
   if (command.includes('{{prompt}}')) {
-    command = command.replace(/\{\{prompt\}\}/g, `"$${PROMPT_ENV_VAR}"`);
-    env[PROMPT_ENV_VAR] = prompt ?? '';
+    command = command.replace(/\{\{prompt\}\}/g, shellEscape(prompt ?? ''));
   }
 
   // Expand custom template variables (after reserved variables are already expanded)
@@ -93,11 +99,4 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
   }
 
   return { command, env };
-}
-
-/**
- * Get the environment variable name used for prompt injection
- */
-export function getPromptEnvVar(): string {
-  return PROMPT_ENV_VAR;
 }
