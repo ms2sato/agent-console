@@ -46,6 +46,16 @@ import { spawn } from 'bun';
 import { existsSync, readFileSync } from 'fs';
 import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';
 
+// Ad-hoc invocation (e.g., the operator's "... -u <service-account> bun
+// /tmp/.../check.ts" command) inherits cwd from the caller (often /root or
+// the operator's home -- neither readable by the service account). Bun's
+// internal spawn machinery evaluates the calling process's cwd, and the
+// inherited unreadable cwd produced EACCES on every posix_spawn attempt
+// during dogfood tests of #866. Production code does not hit this because
+// systemd sets WorkingDirectory= explicitly. Neutralize the dependency at
+// script start: chdir to "/" (always world-readable + world-traversable).
+process.chdir('/');
+
 const targetUser = process.argv[2];
 if (!targetUser) {
   console.error('usage: bun scripts/smoke/check-multiuser-pty-env.ts <target-user>');
@@ -101,7 +111,11 @@ const { argv } = buildElevationArgs({
 });
 
 // Real privilege-elevation invocation (absolute path; see resolveBin above).
-const proc = spawn([SUDO_BIN, ...argv], { stdout: 'pipe', stderr: 'pipe' });
+// Explicit cwd: '/' belt-and-suspenders alongside the process.chdir('/') at
+// script start (above) -- some Bun spawn paths use the spawn-options cwd,
+// others use the calling process cwd. Setting both eliminates either as a
+// failure surface.
+const proc = spawn([SUDO_BIN, ...argv], { cwd: '/', stdout: 'pipe', stderr: 'pipe' });
 const stdout = await new Response(proc.stdout).text();
 const stderr = await new Response(proc.stderr).text();
 const exitCode = await proc.exited;
