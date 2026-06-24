@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterAll, afterEach } from 'bun:test';
+import * as os from 'node:os';
 import type { AgentDefinition } from '@agent-console/shared';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { extractPromptFromSpawnCommand } from '../../__tests__/utils/extract-prompt-from-command.js';
@@ -52,10 +53,17 @@ const mockAgentWithoutHeadless: AgentDefinition = {
 
 let importCounter = 0;
 
+const originalAuthMode = process.env.AUTH_MODE;
+
 describe('session-metadata-suggester', () => {
   beforeEach(() => {
     mockGit.listAllBranches.mockReset();
     mockGit.listAllBranches.mockImplementation(() => Promise.resolve(['main', 'feat/existing']));
+
+    // Default to single-user mode for the existing test set; the
+    // multi-user tests below set AUTH_MODE explicitly and rely on
+    // afterEach to restore the original value.
+    delete process.env.AUTH_MODE;
 
     spawnCalls = [];
     // Reset mock spawn result
@@ -80,6 +88,14 @@ describe('session-metadata-suggester', () => {
       spawnCalls.push({ args, options: options || {} });
       return mockSpawnResult;
     }) as typeof Bun.spawn;
+  });
+
+  afterEach(() => {
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
   });
 
   // Restore original Bun.spawn after all tests
@@ -148,6 +164,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Add a dark mode toggle',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBe('feat/add-dark-mode');
@@ -169,6 +186,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgentWithoutHeadless,
+        requestUser: null,
       });
 
       expect(result.branch).toBeUndefined();
@@ -184,6 +202,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Add dark mode',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       // Should be sanitized to lowercase with hyphens
@@ -200,6 +219,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBeUndefined();
@@ -215,6 +235,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBeUndefined();
@@ -230,6 +251,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBeUndefined();
@@ -245,6 +267,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Some task',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBeUndefined();
@@ -261,6 +284,7 @@ describe('session-metadata-suggester', () => {
         repositoryPath: '/repo',
         agent: mockAgent,
         existingBranches: ['feat/login', 'feat/signup'],
+        requestUser: null,
       });
 
       // Should not call listAllBranches
@@ -278,6 +302,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Some feature',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBe('feat/feature');
@@ -294,6 +319,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'New feature',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBe('feat/new-feature');
@@ -309,6 +335,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'ダークモードを追加する',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBe('feat/dark-mode');
@@ -324,6 +351,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Some feature',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       expect(result.branch).toBe('feat/feature');
@@ -339,6 +367,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Add new feature',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       // Verify the prompt is embedded in the spawn command (no longer via env).
@@ -362,6 +391,7 @@ describe('session-metadata-suggester', () => {
         prompt: 'Add new feature',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       // Verify the embedded prompt includes instruction to avoid existing branches
@@ -383,6 +413,7 @@ describe('session-metadata-suggester', () => {
         repositoryPath: '/repo',
         agent: mockAgent,
         existingBranches: ['feat/conflicting-name', 'fix/another-branch'],
+        requestUser: null,
       });
 
       // Verify the embedded prompt includes instruction to avoid provided branches
@@ -403,12 +434,128 @@ describe('session-metadata-suggester', () => {
         prompt: 'Add first feature',
         repositoryPath: '/repo',
         agent: mockAgent,
+        requestUser: null,
       });
 
       // Verify the embedded prompt does NOT include duplicate avoidance instruction
       expect(spawnCalls.length).toBe(1);
       const prompt = extractPromptFromSpawnCommand(spawnCalls[0].args[2]);
       expect(prompt).not.toContain('Do NOT use any of these existing branch names');
+    });
+
+    // -- Privilege-elevation branch (Issue #856) --
+    //
+    // The runAsUser helper inspects AUTH_MODE + requestUser to decide whether
+    // to elevate via sudo. These assertions exercise the resulting spawn argv
+    // shape so a regression in routing back to the elevated branch fails the
+    // test rather than only manifesting at runtime in multi-user deployments.
+    // Mirrors the Issue #835 / PR #842 pattern in
+    // repository-description-generator.test.ts.
+
+    it('AUTH_MODE=none: bypasses elevation even when requestUser is set', async () => {
+      process.env.AUTH_MODE = 'none';
+      setMockSpawnResult('{"branch": "feat/feature", "title": "Feature"}');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      const result = await suggestSessionMetadata({
+        prompt: 'Add feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: 'alice',
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args[0]).toBe('sh');
+      expect(spawnCalls[0].args[1]).toBe('-c');
+      expect(spawnCalls[0].args[2]).toContain('test-cli -p --format text');
+    });
+
+    it('AUTH_MODE=multi-user with non-server requestUser: elevates via sudo as that user', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const targetUser = `${os.userInfo().username}-someone-else`;
+      setMockSpawnResult('{"branch": "feat/feature", "title": "Feature"}');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      const result = await suggestSessionMetadata({
+        prompt: 'Add feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: targetUser,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(spawnCalls.length).toBe(1);
+      // Elevated argv: ['sudo', '-u', <user>, '--preserve-env=FORCE_COLOR', '-i', 'sh', '-c', <inner>]
+      const args = spawnCalls[0].args;
+      expect(args[0]).toBe('sudo');
+      expect(args[1]).toBe('-u');
+      expect(args[2]).toBe(targetUser);
+      expect(args[3]).toBe('--preserve-env=FORCE_COLOR');
+      expect(args[4]).toBe('-i');
+      expect(args[5]).toBe('sh');
+      expect(args[6]).toBe('-c');
+      // `sudo -i` resets env + chdirs to target HOME, so cwd / env MUST be
+      // interpolated into the inner command. The inner shell should contain
+      // the cd to the repo path, the env exports (`export K=v; <command>`
+      // carrying TERM=dumb), and the agent command. After Issue #851, the
+      // prompt is embedded directly into the agent command via shellEscape
+      // (single-quoted literal), not exported as __AGENT_PROMPT__.
+      const inner = args[7];
+      expect(inner).toContain("cd '/repo'");
+      expect(inner).toMatch(/export\b[^;]*\bTERM='dumb'/);
+      expect(inner).not.toContain('__AGENT_PROMPT__');
+      expect(inner).toContain('test-cli -p --format text');
+      // The prompt is now embedded as the last single-quoted segment of the
+      // inner command (after the headless template's trailing {{prompt}}
+      // placeholder). Verify the suggestion prompt content reached the spawn.
+      const prompt = extractPromptFromSpawnCommand(inner);
+      expect(prompt).toContain('session metadata generator');
+      expect(prompt).toContain('Add feature');
+    });
+
+    it('AUTH_MODE=multi-user with requestUser == server user: bypasses elevation', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      setMockSpawnResult('{"branch": "feat/feature", "title": "Feature"}');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      const result = await suggestSessionMetadata({
+        prompt: 'Add feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: os.userInfo().username,
+      });
+
+      expect(result.error).toBeUndefined();
+      expect(spawnCalls.length).toBe(1);
+      // Direct spawn, no sudo prefix.
+      expect(spawnCalls[0].args[0]).toBe('sh');
+      expect(spawnCalls[0].args[1]).toBe('-c');
+      expect(spawnCalls[0].args[2]).toContain('test-cli -p --format text');
+    });
+
+    it('AUTH_MODE=multi-user with non-server requestUser: surfaces stderr when sudo exits non-zero', async () => {
+      // Real-world failure shape: `claude` not on the elevated user's PATH.
+      // The helper returns a non-zero exitCode and captured stderr; the
+      // suggester surfaces it via the error path.
+      process.env.AUTH_MODE = 'multi-user';
+      setMockSpawnResult('', 127, 'sh: 1: claude: not found');
+
+      const { suggestSessionMetadata } = await getModule();
+
+      const result = await suggestSessionMetadata({
+        prompt: 'Add feature',
+        repositoryPath: '/repo',
+        agent: mockAgent,
+        requestUser: `${os.userInfo().username}-someone-else`,
+      });
+
+      expect(result.branch).toBeUndefined();
+      expect(result.error).toContain('Agent command failed');
+      expect(result.error).toContain('claude: not found');
     });
   });
 });
