@@ -729,6 +729,11 @@ export async function shutdownAppContext(
   context.interactiveProcessManager.disposeAll();
   context.branchWatcherService.stopAll();
 
+  // Cancel any pending clone-job eviction timers (Issue #834). Keeping a
+  // pending setTimeout alive after the process tries to exit would block the
+  // event loop; the eviction is purely an in-memory bookkeeping concern.
+  context.repositoryCloneService.dispose();
+
   // Stop job queue
   await context.jobQueue.stop();
 

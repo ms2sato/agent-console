@@ -14,20 +14,36 @@ export const CreateRepositoryRequestSchema = v.object({
 });
 
 /**
- * Accepted clone URL shapes (Issue #834 Validation):
- *   - `https://...`
- *   - `http://...`
+ * Accepted clone URL shapes (Issue #834 Validation, tightened per CodeRabbit
+ * review on PR #862):
+ *   - `https://...` (TLS only; cleartext http:// is rejected to avoid
+ *     credential-bearing clones over an unsecured channel)
  *   - `git://...`
  *   - `ssh://...`
  *   - `git@host:org/repo[.git]` (SCP-style SSH shortcut)
  *
- * Strict prefix anchoring rejects strings starting with `-` (no
- * `--upload-pack=...` argv-injection), control characters, and embedded
- * whitespace. The server-side runner in `services/repository-clone-service.ts`
- * re-validates with the same rules as a defense-in-depth layer.
+ * The scheme regex pre-anchors the leading character (so a leading `-` cannot
+ * pose as `--upload-pack=...`). The follow-up `cloneUrlDisallowedPattern`
+ * check explicitly rejects whitespace, shell metacharacters
+ * (`;`, `&`, `|`, `` ` ``, `$`, `<`, `>`, `(`, `)`, `[`, `]`, `{`, `}`, `'`,
+ * `"`, `\\`), and any C0/C1 control character before the URL reaches the
+ * server-side runner. The server-side
+ * `services/repository-clone-service.ts` mirrors both layers.
  */
 const cloneUrlPattern =
-  /^(?:https?:\/\/|git:\/\/|ssh:\/\/[^\s]+|[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9._-]+:[^\s]+)\S*$/;
+  /^(?:https:\/\/|git:\/\/|ssh:\/\/[^\s]+|[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9._-]+:[^\s]+)\S*$/;
+
+/**
+ * Characters that must NEVER appear in a clone URL accepted by this schema,
+ * regardless of scheme. Covers POSIX shell metacharacters, both quote shapes,
+ * the backslash escape, parentheses / brackets / braces, control characters
+ * (0x00-0x1F + 0x7F), and any whitespace.
+ *
+ * Keep in sync with `URL_DISALLOWED_PATTERN` in
+ * `packages/server/src/services/repository-clone-service.ts`.
+ */
+// eslint-disable-next-line no-control-regex
+const cloneUrlDisallowedPattern = /[\s\x00-\x1F\x7F;&|`$<>()[\]{}'"\\]/;
 
 /**
  * Repository name validation (Issue #834 Validation):
@@ -52,7 +68,11 @@ export const CloneRepositoryRequestSchema = v.object({
     v.minLength(1, 'URL is required'),
     v.regex(
       cloneUrlPattern,
-      'URL must be https://, http://, git://, ssh://, or git@host:org/repo (no shell metacharacters or leading dashes)',
+      'URL must be https://, git://, ssh://, or git@host:org/repo (http:// rejected; no leading dashes)',
+    ),
+    v.check(
+      (val) => !cloneUrlDisallowedPattern.test(val),
+      'URL contains a disallowed character (whitespace, shell metacharacters, control characters, quotes, or backslash)',
     ),
   ),
   name: v.optional(

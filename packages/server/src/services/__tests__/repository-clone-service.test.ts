@@ -544,4 +544,211 @@ describe('repository-clone-service', () => {
       expect(service.getJob('does-not-exist')).toBeUndefined();
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // CodeRabbit follow-up: atomic target reservation + terminal-job TTL eviction
+  // ---------------------------------------------------------------------------
+
+  describe('atomic target reservation (TOCTOU guard)', () => {
+    it('two concurrent enqueueClone calls for the same name -- exactly one wins', async () => {
+      const runAs = createRunAsUserMock();
+      const registrar = createRegistrarMock();
+      // Hold the clone open so the first job is still in `cloning` when the
+      // second enqueue races -- this is the real-world race window the
+      // CodeRabbit reviewer was concerned about.
+      runAs.responder.fn = () => new Promise(() => {}); // never resolves
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      const both = await Promise.allSettled([
+        service.enqueueClone({
+          url: 'https://github.com/org/repo.git',
+          requestUser: null,
+        }),
+        service.enqueueClone({
+          url: 'https://github.com/org/repo.git',
+          requestUser: null,
+        }),
+      ]);
+
+      const fulfilled = both.filter((r) => r.status === 'fulfilled');
+      const rejected = both.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(
+        CloneNameConflictError,
+      );
+      service.dispose();
+    });
+
+    it('after a failed clone the target dir is freed for re-enqueue', async () => {
+      const runAs = createRunAsUserMock();
+      runAs.responder.fn = async () => ({
+        stdout: '',
+        stderr: 'fatal: not found',
+        exitCode: 128,
+        timedOut: false,
+      });
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      const id1 = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+      });
+      await waitForJobTerminal(service, id1);
+      expect(service.getJob(id1)?.status).toBe(CLONE_JOB_STATUS.FAILED);
+
+      // Now the partial-clone cleanup should have removed the reservation;
+      // a second enqueue must succeed without 409.
+      const id2 = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+      });
+      expect(id2).not.toBe(id1);
+      service.dispose();
+    });
+  });
+
+  describe('terminal-job TTL eviction', () => {
+    it('evicts a succeeded job from the in-memory map after the TTL fires', async () => {
+      // Capture the eviction callback so the test can fire it on demand.
+      const scheduled: { cb: () => void; delayMs: number }[] = [];
+      const runAs = createRunAsUserMock();
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+        terminalJobTtlMs: 5_000,
+        scheduleEviction: (cb, delayMs) => {
+          scheduled.push({ cb, delayMs });
+          return { cancel: () => {} };
+        },
+      });
+
+      const id = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+      });
+      await waitForJobTerminal(service, id);
+
+      // Job is still in the map -- TTL has not elapsed.
+      expect(service.getJob(id)?.status).toBe(CLONE_JOB_STATUS.SUCCEEDED);
+      expect(scheduled).toHaveLength(1);
+      expect(scheduled[0].delayMs).toBe(5_000);
+
+      // Fire the eviction. The job should be removed.
+      scheduled[0].cb();
+      expect(service.getJob(id)).toBeUndefined();
+      service.dispose();
+    });
+
+    it('evicts a failed job from the in-memory map after the TTL fires', async () => {
+      const scheduled: { cb: () => void; delayMs: number }[] = [];
+      const runAs = createRunAsUserMock();
+      runAs.responder.fn = async () => ({
+        stdout: '',
+        stderr: 'fatal: weird new failure',
+        exitCode: 128,
+        timedOut: false,
+      });
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+        terminalJobTtlMs: 1_000,
+        scheduleEviction: (cb, delayMs) => {
+          scheduled.push({ cb, delayMs });
+          return { cancel: () => {} };
+        },
+      });
+
+      const id = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+      });
+      await waitForJobTerminal(service, id);
+      expect(service.getJob(id)?.status).toBe(CLONE_JOB_STATUS.FAILED);
+      expect(scheduled).toHaveLength(1);
+      scheduled[0].cb();
+      expect(service.getJob(id)).toBeUndefined();
+      service.dispose();
+    });
+
+    it('does not schedule eviction for pending / cloning jobs', async () => {
+      const scheduled: { cb: () => void; delayMs: number }[] = [];
+      const runAs = createRunAsUserMock();
+      // Never resolves -- keep the job in CLONING.
+      runAs.responder.fn = () => new Promise(() => {});
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+        scheduleEviction: (cb, delayMs) => {
+          scheduled.push({ cb, delayMs });
+          return { cancel: () => {} };
+        },
+      });
+
+      const id = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: null,
+      });
+      // Wait a tick to let the cloning transition happen.
+      await new Promise((r) => setTimeout(r, 10));
+      expect(service.getJob(id)?.status).toBe(CLONE_JOB_STATUS.CLONING);
+      expect(scheduled).toHaveLength(0);
+      service.dispose();
+    });
+  });
+
+  describe('URL re-validation (defense-in-depth)', () => {
+    it('rejects http:// at the service layer (mirror of schema tightening)', async () => {
+      const runAs = createRunAsUserMock();
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      await expect(
+        service.enqueueClone({
+          url: 'http://example.com/org/repo.git',
+          requestUser: null,
+        }),
+      ).rejects.toBeInstanceOf(CloneValidationError);
+      expect(runAs.calls).toHaveLength(0);
+      service.dispose();
+    });
+
+    it('rejects a URL with embedded shell metacharacters', async () => {
+      const runAs = createRunAsUserMock();
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      await expect(
+        service.enqueueClone({
+          url: 'https://example.com/repo;touch%20x',
+          requestUser: null,
+        }),
+      ).rejects.toBeInstanceOf(CloneValidationError);
+      expect(runAs.calls).toHaveLength(0);
+      service.dispose();
+    });
+  });
 });

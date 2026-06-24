@@ -46,6 +46,15 @@ const logger = createLogger('service:repository-clone');
 const DEFAULT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
+ * How long to keep a terminal (succeeded / failed) job's state in memory
+ * before evicting it. Long enough to let a polling client observe the
+ * terminal state at least a few times; short enough that a long-lived server
+ * + many invalid clone attempts cannot grow the map unbounded. Per CodeRabbit
+ * review on PR #862.
+ */
+const TERMINAL_JOB_TTL_MS = 10 * 60 * 1000;
+
+/**
  * Accepted clone URL shapes -- mirror of the shared schema regex so the
  * service stays a self-contained validation boundary when called outside the
  * route handler (e.g., a future MCP tool). Keep in sync with the
@@ -54,7 +63,20 @@ const DEFAULT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
  * @internal Exported for testing.
  */
 export const CLONE_URL_PATTERN =
-  /^(?:https?:\/\/|git:\/\/|ssh:\/\/[^\s]+|[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9._-]+:[^\s]+)\S*$/;
+  /^(?:https:\/\/|git:\/\/|ssh:\/\/[^\s]+|[A-Za-z0-9_][A-Za-z0-9._-]*@[A-Za-z0-9._-]+:[^\s]+)\S*$/;
+
+/**
+ * Characters that must never appear in a clone URL accepted by this service.
+ * Mirrors `cloneUrlDisallowedPattern` in
+ * `packages/shared/src/schemas/repository.ts`. Covers POSIX shell
+ * metacharacters, both quote shapes, the backslash escape, parentheses /
+ * brackets / braces, C0/C1 control characters (0x00-0x1F + 0x7F), and any
+ * whitespace.
+ *
+ * @internal Exported for testing.
+ */
+// eslint-disable-next-line no-control-regex
+export const URL_DISALLOWED_PATTERN = /[\s\x00-\x1F\x7F;&|`$<>()[\]{}'"\\]/;
 
 /**
  * Accepted repository name shape. Keep in sync with `repoNamePattern` in
@@ -133,6 +155,22 @@ export interface CloneServiceOptions {
   runAsUserImpl?: RunAsUserFn;
   /** Override per-clone timeout. Defaults to {@link DEFAULT_CLONE_TIMEOUT_MS}. */
   cloneTimeoutMs?: number;
+  /**
+   * Override the terminal-job TTL (ms) used by the eviction sweeper.
+   * Defaults to {@link TERMINAL_JOB_TTL_MS}. Tests can lower this so the
+   * eviction observable in a single test tick.
+   */
+  terminalJobTtlMs?: number;
+  /**
+   * Override the scheduler used to evict terminal jobs after their TTL.
+   * Defaults to `setTimeout` / `clearTimeout`. Tests can substitute a
+   * deterministic queue. Returns a cancel handle so the service can short-
+   * circuit a pending eviction (e.g., when the job is observed by a poller).
+   */
+  scheduleEviction?: (
+    cb: () => void,
+    delayMs: number,
+  ) => { cancel: () => void };
 }
 
 /**
@@ -263,7 +301,12 @@ export function classifyCloneError(
 export function validateCloneInputs(url: string, name: string): void {
   if (!CLONE_URL_PATTERN.test(url)) {
     throw new CloneValidationError(
-      'URL must be https://, http://, git://, ssh://, or git@host:org/repo (no shell metacharacters or leading dashes)',
+      'URL must be https://, git://, ssh://, or git@host:org/repo (http:// rejected; no leading dashes)',
+    );
+  }
+  if (URL_DISALLOWED_PATTERN.test(url)) {
+    throw new CloneValidationError(
+      'URL contains a disallowed character (whitespace, shell metacharacters, control characters, quotes, or backslash)',
     );
   }
   if (!REPO_NAME_PATTERN.test(name)) {
@@ -291,13 +334,36 @@ export class RepositoryCloneService {
   private readonly registrar: RepositoryRegistrar;
   private readonly runAsUser: RunAsUserFn;
   private readonly cloneTimeoutMs: number;
+  private readonly terminalJobTtlMs: number;
   private readonly jobs = new Map<string, CloneJobState>();
+  /**
+   * Pending eviction timers for terminal jobs, keyed by jobId. Tracked so
+   * tests / shutdown can clear them and a manual `evictTerminalJobs()` call
+   * can short-circuit them.
+   */
+  private readonly evictTimers = new Map<string, { cancel: () => void }>();
+  /**
+   * Sleep-then-evict shim. Defaults to `setTimeout` / `clearTimeout` from
+   * the host runtime; tests can substitute deterministic timers via
+   * `CloneServiceOptions.scheduleEviction`.
+   */
+  private readonly scheduleEviction: (
+    cb: () => void,
+    delayMs: number,
+  ) => { cancel: () => void };
 
   constructor(options: CloneServiceOptions) {
     this.sourceReposDir = options.sourceReposDir;
     this.registrar = options.registrar;
     this.runAsUser = options.runAsUserImpl ?? defaultRunAsUser;
     this.cloneTimeoutMs = options.cloneTimeoutMs ?? DEFAULT_CLONE_TIMEOUT_MS;
+    this.terminalJobTtlMs = options.terminalJobTtlMs ?? TERMINAL_JOB_TTL_MS;
+    this.scheduleEviction =
+      options.scheduleEviction ??
+      ((cb, delayMs) => {
+        const handle = setTimeout(cb, delayMs);
+        return { cancel: () => clearTimeout(handle) };
+      });
   }
 
   /**
@@ -308,6 +374,15 @@ export class RepositoryCloneService {
    * Pre-flight failures (`CloneValidationError`, `CloneNameConflictError`)
    * are THROWN, not surfaced as a failed job, so the route can map them to
    * `400` / `409` synchronously.
+   *
+   * Race safety -- the target directory is reserved atomically via
+   * `fsPromises.mkdir(targetDir, { recursive: false })`. POSIX `mkdir(2)`
+   * guarantees that exactly one of N concurrent same-target requests
+   * succeeds; the rest receive `EEXIST` and are surfaced as
+   * `CloneNameConflictError`. This closes the TOCTOU window CodeRabbit
+   * flagged on PR #862 against the prior lstat-only check. The reservation
+   * lives until the job's terminal-state cleanup (success: leave the dir
+   * alone; failure: rm the dir so the name is reusable).
    */
   async enqueueClone(request: CloneRepositoryRequest): Promise<string> {
     const url = request.url.trim();
@@ -324,31 +399,36 @@ export class RepositoryCloneService {
 
     const targetDir = path.join(this.sourceReposDir, derived);
 
-    // Pre-flight conflict check. Using lstat so a dangling symlink at the
-    // target also counts as conflict (do not silently re-purpose).
-    try {
-      await fsPromises.lstat(targetDir);
-      throw new CloneNameConflictError(
-        `Target directory already exists: ${targetDir}`,
-      );
-    } catch (err: unknown) {
-      if (err instanceof CloneNameConflictError) throw err;
-      // `ENOENT` is the happy path -- the directory should not exist yet.
-      if (!isEnoent(err)) {
-        // Other lstat errors (EACCES on parent, etc.) are not a conflict but
-        // they ARE a pre-spawn failure. Treat as validation failure so the
-        // route returns 400 with a precise message rather than 500.
-        throw new CloneValidationError(
-          `Could not check target directory: ${errorMessage(err)}`,
-        );
-      }
-    }
-
-    // Ensure parent exists before spawning. The bootstrap script creates
+    // Ensure parent exists before reserving. The bootstrap script creates
     // `${DATA_ROOT}/source-repos` with the right ownership; this is a safety
     // net for development environments / single-user installs where the
     // operator may not have run the bootstrap.
-    await fsPromises.mkdir(this.sourceReposDir, { recursive: true });
+    try {
+      await fsPromises.mkdir(this.sourceReposDir, { recursive: true });
+    } catch (err: unknown) {
+      throw new CloneValidationError(
+        `Could not prepare source-repos directory: ${errorMessage(err)}`,
+      );
+    }
+
+    // Atomic target reservation -- replaces the previous lstat conflict check
+    // (TOCTOU-vulnerable). `mkdir` without `recursive` fails with `EEXIST`
+    // when the target already exists, so we cannot accidentally re-purpose
+    // an operator-cloned tree. `git clone` happily clones INTO a pre-
+    // existing empty directory, so this reservation is compatible with the
+    // subsequent `runAsUser` clone step.
+    try {
+      await fsPromises.mkdir(targetDir);
+    } catch (err: unknown) {
+      if (isEexist(err)) {
+        throw new CloneNameConflictError(
+          `Target directory already exists: ${targetDir}`,
+        );
+      }
+      throw new CloneValidationError(
+        `Could not reserve target directory: ${errorMessage(err)}`,
+      );
+    }
 
     const jobId = randomUUID();
     const now = Date.now();
@@ -406,7 +486,7 @@ export class RepositoryCloneService {
       `git clone --config core.sharedRepository=group ` +
       `${shellEscape(url)} ${shellEscape(targetDir)}`;
 
-    let result;
+    let result: Awaited<ReturnType<RunAsUserFn>>;
     try {
       result = await this.runAsUser({
         username: request.requestUser,
@@ -474,9 +554,11 @@ export class RepositoryCloneService {
   }
 
   /**
-   * Best-effort `rm -rf <targetDir>` so a future retry can re-use the name.
-   * Failures here are logged but do not change the job's final status -- the
-   * underlying failure code is already the primary signal.
+   * Release the atomically-reserved target directory + any partial clone
+   * git left behind. Only called on failure: a successful clone leaves the
+   * directory in place because it now holds the registered repo. Safe to
+   * call even when the directory was only the empty reservation -- `rm`
+   * with `recursive: true` covers both shapes.
    */
   private async cleanupPartialClone(targetDir: string, jobId: string): Promise<void> {
     try {
@@ -484,7 +566,7 @@ export class RepositoryCloneService {
     } catch (err) {
       logger.warn(
         { err, targetDir, jobId },
-        'partial-clone cleanup failed; operator may need to rm -rf manually',
+        'partial-clone cleanup failed; operator may need to remove the directory manually',
       );
     }
   }
@@ -492,20 +574,52 @@ export class RepositoryCloneService {
   private transition(state: CloneJobState, status: CloneJobStatus): void {
     state.status = status;
     state.updatedAt = Date.now();
+    if (status === CLONE_JOB_STATUS.SUCCEEDED || status === CLONE_JOB_STATUS.FAILED) {
+      this.scheduleTerminalEviction(state.id);
+    }
   }
 
   private fail(state: CloneJobState, code: CloneErrorCode, message: string): void {
     state.error = { code, message };
     this.transition(state, CLONE_JOB_STATUS.FAILED);
   }
+
+  /**
+   * Schedule eviction of a terminal job from the in-memory map after the
+   * configured TTL. Replaces any prior timer for the same job. Per
+   * CodeRabbit review on PR #862 (unbounded-growth guard).
+   */
+  private scheduleTerminalEviction(jobId: string): void {
+    const existing = this.evictTimers.get(jobId);
+    if (existing) {
+      existing.cancel();
+    }
+    const handle = this.scheduleEviction(() => {
+      this.jobs.delete(jobId);
+      this.evictTimers.delete(jobId);
+      logger.debug({ jobId }, 'evicted terminal clone job from in-memory map');
+    }, this.terminalJobTtlMs);
+    this.evictTimers.set(jobId, handle);
+  }
+
+  /**
+   * Cancel all pending eviction timers. Used by tests + by the test app
+   * context teardown so timers do not leak across cases.
+   */
+  dispose(): void {
+    for (const handle of this.evictTimers.values()) {
+      handle.cancel();
+    }
+    this.evictTimers.clear();
+  }
 }
 
-function isEnoent(err: unknown): boolean {
+function isEexist(err: unknown): boolean {
   return (
     typeof err === 'object' &&
     err !== null &&
     'code' in err &&
-    (err as { code?: unknown }).code === 'ENOENT'
+    (err as { code?: unknown }).code === 'EEXIST'
   );
 }
 
