@@ -803,3 +803,106 @@ The motivating regression (Issue #866) was a case where the service-account
 user's `PATH` leaked into the elevated session and broke `claude` resolution
 with `sh: 1: claude: Permission denied`. Future smoke checks land as sibling
 scripts under `scripts/smoke/`.
+
+## Local Multi-User Dev Mode
+
+`scripts/dev-multiuser.sh` (also runnable as `bun run dev:multiuser`) starts
+a hot-reloading dev instance that **mirrors production multi-user ownership**
+without touching the production data root. Unlike `bun run dev`
+(single-user, runs as the developer under `~/.agent-console-dev`), this
+script runs the server as the production service user (`agentconsole`) with
+a parallel `/var/lib/agent-console-dev` data root.
+
+Use this when:
+
+- Verifying a feature that depends on the privilege-elevation chain
+  (`runAsUser`, shared-group ownership, setgid inheritance,
+  `sharedRepository=group`, server-side `safe.directory`).
+- Iterating on UI / API code while preserving production-mirrored ownership
+  semantics. Hot reload works because the service user gets a read-only ACL
+  on the current git checkout rather than a separate rsync target.
+
+### Prerequisites (one-time)
+
+`scripts/setup-multiuser-for-ubuntu.sh` must have run on the host to create
+the service user (`agentconsole`), the shared group (`agent-console-users`),
+the sudoers configuration, and install the production systemd unit. The dev
+script reuses all of these. In addition the developer's user must be a
+member of the shared group:
+
+```bash
+sudo gpasswd -a $(whoami) agent-console-users
+# start a NEW login session (or use `newgrp agent-console-users`) so the
+# group is effective in the running shell
+```
+
+`setfacl` (Ubuntu: `acl` package) must be installed.
+
+### Path layout
+
+```
+/var/lib/agent-console-dev/              agentconsole:agent-console-users  drwxrwsr-x (2775)
+/var/lib/agent-console-dev/source-repos/  same -- cloned repos land here
+/var/lib/agent-console-dev/repositories/  same -- per-repo worktrees
+/var/lib/agent-console-dev/uploads/        same -- uploaded files
+```
+
+Created idempotently on each run via `sudo install -d`, owned by
+`agentconsole:agent-console-users` with mode `2775` (setgid + group-writable).
+The developer accesses files through their membership in
+`agent-console-users` plus setgid + `sharedRepository=group` -- the **same**
+access path used in production.
+
+### Ports
+
+Default `3457` (server) / `5173` (client) mirror `bun run dev`. The
+production systemd instance on `8080` is untouched. Only one dev instance
+can run at a time (single-user `bun run dev` OR `bun run dev:multiuser`,
+not both).
+
+### How it works
+
+1. **Pre-flight:** validate service user, shared group, group membership,
+   `setfacl`, and locate the service user's `bun` binary.
+2. **Data root setup (idempotent):** ensure `/var/lib/agent-console-dev/`
+   subtree exists with `agentconsole:agent-console-users` ownership and
+   mode `2775`. Subsequent runs only verify ownership.
+3. **ACL grant on the worktree:** if `agentconsole` cannot already read the
+   checkout, recursively grant `u:agentconsole:rX` (read + traverse) on the
+   tree, with a default ACL so newly-created files inherit. One-time per
+   worktree; subsequent runs detect access and skip.
+4. **Start vite client** (as the developer, port 5173).
+5. **Start server** (as `agentconsole`, port 3457) with env mirroring the
+   production systemd unit (`AUTH_MODE=multi-user`,
+   `AGENT_CONSOLE_HOME=/var/lib/agent-console-dev`,
+   `AUTH_COOKIE_SECURE=false`, `NODE_ENV=development`, `UMask=0002` via
+   shell, `PATH=$SERVICE_HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin`).
+6. **Cleanup on Ctrl+C** — both processes terminate.
+
+### Comparison: single-user dev vs multi-user dev
+
+| | `bun run dev` (single) | `bun run dev:multiuser` |
+|---|---|---|
+| Server runs as | developer (current user) | `agentconsole` |
+| Data root | `$HOME/.agent-console-dev` | `/var/lib/agent-console-dev` |
+| Data owner | developer | `agentconsole:agent-console-users` (mode 2775 setgid) |
+| `AUTH_MODE` | unset (single) | `multi-user` |
+| PAM auth on login | bypassed | required |
+| Privilege elevation (`runAsUser`) | bypassed | active |
+| `sharedRepository=group` applied | no | yes (`#845`) |
+| Server-side `safe.directory` bootstrap (`#853`) | no | yes |
+| Use when | iterating on UI / logic | testing features that depend on multi-user semantics |
+
+### Configurable overrides
+
+```bash
+SERVICE_USER=otheruser \
+SHARED_GROUP=other-shared \
+DEV_DATA_ROOT=/var/lib/agent-console-dev-alt \
+PORT=3458 CLIENT_PORT=5174 \
+bun run dev:multiuser
+```
+
+`SERVICE_BUN=/path/to/bun` overrides the auto-detected bun binary location
+when it lives outside the production-mirrored search path
+(`$SERVICE_HOME/.bun/bin/bun`, `/usr/local/bin/bun`, `/usr/bin/bun`).
