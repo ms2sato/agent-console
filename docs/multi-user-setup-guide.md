@@ -753,3 +753,53 @@ installs at the time of #838 had a small number of pre-existing worktrees
 (per the bootstrap-script-era setup window), so a per-path operator step
 costs less than a database-aware migration script. A scripted variant can
 be added later if installs in the wild accumulate many pre-#838 worktrees.
+
+## Post-deploy Verification (smoke tests)
+
+Run after every deploy that touches a privilege-elevation code path
+(`packages/server/src/services/user-mode.ts`, `env-filter.ts`, or
+`scripts/setup-multiuser-for-ubuntu.sh`). Unit tests cover the inner-command
+string shape, but only an on-host smoke can confirm what env the elevated
+user actually sees -- which depends on distro `sudo` defaults, sudoers
+config, and the target user's login shell init.
+
+### PTY env propagation check
+
+```bash
+sudo -u agentconsole bun scripts/smoke/check-multiuser-pty-env.ts <target-user>
+```
+
+Replace `<target-user>` with an OS user authorized in `/etc/sudoers.d/agent-console`
+(any of the interactive users the multi-user deployment supports).
+
+What it verifies (against the **real** machine -- real `sudo`, real sudoers,
+real login shell init, real OS env):
+
+- The color env (`TERM=xterm-256color`, `COLORTERM=truecolor`, `FORCE_COLOR=3`)
+  reaches the inner shell. Without these, chalk-based CLIs (Claude Code, etc.)
+  render in plain white.
+- The elevated user's natural login env (`PATH`, `HOME`, `USER`, `LOGNAME`,
+  `SHELL`) is correctly populated by `sudo -i`'s shell init -- NOT overridden
+  by the service-account user's env.
+- The target user's PATH includes their own home tree (typical for npm global
+  or nvm setups where claude is installed under the user's home).
+
+Exit codes:
+
+- `0` -- all assertions passed
+- `1` -- one or more assertions failed (details on stderr)
+- `2` -- bad usage (missing target-user argument) or the smoke could not run
+  (target user not in passwd, no home directory field, etc.). Distinct from `1`
+  so operators can tell apart "the smoke ran and found a real problem" vs "the
+  smoke could not even start".
+
+The script imports `buildElevationArgs` directly from
+`packages/server/src/services/elevation-args.ts`, the same helper production
+uses in `MultiUserMode.spawnSudoPty`. Drift between what production sends to
+`sudo` and what the smoke verifies is impossible by construction -- adding a
+new env contribution in the helper propagates to both paths automatically.
+
+The motivating regression (Issue #866) was a case where the service-account
+user's `PATH` leaked into the elevated session and broke `claude` resolution
+with `sh: 1: claude: Permission denied`. Future smoke checks land as sibling
+scripts under `scripts/smoke/`.

@@ -20,6 +20,7 @@ import type { AuthUser } from '@agent-console/shared';
 import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
+import { buildElevationArgs } from './elevation-args.js';
 import { lookupOsUser } from './os-user-lookup.js';
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
@@ -459,13 +460,19 @@ export class MultiUserMode implements UserMode {
    * does not inherit the parent's process environment.
    */
   private spawnSudoPty(request: PtySpawnRequest): PtyInstance {
-    const envExports = this.buildEnvExportString(request);
-
-    let innerCommand: string;
+    // Build the sudo argv via the pure helper in `elevation-args.ts`. The
+    // helper is the single source of truth for: which env vars cross the
+    // privilege boundary, how they are exported in the inner shell, and the
+    // resulting sudo argv. The post-deploy smoke script
+    // (`scripts/smoke/check-multiuser-pty-env.ts`) imports the same helper,
+    // so the argv shape exercised by smoke cannot drift from production.
+    // Issues #863 (original) / #866 (regression fix + design correction).
+    let agentConsoleVars: Record<string, string> | undefined;
+    let command: string;
     switch (request.type) {
       case 'agent': {
         const ctx = request.agentConsoleContext;
-        const agentConsoleVars: Record<string, string> = {
+        agentConsoleVars = {
           AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
           AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
           AGENT_CONSOLE_WORKER_ID: ctx.workerId,
@@ -473,86 +480,31 @@ export class MultiUserMode implements UserMode {
           ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
           ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
         };
-        const agentExports = this.buildExportString(agentConsoleVars);
-        const allExports = [envExports, agentExports].filter(Boolean).join(' ');
-        innerCommand = allExports
-          ? `cd ${this.shellEscape(request.cwd)} && export ${allExports}; ${request.command}`
-          : `cd ${this.shellEscape(request.cwd)} && ${request.command}`;
+        command = request.command;
         break;
       }
       case 'terminal': {
-        innerCommand = envExports
-          ? `cd ${this.shellEscape(request.cwd)} && export ${envExports}; exec $SHELL -l`
-          : `cd ${this.shellEscape(request.cwd)} && exec $SHELL -l`;
+        command = 'exec $SHELL -l';
         break;
       }
     }
 
-    return this.ptyProvider.spawn(
-      'sudo',
-      // `sudo -i` strips most of the env it inherits from the parent. We do
-      // NOT rely on `--preserve-env=...` here for color env: the bun server
-      // process does not carry FORCE_COLOR / TERM / COLORTERM in its own env,
-      // so there is nothing for sudo to preserve. Instead, those values are
-      // inserted into the inner shell's export list (see `buildEnvExportString`,
-      // which merges env-filter's curated child env), so they reach the
-      // spawned process regardless of sudo's env_keep policy. The
-      // `--preserve-env=FORCE_COLOR` flag is retained for harmless safety
-      // (in case a future deploy injects FORCE_COLOR at the systemd unit
-      // level). Issue #863 corrected the previous incorrect assumption that
-      // sudo's env_keep defaults retain TERM/COLORTERM (they do not on
-      // Ubuntu sudo); claude rendered in plain white as a result.
-      ['-u', request.username, '--preserve-env=FORCE_COLOR', '-i', 'sh', '-c', innerCommand],
-      {
-        name: 'xterm-256color',
-        cols: request.cols,
-        rows: request.rows,
-        // Use a neutral, always-traversable cwd for the pre-exec chdir; the
-        // inner `cd ${request.cwd}` (run as the target user) handles landing.
-        cwd: SUDO_NEUTRAL_CWD,
-      },
-    );
+    const { argv } = buildElevationArgs({
+      username: request.username,
+      cwd: request.cwd,
+      additionalEnvVars: request.additionalEnvVars,
+      agentConsoleVars,
+      command,
+    });
+
+    return this.ptyProvider.spawn('sudo', argv, {
+      name: 'xterm-256color',
+      cols: request.cols,
+      rows: request.rows,
+      // Use a neutral, always-traversable cwd for the pre-exec chdir; the
+      // inner `cd ${request.cwd}` (run as the target user) handles landing.
+      cwd: SUDO_NEUTRAL_CWD,
+    });
   }
 
-  /**
-   * Build export string from env-filter's curated system env (TERM,
-   * COLORTERM, FORCE_COLOR, AGENT_CONSOLE_* unset prefix, etc.) merged
-   * with additionalEnvVars (repository + template env vars). Without
-   * env-filter, `sudo -i` would strip TERM and the inner shell would
-   * land on TERM=unknown — chalk-based CLIs (claude, etc.) then
-   * suppress color output. additionalEnvVars wins on key collision,
-   * preserving per-spawn overrides. Issue #863.
-   */
-  private buildEnvExportString(request: PtySpawnRequest): string {
-    const combined = { ...getCleanChildProcessEnv(), ...request.additionalEnvVars };
-    return this.buildExportString(combined);
-  }
-
-  /**
-   * Convert a Record<string, string> to a shell export string.
-   * e.g., "KEY1=val1 KEY2=val2"
-   *
-   * Keys are validated against POSIX environment variable naming rules
-   * to prevent shell injection via crafted key names.
-   */
-  private buildExportString(vars: Record<string, string>): string {
-    return Object.entries(vars)
-      .filter(([key]) => {
-        const valid = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
-        if (!valid) {
-          logger.warn({ key }, 'Skipping environment variable with invalid key name');
-        }
-        return valid;
-      })
-      .map(([key, value]) => `${key}=${this.shellEscape(value)}`)
-      .join(' ');
-  }
-
-  /**
-   * Escape a string for safe use in a single-quoted shell context.
-   */
-  private shellEscape(value: string): string {
-    // Use single quotes, escaping any embedded single quotes
-    return `'${value.replace(/'/g, "'\\''")}'`;
-  }
 }
