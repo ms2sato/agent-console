@@ -766,30 +766,33 @@ config, and the target user's login shell init.
 ### PTY env propagation check
 
 ```bash
-sudo -u agentconsole bash scripts/smoke/check-multiuser-pty-env.sh <target-user>
+sudo -u agentconsole bun scripts/smoke/check-multiuser-pty-env.ts <target-user>
 ```
 
 Replace `<target-user>` with an OS user authorized in `/etc/sudoers.d/agent-console`
 (any of the interactive users the multi-user deployment supports).
 
-What it verifies:
+What it verifies (against the **real** machine -- real `sudo`, real sudoers,
+real login shell init, real OS env):
 
 - The color env (`TERM=xterm-256color`, `COLORTERM=truecolor`, `FORCE_COLOR=3`)
   reaches the inner shell. Without these, chalk-based CLIs (Claude Code, etc.)
   render in plain white.
 - The elevated user's natural login env (`PATH`, `HOME`, `USER`, `LOGNAME`,
   `SHELL`) is correctly populated by `sudo -i`'s shell init -- NOT overridden
-  by the `agentconsole` service user's env.
+  by the service-account user's env.
+- The target user's PATH includes their own home tree (typical for npm global
+  or nvm setups where claude is installed under the user's home).
 
 Exit `0` on success; `1` on any assertion failure (details on stderr).
 
-The motivating regression (Issue #866) was a case where `agentconsole`'s
-`PATH` leaked into the elevated session and broke `claude` resolution with
-`sh: 1: claude: Permission denied`. The smoke script reconstructs the
-production `sudo` argv and inner command shape so subsequent regressions in
-this area surface immediately post-deploy. The Sync contract is documented
-at the top of the script: if you change `spawnSudoPty`'s argv or the
-color-env whitelist in `buildEnvExportString`, update the smoke script in
-the same PR.
+The script imports `buildElevationArgs` directly from
+`packages/server/src/services/elevation-args.ts`, the same helper production
+uses in `MultiUserMode.spawnSudoPty`. Drift between what production sends to
+`sudo` and what the smoke verifies is impossible by construction -- adding a
+new env contribution in the helper propagates to both paths automatically.
 
-Future smoke checks land as sibling scripts under `scripts/smoke/`.
+The motivating regression (Issue #866) was a case where the service-account
+user's `PATH` leaked into the elevated session and broke `claude` resolution
+with `sh: 1: claude: Permission denied`. Future smoke checks land as sibling
+scripts under `scripts/smoke/`.

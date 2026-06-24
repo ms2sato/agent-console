@@ -20,6 +20,7 @@ import type { AuthUser } from '@agent-console/shared';
 import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
+import { buildElevationArgs } from './elevation-args.js';
 import { lookupOsUser } from './os-user-lookup.js';
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
@@ -459,13 +460,19 @@ export class MultiUserMode implements UserMode {
    * does not inherit the parent's process environment.
    */
   private spawnSudoPty(request: PtySpawnRequest): PtyInstance {
-    const envExports = this.buildEnvExportString(request);
-
-    let innerCommand: string;
+    // Build the sudo argv via the pure helper in `elevation-args.ts`. The
+    // helper is the single source of truth for: which env vars cross the
+    // privilege boundary, how they are exported in the inner shell, and the
+    // resulting sudo argv. The post-deploy smoke script
+    // (`scripts/smoke/check-multiuser-pty-env.ts`) imports the same helper,
+    // so the argv shape exercised by smoke cannot drift from production.
+    // Issues #863 (original) / #866 (regression fix + design correction).
+    let agentConsoleVars: Record<string, string> | undefined;
+    let command: string;
     switch (request.type) {
       case 'agent': {
         const ctx = request.agentConsoleContext;
-        const agentConsoleVars: Record<string, string> = {
+        agentConsoleVars = {
           AGENT_CONSOLE_BASE_URL: ctx.baseUrl,
           AGENT_CONSOLE_SESSION_ID: ctx.sessionId,
           AGENT_CONSOLE_WORKER_ID: ctx.workerId,
@@ -473,105 +480,31 @@ export class MultiUserMode implements UserMode {
           ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
           ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
         };
-        const agentExports = this.buildExportString(agentConsoleVars);
-        const allExports = [envExports, agentExports].filter(Boolean).join(' ');
-        innerCommand = allExports
-          ? `cd ${this.shellEscape(request.cwd)} && export ${allExports}; ${request.command}`
-          : `cd ${this.shellEscape(request.cwd)} && ${request.command}`;
+        command = request.command;
         break;
       }
       case 'terminal': {
-        innerCommand = envExports
-          ? `cd ${this.shellEscape(request.cwd)} && export ${envExports}; exec $SHELL -l`
-          : `cd ${this.shellEscape(request.cwd)} && exec $SHELL -l`;
+        command = 'exec $SHELL -l';
         break;
       }
     }
 
-    return this.ptyProvider.spawn(
-      'sudo',
-      // `sudo -i` strips most of the env it inherits from the parent. The
-      // target user's natural env (PATH / HOME / USER / SHELL / LOGNAME /
-      // LANG / etc.) is set by the elevated login shell init. The color env
-      // (TERM / COLORTERM / FORCE_COLOR) — which sudo strips and login init
-      // does not restore — is injected via the inner shell's export list
-      // (see `buildEnvExportString`). The `--preserve-env=FORCE_COLOR` flag
-      // is retained as harmless safety (in case a future deploy injects
-      // FORCE_COLOR at the bun process / systemd unit level, sudo would
-      // preserve it; today the bun process does not carry it). Issues #863
-      // (original misdiagnosis) and #866 (regression fix and design
-      // correction).
-      ['-u', request.username, '--preserve-env=FORCE_COLOR', '-i', 'sh', '-c', innerCommand],
-      {
-        name: 'xterm-256color',
-        cols: request.cols,
-        rows: request.rows,
-        // Use a neutral, always-traversable cwd for the pre-exec chdir; the
-        // inner `cd ${request.cwd}` (run as the target user) handles landing.
-        cwd: SUDO_NEUTRAL_CWD,
-      },
-    );
+    const { argv } = buildElevationArgs({
+      username: request.username,
+      cwd: request.cwd,
+      additionalEnvVars: request.additionalEnvVars,
+      agentConsoleVars,
+      command,
+    });
+
+    return this.ptyProvider.spawn('sudo', argv, {
+      name: 'xterm-256color',
+      cols: request.cols,
+      rows: request.rows,
+      // Use a neutral, always-traversable cwd for the pre-exec chdir; the
+      // inner `cd ${request.cwd}` (run as the target user) handles landing.
+      cwd: SUDO_NEUTRAL_CWD,
+    });
   }
 
-  /**
-   * Build the inner-shell export string for a privilege-elevated PTY spawn.
-   *
-   * `sudo -i` runs the target user's login shell init (.bashrc / .bash_profile /
-   * /etc/profile / system-wide), which sets the user's natural PATH / HOME /
-   * USER / SHELL / LOGNAME / PWD / LANG / etc. We do NOT inherit bun server's
-   * env (the server runs as `agentconsole`); doing so would override the
-   * elevated user's natural env and break PATH lookup, HOME-relative config
-   * loading, etc. Issue #866 (regression of PR #864 / Issue #863).
-   *
-   * The only env vars we inject across the privilege boundary are the ones
-   * sudo strips AND the login shell init does not restore — empirically just
-   * the color trinity (TERM / COLORTERM / FORCE_COLOR). Linux sudo defaults do
-   * not preserve them in env_keep; no shell init script sets them (terminals
-   * are detection-driven, but here the terminal is xterm.js via our PTY
-   * allocation — we know the capability and pass it explicitly).
-   *
-   * `additionalEnvVars` (per-spawn repo / template env) wins on key collision,
-   * preserving spawn-specific overrides.
-   *
-   * Sync contract: changes to this set must be mirrored in
-   * `scripts/smoke/check-multiuser-pty-env.sh` so post-deploy verification
-   * matches the production code path.
-   */
-  private buildEnvExportString(request: PtySpawnRequest): string {
-    const colorEnv: Record<string, string> = {
-      TERM: 'xterm-256color',
-      COLORTERM: 'truecolor',
-      FORCE_COLOR: '3',
-    };
-    const combined = { ...colorEnv, ...request.additionalEnvVars };
-    return this.buildExportString(combined);
-  }
-
-  /**
-   * Convert a Record<string, string> to a shell export string.
-   * e.g., "KEY1=val1 KEY2=val2"
-   *
-   * Keys are validated against POSIX environment variable naming rules
-   * to prevent shell injection via crafted key names.
-   */
-  private buildExportString(vars: Record<string, string>): string {
-    return Object.entries(vars)
-      .filter(([key]) => {
-        const valid = /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
-        if (!valid) {
-          logger.warn({ key }, 'Skipping environment variable with invalid key name');
-        }
-        return valid;
-      })
-      .map(([key, value]) => `${key}=${this.shellEscape(value)}`)
-      .join(' ');
-  }
-
-  /**
-   * Escape a string for safe use in a single-quoted shell context.
-   */
-  private shellEscape(value: string): string {
-    // Use single quotes, escaping any embedded single quotes
-    return `'${value.replace(/'/g, "'\\''")}'`;
-  }
 }
