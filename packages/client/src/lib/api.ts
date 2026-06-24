@@ -23,6 +23,9 @@ import type {
   UpdateRepositoryRequest,
   WorkerMessage,
   GenerateRepositoryDescriptionResponse,
+  CloneRepositoryRequest,
+  CloneRepositoryResponse,
+  CloneJobStatusResponse,
   ConfigResponse,
   LoginRequest,
   LoginResponse,
@@ -286,6 +289,45 @@ export async function unregisterRepository(repositoryId: string): Promise<void> 
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister repository');
   }
+}
+
+/**
+ * Start a server-side clone of a git URL into the shared source-repos
+ * directory. Returns the `jobId` of the enqueued Clone Job (HTTP 202
+ * Accepted); the client polls `fetchCloneJobStatus(jobId)` until the
+ * status reaches a terminal state (`succeeded` or `failed`).
+ *
+ * Uses raw `fetch` because the server endpoint may not yet be in the
+ * Hono RPC client types (parallel implementation in Issue #834).
+ */
+export async function cloneRepository(
+  request: CloneRepositoryRequest
+): Promise<CloneRepositoryResponse> {
+  const res = await fetch(`${API_BASE}/repositories/clone`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to start clone');
+  }
+  return res.json() as Promise<CloneRepositoryResponse>;
+}
+
+/**
+ * Poll the status of a Clone Job. Returns `{ status, error?, repositoryId? }`.
+ * Callers should stop polling when `status === 'succeeded'` or
+ * `status === 'failed'`.
+ *
+ * Uses raw `fetch` because the server endpoint may not yet be in the
+ * Hono RPC client types (parallel implementation in Issue #834).
+ */
+export async function fetchCloneJobStatus(jobId: string): Promise<CloneJobStatusResponse> {
+  const res = await fetch(`${API_BASE}/repositories/clone/${encodeURIComponent(jobId)}`);
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch clone job status');
+  }
+  return res.json() as Promise<CloneJobStatusResponse>;
 }
 
 export interface UpdateRepositoryResponse {

@@ -16,6 +16,11 @@ The stored configuration for an AI agent, including command templates and activi
 A registered Git repository available for session creation. Code reference: `repositoryId` (UUID).
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)
 
+### Clone Job
+An asynchronous server-side job that clones a remote Git URL into the shared [source-repos directory](#source-repos-directory) and registers the result as a [Repository](#repository) (Issue [#834](https://github.com/ms2sato/agent-console/issues/834)). The HTTP endpoint `POST /api/repositories/clone` returns `202 Accepted` with a `jobId`; the client polls `GET /api/repositories/clone/:jobId` for status (`pending` / `cloning` / `succeeded` / `failed`). On failure, a classified `CloneErrorCode` (`auth_failed` / `network_error` / `repo_not_found` / `permission_denied` / `name_conflict` / `timeout` / `validation_error` / `unknown`) lets the UI render actionable copy. In multi-user mode, the clone subprocess runs as the requesting user via the privilege-elevation pattern ([Issue #837](https://github.com/ms2sato/agent-console/issues/837)).
+- **Aliases:** clone-and-register job
+- **See:** `packages/shared/src/schemas/repository.ts` (`CloneRepositoryRequestSchema`, `CloneJobStatusResponse`)
+
 ### Session
 A work session tied to a directory location, containing one or more workers.
 - **Aliases:** Work session
