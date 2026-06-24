@@ -19,6 +19,11 @@ export const repositoryKeys = {
   slackIntegration: (repositoryId: string) => ['repository-slack-integration', repositoryId] as const,
 } as const;
 
+export const cloneJobKeys = {
+  /** Status for a single Clone Job (polled while non-terminal) */
+  status: (jobId: string) => ['clone-job', jobId] as const,
+} as const;
+
 // Note: detail keys use singular form ('agent', 'job') while list keys use plural ('agents', 'jobs').
 // This is intentional to preserve backward compatibility with existing cache keys from before
 // centralization. As a result, detail keys are not hierarchical prefixes of list keys, and
