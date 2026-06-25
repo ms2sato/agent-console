@@ -52,6 +52,18 @@ const repositoryCloneService = {
   getJob: mock((_jobId: string) => undefined as any),
 };
 
+// Mock of the worktreeService for the /branches and /refresh-default-branch
+// routes (Issue #870). Captures the `requestUsername` second arg so each test
+// can assert the route forwarded `authUser.username` correctly.
+const worktreeService = {
+  listBranches: mock((_repoPath: string, _requestUsername?: string | null) =>
+    Promise.resolve({ local: [], remote: [], defaultBranch: null }),
+  ),
+  refreshDefaultBranch: mock((_repoPath: string, _requestUsername?: string | null) =>
+    Promise.resolve('main'),
+  ),
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -73,6 +85,12 @@ function resetAllMocks(): void {
   repositoryCloneService.enqueueClone.mockReset();
   repositoryCloneService.enqueueClone.mockImplementation(() => Promise.resolve('mock-job-id'));
   repositoryCloneService.getJob.mockReset();
+  worktreeService.listBranches.mockReset();
+  worktreeService.listBranches.mockImplementation(() =>
+    Promise.resolve({ local: [], remote: [], defaultBranch: null }),
+  );
+  worktreeService.refreshDefaultBranch.mockReset();
+  worktreeService.refreshDefaultBranch.mockImplementation(() => Promise.resolve('main'));
 }
 
 // ---------------------------------------------------------------------------
@@ -92,6 +110,7 @@ describe('Repositories API', () => {
       agentManager: agentManager as any,
       generateRepositoryDescription: mockGenerateDescription as any,
       repositoryCloneService: repositoryCloneService as any,
+      worktreeService: worktreeService as any,
     });
   });
 
@@ -236,6 +255,87 @@ describe('Repositories API', () => {
       const body = (await res.json()) as { behind: number; ahead: number };
       expect(body.behind).toBe(3);
       expect(body.ahead).toBe(1);
+    });
+  });
+
+  // =========================================================================
+  // GET /api/repositories/:id/branches (Issue #870)
+  // POST /api/repositories/:id/refresh-default-branch (Issue #870)
+  //
+  // These two routes thread `authUser.username` into `worktreeService` so
+  // multi-user mode runs git invocations as the requesting user. The test
+  // app wires SingleUserMode with TEST_AUTH_USER.username = 'testuser', so
+  // we assert that value lands on each service call.
+  // =========================================================================
+
+  describe('GET /api/repositories/:id/branches', () => {
+    it('forwards authUser.username to worktreeService.listBranches', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      worktreeService.listBranches.mockImplementationOnce(() =>
+        Promise.resolve({ local: ['main'], remote: ['origin/main'], defaultBranch: 'main' }),
+      );
+
+      const res = await app.request('/api/repositories/repo1/branches');
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as {
+        local: string[];
+        remote: string[];
+        defaultBranch: string | null;
+      };
+      expect(body.local).toEqual(['main']);
+      expect(body.remote).toEqual(['origin/main']);
+      expect(body.defaultBranch).toBe('main');
+
+      expect(worktreeService.listBranches).toHaveBeenCalledTimes(1);
+      const [repoPath, requestUsername] = worktreeService.listBranches.mock.calls[0];
+      expect(repoPath).toBe('/repo');
+      expect(requestUsername).toBe('testuser');
+    });
+
+    it('returns 404 when the repository is not registered', async () => {
+      repositoryManager.getRepository.mockReturnValue(undefined);
+
+      const res = await app.request('/api/repositories/missing/branches');
+      expect(res.status).toBe(404);
+      expect(worktreeService.listBranches).toHaveBeenCalledTimes(0);
+    });
+  });
+
+  describe('POST /api/repositories/:id/refresh-default-branch', () => {
+    it('forwards authUser.username to worktreeService.refreshDefaultBranch', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      worktreeService.refreshDefaultBranch.mockImplementationOnce(() =>
+        Promise.resolve('develop'),
+      );
+
+      const res = await app.request('/api/repositories/repo1/refresh-default-branch', {
+        method: 'POST',
+      });
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { defaultBranch: string };
+      expect(body.defaultBranch).toBe('develop');
+
+      expect(worktreeService.refreshDefaultBranch).toHaveBeenCalledTimes(1);
+      const [repoPath, requestUsername] = worktreeService.refreshDefaultBranch.mock.calls[0];
+      expect(repoPath).toBe('/repo');
+      expect(requestUsername).toBe('testuser');
+    });
+
+    it('maps GitError to a 400 response (network failure surfaces as Validation)', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      worktreeService.refreshDefaultBranch.mockImplementationOnce(() => {
+        throw new GitError('network unreachable', 128, 'fatal: network unreachable');
+      });
+
+      const res = await app.request('/api/repositories/repo1/refresh-default-branch', {
+        method: 'POST',
+      });
+      expect(res.status).toBe(400);
+
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Failed to refresh default branch');
     });
   });
 

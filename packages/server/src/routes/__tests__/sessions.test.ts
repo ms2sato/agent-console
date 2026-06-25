@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
@@ -724,5 +724,83 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+});
+
+// ===========================================================================
+// GET /api/sessions/:sessionId/branches (Issue #870)
+//
+// The route threads `authUser.username` into `worktreeService.listBranches`
+// so multi-user mode runs the git invocations as the requesting user (PATH,
+// gitconfig, SSH_AUTH_SOCK from the user's login shell). The default test
+// app wires SingleUserMode with TEST_AUTH_USER.username = 'testuser', so we
+// assert that value lands on the service call.
+// ===========================================================================
+describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
+  let app: Hono<AppBindings>;
+  const mockSessionManager = {
+    getSession: mock((_id: string) => undefined as any),
+  };
+  const mockWorktreeService = {
+    listBranches: mock((_repoPath: string, _requestUsername?: string | null) =>
+      Promise.resolve({ local: [], remote: [], defaultBranch: null }),
+    ),
+  };
+
+  beforeEach(() => {
+    mockSessionManager.getSession.mockReset();
+    mockWorktreeService.listBranches.mockReset();
+    mockWorktreeService.listBranches.mockImplementation(() =>
+      Promise.resolve({ local: [], remote: [], defaultBranch: null }),
+    );
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set(
+        'appContext',
+        asAppContext({
+          sessionManager: mockSessionManager as any,
+          worktreeService: mockWorktreeService as any,
+        }),
+      );
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  });
+
+  it('forwards authUser.username to worktreeService.listBranches', async () => {
+    mockSessionManager.getSession.mockReturnValueOnce({
+      id: 'session1',
+      locationPath: '/worktree/wt-001-aaaa',
+    });
+    mockWorktreeService.listBranches.mockImplementationOnce(() =>
+      Promise.resolve({ local: ['main'], remote: ['origin/main'], defaultBranch: 'main' }),
+    );
+
+    const res = await app.request('/api/sessions/session1/branches');
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      local: string[];
+      remote: string[];
+      defaultBranch: string | null;
+    };
+    expect(body.local).toEqual(['main']);
+    expect(body.remote).toEqual(['origin/main']);
+    expect(body.defaultBranch).toBe('main');
+
+    expect(mockWorktreeService.listBranches).toHaveBeenCalledTimes(1);
+    const [locationPath, requestUsername] = mockWorktreeService.listBranches.mock.calls[0];
+    expect(locationPath).toBe('/worktree/wt-001-aaaa');
+    expect(requestUsername).toBe('testuser');
+  });
+
+  it('returns 404 when the session does not exist', async () => {
+    mockSessionManager.getSession.mockReturnValueOnce(undefined);
+
+    const res = await app.request('/api/sessions/missing/branches');
+    expect(res.status).toBe(404);
+    expect(mockWorktreeService.listBranches).toHaveBeenCalledTimes(0);
   });
 });
