@@ -2137,6 +2137,137 @@ describe('MCP Server Tools', () => {
       });
     });
 
+    // -------------------------------------------------------------------------
+    // Issue #876: suggestSessionMetadata receives resolved OS username
+    // -------------------------------------------------------------------------
+    //
+    // Sibling of Issue #844: the same parent-createdBy -> OS-username
+    // resolution must also be threaded into `suggestSessionMetadata` so the
+    // headless `claude -p ...` invocation it performs runs as the requesting
+    // user in multi-user mode (otherwise it runs as the server process user,
+    // which has no per-user Claude auth, and silently falls back to
+    // `task-<timestamp>` branch names). The tests below assert the argument
+    // shape `suggestSessionMetadata` is called with, covering:
+    //   1. Resolved username -> passed through; LLM-suggested branch is used.
+    //   2. No parentSessionId -> requestUser is null; LLM suggestion still
+    //      succeeds via the default mock and the suggested branch is used.
+    //   3. Orphan parent createdBy -> requestUser is null; suggestion failure
+    //      falls back to `task-<timestamp>`.
+    describe('Issue #876: suggestSessionMetadata receives resolved OS username', () => {
+      /**
+       * Read the first captured argument to `mockSuggestSessionMetadata`.
+       *
+       * The bun:test `mock(async () => ...)` factory at the top of this file
+       * declares no parameters, so `mock.calls` is inferred as `[][]` even
+       * though the production code passes a single options object. Cast
+       * through `unknown` to recover the real argument shape — same pattern
+       * used by `findSpawnCallByCommand` (~line 1318) and the test that
+       * reads `ptyFactory.spawn.mock.calls` (~line 1830).
+       */
+      function readSuggestRequestUser(): string | null {
+        const calls = mockSuggestSessionMetadata.mock.calls as unknown as Array<
+          [{ requestUser: string | null }]
+        >;
+        expect(calls.length).toBeGreaterThan(0);
+        return calls[0][0].requestUser;
+      }
+
+      it('passes resolved OS username to suggestSessionMetadata when parent createdBy resolves to a registered user', async () => {
+        // Seed userRepository with an OS user; upsertByOsUid assigns a UUID
+        // that we thread through as the parent session's createdBy. Use a
+        // distinct uid/username from the #844 block to avoid any cross-test
+        // collisions on the in-memory database.
+        const aliceOsUid = 9101;
+        const alice = await userRepository.upsertByOsUid(aliceOsUid, 'alice876', '/home/alice876');
+
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        }, { createdBy: alice.id });
+
+        mockSuggestSessionMetadata.mockImplementationOnce(async () => ({
+          branch: 'fix/diff-worker-elevation',
+          title: 'Diff worker elevation',
+        }));
+
+        await setupDelegateEnvironment('fix/diff-worker-elevation');
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Fix diff worker elevation',
+          // branch intentionally omitted -> exercises the suggestion path
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        // The suggestion call must have received the resolved username, not null.
+        expect(readSuggestRequestUser()).toBe('alice876');
+
+        const data = parseToolResult(response) as { branch: string };
+        expect(data.branch).toBe('fix/diff-worker-elevation');
+      });
+
+      it('passes null requestUser to suggestSessionMetadata when delegate_to_worktree is called without parentSessionId', async () => {
+        // Default mockSuggestSessionMetadata returns 'feat/auto-generated-branch';
+        // no need to override.
+        await setupDelegateEnvironment('feat/auto-generated-branch');
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Direct delegation with no parent context',
+          // branch and parentSessionId both intentionally omitted
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        expect(readSuggestRequestUser()).toBeNull();
+
+        const data = parseToolResult(response) as { branch: string };
+        expect(data.branch).toBe('feat/auto-generated-branch');
+      });
+
+      it('passes null requestUser to suggestSessionMetadata when parent createdBy UUID does not resolve to a user', async () => {
+        // Parent has a createdBy that does not correspond to any
+        // userRepository entry (orphan UUID, mirrors the #844 orphan case).
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        }, { createdBy: 'orphan-uuid-not-in-users-table' });
+
+        // Force the suggestion to fail so the production path falls back to
+        // `task-<timestamp>`. The mock factory at the top of this file is
+        // typed as returning `{branch, title}` (no `error`), but the
+        // production response type allows `{error}` — return the
+        // success-shape fields as `undefined` to satisfy the strict
+        // generic without invasive casts. The production code checks
+        // `suggestion.error || !suggestion.branch` and falls back when
+        // `branch` is missing.
+        mockSuggestSessionMetadata.mockImplementationOnce(async () => ({
+          branch: undefined as unknown as string,
+          title: undefined as unknown as string,
+        }));
+
+        // We do not assert on the response branch shape because the
+        // listWorktrees mock would also need to know the fallback timestamp;
+        // the narrowly-scoped assertion is on the captured `requestUser`
+        // argument plus the suggestion call actually happening.
+        await setupDelegateEnvironment('task-fallback');
+
+        await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Delegation from an orphan parent',
+          // branch intentionally omitted -> exercises the suggestion path
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        // The suggestion call must have received null, not a forged username.
+        expect(readSuggestRequestUser()).toBeNull();
+      });
+    });
+
     it('should accept optional templateVars parameter and create session successfully', async () => {
       await setupDelegateEnvironment('feat/template-vars');
 
