@@ -331,6 +331,48 @@ export async function runAsUser(
 }
 
 /**
+ * Recursive `rm` as the requesting user.
+ *
+ * Layer-correctness helper: encapsulates the canonical `rm -rf -- <path>`
+ * elevated-removal pattern that consumers (worktree deletion, partial-clone
+ * cleanup, hook teardown, ...) would otherwise inline. Mirrors how
+ * `lib/git.ts` encapsulates git command construction (Issue #882 dogfood
+ * feedback from the owner: code placement matters even when behaviour is
+ * identical).
+ *
+ * Semantics:
+ * - `null` / `undefined` / single-user-mode username bypasses elevation via
+ *   {@link runAsUser}'s own short-circuit.
+ * - Pins outer cwd to `/` because the target path itself may not exist
+ *   anymore (e.g., partial deletion left behind by a prior failure).
+ * - Idempotent: POSIX `rm -rf --` does not fail on missing paths.
+ * - `--` terminates option parsing so paths beginning with `-` are still
+ *   treated as paths, not flags.
+ *
+ * Returns the underlying {@link RunAsUserResult} so callers can branch on
+ * `exitCode` / `timedOut` and surface a meaningful error.
+ *
+ * `runAsUserImpl` is an optional injection point so service classes that
+ * already accept a test-seam `runAsUser` (e.g.
+ * {@link WorktreeService.runAsUserImpl}) can route through their own seam
+ * rather than the module-level export -- otherwise tests that mock
+ * `runAsUserImpl` would not capture rm calls funnelled through this helper.
+ */
+export async function rmRecursiveAsUser(
+  path: string,
+  username: string | null | undefined,
+  opts: { timeoutMs?: number; runAsUserImpl?: typeof runAsUser } = {},
+): Promise<RunAsUserResult> {
+  const impl = opts.runAsUserImpl ?? runAsUser;
+  return impl({
+    username,
+    command: `rm -rf -- ${shellEscape(path)}`,
+    cwd: '/',
+    timeoutMs: opts.timeoutMs,
+  });
+}
+
+/**
  * Options for `spawnAsUser`. Mirrors the elevation-relevant subset of
  * `RunAsUserOpts`, minus one-shot-only concerns (`timeoutMs`, `stdin` bytes).
  */

@@ -22,6 +22,7 @@ import { substituteVariables } from '../lib/template-variables.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import {
   runAsUser,
+  rmRecursiveAsUser,
   shellEscape,
   shouldElevateForUser,
   type RunAsUserResult,
@@ -761,15 +762,14 @@ export class WorktreeService {
       stderr.includes("'.git' file");
 
     if (opts.force && !result.timedOut && isStaleWorktreeError) {
-      const escaped = shellEscape(opts.worktreePath);
-      const rmResult = await this._runAsUser({
-        username: opts.requestUsername,
-        // Pin to `/` because the worktree dir itself may not exist anymore.
-        // `rm -rf --` swallows leading-dash safety and missing-path noise.
-        command: `rm -rf -- ${escaped}`,
-        cwd: '/',
-        timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
-      });
+      const rmResult = await rmRecursiveAsUser(
+        opts.worktreePath,
+        opts.requestUsername,
+        {
+          timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+          runAsUserImpl: this._runAsUser,
+        },
+      );
       if (rmResult.timedOut || rmResult.exitCode !== 0) {
         const detail =
           rmResult.stderr.trim() || `exit code ${rmResult.exitCode}`;
@@ -837,16 +837,9 @@ export class WorktreeService {
     requestUsername?: string | null,
   ): Promise<void> {
     if (shouldElevateForUser(requestUsername)) {
-      const escaped = shellEscape(worktreePath);
-      const result = await this._runAsUser({
-        username: requestUsername!,
-        // `rm -rf -- <path>` is idempotent on missing paths (matching the
-        // `force: true` semantics of the in-process branch below). Pin to
-        // `/` because the worktree dir itself may not exist; `/` is always
-        // traversable.
-        command: `rm -rf -- ${escaped}`,
-        cwd: '/',
+      const result = await rmRecursiveAsUser(worktreePath, requestUsername!, {
         timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+        runAsUserImpl: this._runAsUser,
       });
       if (result.timedOut || result.exitCode !== 0) {
         const detail = result.stderr.trim() || `exit code ${result.exitCode}`;
