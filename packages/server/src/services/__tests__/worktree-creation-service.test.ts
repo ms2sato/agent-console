@@ -19,7 +19,12 @@ const mockCreateWorktree = mock<
   ) => Promise<{ worktreePath: string; error?: string; index?: number }>
 >(() => Promise.resolve({ worktreePath: '/repos/my-repo/worktrees/wt-new' }));
 const mockRemoveWorktree = mock<
-  (repoPath: string, path: string, force: boolean) => Promise<{ success: boolean; error?: string }>
+  (
+    repoPath: string,
+    path: string,
+    force: boolean,
+    requestUsername?: string | null,
+  ) => Promise<{ success: boolean; error?: string }>
 >(() => Promise.resolve({ success: true }));
 const mockExecuteHookCommand = mock<
   (cmd: string, cwd: string, vars: Record<string, unknown>) => Promise<HookCommandResult>
@@ -273,7 +278,7 @@ describe('createWorktreeWithSession', () => {
     expect(result.error).toBe(
       `Worktree create reported success but directory is missing: ${CREATED_PATH}`,
     );
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true);
+    expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true, undefined);
     expect(sm.createSession).not.toHaveBeenCalled();
   });
 
@@ -287,7 +292,7 @@ describe('createWorktreeWithSession', () => {
     expect(result.error).toBe('DB connection lost');
 
     // Rollback should have been called
-    expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true);
+    expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true, undefined);
   });
 
   it('skips session creation when autoStartSession is false', async () => {
@@ -342,6 +347,23 @@ describe('createWorktreeWithSession', () => {
     expect(mockCreateWorktree).toHaveBeenCalledWith(
       '/repos/my-repo', 'feature-new', 'repo-1', 'origin/main', 'alice',
     );
+  });
+
+  it('threads requestUsername to rollback removeWorktree on post-worktree failure (Issue #882)', async () => {
+    // Sibling of mcp-server.ts:717 delegate_to_worktree rollback. Without
+    // this threading, the rollback would run as the server user and hit
+    // the same Permission-denied symptom Issue #882 was filed to fix when
+    // the worktree is owned by the requesting user (multi-user mode).
+    const sm = createMockSessionManager();
+    sm.createSession.mockImplementation(() => Promise.reject(new Error('boom')));
+
+    await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, requestUsername: 'alice' },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(mockRemoveWorktree).toHaveBeenCalledWith('/repos/my-repo', CREATED_PATH, true, 'alice');
   });
 
   it('returns original error even when rollback fails', async () => {
