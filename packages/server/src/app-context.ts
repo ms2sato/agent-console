@@ -25,7 +25,7 @@ import type { InteractiveProcessManager } from './services/interactive-process-m
 import type { SystemCapabilitiesService } from './services/system-capabilities-service.js';
 import type { WorktreeService } from './services/worktree-service.js';
 import type { RepositorySlackIntegrationService } from './services/notifications/repository-slack-integration-service.js';
-import type { AuthUser, AppServerMessage } from '@agent-console/shared';
+import type { AuthUser, AppServerMessage, GitHubIssueSummary } from '@agent-console/shared';
 import type { UserMode } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
@@ -69,6 +69,7 @@ import { MemoService } from './services/memo-service.js';
 import { BranchWatcherService } from './services/branch-watcher-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
+import { fetchGitHubIssue } from './services/github-issue-service.js';
 import { generateRepositoryDescription } from './services/repository-description-generator.js';
 import { RepositoryCloneService } from './services/repository-clone-service.js';
 import { getSourceReposDir } from './lib/config.js';
@@ -151,11 +152,26 @@ export interface AppContext {
   /** Broadcast a message to all connected app WebSocket clients */
   broadcastToApp: (msg: AppServerMessage) => void;
 
-  /** Fetch PR URL for a branch */
-  fetchPullRequestUrl: (branch: string, cwd: string) => Promise<string | null>;
+  /** Fetch PR URL for a branch (Issue #885: requestUsername elevates gh CLI) */
+  fetchPullRequestUrl: (
+    branch: string,
+    cwd: string,
+    requestUsername: string | null,
+  ) => Promise<string | null>;
 
-  /** Find open PR for a branch */
-  findOpenPullRequest: (branch: string, cwd: string) => Promise<OpenPrInfo | null>;
+  /** Find open PR for a branch (Issue #885: requestUsername elevates gh CLI) */
+  findOpenPullRequest: (
+    branch: string,
+    cwd: string,
+    requestUsername: string | null,
+  ) => Promise<OpenPrInfo | null>;
+
+  /** Fetch GitHub issue (Issue #885: requestUsername elevates gh CLI) */
+  fetchGitHubIssue: (
+    reference: string,
+    repoPath: string,
+    requestUsername: string | null,
+  ) => Promise<GitHubIssueSummary>;
 
   /** Generate AI-powered repository description */
   generateRepositoryDescription: GenerateRepositoryDescriptionFn;
@@ -514,6 +530,7 @@ export async function createAppContext(
     broadcastToApp: options?.broadcastToApp ?? (() => {}),
     fetchPullRequestUrl,
     findOpenPullRequest,
+    fetchGitHubIssue,
     generateRepositoryDescription,
     repositoryCloneService,
     messageTemplateRepository,
@@ -706,6 +723,7 @@ export async function createTestContext(
     broadcastToApp: () => {},
     fetchPullRequestUrl,
     findOpenPullRequest,
+    fetchGitHubIssue,
     generateRepositoryDescription,
     repositoryCloneService,
     messageTemplateRepository,

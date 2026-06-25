@@ -582,6 +582,50 @@ describe('Worktrees API', () => {
       expect(body.error).toContain('required');
     });
 
+    it('forwards authUser.username to findOpenPullRequest via deleteWorktree (Issue #885)', async () => {
+      // The DELETE handler must thread authUser.username into deleteWorktree's
+      // params (`requestUsername`), which deleteWorktree then forwards to the
+      // injected `findOpenPullRequest` as the 3rd positional arg so the gh
+      // CLI elevation in github-pr-service receives the requesting user.
+      // The default SingleUserMode used by asAppContext is constructed with
+      // TEST_AUTH_USER (username='testuser'), so we assert 'testuser' lands.
+      const mockFindOpenPullRequest = mock<
+        (branch: string, cwd: string, requestUsername: string | null) =>
+          Promise<{ number: number; title: string } | null>
+      >(async () => null);
+
+      const mockSessionManager = {
+        getAllSessions: () => [],
+        killSessionWorkers: mock(() => Promise.resolve()),
+        deleteSession: mock(() => Promise.resolve(true)),
+      } as unknown as SessionManager;
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          sessionManager: mockSessionManager,
+          findOpenPullRequest: mockFindOpenPullRequest,
+          broadcastToApp: () => {},
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      // Sync deletion path (no taskId) so we can await the result and assert.
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}`,
+        { method: 'DELETE' },
+      );
+
+      expect(res.status).toBe(200);
+      expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
+      const [, , requestUsername] = mockFindOpenPullRequest.mock.calls[0];
+      expect(requestUsername).toBe('testuser');
+    });
+
     it('should broadcast worktree-deletion-completed with empty sessionIds when repository is unregistered (orphan async path, refs #815)', async () => {
       // Refs #815. When the repository row is missing from the in-memory
       // registry (e.g., the primary repo dir was deleted out-of-band so

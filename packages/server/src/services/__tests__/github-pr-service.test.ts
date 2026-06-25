@@ -1,329 +1,200 @@
-import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, beforeEach } from 'bun:test';
+import type { runGh, RunGhOpts } from '../github-cli.js';
+import { fetchPullRequestUrl, findOpenPullRequest } from '../github-pr-service.js';
 
-let mockSpawnResult = {
-  exited: Promise.resolve(0),
-  stdout: new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode('{}'));
-      controller.close();
-    },
-  }),
-  stderr: new ReadableStream({
-    start(controller) {
-      controller.close();
-    },
-  }),
-  kill: () => {},
-};
+/**
+ * Build a captured-call fake `runGh` implementation. The service-level tests
+ * assert that `fetchPullRequestUrl` / `findOpenPullRequest` invoke `runGh`
+ * with the expected args / cwd / requestUsername / subcommand. The runner
+ * contract itself (argv shape, throw-on-non-zero, throw-on-timeout, stdout
+ * passthrough) is covered by `github-cli.test.ts`.
+ *
+ * Per `.claude/rules/elevation-helpers.md` "Test-correctness DI is orthogonal
+ * to strict semantics": each service function accepts an optional
+ * `runGhImpl?: typeof runGh` seam (pay-as-you-go DI), which the tests inject.
+ */
+type RunGhCall = { args: string[]; opts: RunGhOpts };
 
-const originalBunSpawn = Bun.spawn;
-let spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
-let importCounter = 0;
+function makeFakeRunGh(
+  responder: (call: RunGhCall) => string | Error,
+): { calls: RunGhCall[]; impl: typeof runGh } {
+  const calls: RunGhCall[] = [];
+  const impl: typeof runGh = async (args, opts) => {
+    const call: RunGhCall = { args, opts };
+    calls.push(call);
+    const response = responder(call);
+    if (response instanceof Error) throw response;
+    return response;
+  };
+  return { calls, impl };
+}
 
-describe('github-pr-service', () => {
+// =====================================================================
+// fetchPullRequestUrl
+// =====================================================================
+
+describe('github-pr-service / fetchPullRequestUrl', () => {
+  let captured: { calls: RunGhCall[]; impl: typeof runGh };
+
   beforeEach(() => {
-    spawnCalls = [];
-
-    mockSpawnResult = {
-      exited: Promise.resolve(0),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('{"url":"https://github.com/owner/repo/pull/42"}'));
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
-
-    (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
-      spawnCalls.push({ args, options: options || {} });
-      return mockSpawnResult;
-    }) as typeof Bun.spawn;
+    captured = makeFakeRunGh(() => '{"url":"https://github.com/owner/repo/pull/42"}');
   });
 
-  afterAll(() => {
-    (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
-  });
-
-  async function getModule() {
-    return import(`../github-pr-service.js?v=${++importCounter}`);
-  }
-
-  it('fetches PR URL for a branch', async () => {
-    const { fetchPullRequestUrl } = await getModule();
-    const prUrl = await fetchPullRequestUrl('feat/my-feature', '/repo');
+  it('invokes runGh with the gh pr view args / cwd / requestUsername / subcommand', async () => {
+    const prUrl = await fetchPullRequestUrl(
+      'feat/my-feature',
+      '/repo',
+      null,
+      { runGhImpl: captured.impl },
+    );
 
     expect(prUrl).toBe('https://github.com/owner/repo/pull/42');
-    expect(spawnCalls[0]?.args).toEqual(['gh', 'pr', 'view', 'feat/my-feature', '--json', 'url']);
-    expect(spawnCalls[0]?.options.cwd).toBe('/repo');
+    expect(captured.calls).toHaveLength(1);
+    expect(captured.calls[0]?.args).toEqual([
+      'pr', 'view', 'feat/my-feature', '--json', 'url',
+    ]);
+    expect(captured.calls[0]?.opts.cwd).toBe('/repo');
+    expect(captured.calls[0]?.opts.requestUsername).toBeNull();
+    expect(captured.calls[0]?.opts.subcommand).toBe('pr view');
   });
 
-  it('returns null when no PR exists for the branch', async () => {
-    mockSpawnResult = {
-      exited: Promise.resolve(1), // Non-zero exit code
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('no pull requests found'));
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+  it('forwards a non-null requestUsername to runGh (elevation context)', async () => {
+    await fetchPullRequestUrl(
+      'feat/my-feature',
+      '/repo',
+      'alice',
+      { runGhImpl: captured.impl },
+    );
 
-    const { fetchPullRequestUrl } = await getModule();
-    const prUrl = await fetchPullRequestUrl('non-existent-branch', '/repo');
+    expect(captured.calls[0]?.opts.requestUsername).toBe('alice');
+  });
+
+  it('returns null when runGh throws (e.g. gh exit 1 for no PR found)', async () => {
+    const { impl } = makeFakeRunGh(() => new Error('gh pr view failed'));
+
+    const prUrl = await fetchPullRequestUrl(
+      'non-existent-branch',
+      '/repo',
+      null,
+      { runGhImpl: impl },
+    );
 
     expect(prUrl).toBeNull();
   });
 
-  it('returns null when gh command returns invalid JSON', async () => {
-    mockSpawnResult = {
-      exited: Promise.resolve(0),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('not valid json'));
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+  it('returns null when runGh returns invalid JSON', async () => {
+    const { impl } = makeFakeRunGh(() => 'not valid json');
 
-    const { fetchPullRequestUrl } = await getModule();
-    const prUrl = await fetchPullRequestUrl('some-branch', '/repo');
+    const prUrl = await fetchPullRequestUrl(
+      'some-branch',
+      '/repo',
+      null,
+      { runGhImpl: impl },
+    );
 
     expect(prUrl).toBeNull();
   });
 
-  it('returns null when response is missing url field', async () => {
-    mockSpawnResult = {
-      exited: Promise.resolve(0),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('{}'));
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+  it('returns null when response is missing the url field', async () => {
+    const { impl } = makeFakeRunGh(() => '{}');
 
-    const { fetchPullRequestUrl } = await getModule();
-    const prUrl = await fetchPullRequestUrl('some-branch', '/repo');
+    const prUrl = await fetchPullRequestUrl(
+      'some-branch',
+      '/repo',
+      null,
+      { runGhImpl: impl },
+    );
 
     expect(prUrl).toBeNull();
   });
 
-  it('handles timeout gracefully', async () => {
-    mockSpawnResult = {
-      exited: new Promise(() => {}), // Never resolves
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+  it('returns null when runGh throws on timeout (caller swallows runner errors)', async () => {
+    const { impl } = makeFakeRunGh(() => new Error('gh pr view timed out after 5000ms'));
 
-    const { fetchPullRequestUrl } = await getModule();
+    const prUrl = await fetchPullRequestUrl(
+      'some-branch',
+      '/repo',
+      null,
+      { runGhImpl: impl },
+    );
 
-    // This test uses the default 5 second timeout, which is too long for tests
-    // Instead, we create a race condition to verify timeout behavior
-    const startTime = Date.now();
-    const timeoutPromise = new Promise<string | null>((resolve) => {
-      setTimeout(() => resolve(null), 100);
-    });
-
-    const fetchPromise = fetchPullRequestUrl('some-branch', '/repo');
-
-    // Race the timeout with the fetch
-    const result = await Promise.race([fetchPromise, timeoutPromise]);
-
-    // The timeout should win since the spawn never resolves
-    expect(Date.now() - startTime).toBeLessThan(5000);
-
-    // Note: In a real scenario with the default 5s timeout, process would be killed
-    // but our race condition doesn't wait that long
-    expect(result).toBeNull();
+    expect(prUrl).toBeNull();
   });
 });
 
-describe('findOpenPullRequest', () => {
+// =====================================================================
+// findOpenPullRequest
+// =====================================================================
+
+describe('github-pr-service / findOpenPullRequest', () => {
+  let captured: { calls: RunGhCall[]; impl: typeof runGh };
+
   beforeEach(() => {
-    spawnCalls = [];
-
-    mockSpawnResult = {
-      exited: Promise.resolve(0),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('[{"number":42,"title":"Add feature X"}]'));
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
-
-    (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
-      spawnCalls.push({ args, options: options || {} });
-      return mockSpawnResult;
-    }) as typeof Bun.spawn;
+    captured = makeFakeRunGh(() => '[{"number":42,"title":"Add feature X"}]');
   });
 
-  afterAll(() => {
-    (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
-  });
-
-  async function getModule() {
-    return import(`../github-pr-service.js?v=${++importCounter}`);
-  }
-
-  it('returns PR info when an open PR exists', async () => {
-    const { findOpenPullRequest } = await getModule();
-    const result = await findOpenPullRequest('feat/my-feature', '/repo');
+  it('invokes runGh with the gh pr list args / cwd / requestUsername / subcommand', async () => {
+    const result = await findOpenPullRequest(
+      'feat/my-feature',
+      '/repo',
+      null,
+      { runGhImpl: captured.impl },
+    );
 
     expect(result).toEqual({ number: 42, title: 'Add feature X' });
-    expect(spawnCalls[0]?.args).toEqual([
-      'gh', 'pr', 'list', '--head', 'feat/my-feature',
-      '--state', 'open', '--json', 'number,title', '--limit', '1',
+    expect(captured.calls).toHaveLength(1);
+    expect(captured.calls[0]?.args).toEqual([
+      'pr', 'list',
+      '--head', 'feat/my-feature',
+      '--state', 'open',
+      '--json', 'number,title',
+      '--limit', '1',
     ]);
-    expect(spawnCalls[0]?.options.cwd).toBe('/repo');
+    expect(captured.calls[0]?.opts.cwd).toBe('/repo');
+    expect(captured.calls[0]?.opts.requestUsername).toBeNull();
+    expect(captured.calls[0]?.opts.subcommand).toBe('pr list');
+  });
+
+  it('forwards a non-null requestUsername to runGh (elevation context)', async () => {
+    await findOpenPullRequest(
+      'feat/my-feature',
+      '/repo',
+      'alice',
+      { runGhImpl: captured.impl },
+    );
+
+    expect(captured.calls[0]?.opts.requestUsername).toBe('alice');
   });
 
   it('returns null when no open PRs exist', async () => {
-    mockSpawnResult = {
-      exited: Promise.resolve(0),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('[]'));
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+    const { impl } = makeFakeRunGh(() => '[]');
 
-    const { findOpenPullRequest } = await getModule();
-    const result = await findOpenPullRequest('feat/no-pr', '/repo');
+    const result = await findOpenPullRequest('feat/no-pr', '/repo', null, { runGhImpl: impl });
 
     expect(result).toBeNull();
   });
 
-  it('throws when gh command fails (fail-closed)', async () => {
-    mockSpawnResult = {
-      exited: Promise.resolve(1),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('gh: command failed'));
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+  it('propagates runGh errors (fail-closed on gh failure)', async () => {
+    const { impl } = makeFakeRunGh(() => new Error('gh: command failed'));
 
-    const { findOpenPullRequest } = await getModule();
-
-    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow();
+    await expect(
+      findOpenPullRequest('some-branch', '/repo', null, { runGhImpl: impl }),
+    ).rejects.toThrow('gh: command failed');
   });
 
   it('throws when JSON parsing fails (fail-closed)', async () => {
-    mockSpawnResult = {
-      exited: Promise.resolve(0),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('not valid json'));
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+    const { impl } = makeFakeRunGh(() => 'not valid json');
 
-    const { findOpenPullRequest } = await getModule();
-
-    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow();
+    await expect(
+      findOpenPullRequest('some-branch', '/repo', null, { runGhImpl: impl }),
+    ).rejects.toThrow('Failed to parse gh pr list output');
   });
 
   it('throws when output has unexpected shape (fail-closed)', async () => {
-    mockSpawnResult = {
-      exited: Promise.resolve(0),
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.enqueue(new TextEncoder().encode('[{"unexpected":"fields"}]'));
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
+    const { impl } = makeFakeRunGh(() => '[{"unexpected":"fields"}]');
 
-    const { findOpenPullRequest } = await getModule();
-
-    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow('Unexpected gh pr list output shape');
+    await expect(
+      findOpenPullRequest('some-branch', '/repo', null, { runGhImpl: impl }),
+    ).rejects.toThrow('Unexpected gh pr list output shape');
   });
-
-  it('throws on timeout (fail-closed)', async () => {
-    mockSpawnResult = {
-      exited: new Promise(() => {}), // Never resolves
-      stdout: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      stderr: new ReadableStream({
-        start(controller) {
-          controller.close();
-        },
-      }),
-      kill: () => {},
-    };
-
-    const { findOpenPullRequest } = await getModule();
-
-    await expect(findOpenPullRequest('some-branch', '/repo')).rejects.toThrow('timed out');
-  }, 10000);
 });

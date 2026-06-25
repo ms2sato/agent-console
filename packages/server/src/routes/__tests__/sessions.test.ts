@@ -825,3 +825,75 @@ describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
     expect(mockWorktreeService.listBranches).toHaveBeenCalledTimes(0);
   });
 });
+
+// ===========================================================================
+// GET /api/sessions/:sessionId/pr-link (Issue #885)
+//
+// The route MUST thread `authUser.username` into the `fetchPullRequestUrl`
+// service so `gh pr view` runs as the requesting OS user under multi-user
+// mode. In single-user mode the value is still forwarded; the underlying
+// `runAsUser` bypasses elevation. This test guards the wiring.
+// ===========================================================================
+describe('Sessions API - GET /api/sessions/:sessionId/pr-link (Issue #885)', () => {
+  let app: Hono<AppBindings>;
+  const mockSessionManager = {
+    getSession: mock((_id: string) => undefined as any),
+  };
+  const mockFetchPullRequestUrl = mock(
+    async (_branch: string, _cwd: string, _requestUsername: string | null) =>
+      null as string | null,
+  );
+
+  beforeEach(() => {
+    mockSessionManager.getSession.mockReset();
+    mockFetchPullRequestUrl.mockReset();
+    mockFetchPullRequestUrl.mockImplementation(async () => 'https://github.com/owner/repo/pull/42');
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set(
+        'appContext',
+        asAppContext({
+          sessionManager: mockSessionManager as any,
+          fetchPullRequestUrl: mockFetchPullRequestUrl,
+        }),
+      );
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  });
+
+  it('forwards authUser.username to fetchPullRequestUrl as 3rd positional arg', async () => {
+    mockSessionManager.getSession.mockReturnValueOnce({
+      id: 'session1',
+      type: 'worktree',
+      worktreeId: 'feature-branch',
+      locationPath: '/worktree/wt-001',
+    });
+
+    const res = await app.request('/api/sessions/session1/pr-link');
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { prUrl: string | null; branchName: string };
+    expect(body.prUrl).toBe('https://github.com/owner/repo/pull/42');
+    expect(body.branchName).toBe('feature-branch');
+
+    expect(mockFetchPullRequestUrl).toHaveBeenCalledTimes(1);
+    const [branch, cwd, requestUsername] = mockFetchPullRequestUrl.mock.calls[0];
+    expect(branch).toBe('feature-branch');
+    expect(cwd).toBe('/worktree/wt-001');
+    // The default SingleUserMode used by asAppContext is constructed with
+    // TEST_AUTH_USER (username='testuser'), so the route MUST forward
+    // 'testuser' as the 3rd positional arg.
+    expect(requestUsername).toBe('testuser');
+  });
+
+  it('returns 404 when the session does not exist', async () => {
+    mockSessionManager.getSession.mockReturnValueOnce(undefined);
+
+    const res = await app.request('/api/sessions/missing/pr-link');
+    expect(res.status).toBe(404);
+    expect(mockFetchPullRequestUrl).not.toHaveBeenCalled();
+  });
+});
