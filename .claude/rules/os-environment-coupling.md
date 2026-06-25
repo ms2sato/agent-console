@@ -33,9 +33,16 @@ Add a **smoke test** that runs the production code path on the actual machine an
 
 The smoke is **load-bearing**: write it before opening the PR, run it before merging, and re-run it after every deploy that touches a privilege-elevation path. The smoke is the only mechanism that can catch distro / sudoers / shell-init quirks before they reach a user.
 
-### Negative assertions are mandatory, not optional
+### Negative assertions are mandatory, not optional — at both layers
 
-When the smoke asserts "expected env X is present," it must ALSO assert "forbidden env Y is absent." Positive-only assertions miss leak / regression bugs that negative assertions catch immediately. Concrete case: Sprint 2026-06-24's `#866` regression (PR `#864` leaked `agentconsole`'s `PATH` into the elevated session, breaking `claude` resolution with `Permission denied`) would have been caught by a single `expect(innerCommand).not.toMatch(/PATH=/)` assertion in the unit test, but the original Issue `#863` test asserted only the positive (`TERM=xterm-256color` present) and missed the leak entirely.
+The unit test and the smoke test verify different things and BOTH need negative assertions:
+
+- **Unit test (helper / command-shape layer)**: asserts the shape of the shell command string the helper emits — e.g., `expect(innerCommand).toContain("TERM='xterm-256color'")` AND `expect(innerCommand).not.toMatch(/(?:^|[\s;])export\b[^;]*\bPATH=/)`. This verifies the HELPER does not add a forbidden export to its argv. It does NOT verify what the elevated process actually sees, because `innerCommand` is the string handed to the elevation invocation, not the post-elevation environment.
+- **Smoke test (real-machine, post-elevation layer)**: asserts the ACTUAL env the elevated process sees after the full chain has run (privilege elevation + login shell init + everything the kernel and the distro contribute). E.g., parse the output of an `env` invocation under elevation, then `expect(envMap.get('TERM')).toBe('xterm-256color')` AND `expect(envMap.get('PATH')?.includes(serviceAccountOnlyPath)).toBe(false)`.
+
+The two layers catch different bugs. The unit test catches "the helper is emitting the wrong shape". The smoke catches "the helper emits the right shape but the OS chain mutates it" (sudoers `env_reset` stripping, login shell init injecting, etc.) AND "the helper is right but a sibling code path bypasses it". Skipping either layer leaves a gap.
+
+**Concrete case (`#866` regression).** PR `#864` made the helper emit `export PATH='<agentconsole's PATH>' ...` into `innerCommand`. The unit test added by PR `#864` asserted only the positive (`TERM='xterm-256color'` present), so the unit test did not catch the leak. PR `#867` added negative assertions at both layers: a unit-test negative on the helper's `innerCommand` shape (`not.toMatch(/PATH=/)`) AND a smoke-test assertion against the actual post-elevation env on the dogfood host. Either alone would have been incomplete: the unit-test negative locks the helper's contract; the smoke confirms the OS chain delivers what the helper intended. The combination is what makes the discipline load-bearing.
 
 ### Don't trust "should work" reasoning about OS behavior
 
