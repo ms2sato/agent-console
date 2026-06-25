@@ -868,6 +868,36 @@ detached
       expect(mockGit.pruneWorktrees).toHaveBeenCalledWith('/repo');
       expect(mockGit.removeWorktree).not.toHaveBeenCalled();
     });
+
+    // ⑧ Non-directory at worktreePath (stale file/symlink) MUST NOT route
+    //    to destructive recovery — surface as { success: false } (#895).
+    it('should fail without recovery when worktreePath exists as a non-directory (#895)', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees', { recursive: true });
+      // Worktree path is a regular FILE, not a directory.
+      fs.writeFileSync('/worktrees/feature-file', 'stale leftover');
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature-file',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.removeWorktree('/repo', '/worktrees/feature-file');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBeDefined();
+      // Prune was NOT run.
+      expect(mockGit.pruneWorktrees).not.toHaveBeenCalled();
+      // git worktree remove was NOT attempted either (pre-check rejected before it).
+      expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+      // DB row preserved.
+      expect(mockRepo.records.length).toBe(1);
+    });
   });
 
   describe('removeWorktree (multi-user, Issue #882)', () => {
@@ -1167,7 +1197,7 @@ detached
       const pruneCall = runAsUserMock.calls[1];
       expect(pruneCall.username).toBe('alice-multiuser-test');
       expect(pruneCall.cwd).toBe('/repo');
-      expect(pruneCall.command).toBe('git worktree prune');
+      expect(pruneCall.command).toBe('git worktree prune --expire=now');
       // lib/git pruneWorktrees NOT called (elevated branch bypasses it).
       expect(mockGit.pruneWorktrees).not.toHaveBeenCalled();
       // lib/git removeWorktree NOT called.

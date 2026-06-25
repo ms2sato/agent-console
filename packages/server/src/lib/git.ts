@@ -512,12 +512,19 @@ export async function removeWorktree(
 }
 
 /**
- * Prune stale worktree registry entries (`git worktree prune`).
+ * Prune stale worktree registry entries (`git worktree prune --expire=now`).
  *
  * Used by `WorktreeService.removeWorktree` when the worktree directory was
  * externally removed but the primary repo (cwd) still exists — `git worktree
  * remove` would fail with `fatal: '<path>' is not a working tree`, so the
  * recovery is to prune the registry directly. See Issue #895.
+ *
+ * `--expire=now` is required: git's default expiration is 3 months
+ * (`gc.worktreePruneExpire`), so a plain `git worktree prune` directly
+ * after the dir was deleted would NOT shed the freshly stale entry, and a
+ * subsequent `worktree add` at the same path could collide. Forcing
+ * immediate expiration is correct here because the caller has already
+ * verified the directory is gone.
  *
  * @param cwd - The primary repo directory (must still exist).
  * @param requestUser - When non-null, run as this OS user via `runAsUser`
@@ -529,7 +536,7 @@ export async function pruneWorktrees(
   cwd: string,
   requestUser?: string | null,
 ): Promise<void> {
-  await git(['worktree', 'prune'], cwd, HEAVY_GIT_TIMEOUT_MS, requestUser);
+  await git(['worktree', 'prune', '--expire=now'], cwd, HEAVY_GIT_TIMEOUT_MS, requestUser);
 }
 
 // ============================================================

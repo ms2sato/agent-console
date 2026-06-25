@@ -690,21 +690,26 @@ export class WorktreeService {
       //
       // ENOENT/ENOTDIR-only narrowing mirrors the repoExists block above:
       // other stat errors (EACCES/EPERM/IO) MUST surface as failure, not
-      // route to destructive recovery.
-      let worktreeExists = false;
+      // route to destructive recovery. A stat success on a non-directory
+      // (file, symlink, socket) is also a surfaced error — the path exists
+      // in some form, so silently pruning + deleting the DB row would
+      // strand the on-disk artifact.
+      let worktreeMissing = false;
       try {
         const stat = await fsPromises.stat(worktreePath);
-        worktreeExists = stat.isDirectory();
+        if (!stat.isDirectory()) {
+          throw new Error(`Worktree path exists but is not a directory: ${worktreePath}`);
+        }
       } catch (error) {
         const code = (error as NodeJS.ErrnoException | undefined)?.code;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
-          worktreeExists = false;
+          worktreeMissing = true;
         } else {
           throw error; // caught by the outer catch → { success: false, error }
         }
       }
 
-      if (!worktreeExists) {
+      if (worktreeMissing) {
         if (shouldElevateForUser(requestUsername)) {
           const elevatedUsername = requestUsername!;
           // Bootstrap safe.directory so the elevated `git worktree prune`
@@ -714,7 +719,7 @@ export class WorktreeService {
           await this.bootstrapSafeDirectoryForUser(elevatedUsername, repoPath);
           const pruneResult = await this._runAsUser({
             username: elevatedUsername,
-            command: 'git worktree prune',
+            command: 'git worktree prune --expire=now',
             cwd: repoPath,
             timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
           });
