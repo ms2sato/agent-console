@@ -466,16 +466,40 @@ describe('repository-clone-service', () => {
   });
 
   describe('partial-clone cleanup on failure', () => {
-    it('rms the target dir after a clone failure so retry is safe', async () => {
+    // Cleanup is delegated to `rmRecursiveAsUser`, which routes through the
+    // service's `runAsUser` test-seam via `runAsUserImpl`. So these tests
+    // verify the helper's contract indirectly: the rm-as-user call still
+    // appears in `runAs.calls` with the helper's distinctive command shape
+    // (`rm -rf -- '<targetDir>'`) and cwd pin (`/`). A separate mock of
+    // `rmRecursiveAsUser` would require either `mock.module` (forbidden by
+    // testing.md Anti-Pattern #2) or a new service-level injection slot (one
+    // test's worth of public surface). The current capture approach is
+    // sufficient because the helper's shape is distinctive enough that no
+    // other code path could produce it.
+    it('delegates to rmRecursiveAsUser with null username when requestUser is null', async () => {
       const targetDir = path.join(sourceReposDir, 'repo');
       const runAs = createRunAsUserMock();
       // Simulate a partial clone: the responder creates the target dir on
       // disk before reporting failure, mirroring what real git does when it
-      // fails mid-stream.
-      runAs.responder.fn = async () => {
-        await fsPromises.mkdir(targetDir, { recursive: true });
-        await fsPromises.writeFile(path.join(targetDir, 'partial-marker'), 'x');
-        return { stdout: '', stderr: 'fatal: weird mid-clone failure', exitCode: 128, timedOut: false };
+      // fails mid-stream. The rm branch performs a real fs rm so the
+      // post-condition lstat ENOENT assertion can verify cleanup happened
+      // via the helper.
+      runAs.responder.fn = async (opts) => {
+        if (opts.command.startsWith('git clone')) {
+          await fsPromises.mkdir(targetDir, { recursive: true });
+          await fsPromises.writeFile(path.join(targetDir, 'partial-marker'), 'x');
+          return {
+            stdout: '',
+            stderr: 'fatal: weird mid-clone failure',
+            exitCode: 128,
+            timedOut: false,
+          };
+        }
+        if (opts.command.startsWith('rm -rf --')) {
+          await fsPromises.rm(targetDir, { recursive: true, force: true });
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
       };
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({
@@ -493,6 +517,120 @@ describe('repository-clone-service', () => {
       const state = service.getJob(jobId);
       expect(state?.status).toBe(CLONE_JOB_STATUS.FAILED);
       // The cleanup MUST have rm'd the partial dir.
+      await expect(fsPromises.lstat(targetDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      // Two calls: the clone and the helper's rm. The helper passes the
+      // null username through; the real `runAsUser` would short-circuit
+      // elevation, but the mock just captures the shape.
+      expect(runAs.calls).toHaveLength(2);
+      expect(runAs.calls[0].command).toContain('git clone');
+      const rmCall = runAs.calls[1];
+      expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
+      expect(rmCall.command).toContain(`'${targetDir}'`);
+      expect(rmCall.cwd).toBe('/');
+      expect(rmCall.username).toBe(null);
+    });
+
+    it('delegates to rmRecursiveAsUser with the requesting user when requestUser is set', async () => {
+      // Multi-user mode: the partial tree on disk is owned by `requestUser`,
+      // so a direct `fsPromises.rm` from the server process would fail with
+      // EACCES (Issue #887). The cleanup must route the rm through
+      // runAsUser so it executes with the same ownership.
+      process.env.AUTH_MODE = 'multi-user';
+      const targetDir = path.join(sourceReposDir, 'repo');
+      const runAs = createRunAsUserMock();
+      runAs.responder.fn = async (opts) => {
+        if (opts.command.startsWith('git clone')) {
+          await fsPromises.mkdir(targetDir, { recursive: true });
+          await fsPromises.writeFile(path.join(targetDir, 'partial-marker'), 'x');
+          return {
+            stdout: '',
+            stderr: 'fatal: weird mid-clone failure',
+            exitCode: 128,
+            timedOut: false,
+          };
+        }
+        if (opts.command.startsWith('rm -rf --')) {
+          await fsPromises.rm(targetDir, { recursive: true, force: true });
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      const jobId = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: 'alice',
+      });
+      await waitForJobTerminal(service, jobId);
+
+      const state = service.getJob(jobId);
+      expect(state?.status).toBe(CLONE_JOB_STATUS.FAILED);
+      await expect(fsPromises.lstat(targetDir)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      // Both the clone and the rm-as-user calls must have happened, both
+      // targeting `alice`.
+      expect(runAs.calls).toHaveLength(2);
+      const cloneCall = runAs.calls[0];
+      expect(cloneCall.command.startsWith('git clone')).toBe(true);
+      expect(cloneCall.username).toBe('alice');
+      const rmCall = runAs.calls[1];
+      expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
+      expect(rmCall.command).toContain(`'${targetDir}'`);
+      expect(rmCall.cwd).toBe('/');
+      expect(rmCall.username).toBe('alice');
+    });
+
+    it('delegates to rmRecursiveAsUser with null username when the clone spawn throws, even with requestUser set', async () => {
+      // Spawn-level failure (e.g., sudo missing) means git clone never
+      // started, so `targetDir` only holds the empty server-owned
+      // reservation from `mkdir(targetDir)` -- no user-owned files were
+      // created. The cleanup passes `null` to the helper so the rm runs as
+      // the server process (which owns the empty reservation) and does NOT
+      // re-hit the same sudo failure that broke the clone. In production
+      // the real `runAsUser` short-circuits the `null` username to a direct
+      // exec; the mock here just captures the shape.
+      process.env.AUTH_MODE = 'multi-user';
+      const targetDir = path.join(sourceReposDir, 'repo');
+      const runAs = createRunAsUserMock();
+      runAs.responder.fn = async (opts) => {
+        if (opts.command.startsWith('git clone')) {
+          throw new Error('spawn sudo ENOENT');
+        }
+        if (opts.command.startsWith('rm -rf --')) {
+          await fsPromises.rm(targetDir, { recursive: true, force: true });
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      const registrar = createRegistrarMock();
+      const service = new RepositoryCloneService({
+        sourceReposDir,
+        registrar: registrar.registrar,
+        runAsUserImpl: runAs.runAsUserImpl,
+      });
+
+      const jobId = await service.enqueueClone({
+        url: 'https://github.com/org/repo.git',
+        requestUser: 'alice',
+      });
+      await waitForJobTerminal(service, jobId);
+
+      const state = service.getJob(jobId);
+      expect(state?.status).toBe(CLONE_JOB_STATUS.FAILED);
+      // Two calls: the failing clone (with alice) and the helper's rm
+      // (with null, NOT alice -- the spawn-throw rationale).
+      expect(runAs.calls).toHaveLength(2);
+      expect(runAs.calls[0].command.startsWith('git clone')).toBe(true);
+      expect(runAs.calls[0].username).toBe('alice');
+      const rmCall = runAs.calls[1];
+      expect(rmCall.command.startsWith('rm -rf -- ')).toBe(true);
+      expect(rmCall.cwd).toBe('/');
+      expect(rmCall.username).toBe(null);
       await expect(fsPromises.lstat(targetDir)).rejects.toMatchObject({ code: 'ENOENT' });
     });
   });
@@ -586,12 +724,19 @@ describe('repository-clone-service', () => {
 
     it('after a failed clone the target dir is freed for re-enqueue', async () => {
       const runAs = createRunAsUserMock();
-      runAs.responder.fn = async () => ({
-        stdout: '',
-        stderr: 'fatal: not found',
-        exitCode: 128,
-        timedOut: false,
-      });
+      const targetDir = path.join(sourceReposDir, 'repo');
+      runAs.responder.fn = async (opts) => {
+        if (opts.command.startsWith('rm -rf --')) {
+          await fsPromises.rm(targetDir, { recursive: true, force: true });
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return {
+          stdout: '',
+          stderr: 'fatal: not found',
+          exitCode: 128,
+          timedOut: false,
+        };
+      };
       const registrar = createRegistrarMock();
       const service = new RepositoryCloneService({
         sourceReposDir,

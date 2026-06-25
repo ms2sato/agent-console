@@ -33,7 +33,11 @@ import * as fsPromises from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import type { Repository, CloneErrorCode, CloneJobStatus } from '@agent-console/shared';
 import { CLONE_ERROR_CODES, CLONE_JOB_STATUS } from '@agent-console/shared';
-import { runAsUser as defaultRunAsUser, shellEscape } from './privilege-elevation.js';
+import {
+  runAsUser as defaultRunAsUser,
+  rmRecursiveAsUser,
+  shellEscape,
+} from './privilege-elevation.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('service:repository-clone');
@@ -507,7 +511,12 @@ export class RepositoryCloneService {
       // with `unknown` code so the user sees the underlying message.
       const message = errorMessage(err);
       logger.warn({ jobId, err }, 'clone spawn threw; marking job failed');
-      await this.cleanupPartialClone(targetDir, jobId);
+      // Cleanup intentionally uses `null` (direct server-side rm), not the
+      // requesting user: the spawn never started, so `targetDir` holds only
+      // the empty server-owned reservation from `mkdir(targetDir)` above.
+      // Re-routing through `runAsUser` here would re-hit the same spawn
+      // failure (sudo missing, etc.) and leak the reservation.
+      await this.cleanupPartialClone(targetDir, jobId, null);
       this.fail(state, CLONE_ERROR_CODES.UNKNOWN, message);
       return;
     }
@@ -521,7 +530,7 @@ export class RepositoryCloneService {
         { jobId, code, exitCode: result.exitCode, timedOut: result.timedOut },
         'git clone failed; marking job failed',
       );
-      await this.cleanupPartialClone(targetDir, jobId);
+      await this.cleanupPartialClone(targetDir, jobId, request.requestUser);
       this.fail(state, code, message);
       return;
     }
@@ -556,17 +565,42 @@ export class RepositoryCloneService {
   /**
    * Release the atomically-reserved target directory + any partial clone
    * git left behind. Only called on failure: a successful clone leaves the
-   * directory in place because it now holds the registered repo. Safe to
-   * call even when the directory was only the empty reservation -- `rm`
-   * with `recursive: true` covers both shapes.
+   * directory in place because it now holds the registered repo.
+   *
+   * Delegates to {@link rmRecursiveAsUser}, which handles both shapes via
+   * its own elevation short-circuit: when `requestUser` is non-null and
+   * multi-user mode is active the rm runs as that user (so it can remove the
+   * user-owned partial tree without EACCES); otherwise it runs as the server
+   * process. `runAsUserImpl: this.runAsUser` routes the call through the
+   * service's test-seam so mocks capture it. (Issue #887)
    */
-  private async cleanupPartialClone(targetDir: string, jobId: string): Promise<void> {
+  private async cleanupPartialClone(
+    targetDir: string,
+    jobId: string,
+    requestUser: string | null,
+  ): Promise<void> {
     try {
-      await fsPromises.rm(targetDir, { recursive: true, force: true });
+      const result = await rmRecursiveAsUser(targetDir, requestUser, {
+        timeoutMs: 30_000,
+        runAsUserImpl: this.runAsUser,
+      });
+      if (result.timedOut || result.exitCode !== 0) {
+        logger.warn(
+          {
+            targetDir,
+            jobId,
+            requestUser,
+            exitCode: result.exitCode,
+            timedOut: result.timedOut,
+            stderr: result.stderr,
+          },
+          'partial-clone cleanup failed; operator may need to remove the directory manually',
+        );
+      }
     } catch (err) {
       logger.warn(
-        { err, targetDir, jobId },
-        'partial-clone cleanup failed; operator may need to remove the directory manually',
+        { err, targetDir, jobId, requestUser },
+        'partial-clone cleanup threw; operator may need to remove the directory manually',
       );
     }
   }
