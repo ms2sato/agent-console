@@ -9,6 +9,7 @@ import { createSessionValidationService } from '../services/session-validation-s
 import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator, vQueryValidator } from '../middleware/validation.js';
 import { getOrgRepoFromPath } from '../lib/git.js';
+import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import type { AppBindings } from '../app-context.js';
 
 const sessions = new Hono<AppBindings>()
@@ -190,14 +191,24 @@ const sessions = new Hono<AppBindings>()
   // Get branches for a session's repository
   .get('/:sessionId/branches', async (c) => {
     const sessionId = c.req.param('sessionId');
-    const { sessionManager, worktreeService } = c.get('appContext');
+    const { sessionManager, worktreeService, userRepository } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {
       throw new NotFoundError('Session');
     }
 
-    const branches = await worktreeService.listBranches(session.locationPath);
+    // Issue #870 / CodeRabbit review on PR #874: multi-user mode must run
+    // the git invocations as the session's effective spawn user (the OS user
+    // that owns the worktree), not as the authenticated viewer. For shared
+    // sessions the spawn user is the shared account; using the viewer's
+    // identity would reintroduce dubious-ownership / missing-credential
+    // failures and silently fall back to empty branches. `resolveSpawnUsername`
+    // mirrors the resolution `SessionManager` uses when launching the
+    // session's PTY workers and falls back to the server username when the
+    // session has no `createdBy` or the lookup fails.
+    const spawnUsername = await resolveSpawnUsername(session.createdBy, userRepository);
+    const branches = await worktreeService.listBranches(session.locationPath, spawnUsername);
     return c.json(branches);
   })
   // Get commits created in this branch (since base commit)

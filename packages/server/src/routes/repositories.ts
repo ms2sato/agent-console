@@ -282,19 +282,27 @@ const repositories = new Hono<AppBindings>()
   .get('/:id/branches', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, worktreeService } = c.get('appContext');
+    const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
       throw new NotFoundError('Repository');
     }
 
-    const branches = await worktreeService.listBranches(repo.path);
+    // Issue #870: thread the authenticated username so multi-user mode runs
+    // the git invocations as the requesting user. The user's PATH,
+    // ~/.gitconfig, and SSH_AUTH_SOCK are picked up from their login shell
+    // via `sudo -i`; without this elevation the server's `agentconsole`
+    // identity has no SSH credentials and hits `dubious ownership` against
+    // user-owned source repos.
+    const branches = await worktreeService.listBranches(repo.path, authUser.username);
     return c.json(branches);
   })
   // Refresh default branch from remote for a repository
   .post('/:id/refresh-default-branch', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, worktreeService } = c.get('appContext');
+    const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -302,7 +310,10 @@ const repositories = new Hono<AppBindings>()
     }
 
     try {
-      const defaultBranch = await worktreeService.refreshDefaultBranch(repo.path);
+      // Issue #870: same rationale as GET /:id/branches above — the network
+      // `git remote set-head` runs as the requesting user so SSH-using git
+      // can authenticate.
+      const defaultBranch = await worktreeService.refreshDefaultBranch(repo.path, authUser.username);
       return c.json({ defaultBranch });
     } catch (error) {
       // Handle git-specific errors (network issues, no remote, etc.)

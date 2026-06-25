@@ -48,9 +48,11 @@ interface FileStatusInfo {
  * Resolve the repository's first (root) commit hash. `rev-list --max-parents=0`
  * can emit multiple root hashes when unrelated histories were merged, so take
  * only the first line. Returns null when there is no commit.
+ *
+ * @param requestUser - OS username to run git as. See {@link computeDefaultBaseSpec}.
  */
-async function getFirstCommit(repoPath: string): Promise<string | null> {
-  const result = await gitSafe(['rev-list', '--max-parents=0', 'HEAD'], repoPath);
+async function getFirstCommit(repoPath: string, requestUser: string | null): Promise<string | null> {
+  const result = await gitSafe(['rev-list', '--max-parents=0', 'HEAD'], repoPath, requestUser);
   return result?.split('\n')[0] ?? null;
 }
 
@@ -66,28 +68,29 @@ async function getFirstCommit(repoPath: string): Promise<string | null> {
  * default branch and no first commit).
  *
  * @param repoPath - Path to the git repository
+ * @param requestUser - OS username to run git as (null = no elevation)
  * @returns Base commit hash, or null if cannot be determined
  */
-async function resolveDefaultForkPoint(repoPath: string): Promise<string | null> {
-  const defaultBranch = await getDefaultBranch(repoPath);
+async function resolveDefaultForkPoint(repoPath: string, requestUser: string | null): Promise<string | null> {
+  const defaultBranch = await getDefaultBranch(repoPath, requestUser);
 
   if (defaultBranch) {
     const originRef = `origin/${defaultBranch}`;
-    if (await gitRefExists(originRef, repoPath)) {
-      const mergeBase = await getMergeBaseSafe(originRef, 'HEAD', repoPath);
+    if (await gitRefExists(originRef, repoPath, requestUser)) {
+      const mergeBase = await getMergeBaseSafe(originRef, 'HEAD', repoPath, requestUser);
       if (mergeBase) {
         return mergeBase;
       }
     }
 
-    const localMergeBase = await getMergeBaseSafe(defaultBranch, 'HEAD', repoPath);
+    const localMergeBase = await getMergeBaseSafe(defaultBranch, 'HEAD', repoPath, requestUser);
     if (localMergeBase) {
       return localMergeBase;
     }
   }
 
   // No default branch (or merge-base unavailable): fall back to first commit.
-  return getFirstCommit(repoPath);
+  return getFirstCommit(repoPath, requestUser);
 }
 
 /**
@@ -104,20 +107,23 @@ async function resolveDefaultForkPoint(repoPath: string): Promise<string | null>
  *   even that cannot be resolved.
  *
  * @param repoPath - Path to the git repository
+ * @param requestUser - OS username to run git as (null = no elevation). In
+ *   multi-user mode this is the worktree-owning user so git does not refuse
+ *   with "dubious ownership in repository". (Issue #869.)
  * @returns A base spec string (never null)
  */
-export async function computeDefaultBaseSpec(repoPath: string): Promise<string> {
-  const defaultBranch = await getDefaultBranch(repoPath);
+export async function computeDefaultBaseSpec(repoPath: string, requestUser: string | null): Promise<string> {
+  const defaultBranch = await getDefaultBranch(repoPath, requestUser);
 
   if (defaultBranch) {
-    if (await gitRefExists(`origin/${defaultBranch}`, repoPath)) {
+    if (await gitRefExists(`origin/${defaultBranch}`, repoPath, requestUser)) {
       return `${MERGE_BASE_REF_PREFIX}origin/${defaultBranch}`;
     }
     return `${MERGE_BASE_REF_PREFIX}${defaultBranch}`;
   }
 
   // No default branch: pin to the first commit (no branch to track).
-  const firstCommit = await getFirstCommit(repoPath);
+  const firstCommit = await getFirstCommit(repoPath, requestUser);
   return firstCommit ?? 'HEAD';
 }
 
@@ -136,20 +142,25 @@ export async function computeDefaultBaseSpec(repoPath: string): Promise<string> 
  *
  * @param spec - The persisted base spec
  * @param repoPath - Path to the git repository
+ * @param requestUser - See {@link computeDefaultBaseSpec}.
  * @returns Resolved commit hash, or null on genuine resolution failure
  */
-export async function resolveBaseSpec(spec: string, repoPath: string): Promise<string | null> {
+export async function resolveBaseSpec(
+  spec: string,
+  repoPath: string,
+  requestUser: string | null,
+): Promise<string | null> {
   if (spec === DEFAULT_FORK_POINT_SPEC) {
-    return resolveDefaultForkPoint(repoPath);
+    return resolveDefaultForkPoint(repoPath, requestUser);
   }
 
   if (spec.startsWith(MERGE_BASE_REF_PREFIX)) {
     const ref = spec.slice(MERGE_BASE_REF_PREFIX.length);
-    return getMergeBaseSafe(ref, 'HEAD', repoPath);
+    return getMergeBaseSafe(ref, 'HEAD', repoPath, requestUser);
   }
 
   // Branch name or explicit commit hash.
-  return resolveRef(spec, repoPath);
+  return resolveRef(spec, repoPath, requestUser);
 }
 
 /**
@@ -157,10 +168,15 @@ export async function resolveBaseSpec(spec: string, repoPath: string): Promise<s
  *
  * @param ref - Branch name or commit hash
  * @param repoPath - Path to the git repository
+ * @param requestUser - See {@link computeDefaultBaseSpec}.
  * @returns Resolved commit hash, or null if invalid
  */
-export async function resolveRef(ref: string, repoPath: string): Promise<string | null> {
-  return gitSafe(['rev-parse', ref], repoPath);
+export async function resolveRef(
+  ref: string,
+  repoPath: string,
+  requestUser: string | null,
+): Promise<string | null> {
+  return gitSafe(['rev-parse', ref], repoPath, requestUser);
 }
 
 /**
@@ -443,12 +459,14 @@ function parseNumstat(numstatOutput: string): Map<string, { additions: number; d
  *
  * @param repoPath - Path to the git repository
  * @param baseCommit - Base commit hash for comparison
+ * @param requestUser - OS username to run git as. See {@link computeDefaultBaseSpec}.
  * @param targetRef - Target reference: 'working-dir' (default) or a commit hash
  * @returns GitDiffData containing summary and raw diff
  */
 export async function getDiffData(
   repoPath: string,
   baseCommit: string,
+  requestUser: string | null,
   targetRef: GitDiffTarget = 'working-dir'
 ): Promise<GitDiffData> {
   const isWorkingDir = targetRef === 'working-dir';
@@ -457,7 +475,7 @@ export async function getDiffData(
   // Get raw diff (from baseCommit to target)
   let rawDiff: string;
   try {
-    rawDiff = await getDiff(baseCommit, gitTargetRef, repoPath);
+    rawDiff = await getDiff(baseCommit, gitTargetRef, repoPath, requestUser);
   } catch (error) {
     logger.warn({ error, repoPath, baseCommit, targetRef: gitTargetRef }, 'Git diff failed, using empty diff');
     rawDiff = '';
@@ -466,7 +484,7 @@ export async function getDiffData(
   // Get numstat for statistics
   let numstatOutput: string;
   try {
-    numstatOutput = await getDiffNumstat(baseCommit, gitTargetRef, repoPath);
+    numstatOutput = await getDiffNumstat(baseCommit, gitTargetRef, repoPath, requestUser);
   } catch (error) {
     logger.warn({ error, repoPath, baseCommit, targetRef: gitTargetRef }, 'Git diff numstat failed, using empty output');
     numstatOutput = '';
@@ -477,14 +495,14 @@ export async function getDiffData(
   let untrackedFiles: string[];
   if (isWorkingDir) {
     try {
-      statusOutput = await getStatusPorcelain(repoPath);
+      statusOutput = await getStatusPorcelain(repoPath, requestUser);
     } catch (error) {
       logger.warn({ error, repoPath }, 'Git status porcelain failed, using empty output');
       statusOutput = '';
     }
 
     try {
-      untrackedFiles = await getUntrackedFiles(repoPath);
+      untrackedFiles = await getUntrackedFiles(repoPath, requestUser);
     } catch (error) {
       logger.warn({ error, repoPath }, 'Git untracked files failed, using empty list');
       untrackedFiles = [];
@@ -631,12 +649,14 @@ function isValidFilePath(filePath: string): boolean {
  * @param repoPath - Path to the git repository
  * @param baseCommit - Base commit hash for comparison
  * @param filePath - Path to the file (relative to repo root)
+ * @param requestUser - OS username to run git as. See {@link computeDefaultBaseSpec}.
  * @returns Raw diff text for the file, or empty string if no changes
  */
 export async function getFileDiff(
   repoPath: string,
   baseCommit: string,
-  filePath: string
+  filePath: string,
+  requestUser: string | null,
 ): Promise<string> {
   // SECURITY: Validate filePath to prevent path traversal attacks
   if (!isValidFilePath(filePath)) {
@@ -646,14 +666,14 @@ export async function getFileDiff(
 
   try {
     // Use targeted git diff command for the specific file
-    const rawDiff = await gitRaw(['diff', baseCommit, '--', filePath], repoPath);
+    const rawDiff = await gitRaw(['diff', baseCommit, '--', filePath], repoPath, undefined, requestUser);
 
     if (rawDiff) {
       return rawDiff;
     }
 
     // File not found in regular diff - check if it's an untracked file
-    const untrackedFiles = await getUntrackedFiles(repoPath);
+    const untrackedFiles = await getUntrackedFiles(repoPath, requestUser);
     if (untrackedFiles.includes(filePath)) {
       const { diff } = await generateUntrackedFileDiff(filePath, repoPath);
       return diff;
@@ -778,6 +798,8 @@ export function stopWatching(repoPath: string): void {
  * @param startLine - Start line number (1-based, inclusive)
  * @param endLine - End line number (1-based, inclusive)
  * @param ref - 'working-dir' or a commit hash
+ * @param requestUser - OS username to run git as. See {@link computeDefaultBaseSpec}.
+ *   Ignored on the 'working-dir' branch (direct filesystem read).
  * @returns Array of line contents
  */
 export async function getFileLines(
@@ -785,7 +807,8 @@ export async function getFileLines(
   filePath: string,
   startLine: number,
   endLine: number,
-  ref: GitDiffTarget
+  ref: GitDiffTarget,
+  requestUser: string | null,
 ): Promise<string[]> {
   if (!isValidFilePath(filePath)) {
     throw new Error(`Invalid file path: ${filePath}`);
@@ -800,7 +823,7 @@ export async function getFileLines(
       throw new Error(`Failed to read ${filePath} from working directory: ${error instanceof Error ? error.message : String(error)}`);
     }
   } else {
-    const result = await gitSafe(['show', `${ref}:${filePath}`], repoPath);
+    const result = await gitSafe(['show', `${ref}:${filePath}`], repoPath, requestUser);
     if (result === null) {
       throw new Error(`Failed to read ${filePath} at ref ${ref}`);
     }

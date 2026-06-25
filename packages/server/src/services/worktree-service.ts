@@ -13,6 +13,10 @@ import {
   refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
 } from '../lib/git.js';
+// listLocalBranches, listRemoteBranches, getDefaultBranch, refreshDefaultBranch
+// are thin pass-throughs after Issue #870: lib/git.ts now accepts requestUser
+// directly so multi-user mode runs git as the worktree-owning user (picking
+// up that user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
@@ -688,14 +692,31 @@ export class WorktreeService {
   }
 
   /**
-   * List branches in a repository
+   * List branches in a repository.
+   *
+   * Routes each constituent git invocation through `lib/git.ts` with the
+   * provided `requestUsername`. When non-null, lib/git.ts uses `runAsUser`
+   * so multi-user mode runs git as the requesting user — picking up that
+   * user's PATH, `~/.gitconfig`, and SSH_AUTH_SOCK from their login shell
+   * via `sudo -i`. The server's own SSH_AUTH_SOCK is intentionally NOT
+   * forwarded: the server runs as a system user (`agentconsole`) which has
+   * no useful agent socket of its own. See Issue #870 for the user-facing
+   * symptom (the "Could not check remote status" banner / dubious
+   * ownership errors).
+   *
+   * Preserves the existing swallow contract: any overall failure returns
+   * `{ local: [], remote: [], defaultBranch: null }` so the UI can render a
+   * neutral "no branches" view instead of propagating an error.
    */
-  async listBranches(repoPath: string): Promise<{ local: string[]; remote: string[]; defaultBranch: string | null }> {
+  async listBranches(
+    repoPath: string,
+    requestUsername: string | null = null,
+  ): Promise<{ local: string[]; remote: string[]; defaultBranch: string | null }> {
     try {
       const [local, remote, defaultBranch] = await Promise.all([
-        listLocalBranches(repoPath),
-        listRemoteBranches(repoPath),
-        this.getDefaultBranch(repoPath),
+        listLocalBranches(repoPath, requestUsername),
+        listRemoteBranches(repoPath, requestUsername),
+        this.getDefaultBranch(repoPath, requestUsername),
       ]);
 
       return { local, remote, defaultBranch };
@@ -706,21 +727,33 @@ export class WorktreeService {
   }
 
   /**
-   * Get the default branch name from remote origin
+   * Get the default branch name from remote origin.
+   *
+   * See {@link listBranches} for the multi-user / SSH credential rationale.
    */
-  async getDefaultBranch(repoPath: string): Promise<string | null> {
-    return gitGetDefaultBranch(repoPath);
+  async getDefaultBranch(
+    repoPath: string,
+    requestUsername: string | null = null,
+  ): Promise<string | null> {
+    return gitGetDefaultBranch(repoPath, requestUsername);
   }
 
   /**
    * Refresh the default branch reference from remote origin.
    * This updates the local refs/remotes/origin/HEAD to match the remote's default branch.
    *
+   * See {@link listBranches} for the multi-user / SSH credential rationale.
+   * The network call (`git remote set-head origin -a`) is the SSH-using git
+   * invocation here, so running it as the requesting user is critical.
+   *
    * @returns The updated default branch name
    * @throws GitError if the command fails (e.g., network error, no remote)
    */
-  async refreshDefaultBranch(repoPath: string): Promise<string> {
-    return gitRefreshDefaultBranch(repoPath);
+  async refreshDefaultBranch(
+    repoPath: string,
+    requestUsername: string | null = null,
+  ): Promise<string> {
+    return gitRefreshDefaultBranch(repoPath, requestUsername);
   }
 
   /**

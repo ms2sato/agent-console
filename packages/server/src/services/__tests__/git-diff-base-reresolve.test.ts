@@ -146,9 +146,9 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
 
     // Diff #1: resolves merge-base(main, HEAD) — should contain the feature
     // change but NOT the upstream-only file.
-    const resolved1 = await resolveBaseSpec(spec, repo);
+    const resolved1 = await resolveBaseSpec(spec, repo, null);
     expect(resolved1).not.toBeNull();
-    const diff1 = await getDiffData(repo, resolved1!);
+    const diff1 = await getDiffData(repo, resolved1!, null);
     const paths1 = diff1.summary.files.map((f) => f.path);
     expect(paths1).toContain('feature.txt');
     expect(paths1).not.toContain('upstream.txt');
@@ -158,11 +158,11 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
 
     // Diff #2: SAME spec, re-resolved → merge-base moves forward to include the
     // upstream commit, so upstream.txt must NOT appear in the diff.
-    const resolved2 = await resolveBaseSpec(spec, repo);
+    const resolved2 = await resolveBaseSpec(spec, repo, null);
     expect(resolved2).not.toBeNull();
     // The merge-base must have advanced (re-resolution actually happened).
     expect(resolved2).not.toBe(resolved1);
-    const diff2 = await getDiffData(repo, resolved2!);
+    const diff2 = await getDiffData(repo, resolved2!, null);
     const paths2 = diff2.summary.files.map((f) => f.path);
     expect(paths2).toContain('feature.txt');
     // CORE REGRESSION ASSERTION: with the old frozen-hash behavior diff2 WOULD
@@ -174,9 +174,9 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
     // A branch identical to main: merge-base is HEAD, diff must be empty.
     await git(['checkout', '-b', 'no-changes'], repo);
     const spec = `${MERGE_BASE_REF_PREFIX}main`;
-    const resolved = await resolveBaseSpec(spec, repo);
+    const resolved = await resolveBaseSpec(spec, repo, null);
     expect(resolved).not.toBeNull();
-    const diff = await getDiffData(repo, resolved!);
+    const diff = await getDiffData(repo, resolved!, null);
     expect(diff.summary.files).toHaveLength(0);
   });
 });

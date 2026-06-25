@@ -180,13 +180,18 @@ export class WorkerLifecycleManager {
       });
       worker = terminalWorker;
     } else {
-      // git-diff worker (async initialization for base commit calculation)
+      // git-diff worker (async initialization for base commit calculation).
+      // Issue #869: resolve the worktree-owning OS username so the initial
+      // `computeDefaultBaseSpec` git invocation runs as that user in
+      // multi-user mode (avoiding "dubious ownership in repository").
+      const username = await this.deps.resolveSpawnUsername(session.createdBy);
       worker = await this.deps.workerManager.initializeGitDiffWorker({
         id: workerId,
         name: workerName,
         createdAt,
         locationPath: session.locationPath,
         baseCommit: request.baseCommit,
+        requestUser: username,
       });
     }
 

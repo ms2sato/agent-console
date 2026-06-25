@@ -22,19 +22,24 @@ import { mock, type Mock } from 'bun:test';
 import { GitError } from '../../lib/git.js';
 export { GitError };
 
-// Type definitions for mock functions
-type AsyncStringFn = (cwd: string) => Promise<string>;
-type AsyncStringNullFn = (cwd: string) => Promise<string | null>;
-type AsyncStringArrayFn = (cwd: string) => Promise<string[]>;
+// Type definitions for mock functions.
+//
+// Issue #869 / #870: Many lib/git.ts helpers now accept an optional trailing
+// `requestUser` argument so callers can route the invocation through
+// `runAsUser` for multi-user mode. The mock signatures mirror that shape so
+// `toHaveBeenCalledWith(..., 'someuser')` assertions in tests type-check.
+type AsyncStringFn = (cwd: string, requestUser?: string | null) => Promise<string>;
+type AsyncStringNullFn = (cwd: string, requestUser?: string | null) => Promise<string | null>;
+type AsyncStringArrayFn = (cwd: string, requestUser?: string | null) => Promise<string[]>;
 type AsyncVoidFn = (...args: unknown[]) => Promise<void>;
 
 // Exported mock functions - configure these in beforeEach
 export const mockGit = {
   // Low-level
   git: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
-  gitRaw: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
-  gitSafe: mock(() => Promise.resolve(null)) as Mock<(args: string[], cwd: string) => Promise<string | null>>,
-  gitRefExists: mock(() => Promise.resolve(false)) as Mock<(ref: string, cwd: string) => Promise<boolean>>,
+  gitRaw: mock(() => Promise.resolve('')) as Mock<(args: string[], cwd: string, timeoutMs?: number, requestUser?: string | null) => Promise<string>>,
+  gitSafe: mock(() => Promise.resolve(null)) as Mock<(args: string[], cwd: string, requestUser?: string | null) => Promise<string | null>>,
+  gitRefExists: mock(() => Promise.resolve(false)) as Mock<(ref: string, cwd: string, requestUser?: string | null) => Promise<boolean>>,
 
   // Branch operations
   getCurrentBranch: mock(() => Promise.resolve('main')) as Mock<AsyncStringFn>,
@@ -74,10 +79,10 @@ export const mockGit = {
   pullFastForward: mock(() => Promise.resolve(0)) as Mock<(cwd: string) => Promise<number>>,
 
   // Diff operations
-  getMergeBase: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string>>,
-  getMergeBaseSafe: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string) => Promise<string | null>>,
-  getDiff: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string) => Promise<string>>,
-  getDiffNumstat: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string) => Promise<string>>,
+  getMergeBase: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string, requestUser?: string | null) => Promise<string>>,
+  getMergeBaseSafe: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string, requestUser?: string | null) => Promise<string | null>>,
+  getDiff: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string, requestUser?: string | null) => Promise<string>>,
+  getDiffNumstat: mock(() => Promise.resolve('')) as Mock<(baseRef: string, targetRef: string | undefined, cwd: string, requestUser?: string | null) => Promise<string>>,
   getStagedFiles: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
   getUnstagedFiles: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
   getUntrackedFiles: mock(() => Promise.resolve([])) as Mock<AsyncStringArrayFn>,

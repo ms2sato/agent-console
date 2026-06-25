@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
@@ -724,5 +724,104 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
     });
 
     expect(res.status).toBe(400);
+  });
+});
+
+// ===========================================================================
+// GET /api/sessions/:sessionId/branches (Issue #870)
+//
+// The route resolves the session's effective spawn user (via
+// `resolveSpawnUsername(session.createdBy, userRepository)`) and threads it
+// into `worktreeService.listBranches` so multi-user mode runs the git
+// invocations as the OS user that owns the worktree. For shared sessions
+// the spawn user is the shared account, NOT the authenticated viewer --
+// using the viewer's identity would reintroduce dubious-ownership /
+// missing-credential failures (CodeRabbit review on PR #874).
+// ===========================================================================
+describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
+  let app: Hono<AppBindings>;
+  const mockSessionManager = {
+    getSession: mock((_id: string) => undefined as any),
+  };
+  type BranchesResult = { local: string[]; remote: string[]; defaultBranch: string | null };
+  const mockWorktreeService = {
+    listBranches: mock<
+      (repoPath: string, requestUsername?: string | null) => Promise<BranchesResult>
+    >(() => Promise.resolve({ local: [], remote: [], defaultBranch: null })),
+  };
+  // Minimal UserRepository stub: returns a user when findById is called with
+  // an id we registered. Lets us drive resolveSpawnUsername deterministically
+  // without spinning up a sqlite repo.
+  const mockUserRepository: any = {
+    findById: mock<(id: string) => Promise<{ id: string; username: string; homeDir: string } | null>>(
+      () => Promise.resolve(null),
+    ),
+  };
+
+  beforeEach(() => {
+    mockSessionManager.getSession.mockReset();
+    mockWorktreeService.listBranches.mockReset();
+    mockWorktreeService.listBranches.mockImplementation(() =>
+      Promise.resolve({ local: [], remote: [], defaultBranch: null }),
+    );
+    mockUserRepository.findById.mockReset();
+    mockUserRepository.findById.mockImplementation(() => Promise.resolve(null));
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set(
+        'appContext',
+        asAppContext({
+          sessionManager: mockSessionManager as any,
+          worktreeService: mockWorktreeService as any,
+          userRepository: mockUserRepository,
+        }),
+      );
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  });
+
+  it('forwards the session spawn username (resolved via createdBy) to worktreeService.listBranches', async () => {
+    mockSessionManager.getSession.mockReturnValueOnce({
+      id: 'session1',
+      locationPath: '/worktree/wt-001-aaaa',
+      createdBy: 'shared-account-id',
+    });
+    mockUserRepository.findById.mockImplementationOnce((id: string) =>
+      id === 'shared-account-id'
+        ? Promise.resolve({ id, username: 'sharedacct', homeDir: '/home/sharedacct' })
+        : Promise.resolve(null),
+    );
+    mockWorktreeService.listBranches.mockImplementationOnce(() =>
+      Promise.resolve({ local: ['main'], remote: ['origin/main'], defaultBranch: 'main' }),
+    );
+
+    const res = await app.request('/api/sessions/session1/branches');
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as {
+      local: string[];
+      remote: string[];
+      defaultBranch: string | null;
+    };
+    expect(body.local).toEqual(['main']);
+    expect(body.remote).toEqual(['origin/main']);
+    expect(body.defaultBranch).toBe('main');
+
+    expect(mockWorktreeService.listBranches).toHaveBeenCalledTimes(1);
+    const [locationPath, requestUsername] = mockWorktreeService.listBranches.mock.calls[0];
+    expect(locationPath).toBe('/worktree/wt-001-aaaa');
+    // Critical: the shared-account spawn user, NOT the authenticated viewer.
+    expect(requestUsername).toBe('sharedacct');
+  });
+
+  it('returns 404 when the session does not exist', async () => {
+    mockSessionManager.getSession.mockReturnValueOnce(undefined);
+
+    const res = await app.request('/api/sessions/missing/branches');
+    expect(res.status).toBe(404);
+    expect(mockWorktreeService.listBranches).toHaveBeenCalledTimes(0);
   });
 });

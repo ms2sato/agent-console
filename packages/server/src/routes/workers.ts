@@ -15,6 +15,7 @@ import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 
 const logger = createLogger('api:workers');
 
@@ -334,7 +335,7 @@ const workers = new Hono<AppBindings>()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
 
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, userRepository } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -349,12 +350,19 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('Worker is not a git-diff worker');
     }
 
+    // Issue #869 / CodeRabbit lesson from PR #874: multi-user mode must run
+    // git as the session's effective spawn user (the OS user that owns the
+    // worktree), NOT the authenticated viewer. For shared sessions the spawn
+    // user is the shared account — using the viewer's identity would
+    // reintroduce dubious-ownership errors on user-owned worktrees.
+    const spawnUsername = await resolveSpawnUsername(session.createdBy, userRepository);
+
     const { resolveBaseSpec, getDiffData } = await import('../services/git-diff-service.js');
-    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath);
+    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath, spawnUsername);
     if (!resolved) {
       throw new ValidationError(`Could not resolve diff base: ${worker.baseCommit}`);
     }
-    const diffData = await getDiffData(session.locationPath, resolved);
+    const diffData = await getDiffData(session.locationPath, resolved, spawnUsername);
 
     return c.json(diffData);
   })
@@ -368,7 +376,7 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('path query parameter is required');
     }
 
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, userRepository } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
@@ -383,12 +391,17 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('Worker is not a git-diff worker');
     }
 
+    // Issue #869 / CodeRabbit lesson from PR #874: see GET /diff above for
+    // the shared-session correctness reason. Resolve the spawn user from
+    // session.createdBy, not the viewer.
+    const spawnUsername = await resolveSpawnUsername(session.createdBy, userRepository);
+
     const { resolveBaseSpec, getFileDiff } = await import('../services/git-diff-service.js');
-    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath);
+    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath, spawnUsername);
     if (!resolved) {
       throw new ValidationError(`Could not resolve diff base: ${worker.baseCommit}`);
     }
-    const rawDiff = await getFileDiff(session.locationPath, resolved, filePath);
+    const rawDiff = await getFileDiff(session.locationPath, resolved, filePath, spawnUsername);
 
     return c.json({ rawDiff });
   });

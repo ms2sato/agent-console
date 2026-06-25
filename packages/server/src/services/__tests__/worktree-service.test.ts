@@ -910,6 +910,39 @@ detached
       expect(result.remote).toEqual([]);
       expect(result.defaultBranch).toBeNull();
     });
+
+    // Issue #870: listBranches now forwards an optional `requestUsername`
+    // through to lib/git.ts so multi-user mode runs git as that user
+    // (picking up their SSH credentials / gitconfig).
+    it('forwards requestUsername=null to lib/git.ts when no argument is passed', async () => {
+      mockGit.listLocalBranches.mockClear();
+      mockGit.listRemoteBranches.mockClear();
+      mockGit.getDefaultBranch.mockClear();
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      await service.listBranches('/repo');
+
+      expect(mockGit.listLocalBranches).toHaveBeenCalledWith('/repo', null);
+      expect(mockGit.listRemoteBranches).toHaveBeenCalledWith('/repo', null);
+      expect(mockGit.getDefaultBranch).toHaveBeenCalledWith('/repo', null);
+    });
+
+    it('forwards a non-null requestUsername through to every lib/git.ts call (Issue #870)', async () => {
+      mockGit.listLocalBranches.mockClear();
+      mockGit.listRemoteBranches.mockClear();
+      mockGit.getDefaultBranch.mockClear();
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      await service.listBranches('/repo', 'alice');
+
+      expect(mockGit.listLocalBranches).toHaveBeenCalledWith('/repo', 'alice');
+      expect(mockGit.listRemoteBranches).toHaveBeenCalledWith('/repo', 'alice');
+      expect(mockGit.getDefaultBranch).toHaveBeenCalledWith('/repo', 'alice');
+    });
   });
 
   describe('getDefaultBranch', () => {
@@ -929,6 +962,64 @@ detached
 
       const result = await service.getDefaultBranch('/repo');
       expect(result).toBeNull();
+    });
+
+    it('forwards requestUsername to lib/git.ts (Issue #870)', async () => {
+      mockGit.getDefaultBranch.mockClear();
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      await service.getDefaultBranch('/repo', 'alice');
+
+      expect(mockGit.getDefaultBranch).toHaveBeenCalledWith('/repo', 'alice');
+    });
+  });
+
+  describe('refreshDefaultBranch', () => {
+    it('forwards requestUsername=null when no argument is passed', async () => {
+      mockGit.refreshDefaultBranch.mockClear();
+      mockGit.refreshDefaultBranch.mockImplementation(() => Promise.resolve('main'));
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.refreshDefaultBranch('/repo');
+
+      expect(result).toBe('main');
+      expect(mockGit.refreshDefaultBranch).toHaveBeenCalledWith('/repo', null);
+    });
+
+    it('forwards a non-null requestUsername to lib/git.ts (Issue #870)', async () => {
+      mockGit.refreshDefaultBranch.mockClear();
+      mockGit.refreshDefaultBranch.mockImplementation(() => Promise.resolve('develop'));
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.refreshDefaultBranch('/repo', 'alice');
+
+      expect(result).toBe('develop');
+      expect(mockGit.refreshDefaultBranch).toHaveBeenCalledWith('/repo', 'alice');
+    });
+
+    it('propagates GitError from the underlying lib/git.ts helper', async () => {
+      mockGit.refreshDefaultBranch.mockClear();
+      mockGit.refreshDefaultBranch.mockImplementation(() =>
+        Promise.reject(new GitError('git remote set-head failed: network unreachable', 128, 'fatal: network unreachable')),
+      );
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.refreshDefaultBranch('/repo', 'alice');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(GitError);
+      expect((caught as Error).message).toContain('network unreachable');
     });
   });
 
