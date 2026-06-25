@@ -1897,5 +1897,207 @@ detached
         expect(spawnCalls[0].args[2]).toBe('npm install && npm run build');
       });
     });
+
+    // Issue #883 — executeHookCommand routes through runAsUser when elevation
+    // would engage (AUTH_MODE=multi-user AND requestUsername differs from the
+    // server-process user). Otherwise the historical direct-spawn behaviour
+    // is preserved verbatim, including the getCleanChildProcessEnv() env
+    // filter — see services/env-filter.ts.
+    describe('privilege elevation (Issue #883)', () => {
+      let originalAuthMode: string | undefined;
+
+      beforeEach(() => {
+        originalAuthMode = process.env.AUTH_MODE;
+      });
+
+      afterEach(() => {
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      it('omitted requestUsername preserves direct Bun.spawn (legacy single-user)', async () => {
+        delete process.env.AUTH_MODE;
+        setMockSpawnResult('hello');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+        );
+
+        expect(result.success).toBe(true);
+        expect(spawnCalls.length).toBe(1);
+        expect(runAsUserMock.calls.length).toBe(0);
+      });
+
+      it('null requestUsername preserves direct Bun.spawn (explicit single-user)', async () => {
+        delete process.env.AUTH_MODE;
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+          null,
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(runAsUserMock.calls.length).toBe(0);
+      });
+
+      it('non-null requestUsername with AUTH_MODE unset bypasses elevation', async () => {
+        // shouldElevateForUser gates on BOTH AUTH_MODE=multi-user AND a
+        // non-server username. With AUTH_MODE unset, even a non-null
+        // username must NOT elevate — this preserves the single-user
+        // env-filter path verbatim.
+        delete process.env.AUTH_MODE;
+        setMockSpawnResult('');
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 1, branch: 'main', repo: 'my-repo' },
+          'alice-multiuser-test',
+        );
+
+        expect(spawnCalls.length).toBe(1);
+        expect(runAsUserMock.calls.length).toBe(0);
+      });
+
+      it('multi-user mode with non-server username routes through runAsUser', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: 'hook output',
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'echo hello',
+          '/test/worktree',
+          { worktreeNum: 7, branch: 'feature/x', repo: 'my-repo' },
+          'alice-multiuser-test',
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.output).toBe('hook output');
+        // Bun.spawn must NOT have been called — the elevated branch routes
+        // exclusively through runAsUser.
+        expect(spawnCalls.length).toBe(0);
+
+        expect(runAsUserMock.calls.length).toBe(1);
+        const call = runAsUserMock.calls[0];
+        expect(call.username).toBe('alice-multiuser-test');
+        expect(call.cwd).toBe('/test/worktree');
+        expect(call.command).toBe('echo hello');
+        // The four hook variables are threaded through opts.env so
+        // runAsUser embeds them via `export K=v` inside the elevated shell.
+        expect(call.env).toEqual({
+          WORKTREE_NUM: '7',
+          BRANCH: 'feature/x',
+          REPO: 'my-repo',
+          WORKTREE_PATH: '/test/worktree',
+        });
+      });
+
+      it('multi-user mode substitutes template variables before runAsUser', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        await service.executeHookCommand(
+          'export PORT={{WORKTREE_NUM + 3000}} && echo {{REPO}}',
+          '/wt',
+          { worktreeNum: 5, branch: 'feature/a', repo: 'my-repo' },
+          'alice-multiuser-test',
+        );
+
+        expect(runAsUserMock.calls.length).toBe(1);
+        expect(runAsUserMock.calls[0].command).toBe(
+          'export PORT=3005 && echo my-repo',
+        );
+      });
+
+      it('multi-user mode surfaces non-zero exit from runAsUser as failed result', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: 'partial',
+          stderr: 'permission denied',
+          exitCode: 1,
+          timedOut: false,
+        });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'cmd',
+          '/wt',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.output).toBe('partial');
+        expect(result.error).toBe('permission denied');
+      });
+
+      it('multi-user mode falls back to exit-code message when stderr is empty', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        runAsUserMock.responder.fn = async () => ({
+          stdout: '',
+          stderr: '',
+          exitCode: 127,
+          timedOut: false,
+        });
+
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.executeHookCommand(
+          'cmd',
+          '/wt',
+          { worktreeNum: 1, branch: 'main', repo: 'r' },
+          'alice-multiuser-test',
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('127');
+      });
+    });
   });
 });

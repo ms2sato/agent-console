@@ -27,7 +27,12 @@ const mockRemoveWorktree = mock<
   ) => Promise<{ success: boolean; error?: string }>
 >(() => Promise.resolve({ success: true }));
 const mockExecuteHookCommand = mock<
-  (cmd: string, cwd: string, vars: Record<string, unknown>) => Promise<HookCommandResult>
+  (
+    cmd: string,
+    cwd: string,
+    vars: Record<string, unknown>,
+    requestUsername?: string | null,
+  ) => Promise<HookCommandResult>
 >(() => Promise.resolve({ success: true }));
 
 const mockWorktreeService = {
@@ -346,6 +351,26 @@ describe('createWorktreeWithSession', () => {
     // multi-user installs create the worktree as the requesting user.
     expect(mockCreateWorktree).toHaveBeenCalledWith(
       '/repos/my-repo', 'feature-new', 'repo-1', 'origin/main', 'alice',
+    );
+  });
+
+  it('threads requestUsername to executeHookCommand for the setup hook (Issue #883)', async () => {
+    // Without this threading, the setup hook would run as the server user
+    // (`agentconsole`) inside a worktree owned by the requesting user, with
+    // no access to that user's gh / ssh credentials and unable to write
+    // user-owned files. Mirrors the same one-line plumbing as Issue #838.
+    const sm = createMockSessionManager();
+    await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, setupCommand: 'npm install', requestUsername: 'alice' },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(mockExecuteHookCommand).toHaveBeenCalledWith(
+      'npm install',
+      CREATED_PATH,
+      { worktreeNum: 2, branch: 'feature-new', repo: 'my-repo' },
+      'alice',
     );
   });
 

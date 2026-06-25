@@ -26,7 +26,12 @@ const mockRemoveWorktree = mock<
   ) => Promise<{ success: boolean; error?: string }>
 >(() => Promise.resolve({ success: true }));
 const mockExecuteHookCommand = mock<
-  (cmd: string, cwd: string, vars: Record<string, unknown>) => Promise<HookCommandResult>
+  (
+    cmd: string,
+    cwd: string,
+    vars: Record<string, unknown>,
+    requestUsername?: string | null,
+  ) => Promise<HookCommandResult>
 >(() => Promise.resolve({ success: true }));
 const mockIsWorktreeOf = mock<
   (repoPath: string, worktreePath: string, repoId: string) => Promise<boolean>
@@ -703,6 +708,34 @@ describe('deleteWorktree', () => {
 
       // null username explicitly threaded through — runAsUser will bypass.
       expect(mockRemoveWorktree).toHaveBeenCalledWith(REPO_PATH, WORKTREE_PATH, true, null);
+    });
+
+    it('threads requestUsername to executeHookCommand for the cleanup hook (Issue #883)', async () => {
+      // Without this threading, the cleanup hook would run as the server
+      // user (`agentconsole`) inside a worktree owned by the requesting
+      // user, and would lack access to that user's gh / ssh credentials.
+      const deps = createMockDeps({
+        sessions: [DEFAULT_WORKTREE_SESSION],
+        repo: { name: 'my-repo', path: REPO_PATH, cleanupCommand: 'echo cleanup' },
+      });
+
+      const result = await deleteWorktree(
+        {
+          repoId: 'repo-1',
+          worktreePath: WORKTREE_PATH,
+          force: false,
+          requestUsername: 'alice',
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockExecuteHookCommand).toHaveBeenCalledWith(
+        'echo cleanup',
+        WORKTREE_PATH,
+        { worktreeNum: 1, branch: 'feature-1', repo: 'my-repo' },
+        'alice',
+      );
     });
   });
 
