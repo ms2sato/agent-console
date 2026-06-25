@@ -970,15 +970,35 @@ export class WorktreeService {
    * Supports template variables: {{WORKTREE_NUM}}, {{BRANCH}}, {{REPO}}, {{WORKTREE_PATH}}
    * Also supports arithmetic expressions like {{WORKTREE_NUM + 3000}}
    *
+   * In `AUTH_MODE=multi-user` with a `requestUsername` that differs from the
+   * server-process user (Issue #883), the command is routed through
+   * `runAsUser` so the hook executes as the worktree-owning user. This is
+   * required because the worktree directory and its credentials (gh, ssh)
+   * are owned by the requesting user; running the hook as the server user
+   * (`agentconsole`) would fail to write user-owned files and would not see
+   * the user's gh / ssh auth.
+   *
+   * The `getCleanChildProcessEnv()` env filter only applies to the
+   * non-elevated branch — on the elevated path `sudo -i` resets the env
+   * entirely, so the user gets their normal login env plus the four hook
+   * variables (`WORKTREE_NUM`, `BRANCH`, `REPO`, `WORKTREE_PATH`) exported
+   * via `runAsUser`'s inner-shell `export` mechanism. The branch is gated
+   * at this caller (per `.claude/rules/elevation-helpers.md` strict-thin-
+   * wrapper contract) rather than threading the filter through `runAsUser`.
+   *
    * @param command - The command template to execute
    * @param worktreePath - The worktree directory path (command will run here)
    * @param vars - Template variables for substitution
+   * @param requestUsername - When set and elevation would engage, the hook
+   *   runs as this user via `runAsUser`. Null / undefined / single-user mode
+   *   preserves the historical direct-spawn behaviour verbatim.
    * @returns Result with success status, output, and any error message
    */
   async executeHookCommand(
     command: string,
     worktreePath: string,
-    vars: { worktreeNum: number; branch: string; repo: string }
+    vars: { worktreeNum: number; branch: string; repo: string },
+    requestUsername?: string | null,
   ): Promise<HookCommandResult> {
     // Substitute template variables in the command
     const substitutedCommand = substituteVariables(command, {
@@ -988,7 +1008,66 @@ export class WorktreeService {
       worktreePath,
     });
 
+    const hookEnv = {
+      WORKTREE_NUM: String(vars.worktreeNum),
+      BRANCH: vars.branch,
+      REPO: vars.repo,
+      WORKTREE_PATH: worktreePath,
+    };
+
     logger.info({ worktreePath, command: substitutedCommand }, 'Executing hook command');
+
+    // Elevated branch (Issue #883): route through runAsUser so the hook runs
+    // as the worktree-owning user. Only engaged when AUTH_MODE=multi-user AND
+    // requestUsername differs from the server-process user — otherwise the
+    // historical direct-spawn path below is preserved verbatim (including
+    // the getCleanChildProcessEnv() env filter).
+    if (shouldElevateForUser(requestUsername)) {
+      try {
+        const result = await this._runAsUser({
+          username: requestUsername!,
+          command: substitutedCommand,
+          cwd: worktreePath,
+          env: hookEnv,
+        });
+
+        if (result.exitCode === 0) {
+          logger.info(
+            { worktreePath, exitCode: result.exitCode, requestUsername },
+            'Hook command completed successfully (elevated)',
+          );
+          return {
+            success: true,
+            output: result.stdout || undefined,
+          };
+        } else {
+          logger.warn(
+            {
+              worktreePath,
+              exitCode: result.exitCode,
+              stderr: result.stderr,
+              requestUsername,
+            },
+            'Hook command failed (elevated)',
+          );
+          return {
+            success: false,
+            output: result.stdout || undefined,
+            error: result.stderr || `Command exited with code ${result.exitCode}`,
+          };
+        }
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        logger.error(
+          { worktreePath, err: error, requestUsername },
+          'Hook command execution error (elevated)',
+        );
+        return {
+          success: false,
+          error: errorMessage,
+        };
+      }
+    }
 
     try {
       // Execute command using Bun.spawn with shell
@@ -998,10 +1077,7 @@ export class WorktreeService {
         stderr: 'pipe',
         env: {
           ...getCleanChildProcessEnv(),
-          WORKTREE_NUM: String(vars.worktreeNum),
-          BRANCH: vars.branch,
-          REPO: vars.repo,
-          WORKTREE_PATH: worktreePath,
+          ...hookEnv,
         },
       });
 

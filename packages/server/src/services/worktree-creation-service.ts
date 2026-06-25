@@ -187,6 +187,7 @@ export async function createWorktreeWithSession(
           branch: worktree.branch,
           repo: repoName,
         },
+        requestUsername,
       );
     }
 

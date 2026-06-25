@@ -77,6 +77,7 @@ async function executeCleanupCommandIfConfigured(
   repo: { path: string; name: string; cleanupCommand?: string | null },
   repoId: string,
   worktreePath: string,
+  requestUsername: string | null | undefined,
 ): Promise<HookCommandResult | undefined> {
   if (!repo.cleanupCommand) return undefined;
 
@@ -94,6 +95,7 @@ async function executeCleanupCommandIfConfigured(
       branch: targetWorktree.branch,
       repo: repo.name,
     },
+    requestUsername,
   );
 }
 
@@ -364,6 +366,7 @@ export async function deleteWorktree(
       { path: repo.path, name: repo.name, cleanupCommand: repo.cleanupCommand },
       repoId,
       worktreePath,
+      requestUsername,
     );
 
     // 6b. Kill PTY processes to release directory handles (await exit before worktree remove)
