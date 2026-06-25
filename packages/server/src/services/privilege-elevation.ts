@@ -30,6 +30,7 @@
  * statements inside the inner command.
  */
 import * as os from 'node:os';
+import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('service:privilege-elevation');
@@ -327,4 +328,143 @@ export async function runAsUser(
   );
 
   return { stdout, stderr, exitCode, timedOut };
+}
+
+/**
+ * Options for `spawnAsUser`. Mirrors the elevation-relevant subset of
+ * `RunAsUserOpts`, minus one-shot-only concerns (`timeoutMs`, `stdin` bytes).
+ */
+export interface SpawnAsUserOpts {
+  /**
+   * Target OS user. Same semantics as `RunAsUserOpts.username`: null /
+   * undefined / equal-to-server-user / `AUTH_MODE !== 'multi-user'` all
+   * bypass elevation.
+   */
+  username: string | null | undefined;
+  /** Shell command (passed verbatim to `sh -c`). */
+  command: string;
+  cwd?: string;
+  env?: Record<string, string>;
+  /**
+   * Env-var names to preserve across the elevated shell via
+   * `--preserve-env=NAME1,NAME2,...`. Defaults to `['FORCE_COLOR']`. An empty
+   * array suppresses the flag entirely. Ignored when elevation is bypassed.
+   */
+  preserveEnv?: string[];
+}
+
+/**
+ * Long-lived spawn result. Unlike `runAsUser`, the caller manages the
+ * lifecycle of the returned subprocess (write to stdin over time, kill, etc).
+ */
+export interface SpawnAsUserResult {
+  /**
+   * The live Bun subprocess. Discriminated to the `'pipe','pipe','pipe'`
+   * variant so callers retain typed access to `stdin` / `stdout` / `stderr`
+   * as the corresponding streams.
+   */
+  subprocess: Subprocess<'pipe', 'pipe', 'pipe'>;
+  /**
+   * Alias for `subprocess.stdin` so callers that previously stored
+   * `subprocess.stdin` separately (e.g. `StoredProcess.stdin` in
+   * `interactive-process-manager.ts`) can keep the existing field shape.
+   */
+  stdin: FileSink;
+  /** Whether the spawn was elevated via `sudo`. Useful for logging. */
+  elevated: boolean;
+}
+
+/**
+ * Indirection so tests can inject a fake spawnAsUser implementation. Mirrors
+ * the {@link SpawnFn} pattern used by `runAsUser`.
+ * @internal Exported for testing.
+ */
+export type SpawnAsUserFn = (opts: SpawnAsUserOpts) => SpawnAsUserResult;
+
+/**
+ * Long-lived counterpart to {@link runAsUser}. Spawns `command` as
+ * `opts.username` (elevating via `sudo` when necessary) and returns the live
+ * `Subprocess` plus its `stdin` `FileSink` so callers can write over time
+ * and kill on demand.
+ *
+ * Use this when the caller needs to:
+ * - feed bytes to the child's stdin across multiple turns
+ * - send SIGTERM / SIGKILL at a later point
+ * - read stdout / stderr as streams rather than waiting for a final blob
+ *
+ * Use {@link runAsUser} when the caller wants a one-shot exec with optional
+ * stdin bytes and a fixed timeout.
+ *
+ * Outer pipe-through-sudo behaviour is identical to the elevated stdin path
+ * already in production at `worktree-service.ts:597-602`
+ * (`makeUserOwnedTemplateSink.writeFile`), which feeds bytes through
+ * `sudo -u <user> --preserve-env=FORCE_COLOR -i sh -c 'cat > <dst>'` via
+ * `runAsUser`'s `opts.stdin`. The argv shape and the elevated/non-elevated
+ * cwd / env decisions are produced by the same {@link buildSpawnArgs} pure
+ * function, so unit tests on `buildSpawnArgs` cover both helpers.
+ *
+ * Lifecycle is fully the caller's responsibility -- no timeout, no auto-kill.
+ */
+export function spawnAsUser(
+  opts: SpawnAsUserOpts,
+  spawn: SpawnFn = Bun.spawn,
+): SpawnAsUserResult {
+  const preserveEnv = opts.preserveEnv ?? [...DEFAULT_PRESERVE_ENV];
+  const serverUsername = os.userInfo().username;
+  const authMode = process.env.AUTH_MODE;
+
+  const { args, elevated } = buildSpawnArgs(
+    opts.username,
+    opts.command,
+    preserveEnv,
+    serverUsername,
+    authMode,
+    opts.cwd,
+    opts.env,
+  );
+
+  // Spawn options mirror `runAsUser`'s elevated / non-elevated branches:
+  // - Elevated: cwd / env are embedded into the inner shell command, the
+  //   outer spawn pins to SUDO_NEUTRAL_CWD and does not forward `opts.env`
+  //   (it would be reset by `sudo -i` anyway).
+  // - Non-elevated: cwd / env flow through spawn options as usual; `opts.env`
+  //   is layered over `process.env` because `Bun.spawn`'s `env` option
+  //   REPLACES (not merges) the child environment.
+  const spawnOptions: Parameters<typeof Bun.spawn>[1] = {
+    stdin: 'pipe',
+    stdout: 'pipe',
+    stderr: 'pipe',
+  };
+  if (elevated) {
+    spawnOptions.cwd = SUDO_NEUTRAL_CWD;
+  } else {
+    if (opts.cwd !== undefined) {
+      spawnOptions.cwd = opts.cwd;
+    }
+    if (opts.env !== undefined) {
+      spawnOptions.env = { ...process.env, ...opts.env };
+    }
+  }
+
+  // `Bun.spawn`'s discriminated return type narrows on the stdio options we
+  // pass. We always request `'pipe'` for all three streams above, so the
+  // returned subprocess is of the fully-piped variant. The `as` is a single
+  // direct cast at the boundary (no `unknown` intermediate); it does not
+  // change any runtime behaviour.
+  const subprocess = spawn(args, spawnOptions) as Subprocess<
+    'pipe',
+    'pipe',
+    'pipe'
+  >;
+
+  logger.info(
+    { username: opts.username ?? null, elevated, command: opts.command },
+    'spawnAsUser spawned',
+  );
+
+  return {
+    subprocess,
+    stdin: subprocess.stdin,
+    elevated,
+  };
 }

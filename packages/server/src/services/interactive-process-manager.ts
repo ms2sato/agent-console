@@ -1,6 +1,7 @@
 import type { InteractiveProcessInfo, InteractiveProcessOutputMode } from '@agent-console/shared';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
+import { spawnAsUser, type SpawnAsUserFn } from './privilege-elevation.js';
 
 const logger = createLogger('interactive-process-manager');
 
@@ -57,17 +58,26 @@ export class InteractiveProcessManager {
   private onExit: ProcessExitCallback;
   private ptyMessageInjector?: PtyMessageInjector;
   private onResponse?: ProcessResponseCallback;
+  /**
+   * Long-lived elevated-spawn helper. Routes the underlying `Bun.spawn`
+   * through `sudo -u <user> -i sh -c ...` when the requesting user differs
+   * from the server process user under `AUTH_MODE=multi-user`. Injected for
+   * testability; defaults to the production import.
+   */
+  private spawnAsUserFn: SpawnAsUserFn;
 
   constructor(
     onOutput: ProcessOutputCallback,
     onExit: ProcessExitCallback,
     ptyMessageInjector?: PtyMessageInjector,
     onResponse?: ProcessResponseCallback,
+    spawnAsUserFn: SpawnAsUserFn = spawnAsUser,
   ) {
     this.onOutput = onOutput;
     this.onExit = onExit;
     this.ptyMessageInjector = ptyMessageInjector;
     this.onResponse = onResponse;
+    this.spawnAsUserFn = spawnAsUserFn;
   }
 
   async runProcess(params: {
@@ -76,8 +86,17 @@ export class InteractiveProcessManager {
     command: string;
     cwd?: string;
     outputMode?: InteractiveProcessOutputMode;
+    /**
+     * OS username to run the command as. Treated identically when
+     * `null` / `undefined` -- no elevation. When set under
+     * `AUTH_MODE=multi-user` and differing from the server process user,
+     * the underlying spawn is elevated via `sudo`. Plumbed in by the
+     * `run_process` MCP tool, which resolves it from the calling
+     * session's `createdBy` (Issue #879).
+     */
+    requestUser?: string | null;
   }): Promise<InteractiveProcessInfo> {
-    const { sessionId, workerId, command, cwd } = params;
+    const { sessionId, workerId, command, cwd, requestUser } = params;
     const outputMode: InteractiveProcessOutputMode = params.outputMode ?? 'pty';
 
     const sessionProcessCount = this.listProcesses(sessionId).filter(
@@ -100,10 +119,14 @@ export class InteractiveProcessManager {
       outputMode,
     };
 
-    const subprocess = Bun.spawn(['sh', '-c', command], {
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
+    // Route the spawn through `spawnAsUser` so multi-user mode elevates the
+    // child to the requesting user. When `requestUser` is null/undefined or
+    // `AUTH_MODE !== 'multi-user'`, the helper bypasses elevation and spawns
+    // `sh -c command` directly -- byte-identical to the prior raw
+    // `Bun.spawn(['sh', '-c', command], { ... })` invocation.
+    const { subprocess, stdin } = this.spawnAsUserFn({
+      username: requestUser ?? null,
+      command,
       cwd,
     });
 
@@ -120,7 +143,7 @@ export class InteractiveProcessManager {
     const stored: StoredProcess = {
       info,
       subprocess,
-      stdin: subprocess.stdin,
+      stdin,
       streamsDone,
     };
     this.processes.set(id, stored);
