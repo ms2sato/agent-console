@@ -33,12 +33,17 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import { createMcpApp } from '../mcp-server.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
+import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
-const mockSuggestSessionMetadata = mock(async () => ({
-  branch: 'feat/auto-generated-branch',
-  title: 'Auto-Generated Title',
-}));
+// Declaring the parameter type makes `mock.calls` typed correctly so the
+// Issue #876 tests can read `mock.calls[0][0].requestUser` without casting.
+const mockSuggestSessionMetadata = mock(
+  async (_request: Parameters<SuggestSessionMetadataFn>[0]) => ({
+    branch: 'feat/auto-generated-branch',
+    title: 'Auto-Generated Title',
+  }),
+);
 
 // github-pr-service mocks (injected via McpDependencies)
 const mockFindOpenPullRequest = mock(async () => null as { number: number; title: string } | null);
@@ -2154,20 +2159,10 @@ describe('MCP Server Tools', () => {
     //   3. Orphan parent createdBy -> requestUser is null; suggestion failure
     //      falls back to `task-<timestamp>`.
     describe('Issue #876: suggestSessionMetadata receives resolved OS username', () => {
-      /**
-       * Read the first captured argument to `mockSuggestSessionMetadata`.
-       *
-       * The bun:test `mock(async () => ...)` factory at the top of this file
-       * declares no parameters, so `mock.calls` is inferred as `[][]` even
-       * though the production code passes a single options object. Cast
-       * through `unknown` to recover the real argument shape — same pattern
-       * used by `findSpawnCallByCommand` (~line 1318) and the test that
-       * reads `ptyFactory.spawn.mock.calls` (~line 1830).
-       */
+      // Read the captured `requestUser` argument from the first
+      // suggestion call (typed via the top-of-file mock parameter).
       function readSuggestRequestUser(): string | null {
-        const calls = mockSuggestSessionMetadata.mock.calls as unknown as Array<
-          [{ requestUser: string | null }]
-        >;
+        const calls = mockSuggestSessionMetadata.mock.calls;
         expect(calls.length).toBeGreaterThan(0);
         return calls[0][0].requestUser;
       }
@@ -2236,35 +2231,36 @@ describe('MCP Server Tools', () => {
           locationPath: TEST_REPO_PATH,
         }, { createdBy: 'orphan-uuid-not-in-users-table' });
 
-        // Force the suggestion to fail so the production path falls back to
-        // `task-<timestamp>`. The mock factory at the top of this file is
-        // typed as returning `{branch, title}` (no `error`), but the
-        // production response type allows `{error}` — return the
-        // success-shape fields as `undefined` to satisfy the strict
-        // generic without invasive casts. The production code checks
-        // `suggestion.error || !suggestion.branch` and falls back when
-        // `branch` is missing.
+        // Empty `branch` triggers the production fallback path
+        // (`suggestion.error || !suggestion.branch`).
         mockSuggestSessionMetadata.mockImplementationOnce(async () => ({
-          branch: undefined as unknown as string,
-          title: undefined as unknown as string,
+          branch: '',
+          title: '',
         }));
 
-        // We do not assert on the response branch shape because the
-        // listWorktrees mock would also need to know the fallback timestamp;
-        // the narrowly-scoped assertion is on the captured `requestUser`
-        // argument plus the suggestion call actually happening.
-        await setupDelegateEnvironment('task-fallback');
+        // Freeze `Date.now` so the `task-<timestamp>` fallback name is
+        // deterministic and the listWorktrees mock can match it.
+        const originalDateNow = Date.now;
+        Date.now = () => 876000;
+        await setupDelegateEnvironment('task-876000');
 
-        await callTool(app, mcpSessionId, 'delegate_to_worktree', {
-          repositoryId: 'test-repo',
-          prompt: 'Delegation from an orphan parent',
-          // branch intentionally omitted -> exercises the suggestion path
-          parentSessionId: parentSession.id,
-          parentWorkerId: 'parent-worker-id',
-        }, nextId++);
+        try {
+          const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+            repositoryId: 'test-repo',
+            prompt: 'Delegation from an orphan parent',
+            // branch intentionally omitted -> exercises the suggestion path
+            parentSessionId: parentSession.id,
+            parentWorkerId: 'parent-worker-id',
+          }, nextId++);
 
-        // The suggestion call must have received null, not a forged username.
-        expect(readSuggestRequestUser()).toBeNull();
+          expect(response.result?.isError).toBeUndefined();
+          const data = parseToolResult(response) as { branch: string };
+          expect(data.branch).toBe('task-876000');
+          // The suggestion call must have received null, not a forged username.
+          expect(readSuggestRequestUser()).toBeNull();
+        } finally {
+          Date.now = originalDateNow;
+        }
       });
     });
 
