@@ -13,14 +13,165 @@
  *   mockGit.listWorktrees.mockImplementation(() => Promise.resolve('...'));
  * });
  * ```
+ *
+ * Issue #869: `git-diff-service.ts` no longer routes through `lib/git.ts`; it
+ * calls `runAsUser` directly with `'git' ...` command strings. The lib/git
+ * mocks below therefore have no effect on git-diff-service code paths.
+ *
+ * To keep integration tests (api.test.ts, session-manager.test.ts, etc.) free
+ * of real `sh -c 'git ...'` spawns when they exercise git-diff worker
+ * creation, `resetGitMocks()` ALSO installs a default fake `runAsUser` that
+ * returns an empty success. This is sufficient for "happy path" worker
+ * creation (computeDefaultBaseSpec falls through to 'HEAD' when every git
+ * invocation returns empty stdout). Tests that need specific git outputs for
+ * git-diff-service should use `mock-run-as-user.ts` directly and override the
+ * default via `__setRunAsUserForTesting`.
  */
 import { mock, type Mock } from 'bun:test';
+import { __setRunAsUserForTesting } from '../../services/git-diff-service.js';
+import type { RunAsUserOpts, RunAsUserResult } from '../../services/privilege-elevation.js';
 
 // Import and re-export the real GitError class from the git module.
 // This ensures instanceof checks work correctly in tests, because both the test code
 // and the mocked module use the same GitError class.
 import { GitError } from '../../lib/git.js';
 export { GitError };
+
+/**
+ * Parse a shell command string of the form `'<arg>' '<arg>' ...` (the format
+ * produced by `git-diff-service`'s `runGit` helper via `shellEscape`) back
+ * into the original args. Only handles single-quoted args without embedded
+ * single quotes — sufficient for every git invocation `git-diff-service`
+ * makes today (refs, paths, flag strings).
+ */
+function parseGitCommand(command: string): string[] | null {
+  // Match individual single-quoted segments. Reject if any segment contains
+  // an unescaped inner quote — outside the helper's scope.
+  const parts: string[] = [];
+  const re = /'([^']*)'/g;
+  let match: RegExpExecArray | null;
+  let lastEnd = 0;
+  while ((match = re.exec(command)) !== null) {
+    // Separator between args must be a single space (or start of string).
+    if (match.index !== lastEnd && match.index !== lastEnd + 1) return null;
+    parts.push(match[1]);
+    lastEnd = match.index + match[0].length;
+  }
+  if (lastEnd !== command.length) return null;
+  if (parts.length === 0 || parts[0] !== 'git') return null;
+  return parts.slice(1);
+}
+
+function success(stdout: string): RunAsUserResult {
+  return { stdout, stderr: '', exitCode: 0, timedOut: false };
+}
+
+function failure(stderr = ''): RunAsUserResult {
+  return { stdout: '', stderr, exitCode: 1, timedOut: false };
+}
+
+/**
+ * Default `runAsUser` for tests that import this helper: parses the git
+ * command string and dispatches to the corresponding `mockGit.*` function so
+ * existing test setups (mocking `mockGit.getMergeBaseSafe`,
+ * `mockGit.getDefaultBranch`, etc.) continue to drive `git-diff-service`
+ * after Issue #869's refactor.
+ *
+ * Commands the dispatcher does not recognize fall through to an empty-success
+ * result. Tests that need finer control should override per-test via
+ * `__setRunAsUserForTesting` (see `mock-run-as-user.ts`).
+ */
+async function defaultEmptyRunAsUser(opts: RunAsUserOpts): Promise<RunAsUserResult> {
+  const args = parseGitCommand(opts.command);
+  if (!args) {
+    return success('');
+  }
+  const cwd = opts.cwd ?? '';
+
+  // Atomic helpers
+  if (args[0] === 'rev-parse' && args[1] === '--verify' && args.length === 3) {
+    const exists = await mockGit.gitRefExists(args[2], cwd);
+    return exists ? success('') : failure();
+  }
+  if (args[0] === 'rev-parse' && args.length === 2) {
+    const result = await mockGit.gitSafe(['rev-parse', args[1]], cwd);
+    return result === null ? failure() : success(result);
+  }
+  if (args[0] === 'rev-list' && args[1] === '--max-parents=0' && args[2] === 'HEAD') {
+    const result = await mockGit.gitSafe(['rev-list', '--max-parents=0', 'HEAD'], cwd);
+    return result === null ? failure() : success(result);
+  }
+  if (args[0] === 'merge-base' && args.length === 3) {
+    const result = await mockGit.getMergeBaseSafe(args[1], args[2], cwd);
+    return result === null ? failure() : success(result);
+  }
+  if (args[0] === 'symbolic-ref' && args[1] === 'refs/remotes/origin/HEAD') {
+    // Mirror what the production getDefaultBranch chain expects: when the
+    // mock `getDefaultBranch` is set, surface a matching symbolic-ref so
+    // `getDefaultBranchAsUser` returns the same branch name. Without it,
+    // surface a non-zero exit so it falls through to main/master probes.
+    const branch = await mockGit.getDefaultBranch(cwd);
+    if (branch) return success(`refs/remotes/origin/${branch}\n`);
+    return failure();
+  }
+  if (args[0] === 'diff') {
+    // Variants: diff <base>, diff <base> <target>, diff --numstat <base> [<target>],
+    // diff <base> -- <filePath>
+    if (args[1] === '--numstat') {
+      const targetRef = args.length >= 4 && args[3] !== '--' ? args[3] : undefined;
+      try {
+        const stdout = await mockGit.getDiffNumstat(args[2], targetRef, cwd);
+        return success(stdout);
+      } catch (err) {
+        return failure(err instanceof Error ? err.message : String(err));
+      }
+    }
+    // `diff <base> -- <file>` is a targeted per-file diff (mirrors gitRaw).
+    if (args.includes('--')) {
+      try {
+        // The mock-git-helper's `mockGit.gitRaw` is typed `(cwd) => Promise<string>`
+        // for historical reasons but the real `gitRaw` is `(args, cwd, timeoutMs?)`.
+        // Tests assert on `mockGit.gitRaw.mock.calls[i][0]` as the args array, so
+        // we invoke it with the production shape and silence the typecheck here.
+        const stdout = await (mockGit.gitRaw as unknown as (args: string[], cwd: string) => Promise<string>)(args, cwd);
+        return success(stdout);
+      } catch (err) {
+        return failure(err instanceof Error ? err.message : String(err));
+      }
+    }
+    // `diff <base> [<target>]`
+    const targetRef = args.length >= 3 ? args[2] : undefined;
+    try {
+      const stdout = await mockGit.getDiff(args[1], targetRef, cwd);
+      return success(stdout);
+    } catch (err) {
+      return failure(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (args[0] === 'status' && args[1] === '--porcelain' && args[2] === '-uall') {
+    try {
+      const stdout = await mockGit.getStatusPorcelain(cwd);
+      return success(stdout);
+    } catch (err) {
+      return failure(err instanceof Error ? err.message : String(err));
+    }
+  }
+  if (args[0] === 'ls-files' && args[1] === '--others' && args[2] === '--exclude-standard') {
+    try {
+      const files = await mockGit.getUntrackedFiles(cwd);
+      return success(files.length === 0 ? '' : files.join('\n') + '\n');
+    } catch {
+      return failure();
+    }
+  }
+  if (args[0] === 'show' && args.length === 2) {
+    const result = await mockGit.gitSafe(['show', args[1]], cwd);
+    return result === null ? failure() : success(result);
+  }
+
+  // Unrecognized git invocation -> succeed with empty stdout (safe default).
+  return success('');
+}
 
 // Type definitions for mock functions
 type AsyncStringFn = (cwd: string) => Promise<string>;
@@ -89,6 +240,12 @@ mock.module('../../lib/git.js', () => ({
   ...mockGit,
   GitError,
 }));
+
+// Issue #869: also install the default empty-success `runAsUser` at module
+// load so any test file importing this helper gets isolation from real `sh`
+// spawns (essential when memfs replaces the real filesystem). Tests that
+// call `resetGitMocks()` get the same default re-installed below.
+__setRunAsUserForTesting(defaultEmptyRunAsUser);
 
 /**
  * Reset all git mocks to default implementations.
@@ -165,4 +322,9 @@ export function resetGitMocks(): void {
   mockGit.getUnstagedFiles.mockImplementation(() => Promise.resolve(''));
   mockGit.getUntrackedFiles.mockImplementation(() => Promise.resolve([]));
   mockGit.getStatusPorcelain.mockImplementation(() => Promise.resolve(''));
+
+  // Issue #869: also install the empty-success default for runAsUser so
+  // git-diff-service composes without real sh spawns under memfs. Tests can
+  // still override via __setRunAsUserForTesting after this call.
+  __setRunAsUserForTesting(defaultEmptyRunAsUser);
 }

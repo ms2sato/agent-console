@@ -553,6 +553,14 @@ export async function setupWebSocketRoutes(
     upgradeWebSocket((c) => {
       const sessionId = c.req.param('sessionId');
       const workerId = c.req.param('workerId');
+      // Issue #869: capture the authenticated OS username at upgrade time so
+      // git-diff git invocations can run as the worktree-owning user in
+      // multi-user mode. `wsAuthGuard` above guarantees authentication
+      // succeeded, so this re-resolution returns a non-null user; we forward
+      // the OS-level `username` (may be null in pathological/test contexts —
+      // `runAsUser` handles null cleanly).
+      const wsAuthUser = appContext.userMode.authenticate(() => getCookie(c, AUTH_COOKIE_NAME));
+      const wsRequestUser = wsAuthUser?.username ?? null;
 
       // Track connection ID for this WebSocket (used to detach callbacks on close)
       let connectionId: string | null = null;
@@ -718,7 +726,8 @@ export async function setupWebSocketRoutes(
               sessionId,
               workerId,
               session.locationPath,
-              (worker as GitDiffWorker).baseCommit
+              (worker as GitDiffWorker).baseCommit,
+              wsRequestUser
             ).catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff connection');
               // Send error to client and close WebSocket on critical connection errors

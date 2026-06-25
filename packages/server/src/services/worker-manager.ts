@@ -94,6 +94,14 @@ export interface GitDiffWorkerInitParams {
   createdAt: string;
   locationPath: string;
   baseCommit?: string;
+  /**
+   * OS username to run git as during the initial `computeDefaultBaseSpec`
+   * call. In multi-user mode this is the worktree-owning user (resolved from
+   * the session's `createdBy`), so git does not refuse with
+   * "dubious ownership in repository". Pass `null` in single-user mode or
+   * when elevation is not required. (Issue #869)
+   */
+  requestUser: string | null;
 }
 
 /**
@@ -266,12 +274,12 @@ export class WorkerManager {
    * commits (Issue #800).
    */
   async initializeGitDiffWorker(params: GitDiffWorkerInitParams): Promise<InternalGitDiffWorker> {
-    const { id, name, createdAt, locationPath, baseCommit } = params;
+    const { id, name, createdAt, locationPath, baseCommit, requestUser } = params;
 
     // An explicitly-provided baseCommit is treated as a verbatim spec (caller
     // intent — e.g. a branch name or commit hash), not pre-resolved. Otherwise
     // compute the default base spec for this repository.
-    const baseSpec = baseCommit ?? (await computeDefaultBaseSpec(locationPath));
+    const baseSpec = baseCommit ?? (await computeDefaultBaseSpec(locationPath, requestUser));
 
     const worker: InternalGitDiffWorker = {
       id,

@@ -333,6 +333,11 @@ const workers = new Hono<AppBindings>()
   .get('/:sessionId/workers/:workerId/diff', async (c) => {
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
+    // Issue #869: thread the authenticated OS username so multi-user mode
+    // runs the worktree's git ops as the worktree owner (avoiding
+    // "dubious ownership in repository"). `runAsUser` bypasses elevation
+    // in single-user mode regardless of this value.
+    const authUser = c.get('authUser');
 
     const { sessionManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
@@ -350,11 +355,11 @@ const workers = new Hono<AppBindings>()
     }
 
     const { resolveBaseSpec, getDiffData } = await import('../services/git-diff-service.js');
-    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath);
+    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath, authUser.username);
     if (!resolved) {
       throw new ValidationError(`Could not resolve diff base: ${worker.baseCommit}`);
     }
-    const diffData = await getDiffData(session.locationPath, resolved);
+    const diffData = await getDiffData(session.locationPath, resolved, authUser.username);
 
     return c.json(diffData);
   })
@@ -363,6 +368,9 @@ const workers = new Hono<AppBindings>()
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
     const filePath = c.req.query('path');
+    // Issue #869: thread the authenticated OS username so multi-user mode
+    // runs the worktree's git ops as the worktree owner.
+    const authUser = c.get('authUser');
 
     if (!filePath) {
       throw new ValidationError('path query parameter is required');
@@ -384,11 +392,11 @@ const workers = new Hono<AppBindings>()
     }
 
     const { resolveBaseSpec, getFileDiff } = await import('../services/git-diff-service.js');
-    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath);
+    const resolved = await resolveBaseSpec(worker.baseCommit, session.locationPath, authUser.username);
     if (!resolved) {
       throw new ValidationError(`Could not resolve diff base: ${worker.baseCommit}`);
     }
-    const rawDiff = await getFileDiff(session.locationPath, resolved, filePath);
+    const rawDiff = await getFileDiff(session.locationPath, resolved, filePath, authUser.username);
 
     return c.json({ rawDiff });
   });

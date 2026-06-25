@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { createMockRunAsUser, type MockRunAsUser } from '../../__tests__/utils/mock-run-as-user.js';
 
 import { DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import {
+  __setRunAsUserForTesting,
   computeDefaultBaseSpec,
   resolveBaseSpec,
   resolveRef,
@@ -14,59 +15,68 @@ import {
 } from '../git-diff-service.js';
 
 describe('GitDiffService', () => {
+  let gitMock: MockRunAsUser;
+
   beforeEach(() => {
-    resetGitMocks();
+    gitMock = createMockRunAsUser();
+    __setRunAsUserForTesting(gitMock.fn);
+  });
+
+  afterEach(() => {
+    __setRunAsUserForTesting(null);
   });
 
   describe('computeDefaultBaseSpec', () => {
     it('returns merge-base:origin/<default> when origin/<default> exists', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue('main');
-      mockGit.gitRefExists.mockImplementation((ref: string) =>
-        Promise.resolve(ref === 'origin/main')
-      );
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { stdout: 'refs/remotes/origin/main\n' });
+      gitMock.respond(['rev-parse', '--verify', 'origin/main'], { stdout: 'abc1234\n' });
 
-      const result = await computeDefaultBaseSpec('/repo/path');
+      const result = await computeDefaultBaseSpec('/repo/path', null);
 
       expect(result).toBe('merge-base:origin/main');
-      expect(mockGit.gitRefExists).toHaveBeenCalledWith('origin/main', '/repo/path');
+      expect(gitMock.findCall(['rev-parse', '--verify', 'origin/main'])).toBeDefined();
     });
 
     it('returns merge-base:<default> when default branch exists but origin/<default> does not', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue('main');
-      mockGit.gitRefExists.mockResolvedValue(false);
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { stdout: 'refs/remotes/origin/main\n' });
+      gitMock.respond(['rev-parse', '--verify', 'origin/main'], { exitCode: 128, stderr: 'fatal: bad revision' });
 
-      const result = await computeDefaultBaseSpec('/repo/path');
+      const result = await computeDefaultBaseSpec('/repo/path', null);
 
       expect(result).toBe('merge-base:main');
     });
 
     it('returns the first-commit hash when there is no default branch', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue(null);
-      mockGit.gitSafe.mockResolvedValue('first-commit-hash');
+      // No default branch via symbolic-ref nor main/master fallbacks.
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { exitCode: 1 });
+      gitMock.respond(['rev-parse', '--verify', 'main'], { exitCode: 128 });
+      gitMock.respond(['rev-parse', '--verify', 'master'], { exitCode: 128 });
+      gitMock.respond(['rev-list', '--max-parents=0', 'HEAD'], { stdout: 'first-commit-hash\n' });
 
-      const result = await computeDefaultBaseSpec('/repo/path');
+      const result = await computeDefaultBaseSpec('/repo/path', null);
 
       expect(result).toBe('first-commit-hash');
-      expect(mockGit.gitSafe).toHaveBeenCalledWith(
-        ['rev-list', '--max-parents=0', 'HEAD'],
-        '/repo/path'
-      );
+      expect(gitMock.findCall(['rev-list', '--max-parents=0', 'HEAD'])).toBeDefined();
     });
 
     it('uses only the first root hash when rev-list emits multiple (merged unrelated histories)', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue(null);
-      mockGit.gitSafe.mockResolvedValue('root1hash\nroot2hash');
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { exitCode: 1 });
+      gitMock.respond(['rev-parse', '--verify', 'main'], { exitCode: 128 });
+      gitMock.respond(['rev-parse', '--verify', 'master'], { exitCode: 128 });
+      gitMock.respond(['rev-list', '--max-parents=0', 'HEAD'], { stdout: 'root1hash\nroot2hash\n' });
 
-      const result = await computeDefaultBaseSpec('/repo/path');
+      const result = await computeDefaultBaseSpec('/repo/path', null);
 
       expect(result).toBe('root1hash');
     });
 
     it('falls back to HEAD when no default branch and no first commit', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue(null);
-      mockGit.gitSafe.mockResolvedValue(null);
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { exitCode: 1 });
+      gitMock.respond(['rev-parse', '--verify', 'main'], { exitCode: 128 });
+      gitMock.respond(['rev-parse', '--verify', 'master'], { exitCode: 128 });
+      gitMock.respond(['rev-list', '--max-parents=0', 'HEAD'], { exitCode: 1 });
 
-      const result = await computeDefaultBaseSpec('/repo/path');
+      const result = await computeDefaultBaseSpec('/repo/path', null);
 
       expect(result).toBe('HEAD');
     });
@@ -74,83 +84,83 @@ describe('GitDiffService', () => {
 
   describe('resolveBaseSpec', () => {
     it('resolves DEFAULT_FORK_POINT_SPEC via origin merge-base when origin exists', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue('main');
-      mockGit.gitRefExists.mockImplementation((ref: string) =>
-        Promise.resolve(ref === 'origin/main')
-      );
-      mockGit.getMergeBaseSafe.mockImplementation((ref1: string) =>
-        Promise.resolve(ref1 === 'origin/main' ? 'origin-merge-base' : null)
-      );
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { stdout: 'refs/remotes/origin/main\n' });
+      gitMock.respond(['rev-parse', '--verify', 'origin/main'], { stdout: 'origin-tip-hash\n' });
+      gitMock.respond(['merge-base', 'origin/main', 'HEAD'], { stdout: 'origin-merge-base\n' });
 
-      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path', null);
 
       expect(result).toBe('origin-merge-base');
-      expect(mockGit.getMergeBaseSafe).toHaveBeenCalledWith('origin/main', 'HEAD', '/repo/path');
+      expect(gitMock.findCall(['merge-base', 'origin/main', 'HEAD'])).toBeDefined();
     });
 
     it('falls back to local merge-base when origin/<default> is missing', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue('main');
-      mockGit.gitRefExists.mockResolvedValue(false);
-      mockGit.getMergeBaseSafe.mockResolvedValue('local-merge-base');
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { stdout: 'refs/remotes/origin/main\n' });
+      gitMock.respond(['rev-parse', '--verify', 'origin/main'], { exitCode: 128 });
+      gitMock.respond(['merge-base', 'main', 'HEAD'], { stdout: 'local-merge-base\n' });
 
-      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path', null);
 
       expect(result).toBe('local-merge-base');
-      expect(mockGit.getMergeBaseSafe).toHaveBeenCalledWith('main', 'HEAD', '/repo/path');
+      expect(gitMock.findCall(['merge-base', 'main', 'HEAD'])).toBeDefined();
     });
 
     it('falls back to first commit when no default branch (sentinel never hard-fails)', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue(null);
-      mockGit.gitSafe.mockResolvedValue('first-commit-hash');
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { exitCode: 1 });
+      gitMock.respond(['rev-parse', '--verify', 'main'], { exitCode: 128 });
+      gitMock.respond(['rev-parse', '--verify', 'master'], { exitCode: 128 });
+      gitMock.respond(['rev-list', '--max-parents=0', 'HEAD'], { stdout: 'first-commit-hash\n' });
 
-      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path', null);
 
       expect(result).toBe('first-commit-hash');
     });
 
     it('uses only the first root hash when rev-list emits multiple (merged unrelated histories)', async () => {
-      mockGit.getDefaultBranch.mockResolvedValue(null);
-      mockGit.gitSafe.mockResolvedValue('root1hash\nroot2hash');
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { exitCode: 1 });
+      gitMock.respond(['rev-parse', '--verify', 'main'], { exitCode: 128 });
+      gitMock.respond(['rev-parse', '--verify', 'master'], { exitCode: 128 });
+      gitMock.respond(['rev-list', '--max-parents=0', 'HEAD'], { stdout: 'root1hash\nroot2hash\n' });
 
-      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path');
+      const result = await resolveBaseSpec(DEFAULT_FORK_POINT_SPEC, '/repo/path', null);
 
       expect(result).toBe('root1hash');
     });
 
-    it('resolves merge-base:<ref> via getMergeBaseSafe', async () => {
-      mockGit.getMergeBaseSafe.mockResolvedValue('mb-hash');
+    it('resolves merge-base:<ref> via merge-base', async () => {
+      gitMock.respond(['merge-base', 'foo', 'HEAD'], { stdout: 'mb-hash\n' });
 
-      const result = await resolveBaseSpec('merge-base:foo', '/repo/path');
+      const result = await resolveBaseSpec('merge-base:foo', '/repo/path', null);
 
       expect(result).toBe('mb-hash');
-      expect(mockGit.getMergeBaseSafe).toHaveBeenCalledWith('foo', 'HEAD', '/repo/path');
+      expect(gitMock.findCall(['merge-base', 'foo', 'HEAD'])).toBeDefined();
     });
 
     it('returns null when merge-base:<ref> cannot be resolved (unrelated histories / deleted ref)', async () => {
-      mockGit.getMergeBaseSafe.mockResolvedValue(null);
+      gitMock.respond(['merge-base', 'foo', 'HEAD'], { exitCode: 1 });
 
-      const result = await resolveBaseSpec('merge-base:foo', '/repo/path');
+      const result = await resolveBaseSpec('merge-base:foo', '/repo/path', null);
 
       expect(result).toBeNull();
     });
 
     it('keeps an explicit commit hash pinned (no re-resolution to a different value)', async () => {
       const hash = '0123456789abcdef0123456789abcdef01234567';
-      mockGit.gitSafe.mockResolvedValue(hash);
+      gitMock.respond(['rev-parse', hash], { stdout: `${hash}\n` });
 
-      const result = await resolveBaseSpec(hash, '/repo/path');
+      const result = await resolveBaseSpec(hash, '/repo/path', null);
 
       expect(result).toBe(hash);
-      expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', hash], '/repo/path');
+      expect(gitMock.findCall(['rev-parse', hash])).toBeDefined();
     });
 
     it('re-resolves a branch name to its current tip', async () => {
-      mockGit.gitSafe.mockResolvedValue('branch-tip-hash');
+      gitMock.respond(['rev-parse', 'feature-branch'], { stdout: 'branch-tip-hash\n' });
 
-      const result = await resolveBaseSpec('feature-branch', '/repo/path');
+      const result = await resolveBaseSpec('feature-branch', '/repo/path', null);
 
       expect(result).toBe('branch-tip-hash');
-      expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', 'feature-branch'], '/repo/path');
+      expect(gitMock.findCall(['rev-parse', 'feature-branch'])).toBeDefined();
     });
 
     // Namespace fix: the sentinel lives in the reserved: namespace
@@ -159,31 +169,31 @@ describe('GitDiffService', () => {
     // intercepted as the sentinel — it must fall through to rev-parse so it
     // round-trips like any other branch/tag.
     it('resolves a real ref literally named "default-fork-point" via rev-parse (not the sentinel path)', async () => {
-      mockGit.gitSafe.mockResolvedValue('real-ref-hash');
+      gitMock.respond(['rev-parse', 'default-fork-point'], { stdout: 'real-ref-hash\n' });
 
-      const result = await resolveBaseSpec('default-fork-point', '/repo/path');
+      const result = await resolveBaseSpec('default-fork-point', '/repo/path', null);
 
       expect(result).toBe('real-ref-hash');
-      expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', 'default-fork-point'], '/repo/path');
+      expect(gitMock.findCall(['rev-parse', 'default-fork-point'])).toBeDefined();
       // The sentinel chain (computeDefaultBaseSpec) must not have been invoked.
-      expect(mockGit.getMergeBaseSafe).not.toHaveBeenCalled();
+      expect(gitMock.findCall(['symbolic-ref', 'refs/remotes/origin/HEAD'])).toBeUndefined();
     });
   });
 
   describe('resolveRef', () => {
     it('should resolve valid ref to commit hash', async () => {
-      mockGit.gitSafe.mockResolvedValue('resolved-hash-123');
+      gitMock.respond(['rev-parse', 'main'], { stdout: 'resolved-hash-123\n' });
 
-      const result = await resolveRef('main', '/repo/path');
+      const result = await resolveRef('main', '/repo/path', null);
 
       expect(result).toBe('resolved-hash-123');
-      expect(mockGit.gitSafe).toHaveBeenCalledWith(['rev-parse', 'main'], '/repo/path');
+      expect(gitMock.findCall(['rev-parse', 'main'])).toBeDefined();
     });
 
     it('should return null for invalid ref', async () => {
-      mockGit.gitSafe.mockResolvedValue(null);
+      gitMock.respond(['rev-parse', 'invalid-ref'], { exitCode: 128 });
 
-      const result = await resolveRef('invalid-ref', '/repo/path');
+      const result = await resolveRef('invalid-ref', '/repo/path', null);
 
       expect(result).toBeNull();
     });
@@ -191,13 +201,12 @@ describe('GitDiffService', () => {
 
   describe('getDiffData', () => {
     it('should return diff data with files', async () => {
-      // Setup mocks
-      mockGit.getDiff.mockResolvedValue('diff --git a/file.ts b/file.ts\n+new line\n');
-      mockGit.getDiffNumstat.mockResolvedValue('10\t5\tfile.ts');
-      mockGit.getStatusPorcelain.mockResolvedValue(' M file.ts');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: 'diff --git a/file.ts b/file.ts\n+new line\n' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '10\t5\tfile.ts\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: ' M file.ts\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       expect(result.summary.baseCommit).toBe('base-commit');
       expect(result.summary.files).toHaveLength(1);
@@ -210,45 +219,62 @@ describe('GitDiffService', () => {
     });
 
     it('should include untracked files', async () => {
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('');
-      mockGit.getStatusPorcelain.mockResolvedValue('?? new-file.ts');
-      mockGit.getUntrackedFiles.mockResolvedValue(['new-file.ts']);
+      // generateUntrackedFileDiff reads the actual file; use a temp directory.
+      const tmpDir = join('/tmp', `getDiffData-untracked-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(join(tmpDir, 'new-file.ts'), 'console.log("hello");\n');
+      try {
+        gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+        gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '' });
+        gitMock.respond(['status', '--porcelain', '-uall'], { stdout: '?? new-file.ts\n' });
+        gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: 'new-file.ts\n' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+        const result = await getDiffData(tmpDir, 'base-commit', null);
 
-      expect(result.summary.files.some(f => f.path === 'new-file.ts')).toBe(true);
-      expect(result.summary.files.find(f => f.path === 'new-file.ts')?.status).toBe('untracked');
+        expect(result.summary.files.some(f => f.path === 'new-file.ts')).toBe(true);
+        expect(result.summary.files.find(f => f.path === 'new-file.ts')?.status).toBe('untracked');
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
 
     it('should handle multiple untracked files (processed in parallel)', async () => {
       // This test verifies that multiple untracked files are all included in the result.
       // The parallel processing optimization should not affect the final output.
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('');
-      mockGit.getStatusPorcelain.mockResolvedValue('?? file-a.ts\n?? file-b.ts\n?? file-c.ts');
-      mockGit.getUntrackedFiles.mockResolvedValue(['file-a.ts', 'file-b.ts', 'file-c.ts']);
+      const tmpDir = join('/tmp', `getDiffData-multi-untracked-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+      mkdirSync(tmpDir, { recursive: true });
+      writeFileSync(join(tmpDir, 'file-a.ts'), 'a\n');
+      writeFileSync(join(tmpDir, 'file-b.ts'), 'b\n');
+      writeFileSync(join(tmpDir, 'file-c.ts'), 'c\n');
+      try {
+        gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+        gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '' });
+        gitMock.respond(['status', '--porcelain', '-uall'], { stdout: '?? file-a.ts\n?? file-b.ts\n?? file-c.ts\n' });
+        gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: 'file-a.ts\nfile-b.ts\nfile-c.ts\n' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+        const result = await getDiffData(tmpDir, 'base-commit', null);
 
-      // All three untracked files should be included
-      expect(result.summary.files).toHaveLength(3);
-      expect(result.summary.files.map(f => f.path)).toEqual(['file-a.ts', 'file-b.ts', 'file-c.ts']);
+        // All three untracked files should be included
+        expect(result.summary.files).toHaveLength(3);
+        expect(result.summary.files.map(f => f.path)).toEqual(['file-a.ts', 'file-b.ts', 'file-c.ts']);
 
-      // All should be marked as untracked with unstaged state
-      for (const file of result.summary.files) {
-        expect(file.status).toBe('untracked');
-        expect(file.stageState).toBe('unstaged');
+        // All should be marked as untracked with unstaged state
+        for (const file of result.summary.files) {
+          expect(file.status).toBe('untracked');
+          expect(file.stageState).toBe('unstaged');
+        }
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
       }
     });
 
     it('should handle empty diff gracefully', async () => {
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('');
-      mockGit.getStatusPorcelain.mockResolvedValue('');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: '' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       expect(result.summary.files).toEqual([]);
       expect(result.summary.totalAdditions).toBe(0);
@@ -256,24 +282,23 @@ describe('GitDiffService', () => {
     });
 
     it('should handle git errors gracefully', async () => {
-      mockGit.getDiff.mockRejectedValue(new Error('git error'));
-      mockGit.getDiffNumstat.mockRejectedValue(new Error('git error'));
-      mockGit.getStatusPorcelain.mockRejectedValue(new Error('git error'));
-      mockGit.getUntrackedFiles.mockRejectedValue(new Error('git error'));
+      // All git invocations fail with non-zero exit; service should log and
+      // return an empty result instead of propagating the error.
+      gitMock.fallback({ exitCode: 1, stderr: 'git error' });
 
-      const result = await getDiffData('/repo/path', 'invalid-commit');
+      const result = await getDiffData('/repo/path', 'invalid-commit', null);
 
       expect(result.summary.files).toEqual([]);
       expect(result.rawDiff).toBe('');
     });
 
     it('should detect staged files', async () => {
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('5\t0\tstaged-file.ts');
-      mockGit.getStatusPorcelain.mockResolvedValue('A  staged-file.ts');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '5\t0\tstaged-file.ts\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: 'A  staged-file.ts\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       const file = result.summary.files.find(f => f.path === 'staged-file.ts');
       expect(file).toBeDefined();
@@ -281,12 +306,12 @@ describe('GitDiffService', () => {
     });
 
     it('should detect partially staged files', async () => {
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('5\t2\tpartial-file.ts');
-      mockGit.getStatusPorcelain.mockResolvedValue('MM partial-file.ts');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '5\t2\tpartial-file.ts\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: 'MM partial-file.ts\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       const file = result.summary.files.find(f => f.path === 'partial-file.ts');
       expect(file).toBeDefined();
@@ -294,12 +319,12 @@ describe('GitDiffService', () => {
     });
 
     it('should handle binary files', async () => {
-      mockGit.getDiff.mockResolvedValue('Binary files differ');
-      mockGit.getDiffNumstat.mockResolvedValue('-\t-\timage.png');
-      mockGit.getStatusPorcelain.mockResolvedValue(' M image.png');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: 'Binary files differ\n' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '-\t-\timage.png\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: ' M image.png\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       const file = result.summary.files.find(f => f.path === 'image.png');
       expect(file).toBeDefined();
@@ -308,12 +333,12 @@ describe('GitDiffService', () => {
 
     it('should handle quoted filenames with spaces', async () => {
       // Git quotes filenames containing spaces or special characters
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('5\t0\tfile with spaces.ts');
-      mockGit.getStatusPorcelain.mockResolvedValue(' M "file with spaces.ts"');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '5\t0\tfile with spaces.ts\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: ' M "file with spaces.ts"\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       const file = result.summary.files.find(f => f.path === 'file with spaces.ts');
       expect(file).toBeDefined();
@@ -321,12 +346,12 @@ describe('GitDiffService', () => {
     });
 
     it('should handle renamed files without quotes', async () => {
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('0\t0\tnew-name.ts');
-      mockGit.getStatusPorcelain.mockResolvedValue('R  old-name.ts -> new-name.ts');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '0\t0\tnew-name.ts\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: 'R  old-name.ts -> new-name.ts\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       const file = result.summary.files.find(f => f.path === 'new-name.ts');
       expect(file).toBeDefined();
@@ -336,12 +361,12 @@ describe('GitDiffService', () => {
 
     it('should handle renamed files with quoted names', async () => {
       // Both old and new names are quoted when they contain special characters
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('0\t0\tnew file.ts');
-      mockGit.getStatusPorcelain.mockResolvedValue('R  "old file.ts" -> "new file.ts"');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '0\t0\tnew file.ts\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: 'R  "old file.ts" -> "new file.ts"\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       const file = result.summary.files.find(f => f.path === 'new file.ts');
       expect(file).toBeDefined();
@@ -351,12 +376,12 @@ describe('GitDiffService', () => {
 
     it('should handle renamed files with mixed quoting', async () => {
       // Only one name is quoted (e.g., adding spaces to a previously simple filename)
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('0\t0\tfile with spaces.ts');
-      mockGit.getStatusPorcelain.mockResolvedValue('R  simple.ts -> "file with spaces.ts"');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '0\t0\tfile with spaces.ts\n' });
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: 'R  simple.ts -> "file with spaces.ts"\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       const file = result.summary.files.find(f => f.path === 'file with spaces.ts');
       expect(file).toBeDefined();
@@ -366,13 +391,13 @@ describe('GitDiffService', () => {
 
     it('should skip malformed status lines gracefully', async () => {
       // Lines that don't match expected format should be skipped
-      mockGit.getDiff.mockResolvedValue('');
-      mockGit.getDiffNumstat.mockResolvedValue('5\t0\tvalid-file.ts');
+      gitMock.respond(['diff', 'base-commit'], { stdout: '' });
+      gitMock.respond(['diff', '--numstat', 'base-commit'], { stdout: '5\t0\tvalid-file.ts\n' });
       // First line is valid, second is malformed (only one character)
-      mockGit.getStatusPorcelain.mockResolvedValue(' M valid-file.ts\nX');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['status', '--porcelain', '-uall'], { stdout: ' M valid-file.ts\nX\n' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getDiffData('/repo/path', 'base-commit');
+      const result = await getDiffData('/repo/path', 'base-commit', null);
 
       // Should still process the valid file
       expect(result.summary.files).toHaveLength(1);
@@ -383,24 +408,21 @@ describe('GitDiffService', () => {
   describe('getFileDiff', () => {
     it('should use targeted git diff command with -- file path', async () => {
       const expectedDiff = 'diff --git a/src/file.ts b/src/file.ts\n--- a/src/file.ts\n+++ b/src/file.ts\n@@ -1,3 +1,4 @@\n line1\n+new line\n line2\n';
-      mockGit.gitRaw.mockResolvedValue(expectedDiff);
+      gitMock.respond(['diff', 'base-commit', '--', 'src/file.ts'], { stdout: expectedDiff });
 
-      const result = await getFileDiff('/repo/path', 'base-commit', 'src/file.ts');
+      const result = await getFileDiff('/repo/path', 'base-commit', 'src/file.ts', null);
 
       expect(result).toBe(expectedDiff);
-      expect(mockGit.gitRaw).toHaveBeenCalledWith(
-        ['diff', 'base-commit', '--', 'src/file.ts'],
-        '/repo/path'
-      );
-      // Should NOT call getDiff (full repo diff)
-      expect(mockGit.getDiff).not.toHaveBeenCalled();
+      expect(gitMock.findCall(['diff', 'base-commit', '--', 'src/file.ts'])).toBeDefined();
+      // Should NOT call the unscoped diff (full repo diff)
+      expect(gitMock.findCall(['diff', 'base-commit'])).toBeUndefined();
     });
 
     it('should return empty string for invalid file path', async () => {
-      const result = await getFileDiff('/repo/path', 'base-commit', '../etc/passwd');
+      const result = await getFileDiff('/repo/path', 'base-commit', '../etc/passwd', null);
 
       expect(result).toBe('');
-      expect(mockGit.gitRaw).not.toHaveBeenCalled();
+      expect(gitMock.calls.length).toBe(0);
     });
 
     it('should fallback to untracked file diff when git diff returns empty', async () => {
@@ -410,32 +432,32 @@ describe('GitDiffService', () => {
       writeFileSync(join(tmpDir, 'new-file.ts'), 'console.log("hello");\n');
 
       try {
-        mockGit.gitRaw.mockResolvedValue('');
-        mockGit.getUntrackedFiles.mockResolvedValue(['new-file.ts']);
+        gitMock.respond(['diff', 'base-commit', '--', 'new-file.ts'], { stdout: '' });
+        gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: 'new-file.ts\n' });
 
-        const result = await getFileDiff(tmpDir, 'base-commit', 'new-file.ts');
+        const result = await getFileDiff(tmpDir, 'base-commit', 'new-file.ts', null);
 
         expect(result).not.toBe('');
         expect(result).toContain('diff --git a/new-file.ts b/new-file.ts');
-        expect(mockGit.getUntrackedFiles).toHaveBeenCalledWith(tmpDir);
+        expect(gitMock.findCall(['ls-files', '--others', '--exclude-standard'])).toBeDefined();
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
       }
     });
 
     it('should return empty string when file has no changes and is not untracked', async () => {
-      mockGit.gitRaw.mockResolvedValue('');
-      mockGit.getUntrackedFiles.mockResolvedValue([]);
+      gitMock.respond(['diff', 'base-commit', '--', 'unchanged-file.ts'], { stdout: '' });
+      gitMock.respond(['ls-files', '--others', '--exclude-standard'], { stdout: '' });
 
-      const result = await getFileDiff('/repo/path', 'base-commit', 'unchanged-file.ts');
+      const result = await getFileDiff('/repo/path', 'base-commit', 'unchanged-file.ts', null);
 
       expect(result).toBe('');
     });
 
     it('should return empty string on git error', async () => {
-      mockGit.gitRaw.mockRejectedValue(new Error('git error'));
+      gitMock.respond(['diff', 'bad-commit', '--', 'src/file.ts'], { exitCode: 128, stderr: 'fatal: bad revision' });
 
-      const result = await getFileDiff('/repo/path', 'bad-commit', 'src/file.ts');
+      const result = await getFileDiff('/repo/path', 'bad-commit', 'src/file.ts', null);
 
       expect(result).toBe('');
     });
@@ -457,18 +479,18 @@ describe('GitDiffService', () => {
       const content = 'line1\nline2\nline3\nline4\nline5\n';
       writeFileSync(join(tmpDir, 'file.ts'), content);
 
-      const result = await getFileLines(tmpDir, 'file.ts', 2, 4, 'working-dir');
+      const result = await getFileLines(tmpDir, 'file.ts', 2, 4, 'working-dir', null);
 
       expect(result).toEqual(['line2', 'line3', 'line4']);
     });
 
     it('commit ref: returns correct lines via git show', async () => {
       const content = 'alpha\nbeta\ngamma\ndelta\n';
-      mockGit.gitSafe.mockResolvedValue(content);
+      gitMock.respond(['show', 'abc123:src/file.ts'], { stdout: content });
 
-      const result = await getFileLines('/repo/path', 'src/file.ts', 1, 2, 'abc123');
+      const result = await getFileLines('/repo/path', 'src/file.ts', 1, 2, 'abc123', null);
 
-      expect(mockGit.gitSafe).toHaveBeenCalledWith(['show', 'abc123:src/file.ts'], '/repo/path');
+      expect(gitMock.findCall(['show', 'abc123:src/file.ts'])).toBeDefined();
       expect(result).toEqual(['alpha', 'beta']);
     });
 
@@ -476,7 +498,7 @@ describe('GitDiffService', () => {
       const content = 'line1\nline2\nline3\n';
       writeFileSync(join(tmpDir, 'file.ts'), content);
 
-      const result = await getFileLines(tmpDir, 'file.ts', 2, 100, 'working-dir');
+      const result = await getFileLines(tmpDir, 'file.ts', 2, 100, 'working-dir', null);
 
       // Content splits to ['line1', 'line2', 'line3', ''], so allLines.length=4
       // clampedEnd = min(4, 100) = 4, slice(1, 4) = ['line2', 'line3', '']
@@ -487,26 +509,26 @@ describe('GitDiffService', () => {
       const content = 'line1\nline2\nline3\n';
       writeFileSync(join(tmpDir, 'file.ts'), content);
 
-      const result = await getFileLines(tmpDir, 'file.ts', 100, 200, 'working-dir');
+      const result = await getFileLines(tmpDir, 'file.ts', 100, 200, 'working-dir', null);
 
       expect(result).toEqual([]);
     });
 
     it('throws on invalid file path (path traversal)', async () => {
       await expect(
-        getFileLines(tmpDir, '../etc/passwd', 1, 10, 'working-dir')
+        getFileLines(tmpDir, '../etc/passwd', 1, 10, 'working-dir', null)
       ).rejects.toThrow('Invalid file path');
     });
 
     it('throws on absolute path', async () => {
       await expect(
-        getFileLines(tmpDir, '/etc/passwd', 1, 10, 'working-dir')
+        getFileLines(tmpDir, '/etc/passwd', 1, 10, 'working-dir', null)
       ).rejects.toThrow('Invalid file path');
     });
 
     it('throws when file does not exist in working-dir', async () => {
       await expect(
-        getFileLines(tmpDir, 'nonexistent.ts', 1, 10, 'working-dir')
+        getFileLines(tmpDir, 'nonexistent.ts', 1, 10, 'working-dir', null)
       ).rejects.toThrow('Failed to read nonexistent.ts from working directory');
     });
 
@@ -514,16 +536,16 @@ describe('GitDiffService', () => {
       const content = 'line1\nline2\nline3\n';
       writeFileSync(join(tmpDir, 'file.ts'), content);
 
-      const result = await getFileLines(tmpDir, 'file.ts', -5, 2, 'working-dir');
+      const result = await getFileLines(tmpDir, 'file.ts', -5, 2, 'working-dir', null);
 
       expect(result).toEqual(['line1', 'line2']);
     });
 
     it('throws when git show returns null', async () => {
-      mockGit.gitSafe.mockResolvedValue(null);
+      gitMock.respond(['show', 'abc123:src/file.ts'], { exitCode: 128, stderr: 'fatal: not found' });
 
       await expect(
-        getFileLines('/repo/path', 'src/file.ts', 1, 5, 'abc123')
+        getFileLines('/repo/path', 'src/file.ts', 1, 5, 'abc123', null)
       ).rejects.toThrow('Failed to read src/file.ts at ref abc123');
     });
   });

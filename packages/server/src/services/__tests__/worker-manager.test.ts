@@ -9,7 +9,9 @@
 import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
-import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import { createMockRunAsUser, type MockRunAsUser } from '../../__tests__/utils/mock-run-as-user.js';
+import { __setRunAsUserForTesting } from '../git-diff-service.js';
 import {
   buildInternalGitDiffWorker,
   buildPersistedAgentWorker,
@@ -142,38 +144,47 @@ describe('WorkerManager', () => {
   });
 
   describe('initializeGitDiffWorker', () => {
+    // computeDefaultBaseSpec inside git-diff-service routes through runAsUser
+    // (Issue #869). Use the run-as-user mock to stub the underlying git
+    // invocations.
+    let gitMock: MockRunAsUser;
+
+    beforeEach(() => {
+      gitMock = createMockRunAsUser();
+      __setRunAsUserForTesting(gitMock.fn);
+    });
+
+    afterEach(() => {
+      __setRunAsUserForTesting(null);
+    });
+
     it('stores the computed default base spec (not a resolved hash) when no baseCommit is provided', async () => {
       // origin/main exists → computeDefaultBaseSpec returns the merge-base spec.
-      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
-      mockGit.gitRefExists.mockImplementation((ref: string) =>
-        Promise.resolve(ref === 'origin/main'),
-      );
-      // If the implementation incorrectly resolved the spec to a hash, this would
-      // be the value it stored. The assertion below proves it stores the spec, not this.
-      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('resolvedhash123'));
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { stdout: 'refs/remotes/origin/main\n' });
+      gitMock.respond(['rev-parse', '--verify', 'origin/main'], { stdout: 'origin-tip-hash\n' });
 
       const worker = await workerManager.initializeGitDiffWorker({
         id: 'git-diff-default',
         name: 'Diff',
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
+        requestUser: null,
       });
 
       expect(worker.type).toBe('git-diff');
       expect(worker.baseCommit).toBe('merge-base:origin/main');
-      // The spec must NOT be pre-resolved to a hash at init time.
-      expect(worker.baseCommit).not.toBe('resolvedhash123');
     });
 
     it('falls back to the local merge-base spec when origin/<default> does not exist', async () => {
-      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('develop'));
-      mockGit.gitRefExists.mockImplementation(() => Promise.resolve(false));
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { stdout: 'refs/remotes/origin/develop\n' });
+      gitMock.respond(['rev-parse', '--verify', 'origin/develop'], { exitCode: 128 });
 
       const worker = await workerManager.initializeGitDiffWorker({
         id: 'git-diff-local',
         name: 'Diff',
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
+        requestUser: null,
       });
 
       expect(worker.baseCommit).toBe('merge-base:develop');
@@ -186,12 +197,12 @@ describe('WorkerManager', () => {
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
         baseCommit: 'merge-base:origin/develop',
+        requestUser: null,
       });
 
       expect(worker.baseCommit).toBe('merge-base:origin/develop');
-      // A verbatim spec must not trigger any rev-parse / merge-base resolution at init.
-      expect(mockGit.gitSafe).not.toHaveBeenCalled();
-      expect(mockGit.getMergeBaseSafe).not.toHaveBeenCalled();
+      // A verbatim spec must not trigger any git invocation at init.
+      expect(gitMock.calls.length).toBe(0);
     });
 
     it('stores an explicit commit-hash baseCommit verbatim (stays pinned)', async () => {
@@ -201,10 +212,29 @@ describe('WorkerManager', () => {
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
         baseCommit: 'deadbeef1234',
+        requestUser: null,
       });
 
       expect(worker.baseCommit).toBe('deadbeef1234');
-      expect(mockGit.gitSafe).not.toHaveBeenCalled();
+      expect(gitMock.calls.length).toBe(0);
+    });
+
+    it('threads requestUser into computeDefaultBaseSpec for multi-user mode (Issue #869)', async () => {
+      gitMock.respond(['symbolic-ref', 'refs/remotes/origin/HEAD'], { stdout: 'refs/remotes/origin/main\n' });
+      gitMock.respond(['rev-parse', '--verify', 'origin/main'], { stdout: 'tip\n' });
+
+      const worker = await workerManager.initializeGitDiffWorker({
+        id: 'git-diff-elevated',
+        name: 'Diff',
+        createdAt: new Date().toISOString(),
+        locationPath: '/elevated/worktree',
+        requestUser: 'workspaceuser',
+      });
+
+      expect(worker.baseCommit).toBe('merge-base:origin/main');
+      const symbolicCall = gitMock.findCall(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+      expect(symbolicCall?.username).toBe('workspaceuser');
+      expect(symbolicCall?.cwd).toBe('/elevated/worktree');
     });
   });
 

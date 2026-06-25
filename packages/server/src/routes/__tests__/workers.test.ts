@@ -777,6 +777,53 @@ describe('Workers API', () => {
       expect(body.error).toContain('Could not resolve diff base');
       expect(body.error).toContain('merge-base:origin/main');
     });
+
+    it('threads the authenticated OS username into the git-diff service (Issue #869)', async () => {
+      // Capture the requestUser that the route passes through to runAsUser
+      // by installing a per-test fake. The route must use the authenticated
+      // user (single-user mode → 'testuser') so multi-user mode would run
+      // git as the worktree-owning user instead of the server user.
+      const seenUsernames: Array<string | null | undefined> = [];
+      const { __setRunAsUserForTesting } = await import('../../services/git-diff-service.js');
+      __setRunAsUserForTesting(async (opts) => {
+        seenUsernames.push(opts.username);
+        // Return canned diff data so the route succeeds end-to-end.
+        if (opts.command.includes("'merge-base'")) {
+          return { stdout: 'resolvedbase999\n', stderr: '', exitCode: 0, timedOut: false };
+        }
+        if (opts.command.includes("'diff'") && opts.command.includes("'--numstat'")) {
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      });
+      try {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+        const worker = await sessionManager.createWorker(session.id, {
+          type: 'git-diff',
+          baseCommit: 'merge-base:origin/main',
+        });
+        expect(worker).not.toBeNull();
+
+        seenUsernames.length = 0;
+        const res = await app.request(
+          `/api/sessions/${session.id}/workers/${worker!.id}/diff`,
+        );
+
+        expect(res.status).toBe(200);
+        // Every runAsUser call from the route must carry the authenticated
+        // username — never null. SingleUserMode resolves to 'testuser'.
+        expect(seenUsernames.length).toBeGreaterThan(0);
+        for (const u of seenUsernames) {
+          expect(u).toBe('testuser');
+        }
+      } finally {
+        __setRunAsUserForTesting(null);
+      }
+    });
   });
 
   // ===========================================================================

@@ -6,20 +6,18 @@
  * the frozen merge-base hash makes those upstream commits show up as
  * "unexpected" file diffs — diverging from GitHub's three-dot PR view.
  *
- * This test drives the production `resolveBaseSpec` / `getDiffData` against a
- * REAL temp git repository. Because the `../lib/git.js` module is mocked
- * process-globally (mock-git-helper.ts) and that mock cannot be reliably undone
- * mid-process, we configure the SAME shared `mockGit` to delegate to the real
- * git CLI against the temp repo. This exercises the genuine production code path
- * deterministically and is immune to cross-file mock ordering.
+ * After Issue #869, `git-diff-service` routes every git invocation through
+ * `runAsUser`. The single-user / unelevated path (passing `requestUser=null`
+ * here) bypasses sudo and shells out to real git directly, so this test still
+ * exercises the genuine production code path against a real temp repository.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import { MERGE_BASE_REF_PREFIX } from '@agent-console/shared';
-import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import {
+  __setRunAsUserForTesting,
   resolveBaseSpec,
   getDiffData,
 } from '../git-diff-service.js';
@@ -47,15 +45,6 @@ async function git(args: string[], cwd: string): Promise<string> {
   return stdout.trim();
 }
 
-/** Run a git command, returning null on failure (mirrors gitSafe). */
-async function gitSafeReal(args: string[], cwd: string): Promise<string | null> {
-  try {
-    return await git(args, cwd);
-  } catch {
-    return null;
-  }
-}
-
 async function createTempDir(prefix: string): Promise<string> {
   const tmpDir = path.join(os.tmpdir(), `${prefix}${crypto.randomUUID().slice(0, 8)}`);
   await Bun.spawn(['mkdir', '-p', tmpDir]).exited;
@@ -66,51 +55,15 @@ async function removeTempDir(dir: string): Promise<void> {
   await Bun.spawn(['rm', '-rf', dir]).exited;
 }
 
-/**
- * Wire the shared git mock to delegate to the real git CLI for the functions
- * `resolveBaseSpec` and `getDiffData` depend on. The cwd argument carries the
- * actual repo path through.
- */
-function wireRealGit(): void {
-  resetGitMocks();
-
-  mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
-  mockGit.gitRefExists.mockImplementation((ref: string, cwd: string) =>
-    gitSafeReal(['rev-parse', '--verify', ref], cwd).then((r) => r !== null)
-  );
-  mockGit.gitSafe.mockImplementation((args: string[], cwd: string) =>
-    gitSafeReal(args, cwd)
-  );
-  mockGit.getMergeBaseSafe.mockImplementation((ref1: string, ref2: string, cwd: string) =>
-    gitSafeReal(['merge-base', ref1, ref2], cwd)
-  );
-
-  // getDiffData dependencies
-  mockGit.getDiff.mockImplementation((baseRef: string, targetRef: string | undefined, cwd: string) =>
-    targetRef
-      ? git(['diff', baseRef, targetRef], cwd)
-      : git(['diff', baseRef], cwd)
-  );
-  mockGit.getDiffNumstat.mockImplementation((baseRef: string, targetRef: string | undefined, cwd: string) =>
-    targetRef
-      ? git(['diff', '--numstat', baseRef, targetRef], cwd)
-      : git(['diff', '--numstat', baseRef], cwd)
-  );
-  mockGit.getStatusPorcelain.mockImplementation((cwd: string) =>
-    git(['status', '--porcelain', '-uall'], cwd)
-  );
-  mockGit.getUntrackedFiles.mockImplementation((cwd: string) =>
-    git(['ls-files', '--others', '--exclude-standard'], cwd).then((out) =>
-      out.split('\n').filter(Boolean)
-    )
-  );
-}
-
 describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
   let repo: string;
 
   beforeEach(async () => {
-    wireRealGit();
+    // Other test files in the same process may have installed an
+    // empty-success `runAsUser` stub via `mock-git-helper.ts` (Issue #869);
+    // restore the real implementation so this test can exercise real git.
+    __setRunAsUserForTesting(null);
+
     repo = await createTempDir('git-diff-800-');
     await git(['init', '-b', 'main'], repo);
     await git(['config', 'user.email', 'test@example.com'], repo);
@@ -124,7 +77,6 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
 
   afterEach(async () => {
     await removeTempDir(repo);
-    resetGitMocks();
   });
 
   it('does NOT include an upstream-only file in the diff after the feature branch merges main', async () => {
@@ -146,9 +98,9 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
 
     // Diff #1: resolves merge-base(main, HEAD) — should contain the feature
     // change but NOT the upstream-only file.
-    const resolved1 = await resolveBaseSpec(spec, repo);
+    const resolved1 = await resolveBaseSpec(spec, repo, null);
     expect(resolved1).not.toBeNull();
-    const diff1 = await getDiffData(repo, resolved1!);
+    const diff1 = await getDiffData(repo, resolved1!, null);
     const paths1 = diff1.summary.files.map((f) => f.path);
     expect(paths1).toContain('feature.txt');
     expect(paths1).not.toContain('upstream.txt');
@@ -158,11 +110,11 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
 
     // Diff #2: SAME spec, re-resolved → merge-base moves forward to include the
     // upstream commit, so upstream.txt must NOT appear in the diff.
-    const resolved2 = await resolveBaseSpec(spec, repo);
+    const resolved2 = await resolveBaseSpec(spec, repo, null);
     expect(resolved2).not.toBeNull();
     // The merge-base must have advanced (re-resolution actually happened).
     expect(resolved2).not.toBe(resolved1);
-    const diff2 = await getDiffData(repo, resolved2!);
+    const diff2 = await getDiffData(repo, resolved2!, null);
     const paths2 = diff2.summary.files.map((f) => f.path);
     expect(paths2).toContain('feature.txt');
     // CORE REGRESSION ASSERTION: with the old frozen-hash behavior diff2 WOULD
@@ -174,9 +126,9 @@ describe('Issue #800: git-diff base spec re-resolution (real repo)', () => {
     // A branch identical to main: merge-base is HEAD, diff must be empty.
     await git(['checkout', '-b', 'no-changes'], repo);
     const spec = `${MERGE_BASE_REF_PREFIX}main`;
-    const resolved = await resolveBaseSpec(spec, repo);
+    const resolved = await resolveBaseSpec(spec, repo, null);
     expect(resolved).not.toBeNull();
-    const diff = await getDiffData(repo, resolved!);
+    const diff = await getDiffData(repo, resolved!, null);
     expect(diff.summary.files).toHaveLength(0);
   });
 });

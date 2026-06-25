@@ -10,13 +10,19 @@ const log = createLogger('git-diff-handler');
 // ============================================================
 
 export interface GitDiffHandlerDependencies {
-  getDiffData: (repoPath: string, baseCommit: string, targetRef?: GitDiffTarget) => Promise<GitDiffData>;
-  resolveRef: (ref: string, repoPath: string) => Promise<string | null>;
+  /**
+   * Issue #869: each dep that runs git accepts `requestUser` so multi-user
+   * mode can elevate git to the worktree-owning user. Pass `null` (or the
+   * server-process user's name) when no elevation is needed; the underlying
+   * helpers bypass elevation in that case.
+   */
+  getDiffData: (repoPath: string, baseCommit: string, requestUser: string | null, targetRef?: GitDiffTarget) => Promise<GitDiffData>;
+  resolveRef: (ref: string, repoPath: string, requestUser: string | null) => Promise<string | null>;
   /** Resolve a persisted base *spec* to a concrete commit hash at diff time. */
-  resolveBaseSpec: (spec: string, repoPath: string) => Promise<string | null>;
+  resolveBaseSpec: (spec: string, repoPath: string, requestUser: string | null) => Promise<string | null>;
   startWatching: (repoPath: string, onChange: () => void) => void;
   stopWatching: (repoPath: string) => void;
-  getFileLines: (repoPath: string, filePath: string, startLine: number, endLine: number, ref: GitDiffTarget) => Promise<string[]>;
+  getFileLines: (repoPath: string, filePath: string, startLine: number, endLine: number, ref: GitDiffTarget, requestUser: string | null) => Promise<string[]>;
   annotationService: AnnotationService;
 }
 
@@ -30,6 +36,12 @@ interface ConnectionState {
   /** Persisted base *spec* (intent), re-resolved to a hash on every diff. */
   baseSpec: string;
   targetRef: GitDiffTarget;
+  /**
+   * Authenticated OS username captured at WS connection time, threaded into
+   * every git invocation so multi-user mode runs git as the worktree owner.
+   * `null` in single-user / no-elevation contexts.
+   */
+  requestUser: string | null;
 }
 
 // Track active connections by workerId
@@ -59,15 +71,16 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
     ws: WSContext,
     locationPath: string,
     baseSpec: string,
+    requestUser: string | null,
     targetRef: GitDiffTarget = 'working-dir'
   ): Promise<boolean> {
     try {
-      const resolved = await resolveBaseSpec(baseSpec, locationPath);
+      const resolved = await resolveBaseSpec(baseSpec, locationPath, requestUser);
       if (resolved === null) {
         sendError(ws, `Could not resolve diff base: ${baseSpec}`);
         return false;
       }
-      const diffData = await getDiffData(locationPath, resolved, targetRef);
+      const diffData = await getDiffData(locationPath, resolved, requestUser, targetRef);
       const msg: GitDiffServerMessage = {
         type: 'diff-data',
         data: diffData,
@@ -101,14 +114,15 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
     sessionId: string,
     workerId: string,
     locationPath: string,
-    baseSpec: string
+    baseSpec: string,
+    requestUser: string | null,
   ): Promise<void> {
     log.info({ sessionId, workerId, locationPath }, 'Git diff WebSocket connected');
 
     // Store connection state (default target is working-dir)
     const connectionKey = workerId;
     const targetRef: GitDiffTarget = 'working-dir';
-    activeConnections.set(connectionKey, { ws, locationPath, baseSpec, targetRef });
+    activeConnections.set(connectionKey, { ws, locationPath, baseSpec, targetRef, requestUser });
 
     // Start file watching - when files change, send updated diff data
     // Note: File watching only makes sense for working-dir target
@@ -116,14 +130,14 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
       const state = activeConnections.get(connectionKey);
       if (state && state.targetRef === 'working-dir') {
         log.debug({ locationPath }, 'File change detected, sending updated diff');
-        sendDiffData(state.ws, state.locationPath, state.baseSpec, state.targetRef).catch((err) => {
+        sendDiffData(state.ws, state.locationPath, state.baseSpec, state.requestUser, state.targetRef).catch((err) => {
           log.error({ err }, 'Failed to send diff data on file change');
         });
       }
     });
 
     // Send initial diff data
-    await sendDiffData(ws, locationPath, baseSpec, targetRef);
+    await sendDiffData(ws, locationPath, baseSpec, requestUser, targetRef);
   }
 
   /**
@@ -168,7 +182,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
 
       switch (parsed.type) {
         case 'refresh':
-          await sendDiffData(ws, locationPath, state.baseSpec, currentTargetRef);
+          await sendDiffData(ws, locationPath, state.baseSpec, state.requestUser, currentTargetRef);
           break;
 
         case 'set-base-commit': {
@@ -178,7 +192,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
           // and state.baseSpec retains its last good value, so later refreshes
           // and file-watch sends keep producing the previous diff instead of
           // reusing a bad spec. This change is connection-local (not persisted).
-          const ok = await sendDiffData(ws, locationPath, parsed.ref, currentTargetRef);
+          const ok = await sendDiffData(ws, locationPath, parsed.ref, state.requestUser, currentTargetRef);
           if (ok) state.baseSpec = parsed.ref;
           break;
         }
@@ -189,7 +203,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
           if (parsed.ref === 'working-dir') {
             targetRef = 'working-dir';
           } else {
-            const resolved = await resolveRef(parsed.ref, locationPath);
+            const resolved = await resolveRef(parsed.ref, locationPath, state.requestUser);
             if (resolved) {
               targetRef = resolved;
             } else {
@@ -199,13 +213,13 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
           }
 
           state.targetRef = targetRef;
-          await sendDiffData(ws, locationPath, state.baseSpec, targetRef);
+          await sendDiffData(ws, locationPath, state.baseSpec, state.requestUser, targetRef);
           break;
         }
 
         case 'get-file-lines': {
           try {
-            const lines = await getFileLines(locationPath, parsed.path, parsed.startLine, parsed.endLine, parsed.ref);
+            const lines = await getFileLines(locationPath, parsed.path, parsed.startLine, parsed.endLine, parsed.ref, state.requestUser);
             const msg: GitDiffServerMessage = {
               type: 'file-lines',
               path: parsed.path,
@@ -257,7 +271,7 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
       return;
     }
 
-    const ok = await sendDiffData(state.ws, state.locationPath, newBaseSpec, state.targetRef);
+    const ok = await sendDiffData(state.ws, state.locationPath, newBaseSpec, state.requestUser, state.targetRef);
     if (ok) state.baseSpec = newBaseSpec;
   }
 
