@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'node:os';
+import type { FileSink } from 'bun';
 import {
   runAsUser,
   spawnAsUser,
@@ -659,6 +660,39 @@ describe('privilege-elevation', () => {
 
   describe('spawnAsUser (integration with spawn)', () => {
     /**
+     * Subset of Bun's `FileSink` shape that `spawnAsUser`'s callers consume
+     * via `subprocess.stdin` (write / end / flush). Pick from Bun's actual
+     * `FileSink` type so the stub literal stays type-compatible with the
+     * field's declared shape on `Subprocess.stdin`. Mirrors the typed-fake
+     * pattern used by `FakeProc` above for the runAsUser fakes.
+     */
+    type FakeFileSink = Pick<FileSink, 'write' | 'end' | 'flush'>;
+
+    /**
+     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape exposed by
+     * `spawnAsUser`'s result. Differs from `FakeProc` in that it carries a
+     * `stdin` `FileSink` (spawnAsUser callers manage stdin over time) and
+     * `exited: Promise<number>` rather than `Promise<number | null>` because
+     * the spawnAsUser tests never resolve `exited` and never expose the
+     * signal-killed-as-null path. `stdin` is typed to Bun's actual `FileSink`
+     * so the outer fake -> `SpawnFn` cast structurally overlaps with
+     * `Subprocess<Writable,Readable,Readable>.stdin` (one direct cast at the
+     * stub boundary substitutes for the previous `as unknown as`).
+     */
+    interface FakeSpawnAsUserProc {
+      exited: Promise<number>;
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      stdin: FileSink;
+      kill: () => void;
+    }
+
+    type FakeSpawnFn = (
+      args: string[],
+      options: Parameters<typeof Bun.spawn>[1],
+    ) => FakeSpawnAsUserProc;
+
+    /**
      * Build a fake spawn for spawnAsUser. Unlike the runAsUser fake above,
      * `spawnAsUser` does NOT await `proc.exited` (lifecycle belongs to the
      * caller), so we keep it simple: a recorded argv/options pair and a
@@ -666,30 +700,31 @@ describe('privilege-elevation', () => {
      * `.flush()`/`.end()` without touching a real subprocess.
      */
     function makeFakeSpawnForSpawnAsUser(captured: CapturedSpawn[]): SpawnFn {
-      const fakeFn = (
-        args: string[],
-        options: Parameters<typeof Bun.spawn>[1],
-      ) => {
+      const fakeFn: FakeSpawnFn = (args, options) => {
         captured.push({ args, options });
-        const stdinStub = {
+        const stdinStub: FakeFileSink = {
           write: () => 0,
-          end: () => {},
+          end: () => 0,
           flush: () => Promise.resolve(0),
         };
         // The fake never resolves `exited` (no caller awaits it) and never
         // emits stream bytes -- only the spawn-time argv / options shape and
-        // the FileSink-shaped stdin are exercised by these tests.
-        const fake = {
+        // the FileSink-shaped stdin are exercised by these tests. The stub
+        // only models the three FileSink methods callers touch; a single
+        // direct cast at THIS boundary widens it to `FileSink` so the outer
+        // `fakeFn as SpawnFn` cast structurally overlaps without `unknown`.
+        const fake: FakeSpawnAsUserProc = {
           exited: new Promise<number>(() => {}),
           stdout: new ReadableStream<Uint8Array>(),
           stderr: new ReadableStream<Uint8Array>(),
-          stdin: stdinStub,
+          stdin: stdinStub as FileSink,
           kill: () => {},
         };
         return fake;
       };
-      // Single direct cast at the fake boundary, no `unknown` intermediate.
-      return fakeFn as unknown as SpawnFn;
+      // Single direct cast at the fake boundary; the fake's typed return
+      // shape (FakeSpawnAsUserProc) matches the subset spawnAsUser consumes.
+      return fakeFn as SpawnFn;
     }
 
     it('AUTH_MODE=none: invokes sh -c directly even when username is set', () => {

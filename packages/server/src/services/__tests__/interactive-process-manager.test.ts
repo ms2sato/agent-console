@@ -238,6 +238,33 @@ describe('InteractiveProcessManager', () => {
     }
 
     /**
+     * Subset of Bun's `FileSink` shape that `interactive-process-manager`
+     * actually consumes (`write` + `flush`; `end` is included so the fake
+     * matches the shape `spawnAsUser` exposes on `subprocess.stdin`).
+     * Declaring it explicitly lets the fake be typed without casting through
+     * `unknown` (which the repo's TypeScript guideline prohibits).
+     */
+    interface FakeFileSink {
+      write: (chunk: string | Uint8Array) => number;
+      end: () => void;
+      flush: () => Promise<number>;
+    }
+
+    /**
+     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape that
+     * `interactive-process-manager` actually consumes (`exited`, `stdout`,
+     * `stderr`, `stdin`, `kill`). Mirrors the `FakeProc` pattern used in
+     * `privilege-elevation.test.ts` for the runAsUser fakes.
+     */
+    interface FakeSubprocess {
+      exited: Promise<number>;
+      stdin: FakeFileSink;
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      kill: (signal?: number) => void;
+    }
+
+    /**
      * Build a fake `spawnAsUserFn` that records the spawn opts and returns
      * a controllable FakeSubprocess. The FakeSubprocess exposes
      * `.simulateExit(code)` so tests can drive the lifecycle.
@@ -257,7 +284,7 @@ describe('InteractiveProcessManager', () => {
         resolveExited = resolve;
       });
 
-      const stdin = {
+      const stdin: FakeFileSink = {
         write: (chunk: string | Uint8Array) => {
           lastStdinWrites.push(chunk);
           return 0;
@@ -269,7 +296,7 @@ describe('InteractiveProcessManager', () => {
         },
       };
 
-      const subprocess = {
+      const subprocess: FakeSubprocess = {
         exited,
         stdin,
         stdout: new ReadableStream<Uint8Array>({
@@ -289,17 +316,21 @@ describe('InteractiveProcessManager', () => {
 
       const fn: SpawnAsUserFn = (opts) => {
         captured.push({ opts });
-        // Cast bridges FakeSubprocess subset -> SpawnAsUserResult shape at
-        // the test boundary. The production code only consumes the fields
-        // included on the fake (subprocess, stdin, elevated).
-        return {
+        // Single direct cast at the fake boundary; the fake's typed members
+        // (FakeSubprocess / FakeFileSink) cover the subset production code
+        // consumes. No `unknown` intermediate.
+        const result: Pick<SpawnAsUserResult, 'elevated'> & {
+          subprocess: FakeSubprocess;
+          stdin: FakeFileSink;
+        } = {
           subprocess,
           stdin,
           elevated:
             opts.username !== null &&
             opts.username !== undefined &&
             opts.username !== '',
-        } as unknown as SpawnAsUserResult;
+        };
+        return result as SpawnAsUserResult;
       };
 
       return {
