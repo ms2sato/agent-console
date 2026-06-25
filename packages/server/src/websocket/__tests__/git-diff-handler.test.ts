@@ -81,8 +81,8 @@ describe('GitDiffHandler', () => {
   });
 
   /** Helper to establish a connection before sending messages */
-  async function connectWorker(baseCommit: string = 'base-commit'): Promise<void> {
-    await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', baseCommit);
+  async function connectWorker(baseCommit: string = 'base-commit', requestUser: string | null = null): Promise<void> {
+    await handlers.handleConnection(mockWs, 'session-1', 'worker-1', '/repo/path', baseCommit, requestUser);
     sentMessages = [];
     mockGetDiffData.mockClear();
   }
@@ -99,7 +99,8 @@ describe('GitDiffHandler', () => {
         'session-1',
         'worker-1',
         '/repo/path',
-        'base-commit'
+        'base-commit',
+        null
       );
 
       expect(mockWs.send).toHaveBeenCalled();
@@ -116,10 +117,11 @@ describe('GitDiffHandler', () => {
         'session-1',
         'worker-1',
         '/repo/path',
-        'specific-commit'
+        'specific-commit',
+        null
       );
 
-      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'specific-commit', 'working-dir');
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'specific-commit', null, 'working-dir');
     });
 
     it('should start file watching on connection', async () => {
@@ -128,10 +130,27 @@ describe('GitDiffHandler', () => {
         'session-1',
         'worker-1',
         '/repo/path',
-        'base-commit'
+        'base-commit',
+        null
       );
 
       expect(mockStartWatching).toHaveBeenCalledWith('/repo/path', expect.any(Function));
+    });
+
+    it('threads the captured requestUser into resolveBaseSpec / getDiffData (Issue #869)', async () => {
+      // A non-null requestUser must reach the underlying service so
+      // multi-user mode can elevate git to the worktree-owning user.
+      await handlers.handleConnection(
+        mockWs,
+        'session-1',
+        'worker-1',
+        '/repo/path',
+        'base-commit',
+        'workspaceuser'
+      );
+
+      expect(mockResolveBaseSpec).toHaveBeenCalledWith('base-commit', '/repo/path', 'workspaceuser');
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'base-commit', 'workspaceuser', 'working-dir');
     });
 
     it('should send error if getDiffData throws', async () => {
@@ -144,7 +163,8 @@ describe('GitDiffHandler', () => {
         'session-1',
         'worker-1',
         '/repo/path',
-        'base-commit'
+        'base-commit',
+        null
       );
 
       expect(sentMessages.length).toBe(1);
@@ -168,7 +188,8 @@ describe('GitDiffHandler', () => {
         'session-1',
         'worker-1',
         '/repo/path',
-        'base-commit'
+        'base-commit',
+        null
       );
 
       // Then disconnect
@@ -196,11 +217,23 @@ describe('GitDiffHandler', () => {
 
         await sendMessage(JSON.stringify({ type: 'refresh' }));
 
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'current-base', 'working-dir');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'current-base', null, 'working-dir');
         expect(sentMessages.length).toBe(1);
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
         expect(sentMsg.type).toBe('diff-data');
+      });
+
+      it('forwards the captured requestUser into refresh re-resolution and diff (Issue #869)', async () => {
+        // File-change / refresh paths must keep using the same requestUser
+        // captured at connection time, not silently drop it.
+        await connectWorker('current-base', 'workspaceuser');
+        mockResolveBaseSpec.mockClear();
+
+        await sendMessage(JSON.stringify({ type: 'refresh' }));
+
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('current-base', '/repo/path', 'workspaceuser');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'current-base', 'workspaceuser', 'working-dir');
       });
     });
 
@@ -211,8 +244,8 @@ describe('GitDiffHandler', () => {
         await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'main' }));
 
         // The raw ref is stored as the spec and re-resolved via resolveBaseSpec.
-        expect(mockResolveBaseSpec).toHaveBeenCalledWith('main', '/repo/path');
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'working-dir');
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('main', '/repo/path', null);
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', null, 'working-dir');
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
         expect(sentMsg.type).toBe('diff-data');
@@ -223,7 +256,7 @@ describe('GitDiffHandler', () => {
 
         await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'invalid-branch' }));
 
-        expect(mockResolveBaseSpec).toHaveBeenCalledWith('invalid-branch', '/repo/path');
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('invalid-branch', '/repo/path', null);
         expect(mockGetDiffData).not.toHaveBeenCalled();
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
@@ -236,8 +269,8 @@ describe('GitDiffHandler', () => {
 
         await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'merge-base:main' }));
 
-        expect(mockResolveBaseSpec).toHaveBeenCalledWith('merge-base:main', '/repo/path');
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'merge-base-commit-hash', 'working-dir');
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('merge-base:main', '/repo/path', null);
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'merge-base-commit-hash', null, 'working-dir');
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
         expect(sentMsg.type).toBe('diff-data');
@@ -248,7 +281,7 @@ describe('GitDiffHandler', () => {
 
         await sendMessage(JSON.stringify({ type: 'set-base-commit', ref: 'merge-base:nonexistent-branch' }));
 
-        expect(mockResolveBaseSpec).toHaveBeenCalledWith('merge-base:nonexistent-branch', '/repo/path');
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('merge-base:nonexistent-branch', '/repo/path', null);
         expect(mockGetDiffData).not.toHaveBeenCalled();
 
         const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
@@ -276,8 +309,8 @@ describe('GitDiffHandler', () => {
         // A subsequent refresh must diff against the OLD good spec, not the bad one.
         await sendMessage(JSON.stringify({ type: 'refresh' }));
 
-        expect(mockResolveBaseSpec).toHaveBeenCalledWith('old-base', '/repo/path');
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'old-base', 'working-dir');
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('old-base', '/repo/path', null);
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'old-base', null, 'working-dir');
 
         const refreshMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
         expect(refreshMsg.type).toBe('diff-data');
@@ -297,8 +330,8 @@ describe('GitDiffHandler', () => {
         // A subsequent refresh uses the newly committed spec, not 'old-base'.
         await sendMessage(JSON.stringify({ type: 'refresh' }));
 
-        expect(mockResolveBaseSpec).toHaveBeenCalledWith('main', '/repo/path');
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'working-dir');
+        expect(mockResolveBaseSpec).toHaveBeenCalledWith('main', '/repo/path', null);
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', null, 'working-dir');
       });
     });
 
@@ -314,7 +347,7 @@ describe('GitDiffHandler', () => {
         // Refresh should use updated base, not 'old-base'
         await sendMessage(JSON.stringify({ type: 'refresh' }));
 
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'working-dir');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', null, 'working-dir');
       });
     });
 
@@ -330,7 +363,7 @@ describe('GitDiffHandler', () => {
         // Set target should use updated base, not 'old-base'
         await sendMessage(JSON.stringify({ type: 'set-target-commit', ref: 'HEAD' }));
 
-        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', 'resolved-commit-hash');
+        expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'resolved-commit-hash', null, 'resolved-commit-hash');
       });
     });
 
@@ -342,7 +375,8 @@ describe('GitDiffHandler', () => {
           'session-1',
           'worker-1',
           '/repo/path',
-          'base-commit'
+          'base-commit',
+          null
         );
         sentMessages = [];
 
@@ -363,7 +397,8 @@ describe('GitDiffHandler', () => {
           'session-1',
           'worker-2',
           '/repo/path',
-          'base-commit'
+          'base-commit',
+          null
         );
         sentMessages = [];
 
@@ -391,6 +426,42 @@ describe('GitDiffHandler', () => {
         expect(sentMsg).toHaveProperty('lines', ['line1', 'line2', 'line3']);
       });
 
+      it('threads requestUser into getFileLines for ref-based reads (Issue #869)', async () => {
+        // File-line reads at a ref must run as the worktree owner so
+        // `git show` does not fail with dubious ownership.
+        const getFileLinesMock = mock(() => Promise.resolve(['line1']));
+        const deps: GitDiffHandlerDependencies = {
+          getDiffData: mockGetDiffData,
+          resolveRef: mockResolveRef,
+          resolveBaseSpec: mockResolveBaseSpec,
+          startWatching: mockStartWatching,
+          stopWatching: mockStopWatching,
+          getFileLines: getFileLinesMock,
+          annotationService: new AnnotationService(),
+        };
+        const localHandlers = createGitDiffHandlers(deps);
+
+        await localHandlers.handleConnection(
+          mockWs,
+          'session-1',
+          'worker-elevated-lines',
+          '/repo/path',
+          'base-commit',
+          'workspaceuser'
+        );
+        sentMessages = [];
+
+        await localHandlers.handleMessage(
+          mockWs,
+          'session-1',
+          'worker-elevated-lines',
+          '/repo/path',
+          JSON.stringify({ type: 'get-file-lines', path: 'src/file.ts', startLine: 1, endLine: 1, ref: 'abc123' }),
+        );
+
+        expect(getFileLinesMock).toHaveBeenCalledWith('/repo/path', 'src/file.ts', 1, 1, 'abc123', 'workspaceuser');
+      });
+
       it('sends error for path traversal attempt', async () => {
         const deps: GitDiffHandlerDependencies = {
           getDiffData: mockGetDiffData,
@@ -408,7 +479,8 @@ describe('GitDiffHandler', () => {
           'session-1',
           'worker-traversal',
           '/repo/path',
-          'base-commit'
+          'base-commit',
+          null
         );
         sentMessages = [];
 
@@ -451,7 +523,8 @@ describe('GitDiffHandler', () => {
           'session-1',
           'worker-3',
           '/repo/path',
-          'base-commit'
+          'base-commit',
+          null
         );
         sentMessages = [];
 
@@ -498,7 +571,7 @@ describe('GitDiffHandler', () => {
 
       await handlers.updateBaseCommit('worker-1', 'new-base-commit');
 
-      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'new-base-commit', 'working-dir');
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'new-base-commit', null, 'working-dir');
       expect(sentMessages.length).toBe(1);
 
       const sentMsg: GitDiffServerMessage = JSON.parse(sentMessages[0]);
@@ -524,7 +597,7 @@ describe('GitDiffHandler', () => {
       // A subsequent refresh should also use the updated base commit
       await sendMessage(JSON.stringify({ type: 'refresh' }));
 
-      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'updated-base', 'working-dir');
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'updated-base', null, 'working-dir');
     });
 
     // Validate-before-replace: a server-pushed spec that fails to resolve must
@@ -545,7 +618,19 @@ describe('GitDiffHandler', () => {
       // A subsequent refresh must diff against the OLD good spec, not the bad one.
       await sendMessage(JSON.stringify({ type: 'refresh' }));
 
-      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'original-base', 'working-dir');
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'original-base', null, 'working-dir');
+    });
+
+    it('threads the captured requestUser through updateBaseCommit (Issue #869)', async () => {
+      // Server-pushed base-commit updates (e.g. from onDiffBaseCommitChanged)
+      // must keep using the same requestUser captured at connection time.
+      await connectWorker('original-base', 'workspaceuser');
+      mockResolveBaseSpec.mockClear();
+
+      await handlers.updateBaseCommit('worker-1', 'updated-base');
+
+      expect(mockResolveBaseSpec).toHaveBeenCalledWith('updated-base', '/repo/path', 'workspaceuser');
+      expect(mockGetDiffData).toHaveBeenCalledWith('/repo/path', 'updated-base', 'workspaceuser', 'working-dir');
     });
   });
 });

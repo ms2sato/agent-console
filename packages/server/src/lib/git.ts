@@ -5,7 +5,21 @@
  * - No shell injection vulnerabilities (args passed as array, not string)
  * - Consistent async API
  * - Non-blocking I/O
+ *
+ * Issue #869 / #870: Many exported helpers accept an optional `requestUser`
+ * trailing argument. When non-null, the invocation is routed via
+ * `runAsUser` (see `../services/privilege-elevation.js`) so that, in
+ * multi-user mode, git executes as the requesting OS user — picking up
+ * that user's PATH, gitconfig, and SSH_AUTH_SOCK from their login shell
+ * via `sudo -i`. When `requestUser` is null/undefined (the default), the
+ * historical `Bun.spawn(['git', ...args])` direct-spawn path runs verbatim.
  */
+import {
+  runAsUser as defaultRunAsUser,
+  shellEscape,
+  type RunAsUserOpts,
+  type RunAsUserResult,
+} from '../services/privilege-elevation.js';
 
 /** Default timeout for local git operations (30 seconds) */
 const DEFAULT_GIT_TIMEOUT_MS = 30000;
@@ -25,6 +39,25 @@ export class GitError extends Error {
     super(message);
     this.name = 'GitError';
   }
+}
+
+// ============================================================
+// Privilege-elevation test seam (Issue #869 / #870)
+// ============================================================
+
+type RunAsUserFn = (opts: RunAsUserOpts) => Promise<RunAsUserResult>;
+
+let _runAsUser: RunAsUserFn = defaultRunAsUser;
+
+/**
+ * Inject a fake `runAsUser` implementation for tests. Pass `null` to
+ * restore the real implementation. Tests should call this in
+ * `beforeEach`/`afterEach` to avoid cross-test leakage.
+ *
+ * @internal Test-only seam; production callers must not use this.
+ */
+export function __setRunAsUserForTesting(fn: RunAsUserFn | null): void {
+  _runAsUser = fn ?? defaultRunAsUser;
 }
 
 /**
@@ -50,12 +83,36 @@ function createTimeoutPromise(timeoutMs: number, command: string): { promise: Pr
 }
 
 /**
+ * Apply the chosen trim mode to raw stdout.
+ *
+ * - `'full'`     - trims both ends; use for single-token outputs like
+ *                  rev-parse / merge-base / symbolic-ref.
+ * - `'start'`    - trims only leading whitespace; use for diff output where
+ *                  trailing newlines are significant.
+ * - `'preserve'` - no trimming; use for `git status --porcelain` and similar
+ *                  formats whose every line has meaningful leading whitespace
+ *                  (the staged/unstaged status columns). Trimming the output
+ *                  would silently strip the indexStatus from the first line
+ *                  and break porcelain parsing.
+ */
+function applyTrim(stdout: string, mode: 'full' | 'start' | 'preserve'): string {
+  switch (mode) {
+    case 'full':     return stdout.trim();
+    case 'start':    return stdout.trimStart();
+    case 'preserve': return stdout;
+  }
+}
+
+/**
  * Internal implementation of git command execution.
  *
  * @param args - Git command arguments (without 'git' prefix)
  * @param cwd - Working directory for the command
  * @param timeoutMs - Timeout in milliseconds
- * @param trimOutput - How to trim the output: 'full' trims both ends, 'start' only trims leading whitespace
+ * @param trimOutput - How to trim stdout (see `applyTrim`).
+ * @param requestUser - When non-null, route the invocation through
+ *   `runAsUser` so it executes as that OS user under multi-user mode.
+ *   When null/undefined (the default), use the direct `Bun.spawn` path.
  * @returns The stdout output
  * @throws GitError if the command fails or times out
  */
@@ -63,8 +120,47 @@ async function gitExec(
   args: string[],
   cwd: string,
   timeoutMs: number,
-  trimOutput: 'full' | 'start'
+  trimOutput: 'full' | 'start' | 'preserve',
+  requestUser?: string | null
 ): Promise<string> {
+  if (requestUser != null && requestUser.length > 0) {
+    // Elevated path: route via runAsUser. cwd is interpolated inside the
+    // sudo'd inner command; the helper handles single-user bypass when the
+    // requestUser matches the server process user (or AUTH_MODE != multi-user).
+    const command = ['git', ...args].map(shellEscape).join(' ');
+    let result: RunAsUserResult;
+    try {
+      result = await _runAsUser({
+        username: requestUser,
+        command,
+        cwd,
+        timeoutMs,
+      });
+    } catch (error) {
+      // Spawn failure (e.g., sudo missing). Surface as GitError so callers
+      // that branch on `instanceof GitError` keep working.
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      throw new GitError(`git ${args[0] ?? '<unknown>'} failed: ${message}`, -1, message);
+    }
+    if (result.timedOut) {
+      throw new GitError(
+        `git ${args[0] ?? '<unknown>'} timed out after ${timeoutMs}ms`,
+        result.exitCode,
+        'Timeout'
+      );
+    }
+    if (result.exitCode !== 0) {
+      const stderr = result.stderr;
+      throw new GitError(
+        `git ${args[0] ?? '<unknown>'} failed: ${stderr.trim() || `exit code ${result.exitCode}`}`,
+        result.exitCode,
+        stderr
+      );
+    }
+    return applyTrim(result.stdout, trimOutput);
+  }
+
+  // Direct-spawn path (unchanged from pre-Issue-#869 behaviour).
   const proc = Bun.spawn(['git', ...args], {
     cwd,
     stdout: 'pipe',
@@ -87,7 +183,7 @@ async function gitExec(
     }
 
     const stdout = await new Response(proc.stdout).text();
-    return trimOutput === 'full' ? stdout.trim() : stdout.trimStart();
+    return applyTrim(stdout, trimOutput);
   } catch (error) {
     // If timeout occurred, kill the process
     if (error instanceof GitError && error.stderr === 'Timeout') {
@@ -109,6 +205,9 @@ async function gitExec(
  * @param args - Git command arguments (without 'git' prefix)
  * @param cwd - Working directory for the command
  * @param timeoutMs - Timeout in milliseconds (default: 30000ms)
+ * @param requestUser - When non-null, run as this OS user via `runAsUser`
+ *   (multi-user mode picks up that user's PATH/gitconfig/SSH_AUTH_SOCK).
+ *   When null/undefined (the default), spawn directly as the server user.
  * @returns The stdout output trimmed
  * @throws GitError if the command fails or times out
  *
@@ -116,8 +215,13 @@ async function gitExec(
  * const branch = await git(['branch', '--show-current'], repoPath);
  * const remoteUrl = await git(['remote', 'get-url', 'origin'], repoPath);
  */
-export async function git(args: string[], cwd: string, timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS): Promise<string> {
-  return gitExec(args, cwd, timeoutMs, 'full');
+export async function git(
+  args: string[],
+  cwd: string,
+  timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS,
+  requestUser?: string | null,
+): Promise<string> {
+  return gitExec(args, cwd, timeoutMs, 'full', requestUser);
 }
 
 /**
@@ -127,6 +231,7 @@ export async function git(args: string[], cwd: string, timeoutMs: number = DEFAU
  * @param args - Git command arguments (without 'git' prefix)
  * @param cwd - Working directory for the command
  * @param timeoutMs - Timeout in milliseconds (default: 30000ms)
+ * @param requestUser - See {@link git}.
  * @returns The stdout output with only leading whitespace trimmed
  * @throws GitError if the command fails or times out
  *
@@ -134,17 +239,28 @@ export async function git(args: string[], cwd: string, timeoutMs: number = DEFAU
  * // Use for diff commands where trailing newlines matter for parsing
  * const diff = await gitRaw(['diff', baseRef], repoPath);
  */
-export async function gitRaw(args: string[], cwd: string, timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS): Promise<string> {
-  return gitExec(args, cwd, timeoutMs, 'start');
+export async function gitRaw(
+  args: string[],
+  cwd: string,
+  timeoutMs: number = DEFAULT_GIT_TIMEOUT_MS,
+  requestUser?: string | null,
+): Promise<string> {
+  return gitExec(args, cwd, timeoutMs, 'start', requestUser);
 }
 
 /**
  * Execute a git command, returning null on failure instead of throwing.
  * Useful for commands where failure is expected (e.g., checking if a branch exists).
+ *
+ * @param requestUser - See {@link git}.
  */
-export async function gitSafe(args: string[], cwd: string): Promise<string | null> {
+export async function gitSafe(
+  args: string[],
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string | null> {
   try {
-    return await git(args, cwd);
+    return await git(args, cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
   } catch {
     return null;
   }
@@ -152,9 +268,15 @@ export async function gitSafe(args: string[], cwd: string): Promise<string | nul
 
 /**
  * Check if a git ref exists.
+ *
+ * @param requestUser - See {@link git}.
  */
-export async function gitRefExists(ref: string, cwd: string): Promise<boolean> {
-  const result = await gitSafe(['rev-parse', '--verify', ref], cwd);
+export async function gitRefExists(
+  ref: string,
+  cwd: string,
+  requestUser?: string | null,
+): Promise<boolean> {
+  const result = await gitSafe(['rev-parse', '--verify', ref], cwd, requestUser);
   return result !== null;
 }
 
@@ -183,10 +305,17 @@ export async function getRemoteUrl(cwd: string): Promise<string | null> {
 
 /**
  * List local branches.
+ *
+ * @param requestUser - See {@link git}. Issue #870: enables multi-user mode
+ *   to run as the worktree-owning user (picks up that user's gitconfig,
+ *   avoiding `dubious ownership` on user-owned repos).
  */
-export async function listLocalBranches(cwd: string): Promise<string[]> {
+export async function listLocalBranches(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string[]> {
   try {
-    const output = await git(['branch', '--format=%(refname:short)'], cwd);
+    const output = await git(['branch', '--format=%(refname:short)'], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
     return output.split('\n').filter(Boolean);
   } catch {
     return [];
@@ -195,10 +324,15 @@ export async function listLocalBranches(cwd: string): Promise<string[]> {
 
 /**
  * List remote branches.
+ *
+ * @param requestUser - See {@link listLocalBranches}.
  */
-export async function listRemoteBranches(cwd: string): Promise<string[]> {
+export async function listRemoteBranches(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string[]> {
   try {
-    const output = await git(['branch', '-r', '--format=%(refname:short)'], cwd);
+    const output = await git(['branch', '-r', '--format=%(refname:short)'], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
     return output.split('\n').filter(Boolean);
   } catch {
     return [];
@@ -223,19 +357,24 @@ export async function listAllBranches(cwd: string): Promise<string[]> {
 
 /**
  * Get the default branch name from remote origin.
+ *
+ * @param requestUser - See {@link listLocalBranches}.
  */
-export async function getDefaultBranch(cwd: string): Promise<string | null> {
+export async function getDefaultBranch(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string | null> {
   // Try symbolic-ref first
-  const symbolicRef = await gitSafe(['symbolic-ref', 'refs/remotes/origin/HEAD'], cwd);
+  const symbolicRef = await gitSafe(['symbolic-ref', 'refs/remotes/origin/HEAD'], cwd, requestUser);
   if (symbolicRef) {
     return symbolicRef.replace('refs/remotes/origin/', '');
   }
 
   // Fallback: check if main or master exists
-  if (await gitRefExists('main', cwd)) {
+  if (await gitRefExists('main', cwd, requestUser)) {
     return 'main';
   }
-  if (await gitRefExists('master', cwd)) {
+  if (await gitRefExists('master', cwd, requestUser)) {
     return 'master';
   }
 
@@ -246,15 +385,25 @@ export async function getDefaultBranch(cwd: string): Promise<string | null> {
  * Refresh the default branch reference from remote origin.
  * This updates the local refs/remotes/origin/HEAD to match the remote's default branch.
  *
+ * The network call `git remote set-head origin -a` is the SSH-using git
+ * invocation here. When `requestUser` is non-null, it runs via `runAsUser`
+ * so it executes as that user — picking up their SSH_AUTH_SOCK from the
+ * login shell (sudo -i) so git-over-SSH authenticates against
+ * private remotes. (Issue #870.)
+ *
+ * @param requestUser - See {@link listLocalBranches}.
  * @returns The updated default branch name
  * @throws GitError if the command fails (e.g., network error, no remote)
  */
-export async function refreshDefaultBranch(cwd: string): Promise<string> {
+export async function refreshDefaultBranch(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string> {
   // Update the remote HEAD reference
-  await git(['remote', 'set-head', 'origin', '-a'], cwd, NETWORK_GIT_TIMEOUT_MS);
+  await git(['remote', 'set-head', 'origin', '-a'], cwd, NETWORK_GIT_TIMEOUT_MS, requestUser);
 
   // Now get the updated default branch
-  const defaultBranch = await getDefaultBranch(cwd);
+  const defaultBranch = await getDefaultBranch(cwd, requestUser);
   if (!defaultBranch) {
     throw new GitError('Could not determine default branch after refresh', -1, 'No default branch found');
   }
@@ -370,23 +519,39 @@ export async function removeWorktree(
  * Get the merge-base commit of two refs (their common ancestor).
  * Useful for finding where a branch diverged from the base branch.
  *
+ * @param requestUser - See {@link git}.
+ *
  * @example
  * const mergeBase = await getMergeBase('main', 'HEAD', repoPath);
  */
-export async function getMergeBase(ref1: string, ref2: string, cwd: string): Promise<string> {
-  return git(['merge-base', ref1, ref2], cwd);
+export async function getMergeBase(
+  ref1: string,
+  ref2: string,
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string> {
+  return git(['merge-base', ref1, ref2], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
 }
 
 /**
  * Get the merge-base commit of two refs, returning null on failure.
+ *
+ * @param requestUser - See {@link git}.
  */
-export async function getMergeBaseSafe(ref1: string, ref2: string, cwd: string): Promise<string | null> {
-  return gitSafe(['merge-base', ref1, ref2], cwd);
+export async function getMergeBaseSafe(
+  ref1: string,
+  ref2: string,
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string | null> {
+  return gitSafe(['merge-base', ref1, ref2], cwd, requestUser);
 }
 
 /**
  * Get unified diff between a base ref and working directory (including staged and unstaged).
  * If targetRef is provided, compares base to that ref instead of working directory.
+ *
+ * @param requestUser - See {@link git}.
  *
  * @example
  * // Diff from merge-base to working directory
@@ -395,12 +560,17 @@ export async function getMergeBaseSafe(ref1: string, ref2: string, cwd: string):
  * // Diff between two commits
  * const diff = await getDiff(commit1, commit2, repoPath);
  */
-export async function getDiff(baseRef: string, targetRef: string | undefined, cwd: string): Promise<string> {
+export async function getDiff(
+  baseRef: string,
+  targetRef: string | undefined,
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string> {
   if (targetRef) {
-    return gitRaw(['diff', baseRef, targetRef], cwd);
+    return gitRaw(['diff', baseRef, targetRef], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
   } else {
     // Diff from baseRef to working directory (staged + unstaged)
-    return gitRaw(['diff', baseRef], cwd);
+    return gitRaw(['diff', baseRef], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
   }
 }
 
@@ -409,16 +579,23 @@ export async function getDiff(baseRef: string, targetRef: string | undefined, cw
  * Returns lines of: additions<TAB>deletions<TAB>filename
  * For binary files, returns "-<TAB>-<TAB>filename"
  *
+ * @param requestUser - See {@link git}.
+ *
  * @example
  * const stats = await getDiffNumstat(mergeBase, undefined, repoPath);
  * // "12\t5\tsrc/index.ts"
  * // "0\t3\tREADME.md"
  */
-export async function getDiffNumstat(baseRef: string, targetRef: string | undefined, cwd: string): Promise<string> {
+export async function getDiffNumstat(
+  baseRef: string,
+  targetRef: string | undefined,
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string> {
   if (targetRef) {
-    return gitRaw(['diff', '--numstat', baseRef, targetRef], cwd);
+    return gitRaw(['diff', '--numstat', baseRef, targetRef], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
   } else {
-    return gitRaw(['diff', '--numstat', baseRef], cwd);
+    return gitRaw(['diff', '--numstat', baseRef], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
   }
 }
 
@@ -442,10 +619,15 @@ export async function getUnstagedFiles(cwd: string): Promise<string> {
 
 /**
  * Get list of untracked files.
+ *
+ * @param requestUser - See {@link git}.
  */
-export async function getUntrackedFiles(cwd: string): Promise<string[]> {
+export async function getUntrackedFiles(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string[]> {
   try {
-    const output = await git(['ls-files', '--others', '--exclude-standard'], cwd);
+    const output = await git(['ls-files', '--others', '--exclude-standard'], cwd, DEFAULT_GIT_TIMEOUT_MS, requestUser);
     return output.split('\n').filter(Boolean);
   } catch {
     return [];
@@ -476,9 +658,21 @@ export interface DiffSummary {
 /**
  * Parse git status output to understand staged/unstaged state.
  * Uses porcelain format for reliable parsing.
+ *
+ * IMPORTANT: porcelain output is returned UNTRIMMED. Every line carries the
+ * staged / unstaged status in its leading two columns (e.g. ` M file.ts`),
+ * and trimming the whole stdout silently strips the indexStatus from the
+ * first line so `XY filename` regex parsing fails on it. Hence we route
+ * through `gitExec` with `trimOutput: 'preserve'` rather than the standard
+ * `git()` wrapper.
+ *
+ * @param requestUser - See {@link git}.
  */
-export async function getStatusPorcelain(cwd: string): Promise<string> {
-  return git(['status', '--porcelain', '-uall'], cwd);
+export async function getStatusPorcelain(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<string> {
+  return gitExec(['status', '--porcelain', '-uall'], cwd, DEFAULT_GIT_TIMEOUT_MS, 'preserve', requestUser);
 }
 
 // ============================================================

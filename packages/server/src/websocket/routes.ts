@@ -23,6 +23,7 @@ import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
 import { withRepositoryRemote } from '../lib/repository-remote.js';
+import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 
 const logger = createLogger('websocket');
 
@@ -713,13 +714,28 @@ export async function setupWebSocketRoutes(
 
           // Handle git-diff workers differently
           if (worker.type === 'git-diff') {
-            handleGitDiffConnection(
-              ws,
-              sessionId,
-              workerId,
-              session.locationPath,
-              (worker as GitDiffWorker).baseCommit
-            ).catch((err) => {
+            // Issue #869 / CodeRabbit lesson from PR #874: resolve the
+            // session's effective spawn user (the worktree-owning OS user),
+            // NOT the authenticated viewer. For shared sessions the spawn
+            // user is the shared account; using the viewer's identity would
+            // reintroduce dubious-ownership errors on user-owned worktrees.
+            // The auth guard (`wsAuthGuard`) above guarantees the viewer is
+            // authenticated; the username threaded to git is the worktree
+            // owner's, not the viewer's.
+            (async () => {
+              const spawnUsername = await resolveSpawnUsername(
+                session.createdBy,
+                appContext.userRepository,
+              );
+              await handleGitDiffConnection(
+                ws,
+                sessionId,
+                workerId,
+                session.locationPath,
+                (worker as GitDiffWorker).baseCommit,
+                spawnUsername,
+              );
+            })().catch((err) => {
               logger.error({ sessionId, workerId, err }, 'Error handling git-diff connection');
               // Send error to client and close WebSocket on critical connection errors
               try {

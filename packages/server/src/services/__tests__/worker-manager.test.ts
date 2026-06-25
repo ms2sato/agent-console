@@ -157,6 +157,7 @@ describe('WorkerManager', () => {
         name: 'Diff',
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
+        requestUser: null,
       });
 
       expect(worker.type).toBe('git-diff');
@@ -174,6 +175,7 @@ describe('WorkerManager', () => {
         name: 'Diff',
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
+        requestUser: null,
       });
 
       expect(worker.baseCommit).toBe('merge-base:develop');
@@ -186,6 +188,7 @@ describe('WorkerManager', () => {
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
         baseCommit: 'merge-base:origin/develop',
+        requestUser: null,
       });
 
       expect(worker.baseCommit).toBe('merge-base:origin/develop');
@@ -201,10 +204,38 @@ describe('WorkerManager', () => {
         createdAt: new Date().toISOString(),
         locationPath: '/repo',
         baseCommit: 'deadbeef1234',
+        requestUser: null,
       });
 
       expect(worker.baseCommit).toBe('deadbeef1234');
       expect(mockGit.gitSafe).not.toHaveBeenCalled();
+    });
+
+    it('threads requestUser into computeDefaultBaseSpec for multi-user mode (Issue #869)', async () => {
+      // The git-diff branch must propagate requestUser into the lib/git.ts
+      // calls that computeDefaultBaseSpec makes. Asserts the username
+      // reaches the mockGit helpers as the trailing argument.
+      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
+      mockGit.gitRefExists.mockImplementation((ref: string) =>
+        Promise.resolve(ref === 'origin/main'),
+      );
+
+      const worker = await workerManager.initializeGitDiffWorker({
+        id: 'git-diff-elevated',
+        name: 'Diff',
+        createdAt: new Date().toISOString(),
+        locationPath: '/elevated/worktree',
+        requestUser: 'workspaceuser',
+      });
+
+      expect(worker.baseCommit).toBe('merge-base:origin/main');
+      // Verify the requestUser threaded through getDefaultBranch and gitRefExists.
+      // mockGit.getDefaultBranch is called with (cwd, requestUser).
+      const getDefaultBranchCalls = mockGit.getDefaultBranch.mock.calls;
+      expect(getDefaultBranchCalls.length).toBeGreaterThan(0);
+      expect(getDefaultBranchCalls[0][0]).toBe('/elevated/worktree');
+      // The second argument is the requestUser.
+      expect((getDefaultBranchCalls[0] as unknown as [string, string | null])[1]).toBe('workspaceuser');
     });
   });
 

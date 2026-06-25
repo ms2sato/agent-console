@@ -856,4 +856,168 @@ index abc1234..def5678 100644
       }
     });
   });
+
+  // =========================================================================
+  // Privilege-elevation seam (Issue #869 / #870)
+  //
+  // When a `requestUser` is passed, lib/git.ts must route the invocation
+  // through `runAsUser` instead of spawning git directly. The
+  // `__setRunAsUserForTesting` hook lets us swap in a capture mock to
+  // assert the contract without spawning any sudo/sh processes.
+  // =========================================================================
+  describe('requestUser routing (Issue #869 / #870)', () => {
+    it('uses Bun.spawn directly when requestUser is null/undefined (default path)', async () => {
+      setMockSpawnResult('main\n');
+      const { git } = await getGitModule();
+
+      const result = await git(['rev-parse', 'HEAD'], '/repo');
+
+      expect(result).toBe('main');
+      // Direct spawn path: Bun.spawn was invoked with the full git argv.
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args).toEqual(['git', 'rev-parse', 'HEAD']);
+      expect(spawnCalls[0].options.cwd).toBe('/repo');
+    });
+
+    it('routes through runAsUser when requestUser is non-empty (elevated path)', async () => {
+      const runAsUserCalls: Array<Record<string, unknown>> = [];
+      const fakeRunAsUser = async (opts: Record<string, unknown>) => {
+        runAsUserCalls.push(opts);
+        return { stdout: 'mainbranch\n', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        const result = await mod.git(['rev-parse', 'HEAD'], '/repo', undefined, 'alice');
+
+        expect(result).toBe('mainbranch');
+        // Direct-spawn path was NOT used: Bun.spawn was never called.
+        expect(spawnCalls.length).toBe(0);
+        // runAsUser was invoked once with username, cwd, and a shell-escaped
+        // git command string.
+        expect(runAsUserCalls.length).toBe(1);
+        expect(runAsUserCalls[0].username).toBe('alice');
+        expect(runAsUserCalls[0].cwd).toBe('/repo');
+        expect(runAsUserCalls[0].command).toBe("'git' 'rev-parse' 'HEAD'");
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+
+    it('translates a non-zero exitCode from runAsUser into a GitError', async () => {
+      const fakeRunAsUser = async () => ({
+        stdout: '',
+        stderr: 'fatal: bad revision\n',
+        exitCode: 128,
+        timedOut: false,
+      });
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        let caught: unknown;
+        try {
+          await mod.git(['rev-parse', 'no-such-ref'], '/repo', undefined, 'alice');
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(mod.GitError);
+        expect((caught as Error).message).toContain('bad revision');
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+
+    it('translates timedOut from runAsUser into a GitError', async () => {
+      const fakeRunAsUser = async () => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 137,
+        timedOut: true,
+      });
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        let caught: unknown;
+        try {
+          await mod.git(['fetch'], '/repo', 5000, 'alice');
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(mod.GitError);
+        expect((caught as Error).message).toContain('timed out');
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+
+    it('wraps a spawn failure thrown by runAsUser into a GitError (e.g., sudo missing)', async () => {
+      const fakeRunAsUser = async () => {
+        throw new Error('spawn sudo ENOENT');
+      };
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        let caught: unknown;
+        try {
+          await mod.git(['rev-parse', 'HEAD'], '/repo', undefined, 'alice');
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeInstanceOf(mod.GitError);
+        expect((caught as Error).message).toContain('spawn sudo ENOENT');
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+  });
+
+  // =========================================================================
+  // getStatusPorcelain whitespace preservation (Issue #870 latent fix)
+  //
+  // The porcelain output's two-column status prefix (`XY filename`) is
+  // separated from the filename by a single space, and the first line in
+  // particular carries meaningful leading whitespace when X is ' ' (e.g.,
+  // ` M file.ts` = unstaged-modified). Trimming the whole stdout would
+  // silently strip that whitespace and break parseStatusPorcelain's
+  // `^(.)(.) (.+)$` regex. Verify the output is returned UNTRIMMED.
+  // =========================================================================
+  describe('getStatusPorcelain whitespace preservation (Issue #870)', () => {
+    it('preserves leading whitespace on the first line so XY status survives', async () => {
+      // ` M file.ts` -> unstaged modified. The leading space is the index
+      // status column and must NOT be stripped by `.trim()`.
+      setMockSpawnResult(' M file.ts\n M other.ts\n');
+      const { getStatusPorcelain } = await getGitModule();
+
+      const result = await getStatusPorcelain('/repo');
+
+      // The leading space MUST be intact. If gitExec stripped it via
+      // .trim()/.trimStart(), the first line would become `M file.ts` and
+      // the XY parser would see only one status column.
+      expect(result.startsWith(' M file.ts')).toBe(true);
+      expect(result).toContain(' M file.ts\n M other.ts');
+    });
+
+    it('preserves leading whitespace under the elevated runAsUser path too', async () => {
+      const fakeRunAsUser = async () => ({
+        stdout: ' M file.ts\n?? new.ts\n',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      });
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        const result = await mod.getStatusPorcelain('/repo', 'alice');
+        // Same invariant on the elevated path.
+        expect(result.startsWith(' M file.ts')).toBe(true);
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
+  });
 });

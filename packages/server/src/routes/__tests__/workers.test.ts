@@ -777,6 +777,67 @@ describe('Workers API', () => {
       expect(body.error).toContain('Could not resolve diff base');
       expect(body.error).toContain('merge-base:origin/main');
     });
+
+    it('threads the session spawn username into the git-diff service (Issue #869 + CodeRabbit lesson)', async () => {
+      // The route must forward the SESSION'S spawn user (resolved via
+      // resolveSpawnUsername(session.createdBy, userRepository)), NOT the
+      // authenticated viewer. For shared sessions the spawn user is the
+      // shared account, so using the viewer's identity would reintroduce
+      // dubious-ownership / missing-credential errors on user-owned worktrees.
+      //
+      // Override the route's appContext with a userRepository stub that
+      // resolves a known createdBy to a specific OS username. The mockGit.*
+      // calls then receive that username as their trailing argument.
+      const mockUserRepository: any = {
+        findById: (id: string) =>
+          id === 'shared-account-id'
+            ? Promise.resolve({ id, username: 'sharedacct', homeDir: '/home/sharedacct' })
+            : Promise.resolve(null),
+      };
+      const elevatedApp = new Hono<AppBindings>();
+      elevatedApp.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({ sessionManager, userRepository: mockUserRepository }));
+        await next();
+      });
+      elevatedApp.onError(onApiError);
+      elevatedApp.route('/api', api);
+
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      // Patch the internal session's createdBy directly to simulate a shared
+      // session. The public Session returned by getSession is a fresh object
+      // each call, so we must mutate the internal map entry.
+      const internalSessions = (sessionManager as unknown as { sessions: Map<string, { createdBy?: string }> }).sessions;
+      const internalSession = internalSessions.get(session.id)!;
+      internalSession.createdBy = 'shared-account-id';
+
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'git-diff',
+        baseCommit: 'merge-base:origin/main',
+      });
+      expect(worker).not.toBeNull();
+
+      mockGit.getMergeBaseSafe.mockImplementation(() => Promise.resolve('resolvedbase999'));
+      mockGit.getDiff.mockImplementation(() => Promise.resolve(''));
+      mockGit.getDiffNumstat.mockImplementation(() => Promise.resolve(''));
+      mockGit.getMergeBaseSafe.mockClear();
+
+      const res = await elevatedApp.request(
+        `/api/sessions/${session.id}/workers/${worker!.id}/diff`,
+      );
+
+      expect(res.status).toBe(200);
+      // mockGit.getMergeBaseSafe is called as
+      // (ref1, ref2, cwd, requestUser). Assert the SHARED-account username
+      // landed there, NOT the authenticated viewer.
+      const calls = mockGit.getMergeBaseSafe.mock.calls;
+      expect(calls.length).toBeGreaterThan(0);
+      const lastCall = calls[calls.length - 1] as unknown as [string, string, string, string | null];
+      expect(lastCall[3]).toBe('sharedacct');
+    });
   });
 
   // ===========================================================================

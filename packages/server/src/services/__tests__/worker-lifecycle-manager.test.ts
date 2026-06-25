@@ -211,6 +211,32 @@ describe('WorkerLifecycleManager', () => {
       expect(ptyFactory.instances.length).toBe(0);
     });
 
+    it('resolves the worktree-owning username for the initial computeDefaultBaseSpec call (Issue #869)', async () => {
+      // The git-diff branch of createWorker must call resolveSpawnUsername so
+      // multi-user mode runs the initial `git symbolic-ref / rev-parse` ops as
+      // the worktree owner, not the server process user — otherwise git
+      // refuses with "dubious ownership in repository".
+      let resolveSpawnCalls = 0;
+      const lifecycleWithSpy = new WorkerLifecycleManager(
+        createDeps({
+          resolveSpawnUsername: async (createdBy) => {
+            resolveSpawnCalls++;
+            expect(createdBy).toBeUndefined();
+            return 'worktreeowner';
+          },
+        }),
+      );
+
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleWithSpy.createWorker(session.id, { type: 'git-diff' });
+
+      expect(worker).not.toBeNull();
+      expect(worker!.type).toBe('git-diff');
+      expect(resolveSpawnCalls).toBe(1);
+    });
+
     it('should return null when session is not found', async () => {
       const request: CreateWorkerParams = {
         type: 'terminal',
