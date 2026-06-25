@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'node:os';
+import type { FileSink } from 'bun';
 import {
   runAsUser,
+  spawnAsUser,
   buildSpawnArgs,
   buildInnerCommand,
   shellEscape,
@@ -653,6 +655,260 @@ describe('privilege-elevation', () => {
 
       const opts = captured[0].options as { stdin?: unknown };
       expect(opts.stdin).toBeUndefined();
+    });
+  });
+
+  describe('spawnAsUser (integration with spawn)', () => {
+    /**
+     * Subset of Bun's `FileSink` shape that `spawnAsUser`'s callers consume
+     * via `subprocess.stdin` (write / end / flush). Pick from Bun's actual
+     * `FileSink` type so the stub literal stays type-compatible with the
+     * field's declared shape on `Subprocess.stdin`. Mirrors the typed-fake
+     * pattern used by `FakeProc` above for the runAsUser fakes.
+     */
+    type FakeFileSink = Pick<FileSink, 'write' | 'end' | 'flush'>;
+
+    /**
+     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape exposed by
+     * `spawnAsUser`'s result. Differs from `FakeProc` in that it carries a
+     * `stdin` `FileSink` (spawnAsUser callers manage stdin over time) and
+     * `exited: Promise<number>` rather than `Promise<number | null>` because
+     * the spawnAsUser tests never resolve `exited` and never expose the
+     * signal-killed-as-null path. `stdin` is typed to Bun's actual `FileSink`
+     * so the outer fake -> `SpawnFn` cast structurally overlaps with
+     * `Subprocess<Writable,Readable,Readable>.stdin` (one direct cast at the
+     * stub boundary substitutes for the previous `as unknown as`).
+     */
+    interface FakeSpawnAsUserProc {
+      exited: Promise<number>;
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      stdin: FileSink;
+      kill: () => void;
+    }
+
+    type FakeSpawnFn = (
+      args: string[],
+      options: Parameters<typeof Bun.spawn>[1],
+    ) => FakeSpawnAsUserProc;
+
+    /**
+     * Build a fake spawn for spawnAsUser. Unlike the runAsUser fake above,
+     * `spawnAsUser` does NOT await `proc.exited` (lifecycle belongs to the
+     * caller), so we keep it simple: a recorded argv/options pair and a
+     * FakeFileSink stub for `stdin` so consumers can call `.write()`/
+     * `.flush()`/`.end()` without touching a real subprocess.
+     */
+    function makeFakeSpawnForSpawnAsUser(captured: CapturedSpawn[]): SpawnFn {
+      const fakeFn: FakeSpawnFn = (args, options) => {
+        captured.push({ args, options });
+        const stdinStub: FakeFileSink = {
+          write: () => 0,
+          end: () => 0,
+          flush: () => Promise.resolve(0),
+        };
+        // The fake never resolves `exited` (no caller awaits it) and never
+        // emits stream bytes -- only the spawn-time argv / options shape and
+        // the FileSink-shaped stdin are exercised by these tests. The stub
+        // only models the three FileSink methods callers touch; a single
+        // direct cast at THIS boundary widens it to `FileSink` so the outer
+        // `fakeFn as SpawnFn` cast structurally overlaps without `unknown`.
+        const fake: FakeSpawnAsUserProc = {
+          exited: new Promise<number>(() => {}),
+          stdout: new ReadableStream<Uint8Array>(),
+          stderr: new ReadableStream<Uint8Array>(),
+          stdin: stdinStub as FileSink,
+          kill: () => {},
+        };
+        return fake;
+      };
+      // Single direct cast at the fake boundary; the fake's typed return
+      // shape (FakeSpawnAsUserProc) matches the subset spawnAsUser consumes.
+      return fakeFn as SpawnFn;
+    }
+
+    it('AUTH_MODE=none: invokes sh -c directly even when username is set', () => {
+      process.env.AUTH_MODE = 'none';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      const result = spawnAsUser(
+        { username: 'alice', command: 'echo hello' },
+        fakeSpawn,
+      );
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].args).toEqual(['sh', '-c', 'echo hello']);
+      expect(result.elevated).toBe(false);
+      expect(result.subprocess).toBeDefined();
+      expect(result.stdin).toBeDefined();
+    });
+
+    it('AUTH_MODE=multi-user with a non-server username: elevates and preserves FORCE_COLOR by default', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const targetUser = `${serverUsername}-someone-else`;
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      const result = spawnAsUser(
+        { username: targetUser, command: 'whoami' },
+        fakeSpawn,
+      );
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].args).toEqual([
+        'sudo',
+        '-u',
+        targetUser,
+        '--preserve-env=FORCE_COLOR',
+        '-i',
+        'sh',
+        '-c',
+        'whoami',
+      ]);
+      expect(result.elevated).toBe(true);
+    });
+
+    it('AUTH_MODE=multi-user with username === serverUsername: bypasses elevation (direct spawn)', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      const result = spawnAsUser(
+        { username: serverUsername, command: 'id -un' },
+        fakeSpawn,
+      );
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].args).toEqual(['sh', '-c', 'id -un']);
+      expect(result.elevated).toBe(false);
+    });
+
+    it('AUTH_MODE=multi-user with null username: bypasses elevation', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      const result = spawnAsUser(
+        { username: null, command: 'echo legacy' },
+        fakeSpawn,
+      );
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].args).toEqual(['sh', '-c', 'echo legacy']);
+      expect(result.elevated).toBe(false);
+    });
+
+    it('always sets stdin/stdout/stderr to "pipe" regardless of elevation', () => {
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      // Non-elevated branch
+      process.env.AUTH_MODE = 'none';
+      spawnAsUser({ username: null, command: 'echo nonelev' }, fakeSpawn);
+
+      // Elevated branch
+      process.env.AUTH_MODE = 'multi-user';
+      spawnAsUser(
+        { username: `${serverUsername}-other`, command: 'echo elev' },
+        fakeSpawn,
+      );
+
+      expect(captured).toHaveLength(2);
+      for (const cap of captured) {
+        const opts = cap.options as {
+          stdin?: unknown;
+          stdout?: unknown;
+          stderr?: unknown;
+        };
+        expect(opts.stdin).toBe('pipe');
+        expect(opts.stdout).toBe('pipe');
+        expect(opts.stderr).toBe('pipe');
+      }
+    });
+
+    it('non-elevated: forwards cwd via spawn options AND merges opts.env over process.env', () => {
+      // Mirror of the runAsUser non-elevated env-merge regression test.
+      process.env.AUTH_MODE = 'none';
+      const sentinelKey = '__SPAWN_AS_USER_TEST_SENTINEL__';
+      const sentinelValue = 'parent-env-survives';
+      process.env[sentinelKey] = sentinelValue;
+      try {
+        const captured: CapturedSpawn[] = [];
+        const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+        spawnAsUser(
+          {
+            username: null,
+            command: 'pwd',
+            cwd: '/some/dir',
+            env: { FOO: 'bar' },
+          },
+          fakeSpawn,
+        );
+
+        const opts = captured[0].options as {
+          cwd?: string;
+          env?: Record<string, string>;
+        };
+        expect(opts.cwd).toBe('/some/dir');
+        expect(opts.env?.FOO).toBe('bar');
+        expect(opts.env?.[sentinelKey]).toBe(sentinelValue);
+        if (process.env.PATH !== undefined) {
+          expect(opts.env?.PATH).toBe(process.env.PATH);
+        }
+        expect(captured[0].args).toEqual(['sh', '-c', 'pwd']);
+      } finally {
+        delete process.env[sentinelKey];
+      }
+    });
+
+    it('elevated: interpolates cwd/env into the inner command AND pins spawn cwd to /', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const targetUser = `${serverUsername}-someone-else`;
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      spawnAsUser(
+        {
+          username: targetUser,
+          command: 'git clone https://x',
+          cwd: '/work/here',
+          env: { GIT_TERMINAL_PROMPT: '0' },
+        },
+        fakeSpawn,
+      );
+
+      const innerCommand = captured[0].args[captured[0].args.length - 1];
+      expect(innerCommand).toBe(
+        "cd '/work/here' && export GIT_TERMINAL_PROMPT='0'; git clone https://x",
+      );
+
+      const opts = captured[0].options as {
+        cwd?: string;
+        env?: Record<string, string>;
+      };
+      expect(opts.cwd).toBe('/');
+      expect(opts.env).toBeUndefined();
+    });
+
+    it('returns subprocess, stdin, and elevated boolean in the result', () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const captured: CapturedSpawn[] = [];
+      const fakeSpawn = makeFakeSpawnForSpawnAsUser(captured);
+
+      const result = spawnAsUser(
+        { username: `${serverUsername}-someone-else`, command: 'echo hi' },
+        fakeSpawn,
+      );
+
+      expect(result.subprocess).toBeDefined();
+      expect(result.stdin).toBeDefined();
+      // stdin must point at the same FileSink the subprocess exposes -- the
+      // `stdin` field is an alias so callers can store it once without
+      // re-reading subprocess.stdin later.
+      expect(result.stdin).toBe(result.subprocess.stdin);
+      expect(result.elevated).toBe(true);
     });
   });
 });

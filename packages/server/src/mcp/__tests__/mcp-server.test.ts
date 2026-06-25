@@ -3208,6 +3208,112 @@ describe('MCP Server Tools', () => {
           expect(response.result?.isError).toBe(true);
         }
       });
+
+      // -----------------------------------------------------------------------
+      // Issue #879: authentication / elevation
+      // -----------------------------------------------------------------------
+      //
+      // run_process must resolve the session's `createdBy` (a users.id UUID)
+      // to its OS `username` via `userRepository.findById` and pass that
+      // through to `interactiveProcessManager.runProcess` as `requestUser`.
+      // Mirrors the resolution pattern already covered for
+      // `delegate_to_worktree` (Issue #844 / #876 blocks above), this time
+      // capturing the argument via a `jest.spyOn` of the manager's
+      // `runProcess` method.
+      describe('authentication / elevation', () => {
+        async function createSessionWithWorkerForUser(
+          createdBy: string | undefined,
+        ): Promise<{ sessionId: string; workerId: string }> {
+          const session = await sessionManager.createSession(
+            {
+              type: 'quick',
+              locationPath: '/test/path',
+              agentId: 'claude-code',
+            },
+            createdBy === undefined ? undefined : { createdBy },
+          );
+          return { sessionId: session.id, workerId: session.workers[0].id };
+        }
+
+        it('plumbs resolved OS username when session createdBy resolves to a registered user', async () => {
+          const alice = await userRepository.upsertByOsUid(9101, 'alice', '/home/alice');
+          const { sessionId, workerId } = await createSessionWithWorkerForUser(alice.id);
+
+          const runProcessSpy = jest.spyOn(
+            interactiveProcessManager,
+            'runProcess',
+          );
+
+          const response = await callTool(app, mcpSessionId, 'run_process', {
+            command: 'echo hi',
+            sessionId,
+            workerId,
+          }, nextId++);
+
+          expect(response.result?.isError).toBeUndefined();
+          expect(runProcessSpy).toHaveBeenCalledTimes(1);
+          const params = runProcessSpy.mock.calls[0][0] as {
+            requestUser?: string | null;
+          };
+          expect(params.requestUser).toBe('alice');
+
+          runProcessSpy.mockRestore();
+        });
+
+        it('passes null requestUser when session has no createdBy (legacy)', async () => {
+          const { sessionId, workerId } =
+            await createSessionWithWorkerForUser(undefined);
+
+          const runProcessSpy = jest.spyOn(
+            interactiveProcessManager,
+            'runProcess',
+          );
+
+          const response = await callTool(app, mcpSessionId, 'run_process', {
+            command: 'echo hi',
+            sessionId,
+            workerId,
+          }, nextId++);
+
+          expect(response.result?.isError).toBeUndefined();
+          expect(runProcessSpy).toHaveBeenCalledTimes(1);
+          const params = runProcessSpy.mock.calls[0][0] as {
+            requestUser?: string | null;
+          };
+          expect(params.requestUser).toBeNull();
+
+          runProcessSpy.mockRestore();
+        });
+
+        it('passes null requestUser when session createdBy UUID does not resolve to a user', async () => {
+          // Orphan / pre-multi-user createdBy that does not match any
+          // userRepository entry. The MCP path must log a warning and fall
+          // back to null rather than aborting the spawn.
+          const { sessionId, workerId } = await createSessionWithWorkerForUser(
+            'orphan-uuid-not-in-users-table',
+          );
+
+          const runProcessSpy = jest.spyOn(
+            interactiveProcessManager,
+            'runProcess',
+          );
+
+          const response = await callTool(app, mcpSessionId, 'run_process', {
+            command: 'echo hi',
+            sessionId,
+            workerId,
+          }, nextId++);
+
+          expect(response.result?.isError).toBeUndefined();
+          expect(runProcessSpy).toHaveBeenCalledTimes(1);
+          const params = runProcessSpy.mock.calls[0][0] as {
+            requestUser?: string | null;
+          };
+          expect(params.requestUser).toBeNull();
+
+          runProcessSpy.mockRestore();
+        });
+      });
     });
 
     describe('list_processes', () => {

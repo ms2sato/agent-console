@@ -3,6 +3,11 @@ import {
   InteractiveProcessManager,
   MAX_PROCESSES_PER_SESSION,
 } from '../interactive-process-manager.js';
+import type {
+  SpawnAsUserFn,
+  SpawnAsUserOpts,
+  SpawnAsUserResult,
+} from '../privilege-elevation.js';
 
 describe('InteractiveProcessManager', () => {
   let manager: InteractiveProcessManager;
@@ -217,6 +222,261 @@ describe('InteractiveProcessManager', () => {
       expect(exitInfo.exitCode).toBe(0);
     });
 
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #879: spawn elevation through `spawnAsUser` for run_process
+  // -------------------------------------------------------------------------
+  //
+  // `runProcess` must route the underlying spawn through the injected
+  // `spawnAsUserFn` and pass `requestUser` through. This tests the contract
+  // at the helper boundary (the elevation argv shape itself is covered by
+  // privilege-elevation.test.ts).
+  describe('runProcess (Issue #879: requestUser plumbing via spawnAsUser)', () => {
+    interface CapturedSpawn {
+      opts: SpawnAsUserOpts;
+    }
+
+    /**
+     * Subset of Bun's `FileSink` shape that `interactive-process-manager`
+     * actually consumes (`write` + `flush`; `end` is included so the fake
+     * matches the shape `spawnAsUser` exposes on `subprocess.stdin`).
+     * Declaring it explicitly lets the fake be typed without casting through
+     * `unknown` (which the repo's TypeScript guideline prohibits).
+     */
+    interface FakeFileSink {
+      write: (chunk: string | Uint8Array) => number;
+      end: () => void;
+      flush: () => Promise<number>;
+    }
+
+    /**
+     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape that
+     * `interactive-process-manager` actually consumes (`exited`, `stdout`,
+     * `stderr`, `stdin`, `kill`). Mirrors the `FakeProc` pattern used in
+     * `privilege-elevation.test.ts` for the runAsUser fakes.
+     */
+    interface FakeSubprocess {
+      exited: Promise<number>;
+      stdin: FakeFileSink;
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      kill: (signal?: number) => void;
+    }
+
+    /**
+     * Build a fake `spawnAsUserFn` that records the spawn opts and returns
+     * a controllable FakeSubprocess. The FakeSubprocess exposes
+     * `.simulateExit(code)` so tests can drive the lifecycle.
+     */
+    function makeFakeSpawnAsUser(captured: CapturedSpawn[]): {
+      fn: SpawnAsUserFn;
+      lastStdinWrites: Array<string | Uint8Array>;
+      flushCalls: { count: number };
+      killSignals: number[];
+      simulateExit: (code: number) => void;
+    } {
+      const lastStdinWrites: Array<string | Uint8Array> = [];
+      const flushCalls = { count: 0 };
+      const killSignals: number[] = [];
+      let resolveExited: ((code: number) => void) | null = null;
+      const exited = new Promise<number>((resolve) => {
+        resolveExited = resolve;
+      });
+
+      const stdin: FakeFileSink = {
+        write: (chunk: string | Uint8Array) => {
+          lastStdinWrites.push(chunk);
+          return 0;
+        },
+        end: () => {},
+        flush: () => {
+          flushCalls.count++;
+          return Promise.resolve(0);
+        },
+      };
+
+      const subprocess: FakeSubprocess = {
+        exited,
+        stdin,
+        stdout: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        kill: (signal?: number) => {
+          killSignals.push(signal ?? 15);
+        },
+      };
+
+      const fn: SpawnAsUserFn = (opts) => {
+        captured.push({ opts });
+        // Single direct cast at the fake boundary; the fake's typed members
+        // (FakeSubprocess / FakeFileSink) cover the subset production code
+        // consumes. No `unknown` intermediate.
+        const result: Pick<SpawnAsUserResult, 'elevated'> & {
+          subprocess: FakeSubprocess;
+          stdin: FakeFileSink;
+        } = {
+          subprocess,
+          stdin,
+          elevated:
+            opts.username !== null &&
+            opts.username !== undefined &&
+            opts.username !== '',
+        };
+        return result as SpawnAsUserResult;
+      };
+
+      return {
+        fn,
+        lastStdinWrites,
+        flushCalls,
+        killSignals,
+        simulateExit: (code: number) => resolveExited?.(code),
+      };
+    }
+
+    it('passes requestUser=undefined as null username to spawnAsUserFn (no elevation)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured);
+      const elevatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        onResponse,
+        fake.fn,
+      );
+
+      await elevatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo hi',
+      });
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBeNull();
+      expect(captured[0].opts.command).toBe('echo hi');
+
+      fake.simulateExit(0);
+      elevatedManager.disposeAll();
+    });
+
+    it('passes requestUser=null as null username to spawnAsUserFn (no elevation)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured);
+      const elevatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        onResponse,
+        fake.fn,
+      );
+
+      await elevatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'echo hi',
+        requestUser: null,
+      });
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBeNull();
+
+      fake.simulateExit(0);
+      elevatedManager.disposeAll();
+    });
+
+    it('forwards requestUser="alice" to spawnAsUserFn as username and propagates the returned subprocess', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured);
+      const elevatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        onResponse,
+        fake.fn,
+      );
+
+      const info = await elevatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'whoami',
+        cwd: '/work/here',
+        requestUser: 'alice',
+      });
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBe('alice');
+      expect(captured[0].opts.command).toBe('whoami');
+      expect(captured[0].opts.cwd).toBe('/work/here');
+      // The returned info must be a valid InteractiveProcessInfo and the
+      // process should be tracked.
+      expect(info.status).toBe('running');
+      expect(elevatedManager.getProcess(info.id)).toBeDefined();
+
+      fake.simulateExit(0);
+      elevatedManager.disposeAll();
+    });
+
+    it('writeResponse writes to the elevated subprocess stdin with content + null byte', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured);
+      const elevatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        onResponse,
+        fake.fn,
+      );
+
+      const info = await elevatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'cat',
+        requestUser: 'alice',
+      });
+
+      const written = await elevatedManager.writeResponse(info.id, 'hello');
+      expect(written).toBe(true);
+      expect(fake.lastStdinWrites).toContain('hello\0');
+      expect(fake.flushCalls.count).toBeGreaterThan(0);
+
+      fake.simulateExit(0);
+      elevatedManager.disposeAll();
+    });
+
+    it('killProcess sends SIGTERM (15) to the elevated subprocess', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured);
+      const elevatedManager = new InteractiveProcessManager(
+        onOutput,
+        onExit,
+        { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+        onResponse,
+        fake.fn,
+      );
+
+      const info = await elevatedManager.runProcess({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        command: 'sleep 60',
+        requestUser: 'alice',
+      });
+
+      const killed = elevatedManager.killProcess(info.id);
+      expect(killed).toBe(true);
+      expect(fake.killSignals).toContain(15);
+
+      // Resolve to avoid hanging promises in afterEach
+      fake.simulateExit(143);
+      elevatedManager.disposeAll();
+    });
   });
 
   describe('killProcess', () => {

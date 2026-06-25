@@ -1151,12 +1151,33 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        // Resolve the session's createdBy (a users.id UUID) to its OS
+        // `username` so the spawned process runs as the requesting user in
+        // multi-user mode (Issue #879). Mirrors the resolution pattern in
+        // `delegate_to_worktree` (above). When `createdBy` is unset or the
+        // UUID does not resolve (legacy / orphan sessions), `requestUsername`
+        // is null and the underlying `spawnAsUser` bypasses elevation --
+        // single-user behaviour preserved.
+        let requestUsername: string | null = null;
+        if (session.createdBy) {
+          const sessionUser = await userRepository.findById(session.createdBy);
+          if (sessionUser) {
+            requestUsername = sessionUser.username;
+          } else {
+            logger.warn(
+              { createdBy: session.createdBy, sessionId },
+              'run_process: session createdBy does not resolve to a user; running command without elevation',
+            );
+          }
+        }
+
         const process = await interactiveProcessManager.runProcess({
           sessionId,
           workerId,
           command,
           cwd,
           outputMode,
+          requestUser: requestUsername,
         });
 
         return textResult({
