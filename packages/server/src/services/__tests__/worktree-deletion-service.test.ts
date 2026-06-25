@@ -155,7 +155,7 @@ describe('deleteWorktree', () => {
 
     expect(result.success).toBe(true);
     expect(result.sessionIds).toEqual([]);
-    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, undefined);
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, null);
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
     expect(mockExecuteHookCommand).not.toHaveBeenCalled();
     expect(deps.sessionManager.killSessionWorkers).not.toHaveBeenCalled();
@@ -181,7 +181,7 @@ describe('deleteWorktree', () => {
     expect(result.sessionIds).toEqual(['sess-1', 'sess-2']);
     expect(deps.sessionManager.killSessionWorkers).toHaveBeenCalledWith('sess-1');
     expect(deps.sessionManager.killSessionWorkers).toHaveBeenCalledWith('sess-2');
-    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, undefined);
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, null);
     expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-1');
     expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-2');
     expect(mockRemoveWorktree).not.toHaveBeenCalled(); // git path not used
