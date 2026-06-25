@@ -458,7 +458,7 @@ export function spawnAsUser(
   >;
 
   logger.info(
-    { username: opts.username ?? null, elevated, command: opts.command },
+    { username: opts.username ?? null, elevated },
     'spawnAsUser spawned',
   );
 
