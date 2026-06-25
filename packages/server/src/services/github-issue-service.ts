@@ -2,45 +2,22 @@
  * GitHub Issue Service
  *
  * Provides functionality to fetch GitHub issue details via the GitHub CLI
- * (`gh api`). Issue #885: gh invocations are routed through the `runAsUser`
- * privilege-elevation helper so multi-user mode (AUTH_MODE=multi-user) runs
- * `gh api` as the requesting OS user (with that user's per-user gh auth
- * token) instead of the server-process user. Mirrors PR #842 / PR #859.
+ * (`gh api`). Issue #885: gh invocations are routed through the `runGh`
+ * thin runner (which composes `runAsUser` per `.claude/rules/elevation-helpers.md`)
+ * so multi-user mode (AUTH_MODE=multi-user) runs `gh api` as the requesting
+ * OS user (with that user's per-user gh auth token) instead of the
+ * server-process user. Mirrors PR #842 / PR #859.
  */
 import type { GitHubIssueSummary } from '@agent-console/shared';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
-import { runAsUser, shellEscape } from './privilege-elevation.js';
+import { runGh } from './github-cli.js';
 
-const DEFAULT_GH_TIMEOUT_MS = 15000;
+const GH_API_TIMEOUT_MS = 15_000;
 
 interface ParsedIssueReference {
   org: string;
   repo: string;
   number: number;
-}
-
-async function runGhApi(
-  args: string[],
-  cwd: string | undefined,
-  requestUsername: string | null,
-): Promise<string> {
-  const command = ['gh', ...args].map(shellEscape).join(' ');
-  const result = await runAsUser({
-    username: requestUsername,
-    command,
-    cwd,
-    timeoutMs: DEFAULT_GH_TIMEOUT_MS,
-  });
-
-  if (result.timedOut) {
-    throw new Error(`gh api timed out after ${DEFAULT_GH_TIMEOUT_MS}ms`);
-  }
-
-  if (result.exitCode !== 0) {
-    throw new Error(result.stderr.trim() || 'gh api request failed');
-  }
-
-  return result.stdout;
 }
 
 function sanitizeBranchSuggestion(title: string, fallbackNumber: number): string {
@@ -106,11 +83,23 @@ async function resolveDefaultOrgRepo(repoPath: string): Promise<string> {
   return orgRepo;
 }
 
+/**
+ * Test-seam DI per `.claude/rules/elevation-helpers.md` "Test-correctness DI
+ * is orthogonal to strict semantics". Production callers ignore this opt;
+ * tests inject a captured-call fake `runGh` to assert helper-level call shape
+ * (args / cwd / requestUsername / subcommand) without spawning real `sh -c`.
+ */
+interface RunGhSeam {
+  runGhImpl?: typeof runGh;
+}
+
 export async function fetchGitHubIssue(
   reference: string,
   repoPath: string,
   requestUsername: string | null,
+  seam: RunGhSeam = {},
 ): Promise<GitHubIssueSummary> {
+  const runGhFn = seam.runGhImpl ?? runGh;
   const defaultOrgRepo = reference.trim().startsWith('#')
     ? await resolveDefaultOrgRepo(repoPath)
     : undefined;
@@ -120,10 +109,9 @@ export async function fetchGitHubIssue(
     throw new Error('Issue number must be a positive integer');
   }
 
-  const responseText = await runGhApi(
+  const responseText = await runGhFn(
     ['api', `repos/${org}/${repo}/issues/${number}`],
-    repoPath,
-    requestUsername,
+    { cwd: repoPath, requestUsername, timeoutMs: GH_API_TIMEOUT_MS, subcommand: 'api' },
   );
 
   let responseJson: { title?: string; body?: string | null; html_url?: string } | undefined;
