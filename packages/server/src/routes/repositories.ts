@@ -12,7 +12,6 @@ import {
   RepositorySlackIntegrationInputSchema,
 } from '@agent-console/shared';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
-import { fetchGitHubIssue } from '../services/github-issue-service.js';
 import { ConflictError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getRemoteUrl, parseOrgRepo, fetchAllRemote, getCommitsBehind, getCommitsAhead, GitError, fetchRemote } from '../lib/git.js';
@@ -263,7 +262,8 @@ const repositories = new Hono<AppBindings>()
   // Fetch a GitHub issue for a repository
   .post('/:id/github-issue', vValidator(FetchGitHubIssueRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager } = c.get('appContext');
+    const { repositoryManager, fetchGitHubIssue } = c.get('appContext');
+    const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -273,7 +273,14 @@ const repositories = new Hono<AppBindings>()
     const body = c.req.valid('json');
 
     try {
-      const issue: GitHubIssueSummary = await fetchGitHubIssue(body.reference, repo.path);
+      // Issue #885: thread the authenticated OS username so multi-user mode
+      // runs `gh api` as the requesting user (with that user's per-user gh
+      // auth token). In single-user mode `runAsUser` bypasses elevation.
+      const issue: GitHubIssueSummary = await fetchGitHubIssue(
+        body.reference,
+        repo.path,
+        authUser.username,
+      );
       return c.json({ issue });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to fetch GitHub issue';

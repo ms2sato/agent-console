@@ -105,7 +105,11 @@ export interface DeleteWorktreeDeps {
   repositoryManager: {
     getRepository(id: string): { name: string; path: string; cleanupCommand?: string | null } | undefined;
   };
-  findOpenPullRequest: (branch: string, cwd: string) => Promise<{ number: number; title: string } | null>;
+  findOpenPullRequest: (
+    branch: string,
+    cwd: string,
+    requestUsername: string | null,
+  ) => Promise<{ number: number; title: string } | null>;
   getCurrentBranch: (cwd: string) => Promise<string>;
 }
 
@@ -254,13 +258,18 @@ export interface DeleteWorktreeParams {
   worktreePath: string;
   force: boolean;
   /**
-   * Requesting OS username — when provided and `AUTH_MODE=multi-user`, the
-   * underlying `git worktree remove` / fallback `rm -rf` invocations route
-   * through `runAsUser` so they execute as the worktree-owning user. This
-   * fixes the `Permission denied` failure when the server user
-   * (`agentconsole`) tries to delete files owned by a delegated user
-   * (Issue #882). When null / undefined / single-user mode, behaviour is
-   * unchanged.
+   * Requesting OS username — when provided and `AUTH_MODE=multi-user`, threads
+   * through to two distinct elevation points:
+   * - `git worktree remove` / fallback `rm -rf` route through `runAsUser` so
+   *   they execute as the worktree-owning user, fixing the `Permission denied`
+   *   failure when the server user (`agentconsole`) tries to delete files
+   *   owned by a delegated user (Issue #882).
+   * - `findOpenPullRequest`'s `gh pr list` invocation runs under the
+   *   requesting user's gh auth token instead of the server user's (Issue
+   *   #885).
+   *
+   * Optional / null / undefined / single-user mode — both elevation points
+   * bypass `sudo` and the existing direct-spawn behaviour is preserved.
    */
   requestUsername?: string | null;
 }
@@ -325,7 +334,7 @@ export async function deleteWorktree(
     try {
       const branch = await getCurrentBranch(worktreePath);
       if (branch && branch !== '(detached)' && branch !== '(unknown)') {
-        const openPr = await findOpenPullRequest(branch, repo.path);
+        const openPr = await findOpenPullRequest(branch, repo.path, requestUsername ?? null);
         if (openPr) {
           return {
             success: false,

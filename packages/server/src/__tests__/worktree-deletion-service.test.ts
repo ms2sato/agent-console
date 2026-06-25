@@ -112,7 +112,7 @@ describe('deleteWorktree — kill phase error handling', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true },
+      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true, requestUsername: null },
       deps,
     );
 
@@ -131,7 +131,7 @@ describe('deleteWorktree — kill phase error handling', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true },
+      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true, requestUsername: null },
       deps,
     );
 
@@ -148,7 +148,7 @@ describe('deleteWorktree — kill phase error handling', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true },
+      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true, requestUsername: null },
       deps,
     );
 
@@ -164,7 +164,7 @@ describe('deleteWorktree — kill phase error handling', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true },
+      { repoId: TEST_REPO_ID, worktreePath: TEST_WORKTREE_PATH, force: true, requestUsername: null },
       deps,
     );
 

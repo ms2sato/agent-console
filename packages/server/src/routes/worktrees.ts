@@ -298,10 +298,13 @@ const worktrees = new Hono<AppBindings>()
     const repoId = c.req.param('id');
     const { repositoryManager, sessionManager, worktreeService, broadcastToApp, findOpenPullRequest } = c.get('appContext');
     // Thread the authenticated OS username down to the deletion service so
-    // multi-user installs delete the worktree as the worktree-owning user
-    // (Issue #882, mirrors the create-side thread-through in this same file).
+    // multi-user installs (a) delete the worktree as the worktree-owning user
+    // — fixing the `Permission denied` failure when `agentconsole` tries to
+    // remove a delegated user's files (Issue #882, mirrors the create-side
+    // thread-through in this same file), and (b) run the `gh pr list`
+    // open-PR check under the requesting user's gh auth token (Issue #885).
     // In single-user mode, `runAsUser` reads this value but `AUTH_MODE` gates
-    // the elevation to a no-op.
+    // the elevation to a no-op for both paths.
     const authUser = c.get('authUser');
 
     // Get worktree path from URL (everything after /worktrees/)

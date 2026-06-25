@@ -45,9 +45,15 @@ const mockSuggestSessionMetadata = mock(
   }),
 );
 
-// github-pr-service mocks (injected via McpDependencies)
-const mockFindOpenPullRequest = mock(async () => null as { number: number; title: string } | null);
-const mockFetchPullRequestUrl = mock(async () => null as string | null);
+// github-pr-service mocks (injected via McpDependencies). Typed signatures
+// so `mock.calls[0][2]` is reachable in the Issue #885 elevation tests.
+const mockFindOpenPullRequest = mock<
+  (branch: string, cwd: string, requestUsername: string | null) =>
+    Promise<{ number: number; title: string } | null>
+>(async () => null);
+const mockFetchPullRequestUrl = mock<
+  (branch: string, cwd: string, requestUsername: string | null) => Promise<string | null>
+>(async () => null);
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -2859,6 +2865,96 @@ describe('MCP Server Tools', () => {
 
       // Session should be preserved
       expect(sessionManager.getSession(session.id)).toBeDefined();
+    });
+
+    // -----------------------------------------------------------------------
+    // Issue #885: authentication / elevation for gh CLI
+    // -----------------------------------------------------------------------
+    //
+    // remove_worktree must resolve the session's `createdBy` (a users.id
+    // UUID) to its OS `username` via `userRepository.findById` and pass
+    // that through to `deleteWorktree` as `requestUsername`, which then
+    // forwards it to the injected `findOpenPullRequest` (the gh CLI
+    // open-PR check). Mirrors the resolution pattern already covered for
+    // `run_process` (Issue #879) and `delegate_to_worktree` (Issue #844).
+    // The MCP caller-auth binding (whether the MCP caller owns
+    // `sessionId`) is deferred to #878.
+    describe('authentication / elevation (Issue #885)', () => {
+      it('plumbs resolved OS username when session createdBy resolves to a registered user', async () => {
+        await setupForDeletion();
+        const alice = await userRepository.upsertByOsUid(9201, 'alice', '/home/alice');
+        const session = await sessionManager.createSession(
+          {
+            type: 'worktree',
+            locationPath: WT_WORKTREE_PATH,
+            repositoryId: 'test-repo',
+            worktreeId: 'feature-branch',
+            agentId: 'claude-code',
+          },
+          { createdBy: alice.id },
+        );
+
+        mockGit.removeWorktree.mockImplementation(async () => {});
+
+        const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+          sessionId: session.id,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        // findOpenPullRequest is the gh-CLI call that receives the
+        // resolved username via deleteWorktree's requestUsername plumbing.
+        expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
+        const [, , requestUsername] = mockFindOpenPullRequest.mock.calls[0];
+        expect(requestUsername).toBe('alice');
+      });
+
+      it('passes null requestUsername when session has no createdBy (legacy)', async () => {
+        await setupForDeletion();
+        // createSession without context omits createdBy entirely.
+        const session = await sessionManager.createSession({
+          type: 'worktree',
+          locationPath: WT_WORKTREE_PATH,
+          repositoryId: 'test-repo',
+          worktreeId: 'feature-branch',
+          agentId: 'claude-code',
+        });
+
+        mockGit.removeWorktree.mockImplementation(async () => {});
+
+        const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+          sessionId: session.id,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
+        const [, , requestUsername] = mockFindOpenPullRequest.mock.calls[0];
+        expect(requestUsername).toBeNull();
+      });
+
+      it('passes null requestUsername when session createdBy UUID does not resolve to a user', async () => {
+        await setupForDeletion();
+        const session = await sessionManager.createSession(
+          {
+            type: 'worktree',
+            locationPath: WT_WORKTREE_PATH,
+            repositoryId: 'test-repo',
+            worktreeId: 'feature-branch',
+            agentId: 'claude-code',
+          },
+          { createdBy: 'orphan-uuid-not-in-users-table' },
+        );
+
+        mockGit.removeWorktree.mockImplementation(async () => {});
+
+        const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+          sessionId: session.id,
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(mockFindOpenPullRequest).toHaveBeenCalledTimes(1);
+        const [, , requestUsername] = mockFindOpenPullRequest.mock.calls[0];
+        expect(requestUsername).toBeNull();
+      });
     });
   });
 

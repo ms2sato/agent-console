@@ -232,6 +232,7 @@ const sessions = new Hono<AppBindings>()
   .get('/:sessionId/pr-link', async (c) => {
     const sessionId = c.req.param('sessionId');
     const { sessionManager } = c.get('appContext');
+    const authUser = c.get('authUser');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {
@@ -246,7 +247,10 @@ const sessions = new Hono<AppBindings>()
     const orgRepo = await getOrgRepoFromPath(session.locationPath);
 
     const { fetchPullRequestUrl } = c.get('appContext');
-    const prUrl = await fetchPullRequestUrl(branchName, session.locationPath);
+    // Issue #885: thread the authenticated OS username so multi-user mode
+    // runs `gh pr view` as the requesting user (with that user's per-user
+    // gh auth token). In single-user mode `runAsUser` bypasses elevation.
+    const prUrl = await fetchPullRequestUrl(branchName, session.locationPath, authUser.username);
 
     return c.json({
       prUrl,

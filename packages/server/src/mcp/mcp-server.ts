@@ -177,8 +177,23 @@ export interface McpDependencies {
    */
   userRepository: UserRepository;
   broadcastToApp: (msg: AppServerMessage) => void;
-  fetchPullRequestUrl: (branch: string, cwd: string) => Promise<string | null>;
-  findOpenPullRequest: (branch: string, cwd: string) => Promise<OpenPrInfo | null>;
+  /**
+   * Fetch PR URL for a branch. Issue #885: 3rd arg is `requestUsername`,
+   * threaded by the MCP caller resolving `session.createdBy` -> `username`.
+   */
+  fetchPullRequestUrl: (
+    branch: string,
+    cwd: string,
+    requestUsername: string | null,
+  ) => Promise<string | null>;
+  /**
+   * Find open PR for a branch. Issue #885: see `fetchPullRequestUrl`.
+   */
+  findOpenPullRequest: (
+    branch: string,
+    cwd: string,
+    requestUsername: string | null,
+  ) => Promise<OpenPrInfo | null>;
 }
 
 // ---------- Factory ----------
@@ -848,19 +863,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // 2. Resolve the session's `createdBy` (a users.id UUID) to its OS
-        //    username so the underlying `git worktree remove` / fallback
-        //    `rm -rf` execute as the worktree-owning user in multi-user mode
-        //    (Issue #882). When `createdBy` is unset or the UUID does not
-        //    resolve (legacy / orphan sessions), `requestUsername` is null
-        //    and `runAsUser` bypasses elevation — current behaviour
-        //    preserved. Resolution shared with `delegate_to_worktree` /
-        //    `run_process` / `create_conditional_wakeup` via
-        //    `resolveRequestUsername` (PR #889, per
-        //    `.claude/rules/elevation-helpers.md`). Folded in during the
-        //    PR #889 rebase: the inline block landed via PR #888 (#882)
-        //    after the helper extraction was authored, so the rebase
-        //    surfaces a 4th callsite of the same pattern and the rule's
-        //    "extract when 3+ callsites" trigger now points at all four.
+        //    username so multiple elevation points run as the worktree-owning
+        //    user in multi-user mode: (a) `git worktree remove` + fallback
+        //    `rm -rf` (Issue #882), and (b) `findOpenPullRequest`'s
+        //    `gh pr list` open-PR check (Issue #885). When `createdBy` is
+        //    unset or the UUID does not resolve (legacy / orphan sessions),
+        //    `requestUsername` is null and `runAsUser` bypasses elevation —
+        //    current behaviour preserved. Resolution shared with
+        //    `delegate_to_worktree` / `run_process` / `create_conditional_wakeup`
+        //    via `resolveRequestUsername` (PR #889, per
+        //    `.claude/rules/elevation-helpers.md`). The MCP caller-auth
+        //    binding (whether the MCP caller owns `sessionId`) is deferred
+        //    to #878.
         const requestUsername = await resolveRequestUsername(
           session.createdBy,
           userRepository,

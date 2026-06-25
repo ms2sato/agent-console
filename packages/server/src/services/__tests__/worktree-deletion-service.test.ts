@@ -149,7 +149,7 @@ describe('deleteWorktree', () => {
     (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -173,7 +173,7 @@ describe('deleteWorktree', () => {
     (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -195,7 +195,7 @@ describe('deleteWorktree', () => {
     (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -208,7 +208,7 @@ describe('deleteWorktree', () => {
     (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: '/outside/path', force: false },
+      { repoId: 'unregistered-repo', worktreePath: '/outside/path', force: false, requestUsername: null },
       deps,
     );
 
@@ -230,7 +230,7 @@ describe('deleteWorktree', () => {
     (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -246,7 +246,7 @@ describe('deleteWorktree', () => {
     (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -263,7 +263,7 @@ describe('deleteWorktree', () => {
     );
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -281,7 +281,7 @@ describe('deleteWorktree', () => {
     );
 
     const result = await deleteWorktree(
-      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'unregistered-repo', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -296,7 +296,7 @@ describe('deleteWorktree', () => {
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -308,7 +308,7 @@ describe('deleteWorktree', () => {
   it('returns validation error when worktree path is outside managed directory', async () => {
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: '/outside/path', force: false },
+      { repoId: 'repo-1', worktreePath: '/outside/path', force: false, requestUsername: null },
       deps,
     );
 
@@ -330,7 +330,7 @@ describe('deleteWorktree', () => {
 
     const deps = createMockDeps({ sessions: [mainSession] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -350,7 +350,7 @@ describe('deleteWorktree', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -367,12 +367,35 @@ describe('deleteWorktree', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: true },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: true, requestUsername: null },
       deps,
     );
 
     expect(result.success).toBe(true);
     expect(mockFindPr).not.toHaveBeenCalled();
+  });
+
+  it('forwards requestUsername to findOpenPullRequest (Issue #885)', async () => {
+    const mockFindPr = mock<DeleteWorktreeDeps['findOpenPullRequest']>(
+      async () => null,
+    );
+    const deps = createMockDeps({
+      sessions: [DEFAULT_WORKTREE_SESSION],
+      findOpenPullRequest: mockFindPr,
+      getCurrentBranch: async () => 'feature-1',
+    });
+
+    const result = await deleteWorktree(
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: 'alice' },
+      deps,
+    );
+
+    expect(result.success).toBe(true);
+    // 3rd positional arg is requestUsername — the value the route handler
+    // resolved from authUser.username for the gh CLI elevation in
+    // github-pr-service (Issue #885).
+    expect(mockFindPr).toHaveBeenCalledTimes(1);
+    expect(mockFindPr.mock.calls[0]).toEqual(['feature-1', REPO_PATH, 'alice']);
   });
 
   it('returns open-pr error when PR check fails (fail-closed)', async () => {
@@ -382,7 +405,7 @@ describe('deleteWorktree', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -400,7 +423,7 @@ describe('deleteWorktree', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -415,7 +438,7 @@ describe('deleteWorktree', () => {
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -428,7 +451,7 @@ describe('deleteWorktree', () => {
   it('clears concurrency guard after successful deletion', async () => {
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
     await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -442,7 +465,7 @@ describe('deleteWorktree', () => {
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
     await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -458,7 +481,7 @@ describe('deleteWorktree', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -478,7 +501,7 @@ describe('deleteWorktree', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -492,7 +515,7 @@ describe('deleteWorktree', () => {
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -510,7 +533,7 @@ describe('deleteWorktree', () => {
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -527,7 +550,7 @@ describe('deleteWorktree', () => {
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -540,7 +563,7 @@ describe('deleteWorktree', () => {
     deps.sessionManager.deleteSession.mockImplementation(() => Promise.reject(new Error('DB error')));
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -560,7 +583,7 @@ describe('deleteWorktree', () => {
 
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, session2] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -587,7 +610,7 @@ describe('deleteWorktree', () => {
     });
 
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 
@@ -696,7 +719,7 @@ describe('deleteWorktree', () => {
     // getAllSessions returns all sessions, but only matching ones should be processed
     const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, otherSession] });
     const result = await deleteWorktree(
-      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false },
+      { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: false, requestUsername: null },
       deps,
     );
 

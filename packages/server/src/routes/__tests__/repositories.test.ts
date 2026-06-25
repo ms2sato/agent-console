@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import type { GitHubIssueSummary } from '@agent-console/shared';
 import type { GenerateRepositoryDescriptionFn } from '../../services/repository-description-generator.js';
 import {
   CloneNameConflictError,
@@ -9,6 +10,21 @@ import { CLONE_ERROR_CODES, CLONE_JOB_STATUS } from '@agent-console/shared';
 const mockGenerateDescription = mock<GenerateRepositoryDescriptionFn>(() =>
   Promise.resolve({ description: 'test' })
 );
+
+// Issue #885: typed signature lets us read `mock.calls[0][2]` for the
+// requestUsername elevation arg without casting.
+const mockFetchGitHubIssue = mock<
+  (reference: string, repoPath: string, requestUsername: string | null) =>
+    Promise<GitHubIssueSummary>
+>(async () => ({
+  org: 'owner',
+  repo: 'repo',
+  number: 1,
+  title: 'Stub',
+  body: '',
+  url: 'https://github.com/owner/repo/issues/1',
+  suggestedBranch: 'stub',
+}));
 
 import type { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
@@ -88,6 +104,16 @@ function resetAllMocks(): void {
   agentManager.getAgent.mockReset();
   mockGenerateDescription.mockReset();
   mockGenerateDescription.mockImplementation(() => Promise.resolve({ description: 'test' }));
+  mockFetchGitHubIssue.mockReset();
+  mockFetchGitHubIssue.mockImplementation(async () => ({
+    org: 'owner',
+    repo: 'repo',
+    number: 1,
+    title: 'Stub',
+    body: '',
+    url: 'https://github.com/owner/repo/issues/1',
+    suggestedBranch: 'stub',
+  }));
   repositoryCloneService.enqueueClone.mockReset();
   repositoryCloneService.enqueueClone.mockImplementation(() => Promise.resolve('mock-job-id'));
   repositoryCloneService.getJob.mockReset();
@@ -117,6 +143,7 @@ describe('Repositories API', () => {
       generateRepositoryDescription: mockGenerateDescription as any,
       repositoryCloneService: repositoryCloneService as any,
       worktreeService: worktreeService as any,
+      fetchGitHubIssue: mockFetchGitHubIssue,
     });
   });
 
@@ -505,6 +532,75 @@ describe('Repositories API', () => {
       expect(body.status).toBe(CLONE_JOB_STATUS.FAILED);
       expect(body.error.code).toBe(CLONE_ERROR_CODES.AUTH_FAILED);
       expect(body.error.message).toContain('Permission denied');
+    });
+  });
+
+  // =========================================================================
+  // POST /api/repositories/:id/github-issue (Issue #885)
+  //
+  // The route MUST thread `authUser.username` into `fetchGitHubIssue` so
+  // `gh api` runs as the requesting OS user under multi-user mode. The test
+  // app wires SingleUserMode with TEST_AUTH_USER.username='testuser'.
+  // =========================================================================
+  describe('POST /api/repositories/:id/github-issue (Issue #885)', () => {
+    it('forwards authUser.username to fetchGitHubIssue as 3rd positional arg', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      mockFetchGitHubIssue.mockImplementationOnce(async () => ({
+        org: 'owner',
+        repo: 'repo',
+        number: 123,
+        title: 'Sample issue',
+        body: 'Body text',
+        url: 'https://github.com/owner/repo/issues/123',
+        suggestedBranch: 'sample-issue',
+      }));
+
+      const res = await app.request('/api/repositories/repo1/github-issue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reference: 'owner/repo#123' }),
+      });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { issue: GitHubIssueSummary };
+      expect(body.issue.number).toBe(123);
+
+      expect(mockFetchGitHubIssue).toHaveBeenCalledTimes(1);
+      const [reference, repoPath, requestUsername] = mockFetchGitHubIssue.mock.calls[0];
+      expect(reference).toBe('owner/repo#123');
+      expect(repoPath).toBe('/repo');
+      // TEST_AUTH_USER.username from test-utils.ts is 'testuser'.
+      expect(requestUsername).toBe('testuser');
+    });
+
+    it('returns 404 when the repository is not registered', async () => {
+      repositoryManager.getRepository.mockReturnValue(undefined);
+
+      const res = await app.request('/api/repositories/missing/github-issue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reference: 'owner/repo#1' }),
+      });
+
+      expect(res.status).toBe(404);
+      expect(mockFetchGitHubIssue).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when fetchGitHubIssue throws', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      mockFetchGitHubIssue.mockImplementationOnce(async () => {
+        throw new Error('gh api request failed');
+      });
+
+      const res = await app.request('/api/repositories/repo1/github-issue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reference: 'owner/repo#1' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('gh api request failed');
     });
   });
 });
