@@ -1051,6 +1051,27 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        // Resolve the session's createdBy (a users.id UUID) to its OS
+        // `username` so the condition-script process runs as the requesting
+        // user in multi-user mode (Issue #886). Mirrors the resolution
+        // pattern in `run_process` (PR #880) and `delegate_to_worktree`
+        // (PR #877). When `createdBy` is unset or the UUID does not resolve
+        // (legacy / orphan sessions), `requestUsername` is null and the
+        // underlying `spawnAsUser` bypasses elevation -- single-user
+        // behaviour preserved.
+        let requestUsername: string | null = null;
+        if (session.createdBy) {
+          const sessionUser = await userRepository.findById(session.createdBy);
+          if (sessionUser) {
+            requestUsername = sessionUser.username;
+          } else {
+            logger.warn(
+              { createdBy: session.createdBy, sessionId },
+              'create_conditional_wakeup: session createdBy does not resolve to a user; running condition script without elevation',
+            );
+          }
+        }
+
         const wakeup = conditionalWakeupManager.createWakeup({
           sessionId,
           workerId,
@@ -1059,6 +1080,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           onTrueMessage,
           timeoutSeconds,
           onTimeoutMessage,
+          requestUsername,
         });
 
         return textResult({

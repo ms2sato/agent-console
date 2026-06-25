@@ -5,6 +5,11 @@ import {
   MAX_INTERVAL_SECONDS,
   MAX_WAKEUPS_PER_SESSION,
 } from '../conditional-wakeup-manager.js';
+import type {
+  SpawnAsUserFn,
+  SpawnAsUserOpts,
+  SpawnAsUserResult,
+} from '../privilege-elevation.js';
 
 describe('ConditionalWakeupManager', () => {
   let manager: ConditionalWakeupManager;
@@ -612,6 +617,245 @@ describe('ConditionalWakeupManager', () => {
       await Promise.resolve();
 
       Bun.spawn = originalSpawn;
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #886: condition-script spawn elevation via `spawnAsUser`
+  // -------------------------------------------------------------------------
+  //
+  // `ConditionalWakeupManager` must route the condition-script spawn through
+  // the injected `spawnAsUserFn`, passing through the `requestUsername`
+  // resolved by the MCP `create_conditional_wakeup` tool. This tests the
+  // contract at the helper boundary (the elevation argv shape itself is
+  // covered by privilege-elevation.test.ts).
+  describe('checkCondition (Issue #886: requestUsername plumbing via spawnAsUser)', () => {
+    interface CapturedSpawn {
+      opts: SpawnAsUserOpts;
+    }
+
+    /**
+     * Subset of Bun's `FileSink` shape. `conditional-wakeup-manager` does
+     * not actually consume `stdin` on the returned subprocess (the wakeup
+     * flow only reads exit code), but `SpawnAsUserResult` includes it, so
+     * we provide a minimal shape so the result is structurally typed.
+     */
+    interface FakeFileSink {
+      write: (chunk: string | Uint8Array) => number;
+      end: () => void;
+      flush: () => Promise<number>;
+    }
+
+    /**
+     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape that the
+     * manager actually consumes (`exited`, `stdout`, `stderr`, `kill`).
+     * Mirrors the `FakeProc` / `FakeSubprocess` pattern used in
+     * `interactive-process-manager.test.ts` for the spawnAsUser fakes.
+     */
+    interface FakeSubprocess {
+      exited: Promise<number>;
+      stdin: FakeFileSink;
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      kill: (signal?: number) => void;
+    }
+
+    /**
+     * Build a fake `spawnAsUserFn` that records the spawn opts and returns
+     * a controllable FakeSubprocess. Exposes `simulateExit(code)` so tests
+     * can drive the condition-check lifecycle deterministically.
+     */
+    function makeFakeSpawnAsUser(captured: CapturedSpawn[], exitCode: number): {
+      fn: SpawnAsUserFn;
+    } {
+      const fn: SpawnAsUserFn = (opts) => {
+        captured.push({ opts });
+        const stdin: FakeFileSink = {
+          write: () => 0,
+          end: () => {},
+          flush: () => Promise.resolve(0),
+        };
+        const subprocess: FakeSubprocess = {
+          exited: Promise.resolve(exitCode),
+          stdin,
+          stdout: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          stderr: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          kill: () => {},
+        };
+        // Single direct cast at the fake boundary; the fake's typed members
+        // (FakeSubprocess / FakeFileSink) cover the subset production code
+        // consumes. No `unknown` intermediate.
+        const result: Pick<SpawnAsUserResult, 'elevated'> & {
+          subprocess: FakeSubprocess;
+          stdin: FakeFileSink;
+        } = {
+          subprocess,
+          stdin,
+          elevated:
+            opts.username !== null &&
+            opts.username !== undefined &&
+            opts.username !== '',
+        };
+        return result as SpawnAsUserResult;
+      };
+      return { fn };
+    }
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      manager.disposeAll();
+      jest.useRealTimers();
+    });
+
+    it('passes requestUsername=undefined as null username to spawnAsUserFn (no elevation)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'gh pr view 1 --json mergeStateStatus',
+        onTrueMessage: 'Done',
+      });
+
+      jest.advanceTimersByTime(30000);
+      // Drain microtasks so the manager's `await Promise.all(...)` resolves.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBeNull();
+      expect(captured[0].opts.command).toBe('gh pr view 1 --json mergeStateStatus');
+
+      elevatedManager.disposeAll();
+    });
+
+    it('passes requestUsername=null as null username to spawnAsUserFn (no elevation)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'exit 1',
+        onTrueMessage: 'Done',
+        requestUsername: null,
+      });
+
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBeNull();
+
+      elevatedManager.disposeAll();
+    });
+
+    it('forwards requestUsername="alice" to spawnAsUserFn as username (elevation path)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'ssh user@host true',
+        onTrueMessage: 'SSH ready',
+        requestUsername: 'alice',
+      });
+
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBe('alice');
+      expect(captured[0].opts.command).toBe('ssh user@host true');
+
+      elevatedManager.disposeAll();
+    });
+
+    it('reuses the same requestUsername on every interval tick', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'exit 1',
+        onTrueMessage: 'Done',
+        requestUsername: 'alice',
+      });
+
+      // Drive three interval ticks.
+      for (let i = 0; i < 3; i++) {
+        jest.advanceTimersByTime(30000);
+        // Three microtask flushes per tick: spawn -> drain stdout/stderr ->
+        // exit. With all promises already resolved a single flush would
+        // suffice, but more is harmless and keeps the test robust against
+        // future internal changes.
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+
+      expect(captured).toHaveLength(3);
+      for (const call of captured) {
+        expect(call.opts.username).toBe('alice');
+      }
+
+      elevatedManager.disposeAll();
+    });
+
+    it('triggers onWakeup with the resolved message when the elevated condition exits 0', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 0);
+      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'gh pr view 1 --jq .mergeStateStatus | grep -q CLEAN',
+        onTrueMessage: 'PR ready',
+        requestUsername: 'alice',
+      });
+
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBe('alice');
+      expect(onWakeup).toHaveBeenCalledTimes(1);
+      const call = onWakeup.mock.calls[0][0];
+      expect(call.onTrueMessage).toBe('PR ready');
+      expect(call.status).toBe('completed_true');
+
+      elevatedManager.disposeAll();
     });
   });
 });
