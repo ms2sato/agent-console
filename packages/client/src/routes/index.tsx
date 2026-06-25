@@ -174,6 +174,7 @@ export function DashboardPage() {
   activePullsRef.current = activePulls;
   const [pullSuccessMessage, setPullSuccessMessage] = useState<string | null>(null);
   const { errorDialogProps: pullErrorDialogProps, showError: showPullError } = useErrorDialog();
+  const { errorDialogProps: unregisterErrorDialogProps, showError: showUnregisterError } = useErrorDialog();
 
   // Track component mount state for guarding async state updates
   const isMountedRef = useRef(true);
@@ -451,6 +452,9 @@ export function DashboardPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
     },
+    onError: (error: Error) => {
+      showUnregisterError('Unregister Failed', error.message);
+    },
   });
 
   const repositories = reposData?.repositories ?? [];
@@ -581,14 +585,24 @@ export function DashboardPage() {
         title="Unregister Repository"
         description={`Are you sure you want to unregister "${repoToUnregister?.name}"?`}
         confirmLabel="Unregister"
-        onConfirm={() => {
-          if (repoToUnregister) {
-            unregisterMutation.mutate(repoToUnregister.id);
+        isLoading={unregisterMutation.isPending}
+        onConfirm={async () => {
+          if (!repoToUnregister) return;
+          const repoId = repoToUnregister.id;
+          try {
+            await unregisterMutation.mutateAsync(repoId);
+          } catch {
+            // Error surfaced via mutation's onError -> showUnregisterError.
+            // We swallow the rejection here purely to control dialog-close timing.
+          } finally {
+            // Close the ConfirmDialog on both success and error so the operator
+            // can see the ErrorDialog without the confirm dialog stacked behind it.
             setRepoToUnregister(null);
           }
         }}
       />
       <ErrorDialog {...pullErrorDialogProps} />
+      <ErrorDialog {...unregisterErrorDialogProps} />
       <AlertDialog open={pullSuccessMessage !== null} onOpenChange={(open) => { if (!open) setPullSuccessMessage(null); }}>
         <AlertDialogContent>
           <AlertDialogHeader>

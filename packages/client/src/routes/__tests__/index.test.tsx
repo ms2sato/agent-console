@@ -50,6 +50,16 @@ interface FetchResponses {
   repositories: Repository[];
   /** Map of repositoryId -> worktrees array */
   worktreesByRepoId: Record<string, unknown[]>;
+  /**
+   * Optional override for DELETE /api/repositories/:id responses.
+   * Keyed by repositoryId. When absent, the DELETE handler returns 204 No Content
+   * AND removes the repository from `repositories` so a refetch reflects the deletion.
+   */
+  deleteRepositoryResponses?: Record<string, { status: number; body?: unknown }>;
+  /**
+   * Recorded DELETE calls so tests can assert which repository id was sent.
+   */
+  deleteRepositoryCalls?: string[];
 }
 
 let fetchResponses: FetchResponses = {
@@ -78,6 +88,24 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
+  }
+
+  // DELETE /api/repositories/:id  (unregister flow)
+  if (method === 'DELETE' && /\/api\/repositories\/[^/]+$/.test(url)) {
+    const match = url.match(/\/api\/repositories\/([^/]+)$/);
+    const repoId = match?.[1] ?? '';
+    fetchResponses.deleteRepositoryCalls?.push(repoId);
+    const override = fetchResponses.deleteRepositoryResponses?.[repoId];
+    if (override) {
+      const body = override.body === undefined ? null : override.body;
+      return new Response(body === null ? null : JSON.stringify(body), {
+        status: override.status,
+        headers: body === null ? undefined : { 'Content-Type': 'application/json' },
+      });
+    }
+    // Default: success path — remove the repo from the next GET response so refetch reflects deletion.
+    fetchResponses.repositories = fetchResponses.repositories.filter((r) => r.id !== repoId);
+    return new Response(null, { status: 204 });
   }
 
   // Default: empty success response (covers branches lookups, etc.)
@@ -130,10 +158,18 @@ function createMockCreationContext(): UseWorktreeCreationTasksReturn {
 
 // --- Render helper ---
 
-async function renderDashboard(repositories: Repository[]) {
+async function renderDashboard(
+  repositories: Repository[],
+  options?: {
+    deleteRepositoryResponses?: Record<string, { status: number; body?: unknown }>;
+    deleteRepositoryCalls?: string[];
+  }
+) {
   fetchResponses = {
-    repositories,
+    repositories: [...repositories],
     worktreesByRepoId: Object.fromEntries(repositories.map((r) => [r.id, []])),
+    deleteRepositoryResponses: options?.deleteRepositoryResponses,
+    deleteRepositoryCalls: options?.deleteRepositoryCalls,
   };
 
   const sessionDataValue = {
@@ -270,5 +306,122 @@ describe('DashboardPage / Add Repository trigger', () => {
       });
       expect(screen.getByRole('button', { name: 'Add Repository' })).toBeTruthy();
     });
+  });
+});
+
+/**
+ * Tests for Issue #871 — Unregister Repository flow.
+ *
+ * The original implementation was fire-and-forget: clicking "Unregister" in the
+ * ConfirmDialog called `unregisterMutation.mutate(...)` and immediately closed
+ * the dialog, so a failing DELETE silently left the repository in the list with
+ * no operator-visible error. The fix awaits `mutateAsync` and surfaces failures
+ * through a dedicated ErrorDialog. These tests pin both the success refetch
+ * behavior and the error-surfacing behavior.
+ */
+describe('DashboardPage / Unregister Repository', () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+    useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(() => undefined);
+    useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(
+      <T,>() => false as T
+    );
+    hasVSCodeSpy = spyOn(capabilitiesModule, 'hasVSCode').mockImplementation(() => false);
+  });
+
+  afterEach(() => {
+    cleanup();
+    useAppWsEventSpy.mockRestore();
+    useAppWsStateSpy.mockRestore();
+    hasVSCodeSpy.mockRestore();
+  });
+
+  it('removes the repository, closes the confirm dialog, and refetches the list on successful DELETE', async () => {
+    const deleteCalls: string[] = [];
+    const { queryClient } = await renderDashboard([createTestRepository()], {
+      deleteRepositoryCalls: deleteCalls,
+    });
+
+    // Repository card rendered for repo-1
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'my-repo', level: 2 })).toBeTruthy();
+    });
+
+    // Open the ConfirmDialog via the card's "Remove" button.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    // ConfirmDialog appears with the "Unregister Repository" title.
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+
+    // Click the confirm button labelled "Unregister".
+    fireEvent.click(screen.getByRole('button', { name: 'Unregister' }));
+
+    // DELETE was invoked against the correct repository id.
+    await waitFor(() => {
+      expect(deleteCalls).toEqual(['repo-1']);
+    });
+
+    // Confirm dialog is dismissed after success.
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Unregister Repository' })).toBeNull();
+    });
+
+    // Trigger a refetch (production code calls invalidateQueries; force the refetch deterministically here).
+    await queryClient.refetchQueries({ queryKey: ['repositories'] });
+
+    // Repository card is gone — the DELETE handler removed it from the response set, so the refetch reflects the deletion.
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'my-repo', level: 2 })).toBeNull();
+    });
+
+    // The error dialog is NOT shown on the success path.
+    expect(screen.queryByRole('heading', { name: 'Unregister Failed' })).toBeNull();
+  });
+
+  it('surfaces the server error message in an ErrorDialog and keeps the repository in the list when DELETE fails', async () => {
+    const deleteCalls: string[] = [];
+    await renderDashboard([createTestRepository()], {
+      deleteRepositoryResponses: {
+        'repo-1': { status: 500, body: { error: 'permission denied' } },
+      },
+      deleteRepositoryCalls: deleteCalls,
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'my-repo', level: 2 })).toBeTruthy();
+    });
+
+    // Open the ConfirmDialog.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+
+    // Confirm.
+    fireEvent.click(screen.getByRole('button', { name: 'Unregister' }));
+
+    // DELETE invoked.
+    await waitFor(() => {
+      expect(deleteCalls).toEqual(['repo-1']);
+    });
+
+    // Confirm dialog is dismissed even though the request failed (operator dismisses error dialog separately).
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Unregister Repository' })).toBeNull();
+    });
+
+    // ErrorDialog appears with the title and server-provided message.
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Failed' })).toBeTruthy();
+    });
+    expect(screen.getByText('permission denied')).toBeTruthy();
+
+    // The repository remains in the list (no silent removal on error).
+    // Radix's open AlertDialog marks the page background `aria-hidden`, so we
+    // include hidden elements when querying for the still-mounted repo heading.
+    expect(screen.getByRole('heading', { name: 'my-repo', level: 2, hidden: true })).toBeTruthy();
   });
 });
