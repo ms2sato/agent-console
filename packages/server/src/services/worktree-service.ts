@@ -41,6 +41,14 @@ const logger = createLogger('worktree-service');
 const WORKTREE_ADD_TIMEOUT_MS = 120000;
 
 /**
+ * Timeout for `git worktree remove` (and the fallback `rm -rf` / `git
+ * worktree prune` shell invocations) that route through `runAsUser` when
+ * the worktree is user-owned (Issue #882). Same wall-clock budget as the
+ * add path.
+ */
+const WORKTREE_REMOVE_TIMEOUT_MS = 120000;
+
+/**
  * Timeout for the per-user `safe.directory` bootstrap. Short — the command is
  * a pure local gitconfig write with no network or fs traversal.
  */
@@ -613,12 +621,26 @@ export class WorktreeService {
   }
 
   /**
-   * Remove a worktree
+   * Remove a worktree.
+   *
+   * When `requestUsername` is provided and elevation engages
+   * (`AUTH_MODE=multi-user` + non-server user), `git worktree remove` (and
+   * any force-fallback `rm -rf` / `git worktree prune`) is invoked via
+   * `runAsUser` so the operations execute as the worktree-owning user. This
+   * fixes the `Permission denied` failure mode hit when the server user
+   * (`agentconsole`) tries to delete files owned by a delegated user
+   * (Issue #882, mirrors the create-side fix from Issue #838 / PR #843).
+   *
+   * In `AUTH_MODE=none` or when `requestUsername` is null/undefined, the call
+   * keeps the historical direct `gitRemoveWorktree` path, preserving the
+   * original single-user behaviour (including the existing test surface that
+   * mocks `lib/git.ts`).
    */
   async removeWorktree(
     repoPath: string,
     worktreePath: string,
-    force: boolean = false
+    force: boolean = false,
+    requestUsername?: string | null,
   ): Promise<{ success: boolean; error?: string }> {
     try {
       // Detect the orphaned-worktree case where the primary repo dir was deleted
@@ -649,7 +671,7 @@ export class WorktreeService {
         // worktree is always defensible, and this also satisfies "at minimum force
         // must work". The helper is idempotent and is also used by the deletion
         // service when the repository row itself is unregistered (#815).
-        await this.removeOrphanedWorktree(worktreePath);
+        await this.removeOrphanedWorktree(worktreePath, requestUsername);
         logger.warn(
           { worktreePath, repoPath },
           'Primary repo dir missing; removed orphaned worktree without git'
@@ -657,7 +679,16 @@ export class WorktreeService {
         return { success: true };
       }
 
-      await gitRemoveWorktree(worktreePath, repoPath, { force });
+      if (shouldElevateForUser(requestUsername)) {
+        await this.invokeGitWorktreeRemove({
+          worktreePath,
+          repoPath,
+          force,
+          requestUsername: requestUsername!,
+        });
+      } else {
+        await gitRemoveWorktree(worktreePath, repoPath, { force });
+      }
 
       // Remove DB record
       await this.worktreeRepository.deleteByPath(worktreePath);
@@ -672,6 +703,100 @@ export class WorktreeService {
   }
 
   /**
+   * Invoke `git worktree remove` via `runAsUser` (multi-user elevated path
+   * for Issue #882). Mirrors the fallback semantics of `lib/git.ts`'s
+   * `removeWorktree`: when `force` is true and the failure stderr indicates
+   * a stale `.git` file or unrecognized worktree, fall back to a manual
+   * `rm -rf` plus a best-effort `git worktree prune` — both routed through
+   * `runAsUser` so they execute as the worktree-owning user. Prune failure
+   * is logged but does not propagate (the rm already succeeded).
+   *
+   * Throws `GitError` on non-recoverable failure so the outer `removeWorktree`
+   * catch keeps its existing `extractErrorMessage` / `instanceof GitError`
+   * branching contract.
+   */
+  private async invokeGitWorktreeRemove(opts: {
+    worktreePath: string;
+    repoPath: string;
+    force: boolean;
+    requestUsername: string;
+  }): Promise<void> {
+    const args = ['git', 'worktree', 'remove', opts.worktreePath];
+    if (opts.force) {
+      // `--force` twice mirrors `lib/git.ts removeWorktree`: removes unclean
+      // worktrees AND locked worktrees.
+      args.push('--force', '--force');
+    }
+    const command = args.map(shellEscape).join(' ');
+
+    const result = await this._runAsUser({
+      username: opts.requestUsername,
+      command,
+      cwd: opts.repoPath,
+      timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+    });
+
+    if (!result.timedOut && result.exitCode === 0) {
+      return;
+    }
+
+    const stderr = result.stderr;
+
+    if (
+      opts.force &&
+      !result.timedOut &&
+      (stderr.includes('.git') || stderr.includes('is not a working tree'))
+    ) {
+      const escaped = shellEscape(opts.worktreePath);
+      const rmResult = await this._runAsUser({
+        username: opts.requestUsername,
+        // Pin to `/` because the worktree dir itself may not exist anymore.
+        // `rm -rf --` swallows leading-dash safety and missing-path noise.
+        command: `rm -rf -- ${escaped}`,
+        cwd: '/',
+        timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+      });
+      if (rmResult.timedOut || rmResult.exitCode !== 0) {
+        const detail =
+          rmResult.stderr.trim() || `exit code ${rmResult.exitCode}`;
+        throw new GitError(
+          `git worktree remove (elevated rm fallback) failed: ${detail}`,
+          rmResult.exitCode,
+          rmResult.stderr,
+        );
+      }
+
+      // Best-effort prune as the user; failure is logged but not propagated
+      // (the rm already succeeded, so git's stale registry is the only cost).
+      const pruneResult = await this._runAsUser({
+        username: opts.requestUsername,
+        command: 'git worktree prune',
+        cwd: opts.repoPath,
+        timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+      });
+      if (pruneResult.timedOut || pruneResult.exitCode !== 0) {
+        logger.warn(
+          {
+            username: opts.requestUsername,
+            repoPath: opts.repoPath,
+            stderr: pruneResult.stderr.trim(),
+            timedOut: pruneResult.timedOut,
+          },
+          'git worktree prune failed after elevated rm fallback; rm already succeeded so continuing',
+        );
+      }
+      return;
+    }
+
+    const detail = stderr.trim() || `exit code ${result.exitCode}`;
+    throw new GitError(
+      `git worktree remove failed: ${detail}`,
+      result.exitCode,
+      stderr,
+    );
+  }
+
+  /**
    * Remove an orphaned worktree without invoking git.
    *
    * Used when a worktree has lost its anchor — either the primary repo
@@ -683,11 +808,41 @@ export class WorktreeService {
    * - `fs.rm` with `force: true` — no-op if the directory is already gone.
    * - `worktreeRepository.deleteByPath` — no-op if the row is already gone.
    *
+   * In multi-user mode (Issue #882) the worktree directory is owned by the
+   * requesting user, so the server-process `fsPromises.rm` would fail with
+   * `EACCES`. When `requestUsername` is provided and elevation engages, the
+   * removal is routed through `runAsUser` (`rm -rf -- <path>`) so it executes
+   * as the worktree owner. The DB-row delete still runs in-process (DB rows
+   * are not OS-owned).
+   *
    * Idempotent. Callers are responsible for any concurrency guard and any
    * security boundary check on `worktreePath`.
    */
-  async removeOrphanedWorktree(worktreePath: string): Promise<void> {
-    await fsPromises.rm(worktreePath, { recursive: true, force: true });
+  async removeOrphanedWorktree(
+    worktreePath: string,
+    requestUsername?: string | null,
+  ): Promise<void> {
+    if (shouldElevateForUser(requestUsername)) {
+      const escaped = shellEscape(worktreePath);
+      const result = await this._runAsUser({
+        username: requestUsername!,
+        // `rm -rf -- <path>` is idempotent on missing paths (matching the
+        // `force: true` semantics of the in-process branch below). Pin to
+        // `/` because the worktree dir itself may not exist; `/` is always
+        // traversable.
+        command: `rm -rf -- ${escaped}`,
+        cwd: '/',
+        timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+      });
+      if (result.timedOut || result.exitCode !== 0) {
+        const detail = result.stderr.trim() || `exit code ${result.exitCode}`;
+        throw new Error(
+          `Failed to remove orphaned worktree as ${requestUsername!}: ${detail}`,
+        );
+      }
+    } else {
+      await fsPromises.rm(worktreePath, { recursive: true, force: true });
+    }
     await this.worktreeRepository.deleteByPath(worktreePath);
   }
 

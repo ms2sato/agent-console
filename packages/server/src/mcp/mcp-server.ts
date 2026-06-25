@@ -846,12 +846,33 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
-        // 2. Delegate all domain logic to service
+        // 2. Resolve the session's `createdBy` (a users.id UUID) to its OS
+        //    username so the underlying `git worktree remove` / fallback
+        //    `rm -rf` execute as the worktree-owning user in multi-user mode
+        //    (Issue #882, mirrors `delegate_to_worktree` / PR #877 + `run_process`
+        //    / PR #880). When `createdBy` is unset or the UUID does not resolve
+        //    (legacy / orphan sessions), `requestUsername` stays null and
+        //    `runAsUser` bypasses elevation — current behaviour preserved.
+        let requestUsername: string | null = null;
+        if (session.createdBy) {
+          const sessionUser = await userRepository.findById(session.createdBy);
+          if (sessionUser) {
+            requestUsername = sessionUser.username;
+          } else {
+            logger.warn(
+              { createdBy: session.createdBy, sessionId },
+              'remove_worktree: session createdBy does not resolve to a user; running git worktree remove without elevation',
+            );
+          }
+        }
+
+        // 3. Delegate all domain logic to service
         const result = await deleteWorktree(
           {
             repoId: session.repositoryId,
             worktreePath: session.locationPath,
             force: force ?? false,
+            requestUsername,
           },
           { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
         );

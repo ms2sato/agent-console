@@ -146,10 +146,10 @@ export interface DeleteWorktreeResult {
  * default per #815.
  */
 async function cleanupOrphanedWorktree(
-  params: { repoId: string; worktreePath: string },
+  params: { repoId: string; worktreePath: string; requestUsername?: string | null },
   deps: DeleteWorktreeDeps,
 ): Promise<DeleteWorktreeResult> {
-  const { repoId, worktreePath } = params;
+  const { repoId, worktreePath, requestUsername } = params;
   const { worktreeService, sessionManager } = deps;
 
   // 1. Security boundary check — same as validateWorktreePath, but without
@@ -200,8 +200,19 @@ async function cleanupOrphanedWorktree(
 
     // 5. Remove the worktree dir + DB row via the git-less helper.
     //    Idempotent — fs.rm with force does not throw on missing paths,
-    //    and deleteByPath does not throw on missing rows.
-    await worktreeService.removeOrphanedWorktree(canonicalPath);
+    //    and deleteByPath does not throw on missing rows. In multi-user mode
+    //    (Issue #882) the requestUsername threads through so the elevated
+    //    `rm -rf` runs as the worktree-owning user.
+    try {
+      await worktreeService.removeOrphanedWorktree(canonicalPath, requestUsername);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.error(
+        { repoId, worktreePath, requestUsername, err: error },
+        'Failed to remove orphaned worktree directory',
+      );
+      return { success: false, error: message, sessionIds };
+    }
 
     // 6. Delete sessions.
     let sessionDeleteError: string | undefined;
@@ -242,6 +253,16 @@ export interface DeleteWorktreeParams {
   repoId: string;
   worktreePath: string;
   force: boolean;
+  /**
+   * Requesting OS username — when provided and `AUTH_MODE=multi-user`, the
+   * underlying `git worktree remove` / fallback `rm -rf` invocations route
+   * through `runAsUser` so they execute as the worktree-owning user. This
+   * fixes the `Permission denied` failure when the server user
+   * (`agentconsole`) tries to delete files owned by a delegated user
+   * (Issue #882). When null / undefined / single-user mode, behaviour is
+   * unchanged.
+   */
+  requestUsername?: string | null;
 }
 
 /**
@@ -259,7 +280,7 @@ export async function deleteWorktree(
   params: DeleteWorktreeParams,
   deps: DeleteWorktreeDeps,
 ): Promise<DeleteWorktreeResult> {
-  const { repoId, worktreePath, force } = params;
+  const { repoId, worktreePath, force, requestUsername } = params;
   const { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch } = deps;
 
   // 1. Look up repository.
@@ -273,7 +294,7 @@ export async function deleteWorktree(
   // exist, just clean up nicely rather than giving up partway".
   const repo = repositoryManager.getRepository(repoId);
   if (!repo) {
-    return cleanupOrphanedWorktree({ repoId, worktreePath }, deps);
+    return cleanupOrphanedWorktree({ repoId, worktreePath, requestUsername }, deps);
   }
 
   // 2. Validate worktree path
@@ -350,8 +371,11 @@ export async function deleteWorktree(
       }
     }
 
-    // 6c. Remove worktree via git
-    const result = await worktreeService.removeWorktree(repo.path, worktreePath, force);
+    // 6c. Remove worktree via git. `requestUsername` threads down so that in
+    //     multi-user mode (Issue #882) the `git worktree remove` / fallback
+    //     `rm -rf` run as the worktree-owning user; null in single-user mode
+    //     preserves the historical direct-spawn path.
+    const result = await worktreeService.removeWorktree(repo.path, worktreePath, force, requestUsername);
 
     if (!result.success) {
       // Capture git status for diagnostics

@@ -18,7 +18,12 @@ const mockListWorktrees = mock<(repoPath: string, repoId: string) => Promise<Wor
   Promise.resolve([]),
 );
 const mockRemoveWorktree = mock<
-  (repoPath: string, path: string, force: boolean) => Promise<{ success: boolean; error?: string }>
+  (
+    repoPath: string,
+    path: string,
+    force: boolean,
+    requestUsername?: string | null,
+  ) => Promise<{ success: boolean; error?: string }>
 >(() => Promise.resolve({ success: true }));
 const mockExecuteHookCommand = mock<
   (cmd: string, cwd: string, vars: Record<string, unknown>) => Promise<HookCommandResult>
@@ -26,9 +31,9 @@ const mockExecuteHookCommand = mock<
 const mockIsWorktreeOf = mock<
   (repoPath: string, worktreePath: string, repoId: string) => Promise<boolean>
 >(() => Promise.resolve(true));
-const mockRemoveOrphanedWorktree = mock<(worktreePath: string) => Promise<void>>(
-  () => Promise.resolve(),
-);
+const mockRemoveOrphanedWorktree = mock<
+  (worktreePath: string, requestUsername?: string | null) => Promise<void>
+>(() => Promise.resolve());
 
 const mockWorktreeService = {
   listWorktrees: mockListWorktrees,
@@ -150,7 +155,7 @@ describe('deleteWorktree', () => {
 
     expect(result.success).toBe(true);
     expect(result.sessionIds).toEqual([]);
-    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH);
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, undefined);
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
     expect(mockExecuteHookCommand).not.toHaveBeenCalled();
     expect(deps.sessionManager.killSessionWorkers).not.toHaveBeenCalled();
@@ -176,7 +181,7 @@ describe('deleteWorktree', () => {
     expect(result.sessionIds).toEqual(['sess-1', 'sess-2']);
     expect(deps.sessionManager.killSessionWorkers).toHaveBeenCalledWith('sess-1');
     expect(deps.sessionManager.killSessionWorkers).toHaveBeenCalledWith('sess-2');
-    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH);
+    expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, undefined);
     expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-1');
     expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-2');
     expect(mockRemoveWorktree).not.toHaveBeenCalled(); // git path not used
@@ -590,6 +595,92 @@ describe('deleteWorktree', () => {
     expect(result.sessionDeleteError).toBe('sess-2: DB error');
     expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-1');
     expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-2');
+  });
+
+  // --- Issue #882: requestUsername threading (multi-user elevation) ---
+
+  describe('requestUsername threading (Issue #882)', () => {
+    it('happy path threads requestUsername into worktreeService.removeWorktree', async () => {
+      const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
+
+      const result = await deleteWorktree(
+        {
+          repoId: 'repo-1',
+          worktreePath: WORKTREE_PATH,
+          force: false,
+          requestUsername: 'alice',
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockRemoveWorktree).toHaveBeenCalledWith(REPO_PATH, WORKTREE_PATH, false, 'alice');
+    });
+
+    it('orphan path threads requestUsername into worktreeService.removeOrphanedWorktree', async () => {
+      const deps = createMockDeps({ sessions: [] });
+      (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+
+      const result = await deleteWorktree(
+        {
+          repoId: 'unregistered-repo',
+          worktreePath: WORKTREE_PATH,
+          force: false,
+          requestUsername: 'alice',
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(mockRemoveOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, 'alice');
+    });
+
+    it('orphan path: surfaces elevated rm failure as { success: false } with actionable error', async () => {
+      // Simulate the elevated `rm -rf` failing (e.g. EACCES on a deeply nested
+      // file). `removeOrphanedWorktree` throws; the deletion service must
+      // convert the throw into an actionable failure result rather than
+      // letting it propagate to the caller as an unhandled rejection.
+      mockRemoveOrphanedWorktree.mockImplementation(() =>
+        Promise.reject(
+          new Error(
+            "Failed to remove orphaned worktree as alice: rm: cannot remove '/var/lib/.../wt-1/locked': Permission denied",
+          ),
+        ),
+      );
+      const deps = createMockDeps({ sessions: [] });
+      (deps.repositoryManager as { getRepository: () => undefined }).getRepository = () => undefined;
+
+      const result = await deleteWorktree(
+        {
+          repoId: 'unregistered-repo',
+          worktreePath: WORKTREE_PATH,
+          force: false,
+          requestUsername: 'alice',
+        },
+        deps,
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Permission denied');
+      expect(result.sessionIds).toEqual([]);
+    });
+
+    it('happy path with requestUsername=null preserves the single-user call shape', async () => {
+      const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION] });
+
+      await deleteWorktree(
+        {
+          repoId: 'repo-1',
+          worktreePath: WORKTREE_PATH,
+          force: true,
+          requestUsername: null,
+        },
+        deps,
+      );
+
+      // null username explicitly threaded through — runAsUser will bypass.
+      expect(mockRemoveWorktree).toHaveBeenCalledWith(REPO_PATH, WORKTREE_PATH, true, null);
+    });
   });
 
   // --- Session filtering ---
