@@ -240,10 +240,22 @@ export class ConditionalWakeupManager {
       // mode elevates the child to the requesting OS user (Issue #886). When
       // `requestUsername` is null/undefined or `AUTH_MODE !== 'multi-user'`,
       // the helper bypasses elevation and spawns `sh -c <script>` directly.
-      const { subprocess } = this.spawnAsUserFn({
+      const { subprocess, stdin } = this.spawnAsUserFn({
         username: stored.requestUsername ?? null,
         command: stored.info.conditionScript,
       });
+
+      // Close stdin immediately so condition scripts that read from it
+      // (e.g. `read`, an interactive prompt, a stray `sudo` password
+      // prompt) get EOF instead of blocking forever. `spawnAsUser` always
+      // pipes stdin (it is the shared elevation primitive consumed by
+      // long-lived callers like `run_process` that DO write to it), but
+      // conditional wakeups never produce input -- exit code is the sole
+      // signal. Without this `end()`, a script that reads stdin would
+      // stall, `subprocess.exited` would never resolve, and every
+      // subsequent interval tick would short-circuit on the `checking`
+      // flag, silently disabling the wakeup.
+      stdin.end();
 
       stored.currentProcess = subprocess;
 

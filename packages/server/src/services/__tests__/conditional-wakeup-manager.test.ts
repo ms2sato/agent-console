@@ -333,8 +333,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(0),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -371,8 +374,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -408,8 +414,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -446,8 +455,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(0),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -486,8 +498,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -528,8 +543,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -576,7 +594,9 @@ describe('ConditionalWakeupManager', () => {
             resolveProcess = resolve; // Allow test to control when process completes
           }),
           kill: mock(),
-          stdin: null,
+          // stdin must expose `end()` because the manager closes it
+          // immediately after spawn (PR #889 CodeRabbit MAJOR / Issue #886).
+          stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
           stdout: null,
           stderr: null,
           terminal: null,
@@ -663,16 +683,24 @@ describe('ConditionalWakeupManager', () => {
     /**
      * Build a fake `spawnAsUserFn` that records the spawn opts and returns
      * a controllable FakeSubprocess. Exposes `simulateExit(code)` so tests
-     * can drive the condition-check lifecycle deterministically.
+     * can drive the condition-check lifecycle deterministically. Also
+     * records `stdin.end()` calls into `stdinEndCalls` so tests can assert
+     * the manager closes the write side immediately after spawn (Issue
+     * #886 CodeRabbit MAJOR -- without `end()`, a script that reads from
+     * stdin would stall forever).
      */
     function makeFakeSpawnAsUser(captured: CapturedSpawn[], exitCode: number): {
       fn: SpawnAsUserFn;
+      stdinEndCalls: { count: number };
     } {
+      const stdinEndCalls = { count: 0 };
       const fn: SpawnAsUserFn = (opts) => {
         captured.push({ opts });
         const stdin: FakeFileSink = {
           write: () => 0,
-          end: () => {},
+          end: () => {
+            stdinEndCalls.count++;
+          },
           flush: () => Promise.resolve(0),
         };
         const subprocess: FakeSubprocess = {
@@ -706,7 +734,7 @@ describe('ConditionalWakeupManager', () => {
         };
         return result as SpawnAsUserResult;
       };
-      return { fn };
+      return { fn, stdinEndCalls };
     }
 
     // Per-test-case ConditionalWakeupManager. Hoisted to suite scope so
@@ -827,6 +855,43 @@ describe('ConditionalWakeupManager', () => {
       for (const call of captured) {
         expect(call.opts.username).toBe('alice');
       }
+    });
+
+    it('closes subprocess stdin immediately after spawn (no read-from-stdin hang)', async () => {
+      // CodeRabbit MAJOR finding on PR #889: `spawnAsUser` always pipes
+      // stdin, so a condition script that reads from stdin (`read`,
+      // interactive tool, stray `sudo` prompt) would block forever and
+      // `subprocess.exited` would never resolve. The manager must call
+      // `stdin.end()` right after spawn so the child gets EOF.
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'read -t 5 line; exit 1',
+        onTrueMessage: 'Done',
+      });
+
+      // First tick: spawn -> stdin.end() must fire before exit await.
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(fake.stdinEndCalls.count).toBe(1);
+
+      // Second tick: a fresh spawn -> another stdin.end() must fire.
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(2);
+      expect(fake.stdinEndCalls.count).toBe(2);
     });
 
     it('triggers onWakeup with the resolved message when the elevated condition exits 0', async () => {
