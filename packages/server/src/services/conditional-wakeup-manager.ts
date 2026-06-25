@@ -4,6 +4,42 @@ import { spawnAsUser, type SpawnAsUserFn } from './privilege-elevation.js';
 
 const logger = createLogger('conditional-wakeup-manager');
 
+/**
+ * Read every chunk from `stream` and discard it. Returns when the stream
+ * is fully drained. Used to release `spawnAsUser`'s mandatory stdout /
+ * stderr pipes for callers that don't consume them (condition scripts
+ * decide via exit code; their output is irrelevant). Reading incrementally
+ * keeps memory bounded -- a `Response(stream).text()` shortcut would
+ * accumulate the entire stream into memory and defeat the unbounded-
+ * output protection. Errors during draining are swallowed because the
+ * pipe is non-load-bearing; the exit code (which is awaited separately
+ * via `subprocess.exited`) decides the outcome.
+ *
+ * Tolerant of `null` / `undefined` streams because `Bun.spawn` test
+ * fakes (and the legacy `Bun.spawn` mocks in this file's older test
+ * cases) sometimes return `stdout: null` to signal "no stream wired up".
+ */
+async function drainAndDiscard(
+  stream: ReadableStream<Uint8Array> | null | undefined,
+): Promise<void> {
+  if (!stream) {
+    return;
+  }
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done } = await reader.read();
+      if (done) {
+        return;
+      }
+    }
+  } catch {
+    // Swallow read errors; the exit code is the sole signal.
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 export const MIN_INTERVAL_SECONDS = 30;
 export const MAX_INTERVAL_SECONDS = 86400;
 export const MAX_WAKEUPS_PER_SESSION = 20;
@@ -223,16 +259,14 @@ export class ConditionalWakeupManager {
       // primitive consumed by both one-shot and long-lived callers). The
       // prior `Bun.spawn(..., { stdout: 'ignore', stderr: 'ignore' })`
       // invocation redirected to /dev/null; here we instead drain both
-      // streams concurrently with the exit await so a script that writes
-      // more than one pipe buffer (typ. 64KB on Linux) cannot block.
-      // Stream contents are discarded -- exit code is the sole signal for
-      // conditional wakeups.
-      const drainStdout = new Response(
-        subprocess.stdout as ReadableStream<Uint8Array>,
-      ).text().catch(() => '');
-      const drainStderr = new Response(
-        subprocess.stderr as ReadableStream<Uint8Array>,
-      ).text().catch(() => '');
+      // streams incrementally and concurrently with the exit await so a
+      // script that writes more than one pipe buffer (typ. 64KB on Linux)
+      // cannot block. Chunks are read and discarded as they arrive -- exit
+      // code is the sole signal for conditional wakeups, and accumulating
+      // the full stream into memory (e.g. via `new Response(...).text()`)
+      // would defeat the unbounded-output protection.
+      const drainStdout = drainAndDiscard(subprocess.stdout);
+      const drainStderr = drainAndDiscard(subprocess.stderr);
 
       const [exitCode] = await Promise.all([
         subprocess.exited,

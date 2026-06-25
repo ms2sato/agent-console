@@ -709,11 +709,19 @@ describe('ConditionalWakeupManager', () => {
       return { fn };
     }
 
+    // Per-test-case ConditionalWakeupManager. Hoisted to suite scope so
+    // `afterEach` can always dispose it -- if a test throws between
+    // `new ConditionalWakeupManager(...)` and an inline `disposeAll()`,
+    // the wakeup's `setInterval` handle would otherwise leak across tests.
+    let elevatedManager: ConditionalWakeupManager | undefined;
+
     beforeEach(() => {
       jest.useFakeTimers();
     });
 
     afterEach(() => {
+      elevatedManager?.disposeAll();
+      elevatedManager = undefined;
       manager.disposeAll();
       jest.useRealTimers();
     });
@@ -721,7 +729,7 @@ describe('ConditionalWakeupManager', () => {
     it('passes requestUsername=undefined as null username to spawnAsUserFn (no elevation)', async () => {
       const captured: CapturedSpawn[] = [];
       const fake = makeFakeSpawnAsUser(captured, 1);
-      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
 
       elevatedManager.createWakeup({
         sessionId: 'session-1',
@@ -740,14 +748,12 @@ describe('ConditionalWakeupManager', () => {
       expect(captured).toHaveLength(1);
       expect(captured[0].opts.username).toBeNull();
       expect(captured[0].opts.command).toBe('gh pr view 1 --json mergeStateStatus');
-
-      elevatedManager.disposeAll();
     });
 
     it('passes requestUsername=null as null username to spawnAsUserFn (no elevation)', async () => {
       const captured: CapturedSpawn[] = [];
       const fake = makeFakeSpawnAsUser(captured, 1);
-      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
 
       elevatedManager.createWakeup({
         sessionId: 'session-1',
@@ -765,14 +771,12 @@ describe('ConditionalWakeupManager', () => {
 
       expect(captured).toHaveLength(1);
       expect(captured[0].opts.username).toBeNull();
-
-      elevatedManager.disposeAll();
     });
 
     it('forwards requestUsername="alice" to spawnAsUserFn as username (elevation path)', async () => {
       const captured: CapturedSpawn[] = [];
       const fake = makeFakeSpawnAsUser(captured, 1);
-      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
 
       elevatedManager.createWakeup({
         sessionId: 'session-1',
@@ -791,14 +795,12 @@ describe('ConditionalWakeupManager', () => {
       expect(captured).toHaveLength(1);
       expect(captured[0].opts.username).toBe('alice');
       expect(captured[0].opts.command).toBe('ssh user@host true');
-
-      elevatedManager.disposeAll();
     });
 
     it('reuses the same requestUsername on every interval tick', async () => {
       const captured: CapturedSpawn[] = [];
       const fake = makeFakeSpawnAsUser(captured, 1);
-      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
 
       elevatedManager.createWakeup({
         sessionId: 'session-1',
@@ -825,14 +827,12 @@ describe('ConditionalWakeupManager', () => {
       for (const call of captured) {
         expect(call.opts.username).toBe('alice');
       }
-
-      elevatedManager.disposeAll();
     });
 
     it('triggers onWakeup with the resolved message when the elevated condition exits 0', async () => {
       const captured: CapturedSpawn[] = [];
       const fake = makeFakeSpawnAsUser(captured, 0);
-      const elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
 
       elevatedManager.createWakeup({
         sessionId: 'session-1',
@@ -854,8 +854,6 @@ describe('ConditionalWakeupManager', () => {
       const call = onWakeup.mock.calls[0][0];
       expect(call.onTrueMessage).toBe('PR ready');
       expect(call.status).toBe('completed_true');
-
-      elevatedManager.disposeAll();
     });
   });
 });
