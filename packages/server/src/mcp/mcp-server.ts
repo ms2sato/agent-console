@@ -32,6 +32,7 @@ import type { InterSessionMessageService } from '../services/inter-session-messa
 import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
 import type { Session, AgentActivityState, AppServerMessage } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
@@ -626,19 +627,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         // Issue #838 / PR #843 from REST to MCP). When `parentCreatedBy`
         // is unset, or the UUID does not resolve (legacy / orphan
         // sessions), `requestUsername` is null and `runAsUser` bypasses
-        // elevation — current behaviour preserved.
-        let requestUsername: string | null = null;
-        if (parentCreatedBy) {
-          const parentUser = await userRepository.findById(parentCreatedBy);
-          if (parentUser) {
-            requestUsername = parentUser.username;
-          } else {
-            logger.warn(
-              { parentCreatedBy, repositoryId },
-              'delegate_to_worktree: parent createdBy does not resolve to a user; running git worktree add without elevation',
-            );
-          }
-        }
+        // elevation — current behaviour preserved. Resolution shared with
+        // `run_process` / `create_conditional_wakeup` via
+        // `resolveRequestUsername` (PR #889, per
+        // `.claude/rules/elevation-helpers.md`).
+        const requestUsername = await resolveRequestUsername(
+          parentCreatedBy,
+          userRepository,
+          { toolName: 'delegate_to_worktree', repositoryId },
+        );
 
         // Determine branch name
         let effectiveBranch: string;
@@ -853,22 +850,22 @@ export function createMcpApp(deps: McpDependencies): Hono {
         // 2. Resolve the session's `createdBy` (a users.id UUID) to its OS
         //    username so the underlying `git worktree remove` / fallback
         //    `rm -rf` execute as the worktree-owning user in multi-user mode
-        //    (Issue #882, mirrors `delegate_to_worktree` / PR #877 + `run_process`
-        //    / PR #880). When `createdBy` is unset or the UUID does not resolve
-        //    (legacy / orphan sessions), `requestUsername` stays null and
-        //    `runAsUser` bypasses elevation — current behaviour preserved.
-        let requestUsername: string | null = null;
-        if (session.createdBy) {
-          const sessionUser = await userRepository.findById(session.createdBy);
-          if (sessionUser) {
-            requestUsername = sessionUser.username;
-          } else {
-            logger.warn(
-              { createdBy: session.createdBy, sessionId },
-              'remove_worktree: session createdBy does not resolve to a user; running git worktree remove without elevation',
-            );
-          }
-        }
+        //    (Issue #882). When `createdBy` is unset or the UUID does not
+        //    resolve (legacy / orphan sessions), `requestUsername` is null
+        //    and `runAsUser` bypasses elevation — current behaviour
+        //    preserved. Resolution shared with `delegate_to_worktree` /
+        //    `run_process` / `create_conditional_wakeup` via
+        //    `resolveRequestUsername` (PR #889, per
+        //    `.claude/rules/elevation-helpers.md`). Folded in during the
+        //    PR #889 rebase: the inline block landed via PR #888 (#882)
+        //    after the helper extraction was authored, so the rebase
+        //    surfaces a 4th callsite of the same pattern and the rule's
+        //    "extract when 3+ callsites" trigger now points at all four.
+        const requestUsername = await resolveRequestUsername(
+          session.createdBy,
+          userRepository,
+          { toolName: 'remove_worktree', sessionId },
+        );
 
         // 3. Delegate all domain logic to service
         const result = await deleteWorktree(
@@ -1051,6 +1048,21 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        // Resolve the session's createdBy (a users.id UUID) to its OS
+        // `username` so the condition-script process runs as the requesting
+        // user in multi-user mode (Issue #886). When `createdBy` is unset
+        // or the UUID does not resolve (legacy / orphan sessions),
+        // `requestUsername` is null and the underlying `spawnAsUser`
+        // bypasses elevation -- single-user behaviour preserved.
+        // Resolution shared with `run_process` / `delegate_to_worktree`
+        // via `resolveRequestUsername` (PR #889, per
+        // `.claude/rules/elevation-helpers.md`).
+        const requestUsername = await resolveRequestUsername(
+          session.createdBy,
+          userRepository,
+          { toolName: 'create_conditional_wakeup', sessionId },
+        );
+
         const wakeup = conditionalWakeupManager.createWakeup({
           sessionId,
           workerId,
@@ -1059,6 +1071,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           onTrueMessage,
           timeoutSeconds,
           onTimeoutMessage,
+          requestUsername,
         });
 
         return textResult({
@@ -1177,24 +1190,19 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // Resolve the session's createdBy (a users.id UUID) to its OS
-        // `username` so the spawned process runs as the requesting user in
-        // multi-user mode (Issue #879). Mirrors the resolution pattern in
-        // `delegate_to_worktree` (above). When `createdBy` is unset or the
-        // UUID does not resolve (legacy / orphan sessions), `requestUsername`
-        // is null and the underlying `spawnAsUser` bypasses elevation --
-        // single-user behaviour preserved.
-        let requestUsername: string | null = null;
-        if (session.createdBy) {
-          const sessionUser = await userRepository.findById(session.createdBy);
-          if (sessionUser) {
-            requestUsername = sessionUser.username;
-          } else {
-            logger.warn(
-              { createdBy: session.createdBy, sessionId },
-              'run_process: session createdBy does not resolve to a user; running command without elevation',
-            );
-          }
-        }
+        // `username` so the spawned process runs as the requesting user
+        // in multi-user mode (Issue #879). When `createdBy` is unset or
+        // the UUID does not resolve (legacy / orphan sessions),
+        // `requestUsername` is null and the underlying `spawnAsUser`
+        // bypasses elevation -- single-user behaviour preserved.
+        // Resolution shared with `delegate_to_worktree` /
+        // `create_conditional_wakeup` via `resolveRequestUsername`
+        // (PR #889, per `.claude/rules/elevation-helpers.md`).
+        const requestUsername = await resolveRequestUsername(
+          session.createdBy,
+          userRepository,
+          { toolName: 'run_process', sessionId },
+        );
 
         const process = await interactiveProcessManager.runProcess({
           sessionId,

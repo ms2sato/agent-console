@@ -5,6 +5,11 @@ import {
   MAX_INTERVAL_SECONDS,
   MAX_WAKEUPS_PER_SESSION,
 } from '../conditional-wakeup-manager.js';
+import type {
+  SpawnAsUserFn,
+  SpawnAsUserOpts,
+  SpawnAsUserResult,
+} from '../privilege-elevation.js';
 
 describe('ConditionalWakeupManager', () => {
   let manager: ConditionalWakeupManager;
@@ -328,8 +333,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(0),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -366,8 +374,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -403,8 +414,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -441,8 +455,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(0),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -481,8 +498,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -523,8 +543,11 @@ describe('ConditionalWakeupManager', () => {
       Bun.spawn = mock(() => ({
         exited: Promise.resolve(1),
         kill: mock(),
-        // Add minimal required properties for Subprocess interface
-        stdin: null,
+        // Add minimal required properties for Subprocess interface.
+        // stdin must expose `end()` because `conditional-wakeup-manager`
+        // closes it immediately after spawn to prevent read-from-stdin
+        // hangs (PR #889 CodeRabbit MAJOR / Issue #886).
+        stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
         stdout: null,
         stderr: null,
         terminal: null,
@@ -571,7 +594,9 @@ describe('ConditionalWakeupManager', () => {
             resolveProcess = resolve; // Allow test to control when process completes
           }),
           kill: mock(),
-          stdin: null,
+          // stdin must expose `end()` because the manager closes it
+          // immediately after spawn (PR #889 CodeRabbit MAJOR / Issue #886).
+          stdin: { write: () => 0, end: () => {}, flush: () => Promise.resolve(0) },
           stdout: null,
           stderr: null,
           terminal: null,
@@ -612,6 +637,288 @@ describe('ConditionalWakeupManager', () => {
       await Promise.resolve();
 
       Bun.spawn = originalSpawn;
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Issue #886: condition-script spawn elevation via `spawnAsUser`
+  // -------------------------------------------------------------------------
+  //
+  // `ConditionalWakeupManager` must route the condition-script spawn through
+  // the injected `spawnAsUserFn`, passing through the `requestUsername`
+  // resolved by the MCP `create_conditional_wakeup` tool. This tests the
+  // contract at the helper boundary (the elevation argv shape itself is
+  // covered by privilege-elevation.test.ts).
+  describe('checkCondition (Issue #886: requestUsername plumbing via spawnAsUser)', () => {
+    interface CapturedSpawn {
+      opts: SpawnAsUserOpts;
+    }
+
+    /**
+     * Subset of Bun's `FileSink` shape. `conditional-wakeup-manager` does
+     * not actually consume `stdin` on the returned subprocess (the wakeup
+     * flow only reads exit code), but `SpawnAsUserResult` includes it, so
+     * we provide a minimal shape so the result is structurally typed.
+     */
+    interface FakeFileSink {
+      write: (chunk: string | Uint8Array) => number;
+      end: () => void;
+      flush: () => Promise<number>;
+    }
+
+    /**
+     * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape that the
+     * manager actually consumes (`exited`, `stdout`, `stderr`, `kill`).
+     * Mirrors the `FakeProc` / `FakeSubprocess` pattern used in
+     * `interactive-process-manager.test.ts` for the spawnAsUser fakes.
+     */
+    interface FakeSubprocess {
+      exited: Promise<number>;
+      stdin: FakeFileSink;
+      stdout: ReadableStream<Uint8Array>;
+      stderr: ReadableStream<Uint8Array>;
+      kill: (signal?: number) => void;
+    }
+
+    /**
+     * Build a fake `spawnAsUserFn` that records the spawn opts and returns
+     * a controllable FakeSubprocess. Exposes `simulateExit(code)` so tests
+     * can drive the condition-check lifecycle deterministically. Also
+     * records `stdin.end()` calls into `stdinEndCalls` so tests can assert
+     * the manager closes the write side immediately after spawn (Issue
+     * #886 CodeRabbit MAJOR -- without `end()`, a script that reads from
+     * stdin would stall forever).
+     */
+    function makeFakeSpawnAsUser(captured: CapturedSpawn[], exitCode: number): {
+      fn: SpawnAsUserFn;
+      stdinEndCalls: { count: number };
+    } {
+      const stdinEndCalls = { count: 0 };
+      const fn: SpawnAsUserFn = (opts) => {
+        captured.push({ opts });
+        const stdin: FakeFileSink = {
+          write: () => 0,
+          end: () => {
+            stdinEndCalls.count++;
+          },
+          flush: () => Promise.resolve(0),
+        };
+        const subprocess: FakeSubprocess = {
+          exited: Promise.resolve(exitCode),
+          stdin,
+          stdout: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          stderr: new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          kill: () => {},
+        };
+        // Single direct cast at the fake boundary; the fake's typed members
+        // (FakeSubprocess / FakeFileSink) cover the subset production code
+        // consumes. No `unknown` intermediate.
+        const result: Pick<SpawnAsUserResult, 'elevated'> & {
+          subprocess: FakeSubprocess;
+          stdin: FakeFileSink;
+        } = {
+          subprocess,
+          stdin,
+          elevated:
+            opts.username !== null &&
+            opts.username !== undefined &&
+            opts.username !== '',
+        };
+        return result as SpawnAsUserResult;
+      };
+      return { fn, stdinEndCalls };
+    }
+
+    // Per-test-case ConditionalWakeupManager. Hoisted to suite scope so
+    // `afterEach` can always dispose it -- if a test throws between
+    // `new ConditionalWakeupManager(...)` and an inline `disposeAll()`,
+    // the wakeup's `setInterval` handle would otherwise leak across tests.
+    let elevatedManager: ConditionalWakeupManager | undefined;
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      elevatedManager?.disposeAll();
+      elevatedManager = undefined;
+      manager.disposeAll();
+      jest.useRealTimers();
+    });
+
+    it('passes requestUsername=undefined as null username to spawnAsUserFn (no elevation)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'gh pr view 1 --json mergeStateStatus',
+        onTrueMessage: 'Done',
+      });
+
+      jest.advanceTimersByTime(30000);
+      // Drain microtasks so the manager's `await Promise.all(...)` resolves.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBeNull();
+      expect(captured[0].opts.command).toBe('gh pr view 1 --json mergeStateStatus');
+    });
+
+    it('passes requestUsername=null as null username to spawnAsUserFn (no elevation)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'exit 1',
+        onTrueMessage: 'Done',
+        requestUsername: null,
+      });
+
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBeNull();
+    });
+
+    it('forwards requestUsername="alice" to spawnAsUserFn as username (elevation path)', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'ssh user@host true',
+        onTrueMessage: 'SSH ready',
+        requestUsername: 'alice',
+      });
+
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBe('alice');
+      expect(captured[0].opts.command).toBe('ssh user@host true');
+    });
+
+    it('reuses the same requestUsername on every interval tick', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'exit 1',
+        onTrueMessage: 'Done',
+        requestUsername: 'alice',
+      });
+
+      // Drive three interval ticks.
+      for (let i = 0; i < 3; i++) {
+        jest.advanceTimersByTime(30000);
+        // Three microtask flushes per tick: spawn -> drain stdout/stderr ->
+        // exit. With all promises already resolved a single flush would
+        // suffice, but more is harmless and keeps the test robust against
+        // future internal changes.
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      }
+
+      expect(captured).toHaveLength(3);
+      for (const call of captured) {
+        expect(call.opts.username).toBe('alice');
+      }
+    });
+
+    it('closes subprocess stdin immediately after spawn (no read-from-stdin hang)', async () => {
+      // CodeRabbit MAJOR finding on PR #889: `spawnAsUser` always pipes
+      // stdin, so a condition script that reads from stdin (`read`,
+      // interactive tool, stray `sudo` prompt) would block forever and
+      // `subprocess.exited` would never resolve. The manager must call
+      // `stdin.end()` right after spawn so the child gets EOF.
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 1);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'read -t 5 line; exit 1',
+        onTrueMessage: 'Done',
+      });
+
+      // First tick: spawn -> stdin.end() must fire before exit await.
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(fake.stdinEndCalls.count).toBe(1);
+
+      // Second tick: a fresh spawn -> another stdin.end() must fire.
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(2);
+      expect(fake.stdinEndCalls.count).toBe(2);
+    });
+
+    it('triggers onWakeup with the resolved message when the elevated condition exits 0', async () => {
+      const captured: CapturedSpawn[] = [];
+      const fake = makeFakeSpawnAsUser(captured, 0);
+      elevatedManager = new ConditionalWakeupManager(onWakeup, fake.fn);
+
+      elevatedManager.createWakeup({
+        sessionId: 'session-1',
+        workerId: 'worker-1',
+        intervalSeconds: 30,
+        conditionScript: 'gh pr view 1 --jq .mergeStateStatus | grep -q CLEAN',
+        onTrueMessage: 'PR ready',
+        requestUsername: 'alice',
+      });
+
+      jest.advanceTimersByTime(30000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0].opts.username).toBe('alice');
+      expect(onWakeup).toHaveBeenCalledTimes(1);
+      const call = onWakeup.mock.calls[0][0];
+      expect(call.onTrueMessage).toBe('PR ready');
+      expect(call.status).toBe('completed_true');
     });
   });
 });
