@@ -115,6 +115,7 @@ describe('WorktreeService', () => {
     mockGit.parseOrgRepo.mockReset();
     mockGit.listWorktrees.mockReset();
     mockGit.removeWorktree.mockReset();
+    mockGit.pruneWorktrees.mockReset();
     mockGit.listLocalBranches.mockReset();
     mockGit.listRemoteBranches.mockReset();
     mockGit.getDefaultBranch.mockReset();
@@ -131,6 +132,7 @@ HEAD def456
 branch refs/heads/feature-1
 `));
     mockGit.removeWorktree.mockImplementation(() => Promise.resolve());
+    mockGit.pruneWorktrees.mockImplementation(() => Promise.resolve());
     mockGit.listLocalBranches.mockImplementation(() => Promise.resolve(['main', 'feature-1', 'feature-2']));
     mockGit.listRemoteBranches.mockImplementation(() => Promise.resolve(['origin/main', 'origin/develop']));
     mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve('main'));
@@ -639,11 +641,13 @@ detached
 
   describe('removeWorktree', () => {
     // ① Primary repo dir exists + clean: behavior unchanged (normal git path).
-    //   The pre-check stats repoPath against memfs, so the primary must exist in
-    //   the in-memory volume for the normal git path to run.
+    //   Both the primary and the worktree dir must exist in memfs so the
+    //   pre-checks (repoExists + worktreeExists, the latter added for #895)
+    //   pass and the normal git path runs.
     it('should remove worktree successfully', async () => {
-      // Primary repo dir must exist for the normal git path (pre-check passes)
+      // Primary repo dir and worktree dir must exist for the normal git path.
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       // Pre-populate DB record for the worktree being removed
       mockRepo.records.push({
         id: 'wt-1',
@@ -672,6 +676,7 @@ detached
 
     it('should use force flag when specified', async () => {
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       // Pre-populate DB record
       mockRepo.records.push({
         id: 'wt-1',
@@ -695,6 +700,7 @@ detached
 
     it('should return error on failure', async () => {
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       mockGit.removeWorktree.mockImplementation(() =>
         Promise.reject(new GitError('worktree has changes', 128, 'fatal: worktree has uncommitted changes'))
       );
@@ -813,6 +819,55 @@ detached
         statSpy.mockRestore();
       }
     });
+
+    // ⑥ Primary repo dir present + worktree dir MISSING: orphan
+    //    worktree-dir recovery via `git worktree prune` + DB-row delete
+    //    (Issue #895).
+    it('should recover orphan worktree-dir via prune+delete when worktree path is missing (#895)', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
+      // /worktrees/feature does NOT exist on disk — externally removed.
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.removeWorktree('/repo', '/worktrees/feature');
+
+      expect(result.success).toBe(true);
+      expect(result.error).toBeUndefined();
+      // Prune ran in repoPath (single-user lib/git path).
+      expect(mockGit.pruneWorktrees).toHaveBeenCalledWith('/repo');
+      // `git worktree remove` was NOT attempted (would have failed with
+      // `is not a working tree`).
+      expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+      // DB record removed.
+      expect(mockRepo.records.length).toBe(0);
+    });
+
+    // ⑦ Idempotent: a second call after the DB row + worktree dir are
+    //    both already gone still returns success. The prune is a cheap
+    //    no-op on a clean registry.
+    it('should be idempotent on the second orphan worktree-dir recovery call (#895)', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
+      // No DB record (already cleaned up by a prior call) and no on-disk worktree.
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.removeWorktree('/repo', '/worktrees/already-pruned');
+
+      expect(result.success).toBe(true);
+      expect(result.error).toBeUndefined();
+      // Prune still runs (cheap no-op on a clean registry).
+      expect(mockGit.pruneWorktrees).toHaveBeenCalledWith('/repo');
+      expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+    });
   });
 
   describe('removeWorktree (multi-user, Issue #882)', () => {
@@ -833,6 +888,7 @@ detached
 
     it('routes git worktree remove through runAsUser when requestUsername is provided', async () => {
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -877,6 +933,7 @@ detached
 
     it('emits --force --force in the elevated command when force=true', async () => {
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -902,6 +959,7 @@ detached
 
     it('returns { success: false } with actionable error when elevated git remove fails', async () => {
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -950,6 +1008,7 @@ detached
       // even though the error is not a stale-worktree case. Narrowed matcher
       // must NOT match `fatal: not a git repository ... .git`.
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -996,6 +1055,7 @@ detached
 
     it('falls back to elevated rm + prune when force=true and stderr matches a stale-worktree pattern', async () => {
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -1046,6 +1106,7 @@ detached
 
     it('skips runAsUser when requestUsername is null (single-user path preserved)', async () => {
       fs.mkdirSync('/repo', { recursive: true });
+      fs.mkdirSync('/worktrees/feature', { recursive: true });
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -1070,6 +1131,94 @@ detached
         '/repo',
         { force: false },
       );
+    });
+
+    it('routes prune through runAsUser when worktree-dir is missing and requestUsername is provided (#895)', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
+      // worktree dir absent
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.removeWorktree(
+        '/repo',
+        '/worktrees/feature',
+        false,
+        'alice-multiuser-test',
+      );
+
+      expect(result.success).toBe(true);
+      // Two runAsUser calls: safe.directory bootstrap, then prune.
+      expect(runAsUserMock.calls.length).toBe(2);
+      const bootstrap = runAsUserMock.calls[0];
+      expect(bootstrap.username).toBe('alice-multiuser-test');
+      expect(bootstrap.command).toContain('safe.directory');
+      expect(bootstrap.command).toContain("'/repo'");
+      const pruneCall = runAsUserMock.calls[1];
+      expect(pruneCall.username).toBe('alice-multiuser-test');
+      expect(pruneCall.cwd).toBe('/repo');
+      expect(pruneCall.command).toBe('git worktree prune');
+      // lib/git pruneWorktrees NOT called (elevated branch bypasses it).
+      expect(mockGit.pruneWorktrees).not.toHaveBeenCalled();
+      // lib/git removeWorktree NOT called.
+      expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+      // DB row removed.
+      expect(mockRepo.records.length).toBe(0);
+    });
+
+    it('surfaces { success: false } when elevated prune fails (orphan worktree-dir, #895)', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
+      // worktree dir absent
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      // Bootstrap [0] succeeds; prune [1] fails.
+      let callIdx = 0;
+      runAsUserMock.responder.fn = async () => {
+        callIdx += 1;
+        if (callIdx === 1) {
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return {
+          stdout: '',
+          stderr: 'fatal: bad bare repository',
+          exitCode: 128,
+          timedOut: false,
+        };
+      };
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.removeWorktree(
+        '/repo',
+        '/worktrees/feature',
+        false,
+        'alice-multiuser-test',
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('bad bare repository');
+      // DB record preserved on prune failure.
+      expect(mockRepo.records.length).toBe(1);
     });
   });
 

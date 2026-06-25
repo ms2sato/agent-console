@@ -7,6 +7,7 @@ import {
   parseOrgRepo,
   listWorktrees as gitListWorktrees,
   removeWorktree as gitRemoveWorktree,
+  pruneWorktrees as gitPruneWorktrees,
   listLocalBranches,
   listRemoteBranches,
   getDefaultBranch as gitGetDefaultBranch,
@@ -676,6 +677,63 @@ export class WorktreeService {
         logger.warn(
           { worktreePath, repoPath },
           'Primary repo dir missing; removed orphaned worktree without git'
+        );
+        return { success: true };
+      }
+
+      // Detect the orphan-worktree-dir case (#895): primary repo OK, but
+      // `worktreePath` itself was externally removed. `git worktree remove`
+      // would fail with `fatal: '<path>' is not a working tree`. Skip the
+      // remove and run `git worktree prune` + DB-row delete in repoPath
+      // instead. `removeOrphanedWorktree` is not reusable here because prune
+      // still needs the primary repo for context.
+      //
+      // ENOENT/ENOTDIR-only narrowing mirrors the repoExists block above:
+      // other stat errors (EACCES/EPERM/IO) MUST surface as failure, not
+      // route to destructive recovery.
+      let worktreeExists = false;
+      try {
+        const stat = await fsPromises.stat(worktreePath);
+        worktreeExists = stat.isDirectory();
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          worktreeExists = false;
+        } else {
+          throw error; // caught by the outer catch → { success: false, error }
+        }
+      }
+
+      if (!worktreeExists) {
+        if (shouldElevateForUser(requestUsername)) {
+          const elevatedUsername = requestUsername!;
+          // Bootstrap safe.directory so the elevated `git worktree prune`
+          // does not hit `fatal: detected dubious ownership` on the
+          // server-owned source repo. Mirrors the normal elevated remove
+          // path below.
+          await this.bootstrapSafeDirectoryForUser(elevatedUsername, repoPath);
+          const pruneResult = await this._runAsUser({
+            username: elevatedUsername,
+            command: 'git worktree prune',
+            cwd: repoPath,
+            timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+          });
+          if (pruneResult.timedOut || pruneResult.exitCode !== 0) {
+            const detail =
+              pruneResult.stderr.trim() || `exit code ${pruneResult.exitCode}`;
+            throw new GitError(
+              `git worktree prune (orphan worktree-dir recovery, #895) failed: ${detail}`,
+              pruneResult.exitCode,
+              pruneResult.stderr,
+            );
+          }
+        } else {
+          await gitPruneWorktrees(repoPath);
+        }
+        await this.worktreeRepository.deleteByPath(worktreePath);
+        logger.warn(
+          { worktreePath, repoPath },
+          'Worktree dir missing; pruned registry and removed DB row (#895)',
         );
         return { success: true };
       }
