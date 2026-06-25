@@ -167,6 +167,27 @@ describe('Repositories API', () => {
       expect(body.success).toBe(true);
       expect(repositorySlackIntegrationService.deleteIntegration).toHaveBeenCalled();
     });
+
+    it('forwards authUser.username to unregisterRepository for CLEANUP_REPOSITORY elevation (Issue #884)', async () => {
+      // Backend half of #871: the CLEANUP_REPOSITORY job needs to elevate its
+      // recursive rm to the requesting user (worktree subtrees are owned per
+      // #838 / PR #843). The route's responsibility is to thread the
+      // authenticated username. The default test app wires SingleUserMode
+      // with TEST_AUTH_USER = 'testuser'.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+      repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(200);
+
+      expect(repositoryManager.unregisterRepository).toHaveBeenCalledTimes(1);
+      const [repoIdArg, requestUsernameArg] =
+        repositoryManager.unregisterRepository.mock.calls[0] as [string, string];
+      expect(repoIdArg).toBe('repo1');
+      expect(requestUsernameArg).toBe('testuser');
+    });
   });
 
   // =========================================================================
