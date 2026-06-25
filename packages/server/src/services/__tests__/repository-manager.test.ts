@@ -598,6 +598,46 @@ describe('RepositoryManager', () => {
       const savedRepos = await repositoryRepository.findAll();
       expect(savedRepos.length).toBe(0);
     });
+
+    it('threads requestUsername into the CLEANUP_REPOSITORY job payload (Issue #884)', async () => {
+      // Backend half of #871: the DELETE route resolves authUser.username and
+      // hands it to unregisterRepository(); the handler then uses it to
+      // elevate the recursive rm under multi-user mode.
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+      await manager.unregisterRepository(repo.id, 'alice');
+
+      // Read the persisted job back from the test JobQueue (which is the
+      // production JobQueue against an in-memory SQLite). The payload column
+      // is JSON-encoded; decode and assert the requestUsername field.
+      const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+      expect(jobs.length).toBe(1);
+      const payload = JSON.parse(jobs[0]!.payload) as {
+        repoDir: string;
+        requestUsername: string | null;
+      };
+      expect(payload.requestUsername).toBe('alice');
+      expect(payload.repoDir).toContain('test-org');
+    });
+
+    it('defaults requestUsername to null when not provided (back-compat)', async () => {
+      const manager = await getRepositoryManager();
+      const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+      // Call site that does not pass requestUsername (e.g., a non-route
+      // caller). The payload field should be null, which the handler reads
+      // as "use the historical direct fs.rm path".
+      await manager.unregisterRepository(repo.id);
+
+      const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+      expect(jobs.length).toBe(1);
+      const payload = JSON.parse(jobs[0]!.payload) as {
+        repoDir: string;
+        requestUsername: string | null;
+      };
+      expect(payload.requestUsername).toBeNull();
+    });
   });
 
   describe('getRepository', () => {

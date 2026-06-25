@@ -24,7 +24,11 @@ const repositoryManager = {
   getAllRepositories: mock(() => []),
   registerRepository: mock(() => Promise.resolve({} as any)),
   updateRepository: mock(() => Promise.resolve(undefined as any)),
-  unregisterRepository: mock(() => Promise.resolve(true)),
+  // Typed signature so tests can assert the route forwarded `authUser.username`
+  // as the second argument (Issue #884; see DELETE route test below).
+  unregisterRepository: mock<
+    (id: string, requestUsername?: string | null) => Promise<boolean>
+  >(() => Promise.resolve(true)),
 };
 
 const sessionManager = {
@@ -166,6 +170,26 @@ describe('Repositories API', () => {
       const body = (await res.json()) as { success: boolean };
       expect(body.success).toBe(true);
       expect(repositorySlackIntegrationService.deleteIntegration).toHaveBeenCalled();
+    });
+
+    it('forwards authUser.username to unregisterRepository for CLEANUP_REPOSITORY elevation (Issue #884)', async () => {
+      // Backend half of #871: the CLEANUP_REPOSITORY job needs to elevate its
+      // recursive rm to the requesting user (worktree subtrees are owned per
+      // #838 / PR #843). The route's responsibility is to thread the
+      // authenticated username. The default test app wires SingleUserMode
+      // with TEST_AUTH_USER = 'testuser'.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+      repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(200);
+
+      expect(repositoryManager.unregisterRepository).toHaveBeenCalledTimes(1);
+      const callArgs = repositoryManager.unregisterRepository.mock.calls[0];
+      expect(callArgs[0]).toBe('repo1');
+      expect(callArgs[1]).toBe('testuser');
     });
   });
 
