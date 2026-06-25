@@ -70,6 +70,41 @@ Do **not** extract a helper for:
 4. **Update `docs/glossary.md`** entry for `requestUsername` (or the relevant entry) to mention the new helper alongside its siblings.
 5. **Coordinate with sibling PRs** via the orchestrator: PRs that consume the new helper rebase and adopt it (typically a `force-with-lease` after explicit per-PR approval per `workflow.md`).
 
+## When consuming the primitives
+
+The strict-thin-wrapper contract above describes what the elevation helpers must (and must not) do. This section describes the consumer's reciprocal discipline -- correctness obligations that follow from the primitives' shape and that the helper itself cannot enforce.
+
+### `spawnAsUser`: close stdin when not feeding input
+
+`spawnAsUser` always pipes stdin (`stdin: 'pipe'`). This is the right default for its long-lived consumers (`run_process` / `InteractiveProcessManager`), which feed bytes to the child over time via `subprocess.stdin.write(...)` / `flush()`. **Any consumer that does not feed stdin must close it immediately after spawn**, by calling `stdin.end()` on the returned `SpawnAsUserResult.stdin` (a `FileSink`).
+
+```ts
+const { subprocess, stdin } = spawnAsUser({
+  username: requestUsername,
+  command: 'some-condition-check.sh',
+});
+stdin.end();   // <-- mandatory for fire-and-forget callers
+// ... await subprocess.exited / read exit code / etc.
+```
+
+Without `stdin.end()`, a child that reads from stdin (`read`, an interactive prompt, a stray `sudo` password prompt) blocks indefinitely waiting for input. `subprocess.exited` never resolves. The failure mode is **silent**:
+
+- No error is logged (the spawn succeeded).
+- No notification fires (the consumer's await on `subprocess.exited` is suspended).
+- A polling consumer's `checking` flag (or equivalent) stays true; every subsequent interval tick short-circuits on the in-flight check; the consumer appears to "stop checking" with no signal.
+- A test would catch this only if it explicitly runs a stdin-reading script. Default tests (using `exit 0` / `exit 1` scripts) pass even with the bug.
+
+The fix is a one-liner; the cost of missing it is a class of bugs that does not surface in CI.
+
+**Worked example**: PR [#889](https://github.com/ms2sato/agent-console/pull/889) (Issue #886) shipped this consumer fix for `ConditionalWakeupManager` after CodeRabbit MAJOR caught the missing `stdin.end()`. The conditional-wakeup callsite was migrated from raw `Bun.spawn(['sh', '-c', script])` (stdin defaults to `'ignore'`) to `spawnAsUser(...)` (stdin defaults to `'pipe'`). The migration was byte-identical at the argv level but the stdin contract diverged silently.
+
+**Proactive audit candidates** (the bug shape, not current sites):
+- Future MCP tools wrapping `spawnAsUser` that aren't `run_process`-style. Any "execute and observe exit code only" tool (e.g. a future `run_health_check` / `validate_branch_state` / `precheck_*`) inherits the same asymmetry between the primitive's stdin contract and the consumer's actual need.
+- Cron-like internal poll consumers analogous to conditional-wakeup but watching different state (repository freshness, gh PR state, external service liveness, etc.). Same fire-and-forget shape.
+- Any `Bun.spawn → spawnAsUser` migration where the prior call used `stdin: 'ignore'` (default) or `stdin: 'inherit'`. The argv looks identical; the stdin contract is the silent-regression vector.
+
+The `stdin.end()` discipline is structurally similar to "drain stdout/stderr after spawnAsUser if you do not consume them" (also a `spawnAsUser` consumer obligation, addressed in PR #889 via the same conditional-wakeup migration's `drainAndDiscard` helper). Both follow from the primitive piping streams that its long-lived consumers need but that fire-and-forget consumers do not. Future helpers in this family may introduce analogous consumer-side disciplines; the principle is the same: **the primitive's defaults are tuned for its loudest consumer; quieter consumers inherit obligations that the primitive cannot encode**.
+
 ## How this rule is expected to evolve
 
 As the helper family grows (`chmodAsUser`, `lstatAsUser`, etc. are plausible future additions when fs operations on cross-user paths come up), the naming pattern (`<verb>AsUser`) and the strict-thin-wrapper contract self-extend. This rule's body should not need to change; the glossary entry's enumeration of helpers should be updated in the same PR that adds the new primitive.
