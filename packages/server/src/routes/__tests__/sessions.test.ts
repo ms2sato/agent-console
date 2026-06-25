@@ -730,20 +730,31 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
 // ===========================================================================
 // GET /api/sessions/:sessionId/branches (Issue #870)
 //
-// The route threads `authUser.username` into `worktreeService.listBranches`
-// so multi-user mode runs the git invocations as the requesting user (PATH,
-// gitconfig, SSH_AUTH_SOCK from the user's login shell). The default test
-// app wires SingleUserMode with TEST_AUTH_USER.username = 'testuser', so we
-// assert that value lands on the service call.
+// The route resolves the session's effective spawn user (via
+// `resolveSpawnUsername(session.createdBy, userRepository)`) and threads it
+// into `worktreeService.listBranches` so multi-user mode runs the git
+// invocations as the OS user that owns the worktree. For shared sessions
+// the spawn user is the shared account, NOT the authenticated viewer --
+// using the viewer's identity would reintroduce dubious-ownership /
+// missing-credential failures (CodeRabbit review on PR #874).
 // ===========================================================================
 describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
   let app: Hono<AppBindings>;
   const mockSessionManager = {
     getSession: mock((_id: string) => undefined as any),
   };
+  type BranchesResult = { local: string[]; remote: string[]; defaultBranch: string | null };
   const mockWorktreeService = {
-    listBranches: mock((_repoPath: string, _requestUsername?: string | null) =>
-      Promise.resolve({ local: [], remote: [], defaultBranch: null }),
+    listBranches: mock<
+      (repoPath: string, requestUsername?: string | null) => Promise<BranchesResult>
+    >(() => Promise.resolve({ local: [], remote: [], defaultBranch: null })),
+  };
+  // Minimal UserRepository stub: returns a user when findById is called with
+  // an id we registered. Lets us drive resolveSpawnUsername deterministically
+  // without spinning up a sqlite repo.
+  const mockUserRepository: any = {
+    findById: mock<(id: string) => Promise<{ id: string; username: string; homeDir: string } | null>>(
+      () => Promise.resolve(null),
     ),
   };
 
@@ -753,6 +764,8 @@ describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
     mockWorktreeService.listBranches.mockImplementation(() =>
       Promise.resolve({ local: [], remote: [], defaultBranch: null }),
     );
+    mockUserRepository.findById.mockReset();
+    mockUserRepository.findById.mockImplementation(() => Promise.resolve(null));
 
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
@@ -761,6 +774,7 @@ describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
         asAppContext({
           sessionManager: mockSessionManager as any,
           worktreeService: mockWorktreeService as any,
+          userRepository: mockUserRepository,
         }),
       );
       await next();
@@ -769,11 +783,17 @@ describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
     app.route('/api', api);
   });
 
-  it('forwards authUser.username to worktreeService.listBranches', async () => {
+  it('forwards the session spawn username (resolved via createdBy) to worktreeService.listBranches', async () => {
     mockSessionManager.getSession.mockReturnValueOnce({
       id: 'session1',
       locationPath: '/worktree/wt-001-aaaa',
+      createdBy: 'shared-account-id',
     });
+    mockUserRepository.findById.mockImplementationOnce((id: string) =>
+      id === 'shared-account-id'
+        ? Promise.resolve({ id, username: 'sharedacct', homeDir: '/home/sharedacct' })
+        : Promise.resolve(null),
+    );
     mockWorktreeService.listBranches.mockImplementationOnce(() =>
       Promise.resolve({ local: ['main'], remote: ['origin/main'], defaultBranch: 'main' }),
     );
@@ -793,7 +813,8 @@ describe('Sessions API - GET /api/sessions/:sessionId/branches', () => {
     expect(mockWorktreeService.listBranches).toHaveBeenCalledTimes(1);
     const [locationPath, requestUsername] = mockWorktreeService.listBranches.mock.calls[0];
     expect(locationPath).toBe('/worktree/wt-001-aaaa');
-    expect(requestUsername).toBe('testuser');
+    // Critical: the shared-account spawn user, NOT the authenticated viewer.
+    expect(requestUsername).toBe('sharedacct');
   });
 
   it('returns 404 when the session does not exist', async () => {

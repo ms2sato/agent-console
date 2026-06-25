@@ -55,13 +55,15 @@ const repositoryCloneService = {
 // Mock of the worktreeService for the /branches and /refresh-default-branch
 // routes (Issue #870). Captures the `requestUsername` second arg so each test
 // can assert the route forwarded `authUser.username` correctly.
+type BranchesResult = { local: string[]; remote: string[]; defaultBranch: string | null };
+
 const worktreeService = {
-  listBranches: mock((_repoPath: string, _requestUsername?: string | null) =>
-    Promise.resolve({ local: [], remote: [], defaultBranch: null }),
-  ),
-  refreshDefaultBranch: mock((_repoPath: string, _requestUsername?: string | null) =>
-    Promise.resolve('main'),
-  ),
+  listBranches: mock<
+    (repoPath: string, requestUsername?: string | null) => Promise<BranchesResult>
+  >(() => Promise.resolve({ local: [], remote: [], defaultBranch: null })),
+  refreshDefaultBranch: mock<
+    (repoPath: string, requestUsername?: string | null) => Promise<string>
+  >(() => Promise.resolve('main')),
 };
 
 // ---------------------------------------------------------------------------
