@@ -297,6 +297,12 @@ const worktrees = new Hono<AppBindings>()
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, sessionManager, worktreeService, broadcastToApp, findOpenPullRequest } = c.get('appContext');
+    // Thread the authenticated OS username down to the deletion service so
+    // multi-user installs delete the worktree as the worktree-owning user
+    // (Issue #882, mirrors the create-side thread-through in this same file).
+    // In single-user mode, `runAsUser` reads this value but `AUTH_MODE` gates
+    // the elevation to a no-op.
+    const authUser = c.get('authUser');
 
     // Get worktree path from URL (everything after /worktrees/)
     const url = new URL(c.req.url);
@@ -327,13 +333,14 @@ const worktrees = new Hono<AppBindings>()
     }
 
     const deletionDeps = { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch };
+    const requestUsername = authUser.username;
 
     // If taskId is provided, handle deletion asynchronously
     if (taskId) {
       // Execute deletion in background (fire-and-forget)
       (async () => {
         try {
-          const result = await deleteWorktree({ repoId, worktreePath, force }, deletionDeps);
+          const result = await deleteWorktree({ repoId, worktreePath, force, requestUsername }, deletionDeps);
           const sessionIds = result.sessionIds ?? [];
 
           if (!result.success) {
@@ -380,7 +387,7 @@ const worktrees = new Hono<AppBindings>()
     }
 
     // Synchronous deletion (backward compatible)
-    const result = await deleteWorktree({ repoId, worktreePath, force }, deletionDeps);
+    const result = await deleteWorktree({ repoId, worktreePath, force, requestUsername }, deletionDeps);
 
     if (!result.success) {
       // Map errorType to appropriate HTTP status

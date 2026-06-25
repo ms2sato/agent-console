@@ -642,7 +642,12 @@ describe('Worktrees API', () => {
       expect(failedBroadcasts.length).toBe(0);
 
       // The git-less helper must be the one that ran (not the git-bound removeWorktree).
-      expect(mockWorktreeService.removeOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH);
+      // The route threads `authUser.username` ('testuser' in the test fixture)
+      // down to the helper for Issue #882 multi-user elevation. In single-user
+      // mode `runAsUser` ignores the value, but the route still passes it
+      // — this assertion is the boundary test that proves the route closes
+      // the threading gap end-to-end.
+      expect(mockWorktreeService.removeOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, 'testuser');
       expect(mockWorktreeService.removeWorktree).not.toHaveBeenCalled();
     });
   });

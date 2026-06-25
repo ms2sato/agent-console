@@ -3,11 +3,14 @@ import * as os from 'node:os';
 import type { FileSink } from 'bun';
 import {
   runAsUser,
+  rmRecursiveAsUser,
   spawnAsUser,
   buildSpawnArgs,
   buildInnerCommand,
   shellEscape,
   shouldElevateForUser,
+  type RunAsUserOpts,
+  type RunAsUserResult,
   type SpawnFn,
 } from '../privilege-elevation.js';
 
@@ -909,6 +912,99 @@ describe('privilege-elevation', () => {
       // re-reading subprocess.stdin later.
       expect(result.stdin).toBe(result.subprocess.stdin);
       expect(result.elevated).toBe(true);
+    });
+  });
+
+  // ============================================================
+  // rmRecursiveAsUser (layer-correctness helper, Issue #882 owner feedback)
+  // ============================================================
+  //
+  // The helper composes `runAsUser` with a fixed command shape
+  // (`rm -rf -- '<path>'`) + cwd (`/`). It is the canonical encapsulation
+  // for elevated recursive removal so consumers do not inline the
+  // shellEscape + cwd-pinning + idempotency contract repeatedly.
+  describe('rmRecursiveAsUser', () => {
+    it('null username bypasses elevation (forwards null straight to runAsUser)', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const result = await rmRecursiveAsUser('/some/path', null, {
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].username).toBeNull();
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('elevated path: command contains shell-escaped path and cwd is "/"', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      // Path with a single quote forces non-trivial shellEscape behaviour.
+      await rmRecursiveAsUser("/var/lib/it's-fine/wt-1", 'alice', {
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].username).toBe('alice');
+      expect(captured[0].cwd).toBe('/');
+      // Single-quote escape: `'it'\''s-fine'` style.
+      expect(captured[0].command).toBe(`rm -rf -- '/var/lib/it'\\''s-fine/wt-1'`);
+    });
+
+    it('forwards timeoutMs to runAsUser when provided', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await rmRecursiveAsUser('/p', 'alice', {
+        timeoutMs: 12345,
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured[0].timeoutMs).toBe(12345);
+    });
+
+    it('returns the underlying RunAsUserResult unchanged (caller branches on exitCode/timedOut)', async () => {
+      const fakeRunAsUser: typeof runAsUser = async () => ({
+        stdout: 'OUT',
+        stderr: 'ERR',
+        exitCode: 137,
+        timedOut: true,
+      });
+
+      const result: RunAsUserResult = await rmRecursiveAsUser('/p', 'alice', {
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(result).toEqual({
+        stdout: 'OUT',
+        stderr: 'ERR',
+        exitCode: 137,
+        timedOut: true,
+      });
+    });
+
+    it('uses the module runAsUser when no runAsUserImpl is injected (default branch)', async () => {
+      // Smoke-test the default — we cannot easily intercept module-internal
+      // runAsUser without spying, but we can confirm null bypass returns
+      // exitCode 0 from the real `sh -c 'rm -rf -- /nonexistent-xyz...'`
+      // invocation. Idempotency contract: missing paths do not fail.
+      const result = await rmRecursiveAsUser(
+        '/nonexistent-rm-recursive-as-user-test-path-xyz-12345',
+        null,
+      );
+      expect(result.exitCode).toBe(0);
+      expect(result.timedOut).toBe(false);
     });
   });
 });

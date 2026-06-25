@@ -19,9 +19,15 @@ async function rollbackWorktree(
   worktreeService: CreateWorktreeServiceDeps,
   repoPath: string,
   worktreePath: string,
+  requestUsername?: string | null,
 ): Promise<void> {
   try {
-    await worktreeService.removeWorktree(repoPath, worktreePath, true);
+    // Thread `requestUsername` through so the rollback also elevates in
+    // multi-user mode (Issue #882). The create path itself elevates per
+    // #838 / PR #843, so leaving the rollback un-elevated would silently
+    // re-introduce the same Permission-denied symptom against a worktree
+    // the server user does not own.
+    await worktreeService.removeWorktree(repoPath, worktreePath, true, requestUsername);
   } catch (cleanupErr) {
     logger.warn(
       { worktreePath, err: cleanupErr },
@@ -151,7 +157,7 @@ export async function createWorktreeWithSession(
       { worktreePath: createdWorktreePath, err: statErr },
       'createWorktree reported success but stat failed; rolling back',
     );
-    await rollbackWorktree(worktreeService, repoPath, createdWorktreePath);
+    await rollbackWorktree(worktreeService, repoPath, createdWorktreePath, requestUsername);
     return {
       success: false,
       error: `Worktree create reported success but directory is missing: ${createdWorktreePath}`,
@@ -217,7 +223,7 @@ export async function createWorktreeWithSession(
       { worktreePath: createdWorktreePath, err: postWorktreeErr },
       'Post-worktree step failed, rolling back worktree',
     );
-    await rollbackWorktree(worktreeService, repoPath, createdWorktreePath);
+    await rollbackWorktree(worktreeService, repoPath, createdWorktreePath, requestUsername);
     const errorMsg = postWorktreeErr instanceof Error ? postWorktreeErr.message : 'Unknown error during worktree creation';
     return { success: false, error: errorMsg };
   }

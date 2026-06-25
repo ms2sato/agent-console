@@ -712,9 +712,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
             { sessionId: session.id, repositoryId },
             'Session deleted during delegate_to_worktree, rolling back worktree',
           );
-          // Rollback the created worktree since the session no longer exists
+          // Rollback the created worktree since the session no longer exists.
+          // Thread the same `requestUsername` resolved above so the rollback
+          // also runs as the worktree-owning user in multi-user mode
+          // (Issue #882). Otherwise the rollback would hit the same
+          // Permission-denied failure mode this issue was filed to fix.
           try {
-            await worktreeService.removeWorktree(repo.path, result.worktree!.path, true);
+            await worktreeService.removeWorktree(repo.path, result.worktree!.path, true, requestUsername);
           } catch (cleanupErr) {
             logger.warn(
               { worktreePath: result.worktree!.path, err: cleanupErr },
@@ -846,12 +850,33 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
-        // 2. Delegate all domain logic to service
+        // 2. Resolve the session's `createdBy` (a users.id UUID) to its OS
+        //    username so the underlying `git worktree remove` / fallback
+        //    `rm -rf` execute as the worktree-owning user in multi-user mode
+        //    (Issue #882, mirrors `delegate_to_worktree` / PR #877 + `run_process`
+        //    / PR #880). When `createdBy` is unset or the UUID does not resolve
+        //    (legacy / orphan sessions), `requestUsername` stays null and
+        //    `runAsUser` bypasses elevation — current behaviour preserved.
+        let requestUsername: string | null = null;
+        if (session.createdBy) {
+          const sessionUser = await userRepository.findById(session.createdBy);
+          if (sessionUser) {
+            requestUsername = sessionUser.username;
+          } else {
+            logger.warn(
+              { createdBy: session.createdBy, sessionId },
+              'remove_worktree: session createdBy does not resolve to a user; running git worktree remove without elevation',
+            );
+          }
+        }
+
+        // 3. Delegate all domain logic to service
         const result = await deleteWorktree(
           {
             repoId: session.repositoryId,
             worktreePath: session.locationPath,
             force: force ?? false,
+            requestUsername,
           },
           { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
         );
