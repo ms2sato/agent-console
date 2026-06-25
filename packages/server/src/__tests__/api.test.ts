@@ -116,6 +116,64 @@ import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
 import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser } from './test-utils.js';
 import { SingleUserMode } from '../services/user-mode.js';
+import type { RunAsUserOpts, RunAsUserResult } from '../services/privilege-elevation.js';
+
+// =============================================================================
+// runAsUser mock for WorktreeService branch enumeration (Issue #870)
+// =============================================================================
+//
+// WorktreeService.listBranches / refreshDefaultBranch now route through
+// runAsUser so multi-user mode can pick up the user's SSH credentials. The
+// tests inject this responder via WorktreeService's `runAsUserImpl` option
+// instead of the (now-unused) lib/git branch helpers. The mock dispatches on
+// the shell command string so the response matches what the real `git ...`
+// invocation would have produced. Per-test overrides set
+// `worktreeRunAsUserOverride.fn` to short-circuit specific commands.
+let worktreeRunAsUserCalls: RunAsUserOpts[] = [];
+const worktreeRunAsUserOverride: { fn: ((opts: RunAsUserOpts) => RunAsUserResult | null) | null } = {
+  fn: null,
+};
+
+function worktreeRunAsUserDefault(opts: RunAsUserOpts): RunAsUserResult {
+  const cmd = opts.command;
+  // Local branch enumeration -> mirror the defaults in setupDefaultGitMocks.
+  if (cmd.includes("'branch' '--format=%(refname:short)'") && !cmd.includes("'-r'")) {
+    return { stdout: 'main\ndevelop\nfeature-1\n', stderr: '', exitCode: 0, timedOut: false };
+  }
+  if (cmd.includes("'branch' '-r' '--format=%(refname:short)'")) {
+    return { stdout: 'origin/main\norigin/develop\n', stderr: '', exitCode: 0, timedOut: false };
+  }
+  // Default-branch resolution probe -- prefer symbolic-ref success so the
+  // fallback rev-parse branches are never reached in the default fixture.
+  if (cmd.includes("'symbolic-ref' 'refs/remotes/origin/HEAD'")) {
+    return { stdout: 'refs/remotes/origin/main\n', stderr: '', exitCode: 0, timedOut: false };
+  }
+  if (cmd.includes("'rev-parse' '--verify' 'main'")) {
+    return { stdout: 'abc123\n', stderr: '', exitCode: 0, timedOut: false };
+  }
+  if (cmd.includes("'rev-parse' '--verify' 'master'")) {
+    return { stdout: '', stderr: '', exitCode: 128, timedOut: false };
+  }
+  // `git remote set-head origin -a` (refresh-default-branch). Success.
+  if (cmd.includes("'remote' 'set-head' 'origin' '-a'")) {
+    return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+  }
+  // Any other command (e.g., `git worktree add`) falls back to success so
+  // tests that exercise non-branch paths are not broken by this responder.
+  return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+}
+
+async function worktreeRunAsUserImpl(opts: RunAsUserOpts): Promise<RunAsUserResult> {
+  worktreeRunAsUserCalls.push(opts);
+  const override = worktreeRunAsUserOverride.fn?.(opts);
+  if (override) return override;
+  return worktreeRunAsUserDefault(opts);
+}
+
+function resetWorktreeRunAsUserMock() {
+  worktreeRunAsUserCalls = [];
+  worktreeRunAsUserOverride.fn = null;
+}
 
 // =============================================================================
 // Test Setup
@@ -245,6 +303,10 @@ describe('API Routes Integration', () => {
 
     // Setup default git command responses
     setupDefaultGitMocks();
+
+    // Reset the WorktreeService runAsUser capture/responder for branch
+    // enumeration tests (Issue #870).
+    resetWorktreeRunAsUserMock();
   });
 
   afterEach(async () => {
@@ -311,7 +373,10 @@ describe('API Routes Integration', () => {
         repositoryManager: testRepositoryManager!,
         systemCapabilities: testSystemCapabilities!,
         agentManager: testAgentManager!,
-        worktreeService: new WorktreeService({ db: getDatabase() }),
+        worktreeService: new WorktreeService({
+          db: getDatabase(),
+          runAsUserImpl: worktreeRunAsUserImpl,
+        }),
         suggestSessionMetadata: mockSuggestSessionMetadata,
         broadcastToApp: mockBroadcastToApp,
         findOpenPullRequest: mockFindOpenPullRequest,
@@ -1303,8 +1368,16 @@ describe('API Routes Integration', () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
-        // Mock refreshDefaultBranch to return 'develop' (simulating remote changed)
-        mockGit.refreshDefaultBranch.mockImplementationOnce(() => Promise.resolve('develop'));
+        // Make the symbolic-ref probe report `origin/HEAD -> develop`,
+        // simulating that the remote default changed after the `git remote
+        // set-head origin -a` call. The default responder accepts the
+        // set-head call itself with exit 0.
+        worktreeRunAsUserOverride.fn = (opts) => {
+          if (opts.command.includes("'symbolic-ref' 'refs/remotes/origin/HEAD'")) {
+            return { stdout: 'refs/remotes/origin/develop\n', stderr: '', exitCode: 0, timedOut: false };
+          }
+          return null;
+        };
 
         const res = await app.request(`/api/repositories/${repo.id}/refresh-default-branch`, {
           method: 'POST',
@@ -1328,10 +1401,20 @@ describe('API Routes Integration', () => {
         const app = await createApp();
         const { repo } = await registerTestRepo(app);
 
-        // Mock refreshDefaultBranch to reject with GitError (simulating network error)
-        mockGit.refreshDefaultBranch.mockImplementationOnce(() =>
-          Promise.reject(new GitError('git remote set-head failed: network error', 128, 'fatal: unable to access'))
-        );
+        // Make `git remote set-head origin -a` fail (simulating network /
+        // SSH-auth failure). The service surfaces this as GitError and the
+        // route maps it to ValidationError (HTTP 400).
+        worktreeRunAsUserOverride.fn = (opts) => {
+          if (opts.command.includes("'remote' 'set-head' 'origin' '-a'")) {
+            return {
+              stdout: '',
+              stderr: 'fatal: unable to access remote',
+              exitCode: 128,
+              timedOut: false,
+            };
+          }
+          return null;
+        };
 
         const res = await app.request(`/api/repositories/${repo.id}/refresh-default-branch`, {
           method: 'POST',

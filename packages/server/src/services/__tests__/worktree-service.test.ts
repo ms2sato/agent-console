@@ -883,52 +883,418 @@ detached
     });
   });
 
+  // ===========================================================================
+  // listBranches / getDefaultBranch / refreshDefaultBranch (Issue #870)
+  //
+  // The three branch-related methods now route all git invocations through
+  // `runAsUser` so multi-user mode can pick up the requesting user's SSH
+  // credentials, PATH, and gitconfig (eliminating "Could not check remote
+  // status" and `dubious ownership` errors against user-owned source repos).
+  // Tests inject a `runAsUserImpl` capture mock and dispatch by inspecting
+  // the captured command string.
+  // ===========================================================================
+
+  /**
+   * Build a command-aware responder for the WorktreeService runAsUser mock.
+   * Returns a builder you can compose with `with(matcher, response)`; falls
+   * back to a happy-path default for unmatched commands so individual tests
+   * only need to override the cases they care about.
+   */
+  function makeCommandResponder() {
+    const matchers: Array<{
+      match: (cmd: string) => boolean;
+      response: RunAsUserResult;
+    }> = [];
+    const responder = (cmd: string): RunAsUserResult => {
+      for (const m of matchers) {
+        if (m.match(cmd)) return m.response;
+      }
+      // Default success for unmatched commands (mostly: `git worktree add`
+      // when these listBranches tests construct a service that also serves
+      // create paths).
+      return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+    };
+    return {
+      with(match: (cmd: string) => boolean, response: RunAsUserResult) {
+        matchers.push({ match, response });
+        return this;
+      },
+      get fn() {
+        return responder;
+      },
+    };
+  }
+
   describe('listBranches', () => {
-    it('should list local and remote branches', async () => {
+    it('routes through runAsUser with username=null when no requestUsername is supplied', async () => {
+      const r = makeCommandResponder()
+        .with(
+          (c) => c.includes("'branch' '--format=%(refname:short)'") && !c.includes("'-r'"),
+          { stdout: 'main\nfeature-1\nfeature-2\n', stderr: '', exitCode: 0, timedOut: false },
+        )
+        .with(
+          (c) => c.includes("'branch' '-r' '--format=%(refname:short)'"),
+          { stdout: 'origin/main\norigin/develop\n', stderr: '', exitCode: 0, timedOut: false },
+        )
+        .with(
+          (c) => c.includes("'symbolic-ref' 'refs/remotes/origin/HEAD'"),
+          { stdout: 'refs/remotes/origin/main\n', stderr: '', exitCode: 0, timedOut: false },
+        );
+      runAsUserMock.responder.fn = async (opts) => r.fn(opts.command);
+
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.listBranches('/repo');
 
-      expect(result.local).toContain('main');
-      expect(result.local).toContain('feature-1');
-      expect(result.remote).toContain('origin/main');
+      expect(result.local).toEqual(['main', 'feature-1', 'feature-2']);
+      expect(result.remote).toEqual(['origin/main', 'origin/develop']);
       expect(result.defaultBranch).toBe('main');
+
+      // Every call went through runAsUser with username=null (no elevation),
+      // cwd=/repo, and a shell-escaped git command.
+      expect(runAsUserMock.calls.length).toBeGreaterThan(0);
+      for (const call of runAsUserMock.calls) {
+        expect(call.username).toBeNull();
+        expect(call.cwd).toBe('/repo');
+        expect(call.command.startsWith("'git'")).toBe(true);
+      }
     });
 
-    it('should return empty arrays on error', async () => {
-      mockGit.listLocalBranches.mockImplementation(() => Promise.reject(new Error('git error')));
-      mockGit.listRemoteBranches.mockImplementation(() => Promise.reject(new Error('git error')));
-      mockGit.getDefaultBranch.mockImplementation(() => Promise.reject(new Error('git error')));
+    it('forwards a non-null requestUsername to runAsUser for every invocation (elevated path)', async () => {
+      runAsUserMock.responder.fn = async (opts) => {
+        if (opts.command.includes("'symbolic-ref'")) {
+          return {
+            stdout: 'refs/remotes/origin/main\n',
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          };
+        }
+        return { stdout: 'main\n', stderr: '', exitCode: 0, timedOut: false };
+      };
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      await service.listBranches('/repo', 'alice');
+
+      // All three calls (local, remote, symbolic-ref) carry username='alice'.
+      expect(runAsUserMock.calls.length).toBe(3);
+      for (const call of runAsUserMock.calls) {
+        expect(call.username).toBe('alice');
+        expect(call.cwd).toBe('/repo');
+      }
+      const commands = runAsUserMock.calls.map((c) => c.command);
+      expect(commands.some((c) => c.includes("'branch' '--format=%(refname:short)'"))).toBe(true);
+      expect(commands.some((c) => c.includes("'branch' '-r' '--format=%(refname:short)'"))).toBe(true);
+      expect(commands.some((c) => c.includes("'symbolic-ref' 'refs/remotes/origin/HEAD'"))).toBe(true);
+    });
+
+    it('returns the swallow contract on non-zero exits (the UI banner case)', async () => {
+      runAsUserMock.responder.fn = async () => ({
+        stdout: '',
+        stderr: 'fatal: detected dubious ownership',
+        exitCode: 128,
+        timedOut: false,
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.listBranches('/repo', 'alice');
+
+      expect(result).toEqual({ local: [], remote: [], defaultBranch: null });
+    });
+
+    it('treats empty stdout as no branches (boundary)', async () => {
+      runAsUserMock.responder.fn = async () => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.listBranches('/repo');
 
       expect(result.local).toEqual([]);
       expect(result.remote).toEqual([]);
-      expect(result.defaultBranch).toBeNull();
+      // All three resolve-default-branch probes return empty/exit 0 -- the
+      // symbolic-ref output is empty (so no value), and rev-parse exits 0
+      // (so 'main' resolves). The output is empty for symbolic-ref so the
+      // service falls through to rev-parse main, which succeeds.
+      expect(result.defaultBranch).toBe('main');
     });
   });
 
   describe('getDefaultBranch', () => {
-    it('should return default branch from git', async () => {
+    it('returns the branch from symbolic-ref when it succeeds', async () => {
+      runAsUserMock.responder.fn = async (opts) => {
+        if (opts.command.includes("'symbolic-ref'")) {
+          return {
+            stdout: 'refs/remotes/origin/main\n',
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          };
+        }
+        // Should not be reached when symbolic-ref succeeds.
+        return { stdout: '', stderr: '', exitCode: 128, timedOut: false };
+      };
+
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.getDefaultBranch('/repo');
+      expect(result).toBe('main');
+      // Only one call -- the symbolic-ref short-circuit.
+      expect(runAsUserMock.calls.length).toBe(1);
+    });
+
+    it('falls back to `main` when symbolic-ref fails but rev-parse main succeeds', async () => {
+      runAsUserMock.responder.fn = async (opts) => {
+        if (opts.command.includes("'symbolic-ref'")) {
+          return {
+            stdout: '',
+            stderr: "fatal: ref refs/remotes/origin/HEAD is not a symbolic ref",
+            exitCode: 128,
+            timedOut: false,
+          };
+        }
+        if (opts.command.includes("'rev-parse' '--verify' 'main'")) {
+          return { stdout: 'abc123\n', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 128, timedOut: false };
+      };
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.getDefaultBranch('/repo');
       expect(result).toBe('main');
     });
 
-    it('should return null if no default branch found', async () => {
-      mockGit.getDefaultBranch.mockImplementation(() => Promise.resolve(null));
+    it('falls back to `master` when both symbolic-ref and main fail', async () => {
+      runAsUserMock.responder.fn = async (opts) => {
+        if (opts.command.includes("'symbolic-ref'")) {
+          return { stdout: '', stderr: '', exitCode: 128, timedOut: false };
+        }
+        if (opts.command.includes("'rev-parse' '--verify' 'main'")) {
+          return { stdout: '', stderr: '', exitCode: 128, timedOut: false };
+        }
+        if (opts.command.includes("'rev-parse' '--verify' 'master'")) {
+          return { stdout: 'def456\n', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return { stdout: '', stderr: '', exitCode: 128, timedOut: false };
+      };
 
       const WorktreeService = await getWorktreeService();
-      const service = new WorktreeService({ worktreeRepository: mockRepo });
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.getDefaultBranch('/repo');
+      expect(result).toBe('master');
+    });
+
+    it('returns null when every probe fails', async () => {
+      runAsUserMock.responder.fn = async () => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 128,
+        timedOut: false,
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
 
       const result = await service.getDefaultBranch('/repo');
       expect(result).toBeNull();
+      // All three probes were attempted.
+      expect(runAsUserMock.calls.length).toBe(3);
+    });
+
+    it('forwards a non-null requestUsername (elevated path)', async () => {
+      runAsUserMock.responder.fn = async () => ({
+        stdout: 'refs/remotes/origin/main\n',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      });
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      await service.getDefaultBranch('/repo', 'alice');
+
+      expect(runAsUserMock.calls.length).toBe(1);
+      expect(runAsUserMock.calls[0].username).toBe('alice');
+      expect(runAsUserMock.calls[0].cwd).toBe('/repo');
+    });
+  });
+
+  describe('refreshDefaultBranch', () => {
+    it('runs `git remote set-head origin -a` then resolves the default branch', async () => {
+      const r = makeCommandResponder()
+        .with(
+          (c) => c.includes("'remote' 'set-head' 'origin' '-a'"),
+          { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+        )
+        .with(
+          (c) => c.includes("'symbolic-ref' 'refs/remotes/origin/HEAD'"),
+          { stdout: 'refs/remotes/origin/develop\n', stderr: '', exitCode: 0, timedOut: false },
+        );
+      runAsUserMock.responder.fn = async (opts) => r.fn(opts.command);
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.refreshDefaultBranch('/repo');
+
+      expect(result).toBe('develop');
+      // First call is the network set-head; second is the symbolic-ref probe.
+      expect(runAsUserMock.calls.length).toBe(2);
+      expect(runAsUserMock.calls[0].command).toMatch(
+        /^'git' 'remote' 'set-head' 'origin' '-a'$/,
+      );
+      expect(runAsUserMock.calls[0].cwd).toBe('/repo');
+      expect(runAsUserMock.calls[1].command).toContain("'symbolic-ref'");
+    });
+
+    it('throws GitError when the network set-head call fails', async () => {
+      runAsUserMock.responder.fn = async (opts) => {
+        if (opts.command.includes("'remote' 'set-head' 'origin' '-a'")) {
+          return {
+            stdout: '',
+            stderr: 'fatal: unable to access remote',
+            exitCode: 128,
+            timedOut: false,
+          };
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      let caught: unknown;
+      try {
+        await service.refreshDefaultBranch('/repo');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(GitError);
+      expect((caught as Error).message).toContain('git remote set-head failed');
+      expect((caught as Error).message).toContain('unable to access remote');
+    });
+
+    it('throws GitError when the post-refresh resolution returns null', async () => {
+      runAsUserMock.responder.fn = async (opts) => {
+        if (opts.command.includes("'remote' 'set-head' 'origin' '-a'")) {
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        // Every resolution probe fails -> null
+        return { stdout: '', stderr: '', exitCode: 128, timedOut: false };
+      };
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      let caught: unknown;
+      try {
+        await service.refreshDefaultBranch('/repo');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(GitError);
+      expect((caught as Error).message).toContain('Could not determine default branch after refresh');
+    });
+
+    it('forwards a non-null requestUsername to every invocation (elevated path)', async () => {
+      const r = makeCommandResponder()
+        .with(
+          (c) => c.includes("'remote' 'set-head' 'origin' '-a'"),
+          { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+        )
+        .with(
+          (c) => c.includes("'symbolic-ref' 'refs/remotes/origin/HEAD'"),
+          { stdout: 'refs/remotes/origin/main\n', stderr: '', exitCode: 0, timedOut: false },
+        );
+      runAsUserMock.responder.fn = async (opts) => r.fn(opts.command);
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.refreshDefaultBranch('/repo', 'alice');
+
+      expect(result).toBe('main');
+      expect(runAsUserMock.calls.length).toBe(2);
+      for (const call of runAsUserMock.calls) {
+        expect(call.username).toBe('alice');
+        expect(call.cwd).toBe('/repo');
+      }
+    });
+
+    it('throws GitError when the runAsUser helper itself throws (spawn failure)', async () => {
+      runAsUserMock.responder.fn = async () => {
+        throw new Error('spawn sudo ENOENT');
+      };
+
+      const WorktreeService = await getWorktreeService();
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      let caught: unknown;
+      try {
+        await service.refreshDefaultBranch('/repo', 'alice');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(GitError);
+      expect((caught as Error).message).toContain('git remote set-head failed');
+      expect((caught as Error).message).toContain('spawn sudo ENOENT');
     });
   });
 

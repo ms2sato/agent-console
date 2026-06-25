@@ -7,10 +7,6 @@ import {
   parseOrgRepo,
   listWorktrees as gitListWorktrees,
   removeWorktree as gitRemoveWorktree,
-  listLocalBranches,
-  listRemoteBranches,
-  getDefaultBranch as gitGetDefaultBranch,
-  refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
 } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -48,6 +44,23 @@ const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
  * elevated branch). Local fs only, short content -- 10s is generous.
  */
 const TEMPLATE_MATERIALIZE_TIMEOUT_MS = 10000;
+
+/**
+ * Timeout for local-only branch enumeration / resolution commands routed
+ * through `runAsUser` (`git branch ...`, `git symbolic-ref ...`,
+ * `git rev-parse --verify ...`). Mirrors `DEFAULT_GIT_TIMEOUT_MS` in
+ * `lib/git.ts` -- these calls do not touch the network.
+ */
+const LOCAL_GIT_TIMEOUT_MS = 30000;
+
+/**
+ * Timeout for the single network git operation in this file (`git remote
+ * set-head origin -a` inside `refreshDefaultBranch`). Mirrors
+ * `NETWORK_GIT_TIMEOUT_MS` in `lib/git.ts` so the routed multi-user path
+ * has the same wall-clock budget as the direct-spawn single-user path
+ * would have.
+ */
+const NETWORK_GIT_TIMEOUT_MS = 60000;
 
 /**
  * Generate a random alphanumeric suffix
@@ -688,14 +701,38 @@ export class WorktreeService {
   }
 
   /**
-   * List branches in a repository
+   * List branches in a repository.
+   *
+   * Routes all three constituent git invocations (`git branch ...`, `git
+   * branch -r ...`, and the default-branch resolution probe) through
+   * `runAsUser` so they execute as the requesting user when the server is
+   * in `AUTH_MODE=multi-user`. Running as the requesting user means git
+   * picks up that user's PATH, `~/.gitconfig`, and -- critically for git
+   * over SSH -- their `SSH_AUTH_SOCK` (set by the user's login shell from
+   * `~/.bashrc` / `~/.profile` / 1Password CLI snippet via `sudo -i`). The
+   * server's own `SSH_AUTH_SOCK` is intentionally NOT forwarded: the
+   * server runs as a system user (`agentconsole`) which has no useful
+   * ssh-agent socket of its own. See Issue #870 for the user-facing
+   * symptom (the "Could not check remote status" banner).
+   *
+   * In `AUTH_MODE=none` or when `requestUsername` is null, `runAsUser`
+   * bypasses elevation and spawns the command directly as the server
+   * user (preserving the original single-user behaviour).
+   *
+   * Keeps the existing outer try/catch swallow contract: on overall
+   * failure the method returns `{ local: [], remote: [], defaultBranch:
+   * null }` so the UI can render a neutral "no branches" view rather
+   * than propagating an error.
    */
-  async listBranches(repoPath: string): Promise<{ local: string[]; remote: string[]; defaultBranch: string | null }> {
+  async listBranches(
+    repoPath: string,
+    requestUsername: string | null = null,
+  ): Promise<{ local: string[]; remote: string[]; defaultBranch: string | null }> {
     try {
       const [local, remote, defaultBranch] = await Promise.all([
-        listLocalBranches(repoPath),
-        listRemoteBranches(repoPath),
-        this.getDefaultBranch(repoPath),
+        this.listLocalBranchesAsUser(repoPath, requestUsername),
+        this.listRemoteBranchesAsUser(repoPath, requestUsername),
+        this.resolveDefaultBranch(repoPath, requestUsername),
       ]);
 
       return { local, remote, defaultBranch };
@@ -706,21 +743,206 @@ export class WorktreeService {
   }
 
   /**
-   * Get the default branch name from remote origin
+   * Get the default branch name from remote origin.
+   *
+   * Routes the resolution probe through `runAsUser` for the same
+   * SSH-credential / gitconfig reasons documented on `listBranches`.
    */
-  async getDefaultBranch(repoPath: string): Promise<string | null> {
-    return gitGetDefaultBranch(repoPath);
+  async getDefaultBranch(
+    repoPath: string,
+    requestUsername: string | null = null,
+  ): Promise<string | null> {
+    return this.resolveDefaultBranch(repoPath, requestUsername);
   }
 
   /**
    * Refresh the default branch reference from remote origin.
    * This updates the local refs/remotes/origin/HEAD to match the remote's default branch.
    *
+   * The network call (`git remote set-head origin -a`) is the SSH-using
+   * git invocation in this method. It is routed through `runAsUser` so
+   * that in `AUTH_MODE=multi-user` it executes as the requesting user --
+   * picking up that user's `SSH_AUTH_SOCK` from their login shell
+   * startup (`~/.bashrc` / `~/.profile` / 1Password CLI snippet), since
+   * `sudo -i` reads the target user's login env from those files. The
+   * server's own `SSH_AUTH_SOCK` is intentionally NOT forwarded: the
+   * server runs as the system user (`agentconsole`) and has no useful
+   * agent socket of its own.
+   *
    * @returns The updated default branch name
    * @throws GitError if the command fails (e.g., network error, no remote)
    */
-  async refreshDefaultBranch(repoPath: string): Promise<string> {
-    return gitRefreshDefaultBranch(repoPath);
+  async refreshDefaultBranch(
+    repoPath: string,
+    requestUsername: string | null = null,
+  ): Promise<string> {
+    const command = ['git', 'remote', 'set-head', 'origin', '-a'].map(shellEscape).join(' ');
+
+    let result: RunAsUserResult;
+    try {
+      result = await this._runAsUser({
+        username: requestUsername,
+        command,
+        cwd: repoPath,
+        timeoutMs: NETWORK_GIT_TIMEOUT_MS,
+      });
+    } catch (error) {
+      // Spawn failure (e.g., sudo missing). Surface as GitError so callers
+      // that branch on `instanceof GitError` keep working.
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      throw new GitError(`git remote set-head failed: ${message}`, -1, message);
+    }
+
+    if (result.timedOut || result.exitCode !== 0) {
+      const stderr = result.stderr.trim();
+      const detail = stderr || `exit code ${result.exitCode}`;
+      throw new GitError(`git remote set-head failed: ${detail}`, result.exitCode, stderr);
+    }
+
+    const defaultBranch = await this.resolveDefaultBranch(repoPath, requestUsername);
+    if (!defaultBranch) {
+      throw new GitError(
+        'Could not determine default branch after refresh',
+        -1,
+        'No default branch found',
+      );
+    }
+    return defaultBranch;
+  }
+
+  /**
+   * Execute a single git command as the requesting user. Returns stdout on
+   * success, `null` when the command exits non-zero or fails to spawn.
+   * Used by the branch-enumeration helpers and the default-branch probe.
+   *
+   * The elevated user must have `SSH_AUTH_SOCK` configured in their login
+   * shell startup (`~/.bashrc` / `~/.profile` / 1Password CLI snippet)
+   * for git-over-SSH to authenticate. `sudo -i` reads the user's login
+   * env from those files; the server's own `SSH_AUTH_SOCK` is
+   * intentionally not forwarded because the server runs as a system
+   * user with no useful agent socket. See Issue #870.
+   */
+  private async runGitAsUserSafe(
+    args: string[],
+    repoPath: string,
+    requestUsername: string | null,
+    timeoutMs: number,
+  ): Promise<string | null> {
+    const command = ['git', ...args].map(shellEscape).join(' ');
+    let result: RunAsUserResult;
+    try {
+      result = await this._runAsUser({
+        username: requestUsername,
+        command,
+        cwd: repoPath,
+        timeoutMs,
+      });
+    } catch (error) {
+      logger.warn(
+        { err: error, args, repoPath, requestUsername },
+        'runGitAsUserSafe: spawn failed',
+      );
+      return null;
+    }
+    if (result.timedOut || result.exitCode !== 0) {
+      return null;
+    }
+    return result.stdout;
+  }
+
+  /**
+   * List local branches as the requesting user.
+   *
+   * Mirrors the single-user `listLocalBranches` from `lib/git.ts`: returns
+   * an empty array on any failure (output trimmed and split on newlines,
+   * empties filtered).
+   */
+  private async listLocalBranchesAsUser(
+    repoPath: string,
+    requestUsername: string | null,
+  ): Promise<string[]> {
+    const stdout = await this.runGitAsUserSafe(
+      ['branch', '--format=%(refname:short)'],
+      repoPath,
+      requestUsername,
+      LOCAL_GIT_TIMEOUT_MS,
+    );
+    if (stdout === null) return [];
+    return stdout.trim().split('\n').filter(Boolean);
+  }
+
+  /**
+   * List remote branches as the requesting user.
+   *
+   * Mirrors the single-user `listRemoteBranches` from `lib/git.ts`:
+   * returns an empty array on any failure.
+   */
+  private async listRemoteBranchesAsUser(
+    repoPath: string,
+    requestUsername: string | null,
+  ): Promise<string[]> {
+    const stdout = await this.runGitAsUserSafe(
+      ['branch', '-r', '--format=%(refname:short)'],
+      repoPath,
+      requestUsername,
+      LOCAL_GIT_TIMEOUT_MS,
+    );
+    if (stdout === null) return [];
+    return stdout.trim().split('\n').filter(Boolean);
+  }
+
+  /**
+   * Resolve the default branch as the requesting user.
+   *
+   * Mirrors the resolution order of `lib/git.ts:getDefaultBranch`:
+   *   1. `git symbolic-ref refs/remotes/origin/HEAD` -- on success, strip
+   *      the `refs/remotes/origin/` prefix and return.
+   *   2. `git rev-parse --verify main` -- on success, return `'main'`.
+   *   3. `git rev-parse --verify master` -- on success, return `'master'`.
+   *   4. Otherwise return `null`.
+   *
+   * Used by both `listBranches` (composed in parallel with the local /
+   * remote enumeration) and `refreshDefaultBranch` (called after the
+   * `git remote set-head` invocation succeeds).
+   */
+  private async resolveDefaultBranch(
+    repoPath: string,
+    requestUsername: string | null,
+  ): Promise<string | null> {
+    const symbolicRef = await this.runGitAsUserSafe(
+      ['symbolic-ref', 'refs/remotes/origin/HEAD'],
+      repoPath,
+      requestUsername,
+      LOCAL_GIT_TIMEOUT_MS,
+    );
+    if (symbolicRef !== null) {
+      const trimmed = symbolicRef.trim();
+      if (trimmed.length > 0) {
+        return trimmed.replace('refs/remotes/origin/', '');
+      }
+    }
+
+    const mainExists = await this.runGitAsUserSafe(
+      ['rev-parse', '--verify', 'main'],
+      repoPath,
+      requestUsername,
+      LOCAL_GIT_TIMEOUT_MS,
+    );
+    if (mainExists !== null) {
+      return 'main';
+    }
+
+    const masterExists = await this.runGitAsUserSafe(
+      ['rev-parse', '--verify', 'master'],
+      repoPath,
+      requestUsername,
+      LOCAL_GIT_TIMEOUT_MS,
+    );
+    if (masterExists !== null) {
+      return 'master';
+    }
+
+    return null;
   }
 
   /**

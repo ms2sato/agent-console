@@ -191,13 +191,16 @@ const sessions = new Hono<AppBindings>()
   .get('/:sessionId/branches', async (c) => {
     const sessionId = c.req.param('sessionId');
     const { sessionManager, worktreeService } = c.get('appContext');
+    const authUser = c.get('authUser');
     const session = sessionManager.getSession(sessionId);
 
     if (!session) {
       throw new NotFoundError('Session');
     }
 
-    const branches = await worktreeService.listBranches(session.locationPath);
+    // Thread the authenticated username so multi-user mode runs the git
+    // invocations as the requesting user (Issue #870).
+    const branches = await worktreeService.listBranches(session.locationPath, authUser.username);
     return c.json(branches);
   })
   // Get commits created in this branch (since base commit)
