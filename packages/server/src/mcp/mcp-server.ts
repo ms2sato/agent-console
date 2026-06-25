@@ -615,6 +615,31 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(`Agent not found: ${selectedAgentId}`);
         }
 
+        // Inherit createdBy from parent session (if delegated)
+        const parentCreatedBy = parentSessionId
+          ? sessionManager.getSession(parentSessionId)?.createdBy
+          : undefined;
+
+        // Resolve parent's createdBy (a users.id UUID) to its OS username
+        // so the suggestion call and `git worktree add` both run as the
+        // requesting user in multi-user mode (Issues #844, #876, extending
+        // Issue #838 / PR #843 from REST to MCP). When `parentCreatedBy`
+        // is unset, or the UUID does not resolve (legacy / orphan
+        // sessions), `requestUsername` is null and `runAsUser` bypasses
+        // elevation — current behaviour preserved.
+        let requestUsername: string | null = null;
+        if (parentCreatedBy) {
+          const parentUser = await userRepository.findById(parentCreatedBy);
+          if (parentUser) {
+            requestUsername = parentUser.username;
+          } else {
+            logger.warn(
+              { parentCreatedBy, repositoryId },
+              'delegate_to_worktree: parent createdBy does not resolve to a user; running git worktree add without elevation',
+            );
+          }
+        }
+
         // Determine branch name
         let effectiveBranch: string;
         let effectiveTitle = title;
@@ -623,17 +648,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
           // Explicit branch name provided
           effectiveBranch = branch;
         } else {
-          // Auto-generate branch name from prompt.
-          // MCP-side privilege elevation for the suggestion call is tracked
-          // separately (Issue #856 Out-of-Scope note). For now pass `null`
-          // so `runAsUser` bypasses elevation; this preserves prior MCP
-          // behaviour. A future issue (modelled on #844) can resolve the
-          // parent session's createdBy -> OS username and thread it here.
+          // Auto-generate branch name from prompt. The suggestion's headless
+          // `claude -p ...` invocation runs via `runAsUser` with the same
+          // resolved parent OS username threaded into `git worktree add`
+          // below, so in multi-user mode it picks up the user's per-user
+          // Claude auth instead of running as the server process user.
+          // Issue #876 (mirrors Issue #856 / PR #859 for the REST path).
           const suggestion = await suggestSessionMetadata({
             prompt: prompt.trim(),
             repositoryPath: repo.path,
             agent,
-            requestUser: null,
+            requestUser: requestUsername,
           });
           if (suggestion.error || !suggestion.branch) {
             effectiveBranch = `task-${Date.now()}`;
@@ -652,30 +677,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
           baseBranch ??
           (await worktreeService.getDefaultBranch(repo.path)) ??
           'main';
-
-        // Inherit createdBy from parent session (if delegated)
-        const parentCreatedBy = parentSessionId
-          ? sessionManager.getSession(parentSessionId)?.createdBy
-          : undefined;
-
-        // Resolve parent's createdBy (a users.id UUID) to its OS username so
-        // `git worktree add` runs as the requesting user in multi-user mode
-        // (Issue #844, extending Issue #838 / PR #843 from REST to MCP).
-        // When `parentCreatedBy` is unset, or the UUID does not resolve
-        // (legacy / orphan sessions), `requestUsername` is null and
-        // `runAsUser` bypasses elevation — current behaviour preserved.
-        let requestUsername: string | null = null;
-        if (parentCreatedBy) {
-          const parentUser = await userRepository.findById(parentCreatedBy);
-          if (parentUser) {
-            requestUsername = parentUser.username;
-          } else {
-            logger.warn(
-              { parentCreatedBy, repositoryId },
-              'delegate_to_worktree: parent createdBy does not resolve to a user; running git worktree add without elevation',
-            );
-          }
-        }
 
         const result = await createWorktreeWithSession({
           repoPath: repo.path,
