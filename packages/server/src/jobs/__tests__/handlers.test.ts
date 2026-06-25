@@ -7,22 +7,52 @@
  * - Invalid payloads (bad scope, path-escape slug) MUST be logged and skipped
  *   without any filesystem operation.
  */
-import { describe, it, expect, beforeEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import * as os from 'os';
 import * as path from 'path';
 import { JOB_TYPES } from '@agent-console/shared';
-import type { CleanupSessionOutputsPayload, CleanupWorkerOutputPayload } from '@agent-console/shared';
+import type {
+  CleanupRepositoryPayload,
+  CleanupSessionOutputsPayload,
+  CleanupWorkerOutputPayload,
+} from '@agent-console/shared';
 import type { JobQueue, JobHandler } from '../job-queue.js';
 import { registerJobHandlers } from '../handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import type { RunAsUserOpts, RunAsUserResult } from '../../services/privilege-elevation.js';
 
 const TEST_CONFIG = '/test/config';
+
+/**
+ * Capture-and-respond fake for `runAsUser`, mirroring the pattern used by
+ * `repository-manager.test.ts`. Default response succeeds; tests override
+ * `responder.fn` for failure / timeout scenarios.
+ */
+function createRunAsUserMock() {
+  const calls: RunAsUserOpts[] = [];
+  const responder = {
+    fn: async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    }),
+  };
+  const runAsUserImpl = (opts: RunAsUserOpts) => {
+    calls.push(opts);
+    return responder.fn(opts);
+  };
+  return { calls, runAsUserImpl, responder };
+}
 
 describe('cleanup job handlers', () => {
   let handlers: Map<string, JobHandler<unknown>>;
   let workerOutputFileManager: WorkerOutputFileManager;
   let deleteSessionOutputs: ReturnType<typeof mock>;
   let deleteWorkerOutput: ReturnType<typeof mock>;
+  let runAsUserMock: ReturnType<typeof createRunAsUserMock>;
+  const originalAuthMode = process.env.AUTH_MODE;
 
   beforeEach(() => {
     handlers = new Map();
@@ -48,7 +78,18 @@ describe('cleanup job handlers', () => {
     } as unknown as JobQueue;
 
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
-    registerJobHandlers(fakeQueue, workerOutputFileManager);
+    runAsUserMock = createRunAsUserMock();
+    registerJobHandlers(fakeQueue, workerOutputFileManager, {
+      runAsUserImpl: runAsUserMock.runAsUserImpl,
+    });
+  });
+
+  afterEach(() => {
+    if (originalAuthMode === undefined) {
+      delete process.env.AUTH_MODE;
+    } else {
+      process.env.AUTH_MODE = originalAuthMode;
+    }
   });
 
   describe('CLEANUP_SESSION_OUTPUTS', () => {
@@ -118,6 +159,120 @@ describe('cleanup job handlers', () => {
     it('logs and skips on invalid slug', async () => {
       await runPayload({ sessionId: 'sid', workerId: 'wid', scope: 'repository', slug: '/absolute/path' });
       expect(deleteWorkerOutput).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('CLEANUP_REPOSITORY (Issue #884)', () => {
+    async function runPayload(payload: CleanupRepositoryPayload): Promise<void> {
+      const handler = handlers.get(JOB_TYPES.CLEANUP_REPOSITORY)!;
+      await handler(payload);
+    }
+
+    /**
+     * Pick a username guaranteed to differ from the server process user so
+     * `shouldElevateForUser` returns true under `AUTH_MODE=multi-user`. We
+     * avoid hard-coding 'ms2sato' / similar because tests must pass on any
+     * developer's box.
+     */
+    function pickOtherUser(): string {
+      const me = os.userInfo().username;
+      return me === 'tester' ? 'other-user' : 'tester';
+    }
+
+    it('bypasses runAsUser when requestUsername is null (direct fs.rm path)', async () => {
+      // Multi-user mode still falls back to direct fs.rm when no username is
+      // threaded (e.g., a non-route caller). The ENOENT on the non-existent
+      // path is swallowed by the handler's idempotent-skip branch -- no throw.
+      process.env.AUTH_MODE = 'multi-user';
+      await runPayload({
+        repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo',
+        requestUsername: null,
+      });
+      expect(runAsUserMock.calls.length).toBe(0);
+    });
+
+    it('treats ENOENT as success on the direct fs.rm path (idempotent)', async () => {
+      delete process.env.AUTH_MODE;
+      await runPayload({
+        repoDir: '/var/lib/agent-console/repositories/missing/' + Date.now(),
+        requestUsername: null,
+      });
+      // No throw = success. runAsUser must not have been touched.
+      expect(runAsUserMock.calls.length).toBe(0);
+    });
+
+    it('elevates via runAsUser when AUTH_MODE=multi-user and requestUsername targets another user', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const other = pickOtherUser();
+      const repoDir = '/var/lib/agent-console/repositories/org/repo';
+
+      await runPayload({ repoDir, requestUsername: other });
+
+      expect(runAsUserMock.calls.length).toBe(1);
+      const call = runAsUserMock.calls[0]!;
+      expect(call.username).toBe(other);
+      // shell-escaped repoDir guards against future drift in how repoDir is composed.
+      expect(call.command).toBe(`rm -rf -- '${repoDir}'`);
+      // cwd is NOT set: runAsUser pins the outer spawn to SUDO_NEUTRAL_CWD and
+      // the inner command operates on an absolute path.
+      expect(call.cwd).toBeUndefined();
+    });
+
+    it('falls back to direct fs.rm when AUTH_MODE is none (single-user) even with a username', async () => {
+      // Same-user / non-multi-user means shouldElevateForUser returns false,
+      // so the handler stays on the direct fs.rm path. We pass a missing
+      // path so the ENOENT branch silently returns.
+      delete process.env.AUTH_MODE;
+      await runPayload({
+        repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo',
+        requestUsername: 'someone',
+      });
+      expect(runAsUserMock.calls.length).toBe(0);
+    });
+
+    it('throws when the elevated rm returns non-zero so the job queue retries', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      runAsUserMock.responder.fn = async () => ({
+        stdout: '',
+        stderr: "rm: cannot remove '...': Permission denied\n",
+        exitCode: 1,
+        timedOut: false,
+      });
+      await expect(
+        runPayload({
+          repoDir: '/var/lib/agent-console/repositories/org/repo',
+          requestUsername: pickOtherUser(),
+        })
+      ).rejects.toThrow(/cleanup:repository elevated rm failed: rm: cannot remove/);
+    });
+
+    it('throws when the elevated rm times out', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      runAsUserMock.responder.fn = async () => ({
+        stdout: '',
+        stderr: '',
+        exitCode: 137,
+        timedOut: true,
+      });
+      await expect(
+        runPayload({
+          repoDir: '/var/lib/agent-console/repositories/org/repo',
+          requestUsername: pickOtherUser(),
+        })
+      ).rejects.toThrow(/cleanup:repository elevated rm failed/);
+    });
+
+    it('propagates spawn failures from runAsUser', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      runAsUserMock.responder.fn = async () => {
+        throw new Error('sudo: command not found');
+      };
+      await expect(
+        runPayload({
+          repoDir: '/var/lib/agent-console/repositories/org/repo',
+          requestUsername: pickOtherUser(),
+        })
+      ).rejects.toThrow(/sudo: command not found/);
     });
   });
 });

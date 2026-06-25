@@ -245,7 +245,17 @@ export class RepositoryManager {
     return repository;
   }
 
-  async unregisterRepository(id: string): Promise<boolean> {
+  /**
+   * Unregister a repository, deleting its data subtree and DB row.
+   *
+   * @param id Repository ID to unregister.
+   * @param requestUsername OS username of the operator triggering the
+   *   unregister. Threaded into the CLEANUP_REPOSITORY job so the handler can
+   *   elevate the recursive `fs.rm` to that user when the worktree subtree is
+   *   user-owned (`AUTH_MODE=multi-user`, Issue #884). Pass `null` for the
+   *   historical direct `fs.rm` path (single-user mode, or non-route callers).
+   */
+  async unregisterRepository(id: string, requestUsername: string | null = null): Promise<boolean> {
     const repo = this.repositories.get(id);
     if (!repo) return false;
 
@@ -260,7 +270,7 @@ export class RepositoryManager {
     }
 
     // Clean up related directories
-    await this.cleanupRepositoryData(repo.path);
+    await this.cleanupRepositoryData(repo.path, requestUsername);
 
     this.repositories.delete(id);
     await this.repository.delete(id);
@@ -529,9 +539,18 @@ export class RepositoryManager {
 
   /**
    * Clean up repository data directory (worktrees and templates)
+   * @param repoPath Absolute path of the registered repository (used to
+   *   resolve the data dir under `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`).
+   * @param requestUsername OS username threaded into the CLEANUP_REPOSITORY
+   *   payload so the handler can elevate the recursive `rm` to that user
+   *   under `AUTH_MODE=multi-user` when the worktree subtree is user-owned
+   *   (Issue #884). `null` keeps the historical direct `fs.rm` path.
    * @throws Error if jobQueue is not available
    */
-  private async cleanupRepositoryData(repoPath: string): Promise<void> {
+  private async cleanupRepositoryData(
+    repoPath: string,
+    requestUsername: string | null,
+  ): Promise<void> {
     if (!this.jobQueue) {
       throw new Error('JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.');
     }
@@ -540,7 +559,10 @@ export class RepositoryManager {
     const repoDir = getRepositoryDir(orgRepo);
 
     // Clean up entire repository directory via job queue
-    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, { repoDir });
+    await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, {
+      repoDir,
+      requestUsername,
+    });
   }
 
   getRepository(id: string): Repository | undefined {

@@ -143,6 +143,7 @@ const repositories = new Hono<AppBindings>()
   .delete('/:id', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, sessionManager } = c.get('appContext');
+    const authUser = c.get('authUser');
 
     // Check if repository exists
     const repo = repositoryManager.getRepository(repoId);
@@ -186,7 +187,11 @@ const repositories = new Hono<AppBindings>()
       logger.debug({ repositoryId: repoId }, 'No Slack integration to cleanup for repository');
     }
 
-    const success = await repositoryManager.unregisterRepository(repoId);
+    // Issue #884: thread the authenticated username so the CLEANUP_REPOSITORY
+    // job can elevate the recursive `rm` to that user under multi-user mode
+    // (worktree subtrees are owned by the requesting user per #838 / PR #843).
+    // Backend half of #871 (frontend in PR #873).
+    const success = await repositoryManager.unregisterRepository(repoId, authUser.username);
 
     if (!success) {
       // Repository was likely deleted between the check and unregister (race condition)
