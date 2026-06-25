@@ -20,30 +20,49 @@ import type { JobQueue, JobHandler } from '../job-queue.js';
 import { registerJobHandlers } from '../handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
-import type { RunAsUserOpts, RunAsUserResult } from '../../services/privilege-elevation.js';
+import type { RunAsUserResult } from '../../services/privilege-elevation.js';
 
 const TEST_CONFIG = '/test/config';
 
 /**
- * Capture-and-respond fake for `runAsUser`, mirroring the pattern used by
- * `repository-manager.test.ts`. Default response succeeds; tests override
- * `responder.fn` for failure / timeout scenarios.
+ * Captured arguments for `rmRecursiveAsUser` (PR #888). Mirrors the helper's
+ * positional signature so the test seam can assert path / username / opts
+ * directly — no need to inspect the underlying `rm -rf -- '<...>'` command
+ * shape (the helper's own unit tests already cover that argv).
  */
-function createRunAsUserMock() {
-  const calls: RunAsUserOpts[] = [];
+interface RmRecursiveAsUserCall {
+  path: string;
+  username: string | null | undefined;
+  opts: { timeoutMs?: number } | undefined;
+}
+
+/**
+ * Capture-and-respond fake for `rmRecursiveAsUser`. Default response succeeds;
+ * tests override `responder.fn` for failure / timeout scenarios.
+ */
+function createRmRecursiveAsUserMock() {
+  const calls: RmRecursiveAsUserCall[] = [];
   const responder = {
-    fn: async (_opts: RunAsUserOpts): Promise<RunAsUserResult> => ({
+    fn: async (
+      _path: string,
+      _username: string | null | undefined,
+      _opts: { timeoutMs?: number } | undefined,
+    ): Promise<RunAsUserResult> => ({
       stdout: '',
       stderr: '',
       exitCode: 0,
       timedOut: false,
     }),
   };
-  const runAsUserImpl = (opts: RunAsUserOpts) => {
-    calls.push(opts);
-    return responder.fn(opts);
+  const rmRecursiveAsUserImpl = (
+    path: string,
+    username: string | null | undefined,
+    opts?: { timeoutMs?: number },
+  ) => {
+    calls.push({ path, username, opts });
+    return responder.fn(path, username, opts);
   };
-  return { calls, runAsUserImpl, responder };
+  return { calls, rmRecursiveAsUserImpl, responder };
 }
 
 describe('cleanup job handlers', () => {
@@ -51,7 +70,7 @@ describe('cleanup job handlers', () => {
   let workerOutputFileManager: WorkerOutputFileManager;
   let deleteSessionOutputs: ReturnType<typeof mock>;
   let deleteWorkerOutput: ReturnType<typeof mock>;
-  let runAsUserMock: ReturnType<typeof createRunAsUserMock>;
+  let rmRecursiveAsUserMock: ReturnType<typeof createRmRecursiveAsUserMock>;
   const originalAuthMode = process.env.AUTH_MODE;
 
   beforeEach(() => {
@@ -78,9 +97,9 @@ describe('cleanup job handlers', () => {
     } as unknown as JobQueue;
 
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG;
-    runAsUserMock = createRunAsUserMock();
+    rmRecursiveAsUserMock = createRmRecursiveAsUserMock();
     registerJobHandlers(fakeQueue, workerOutputFileManager, {
-      runAsUserImpl: runAsUserMock.runAsUserImpl,
+      rmRecursiveAsUserImpl: rmRecursiveAsUserMock.rmRecursiveAsUserImpl,
     });
   });
 
@@ -179,7 +198,7 @@ describe('cleanup job handlers', () => {
       return me === 'tester' ? 'other-user' : 'tester';
     }
 
-    it('bypasses runAsUser when requestUsername is null (direct fs.rm path)', async () => {
+    it('bypasses rmRecursiveAsUser when requestUsername is null (direct fs.rm path)', async () => {
       // Multi-user mode still falls back to direct fs.rm when no username is
       // threaded (e.g., a non-route caller). The ENOENT on the non-existent
       // path is swallowed by the handler's idempotent-skip branch -- no throw.
@@ -188,7 +207,7 @@ describe('cleanup job handlers', () => {
         repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo',
         requestUsername: null,
       });
-      expect(runAsUserMock.calls.length).toBe(0);
+      expect(rmRecursiveAsUserMock.calls.length).toBe(0);
     });
 
     it('treats ENOENT as success on the direct fs.rm path (idempotent)', async () => {
@@ -197,25 +216,27 @@ describe('cleanup job handlers', () => {
         repoDir: '/var/lib/agent-console/repositories/missing/' + Date.now(),
         requestUsername: null,
       });
-      // No throw = success. runAsUser must not have been touched.
-      expect(runAsUserMock.calls.length).toBe(0);
+      // No throw = success. The helper must not have been touched.
+      expect(rmRecursiveAsUserMock.calls.length).toBe(0);
     });
 
-    it('elevates via runAsUser when AUTH_MODE=multi-user and requestUsername targets another user', async () => {
+    it('elevates via rmRecursiveAsUser when AUTH_MODE=multi-user and requestUsername targets another user', async () => {
       process.env.AUTH_MODE = 'multi-user';
       const other = pickOtherUser();
       const repoDir = '/var/lib/agent-console/repositories/org/repo';
 
       await runPayload({ repoDir, requestUsername: other });
 
-      expect(runAsUserMock.calls.length).toBe(1);
-      const call = runAsUserMock.calls[0]!;
+      // Layering contract: handler invokes rmRecursiveAsUser with the raw
+      // path + username and a timeout. The helper's own unit tests cover the
+      // underlying `rm -rf --` argv shape -- the handler test does not
+      // re-assert it here (would be a layer leak from the handler to the
+      // helper).
+      expect(rmRecursiveAsUserMock.calls.length).toBe(1);
+      const call = rmRecursiveAsUserMock.calls[0]!;
+      expect(call.path).toBe(repoDir);
       expect(call.username).toBe(other);
-      // shell-escaped repoDir guards against future drift in how repoDir is composed.
-      expect(call.command).toBe(`rm -rf -- '${repoDir}'`);
-      // cwd is NOT set: runAsUser pins the outer spawn to SUDO_NEUTRAL_CWD and
-      // the inner command operates on an absolute path.
-      expect(call.cwd).toBeUndefined();
+      expect(call.opts?.timeoutMs).toBeGreaterThan(0);
     });
 
     it('falls back to direct fs.rm when AUTH_MODE is none (single-user) even with a username', async () => {
@@ -227,12 +248,12 @@ describe('cleanup job handlers', () => {
         repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo',
         requestUsername: 'someone',
       });
-      expect(runAsUserMock.calls.length).toBe(0);
+      expect(rmRecursiveAsUserMock.calls.length).toBe(0);
     });
 
     it('throws when the elevated rm returns non-zero so the job queue retries', async () => {
       process.env.AUTH_MODE = 'multi-user';
-      runAsUserMock.responder.fn = async () => ({
+      rmRecursiveAsUserMock.responder.fn = async () => ({
         stdout: '',
         stderr: "rm: cannot remove '...': Permission denied\n",
         exitCode: 1,
@@ -248,7 +269,7 @@ describe('cleanup job handlers', () => {
 
     it('throws when the elevated rm times out', async () => {
       process.env.AUTH_MODE = 'multi-user';
-      runAsUserMock.responder.fn = async () => ({
+      rmRecursiveAsUserMock.responder.fn = async () => ({
         stdout: '',
         stderr: '',
         exitCode: 137,
@@ -262,9 +283,9 @@ describe('cleanup job handlers', () => {
       ).rejects.toThrow(/cleanup:repository elevated rm failed/);
     });
 
-    it('propagates spawn failures from runAsUser', async () => {
+    it('propagates spawn failures from the helper', async () => {
       process.env.AUTH_MODE = 'multi-user';
-      runAsUserMock.responder.fn = async () => {
+      rmRecursiveAsUserMock.responder.fn = async () => {
         throw new Error('sudo: command not found');
       };
       await expect(
