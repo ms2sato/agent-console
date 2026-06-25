@@ -680,11 +680,18 @@ export class WorktreeService {
       }
 
       if (shouldElevateForUser(requestUsername)) {
+        const elevatedUsername = requestUsername!;
+        // Bootstrap the user's `safe.directory` for `repoPath` so the
+        // elevated `git worktree remove` (running as the user) does not hit
+        // `fatal: detected dubious ownership` on the server-owned source
+        // repo. Mirrors the create path (`createWorktree`) which performs
+        // the same bootstrap before `git worktree add`. Idempotent.
+        await this.bootstrapSafeDirectoryForUser(elevatedUsername, repoPath);
         await this.invokeGitWorktreeRemove({
           worktreePath,
           repoPath,
           force,
-          requestUsername: requestUsername!,
+          requestUsername: elevatedUsername,
         });
       } else {
         await gitRemoveWorktree(worktreePath, repoPath, { force });
@@ -742,11 +749,18 @@ export class WorktreeService {
 
     const stderr = result.stderr;
 
-    if (
-      opts.force &&
-      !result.timedOut &&
-      (stderr.includes('.git') || stderr.includes('is not a working tree'))
-    ) {
+    // Narrow stale-worktree matcher: only patterns that genuinely indicate
+    // git can no longer manage the worktree (so a manual removal is the
+    // correct recovery). Avoids over-broad matches like `fatal: not a git
+    // repository ... .git` that would trigger destructive cleanup against
+    // a healthy repo (CodeRabbit, 2026-06-25).
+    const isStaleWorktreeError =
+      stderr.includes('is not a working tree') ||
+      stderr.includes('cannot read .git file') ||
+      stderr.includes('invalid gitfile format') ||
+      stderr.includes("'.git' file");
+
+    if (opts.force && !result.timedOut && isStaleWorktreeError) {
       const escaped = shellEscape(opts.worktreePath);
       const rmResult = await this._runAsUser({
         username: opts.requestUsername,

@@ -712,9 +712,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
             { sessionId: session.id, repositoryId },
             'Session deleted during delegate_to_worktree, rolling back worktree',
           );
-          // Rollback the created worktree since the session no longer exists
+          // Rollback the created worktree since the session no longer exists.
+          // Thread the same `requestUsername` resolved above so the rollback
+          // also runs as the worktree-owning user in multi-user mode
+          // (Issue #882). Otherwise the rollback would hit the same
+          // Permission-denied failure mode this issue was filed to fix.
           try {
-            await worktreeService.removeWorktree(repo.path, result.worktree!.path, true);
+            await worktreeService.removeWorktree(repo.path, result.worktree!.path, true, requestUsername);
           } catch (cleanupErr) {
             logger.warn(
               { worktreePath: result.worktree!.path, err: cleanupErr },
