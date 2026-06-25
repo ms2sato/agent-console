@@ -24,7 +24,11 @@ const repositoryManager = {
   getAllRepositories: mock(() => []),
   registerRepository: mock(() => Promise.resolve({} as any)),
   updateRepository: mock(() => Promise.resolve(undefined as any)),
-  unregisterRepository: mock(() => Promise.resolve(true)),
+  // Typed signature so tests can assert the route forwarded `authUser.username`
+  // as the second argument (Issue #884; see DELETE route test below).
+  unregisterRepository: mock<
+    (id: string, requestUsername?: string | null) => Promise<boolean>
+  >(() => Promise.resolve(true)),
 };
 
 const sessionManager = {
@@ -183,10 +187,9 @@ describe('Repositories API', () => {
       expect(res.status).toBe(200);
 
       expect(repositoryManager.unregisterRepository).toHaveBeenCalledTimes(1);
-      const [repoIdArg, requestUsernameArg] =
-        repositoryManager.unregisterRepository.mock.calls[0] as [string, string];
-      expect(repoIdArg).toBe('repo1');
-      expect(requestUsernameArg).toBe('testuser');
+      const callArgs = repositoryManager.unregisterRepository.mock.calls[0];
+      expect(callArgs[0]).toBe('repo1');
+      expect(callArgs[1]).toBe('testuser');
     });
   });
 
