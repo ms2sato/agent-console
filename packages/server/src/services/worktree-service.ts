@@ -696,6 +696,17 @@ export class WorktreeService {
       // route to destructive recovery. A stat success on a non-directory
       // (file, symlink, socket) is also a surfaced error — the path exists
       // in some form, so the orphan-recovery upgrade is not justified.
+      //
+      // Multi-user carve-out (CodeRabbit on PR #897): when elevation will
+      // engage, the server process may lack stat access on a user-owned
+      // worktree path (parent dir mode 0700). The elevated `git worktree
+      // remove` running as the owner handles its own existence check, so
+      // EACCES/EPERM on the probe should fall through to the elevated path
+      // with `effectiveForce` at the caller's value rather than surfacing
+      // as a failure. In single-user mode, EACCES is a genuine
+      // misconfiguration (the server user lacks stat on its own data root)
+      // that must surface as failure — the elevated branch cannot help.
+      const willElevateRemoval = shouldElevateForUser(requestUsername);
       let effectiveForce = force;
       try {
         const stat = await fsPromises.stat(worktreePath);
@@ -708,12 +719,21 @@ export class WorktreeService {
         const code = (error as NodeJS.ErrnoException | undefined)?.code;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           effectiveForce = true;
+        } else if (
+          willElevateRemoval &&
+          (code === 'EACCES' || code === 'EPERM')
+        ) {
+          // Multi-user carve-out: skip the throw and proceed to the
+          // elevated path. `effectiveForce` stays at the caller's value
+          // (no upgrade) — we cannot tell whether the dir is missing or
+          // present-but-unreadable, and the elevated `git worktree
+          // remove` will resolve that ambiguity itself.
         } else {
           throw error; // caught by the outer catch → { success: false, error }
         }
       }
 
-      if (shouldElevateForUser(requestUsername)) {
+      if (willElevateRemoval) {
         const elevatedUsername = requestUsername!;
         // Bootstrap the user's `safe.directory` for `repoPath` so the
         // elevated `git worktree remove` (running as the user) does not hit

@@ -876,6 +876,59 @@ detached
       );
     });
 
+    // Single-user EACCES on the worktreePath stat is a genuine
+    // misconfiguration and must NOT be silently routed to recovery. This
+    // locks the narrow scope of the EACCES carve-out from PR #897 CodeRabbit
+    // — only multi-user mode skips the throw on EACCES/EPERM (#895).
+    it('still surfaces { success: false } on EACCES in single-user mode (no elevation) (#895)', async () => {
+      // Single-user: AUTH_MODE is unset (top-level beforeEach restores it),
+      // and requestUsername is null — so `shouldElevateForUser(null)` is
+      // false regardless of AUTH_MODE, and the EACCES carve-out does not
+      // engage.
+      fs.mkdirSync('/repo', { recursive: true });
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const realStat = fs.promises.stat;
+      const statSpy = spyOn(fs.promises, 'stat').mockImplementation(((p: fs.PathLike) => {
+        if (typeof p === 'string' && p === '/worktrees/feature') {
+          return Promise.reject(
+            Object.assign(new Error('EACCES: permission denied, stat'), { code: 'EACCES' }),
+          );
+        }
+        return realStat(p as fs.PathLike);
+      }) as typeof fs.promises.stat);
+
+      try {
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.removeWorktree(
+          '/repo',
+          '/worktrees/feature',
+          false,
+          null, // single-user (no elevation)
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+        expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+        expect(runAsUserMock.calls.length).toBe(0);
+        // DB row preserved on failure.
+        expect(mockRepo.records.length).toBe(1);
+      } finally {
+        statSpy.mockRestore();
+      }
+    });
+
     // ⑧ Non-directory at worktreePath (stale file/symlink) MUST NOT route
     //    to destructive recovery — surface as { success: false } (#895).
     it('should fail without recovery when worktreePath exists as a non-directory (#895)', async () => {
@@ -1261,6 +1314,68 @@ detached
       expect(runAsUserMock.calls[3].cwd).toBe('/repo');
       // DB record removed on success.
       expect(mockRepo.records.length).toBe(0);
+    });
+
+    // CodeRabbit on PR #897: the worktreePath stat pre-check was too strict
+    // in multi-user mode. When the server process lacks stat access on a
+    // user-owned worktree path (parent dir mode 0700), it sees EACCES even
+    // though the elevated `git worktree remove` running as the owner can
+    // still resolve and remove the worktree. The carve-out skips the throw
+    // for EACCES/EPERM when elevation will engage; `effectiveForce` stays at
+    // the caller's value (no upgrade) so the elevated branch handles its own
+    // existence check (#895).
+    it('proceeds to elevated remove path when stat(worktreePath) rejects with EACCES (#895)', async () => {
+      fs.mkdirSync('/repo', { recursive: true });
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      // Reject stat() only for the worktreePath probe; the repoPath probe
+      // (which runs first) keeps its normal memfs behaviour and succeeds.
+      const realStat = fs.promises.stat;
+      const statSpy = spyOn(fs.promises, 'stat').mockImplementation(((p: fs.PathLike) => {
+        if (typeof p === 'string' && p === '/worktrees/feature') {
+          return Promise.reject(
+            Object.assign(new Error('EACCES: permission denied, stat'), { code: 'EACCES' }),
+          );
+        }
+        return realStat(p as fs.PathLike);
+      }) as typeof fs.promises.stat);
+
+      try {
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({
+          worktreeRepository: mockRepo,
+          runAsUserImpl: runAsUserMock.runAsUserImpl,
+        });
+
+        const result = await service.removeWorktree(
+          '/repo',
+          '/worktrees/feature',
+          false,
+          'alice-multiuser-test',
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.error).toBeUndefined();
+        // 2 calls: safe.directory bootstrap + elevated `git worktree
+        // remove`. `force` kept at the caller's value (false) because the
+        // EACCES carve-out does NOT upgrade effectiveForce — only
+        // ENOENT/ENOTDIR does.
+        expect(runAsUserMock.calls.length).toBe(2);
+        const removeCall = runAsUserMock.calls[1];
+        expect(removeCall.command).toBe(
+          `'git' 'worktree' 'remove' '/worktrees/feature'`,
+        );
+        // DB row removed on success.
+        expect(mockRepo.records.length).toBe(0);
+      } finally {
+        statSpy.mockRestore();
+      }
     });
   });
 
