@@ -57,7 +57,6 @@ export const mockGit = {
   listWorktrees: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
   createWorktree: mock(() => Promise.resolve()) as Mock<AsyncVoidFn>,
   removeWorktree: mock(() => Promise.resolve()) as Mock<AsyncVoidFn>,
-  pruneWorktrees: mock(() => Promise.resolve()) as Mock<(cwd: string, requestUser?: string | null) => Promise<void>>,
 
   // Org/Repo extraction (sync functions)
   parseOrgRepo: mock((remoteUrl: string) => {
@@ -116,7 +115,6 @@ export function resetGitMocks(): void {
   mockGit.listWorktrees.mockReset();
   mockGit.createWorktree.mockReset();
   mockGit.removeWorktree.mockReset();
-  mockGit.pruneWorktrees.mockReset();
   mockGit.parseOrgRepo.mockReset();
   mockGit.getOrgRepoFromPath.mockReset();
   mockGit.fetchRemote.mockReset();
@@ -150,7 +148,6 @@ export function resetGitMocks(): void {
   mockGit.listWorktrees.mockImplementation(() => Promise.resolve(''));
   mockGit.createWorktree.mockImplementation(() => Promise.resolve());
   mockGit.removeWorktree.mockImplementation(() => Promise.resolve());
-  mockGit.pruneWorktrees.mockImplementation(() => Promise.resolve());
   mockGit.parseOrgRepo.mockImplementation((remoteUrl: string) => {
     const sshMatch = remoteUrl.match(/git@[^:]+:([^/]+\/[^/]+?)(?:\.git)?$/);
     if (sshMatch) return sshMatch[1];

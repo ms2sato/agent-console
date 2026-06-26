@@ -7,7 +7,6 @@ import {
   parseOrgRepo,
   listWorktrees as gitListWorktrees,
   removeWorktree as gitRemoveWorktree,
-  pruneWorktrees as gitPruneWorktrees,
   listLocalBranches,
   listRemoteBranches,
   getDefaultBranch as gitGetDefaultBranch,
@@ -683,64 +682,35 @@ export class WorktreeService {
 
       // Detect the orphan-worktree-dir case (#895): primary repo OK, but
       // `worktreePath` itself was externally removed. `git worktree remove`
-      // would fail with `fatal: '<path>' is not a working tree`. Skip the
-      // remove and run `git worktree prune` + DB-row delete in repoPath
-      // instead. `removeOrphanedWorktree` is not reusable here because prune
-      // still needs the primary repo for context.
+      // would fail with `fatal: '<path>' is not a working tree`. Rather than
+      // duplicate recovery here, upgrade `force` to true so the call routes
+      // through the existing fallback path in `lib/git.ts:removeWorktree`
+      // (line 479-510) or `invokeGitWorktreeRemove` (line 764-803), both of
+      // which already catch `is not a working tree` and run fs.rm /
+      // rmRecursiveAsUser + `git worktree prune --expire=now`. The external
+      // `force` contract is unchanged — caller-visible meaning stays
+      // "unclean/locked override"; this is an internal correctness lift only.
       //
       // ENOENT/ENOTDIR-only narrowing mirrors the repoExists block above:
       // other stat errors (EACCES/EPERM/IO) MUST surface as failure, not
       // route to destructive recovery. A stat success on a non-directory
       // (file, symlink, socket) is also a surfaced error — the path exists
-      // in some form, so silently pruning + deleting the DB row would
-      // strand the on-disk artifact.
-      let worktreeMissing = false;
+      // in some form, so the orphan-recovery upgrade is not justified.
+      let effectiveForce = force;
       try {
         const stat = await fsPromises.stat(worktreePath);
         if (!stat.isDirectory()) {
-          throw new Error(`Worktree path exists but is not a directory: ${worktreePath}`);
+          throw new Error(
+            `Worktree path exists but is not a directory: ${worktreePath}`,
+          );
         }
       } catch (error) {
         const code = (error as NodeJS.ErrnoException | undefined)?.code;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
-          worktreeMissing = true;
+          effectiveForce = true;
         } else {
           throw error; // caught by the outer catch → { success: false, error }
         }
-      }
-
-      if (worktreeMissing) {
-        if (shouldElevateForUser(requestUsername)) {
-          const elevatedUsername = requestUsername!;
-          // Bootstrap safe.directory so the elevated `git worktree prune`
-          // does not hit `fatal: detected dubious ownership` on the
-          // server-owned source repo. Mirrors the normal elevated remove
-          // path below.
-          await this.bootstrapSafeDirectoryForUser(elevatedUsername, repoPath);
-          const pruneResult = await this._runAsUser({
-            username: elevatedUsername,
-            command: 'git worktree prune --expire=now',
-            cwd: repoPath,
-            timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
-          });
-          if (pruneResult.timedOut || pruneResult.exitCode !== 0) {
-            const detail =
-              pruneResult.stderr.trim() || `exit code ${pruneResult.exitCode}`;
-            throw new GitError(
-              `git worktree prune (orphan worktree-dir recovery, #895) failed: ${detail}`,
-              pruneResult.exitCode,
-              pruneResult.stderr,
-            );
-          }
-        } else {
-          await gitPruneWorktrees(repoPath);
-        }
-        await this.worktreeRepository.deleteByPath(worktreePath);
-        logger.warn(
-          { worktreePath, repoPath },
-          'Worktree dir missing; pruned registry and removed DB row (#895)',
-        );
-        return { success: true };
       }
 
       if (shouldElevateForUser(requestUsername)) {
@@ -754,11 +724,11 @@ export class WorktreeService {
         await this.invokeGitWorktreeRemove({
           worktreePath,
           repoPath,
-          force,
+          force: effectiveForce,
           requestUsername: elevatedUsername,
         });
       } else {
-        await gitRemoveWorktree(worktreePath, repoPath, { force });
+        await gitRemoveWorktree(worktreePath, repoPath, { force: effectiveForce });
       }
 
       // Remove DB record
@@ -845,9 +815,18 @@ export class WorktreeService {
 
       // Best-effort prune as the user; failure is logged but not propagated
       // (the rm already succeeded, so git's stale registry is the only cost).
+      //
+      // `--expire=now` is required here because we just deleted the worktree
+      // directory ourselves: git's default `gc.worktreePruneExpire` is 3
+      // months, so a plain `git worktree prune` would NOT shed the freshly
+      // stale entry we just created, and a subsequent `worktree add` at the
+      // same path could collide. Forcing immediate expiration is correct
+      // because this prune is gated inside the stale-`.git` / `is not a
+      // working tree` recovery branch — by the time we get here the rm has
+      // already succeeded.
       const pruneResult = await this._runAsUser({
         username: opts.requestUsername,
-        command: 'git worktree prune',
+        command: 'git worktree prune --expire=now',
         cwd: opts.repoPath,
         timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
       });

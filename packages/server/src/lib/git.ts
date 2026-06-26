@@ -487,6 +487,13 @@ export async function removeWorktree(
       // was deleted out-of-band, `git worktree prune` would run against a dead
       // cwd and Bun.spawn throws ENOENT. Pruning against an absent common dir is
       // a no-op anyway, so skipping it is safe.
+      //
+      // `--expire=now` is required here because we just deleted the worktree
+      // directory ourselves: git's default `gc.worktreePruneExpire` is 3 months,
+      // so a plain `git worktree prune` would NOT shed the freshly-stale entry
+      // we just created, and a subsequent `worktree add` at the same path
+      // could collide. Forcing immediate expiration is correct because the
+      // recovery path has already confirmed the worktree dir is gone.
       let cwdExists = false;
       try {
         await fs.stat(cwd);
@@ -496,7 +503,7 @@ export async function removeWorktree(
       }
       if (cwdExists) {
         try {
-          await git(['worktree', 'prune'], cwd, HEAVY_GIT_TIMEOUT_MS);
+          await git(['worktree', 'prune', '--expire=now'], cwd, HEAVY_GIT_TIMEOUT_MS);
         } catch (pruneError) {
           const code = (pruneError as NodeJS.ErrnoException | undefined)?.code;
           // cwd may vanish between stat() and spawn(); cleanup already succeeded.
@@ -509,34 +516,6 @@ export async function removeWorktree(
     }
     throw error;
   }
-}
-
-/**
- * Prune stale worktree registry entries (`git worktree prune --expire=now`).
- *
- * Used by `WorktreeService.removeWorktree` when the worktree directory was
- * externally removed but the primary repo (cwd) still exists — `git worktree
- * remove` would fail with `fatal: '<path>' is not a working tree`, so the
- * recovery is to prune the registry directly. See Issue #895.
- *
- * `--expire=now` is required: git's default expiration is 3 months
- * (`gc.worktreePruneExpire`), so a plain `git worktree prune` directly
- * after the dir was deleted would NOT shed the freshly stale entry, and a
- * subsequent `worktree add` at the same path could collide. Forcing
- * immediate expiration is correct here because the caller has already
- * verified the directory is gone.
- *
- * @param cwd - The primary repo directory (must still exist).
- * @param requestUser - When non-null, run as this OS user via `runAsUser`
- *   (multi-user mode picks up that user's PATH/gitconfig/SSH_AUTH_SOCK). When
- *   null/undefined (the default), spawn directly as the server user.
- * @throws GitError on prune failure.
- */
-export async function pruneWorktrees(
-  cwd: string,
-  requestUser?: string | null,
-): Promise<void> {
-  await git(['worktree', 'prune', '--expire=now'], cwd, HEAVY_GIT_TIMEOUT_MS, requestUser);
 }
 
 // ============================================================
