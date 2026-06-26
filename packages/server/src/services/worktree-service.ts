@@ -682,32 +682,20 @@ export class WorktreeService {
         return { success: true };
       }
 
-      // Detect the orphan-worktree-dir case (#895): primary repo OK, but
-      // `worktreePath` itself was externally removed. `git worktree remove`
-      // would fail with `fatal: '<path>' is not a working tree`. Rather than
-      // duplicate recovery here, upgrade `force` to true so the call routes
-      // through the existing fallback path in `lib/git.ts:removeWorktree`
-      // (line 479-510) or `invokeGitWorktreeRemove` (line 764-803), both of
-      // which already catch `is not a working tree` and run fs.rm /
-      // rmRecursiveAsUser + `git worktree prune --expire=now`. The external
-      // `force` contract is unchanged — caller-visible meaning stays
-      // "unclean/locked override"; this is an internal correctness lift only.
+      // Orphan-worktree-dir case: worktreePath is gone but the primary
+      // repo is OK. Upgrade `force` so the call routes through the existing
+      // fallback in `removeWorktreeWithFallback` (rm + prune --expire=now)
+      // rather than duplicating recovery here.
       //
-      // ENOENT/ENOTDIR-only narrowing mirrors the repoExists block above:
-      // other stat errors (EACCES/EPERM/IO) MUST surface as failure, not
-      // route to destructive recovery. A stat success on a non-directory
-      // (file, symlink, socket) is also a surfaced error — the path exists
-      // in some form, so the orphan-recovery upgrade is not justified.
+      // ENOENT/ENOTDIR-only: other stat errors (EACCES/EPERM/IO) and
+      // non-directory hits MUST surface as failure rather than route to
+      // destructive recovery.
       //
-      // Multi-user carve-out (CodeRabbit on PR #897): when elevation will
-      // engage, the server process may lack stat access on a user-owned
-      // worktree path (parent dir mode 0700). The elevated `git worktree
-      // remove` running as the owner handles its own existence check, so
-      // EACCES/EPERM on the probe should fall through to the elevated path
-      // with `effectiveForce` at the caller's value rather than surfacing
-      // as a failure. In single-user mode, EACCES is a genuine
-      // misconfiguration (the server user lacks stat on its own data root)
-      // that must surface as failure — the elevated branch cannot help.
+      // Multi-user carve-out: when elevation engages, the server process
+      // may lack stat on a user-owned worktree (parent dir mode 0700). The
+      // elevated `git worktree remove` handles its own existence check, so
+      // EACCES/EPERM fall through to the elevated path with the caller's
+      // `force` unchanged.
       const willElevateRemoval = shouldElevateForUser(requestUsername);
       let effectiveForce = force;
       try {
@@ -725,13 +713,10 @@ export class WorktreeService {
           willElevateRemoval &&
           (code === 'EACCES' || code === 'EPERM')
         ) {
-          // Multi-user carve-out: skip the throw and proceed to the
-          // elevated path. `effectiveForce` stays at the caller's value
-          // (no upgrade) — we cannot tell whether the dir is missing or
-          // present-but-unreadable, and the elevated `git worktree
-          // remove` will resolve that ambiguity itself.
+          // Multi-user carve-out: defer the existence check to the elevated
+          // remove. `effectiveForce` stays at the caller's value.
         } else {
-          throw error; // caught by the outer catch → { success: false, error }
+          throw error;
         }
       }
 
@@ -766,17 +751,10 @@ export class WorktreeService {
   }
 
   /**
-   * Invoke `git worktree remove` via `runAsUser` (multi-user elevated path
-   * for Issue #882). Constructs a {@link WorktreeRemovalRunner} that binds
-   * the elevated `runAsUser` and `rmRecursiveAsUser` to the requesting user,
-   * then delegates the orchestration (force-fallback recovery, narrow
-   * stale-worktree matcher, best-effort prune) to the shared
-   * {@link removeWorktreeWithFallback} helper in `lib/git.ts`. The
-   * single-user sibling is `lib/git.ts:removeWorktree`.
-   *
-   * Throws `GitError` on non-recoverable failure so the outer `removeWorktree`
-   * catch keeps its existing `extractErrorMessage` / `instanceof GitError`
-   * branching contract.
+   * Elevated runner over {@link removeWorktreeWithFallback}: binds
+   * `runAsUser` / `rmRecursiveAsUser` to the requesting user. Throws
+   * `GitError` on non-recoverable failure so the outer `removeWorktree`
+   * catch keeps its existing branching contract.
    */
   private async invokeGitWorktreeRemove(opts: {
     worktreePath: string;

@@ -448,19 +448,9 @@ export async function createWorktree(
 }
 
 /**
- * Runner abstraction used by {@link removeWorktreeWithFallback}.
- *
- * - `runGit` invokes `git` with the given args. Args do NOT include the `git`
- *   binary itself; the runner is responsible for binding to git (direct
- *   `Bun.spawn` vs sudo-elevated invocation via `runAsUser`) and for cwd.
- *   A non-zero `exitCode` or `timedOut: true` is signalled in the returned
- *   tuple; the runner must NOT throw for ordinary command failure. The
- *   runner may throw only for unexpected exceptions outside the command's
- *   own exit semantics (e.g. sudo missing, spawn-level fatal that cannot
- *   be normalized to an exit code).
- * - `rmRecursive` removes a directory tree force-style (no error if absent).
- *   Errors that are NOT no-op-on-absent (permission, timeout) MUST throw so
- *   the orchestration helper can propagate them to the caller's outer catch.
+ * Runner abstraction for {@link removeWorktreeWithFallback}: `runGit`
+ * dispatches a `git` argv (direct spawn or elevated) and reports exit via
+ * the returned tuple; `rmRecursive` removes a directory tree force-style.
  */
 export interface WorktreeRemovalRunner {
   runGit(args: string[]): Promise<{ exitCode: number; stderr: string; timedOut?: boolean }>;
@@ -470,35 +460,15 @@ export interface WorktreeRemovalRunner {
 /**
  * Shared orchestration for `git worktree remove` with force-fallback recovery.
  *
- * Strategy:
- * 1. `git worktree remove <path>` (+`--force --force` when `options.force`).
- * 2. If exit 0 and !timedOut → return.
- * 3. If `options.force && !timedOut && stderr matches a narrow stale-worktree
- *    pattern`:
- *      - `runner.rmRecursive(worktreePath)` (rm errors propagate to the caller).
- *      - `runner.runGit(['worktree', 'prune', '--expire=now'])` (best-effort:
- *        `.catch(() => {})` so unexpected exceptions from the runner do not
- *        propagate; a non-zero `exitCode` result is silently accepted).
- *      - return.
- * 4. Otherwise → throw {@link GitError}.
+ * `--expire=now` on the fallback prune is required because the rm has just
+ * deleted the worktree dir itself: git's default `gc.worktreePruneExpire`
+ * is 3 months, so a plain `git worktree prune` would leave the freshly-stale
+ * registry entry behind and a subsequent `worktree add` at the same path
+ * could collide.
  *
- * `--expire=now` is required because the fallback just deleted the worktree
- * directory ourselves: git's default `gc.worktreePruneExpire` is 3 months, so
- * a plain `git worktree prune` would NOT shed the freshly-stale entry we just
- * created, and a subsequent `worktree add` at the same path could collide.
- * Forcing immediate expiration is correct because the recovery branch only
- * runs after the rm has already succeeded (Issue #895).
- *
- * The `force` external contract is "unclean / locked / orphan-dir recovery
- * override". The matcher uses the narrow pattern consolidated from
- * `worktree-service.ts:invokeGitWorktreeRemove` (post-CodeRabbit-feedback on
- * Issue #882); it never matches a bare `.git` substring, which over-triggered
- * destructive recovery on `fatal: not a git repository ... .git`.
- *
- * Security note: this helper performs no path-safety validation. It is a
- * low-level git orchestration; security checks (path traversal prevention,
- * `isWorktreeOf` ownership, boundary validation) are the caller's
- * responsibility.
+ * The stale-worktree matcher is intentionally narrow — it never matches a
+ * bare `.git` substring, which over-triggered destructive recovery on
+ * `fatal: not a git repository ... .git`.
  */
 export async function removeWorktreeWithFallback(
   worktreePath: string,
@@ -535,12 +505,9 @@ export async function removeWorktreeWithFallback(
 }
 
 /**
- * Remove a worktree.
- *
- * Thin wrapper around {@link removeWorktreeWithFallback} bound to the
- * server-process git invocation path (`Bun.spawn` via `git()`) and the
- * server-process `fs.rm` for the fallback removal. The elevated, user-owned
- * sibling is `worktree-service.ts:invokeGitWorktreeRemove`.
+ * Remove a worktree (server-process `Bun.spawn` runner over
+ * {@link removeWorktreeWithFallback}). The elevated sibling is
+ * `worktree-service.ts:invokeGitWorktreeRemove`.
  */
 export async function removeWorktree(
   worktreePath: string,
@@ -554,16 +521,11 @@ export async function removeWorktree(
         return { exitCode: 0, stderr: '', timedOut: false };
       } catch (error) {
         if (error instanceof GitError) {
-          // Includes timeouts (GitError with stderr='Timeout') and ordinary
-          // non-zero exits. The matcher in the orchestration helper is
-          // narrow enough that 'Timeout' falls through to the throw branch.
           return { exitCode: error.exitCode, stderr: error.stderr, timedOut: false };
         }
-        // ENOENT/ENOTDIR on the spawn itself (e.g., cwd vanished between
-        // the caller's check and this invocation): surface as a non-stale
-        // result so the helper's matcher falls through to its throw branch
-        // on the initial remove call, or so the swallow `.catch` accepts
-        // it harmlessly on the prune call.
+        // ENOENT/ENOTDIR on the spawn itself (cwd vanished): surface as a
+        // non-stale result so the helper falls through to its throw branch
+        // on the remove call, or is silently swallowed on the prune call.
         const code = (error as NodeJS.ErrnoException | undefined)?.code;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           return { exitCode: -1, stderr: `spawn ${code}`, timedOut: false };

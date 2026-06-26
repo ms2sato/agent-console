@@ -639,11 +639,7 @@ detached
 
   describe('removeWorktree', () => {
     // ① Primary repo dir exists + clean: behavior unchanged (normal git path).
-    //   Both the primary and the worktree dir must exist in memfs so the
-    //   pre-checks (repoExists + worktreeExists, the latter added for #895)
-    //   pass and the normal git path runs.
     it('should remove worktree successfully', async () => {
-      // Primary repo dir and worktree dir must exist for the normal git path.
       fs.mkdirSync('/repo', { recursive: true });
       fs.mkdirSync('/worktrees/feature', { recursive: true });
       // Pre-populate DB record for the worktree being removed
@@ -819,12 +815,9 @@ detached
     });
 
     // ⑥ Primary repo dir present + worktree dir MISSING: upgrade `force=true`
-    //    internally and route through the existing fallback in
-    //    `lib/git.ts:removeWorktree` (which already catches `is not a working
-    //    tree` and runs fs.rm + `git worktree prune --expire=now`). Issue #895.
+    //    internally and route through the existing fallback (#895).
     it('should upgrade force=true internally when worktree path is missing (#895)', async () => {
       fs.mkdirSync('/repo', { recursive: true });
-      // /worktrees/feature does NOT exist on disk — externally removed.
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -836,30 +829,21 @@ detached
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
 
-      // Caller did NOT pass force=true; the pre-check upgrades it internally.
       const result = await service.removeWorktree('/repo', '/worktrees/feature');
 
       expect(result.success).toBe(true);
       expect(result.error).toBeUndefined();
-      // lib/git.ts removeWorktree called with force=true (upgraded internally).
-      // The recovery itself (fs.rm + prune) is the responsibility of
-      // lib/git.ts:removeWorktree's force-fallback catch block, which is
-      // covered by that module's own tests.
       expect(mockGit.removeWorktree).toHaveBeenCalledWith(
         '/worktrees/feature',
         '/repo',
         { force: true },
       );
-      // DB record removed.
       expect(mockRepo.records.length).toBe(0);
     });
 
-    // ⑦ Idempotent: a second call after the DB row + worktree dir are
-    //    both already gone still returns success. The upgraded force=true
-    //    routes through lib/git.ts's idempotent fallback.
+    // ⑦ Idempotent: second orphan-recovery call (no DB row, no dir) still succeeds.
     it('should be idempotent on the second orphan worktree-dir recovery call (#895)', async () => {
       fs.mkdirSync('/repo', { recursive: true });
-      // No DB record (already cleaned up by a prior call) and no on-disk worktree.
 
       const WorktreeService = await getWorktreeService();
       const service = new WorktreeService({ worktreeRepository: mockRepo });
@@ -868,7 +852,6 @@ detached
 
       expect(result.success).toBe(true);
       expect(result.error).toBeUndefined();
-      // Same upgrade contract: force=true routed to lib/git.ts.
       expect(mockGit.removeWorktree).toHaveBeenCalledWith(
         '/worktrees/already-pruned',
         '/repo',
@@ -876,15 +859,9 @@ detached
       );
     });
 
-    // Single-user EACCES on the worktreePath stat is a genuine
-    // misconfiguration and must NOT be silently routed to recovery. This
-    // locks the narrow scope of the EACCES carve-out from PR #897 CodeRabbit
-    // — only multi-user mode skips the throw on EACCES/EPERM (#895).
+    // Single-user EACCES: carve-out does NOT engage; failure surfaces. This
+    // locks the narrow scope of the multi-user EACCES carve-out (#895).
     it('still surfaces { success: false } on EACCES in single-user mode (no elevation) (#895)', async () => {
-      // Single-user: AUTH_MODE is unset (top-level beforeEach restores it),
-      // and requestUsername is null — so `shouldElevateForUser(null)` is
-      // false regardless of AUTH_MODE, and the EACCES carve-out does not
-      // engage.
       fs.mkdirSync('/repo', { recursive: true });
       mockRepo.records.push({
         id: 'wt-1',
@@ -915,26 +892,23 @@ detached
           '/repo',
           '/worktrees/feature',
           false,
-          null, // single-user (no elevation)
+          null,
         );
 
         expect(result.success).toBe(false);
         expect(result.error).toBeDefined();
         expect(mockGit.removeWorktree).not.toHaveBeenCalled();
         expect(runAsUserMock.calls.length).toBe(0);
-        // DB row preserved on failure.
         expect(mockRepo.records.length).toBe(1);
       } finally {
         statSpy.mockRestore();
       }
     });
 
-    // ⑧ Non-directory at worktreePath (stale file/symlink) MUST NOT route
-    //    to destructive recovery — surface as { success: false } (#895).
+    // ⑧ Non-directory at worktreePath MUST NOT route to destructive recovery (#895).
     it('should fail without recovery when worktreePath exists as a non-directory (#895)', async () => {
       fs.mkdirSync('/repo', { recursive: true });
       fs.mkdirSync('/worktrees', { recursive: true });
-      // Worktree path is a regular FILE, not a directory.
       fs.writeFileSync('/worktrees/feature-file', 'stale leftover');
       mockRepo.records.push({
         id: 'wt-1',
@@ -951,9 +925,7 @@ detached
 
       expect(result.success).toBe(false);
       expect(result.error).toBeDefined();
-      // git worktree remove was NOT attempted (pre-check rejected before it).
       expect(mockGit.removeWorktree).not.toHaveBeenCalled();
-      // DB row preserved.
       expect(mockRepo.records.length).toBe(1);
     });
   });
@@ -1188,11 +1160,6 @@ detached
       expect(runAsUserMock.calls.length).toBe(4);
       expect(runAsUserMock.calls[2].command).toBe(`rm -rf -- '/worktrees/feature'`);
       expect(runAsUserMock.calls[2].cwd).toBe('/');
-      // Post-PR-#897 consolidation: the fallback prune is now constructed by
-      // the shared `removeWorktreeWithFallback` runner, which `shellEscape`s
-      // every argv element (matching the remove call's escape policy). The
-      // resulting command is `'git' 'worktree' 'prune' '--expire=now'`
-      // (each element single-quoted), not the previous unquoted form.
       expect(runAsUserMock.calls[3].command).toBe(
         `'git' 'worktree' 'prune' '--expire=now'`,
       );
@@ -1230,7 +1197,6 @@ detached
 
     it('routes force=true through runAsUser when worktree-dir is missing (#895)', async () => {
       fs.mkdirSync('/repo', { recursive: true });
-      // worktree dir absent
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -1245,9 +1211,6 @@ detached
         runAsUserImpl: runAsUserMock.runAsUserImpl,
       });
 
-      // Caller passes force=false; pre-check upgrades force=true internally.
-      // The `git worktree remove` succeeds (default responder), so the
-      // fallback chain (rm + prune) does NOT engage in this happy path.
       const result = await service.removeWorktree(
         '/repo',
         '/worktrees/feature',
@@ -1256,8 +1219,6 @@ detached
       );
 
       expect(result.success).toBe(true);
-      // Two runAsUser calls: safe.directory bootstrap, then
-      // `git worktree remove --force --force` (force upgraded internally).
       expect(runAsUserMock.calls.length).toBe(2);
       const bootstrap = runAsUserMock.calls[0];
       expect(bootstrap.username).toBe('alice-multiuser-test');
@@ -1266,15 +1227,12 @@ detached
       expect(runAsUserMock.calls[1].command).toBe(
         `'git' 'worktree' 'remove' '/worktrees/feature' '--force' '--force'`,
       );
-      // lib/git removeWorktree NOT called (elevated branch bypasses it).
       expect(mockGit.removeWorktree).not.toHaveBeenCalled();
-      // DB row removed.
       expect(mockRepo.records.length).toBe(0);
     });
 
     it('uses --expire=now in fallback prune when worktree-dir is missing and force=true triggers fallback (#895)', async () => {
       fs.mkdirSync('/repo', { recursive: true });
-      // worktree dir absent — pre-check upgrades to force=true.
       mockRepo.records.push({
         id: 'wt-1',
         repositoryId: 'repo-1',
@@ -1283,11 +1241,9 @@ detached
         createdAt: new Date().toISOString(),
       });
 
-      // Call 1 (bootstrap): success
-      // Call 2 (`git worktree remove --force --force`): is-not-a-working-tree
-      //   error (triggers the fallback chain in `invokeGitWorktreeRemove`)
-      // Call 3 (`rm -rf -- '/worktrees/feature'`): success
-      // Call 4 (`git worktree prune --expire=now`): success
+      // Call sequence: 1 bootstrap, 2 `git worktree remove` (returns the
+      // is-not-a-working-tree error to trigger the fallback), 3 `rm -rf`,
+      // 4 `git worktree prune --expire=now`.
       let callIdx = 0;
       runAsUserMock.responder.fn = async () => {
         callIdx += 1;
@@ -1317,26 +1273,16 @@ detached
 
       expect(result.success).toBe(true);
       expect(runAsUserMock.calls.length).toBe(4);
-      // Post-PR-#897 consolidation: the shared runner shellEscapes every
-      // argv element including the prune call (matches the remove call's
-      // escape policy). The unquoted shape from the previous in-service
-      // implementation is gone.
       expect(runAsUserMock.calls[3].command).toBe(
         `'git' 'worktree' 'prune' '--expire=now'`,
       );
       expect(runAsUserMock.calls[3].cwd).toBe('/repo');
-      // DB record removed on success.
       expect(mockRepo.records.length).toBe(0);
     });
 
-    // CodeRabbit on PR #897: the worktreePath stat pre-check was too strict
-    // in multi-user mode. When the server process lacks stat access on a
-    // user-owned worktree path (parent dir mode 0700), it sees EACCES even
-    // though the elevated `git worktree remove` running as the owner can
-    // still resolve and remove the worktree. The carve-out skips the throw
-    // for EACCES/EPERM when elevation will engage; `effectiveForce` stays at
-    // the caller's value (no upgrade) so the elevated branch handles its own
-    // existence check (#895).
+    // EACCES/EPERM carve-out: only multi-user mode skips the throw and
+    // defers the existence check to the elevated remove. `effectiveForce`
+    // stays at the caller's value (no upgrade) — see worktree-service.ts.
     it('proceeds to elevated remove path when stat(worktreePath) rejects with EACCES (#895)', async () => {
       fs.mkdirSync('/repo', { recursive: true });
       mockRepo.records.push({
@@ -1347,8 +1293,6 @@ detached
         createdAt: new Date().toISOString(),
       });
 
-      // Reject stat() only for the worktreePath probe; the repoPath probe
-      // (which runs first) keeps its normal memfs behaviour and succeeds.
       const realStat = fs.promises.stat;
       const statSpy = spyOn(fs.promises, 'stat').mockImplementation(((p: fs.PathLike) => {
         if (typeof p === 'string' && p === '/worktrees/feature') {
@@ -1375,16 +1319,11 @@ detached
 
         expect(result.success).toBe(true);
         expect(result.error).toBeUndefined();
-        // 2 calls: safe.directory bootstrap + elevated `git worktree
-        // remove`. `force` kept at the caller's value (false) because the
-        // EACCES carve-out does NOT upgrade effectiveForce — only
-        // ENOENT/ENOTDIR does.
         expect(runAsUserMock.calls.length).toBe(2);
         const removeCall = runAsUserMock.calls[1];
         expect(removeCall.command).toBe(
           `'git' 'worktree' 'remove' '/worktrees/feature'`,
         );
-        // DB row removed on success.
         expect(mockRepo.records.length).toBe(0);
       } finally {
         statSpy.mockRestore();

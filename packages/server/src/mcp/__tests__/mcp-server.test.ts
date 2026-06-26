@@ -2594,11 +2594,10 @@ describe('MCP Server Tools', () => {
       const repoPath = opts.repoPath ?? WT_REPO_PATH;
       const worktreePaths = opts.worktreePaths ?? [WT_WORKTREE_PATH];
 
-      // Ensure repo paths exist in memfs. Each worktree path also gets a
-      // `.keep` marker so the directory exists on the in-memory volume —
-      // `WorktreeService.removeWorktree` now stats the worktree path (#895)
-      // and routes to prune+delete when missing, which would bypass the
-      // mocked `git worktree remove` path that several deletion tests rely on.
+      // Worktree paths get a `.keep` marker so the directory exists on
+      // memfs — `WorktreeService.removeWorktree` stats the worktree path
+      // and would otherwise route to the orphan-recovery branch, bypassing
+      // the mocked `git worktree remove`.
       const fsEntries: Record<string, string> = {
         [`${TEST_CONFIG_DIR}/.keep`]: '',
         [`${repoPath}/.git/HEAD`]: 'ref: refs/heads/main',

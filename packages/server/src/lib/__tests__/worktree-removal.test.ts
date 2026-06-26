@@ -5,17 +5,6 @@ import {
   type WorktreeRemovalRunner,
 } from '../git.js';
 
-/**
- * Unit tests for the consolidated `removeWorktreeWithFallback` helper
- * (PR #897). Both `lib/git.ts:removeWorktree` (server-process direct spawn)
- * and `worktree-service.ts:invokeGitWorktreeRemove` (multi-user elevated)
- * are thin runner constructors that delegate the orchestration here.
- *
- * Hand-rolled fake runners — no mock library state — so the test reads as
- * a sequence of runner calls. Each test asserts the runner call order /
- * args directly.
- */
-
 interface RunGitCall {
   args: string[];
 }
@@ -98,7 +87,6 @@ describe('removeWorktreeWithFallback', () => {
           timedOut: false,
         };
       }
-      // Prune call: success.
       return { exitCode: 0, stderr: '' };
     });
 
@@ -195,7 +183,6 @@ describe('removeWorktreeWithFallback', () => {
       removeWorktreeWithFallback('/wt/feat', runner, { force: true }),
     ).rejects.toBeInstanceOf(GitError);
 
-    // The initial remove ran and rm ran; prune was NOT attempted (rm threw).
     expect(runGitCalls.length).toBe(1);
     expect(rmCalls).toEqual([{ path: '/wt/feat' }]);
   });
@@ -209,13 +196,9 @@ describe('removeWorktreeWithFallback', () => {
           timedOut: false,
         };
       }
-      // Prune call: unexpected synchronous throw from the runner.
       return new Error('prune blew up');
     });
 
-    // Must resolve without throwing: rm already succeeded so the stale
-    // registry entry is the only cost, and `.catch(() => {})` in the
-    // helper swallows the rejection.
     await removeWorktreeWithFallback('/wt/feat', runner, { force: true });
 
     expect(runGitCalls.length).toBe(2);
@@ -224,9 +207,6 @@ describe('removeWorktreeWithFallback', () => {
   });
 
   it('throws GitError on a non-stale stderr even when force=true (narrow matcher regression guard)', async () => {
-    // Regression guard for the consolidation: the original
-    // `lib/git.ts:482` broad `.git` substring match would have triggered
-    // destructive recovery on this stderr. The narrow matcher must not.
     const { runner, runGitCalls, rmCalls } = makeRunner(() => ({
       exitCode: 128,
       stderr: 'fatal: not a git repository (or any of the parent directories): .git',
@@ -272,8 +252,6 @@ describe('removeWorktreeWithFallback', () => {
   });
 
   it('treats omitted timedOut as not-timed-out (default false)', async () => {
-    // Helper's contract: timedOut is optional; omitted === false. A stale
-    // stderr with force=true should still recover.
     const { runner, runGitCalls, rmCalls } = makeRunner((call) => {
       if (call === 1) {
         return {
