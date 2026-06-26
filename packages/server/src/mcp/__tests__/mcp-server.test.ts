@@ -2594,11 +2594,17 @@ describe('MCP Server Tools', () => {
       const repoPath = opts.repoPath ?? WT_REPO_PATH;
       const worktreePaths = opts.worktreePaths ?? [WT_WORKTREE_PATH];
 
-      // Ensure repo paths exist in memfs
+      // Worktree paths get a `.keep` marker so the directory exists on
+      // memfs — `WorktreeService.removeWorktree` stats the worktree path
+      // and would otherwise route to the orphan-recovery branch, bypassing
+      // the mocked `git worktree remove`.
       const fsEntries: Record<string, string> = {
         [`${TEST_CONFIG_DIR}/.keep`]: '',
         [`${repoPath}/.git/HEAD`]: 'ref: refs/heads/main',
       };
+      for (const wtPath of worktreePaths) {
+        fsEntries[`${wtPath}/.keep`] = '';
+      }
       setupMemfs(fsEntries);
       process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 

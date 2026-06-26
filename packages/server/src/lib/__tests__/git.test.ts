@@ -588,26 +588,23 @@ index abc1234..def5678 100644
     });
 
     it('should throw GitError when removal fails without force even if .git error', async () => {
-      setMockSpawnResult('', 128, "fatal: '.git' does not exist");
+      setMockSpawnResult('', 128, 'fatal: cannot read .git file');
       const { removeWorktree, GitError } = await getGitModule();
 
       await expect(removeWorktree('/path/to/worktree', '/repo')).rejects.toBeInstanceOf(GitError);
     });
 
-    it('should fall back to manual cleanup when force is true and .git does not exist', async () => {
+    it('should fall back to manual cleanup when force is true and the .git file cannot be read', async () => {
       const fs = await import('node:fs/promises');
 
       // Create a temp directory using the same fs module that removeWorktree will use
       // (which may be memfs when running in the full test suite).
       const tempWorktreePath = `/tmp/git-test-worktree-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await fs.mkdir(tempWorktreePath, { recursive: true });
-      // cwd (primary repo) must exist on disk for the prune step to run, since the
-      // fallback now skips prune when the primary repo dir is missing.
       const tempRepoPath = `/tmp/git-test-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await fs.mkdir(tempRepoPath, { recursive: true });
 
       try {
-        // First call fails with .git error, second call (worktree prune) succeeds
         let callCount = 0;
         (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
           spawnCalls.push({ args, options: options || {} });
@@ -621,7 +618,7 @@ index abc1234..def5678 100644
               }),
               stderr: new ReadableStream({
                 start(controller) {
-                  controller.enqueue(new TextEncoder().encode("fatal: '.git' does not exist"));
+                  controller.enqueue(new TextEncoder().encode('fatal: cannot read .git file'));
                   controller.close();
                 },
               }),
@@ -643,10 +640,12 @@ index abc1234..def5678 100644
 
         await removeWorktree(tempWorktreePath, tempRepoPath, { force: true });
 
-        // Should have called git worktree remove first, then git worktree prune
+        // `--expire=now` is required because the fallback just deleted the
+        // worktree dir; git's default 3-month grace would leave the
+        // freshly-stale registry entry behind otherwise.
         expect(spawnCalls.length).toBe(2);
         expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', tempWorktreePath, '--force', '--force']);
-        expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune']);
+        expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune', '--expire=now']);
         expect(spawnCalls[1].options.cwd).toBe(tempRepoPath);
       } finally {
         // Clean up temp directories (worktree may already be removed by removeWorktree)
@@ -701,156 +700,15 @@ index abc1234..def5678 100644
 
         await removeWorktree(tempWorktreePath, tempRepoPath, { force: true });
 
-        // Should have called git worktree remove first, then git worktree prune
+        // `--expire=now` is required: the fallback just deleted the worktree
+        // dir, and git's default 3-month grace would leave the freshly-stale
+        // registry entry behind.
         expect(spawnCalls.length).toBe(2);
         expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', tempWorktreePath, '--force', '--force']);
-        expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune']);
+        expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune', '--expire=now']);
         expect(spawnCalls[1].options.cwd).toBe(tempRepoPath);
       } finally {
         // Clean up temp directories (worktree may already be removed by removeWorktree)
-        await fs.rm(tempWorktreePath, { recursive: true, force: true });
-        await fs.rm(tempRepoPath, { recursive: true, force: true });
-      }
-    });
-
-    it('should skip prune when force is true and the primary repo dir (cwd) does not exist', async () => {
-      const fs = await import('node:fs/promises');
-
-      const tempWorktreePath = `/tmp/git-test-worktree-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      await fs.mkdir(tempWorktreePath, { recursive: true });
-      // Primary repo dir (cwd) deliberately does NOT exist on disk.
-      const missingRepoPath = `/tmp/git-test-missing-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-      try {
-        // First (and only) call: git worktree remove fails with a .git-class error.
-        // Prune must NOT be attempted because cwd is missing.
-        (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
-          spawnCalls.push({ args, options: options || {} });
-          return {
-            exited: Promise.resolve(128),
-            stdout: new ReadableStream({
-              start(controller) { controller.close(); },
-            }),
-            stderr: new ReadableStream({
-              start(controller) {
-                controller.enqueue(new TextEncoder().encode("fatal: '.git' does not exist"));
-                controller.close();
-              },
-            }),
-          };
-        }) as typeof Bun.spawn;
-
-        const { removeWorktree } = await getGitModule();
-
-        // Must not throw even though the primary repo dir is gone.
-        await removeWorktree(tempWorktreePath, missingRepoPath, { force: true });
-
-        // fs.rm happened: the worktree dir is gone.
-        let worktreeStillExists = true;
-        try {
-          await fs.stat(tempWorktreePath);
-        } catch {
-          worktreeStillExists = false;
-        }
-        expect(worktreeStillExists).toBe(false);
-
-        // Only the remove was attempted; prune was skipped (cwd missing).
-        expect(spawnCalls.length).toBe(1);
-        expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', tempWorktreePath, '--force', '--force']);
-      } finally {
-        await fs.rm(tempWorktreePath, { recursive: true, force: true });
-      }
-    });
-
-    it('should swallow an ENOENT-coded prune error after worktree cleanup (stat→spawn race)', async () => {
-      const fs = await import('node:fs/promises');
-
-      const tempWorktreePath = `/tmp/git-test-worktree-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      await fs.mkdir(tempWorktreePath, { recursive: true });
-      // cwd exists at stat() time so the prune is attempted...
-      const tempRepoPath = `/tmp/git-test-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      await fs.mkdir(tempRepoPath, { recursive: true });
-
-      try {
-        // First call (remove) fails with a .git-class error; second call (prune)
-        // throws synchronously with an ENOENT code, simulating cwd vanishing
-        // between stat() and spawn().
-        let callCount = 0;
-        (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
-          spawnCalls.push({ args, options: options || {} });
-          callCount++;
-          if (callCount === 1) {
-            return {
-              exited: Promise.resolve(128),
-              stdout: new ReadableStream({ start(controller) { controller.close(); } }),
-              stderr: new ReadableStream({
-                start(controller) {
-                  controller.enqueue(new TextEncoder().encode("fatal: '.git' does not exist"));
-                  controller.close();
-                },
-              }),
-            };
-          }
-          // Second call (prune): spawn itself throws ENOENT (cwd gone).
-          throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
-        }) as typeof Bun.spawn;
-
-        const { removeWorktree } = await getGitModule();
-
-        // Must resolve without throwing: the worktree fs.rm already succeeded.
-        await removeWorktree(tempWorktreePath, tempRepoPath, { force: true });
-
-        // Worktree dir was removed.
-        let worktreeStillExists = true;
-        try {
-          await fs.stat(tempWorktreePath);
-        } catch {
-          worktreeStillExists = false;
-        }
-        expect(worktreeStillExists).toBe(false);
-
-        // Both remove and prune were attempted (prune threw and was swallowed).
-        expect(spawnCalls.length).toBe(2);
-        expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune']);
-      } finally {
-        await fs.rm(tempWorktreePath, { recursive: true, force: true });
-        await fs.rm(tempRepoPath, { recursive: true, force: true });
-      }
-    });
-
-    it('should propagate a non-ENOENT prune error (guard is narrow)', async () => {
-      const fs = await import('node:fs/promises');
-
-      const tempWorktreePath = `/tmp/git-test-worktree-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      await fs.mkdir(tempWorktreePath, { recursive: true });
-      const tempRepoPath = `/tmp/git-test-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      await fs.mkdir(tempRepoPath, { recursive: true });
-
-      try {
-        let callCount = 0;
-        (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
-          spawnCalls.push({ args, options: options || {} });
-          callCount++;
-          if (callCount === 1) {
-            return {
-              exited: Promise.resolve(128),
-              stdout: new ReadableStream({ start(controller) { controller.close(); } }),
-              stderr: new ReadableStream({
-                start(controller) {
-                  controller.enqueue(new TextEncoder().encode("fatal: '.git' does not exist"));
-                  controller.close();
-                },
-              }),
-            };
-          }
-          // Second call (prune): a non-ENOENT error must propagate.
-          throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
-        }) as typeof Bun.spawn;
-
-        const { removeWorktree } = await getGitModule();
-
-        await expect(removeWorktree(tempWorktreePath, tempRepoPath, { force: true })).rejects.toThrow('EPERM');
-      } finally {
         await fs.rm(tempWorktreePath, { recursive: true, force: true });
         await fs.rm(tempRepoPath, { recursive: true, force: true });
       }
