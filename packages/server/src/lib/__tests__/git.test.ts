@@ -601,19 +601,10 @@ index abc1234..def5678 100644
       // (which may be memfs when running in the full test suite).
       const tempWorktreePath = `/tmp/git-test-worktree-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await fs.mkdir(tempWorktreePath, { recursive: true });
-      // cwd (primary repo) used to be probed by an explicit fs.stat check in
-      // removeWorktree; after the PR #897 consolidation that guard is gone
-      // (the prune is now `.catch`-swallowed unconditionally inside
-      // `removeWorktreeWithFallback`), but the test still uses a real temp dir
-      // so the surrounding mock environment stays predictable.
       const tempRepoPath = `/tmp/git-test-repo-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       await fs.mkdir(tempRepoPath, { recursive: true });
 
       try {
-        // First call fails with a narrow stale-`.git` pattern, second call
-        // (worktree prune) succeeds. The matcher was narrowed during the PR
-        // #897 consolidation; the original broad `.git` substring would have
-        // over-triggered on `fatal: not a git repository ... .git`.
         let callCount = 0;
         (Bun as { spawn: typeof Bun.spawn }).spawn = ((args: string[], options?: Record<string, unknown>) => {
           spawnCalls.push({ args, options: options || {} });
@@ -649,10 +640,9 @@ index abc1234..def5678 100644
 
         await removeWorktree(tempWorktreePath, tempRepoPath, { force: true });
 
-        // Should have called git worktree remove first, then git worktree prune.
         // `--expire=now` is required because the fallback just deleted the
         // worktree dir; git's default 3-month grace would leave the
-        // freshly-stale registry entry behind otherwise (#895).
+        // freshly-stale registry entry behind otherwise.
         expect(spawnCalls.length).toBe(2);
         expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', tempWorktreePath, '--force', '--force']);
         expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune', '--expire=now']);
@@ -710,10 +700,9 @@ index abc1234..def5678 100644
 
         await removeWorktree(tempWorktreePath, tempRepoPath, { force: true });
 
-        // Should have called git worktree remove first, then git worktree prune.
         // `--expire=now` is required: the fallback just deleted the worktree
         // dir, and git's default 3-month grace would leave the freshly-stale
-        // registry entry behind (#895).
+        // registry entry behind.
         expect(spawnCalls.length).toBe(2);
         expect(spawnCalls[0].args).toEqual(['git', 'worktree', 'remove', tempWorktreePath, '--force', '--force']);
         expect(spawnCalls[1].args).toEqual(['git', 'worktree', 'prune', '--expire=now']);
@@ -724,24 +713,6 @@ index abc1234..def5678 100644
         await fs.rm(tempRepoPath, { recursive: true, force: true });
       }
     });
-
-    // PR #897 consolidation note: three previous tests were removed when the
-    // explicit cwd-existence guard and the `code === ENOENT/ENOTDIR` prune
-    // re-throw were collapsed into `removeWorktreeWithFallback`:
-    //   - "should skip prune when force is true and the primary repo dir
-    //     (cwd) does not exist" — the guard is gone; prune is unconditionally
-    //     attempted and best-effort swallowed.
-    //   - "should swallow an ENOENT-coded prune error after worktree
-    //     cleanup" — covered now by the runner's ENOENT/ENOTDIR conversion
-    //     to `exitCode: -1` plus the helper's `.catch(() => {})`.
-    //   - "should propagate a non-ENOENT prune error (guard is narrow)" —
-    //     intentional behaviour change: all prune failures (including EPERM
-    //     etc.) are now swallowed because rm already succeeded; the stale
-    //     registry entry is the only cost. The owner's spec for PR #897
-    //     explicitly opts into this trade-off.
-    // The runner-level invariants (ENOENT short-circuit on the initial remove
-    // throwing GitError; prune swallow) are covered directly by
-    // `worktree-removal.test.ts`'s `removeWorktreeWithFallback` unit tests.
   });
 
   // =========================================================================
