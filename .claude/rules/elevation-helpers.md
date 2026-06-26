@@ -105,6 +105,33 @@ The fix is a one-liner; the cost of missing it is a class of bugs that does not 
 
 The `stdin.end()` discipline is structurally similar to "drain stdout/stderr after spawnAsUser if you do not consume them" (also a `spawnAsUser` consumer obligation, addressed in PR #889 via the same conditional-wakeup migration's `drainAndDiscard` helper). Both follow from the primitive piping streams that its long-lived consumers need but that fire-and-forget consumers do not. Future helpers in this family may introduce analogous consumer-side disciplines; the principle is the same: **the primitive's defaults are tuned for its loudest consumer; quieter consumers inherit obligations that the primitive cannot encode**.
 
+### Caller-side pre-filter discipline
+
+When the consumer's existing direct-spawn path applies an env / arg / shape transformation that `runAsUser`'s non-elevated branch does NOT replicate (e.g., `getCleanChildProcessEnv()` stripping `AGENT_CONSOLE_*` / `SERVER_ONLY_ENV_VARS` before spawn), **gate the elevation at the caller** via `shouldElevateForUser(requestUsername)` and keep the legacy direct-spawn branch verbatim for the non-elevated case. Do NOT push the filter into `runAsUser` — that would violate the strict-thin-wrapper contract by adding semantic layering inside the primitive.
+
+```ts
+async function executeHook(cmd: string, requestUsername: string | null) {
+  if (shouldElevateForUser(requestUsername)) {
+    // Elevated branch: runAsUser does NOT filter env; that is correct for
+    // its primitive role. Pass the env we intentionally want forwarded.
+    return runAsUser({ username: requestUsername!, command: cmd, env: hookEnv });
+  }
+  // Non-elevated branch: preserve the existing filter (was `Bun.spawn` with
+  // `getCleanChildProcessEnv()`). Do not migrate this path to runAsUser
+  // just for symmetry — the filter is the consumer's reciprocal obligation
+  // and belongs at this layer.
+  return Bun.spawn(['sh', '-c', cmd], { env: { ...getCleanChildProcessEnv(), ...hookEnv } });
+}
+```
+
+The reciprocal cost of preserving two branches is a small per-caller `if (shouldElevateForUser(...))` gate. This is the correct layer for filter semantics — the primitive stays strict, the consumer owns the filter.
+
+**Worked example**: PR [#896](https://github.com/ms2sato/agent-console/pull/896) (Issue #883) added elevation to `executeHookCommand`. The existing direct path used `getCleanChildProcessEnv()` to strip `AGENT_CONSOLE_*` / `SERVER_ONLY_ENV_VARS` before spawn; `runAsUser`'s non-elevated branch merges `{ ...process.env, ...opts.env }` and would have leaked those server env vars to hooks. The implementation gates elevation at the caller, keeping the legacy `Bun.spawn` branch with the filter intact. Pushing the filter into `runAsUser` would have broken the strict-thin-wrapper contract.
+
+**Proactive audit candidates** (the bug shape, not current sites):
+- Any caller currently doing `Bun.spawn(['sh','-c', cmd], { env: getCleanChildProcessEnv() })` (or analogous env-shape transformation) that is about to gain a multi-user elevation path. Check `getCleanChildProcessEnv` usage in `packages/server/src/`.
+- Any caller doing pre-spawn arg sanitization (path normalization, secret stripping, etc.) where the sanitization is not encoded in the spawn primitive.
+
 ## How this rule is expected to evolve
 
 As the helper family grows (`chmodAsUser`, `lstatAsUser`, etc. are plausible future additions when fs operations on cross-user paths come up), the naming pattern (`<verb>AsUser`) and the strict-thin-wrapper contract self-extend. This rule's body should not need to change; the glossary entry's enumeration of helpers should be updated in the same PR that adds the new primitive.

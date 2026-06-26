@@ -26,6 +26,22 @@ Agent Console is currently single-user. When started by one OS user, all session
   2. The in-process readiness cache is dropped so that if `/tmp` is reaped by `systemd-tmpfiles` during long-running server uptime, the next upload re-creates the directory on demand with the same mode / group invariants.
 - **Concurrent worktree edits accepted; conflict resolution AI-mediated (Issue [#830](https://github.com/ms2sato/agent-console/issues/830))** — All worktrees are flat (`<data-root>/repositories/<org>/<repo>/worktrees/wt-NNN-XXXX/`), owned `<service-user>:agent-console-users` mode `2775`. Any group member can read and write. There is no per-worktree owner concept and no DB schema change for worktrees. Concurrent edits are accepted; conflict resolution is delegated to the AI agents using the worktree. The project policy is that AI-mediated edits do not race in practice.
 
+### Cross-User Operation Semantics
+
+The `2775 agent-console-users` mode on the worktrees parent directory is a deliberate **team-trust** design choice, not an oversight. Direct consequences at the OS layer:
+
+- **Any `agent-console-users` group member can list, read, modify, and delete entries inside another user's worktree.** POSIX `unlink` / `rmdir` permission is controlled by the **parent directory's** write bit, not by the entry's owner. Parent dir `2775` grants group-wide write — so user A can remove user B's worktree files even though those files are uid-owned by B.
+- **Files created via the per-user PTY are 664 group-writable** (umask 0002 + setgid inheritance). This extends the same group-shared semantics one level down: user A can read and modify B's source files, run B's git workflow against B's worktree, etc.
+- **The trust boundary is the `agent-console-users` group itself, not the individual OS user.** All group members are treated as a single trusted collaboration domain. This matches the project's "team uses one server instance for shared collaboration" model.
+
+What this means for the application layer:
+
+- **Don't rely on OS-level isolation between users in this group.** Server-side authorization checks (route gating, session-ownership policies, audit attribution) are the only enforced boundary. The filesystem will not prevent cross-user mistakes or intentional cross-user actions; the application must.
+- **Cross-user operations are expected, not exceptional.** The shared-session design ([`shared-orchestrator-session.md`](shared-orchestrator-session.md)) and the application's elevation routing both presume team members may legitimately operate on each other's worktrees / sessions. Server identity (`agentconsole`) is the canonical actor for cross-user operations; per-user elevation (`runAsUser(authUser.username)`) is for operations the user is performing on their own resources. See the per-user vs service-user policy discussion in design follow-ups.
+- **OS-level mistakes are reversible only by group convention, not by FS-level protection.** If user A accidentally `rm -rf` B's worktree, only B's git remote (push state) preserves the work. The system assumes this risk because the alternative (per-user 700 isolation) would break the team collaboration model — concurrent worktree edits, shared session viewing, and AI-mediated handoff all require group write.
+
+This is intentional within the existing trust boundary. The strategic question of whether to add an application-layer authorization model on top (and how it interacts with upstream vendor identity models such as Anthropic's per-account Claude Code subscription) is a separate design topic.
+
 ### Why This Approach (PTY User Isolation)
 
 | Approach | Pros | Cons |
