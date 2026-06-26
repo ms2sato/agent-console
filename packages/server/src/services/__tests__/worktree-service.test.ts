@@ -1188,7 +1188,14 @@ detached
       expect(runAsUserMock.calls.length).toBe(4);
       expect(runAsUserMock.calls[2].command).toBe(`rm -rf -- '/worktrees/feature'`);
       expect(runAsUserMock.calls[2].cwd).toBe('/');
-      expect(runAsUserMock.calls[3].command).toBe('git worktree prune --expire=now');
+      // Post-PR-#897 consolidation: the fallback prune is now constructed by
+      // the shared `removeWorktreeWithFallback` runner, which `shellEscape`s
+      // every argv element (matching the remove call's escape policy). The
+      // resulting command is `'git' 'worktree' 'prune' '--expire=now'`
+      // (each element single-quoted), not the previous unquoted form.
+      expect(runAsUserMock.calls[3].command).toBe(
+        `'git' 'worktree' 'prune' '--expire=now'`,
+      );
       expect(runAsUserMock.calls[3].cwd).toBe('/repo');
     });
 
@@ -1310,7 +1317,13 @@ detached
 
       expect(result.success).toBe(true);
       expect(runAsUserMock.calls.length).toBe(4);
-      expect(runAsUserMock.calls[3].command).toBe('git worktree prune --expire=now');
+      // Post-PR-#897 consolidation: the shared runner shellEscapes every
+      // argv element including the prune call (matches the remove call's
+      // escape policy). The unquoted shape from the previous in-service
+      // implementation is gone.
+      expect(runAsUserMock.calls[3].command).toBe(
+        `'git' 'worktree' 'prune' '--expire=now'`,
+      );
       expect(runAsUserMock.calls[3].cwd).toBe('/repo');
       // DB record removed on success.
       expect(mockRepo.records.length).toBe(0);

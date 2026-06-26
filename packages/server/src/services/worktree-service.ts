@@ -7,11 +7,13 @@ import {
   parseOrgRepo,
   listWorktrees as gitListWorktrees,
   removeWorktree as gitRemoveWorktree,
+  removeWorktreeWithFallback,
   listLocalBranches,
   listRemoteBranches,
   getDefaultBranch as gitGetDefaultBranch,
   refreshDefaultBranch as gitRefreshDefaultBranch,
   GitError,
+  type WorktreeRemovalRunner,
 } from '../lib/git.js';
 // listLocalBranches, listRemoteBranches, getDefaultBranch, refreshDefaultBranch
 // are thin pass-throughs after Issue #870: lib/git.ts now accepts requestUser
@@ -765,12 +767,12 @@ export class WorktreeService {
 
   /**
    * Invoke `git worktree remove` via `runAsUser` (multi-user elevated path
-   * for Issue #882). Mirrors the fallback semantics of `lib/git.ts`'s
-   * `removeWorktree`: when `force` is true and the failure stderr indicates
-   * a stale `.git` file or unrecognized worktree, fall back to a manual
-   * `rm -rf` plus a best-effort `git worktree prune` — both routed through
-   * `runAsUser` so they execute as the worktree-owning user. Prune failure
-   * is logged but does not propagate (the rm already succeeded).
+   * for Issue #882). Constructs a {@link WorktreeRemovalRunner} that binds
+   * the elevated `runAsUser` and `rmRecursiveAsUser` to the requesting user,
+   * then delegates the orchestration (force-fallback recovery, narrow
+   * stale-worktree matcher, best-effort prune) to the shared
+   * {@link removeWorktreeWithFallback} helper in `lib/git.ts`. The
+   * single-user sibling is `lib/git.ts:removeWorktree`.
    *
    * Throws `GitError` on non-recoverable failure so the outer `removeWorktree`
    * catch keeps its existing `extractErrorMessage` / `instanceof GitError`
@@ -782,94 +784,40 @@ export class WorktreeService {
     force: boolean;
     requestUsername: string;
   }): Promise<void> {
-    const args = ['git', 'worktree', 'remove', opts.worktreePath];
-    if (opts.force) {
-      // `--force` twice mirrors `lib/git.ts removeWorktree`: removes unclean
-      // worktrees AND locked worktrees.
-      args.push('--force', '--force');
-    }
-    const command = args.map(shellEscape).join(' ');
-
-    const result = await this._runAsUser({
-      username: opts.requestUsername,
-      command,
-      cwd: opts.repoPath,
-      timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
-    });
-
-    if (!result.timedOut && result.exitCode === 0) {
-      return;
-    }
-
-    const stderr = result.stderr;
-
-    // Narrow stale-worktree matcher: only patterns that genuinely indicate
-    // git can no longer manage the worktree (so a manual removal is the
-    // correct recovery). Avoids over-broad matches like `fatal: not a git
-    // repository ... .git` that would trigger destructive cleanup against
-    // a healthy repo (CodeRabbit, 2026-06-25).
-    const isStaleWorktreeError =
-      stderr.includes('is not a working tree') ||
-      stderr.includes('cannot read .git file') ||
-      stderr.includes('invalid gitfile format') ||
-      stderr.includes("'.git' file");
-
-    if (opts.force && !result.timedOut && isStaleWorktreeError) {
-      const rmResult = await rmRecursiveAsUser(
-        opts.worktreePath,
-        opts.requestUsername,
-        {
+    const runner: WorktreeRemovalRunner = {
+      runGit: async (args) => {
+        const command = ['git', ...args].map(shellEscape).join(' ');
+        const result = await this._runAsUser({
+          username: opts.requestUsername,
+          command,
+          cwd: opts.repoPath,
+          timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+        });
+        return {
+          exitCode: result.exitCode,
+          stderr: result.stderr,
+          timedOut: result.timedOut,
+        };
+      },
+      rmRecursive: async (target) => {
+        const rm = await rmRecursiveAsUser(target, opts.requestUsername, {
           timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
           runAsUserImpl: this._runAsUser,
-        },
-      );
-      if (rmResult.timedOut || rmResult.exitCode !== 0) {
-        const detail =
-          rmResult.stderr.trim() || `exit code ${rmResult.exitCode}`;
-        throw new GitError(
-          `git worktree remove (elevated rm fallback) failed: ${detail}`,
-          rmResult.exitCode,
-          rmResult.stderr,
-        );
-      }
+        });
+        if (rm.timedOut || rm.exitCode !== 0) {
+          const detail = rm.stderr.trim() || `exit code ${rm.exitCode}`;
+          throw new GitError(
+            `git worktree remove (elevated rm fallback) failed: ${detail}`,
+            rm.exitCode,
+            rm.stderr,
+          );
+        }
+      },
+    };
 
-      // Best-effort prune as the user; failure is logged but not propagated
-      // (the rm already succeeded, so git's stale registry is the only cost).
-      //
-      // `--expire=now` is required here because we just deleted the worktree
-      // directory ourselves: git's default `gc.worktreePruneExpire` is 3
-      // months, so a plain `git worktree prune` would NOT shed the freshly
-      // stale entry we just created, and a subsequent `worktree add` at the
-      // same path could collide. Forcing immediate expiration is correct
-      // because this prune is gated inside the stale-`.git` / `is not a
-      // working tree` recovery branch — by the time we get here the rm has
-      // already succeeded.
-      const pruneResult = await this._runAsUser({
-        username: opts.requestUsername,
-        command: 'git worktree prune --expire=now',
-        cwd: opts.repoPath,
-        timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
-      });
-      if (pruneResult.timedOut || pruneResult.exitCode !== 0) {
-        logger.warn(
-          {
-            username: opts.requestUsername,
-            repoPath: opts.repoPath,
-            stderr: pruneResult.stderr.trim(),
-            timedOut: pruneResult.timedOut,
-          },
-          'git worktree prune failed after elevated rm fallback; rm already succeeded so continuing',
-        );
-      }
-      return;
-    }
-
-    const detail = stderr.trim() || `exit code ${result.exitCode}`;
-    throw new GitError(
-      `git worktree remove failed: ${detail}`,
-      result.exitCode,
-      stderr,
-    );
+    await removeWorktreeWithFallback(opts.worktreePath, runner, {
+      force: opts.force,
+    });
   }
 
   /**
