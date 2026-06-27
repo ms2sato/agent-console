@@ -57,6 +57,7 @@ describe('SqliteRepositoryRepository', () => {
       cleanupCommand: overrides.cleanupCommand,
       description: overrides.description ?? null,
       defaultAgentId: overrides.defaultAgentId ?? null,
+      clonedSourceRepoPath: overrides.clonedSourceRepoPath ?? null,
     };
   }
 

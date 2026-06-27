@@ -206,6 +206,7 @@ describe('cleanup job handlers', () => {
       await runPayload({
         repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo',
         requestUsername: null,
+        extraDir: null,
       });
       expect(rmRecursiveAsUserMock.calls.length).toBe(0);
     });
@@ -215,6 +216,7 @@ describe('cleanup job handlers', () => {
       await runPayload({
         repoDir: '/var/lib/agent-console/repositories/missing/' + Date.now(),
         requestUsername: null,
+        extraDir: null,
       });
       // No throw = success. The helper must not have been touched.
       expect(rmRecursiveAsUserMock.calls.length).toBe(0);
@@ -225,7 +227,7 @@ describe('cleanup job handlers', () => {
       const other = pickOtherUser();
       const repoDir = '/var/lib/agent-console/repositories/org/repo';
 
-      await runPayload({ repoDir, requestUsername: other });
+      await runPayload({ repoDir, requestUsername: other, extraDir: null });
 
       // Layering contract: handler invokes rmRecursiveAsUser with the raw
       // path + username and a timeout. The helper's own unit tests cover the
@@ -247,6 +249,7 @@ describe('cleanup job handlers', () => {
       await runPayload({
         repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo',
         requestUsername: 'someone',
+        extraDir: null,
       });
       expect(rmRecursiveAsUserMock.calls.length).toBe(0);
     });
@@ -263,6 +266,7 @@ describe('cleanup job handlers', () => {
         runPayload({
           repoDir: '/var/lib/agent-console/repositories/org/repo',
           requestUsername: pickOtherUser(),
+          extraDir: null,
         })
       ).rejects.toThrow(/cleanup:repository elevated rm failed: rm: cannot remove/);
     });
@@ -279,6 +283,7 @@ describe('cleanup job handlers', () => {
         runPayload({
           repoDir: '/var/lib/agent-console/repositories/org/repo',
           requestUsername: pickOtherUser(),
+          extraDir: null,
         })
       ).rejects.toThrow(/cleanup:repository elevated rm failed/);
     });
@@ -292,8 +297,92 @@ describe('cleanup job handlers', () => {
         runPayload({
           repoDir: '/var/lib/agent-console/repositories/org/repo',
           requestUsername: pickOtherUser(),
+          extraDir: null,
         })
       ).rejects.toThrow(/sudo: command not found/);
+    });
+
+    // =========================================================================
+    // Issue #905: extraDir removes the source-repo clone in addition to
+    // repoDir. Same elevation decision, same idempotent / error-handling shape.
+    // =========================================================================
+
+    it('removes extraDir on the direct fs.rm path when extraDir is set (Issue #905)', async () => {
+      // AUTH_MODE unset + requestUsername null -> shouldElevateForUser=false.
+      // Both `repoDir` and `extraDir` resolve through the direct fs.rm branch.
+      // Non-existent paths exit via the ENOENT idempotent-skip; no throw.
+      // Negative assertion: rmRecursiveAsUser must NOT have been called -
+      // confirms the direct branch was taken for BOTH removals.
+      delete process.env.AUTH_MODE;
+      await runPayload({
+        repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo-' + Date.now(),
+        requestUsername: null,
+        extraDir: '/var/lib/agent-console/source-repos/no-such-org/no-such-repo-' + Date.now(),
+      });
+      expect(rmRecursiveAsUserMock.calls.length).toBe(0);
+    });
+
+    it('removes extraDir on the elevated path when AUTH_MODE=multi-user (Issue #905)', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const other = pickOtherUser();
+      const repoDir = '/var/lib/agent-console/repositories/org/repo';
+      const extraDir = '/var/lib/agent-console/source-repos/org/repo';
+
+      await runPayload({ repoDir, requestUsername: other, extraDir });
+
+      // Both removals routed through rmRecursiveAsUser in order: main first,
+      // extra second. Same username, both with a positive timeout.
+      expect(rmRecursiveAsUserMock.calls.length).toBe(2);
+      expect(rmRecursiveAsUserMock.calls[0]!.path).toBe(repoDir);
+      expect(rmRecursiveAsUserMock.calls[0]!.username).toBe(other);
+      expect(rmRecursiveAsUserMock.calls[1]!.path).toBe(extraDir);
+      expect(rmRecursiveAsUserMock.calls[1]!.username).toBe(other);
+    });
+
+    it('does NOT call extraDir cleanup when extraDir is null under multi-user mode (Issue #905)', async () => {
+      // Explicit null assertion: when extraDir is null the handler must only
+      // process repoDir. With AUTH_MODE=multi-user, exactly one elevated call.
+      process.env.AUTH_MODE = 'multi-user';
+      const other = pickOtherUser();
+      const repoDir = '/var/lib/agent-console/repositories/org/repo';
+
+      await runPayload({ repoDir, requestUsername: other, extraDir: null });
+
+      expect(rmRecursiveAsUserMock.calls.length).toBe(1);
+      expect(rmRecursiveAsUserMock.calls[0]!.path).toBe(repoDir);
+    });
+
+    it('propagates errors from extraDir removal so the job retries (Issue #905)', async () => {
+      // First call (main repoDir) succeeds; second call (extraDir) returns
+      // a non-zero exit. The handler must surface the second failure so the
+      // job queue retries the whole job on the next attempt.
+      process.env.AUTH_MODE = 'multi-user';
+      const other = pickOtherUser();
+      const repoDir = '/var/lib/agent-console/repositories/org/repo';
+      const extraDir = '/var/lib/agent-console/source-repos/org/repo';
+
+      let callIndex = 0;
+      rmRecursiveAsUserMock.responder.fn = async () => {
+        callIndex += 1;
+        if (callIndex === 1) {
+          return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+        }
+        return {
+          stdout: '',
+          stderr: "rm: cannot remove source-repos clone: Permission denied\n",
+          exitCode: 1,
+          timedOut: false,
+        };
+      };
+
+      await expect(
+        runPayload({ repoDir, requestUsername: other, extraDir }),
+      ).rejects.toThrow(/cleanup:repository elevated rm failed: rm: cannot remove/);
+
+      // Both calls were attempted (repoDir succeeded, extraDir failed).
+      expect(rmRecursiveAsUserMock.calls.length).toBe(2);
+      expect(rmRecursiveAsUserMock.calls[0]!.path).toBe(repoDir);
+      expect(rmRecursiveAsUserMock.calls[1]!.path).toBe(extraDir);
     });
   });
 });

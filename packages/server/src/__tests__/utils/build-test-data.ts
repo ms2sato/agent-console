@@ -111,6 +111,9 @@ export function buildPersistedRepository(
     name: 'test-repo',
     path: '/test/repo',
     createdAt: '2026-01-01T00:00:00.000Z',
+    // Derived field; null by default so the value satisfies `Repository`
+    // wherever the persisted record is passed through (Issue #905).
+    clonedSourceRepoPath: null,
     ...overrides,
   };
 }

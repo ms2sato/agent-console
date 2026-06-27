@@ -289,6 +289,20 @@ export const DeleteWorktreeRequestSchema = v.object({
 });
 
 /**
+ * Schema for the DELETE /api/repositories/:id request body (Issue #905).
+ *
+ * `removeSourceRepo` toggles whether the server-side cleanup job also removes
+ * the cloned source-repo directory (only valid when the repo's `path` lives
+ * under the shared `source-repos` directory; the server applies a defensive
+ * path-prefix guard regardless of the request body). Defaults to `false` so
+ * an absent body keeps the historical behaviour of removing only the data
+ * subtree.
+ */
+export const DeleteRepositoryRequestSchema = v.object({
+  removeSourceRepo: v.optional(v.boolean(), false),
+});
+
+/**
  * Schema for pulling a worktree (git pull --ff-only)
  */
 export const PullWorktreeRequestSchema = v.object({
@@ -340,6 +354,7 @@ export type CreateWorktreeCustomRequest = v.InferOutput<typeof CreateWorktreeCus
 export type CreateWorktreeExistingRequest = v.InferOutput<typeof CreateWorktreeExistingRequestSchema>;
 export type CreateWorktreeRequest = v.InferOutput<typeof CreateWorktreeRequestSchema>;
 export type DeleteWorktreeRequest = v.InferOutput<typeof DeleteWorktreeRequestSchema>;
+export type DeleteRepositoryRequest = v.InferOutput<typeof DeleteRepositoryRequestSchema>;
 export type PullWorktreeRequest = v.InferOutput<typeof PullWorktreeRequestSchema>;
 export type UpdateRepositoryRequest = v.InferOutput<typeof UpdateRepositoryRequestSchema>;
 export type FetchGitHubIssueRequest = v.InferOutput<typeof FetchGitHubIssueRequestSchema>;

@@ -64,6 +64,9 @@ const repository = {
   name: 'my-repo',
   path: '/path/to/repo',
   createdAt: '2026-01-01T00:00:00Z',
+  // Issue #905: required (not optional) on the wire so every broadcast
+  // carries a defined value; server derives via getSourceReposDir().
+  clonedSourceRepoPath: null,
 };
 
 describe('AppServerMessageSchema', () => {

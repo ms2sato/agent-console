@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
+import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
@@ -638,6 +639,95 @@ describe('RepositoryManager', () => {
       };
       expect(payload.requestUsername).toBeNull();
     });
+
+    // =========================================================================
+    // Issue #905: extraDir payload field driven by `removeSourceRepo` opts +
+    // the path-prefix guard against getSourceReposDir().
+    // =========================================================================
+
+    describe('extraDir CLEANUP_REPOSITORY payload (Issue #905)', () => {
+      let originalSourceReposDir: string | undefined;
+
+      beforeEach(() => {
+        originalSourceReposDir = process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR;
+      });
+
+      afterEach(() => {
+        if (originalSourceReposDir === undefined) {
+          delete process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR;
+        } else {
+          process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR = originalSourceReposDir;
+        }
+      });
+
+      it('passes extraDir=null when opts.removeSourceRepo is unset (back-compat)', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        await manager.unregisterRepository(repo.id, 'alice');
+
+        const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+        expect(jobs.length).toBe(1);
+        const payload = JSON.parse(jobs[0]!.payload) as {
+          repoDir: string;
+          requestUsername: string | null;
+          extraDir: string | null;
+        };
+        expect(payload.extraDir).toBeNull();
+      });
+
+      it('passes extraDir=repoPath when removeSourceRepo=true and path is under source-repos dir', async () => {
+        // Place the registered repo INSIDE the configured source-repos dir.
+        // memfs honours `mkdirSync` + `writeFileSync`, and the
+        // registerRepository fast-paths check `access(repoPath)` + `access(.git)`.
+        const sourceReposDir = path.join(TEST_CONFIG_DIR, 'my-source-repos');
+        process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR = sourceReposDir;
+        const clonedRepoPath = path.join(sourceReposDir, 'owner', 'cloned-repo');
+        const clonedRepoFiles = createMockGitRepoFiles(clonedRepoPath);
+        for (const [filePath, content] of Object.entries(clonedRepoFiles)) {
+          fs.mkdirSync(path.dirname(filePath), { recursive: true });
+          fs.writeFileSync(filePath, content);
+        }
+
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(clonedRepoPath);
+
+        await manager.unregisterRepository(repo.id, 'alice', { removeSourceRepo: true });
+
+        const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+        expect(jobs.length).toBe(1);
+        const payload = JSON.parse(jobs[0]!.payload) as {
+          repoDir: string;
+          requestUsername: string | null;
+          extraDir: string | null;
+        };
+        expect(payload.extraDir).toBe(clonedRepoPath);
+        expect(payload.requestUsername).toBe('alice');
+      });
+
+      it('passes extraDir=null when removeSourceRepo=true but path is OUTSIDE source-repos dir (path-guard)', async () => {
+        // Path-guard: even if the request body asks for source-repo removal,
+        // a registered repo OUTSIDE the configured source-repos dir must
+        // NOT have its path forwarded as extraDir. Defends against tampered
+        // request bodies hitting an arbitrary path.
+        process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR = path.join(TEST_CONFIG_DIR, 'other-source-repos');
+
+        const manager = await getRepositoryManager();
+        // TEST_REPO_DIR is /test/repo, outside /test/config/other-source-repos.
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        await manager.unregisterRepository(repo.id, 'alice', { removeSourceRepo: true });
+
+        const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+        expect(jobs.length).toBe(1);
+        const payload = JSON.parse(jobs[0]!.payload) as {
+          repoDir: string;
+          requestUsername: string | null;
+          extraDir: string | null;
+        };
+        expect(payload.extraDir).toBeNull();
+      });
+    });
   });
 
   describe('getRepository', () => {
@@ -733,6 +823,7 @@ describe('RepositoryManager', () => {
           name: 'repo',
           path: TEST_REPO_DIR,
           createdAt: '2024-01-01T00:00:00.000Z',
+          clonedSourceRepoPath: null,
         },
       ];
 
@@ -751,6 +842,7 @@ describe('RepositoryManager', () => {
           name: 'missing',
           path: '/non/existent/path',
           createdAt: '2024-01-01T00:00:00.000Z',
+          clonedSourceRepoPath: null,
         },
       ];
 

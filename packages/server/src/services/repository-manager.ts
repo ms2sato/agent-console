@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import { access, lstat } from 'fs/promises';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
-import { getRepositoryDir } from '../lib/config.js';
+import { getRepositoryDir, getSourceReposDir } from '../lib/config.js';
+import { isUnderSourceReposDir } from '../lib/repository-remote.js';
 import { getOrgRepoFromPath as gitGetOrgRepoFromPath } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
@@ -232,6 +233,10 @@ export class RepositoryManager {
       createdAt: new Date().toISOString(),
       description: options?.description ?? null,
       defaultAgentId: null,
+      // Derived at serving time via `withRepositoryRemote` (Issue #905). The
+      // in-memory copy carries `null` so the type contract is satisfied; the
+      // REST / WS layer recomputes against `getSourceReposDir()` per request.
+      clonedSourceRepoPath: null,
     };
 
     this.repositories.set(id, repository);
@@ -254,8 +259,16 @@ export class RepositoryManager {
    *   elevate the recursive `fs.rm` to that user when the worktree subtree is
    *   user-owned (`AUTH_MODE=multi-user`, Issue #884). Pass `null` for the
    *   historical direct `fs.rm` path (single-user mode, or non-route callers).
+   * @param opts Optional flags. `removeSourceRepo` requests that the cleanup
+   *   job also remove the source-repo clone when `repo.path` lives under
+   *   `getSourceReposDir()` (Issue #905). The path-guard is applied in
+   *   `cleanupRepositoryData`; out-of-prefix paths are silently skipped.
    */
-  async unregisterRepository(id: string, requestUsername: string | null = null): Promise<boolean> {
+  async unregisterRepository(
+    id: string,
+    requestUsername: string | null = null,
+    opts: { removeSourceRepo?: boolean } = {},
+  ): Promise<boolean> {
     const repo = this.repositories.get(id);
     if (!repo) return false;
 
@@ -270,7 +283,7 @@ export class RepositoryManager {
     }
 
     // Clean up related directories
-    await this.cleanupRepositoryData(repo.path, requestUsername);
+    await this.cleanupRepositoryData(repo.path, requestUsername, opts);
 
     this.repositories.delete(id);
     await this.repository.delete(id);
@@ -545,11 +558,16 @@ export class RepositoryManager {
    *   payload so the handler can elevate the recursive `rm` to that user
    *   under `AUTH_MODE=multi-user` when the worktree subtree is user-owned
    *   (Issue #884). `null` keeps the historical direct `fs.rm` path.
+   * @param opts.removeSourceRepo When `true`, additionally remove the source
+   *   repo clone at `repoPath` itself (Issue #905). Only honoured when
+   *   `repoPath` lives under `getSourceReposDir()`; out-of-prefix paths are
+   *   silently skipped with a debug log.
    * @throws Error if jobQueue is not available
    */
   private async cleanupRepositoryData(
     repoPath: string,
     requestUsername: string | null,
+    opts: { removeSourceRepo?: boolean } = {},
   ): Promise<void> {
     if (!this.jobQueue) {
       throw new Error('JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.');
@@ -558,10 +576,30 @@ export class RepositoryManager {
     const orgRepo = await getOrgRepoFromPath(repoPath);
     const repoDir = getRepositoryDir(orgRepo);
 
+    // Issue #905: when the unregister request opts in to source-repo removal,
+    // verify the registered path actually lives under the shared source-repos
+    // directory before forwarding it as `extraDir`. The frontend gates the
+    // checkbox on `clonedSourceRepoPath`, but the server applies the same
+    // path-prefix check as a defensive guard against a tampered request body
+    // that toggles the flag on a path outside the source-repos prefix.
+    let extraDir: string | null = null;
+    if (opts.removeSourceRepo === true) {
+      const sourceReposDir = getSourceReposDir();
+      if (isUnderSourceReposDir(repoPath, sourceReposDir)) {
+        extraDir = repoPath;
+      } else {
+        logger.debug(
+          { repoPath, sourceReposDir },
+          'removeSourceRepo requested but registered path is outside source-repos dir; skipping extra cleanup',
+        );
+      }
+    }
+
     // Clean up entire repository directory via job queue
     await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, {
       repoDir,
       requestUsername,
+      extraDir,
     });
   }
 

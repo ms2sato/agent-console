@@ -1,12 +1,15 @@
 import { Hono } from 'hono';
+import * as v from 'valibot';
 import type {
   GitHubIssueSummary,
   CloneRepositoryResponse,
   CloneJobStatusResponse,
+  DeleteRepositoryRequest,
 } from '@agent-console/shared';
 import {
   CreateRepositoryRequestSchema,
   CloneRepositoryRequestSchema,
+  DeleteRepositoryRequestSchema,
   UpdateRepositoryRequestSchema,
   FetchGitHubIssueRequestSchema,
   RepositorySlackIntegrationInputSchema,
@@ -144,6 +147,18 @@ const repositories = new Hono<AppBindings>()
     const { repositoryManager, sessionManager } = c.get('appContext');
     const authUser = c.get('authUser');
 
+    // Issue #905: parse the DELETE body manually because `vValidator` would
+    // 400 on a missing body / missing Content-Type. The schema's default
+    // makes an absent `removeSourceRepo` field equivalent to `false`.
+    let parsed: DeleteRepositoryRequest;
+    const raw = await c.req.json().catch(() => ({}));
+    const parseResult = v.safeParse(DeleteRepositoryRequestSchema, raw);
+    if (!parseResult.success) {
+      const firstIssue = parseResult.issues[0];
+      throw new ValidationError(firstIssue?.message ?? 'Validation failed');
+    }
+    parsed = parseResult.output;
+
     // Check if repository exists
     const repo = repositoryManager.getRepository(repoId);
     if (!repo) {
@@ -190,7 +205,13 @@ const repositories = new Hono<AppBindings>()
     // job can elevate the recursive `rm` to that user under multi-user mode
     // (worktree subtrees are owned by the requesting user per #838 / PR #843).
     // Backend half of #871 (frontend in PR #873).
-    const success = await repositoryManager.unregisterRepository(repoId, authUser.username);
+    // Issue #905: forward `removeSourceRepo` so the cleanup job optionally
+    // removes the source-repo clone in addition to the data subtree.
+    const success = await repositoryManager.unregisterRepository(
+      repoId,
+      authUser.username,
+      { removeSourceRepo: parsed.removeSourceRepo },
+    );
 
     if (!success) {
       // Repository was likely deleted between the check and unregister (race condition)

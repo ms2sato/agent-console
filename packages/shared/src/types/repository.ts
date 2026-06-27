@@ -9,6 +9,17 @@ export interface Repository {
   envVars?: string | null; // Environment variables in .env format (applied to workers)
   description?: string | null; // Brief description of the repository
   defaultAgentId?: string | null; // Default agent ID for worktree creation
+  /**
+   * Equal to `path` when this repository was registered through
+   * `POST /api/repositories/clone` (Issue #834) and the clone lives under the
+   * shared `source-repos` directory (`getSourceReposDir()`); `null` otherwise.
+   * The client uses this field to gate the "also remove the cloned source repo"
+   * checkbox visibility on the unregister UI (Issue #905). When the user
+   * checks the box, `DELETE /api/repositories/:id` is sent with
+   * `removeSourceRepo: true` and the server's CLEANUP_REPOSITORY job removes
+   * this directory via `extraDir` in addition to the main data subtree.
+   */
+  clonedSourceRepoPath: string | null;
 }
 
 /**
