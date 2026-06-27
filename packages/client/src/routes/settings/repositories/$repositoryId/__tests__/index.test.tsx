@@ -86,10 +86,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
     return new Response(null, { status: 204 });
   }
 
-  return new Response(JSON.stringify({}), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  throw new Error(`Unhandled fetch request in RepositoryDetailView test: ${method} ${url}`);
 });
 
 globalThis.fetch = mockFetch as unknown as typeof fetch;

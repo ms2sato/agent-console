@@ -378,12 +378,13 @@ describe('API Client', () => {
     });
 
     it('throws ApiError when DELETE fails', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 500,
-        statusText: 'Internal Server Error',
-        json: mock(() => Promise.resolve({ error: 'cleanup failed' })),
-      } as unknown as Response);
+      mockFetch.mockResolvedValue(
+        new Response(JSON.stringify({ error: 'cleanup failed' }), {
+          status: 500,
+          statusText: 'Internal Server Error',
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
 
       await expect(
         unregisterRepository('repo-id', { removeSourceRepo: true })
