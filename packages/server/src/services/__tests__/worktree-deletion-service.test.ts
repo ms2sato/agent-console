@@ -625,6 +625,81 @@ describe('deleteWorktree', () => {
     expect(deps.sessionManager.deleteSession).toHaveBeenCalledWith('sess-2');
   });
 
+  // --- Kill phase error handling (git path) ---
+
+  describe('kill phase error handling (git path)', () => {
+    it('proceeds with worktree deletion when killSessionWorkers fails for some sessions (partial failure)', async () => {
+      const session2 = buildWorktreeSession({
+        id: 'sess-2',
+        repositoryName: 'my-repo',
+        worktreeId: 'feature-1',
+        locationPath: WORKTREE_PATH,
+      });
+
+      const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, session2] });
+      deps.sessionManager.killSessionWorkers.mockImplementation((id: string) => {
+        if (id === 'sess-1') return Promise.reject(new Error('PTY process not found'));
+        return Promise.resolve();
+      });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: true, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.killErrors).toEqual([
+        { sessionId: 'sess-1', error: 'PTY process not found' },
+      ]);
+      expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
+    });
+
+    it('proceeds with worktree deletion when killSessionWorkers fails for all sessions', async () => {
+      const session2 = buildWorktreeSession({
+        id: 'sess-2',
+        repositoryName: 'my-repo',
+        worktreeId: 'feature-1',
+        locationPath: WORKTREE_PATH,
+      });
+
+      const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, session2] });
+      deps.sessionManager.killSessionWorkers.mockImplementation(() =>
+        Promise.reject(new Error('kill failed')),
+      );
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: true, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.killErrors).toEqual([
+        { sessionId: 'sess-1', error: 'kill failed' },
+        { sessionId: 'sess-2', error: 'kill failed' },
+      ]);
+      expect(mockRemoveWorktree).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits killErrors from result when all kills succeed', async () => {
+      const session2 = buildWorktreeSession({
+        id: 'sess-2',
+        repositoryName: 'my-repo',
+        worktreeId: 'feature-1',
+        locationPath: WORKTREE_PATH,
+      });
+
+      const deps = createMockDeps({ sessions: [DEFAULT_WORKTREE_SESSION, session2] });
+
+      const result = await deleteWorktree(
+        { repoId: 'repo-1', worktreePath: WORKTREE_PATH, force: true, requestUsername: null },
+        deps,
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.killErrors).toBeUndefined();
+    });
+  });
+
   // --- Issue #882: requestUsername threading (multi-user elevation) ---
 
   describe('requestUsername threading (Issue #882)', () => {
