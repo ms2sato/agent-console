@@ -60,6 +60,13 @@ interface FetchResponses {
    * Recorded DELETE calls so tests can assert which repository id was sent.
    */
   deleteRepositoryCalls?: string[];
+  /**
+   * Recorded DELETE bodies so tests can assert the JSON payload (or its absence)
+   * that the client sent. Each entry is the parsed JSON body, or `undefined`
+   * when the DELETE was issued without a body. Indices align with
+   * `deleteRepositoryCalls`.
+   */
+  deleteRepositoryBodies?: unknown[];
 }
 
 let fetchResponses: FetchResponses = {
@@ -95,6 +102,18 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
     const match = url.match(/\/api\/repositories\/([^/]+)$/);
     const repoId = match?.[1] ?? '';
     fetchResponses.deleteRepositoryCalls?.push(repoId);
+    if (fetchResponses.deleteRepositoryBodies) {
+      const rawBody = init?.body;
+      let parsed: unknown = undefined;
+      if (typeof rawBody === 'string' && rawBody.length > 0) {
+        try {
+          parsed = JSON.parse(rawBody);
+        } catch {
+          parsed = rawBody;
+        }
+      }
+      fetchResponses.deleteRepositoryBodies.push(parsed);
+    }
     const override = fetchResponses.deleteRepositoryResponses?.[repoId];
     if (override) {
       const body = override.body === undefined ? null : override.body;
@@ -163,6 +182,7 @@ async function renderDashboard(
   options?: {
     deleteRepositoryResponses?: Record<string, { status: number; body?: unknown }>;
     deleteRepositoryCalls?: string[];
+    deleteRepositoryBodies?: unknown[];
   }
 ) {
   fetchResponses = {
@@ -170,6 +190,7 @@ async function renderDashboard(
     worktreesByRepoId: Object.fromEntries(repositories.map((r) => [r.id, []])),
     deleteRepositoryResponses: options?.deleteRepositoryResponses,
     deleteRepositoryCalls: options?.deleteRepositoryCalls,
+    deleteRepositoryBodies: options?.deleteRepositoryBodies,
   };
 
   const sessionDataValue = {
@@ -423,5 +444,179 @@ describe('DashboardPage / Unregister Repository', () => {
     // Radix's open AlertDialog marks the page background `aria-hidden`, so we
     // include hidden elements when querying for the still-mounted repo heading.
     expect(screen.getByRole('heading', { name: 'my-repo', level: 2, hidden: true })).toBeTruthy();
+  });
+});
+
+/**
+ * Tests for Issue #905 — source-repo cleanup opt-in checkbox on the Unregister
+ * Repository dialog. The checkbox is only meaningful (and only rendered) when
+ * the repository was registered via "Clone from URL" — i.e. when
+ * `clonedSourceRepoPath` is non-null. External-path repositories MUST NOT show
+ * the checkbox. When checked, the client sends `{ removeSourceRepo: true }`
+ * in the DELETE body; when unchecked, no body is sent.
+ */
+describe('DashboardPage / Unregister Repository — source-repo cleanup checkbox', () => {
+  beforeEach(() => {
+    mockFetch.mockClear();
+    useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(() => undefined);
+    useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(
+      <T,>() => false as T
+    );
+    hasVSCodeSpy = spyOn(capabilitiesModule, 'hasVSCode').mockImplementation(() => false);
+  });
+
+  afterEach(() => {
+    cleanup();
+    useAppWsEventSpy.mockRestore();
+    useAppWsStateSpy.mockRestore();
+    hasVSCodeSpy.mockRestore();
+  });
+
+  it('does NOT render the checkbox when clonedSourceRepoPath is null', async () => {
+    await renderDashboard([
+      createTestRepository({ clonedSourceRepoPath: null }),
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'my-repo', level: 2 })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+
+    expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+
+  it('renders the checkbox with the path label when clonedSourceRepoPath is non-null', async () => {
+    const clonedPath = '/test/source-repos/my-repo';
+    await renderDashboard([
+      createTestRepository({ clonedSourceRepoPath: clonedPath }),
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'my-repo', level: 2 })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+
+    const checkbox = screen.getByRole('checkbox');
+    expect(checkbox).toBeTruthy();
+    expect((checkbox as HTMLInputElement).checked).toBe(false);
+
+    // Path appears inside the checkbox label.
+    expect(screen.getByText(clonedPath)).toBeTruthy();
+  });
+
+  it('passes removeSourceRepo: true in the DELETE body when checked and confirmed', async () => {
+    const deleteCalls: string[] = [];
+    const deleteBodies: unknown[] = [];
+    await renderDashboard(
+      [
+        createTestRepository({
+          clonedSourceRepoPath: '/test/source-repos/my-repo',
+        }),
+      ],
+      {
+        deleteRepositoryCalls: deleteCalls,
+        deleteRepositoryBodies: deleteBodies,
+      }
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'my-repo', level: 2 })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+
+    const checkbox = screen.getByRole('checkbox');
+    fireEvent.click(checkbox);
+    expect((checkbox as HTMLInputElement).checked).toBe(true);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unregister' }));
+
+    await waitFor(() => {
+      expect(deleteCalls).toEqual(['repo-1']);
+    });
+
+    expect(deleteBodies).toEqual([{ removeSourceRepo: true }]);
+  });
+
+  it('omits the body when the checkbox stays unchecked and confirmed', async () => {
+    const deleteCalls: string[] = [];
+    const deleteBodies: unknown[] = [];
+    await renderDashboard(
+      [
+        createTestRepository({
+          clonedSourceRepoPath: '/test/source-repos/my-repo',
+        }),
+      ],
+      {
+        deleteRepositoryCalls: deleteCalls,
+        deleteRepositoryBodies: deleteBodies,
+      }
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'my-repo', level: 2 })).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+
+    // Don't click the checkbox — leave it unchecked.
+    fireEvent.click(screen.getByRole('button', { name: 'Unregister' }));
+
+    await waitFor(() => {
+      expect(deleteCalls).toEqual(['repo-1']);
+    });
+
+    expect(deleteBodies).toEqual([undefined]);
+  });
+
+  it('resets the checkbox state to unchecked after the dialog is dismissed and reopened', async () => {
+    await renderDashboard([
+      createTestRepository({
+        clonedSourceRepoPath: '/test/source-repos/my-repo',
+      }),
+    ]);
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'my-repo', level: 2 })).toBeTruthy();
+    });
+
+    // First open: check the box.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+
+    // Cancel the dialog (Radix AlertDialogCancel is rendered as the "Cancel" button).
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('heading', { name: 'Unregister Repository' })).toBeNull();
+    });
+
+    // Re-open: checkbox state should be reset to unchecked.
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
+    });
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
   });
 });

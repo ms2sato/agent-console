@@ -144,6 +144,10 @@ export function DashboardPage() {
   const [showAddRepo, setShowAddRepo] = useState(false);
   // Repository to unregister (for confirmation dialog)
   const [repoToUnregister, setRepoToUnregister] = useState<Repository | null>(null);
+  // Opt-in for deleting the cloned source repo on unregister; only meaningful
+  // when `repoToUnregister.clonedSourceRepoPath != null` (the dialog hides the
+  // checkbox in the external-path case so this stays false).
+  const [removeSourceRepo, setRemoveSourceRepo] = useState(false);
 
   // Session data from root layout (single source of truth)
   const { sessions: allSessions, wsInitialized, workerActivityStates } = useSessionDataContext();
@@ -448,7 +452,8 @@ export function DashboardPage() {
   });
 
   const unregisterMutation = useMutation({
-    mutationFn: unregisterRepository,
+    mutationFn: ({ id, removeSourceRepo: remove }: { id: string; removeSourceRepo: boolean }) =>
+      unregisterRepository(id, remove ? { removeSourceRepo: true } : undefined),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: repositoryKeys.all() });
     },
@@ -581,7 +586,12 @@ export function DashboardPage() {
       {/* Unregister Repository Confirmation */}
       <ConfirmDialog
         open={repoToUnregister !== null}
-        onOpenChange={(open) => !open && setRepoToUnregister(null)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRepoToUnregister(null);
+            setRemoveSourceRepo(false);
+          }
+        }}
         title="Unregister Repository"
         description={`Are you sure you want to unregister "${repoToUnregister?.name}"?`}
         confirmLabel="Unregister"
@@ -590,7 +600,7 @@ export function DashboardPage() {
           if (!repoToUnregister) return;
           const repoId = repoToUnregister.id;
           try {
-            await unregisterMutation.mutateAsync(repoId);
+            await unregisterMutation.mutateAsync({ id: repoId, removeSourceRepo });
           } catch {
             // Error surfaced via mutation's onError -> showUnregisterError.
             // We swallow the rejection here purely to control dialog-close timing.
@@ -598,9 +608,25 @@ export function DashboardPage() {
             // Close the ConfirmDialog on both success and error so the operator
             // can see the ErrorDialog without the confirm dialog stacked behind it.
             setRepoToUnregister(null);
+            setRemoveSourceRepo(false);
           }
         }}
-      />
+      >
+        {repoToUnregister?.clonedSourceRepoPath != null && (
+          <label className="flex items-start gap-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              checked={removeSourceRepo}
+              onChange={(e) => setRemoveSourceRepo(e.target.checked)}
+              className="mt-0.5 accent-indigo-600"
+            />
+            <span>
+              Also remove the cloned source repository at{' '}
+              <code className="text-xs text-gray-400 break-all">{repoToUnregister.clonedSourceRepoPath}</code>
+            </span>
+          </label>
+        )}
+      </ConfirmDialog>
       <ErrorDialog {...pullErrorDialogProps} />
       <ErrorDialog {...unregisterErrorDialogProps} />
       <AlertDialog open={pullSuccessMessage !== null} onOpenChange={(open) => { if (!open) setPullSuccessMessage(null); }}>

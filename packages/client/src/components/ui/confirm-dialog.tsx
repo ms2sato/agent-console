@@ -21,6 +21,13 @@ export interface ConfirmDialogProps {
   variant?: 'default' | 'danger';
   onConfirm: () => void;
   isLoading?: boolean;
+  /**
+   * Optional content rendered between the description and the action footer.
+   * Use to inject form controls (e.g., an additional opt-in checkbox) that
+   * would not be valid HTML inside `AlertDialogDescription` (which renders
+   * as a `<p>`).
+   */
+  children?: React.ReactNode;
 }
 
 /**
@@ -37,6 +44,7 @@ export function ConfirmDialog({
   variant = 'default',
   onConfirm,
   isLoading = false,
+  children,
 }: ConfirmDialogProps) {
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
@@ -47,6 +55,7 @@ export function ConfirmDialog({
           </AlertDialogTitle>
           <AlertDialogDescription>{description}</AlertDialogDescription>
         </AlertDialogHeader>
+        {children}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={isLoading}>
             {cancelLabel}

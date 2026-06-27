@@ -284,8 +284,23 @@ export async function registerRepository(request: CreateRepositoryRequest): Prom
   return res.json() as Promise<CreateRepositoryResponse>;
 }
 
-export async function unregisterRepository(repositoryId: string): Promise<void> {
-  const res = await api.repositories[':id'].$delete({ param: { id: repositoryId } });
+/**
+ * Unregister a repository. When `opts.removeSourceRepo` is `true`, the server
+ * also removes the app-cloned source repository on disk (only meaningful when
+ * the repository was registered via "Clone from URL"; ignored otherwise).
+ * Sending no `opts` omits the request body entirely, which the server treats
+ * as the default `removeSourceRepo: false`.
+ */
+export async function unregisterRepository(
+  repositoryId: string,
+  opts?: { removeSourceRepo?: boolean },
+): Promise<void> {
+  const init: RequestInit = { method: 'DELETE' };
+  if (opts !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify({ removeSourceRepo: opts.removeSourceRepo });
+  }
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}`, init);
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister repository');
   }
