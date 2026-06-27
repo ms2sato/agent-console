@@ -296,6 +296,29 @@ describe('Repositories API', () => {
       // invalid type could reach the cleanup job.
       expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
     });
+
+    it('rejects malformed JSON body with 400 ValidationError (Issue #905)', async () => {
+      // Malformed JSON must NOT silently fall through to the
+      // `removeSourceRepo: false` default the way an empty body does. The
+      // route differentiates: empty body -> default; non-empty body that
+      // fails JSON.parse -> 400.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not json',
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Invalid JSON body');
+      // Negative assertion confirms the route short-circuited before the
+      // manager call -- otherwise a tampered body could trigger an
+      // unintended cleanup job.
+      expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
+    });
   });
 
   // =========================================================================

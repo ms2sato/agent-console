@@ -138,5 +138,23 @@ describe('withRepositoryRemote', () => {
 
       expect(enriched.clonedSourceRepoPath).toBeNull();
     });
+
+    it('accepts a path whose first segment literally begins with ".."', async () => {
+      // Regression for the CodeRabbit MAJOR catch: a naive
+      // `!rel.startsWith('..')` rejects every relative path whose string
+      // starts with two dots, including legitimate in-tree directories
+      // like `..hidden-org/repo` (a real owner directory inside the
+      // source-repos tree). Only the literal `..` segment and `..${sep}`
+      // prefixes are parent-escapes. Verify a `..hidden-org`-rooted path
+      // is treated as IN-tree so its source-repo cleanup affordance works.
+      const repo = createTestRepository({
+        path: '/tmp/test-source-repos/..hidden-org/repo',
+      });
+      const enriched = await withRepositoryRemote(repo);
+
+      expect(enriched.clonedSourceRepoPath).toBe(
+        '/tmp/test-source-repos/..hidden-org/repo',
+      );
+    });
   });
 });

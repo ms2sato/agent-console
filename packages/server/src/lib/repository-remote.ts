@@ -7,10 +7,18 @@ import { getSourceReposDir } from './config.js';
  * Decide whether `repoPath` lives under `sourceReposDir`. Uses
  * `path.relative` instead of a naive `startsWith` so sibling-prefix paths
  * (e.g., `/tmp/source-repos-other/...` against `/tmp/source-repos`) do NOT
- * match. The relative path must be non-empty (path is not the dir itself),
- * must not escape upwards (no leading `..`), and must not be absolute (which
+ * match. The relative path must be non-empty (the path is not the dir
+ * itself), must not be the literal parent escape `..` and must not begin
+ * with a `..` segment (`..${sep}...`), and must not be absolute (which
  * would indicate `path.relative` could not resolve a containment relation,
  * typically on Windows across drives).
+ *
+ * We deliberately do NOT reject ALL relative paths whose string starts
+ * with `..` (`!rel.startsWith('..')`) because that would also reject
+ * legitimate in-tree directory names that happen to begin with two dots
+ * (e.g., `..hidden-org/repo` -- a real directory inside the source-repos
+ * tree). Only the literal `..` segment or a `..`+separator prefix is a
+ * parent-directory walk.
  *
  * @internal Exported for testing.
  */
@@ -19,7 +27,12 @@ export function isUnderSourceReposDir(
   sourceReposDir: string,
 ): boolean {
   const rel = path.relative(sourceReposDir, repoPath);
-  return rel.length > 0 && !rel.startsWith('..') && !path.isAbsolute(rel);
+  return (
+    rel.length > 0 &&
+    rel !== '..' &&
+    !rel.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(rel)
+  );
 }
 
 /**
@@ -27,11 +40,16 @@ export function isUnderSourceReposDir(
  *
  * `clonedSourceRepoPath` is set to `repository.path` when that path lives
  * under the resolved [source-repos directory](../../../docs/glossary.md)
- * (i.e. the repo was registered through `POST /api/repositories/clone`,
- * Issue [#834](https://github.com/ms2sato/agent-console/issues/834)), and
- * `null` otherwise. The frontend uses this field to decide whether the
- * unregister UI surfaces the "also remove the cloned source repo" checkbox
- * (Issue [#905](https://github.com/ms2sato/agent-console/issues/905)).
+ * (`getSourceReposDir()`) -- this is a pure path-containment check, NOT a
+ * provenance check. Any repository whose registered path falls inside the
+ * source-repos prefix is treated as a "cloned source repo" for the purposes
+ * of the unregister UI, regardless of how the directory was created (via
+ * `POST /api/repositories/clone`, an operator-side `git clone`, or any
+ * other means). Set to `null` when the path is outside that prefix.
+ *
+ * The frontend uses this field to decide whether the unregister UI
+ * surfaces the "also remove the cloned source repo" checkbox (Issue
+ * [#905](https://github.com/ms2sato/agent-console/issues/905)).
  *
  * Used by both REST API responses and WebSocket broadcasts to ensure
  * consistent repository data across all delivery channels.

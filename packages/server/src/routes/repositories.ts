@@ -149,15 +149,27 @@ const repositories = new Hono<AppBindings>()
 
     // Issue #905: parse the DELETE body manually because `vValidator` would
     // 400 on a missing body / missing Content-Type. The schema's default
-    // makes an absent `removeSourceRepo` field equivalent to `false`.
-    let parsed: DeleteRepositoryRequest;
-    const raw = await c.req.json().catch(() => ({}));
+    // makes an absent `removeSourceRepo` field equivalent to `false`. We
+    // differentiate three states explicitly so malformed JSON cannot fall
+    // through to the default-false path silently:
+    //   - empty / whitespace-only body -> default ({})
+    //   - non-empty body parseable as JSON -> validate via schema
+    //   - non-empty body that fails JSON.parse -> 400 ValidationError
+    const rawText = await c.req.text();
+    let raw: unknown = {};
+    if (rawText.trim() !== '') {
+      try {
+        raw = JSON.parse(rawText) as unknown;
+      } catch {
+        throw new ValidationError('Invalid JSON body');
+      }
+    }
     const parseResult = v.safeParse(DeleteRepositoryRequestSchema, raw);
     if (!parseResult.success) {
       const firstIssue = parseResult.issues[0];
       throw new ValidationError(firstIssue?.message ?? 'Validation failed');
     }
-    parsed = parseResult.output;
+    const parsed: DeleteRepositoryRequest = parseResult.output;
 
     // Check if repository exists
     const repo = repositoryManager.getRepository(repoId);
