@@ -1,0 +1,46 @@
+name: Comment Blame-Shift Lint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/*/src/**/*.ts'
+      - 'packages/*/src/**/*.tsx'
+      - 'packages/*/src/**/*.js'
+      - 'packages/*/src/**/*.jsx'
+      - 'scripts/check-source-comment-blame-shift.mjs'
+      - 'scripts/__tests__/check-source-comment-blame-shift.test.mjs'
+      - 'package.json'
+      - '.github/workflows/comment-blame-shift-lint.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'packages/*/src/**/*.ts'
+      - 'packages/*/src/**/*.tsx'
+      - 'packages/*/src/**/*.js'
+      - 'packages/*/src/**/*.jsx'
+      - 'scripts/check-source-comment-blame-shift.mjs'
+      - 'scripts/__tests__/check-source-comment-blame-shift.test.mjs'
+      - 'package.json'
+      - '.github/workflows/comment-blame-shift-lint.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  comment-blame-shift-lint:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.5"
+
+      - name: Run comment blame-shift check
+        run: bun scripts/check-source-comment-blame-shift.mjs
+
+      - name: Run comment blame-shift unit tests
+        run: bun test scripts/__tests__/check-source-comment-blame-shift.test.mjs
