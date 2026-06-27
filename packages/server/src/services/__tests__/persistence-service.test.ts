@@ -65,6 +65,45 @@ describe('PersistenceService', () => {
       const loaded = await service.loadRepositories();
       expect(loaded).toEqual(repos2);
     });
+
+    // Issue #905: `clonedSourceRepoPath` was added to `PersistedRepository`
+    // as a required field so the in-memory record stays structurally
+    // compatible with `Repository` (which is served downstream). The
+    // persistence layer JSON-serializes the whole object, so a roundtrip
+    // is sufficient to verify both the null and non-null values survive.
+    it('round-trips clonedSourceRepoPath (null and a path) (Issue #905)', async () => {
+      const service = await getPersistenceService();
+
+      const testRepos = [
+        {
+          id: 'in-source-repos',
+          name: 'cloned-repo',
+          path: '/var/lib/agent-console/source-repos/owner/cloned-repo',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          clonedSourceRepoPath:
+            '/var/lib/agent-console/source-repos/owner/cloned-repo',
+        },
+        {
+          id: 'outside-source-repos',
+          name: 'manual-repo',
+          path: '/home/alice/projects/manual-repo',
+          createdAt: '2026-01-02T00:00:00.000Z',
+          clonedSourceRepoPath: null,
+        },
+      ];
+
+      await service.saveRepositories(testRepos);
+      const loaded = await service.loadRepositories();
+
+      expect(loaded).toEqual(testRepos);
+      // Pin the field-shape contract explicitly so a future regression that
+      // silently drops the field on load (e.g. via a typo in a parser)
+      // surfaces here, not as a downstream `Repository` type-error.
+      expect(loaded[0]!.clonedSourceRepoPath).toBe(
+        '/var/lib/agent-console/source-repos/owner/cloned-repo',
+      );
+      expect(loaded[1]!.clonedSourceRepoPath).toBeNull();
+    });
   });
 
   describe('sessions', () => {

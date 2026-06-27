@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 
@@ -155,6 +156,36 @@ describe('withRepositoryRemote', () => {
       expect(enriched.clonedSourceRepoPath).toBe(
         '/tmp/test-source-repos/..hidden-org/repo',
       );
+    });
+
+    it('classifies a repository under a relative AGENT_CONSOLE_SOURCE_REPOS_DIR as in-tree', async () => {
+      // Defensive existence test for the relative-source-repos-dir case
+      // (CodeRabbit GitHub-bot concern). `AGENT_CONSOLE_SOURCE_REPOS_DIR` is
+      // operator-supplied and may be a relative path. `isUnderSourceReposDir`
+      // calls `path.resolve` explicitly on both operands to make the
+      // normalization intent visible at the call site (rather than implicit
+      // through `path.relative`'s internal resolve). Verify the relative-dir
+      // path resolves correctly and the in-tree check passes.
+      //
+      // Polarity note: Node/Bun's `path.relative` already internally calls
+      // `path.resolve` on both operands, so this test passes identically with
+      // or without the explicit `path.resolve` calls in `isUnderSourceReposDir`.
+      // The test does NOT regression-guard the explicit calls; it documents
+      // the supported relative-env-var case as a positive existence test. The
+      // explicit calls remain valuable as defensive coding / intent
+      // documentation per the GitHub-bot review.
+      const relativeDir = `relative-test-source-repos-${Date.now()}`;
+      process.env.AGENT_CONSOLE_SOURCE_REPOS_DIR = relativeDir;
+
+      // Resolve against the current cwd the same way `registerRepository`
+      // would when given a relative input. This is what gets persisted as
+      // `repo.path` and what `isUnderSourceReposDir` must accept.
+      const absoluteRepoPath = path.resolve(relativeDir, 'owner', 'cloned-repo');
+
+      const repo = createTestRepository({ path: absoluteRepoPath });
+      const enriched = await withRepositoryRemote(repo);
+
+      expect(enriched.clonedSourceRepoPath).toBe(absoluteRepoPath);
     });
   });
 });

@@ -8,6 +8,7 @@
  *   without any filesystem operation.
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import * as fsPromises from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { JOB_TYPES } from '@agent-console/shared';
@@ -307,19 +308,53 @@ describe('cleanup job handlers', () => {
     // repoDir. Same elevation decision, same idempotent / error-handling shape.
     // =========================================================================
 
-    it('removes extraDir on the direct fs.rm path when extraDir is set (Issue #905)', async () => {
-      // AUTH_MODE unset + requestUsername null -> shouldElevateForUser=false.
-      // Both `repoDir` and `extraDir` resolve through the direct fs.rm branch.
-      // Non-existent paths exit via the ENOENT idempotent-skip; no throw.
-      // Negative assertion: rmRecursiveAsUser must NOT have been called -
-      // confirms the direct branch was taken for BOTH removals.
+    it('removes both repoDir and extraDir on the direct fs.rm path when extraDir is set (Issue #905)', async () => {
+      // CodeRabbit feedback: a negative-only assertion (`rmRecursiveAsUser
+      // not called`) does NOT prove the handler attempted both removals on
+      // the direct path. Create both dirs with marker files, run the
+      // handler, and assert both dirs are gone afterwards. This proves
+      // `removeOne(repoDir)` AND `removeOne(extraDir)` both fired through
+      // the direct fs.rm path.
+      //
+      // Note: this file's broader test suite (the server package's
+      // `__tests__/utils/mock-fs-helper.ts`) registers a process-global
+      // `mock.module('fs/promises', () => memfs.fs.promises)` that gets
+      // installed once another test in the same `bun test src/` run imports
+      // it. We therefore stage the dirs under `os.tmpdir()` with
+      // `mkdir({ recursive: true })` so the parent gets created in either
+      // backing store: real fs already has `/tmp`, memfs creates it
+      // on-demand via the recursive flag. The assertion ("the handler
+      // removed what we created") is independent of the backing-store
+      // mechanism.
+      const baseDir = path.join(os.tmpdir(), `cleanup-handler-test-${process.pid}-${Date.now()}`);
+      const repoDir = path.join(baseDir, 'repo-data');
+      const extraDir = path.join(baseDir, 'source-clone');
+      await fsPromises.mkdir(repoDir, { recursive: true });
+      await fsPromises.mkdir(extraDir, { recursive: true });
+      // Marker files so the dirs are non-empty -- a buggy implementation
+      // that only ran rmdir-style removal would leave them.
+      await fsPromises.writeFile(path.join(repoDir, 'marker'), 'r');
+      await fsPromises.writeFile(path.join(extraDir, 'marker'), 'e');
+
+      // AUTH_MODE unset + requestUsername null -> shouldElevateForUser=false,
+      // so both removals route through `removeOne`'s direct fs.rm branch.
       delete process.env.AUTH_MODE;
-      await runPayload({
-        repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo-' + Date.now(),
-        requestUsername: null,
-        extraDir: '/var/lib/agent-console/source-repos/no-such-org/no-such-repo-' + Date.now(),
-      });
-      expect(rmRecursiveAsUserMock.calls.length).toBe(0);
+      try {
+        await runPayload({ repoDir, requestUsername: null, extraDir });
+
+        // Positive assertion: both directories are GONE. Use `fs.access`
+        // expect-reject -- `access` throws ENOENT on missing paths, which
+        // is exactly what we want to see for a successful recursive rm.
+        await expect(fsPromises.access(repoDir)).rejects.toThrow();
+        await expect(fsPromises.access(extraDir)).rejects.toThrow();
+        // Negative assertion: elevated helper was never invoked.
+        expect(rmRecursiveAsUserMock.calls.length).toBe(0);
+      } finally {
+        // Belt-and-suspenders cleanup: if the handler under test failed to
+        // remove one of the dirs (which would already be caught by the
+        // expect above), make sure the test does not leak temp files.
+        await fsPromises.rm(baseDir, { recursive: true, force: true });
+      }
     });
 
     it('removes extraDir on the elevated path when AUTH_MODE=multi-user (Issue #905)', async () => {

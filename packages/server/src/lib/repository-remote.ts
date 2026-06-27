@@ -13,6 +13,17 @@ import { getSourceReposDir } from './config.js';
  * would indicate `path.relative` could not resolve a containment relation,
  * typically on Windows across drives).
  *
+ * Both operands are normalized through `path.resolve` before the
+ * containment check. `getSourceReposDir()` can return a relative path
+ * (operator-supplied `AGENT_CONSOLE_SOURCE_REPOS_DIR`, or a relative
+ * `AGENT_CONSOLE_HOME` propagated through `path.join`); `repo.path` is
+ * always absolute (built via `path.resolve` in `registerRepository`).
+ * Without the resolve step, `path.relative(relative_dir, absolute_path)`
+ * resolves both against `process.cwd()` and can misclassify valid clones
+ * when cwd differs from where the relative source-repos dir resolves at
+ * config-read time. The resolve step makes the check stable regardless
+ * of the order in which the env var and cwd were established.
+ *
  * We deliberately do NOT reject ALL relative paths whose string starts
  * with `..` (`!rel.startsWith('..')`) because that would also reject
  * legitimate in-tree directory names that happen to begin with two dots
@@ -26,7 +37,9 @@ export function isUnderSourceReposDir(
   repoPath: string,
   sourceReposDir: string,
 ): boolean {
-  const rel = path.relative(sourceReposDir, repoPath);
+  const absoluteSourceReposDir = path.resolve(sourceReposDir);
+  const absoluteRepoPath = path.resolve(repoPath);
+  const rel = path.relative(absoluteSourceReposDir, absoluteRepoPath);
   return (
     rel.length > 0 &&
     rel !== '..' &&
