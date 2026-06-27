@@ -416,6 +416,29 @@ curl -X POST http://localhost:8080/api/auth/login \
 > isolation), run the Docker verification: `scripts/verify-multiuser-docker.sh`
 > (see [`docker/README.md`](../docker/README.md)).
 
+## Iterative Updates (after the initial setup)
+
+After the bootstrap script has completed once, ongoing source-code updates and
+restarts are performed by `scripts/update-and-deploy-for-multiuser-ubuntu.sh`.
+The script assumes the source-repo at `${AGENT_CONSOLE_DATA_ROOT}/source-repos/agent-console`
+has already been advanced to the target ref (the orchestrator-driven update
+cycle: fetch + checkout + this script).
+
+```bash
+# Default invocation (matches bootstrap defaults: agentconsole / port 8080).
+sudo scripts/update-and-deploy-for-multiuser-ubuntu.sh
+
+# Overrides (env vars; CLI flags not supported):
+sudo AGENT_CONSOLE_PORT=9000 \
+     AGENT_CONSOLE_SERVICE_USER=ac-svc \
+     scripts/update-and-deploy-for-multiuser-ubuntu.sh
+```
+
+The full list of override env vars is documented in the script's top comment.
+The script does not perform `git pull` itself — sync the source-repo to the
+intended commit before invoking, and confirm via the printed HEAD line in the
+script's `==> Pre-check` step before the build proceeds.
+
 ## Environment Variables
 
 | Variable | Default | Description |
