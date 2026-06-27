@@ -188,6 +188,52 @@ describe('findViolationsInSource — positive cases', () => {
   });
 });
 
+// Each test below polarity-flips: it fails against the pre-fix
+// tokenizer (which treated `${...}` opaque inside a template literal)
+// and passes once the templateStack frame logic lands. The non-flipping
+// "and adjacent code still works" cases are intentionally excluded —
+// per testing rules, tests that pass identically on both branches do
+// not regression-guard the fix.
+describe('findViolationsInSource — template-literal interpolation expressions', () => {
+  it('detects a line comment inside a `${...}` expression', () => {
+    const source =
+      'const s = `Hello ${\n  // Issue #999 inside template expr\n  name\n}`;\n';
+    const out = findViolationsInSource(source);
+    expect(out).toHaveLength(1);
+    expect(out[0].pattern).toBe('issue-ref');
+    expect(out[0].line).toBe(2);
+  });
+
+  it('detects a block comment inside a `${...}` expression', () => {
+    const source = 'const s = `Hello ${/* Issue #888 */ name}`;\n';
+    const out = findViolationsInSource(source);
+    expect(out).toEqual([{ line: 1, col: 23, pattern: 'issue-ref' }]);
+  });
+});
+
+// Each test below polarity-flips: it fails against the pre-fix regex
+// (no `\b`) which would match `MajorIssue #123` or `Issue #123abc`.
+// With word boundaries the matcher correctly rejects those.
+describe('findViolationsInSource — word-boundary discrimination (Issue/PR)', () => {
+  it('does NOT flag `Issue #N` when prefixed by another word character', () => {
+    const source = `// MajorIssue #123 in name\n`;
+    const out = findViolationsInSource(source);
+    expect(out).toEqual([]);
+  });
+
+  it('does NOT flag `Issue #NNN` when suffixed by letters (no word boundary)', () => {
+    const source = `// Issue #123abc not really\n`;
+    const out = findViolationsInSource(source);
+    expect(out).toEqual([]);
+  });
+
+  it('does NOT flag `PR #N` when prefixed by another word character', () => {
+    const source = `// AdjacentPR #50 ID\n`;
+    const out = findViolationsInSource(source);
+    expect(out).toEqual([]);
+  });
+});
+
 describe('findViolationsInSource — negative cases (no false positives)', () => {
   it('does NOT flag string literals containing `// Issue #N`', () => {
     const source = `const note = "// Issue #123 in string"; const x = 1;\n`;
@@ -419,6 +465,9 @@ describe('KNOWN_VIOLATIONS — baseline integrity', () => {
     const result = spawnSync('bun', [SCRIPT_PATH], {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
+      // Cap the subprocess so a hang in the detector does not block the
+      // whole test run for the full bun-test default timeout.
+      timeout: 30_000,
     });
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Found 0 new violations');

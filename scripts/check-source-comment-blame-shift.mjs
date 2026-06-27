@@ -91,6 +91,15 @@ export function* tokenizeComments(source) {
   // operator. The set CAN_PRECEDE_REGEX captures common JS operators and
   // punctuators that precede a regex literal in valid programs.
   let prevSig = '';
+  // Stack of "template expression frames" — one per open `${` inside an
+  // enclosing `bq` (backtick template) state. Each frame tracks the
+  // brace depth WITHIN that expression. When state is 'code' AND
+  // templateStack is non-empty, a `}` at depth 0 of the top frame closes
+  // the interpolation and returns the tokenizer to 'bq'. Nested
+  // templates work transparently because each `${` pushes its own frame
+  // and each closing `}` pops one. Without this stack, comments inside
+  // template-string interpolation expressions were silently skipped.
+  const templateStack = [];
   let commentText = '';
   let commentLine = 0;
   let commentCol = 0;
@@ -169,6 +178,34 @@ export function* tokenizeComments(source) {
         line++; col = 1; i++;
         continue;
       }
+      // Inside a template-string interpolation: track `{` and `}` so we
+      // know when a `}` closes the enclosing `${`. Top frame's
+      // braceDepth is incremented on `{` and decremented on `}`. When
+      // it reaches -1 (i.e. we see `}` at depth 0), we pop and return
+      // to `bq`.
+      if (templateStack.length > 0) {
+        if (ch === '{') {
+          templateStack[templateStack.length - 1].braceDepth += 1;
+          setPrevSig(ch);
+          i++; col++;
+          continue;
+        }
+        if (ch === '}') {
+          const top = templateStack[templateStack.length - 1];
+          if (top.braceDepth === 0) {
+            templateStack.pop();
+            state = 'bq';
+            // After popping, the closing `}` is consumed; the next char
+            // is part of the enclosing template literal.
+            i++; col++;
+            continue;
+          }
+          top.braceDepth -= 1;
+          setPrevSig(ch);
+          i++; col++;
+          continue;
+        }
+      }
       setPrevSig(ch);
       i++; col++;
       continue;
@@ -216,12 +253,18 @@ export function* tokenizeComments(source) {
         i++; col++;
         continue;
       }
-      // For simplicity we do NOT enter "code" inside ${...} expressions.
-      // Treating the expression contents as opaque is safe for our goal
-      // (detecting comments in real source) because template-string
-      // expressions almost never contain inline `/* ... */` comments
-      // that would matter to the detector. A `//` inside `${}` would
-      // also stay inside the template literal, which is fine.
+      if (ch === '$' && next === '{') {
+        // Enter the interpolation expression: push a fresh template
+        // frame and transition to 'code'. The matching `}` (at depth 0
+        // of this frame) will pop back to 'bq'.
+        templateStack.push({ braceDepth: 0 });
+        state = 'code';
+        // Setting prevSig to '{' makes a leading `/` (e.g. `${/re/}`)
+        // correctly classify as a regex literal.
+        prevSig = '{';
+        i += 2; col += 2;
+        continue;
+      }
       if (ch === '\n') { line++; col = 1; i++; continue; }
       i++; col++;
       continue;
@@ -334,13 +377,14 @@ function findViolationsInChunk(chunk) {
   const hits = [];
   const { text, col, kind } = chunk;
 
-  // 1. Issue #NNN
-  for (const m of text.matchAll(/Issue #\d+/g)) {
+  // 1. Issue #NNN — `\b` word boundaries prevent matches inside longer
+  //    identifiers; see the word-boundary tests for the expected shape.
+  for (const m of text.matchAll(/\bIssue #\d+\b/g)) {
     hits.push({ pattern: 'issue-ref', col: col + m.index });
   }
 
-  // 2. PR #NNN
-  for (const m of text.matchAll(/PR #\d+/g)) {
+  // 2. PR #NNN — same word-boundary rationale as issue-ref above.
+  for (const m of text.matchAll(/\bPR #\d+\b/g)) {
     hits.push({ pattern: 'pr-ref', col: col + m.index });
   }
 

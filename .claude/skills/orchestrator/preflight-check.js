@@ -65,8 +65,9 @@ function printCommentBlameShiftCheck(result) {
     console.log('✅ No new Issue / PR / dated CodeRabbit references in source comments.');
     return 0;
   }
-  // Violation lines come on stdout (one per match). The script's summary
-  // and remediation text are on stderr; surface a slice for context.
+  // Violation lines come on stdout (one per match). We only consume
+  // stdout here; the detector's own summary / remediation lines are
+  // appended below from this function (we do not surface stderr).
   const violationLines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
   console.log(`❌ Found ${violationLines.length} new violation(s) in source comments:\n`);
   console.log('```');
