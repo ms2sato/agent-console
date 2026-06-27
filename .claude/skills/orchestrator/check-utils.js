@@ -456,6 +456,44 @@ export function runLanguageCheck({ repoRoot, binary = 'bun' } = {}) {
   };
 }
 
+// --- Source-comment blame-shift check ---
+
+/**
+ * Run scripts/check-source-comment-blame-shift.mjs and return its result.
+ *
+ * The Bun script is the source of truth for the detection regex, the
+ * `file:line:col pattern` output format, and the KNOWN_VIOLATIONS
+ * allowlist; this helper spawns it so that preflight-check.js (which
+ * runs under node) can surface the verdict alongside the other gates.
+ *
+ * @param {object} [options]
+ * @param {string} [options.repoRoot] absolute path to repo root
+ * @param {string} [options.binary] runtime binary (default: 'bun')
+ * @returns {{exitCode: number, stdout: string, stderr: string, spawnFailed: boolean}}
+ */
+export function runCommentBlameShiftCheck({ repoRoot, binary = 'bun' } = {}) {
+  const root = repoRoot || resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
+  const scriptPath = resolve(root, 'scripts/check-source-comment-blame-shift.mjs');
+  const result = spawnSync(binary, [scriptPath], {
+    cwd: root,
+    encoding: 'utf-8',
+  });
+  if (result.error) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `Failed to spawn '${binary}': ${result.error.message}`,
+      spawnFailed: true,
+    };
+  }
+  return {
+    exitCode: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    spawnFailed: false,
+  };
+}
+
 // --- CI status check ---
 
 export function getCiStatus(prNumber) {

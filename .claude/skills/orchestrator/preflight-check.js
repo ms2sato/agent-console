@@ -25,6 +25,7 @@ import {
   findTestFiles,
   isTestFile,
   detectIntegrationTestNeeds,
+  runCommentBlameShiftCheck,
   runLanguageCheck,
 } from './check-utils.js';
 import { run as runDuplicationCheck } from './rule-skill-duplication-check.js';
@@ -50,6 +51,33 @@ function printLanguageCheck(result) {
   }
   console.log('```');
   console.log('\nRun `bun run check:lang` locally to reproduce. Public artifacts must be in English (see `.claude/rules/workflow.md` Language Policy).');
+  return 1;
+}
+
+function printCommentBlameShiftCheck(result) {
+  console.log('## Source-Comment Blame-Shift Check\n');
+  if (result.spawnFailed) {
+    console.log(`❌ Could not run source-comment blame-shift check: ${result.stderr}`);
+    console.log('\nThis check requires Bun on PATH. The CI workflow must include the `oven-sh/setup-bun` step before invoking preflight-check.js.');
+    return 1;
+  }
+  if (result.exitCode === 0) {
+    console.log('✅ No new Issue / PR / dated CodeRabbit references in source comments.');
+    return 0;
+  }
+  // Violation lines come on stdout (one per match). We only consume
+  // stdout here; the detector's own summary / remediation lines are
+  // appended below from this function (we do not surface stderr).
+  const violationLines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
+  console.log(`❌ Found ${violationLines.length} new violation(s) in source comments:\n`);
+  console.log('```');
+  for (const line of violationLines) {
+    console.log(line);
+  }
+  console.log('```');
+  console.log(
+    '\nNew comment references to Issues / PRs / dated CodeRabbit reviews are not allowed — they rot as the codebase evolves. Move the narrative into the PR description / git log instead.',
+  );
   return 1;
 }
 
@@ -130,7 +158,11 @@ function run(changedFiles) {
   const languageResult = runLanguageCheck();
   const languageExit = printLanguageCheck(languageResult);
 
-  if (hasUnitGaps || duplicationExit !== 0 || languageExit !== 0) {
+  console.log('\n---\n');
+  const blameShiftResult = runCommentBlameShiftCheck();
+  const blameShiftExit = printCommentBlameShiftCheck(blameShiftResult);
+
+  if (hasUnitGaps || duplicationExit !== 0 || languageExit !== 0 || blameShiftExit !== 0) {
     process.exit(1);
   }
   process.exit(0);
