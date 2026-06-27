@@ -202,11 +202,11 @@ The conditional stash/pop avoids `git stash pop` failing on an empty stash when 
 
 The same applies to `git rebase` on a pushed branch: if the rebase will require force-push to publish, get approval first.
 
-When the situation is a known operational pattern (stacked PR + base squash-merge), prefer to describe the patch set (commit subjects) and the intended rebase target, then request approval. Do not perform force-push "to save a round trip" — the memory `feedback_no_unauthorized_rebase.md` captures the reasoning.
+When the situation is a known operational pattern (stacked PR + base squash-merge), prefer to describe the patch set (commit subjects) and the intended rebase target, then request approval. Do not perform force-push "to save a round trip" — the per-PR approval gate exists because unintended branch overwrites are expensive to recover and the round-trip cost is small by comparison.
 
 This rule does not apply to the initial push of a brand-new feature branch (no force involved) or to rebasing a local branch that has never been pushed (no remote divergence).
 
-**Orchestrator-side phrasing discipline.** When the Orchestrator (or any instruction-writer) authorizes work that touches a force-push-relevant operation, the instruction must explicitly say what is approved and what is not. Vague phrases like "after rebase, continue" / "proceed" risk being read as blanket force-push approval. Required phrasing pattern: separate (a) "rebase and local verification are approved" from (b) "force-push remains gated — stop and report before pushing". (Lesson: Sprint 2026-06-26 PR #897 — the Orchestrator authorized "continue after rebase" intending only local rebase plus tests; the agent interpreted it as force-push approval as well. Re-occurrence of `memory/feedback_no_unauthorized_rebase.md` — both sides contributed to the gap, and explicit instruction phrasing is the orchestrator-side prevention.)
+**Orchestrator-side phrasing discipline.** When the Orchestrator (or any instruction-writer) authorizes work that touches a force-push-relevant operation, the instruction must explicitly say what is approved and what is not. Vague phrases like "after rebase, continue" / "proceed" risk being read as blanket force-push approval. Required phrasing pattern: separate (a) "rebase and local verification are approved" from (b) "force-push remains gated — stop and report before pushing". (Lesson: Sprint 2026-06-26 PR #897 — the Orchestrator authorized "continue after rebase" intending only local rebase plus tests; the agent interpreted it as force-push approval as well. Both sides contributed to the gap, and explicit instruction phrasing is the orchestrator-side prevention.)
 
 ## Testing Requirements
 
