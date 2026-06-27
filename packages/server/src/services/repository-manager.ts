@@ -30,11 +30,10 @@ const DEFAULT_SHARED_GROUP = 'agent-console-users';
 const SHARED_REPO_APPLY_TIMEOUT_MS = 30000;
 
 /**
- * Timeout for the server-side `safe.directory` bootstrap (Issue #853). Short --
- * the command is a pure local gitconfig write with no network or fs traversal.
+ * Timeout for the server-side `safe.directory` bootstrap. Short -- the
+ * command is a pure local gitconfig write with no network or fs traversal.
  * Mirrors `SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS` in `worktree-service.ts`, which
- * implements the per-user side of the same idempotent bootstrap pattern
- * (Issue #838 / PR #843).
+ * implements the per-user side of the same idempotent bootstrap pattern.
  */
 const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
 
@@ -208,10 +207,10 @@ export class RepositoryManager {
     }
 
     // In multi-user mode, ensure the source repo's `.git/` is configured so
-    // the requesting user (running `git worktree add` via `runAsUser` per
-    // Issue #838) can write refs / lock files. Idempotent; failure logs a
-    // warning but does not block registration (the operator can still apply
-    // the documented manual fallback). Issue #845.
+    // the requesting user (running `git worktree add` via `runAsUser`) can
+    // write refs / lock files. Idempotent; failure logs a warning but does
+    // not block registration (the operator can still apply the documented
+    // manual fallback).
     await this.applyMultiUserSharedRepoConfig(absolutePath);
 
     // In multi-user mode, also bootstrap `safe.directory` into the SERVER's
@@ -220,7 +219,7 @@ export class RepositoryManager {
     // cloned by a different OS user do not hit `dubious ownership`. Mirror of
     // `bootstrapSafeDirectoryForUser` in worktree-service.ts but with
     // `username: null` (run as the server itself, writing the server's
-    // gitconfig). Issue #853.
+    // gitconfig).
     await this.bootstrapSafeDirectoryForServer(absolutePath);
 
     const id = crypto.randomUUID();
@@ -233,9 +232,9 @@ export class RepositoryManager {
       createdAt: new Date().toISOString(),
       description: options?.description ?? null,
       defaultAgentId: null,
-      // Derived at serving time via `withRepositoryRemote` (Issue #905). The
-      // in-memory copy carries `null` so the type contract is satisfied; the
-      // REST / WS layer recomputes against `getSourceReposDir()` per request.
+      // Derived at serving time via `withRepositoryRemote`. The in-memory
+      // copy carries `null` so the type contract is satisfied; the REST / WS
+      // layer recomputes against `getSourceReposDir()` per request.
       clonedSourceRepoPath: null,
     };
 
@@ -257,11 +256,11 @@ export class RepositoryManager {
    * @param requestUsername OS username of the operator triggering the
    *   unregister. Threaded into the CLEANUP_REPOSITORY job so the handler can
    *   elevate the recursive `fs.rm` to that user when the worktree subtree is
-   *   user-owned (`AUTH_MODE=multi-user`, Issue #884). Pass `null` for the
-   *   historical direct `fs.rm` path (single-user mode, or non-route callers).
+   *   user-owned (`AUTH_MODE=multi-user`). Pass `null` for the historical
+   *   direct `fs.rm` path (single-user mode, or non-route callers).
    * @param opts Optional flags. `removeSourceRepo` requests that the cleanup
    *   job also remove the source-repo clone when `repo.path` lives under
-   *   `getSourceReposDir()` (Issue #905). The path-guard is applied in
+   *   `getSourceReposDir()`. The path-guard is applied in
    *   `cleanupRepositoryData`; out-of-prefix paths are silently skipped.
    */
   async unregisterRepository(
@@ -322,9 +321,9 @@ export class RepositoryManager {
   /**
    * In `AUTH_MODE=multi-user`, configure the source repo's `.git/` so members
    * of the shared group (`agent-console-users`) can write refs and lock files
-   * when `git worktree add` runs as the requesting user via `runAsUser` (Issue
-   * #838 / PR #843). The configuration is the same one previously documented
-   * as a manual operator step in `docs/multi-user-setup-guide.md` "Source Repo
+   * when `git worktree add` runs as the requesting user via `runAsUser`.
+   * The configuration is the same one previously documented as a manual
+   * operator step in `docs/multi-user-setup-guide.md` "Source Repo
    * Group-Writability":
    *
    *   git -C <repo> config core.sharedRepository group
@@ -461,9 +460,9 @@ export class RepositoryManager {
    * `applyMultiUserSharedRepoConfig` step targets filesystem mode + group
    * ownership but does NOT change file OWNER uid, so safe.directory is the
    * minimum-trust-expansion mitigation. Mirror of
-   * `bootstrapSafeDirectoryForUser` in worktree-service.ts (Issue #838 /
-   * PR #843), but with `username: null` so the bootstrap writes the SERVER's
-   * gitconfig rather than a user's. Issue #853.
+   * `bootstrapSafeDirectoryForUser` in worktree-service.ts, but with
+   * `username: null` so the bootstrap writes the SERVER's gitconfig rather
+   * than a user's.
    *
    * Idempotent -- checks `git config --get-all safe.directory` first and only
    * adds the entry when this exact `repoPath` is missing. Failure is logged
@@ -556,12 +555,12 @@ export class RepositoryManager {
    *   resolve the data dir under `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`).
    * @param requestUsername OS username threaded into the CLEANUP_REPOSITORY
    *   payload so the handler can elevate the recursive `rm` to that user
-   *   under `AUTH_MODE=multi-user` when the worktree subtree is user-owned
-   *   (Issue #884). `null` keeps the historical direct `fs.rm` path.
+   *   under `AUTH_MODE=multi-user` when the worktree subtree is user-owned.
+   *   `null` keeps the historical direct `fs.rm` path.
    * @param opts.removeSourceRepo When `true`, additionally remove the source
-   *   repo clone at `repoPath` itself (Issue #905). Only honoured when
-   *   `repoPath` lives under `getSourceReposDir()`; out-of-prefix paths are
-   *   silently skipped with a debug log.
+   *   repo clone at `repoPath` itself. Only honoured when `repoPath` lives
+   *   under `getSourceReposDir()`; out-of-prefix paths are silently skipped
+   *   with a debug log.
    * @throws Error if jobQueue is not available
    */
   private async cleanupRepositoryData(
@@ -576,12 +575,12 @@ export class RepositoryManager {
     const orgRepo = await getOrgRepoFromPath(repoPath);
     const repoDir = getRepositoryDir(orgRepo);
 
-    // Issue #905: when the unregister request opts in to source-repo removal,
-    // verify the registered path actually lives under the shared source-repos
-    // directory before forwarding it as `extraDir`. The frontend gates the
-    // checkbox on `clonedSourceRepoPath`, but the server applies the same
-    // path-prefix check as a defensive guard against a tampered request body
-    // that toggles the flag on a path outside the source-repos prefix.
+    // When the unregister request opts in to source-repo removal, verify the
+    // registered path actually lives under the shared source-repos directory
+    // before forwarding it as `extraDir`. The frontend gates the checkbox on
+    // `clonedSourceRepoPath`, but the server applies the same path-prefix
+    // check as a defensive guard against a tampered request body that
+    // toggles the flag on a path outside the source-repos prefix.
     let extraDir: string | null = null;
     if (opts.removeSourceRepo === true) {
       const sourceReposDir = getSourceReposDir();

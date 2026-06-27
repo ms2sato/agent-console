@@ -289,7 +289,7 @@ export const DeleteWorktreeRequestSchema = v.object({
 });
 
 /**
- * Schema for the DELETE /api/repositories/:id request body (Issue #905).
+ * Schema for the DELETE /api/repositories/:id request body.
  *
  * `removeSourceRepo` toggles whether the server-side cleanup job also removes
  * the cloned source-repo directory (only valid when the repo's `path` lives

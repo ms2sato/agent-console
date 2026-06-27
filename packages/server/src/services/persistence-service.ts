@@ -25,9 +25,9 @@ export interface PersistedRepository {
   description?: string | null;
   defaultAgentId?: string | null;
   /**
-   * Derived field surfaced at serving time (Issue #905). Carries `null` in
-   * the persisted JSON record; `withRepositoryRemote` recomputes the value
-   * against `getSourceReposDir()` on every read. Kept in the persisted shape
+   * Derived field surfaced at serving time. Carries `null` in the persisted
+   * JSON record; `withRepositoryRemote` recomputes the value against
+   * `getSourceReposDir()` on every read. Kept in the persisted shape
    * (matching `Repository`) so `PersistedRepository` remains structurally
    * compatible with `Repository` for callers that consume the value
    * post-load without explicit enrichment.

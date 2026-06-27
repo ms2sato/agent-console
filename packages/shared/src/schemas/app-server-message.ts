@@ -91,8 +91,8 @@ const RepositorySchema = v.object({
   envVars: v.optional(v.nullable(v.string())),
   description: v.optional(v.nullable(v.string())),
   defaultAgentId: v.optional(v.nullable(v.string())),
-  // Issue #905: required (not optional) so every broadcast carries a defined
-  // value; server derives via `withRepositoryRemote` against `getSourceReposDir()`.
+  // Required (not optional) so every broadcast carries a defined value;
+  // server derives via `withRepositoryRemote` against `getSourceReposDir()`.
   clonedSourceRepoPath: v.nullable(v.string()),
 });
 

@@ -129,12 +129,12 @@ export function registerJobHandlers(
   // as that user. Single-user / null / same-user preserves the original
   // direct `fs.rm` path (and its ENOENT idempotency).
   //
-  // Issue #905: when `extraDir` is set (by the manager, only for repos cloned
-  // through `POST /api/repositories/clone` whose `path` lives under
-  // `getSourceReposDir()`), also remove that directory AFTER the main
-  // `repoDir` has been removed successfully. Same elevation decision, same
-  // idempotent / error-handling shape. If the main `repoDir` removal throws,
-  // `extraDir` is not attempted -- the job queue retries the whole job.
+  // When `extraDir` is set (by the manager, only when the registered repo's
+  // `path` lives under `getSourceReposDir()`), also remove that directory
+  // AFTER the main `repoDir` has been removed successfully. Same elevation
+  // decision, same idempotent / error-handling shape. If the main `repoDir`
+  // removal throws, `extraDir` is not attempted -- the job queue retries the
+  // whole job.
   //
   // Layering note: the elevated branch uses the dedicated layer helper rather
   // than inlining a `rm -rf -- <shellEscape(path)>` command at this site;

@@ -104,7 +104,7 @@ export interface CleanupRepositoryPayload {
    * `removeSourceRepo === true` AND the repository's `path` lives under the
    * shared `source-repos` directory (`getSourceReposDir()`). `null` when the
    * client did not request source-repo removal, or when the registered path
-   * is outside the source-repos prefix (path-guard miss). Issue #905.
+   * is outside the source-repos prefix (path-guard miss).
    *
    * The handler processes `repoDir` first; if it succeeds and `extraDir != null`,
    * `extraDir` is removed with the same elevation decision and the same

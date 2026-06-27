@@ -406,7 +406,7 @@ export function toRepository(row: RepositoryRow): Repository {
     // `clonedSourceRepoPath` is a derived field (not persisted). The serving
     // path (REST / WS) enriches the value via `withRepositoryRemote`; this
     // mapper sets the safe default so the type contract is satisfied at the
-    // edges of the persistence layer. Issue #905.
+    // edges of the persistence layer.
     clonedSourceRepoPath: null,
   };
 }
