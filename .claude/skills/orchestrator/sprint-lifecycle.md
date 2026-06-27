@@ -7,15 +7,33 @@ Orchestrator sessions are managed in sprint units. Sprints run on a plan -> exec
 Each sprint is labeled by the calendar date its retrospective runs (e.g., `2026-04-17`). When two or more sprints complete on the same calendar day, suffix the second and onward with `-b`, `-c`, etc. (e.g., `2026-04-17b`). Use the same label consistently in retrospective memos, `project_sprint_status.md`, and commit / PR references for that sprint's artifacts.
 
 ## Sprint Start
-1. **Sync the Orchestrator session branch with origin/main** (with owner confirmation):
+1. **Sync the Orchestrator session branch with origin/main**:
    ```bash
    git fetch origin main
    git log --oneline -3        # show current HEAD
    git log --oneline -3 origin/main  # show origin/main HEAD
-   # After owner confirms:
-   git rebase origin/main
    ```
-   **Why:** The Orchestrator session branch may be behind `origin/main` if other PRs were merged between sprints. Starting from stale code leads to incorrect decisions. Using `rebase` instead of `reset --hard` preserves any local commits that haven't been pushed, making it a safer default.
+
+   Then choose the path based on whether the local branch is fast-forwardable:
+
+   ```bash
+   if git merge-base --is-ancestor HEAD origin/main; then
+     # Fast-forward path: HEAD is an ancestor of (or equal to) origin/main.
+     # No history rewrite, no new commits — just advances the ref.
+     # Owner approval is NOT required.
+     git merge --ff-only origin/main
+   else
+     # Diverged path: the local branch has commits that origin/main does not.
+     # Rebase rewrites history (commit hashes change). Get owner approval
+     # first, then:
+     git rebase origin/main
+   fi
+   ```
+
+   **Why:** Starting from stale code leads to incorrect decisions. The two paths have meaningfully different risk profiles:
+
+   - **Fast-forward** is a pure ref advance: no commits are rewritten, no force-push is ever implied, and `--ff-only` fails cleanly if the precondition is wrong. Asking owner approval for this case wastes a round-trip on every Sprint Start without buying any safety.
+   - **Diverged rebase** mutates commit hashes; even though the orchestrator session branch is rarely shared, hash-rewrites still warrant the owner gate — the same principle as the per-PR force-push approval rule in `CLAUDE.md`. `git rebase` (over `reset --hard`) preserves any local commits that haven't been pushed, making it the safer default once approval lands.
 2. Decide the sprint task list in consultation with the owner (Issue-based)
 3. Update `memory/project_sprint_status.md` (Claude memory) with:
    - Sprint goal
