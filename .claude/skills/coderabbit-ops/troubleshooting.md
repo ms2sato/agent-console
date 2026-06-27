@@ -60,3 +60,23 @@ The simultaneous-rate-limit case does not relax PR Merge Authority — it remove
    ```
 
 (Lesson: Sprint 2026-05-10 PR #770 round 3 — CodeRabbit auto-closed all inline comments via `<review_comment_addressed>` markers but did not submit a top-level `APPROVED` review; PR-level `reviewDecision` remained `CHANGES_REQUESTED` despite every flagged item being resolved. Pushing a trivial commit to force a re-trigger would only burn CI cycles per the abandon-the-wait rule above.)
+
+## Q: The local CLI is consistently catching issues before the GitHub bot. How should I use them together?
+
+**Standard pattern: "CLI clean → wait for bot → APPROVED" two-phase verification.** Treat the local CLI as a fast first pass that catches most Major / actionable findings, and the GitHub bot as a slower confirmation layer. The bot's `reviewDecision: APPROVED` is the canonical clean signal, but the local CLI typically finishes well before the bot submits its review (especially when the bot is rate-limited and gradually recovers).
+
+Recommended sequence per push:
+
+1. **Run the local CLI** (`coderabbit review --agent --base main`). Address every CRITICAL / HIGH / MEDIUM finding. Re-push if you make code changes from CLI feedback.
+2. **Wait for the GitHub-side bot review.** It may take 3-12 minutes typically, longer under rate-limit. Do not push trivial commits to retrigger (per "abandon-the-wait" above).
+3. **Merge when `reviewDecision: APPROVED` and CLI is clean.** Both layers form the 3-layer clean verdict.
+
+This pattern is robust against the GitHub bot being temporarily rate-limited: the CLI gives you a verifiable clean signal you can act on while the bot recovers. When the bot eventually submits, it serves as confirmation rather than the only data point. (Lesson: Sprint 2026-06-26 — observed across PRs #892 / #897. Both pushed multiple times during a CodeRabbit rate-limit window; CLI ran clean on every push and caught Major findings the bot would later have flagged. The bot's APPROVED arrived after rate-limit lifted, confirming the CLI verdict. Without the CLI pass, both PRs would have been merge-blocked on the bot's rate-limit recovery or proceeded with no review at all.)
+
+## Q: `mergeStateStatus: BLOCKED` despite all checks SUCCESS and reviewDecision APPROVED. Why can't I auto-merge?
+
+**This is the main-branch signature ruleset, not a CodeRabbit issue.** Production main has a branch-protection ruleset that requires signed commits via a "signature" required check. PRs created by the orchestrator / agents through `gh pr create` do not satisfy that ruleset, so `mergeStateStatus` reports `BLOCKED` even when CI is green and the review is APPROVED.
+
+**Resolution: use `gh pr merge <N> --admin --squash` (owner action).** The `--admin` flag bypasses the signature requirement for the merge commit. Orchestrator can squash-merge docs / test-only PRs under PR Merge Authority; production code requires owner approval before the orchestrator passes the merge instruction.
+
+Do NOT interpret `mergeStateStatus: BLOCKED` as a CI failure or a CodeRabbit reject. Check the rollup, the `reviewDecision`, and the inline comments first; if those are all clean and `BLOCKED` is the only remaining signal, the signature ruleset is the cause. (Lesson: Sprint 2026-06-26 PR #897 — both Wave A PRs reported `mergeStateStatus: BLOCKED` throughout the review cycle despite all CI checks passing; owner used `--admin` flag to merge. New orchestrators discover this only when surprised by the persistent BLOCKED state; documenting here saves the discovery cost.)

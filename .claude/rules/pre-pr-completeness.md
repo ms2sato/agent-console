@@ -10,6 +10,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
    - Read any file that looks relevant, even briefly
    - If a similar mechanism exists: is this new thing a genuine extension, a replacement, or a duplicate? Duplicate → stop and reuse. Extension → cross-link. Replacement → document migration.
    - **1.5 (cross-doc citation sub-check):** When this PR cites another document's technical claim (schema, API, command behaviour), verify the claim against the actual code, not just the other document. Documents describe intent; code describes reality. When the two drift, cite the code's current state. (Lesson: Sprint 2026-04-20 PR #677 claimed `multi-user-shared-setup.md` "declared REFERENCES users(id)"; CodeRabbit caught that migration v14 shipped without the REFERENCES DDL. The design doc described the spec; the code did something different.)
+   - **1.6 (adjacent-fallback sub-check):** When designing a new "X-fallback" / "X-recovery" / "X-retry" mechanism, do not stop at "grep the function I'm modifying". Also grep adjacent code paths for the same pattern: `catch` blocks within the same function family, sibling functions that handle the same failure mode, helper functions in the same file with `force` / `fallback` / `recovery` / `retry` keywords. The risk is **duplicating existing recovery logic** because the new mechanism's intent is described in different words than the existing one. Read the full function body of any nearby `catch (error)` block before committing to the design. (Lesson: Sprint 2026-06-26 PR #897 — agent designed a new `pruneWorktrees` helper + a dedicated orphan-recovery branch in `WorktreeService.removeWorktree`, without auditing `lib/git.ts:removeWorktree`'s existing force-fallback catch block which already did `fs.rm` + `git worktree prune` for the same orphan case. Owner caught the duplicate during review. The agent had grepped `removeWorktree` for callsites but did not read the function body or the adjacent catch block.)
 2. **Is the invocation or trigger of this new thing documented in a canonical procedure?**
    - If it is a script or a skill that needs to run at a specific point, find where that point is described (e.g., `core-responsibilities.md §N`, `sprint-lifecycle.md`, or equivalent)
    - Add the invocation instruction there in the same PR
@@ -64,6 +65,17 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
    **Do not use the count as an excuse to escape the change.** If the right design is `async`, accept the test-call-site churn rather than introducing overload / optional-param / wrapper alternatives — those warp the design to dodge integration cost. The pre-estimate exists to set expectations, not to gate the change.
 
    (Lesson: Sprint 2026-05-10 PR #770 — `activate*Pty` async migration produced ~50 call-site changes in tests; the bulk-replace script was rerun twice (the first pass had a 14-space indent bug). Counting up-front would have set churn expectations and surfaced the indent assumption earlier.)
+
+9. **Target-environment cross-check — for bug fix PRs:**
+
+   When this PR is a bug fix, enumerate every environment / mode the affected code path supports (single-user vs multi-user, AUTH_MODE=none vs multi-user, server-spawn vs elevated-spawn, dev vs prod, with-cache vs no-cache, etc.) and verify the fix design works in **all** of them, not just the one where the bug was first observed.
+
+   1. **List the environments / modes** the modified function supports. Read the function and trace its `if (mode === ...)` / `if (shouldElevateForUser(...))` / `process.env.X === ...` branches.
+   2. **For each mode, ask: "does the fix logic make sense here?"** Pay extra attention to permission / identity differences (which user owns the files, who can stat / read / spawn).
+   3. **Write at least one test per mode** if the modes have meaningfully different paths.
+   4. **If a mode introduces a blind spot the fix design didn't account for**, redesign the fix to cover that mode upfront — do not defer to a follow-up.
+
+   (Lesson: Sprint 2026-06-26 PR #897 — the initial orphan-recovery design called `fsPromises.stat(worktreePath)` as the server process. In multi-user mode the worktree dir may be user-owned with mode 0700, causing EACCES on stat. The fix would have rejected valid orphan-recovery cases in multi-user mode — the very environment that surfaced the bug in dogfood. CodeRabbit MAJOR caught the EACCES blind spot before merge; pre-design environment enumeration would have caught it earlier.)
 
 ## When to apply
 
