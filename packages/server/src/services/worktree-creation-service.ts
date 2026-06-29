@@ -117,7 +117,10 @@ export async function createWorktreeWithSession(
 
   if (useRemote && baseBranch) {
     try {
-      await fetchRemote(baseBranch, repoPath);
+      // Forward `requestUsername` so multi-user mode runs the network fetch
+      // as the requesting user (picks up their SSH credentials via sudo -i),
+      // matching the elevated `createWorktree` call below.
+      await fetchRemote(baseBranch, repoPath, requestUsername);
       effectiveBaseBranch = `origin/${baseBranch}`;
     } catch (error) {
       logger.warn(

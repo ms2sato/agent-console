@@ -803,16 +803,27 @@ export async function pullFastForward(cwd: string): Promise<number> {
 
 /**
  * Fetch a specific branch from remote origin.
+ *
+ * @param requestUser - See {@link git}.
  */
-export async function fetchRemote(branch: string, cwd: string): Promise<void> {
-  await git(['fetch', 'origin', branch], cwd, NETWORK_GIT_TIMEOUT_MS);
+export async function fetchRemote(
+  branch: string,
+  cwd: string,
+  requestUser?: string | null,
+): Promise<void> {
+  await git(['fetch', 'origin', branch], cwd, NETWORK_GIT_TIMEOUT_MS, requestUser);
 }
 
 /**
  * Fetch all branches from remote origin.
+ *
+ * @param requestUser - See {@link git}.
  */
-export async function fetchAllRemote(cwd: string): Promise<void> {
-  await git(['fetch', 'origin'], cwd, NETWORK_GIT_TIMEOUT_MS);
+export async function fetchAllRemote(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<void> {
+  await git(['fetch', 'origin'], cwd, NETWORK_GIT_TIMEOUT_MS, requestUser);
 }
 
 /**

@@ -69,8 +69,12 @@ export const mockGit = {
   getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')) as Mock<AsyncStringNullFn>,
 
   // Remote fetch operations
-  fetchRemote: mock(() => Promise.resolve()) as Mock<(branch: string, cwd: string) => Promise<void>>,
-  fetchAllRemote: mock(() => Promise.resolve()) as Mock<(cwd: string) => Promise<void>>,
+  fetchRemote: mock(() => Promise.resolve()) as Mock<
+    (branch: string, cwd: string, requestUser?: string | null) => Promise<void>
+  >,
+  fetchAllRemote: mock(() => Promise.resolve()) as Mock<
+    (cwd: string, requestUser?: string | null) => Promise<void>
+  >,
   getCommitsBehind: mock(() => Promise.resolve(0)) as Mock<(branch: string, cwd: string) => Promise<number>>,
   getCommitsAhead: mock(() => Promise.resolve(0)) as Mock<(branch: string, cwd: string) => Promise<number>>,
 

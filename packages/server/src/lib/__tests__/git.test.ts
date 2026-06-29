@@ -102,6 +102,40 @@ describe('git remote operations', () => {
 
       await expect(fetchRemote('nonexistent', '/repo')).rejects.toBeInstanceOf(GitError);
     });
+
+    it('uses Bun.spawn directly when requestUser is omitted (default path)', async () => {
+      setMockSpawnResult('');
+      const { fetchRemote } = await getGitModule();
+
+      await fetchRemote('main', '/repo');
+
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args).toEqual(['git', 'fetch', 'origin', 'main']);
+      expect(spawnCalls[0].options.cwd).toBe('/repo');
+    });
+
+    it('routes through runAsUser when requestUser is non-empty (elevated path)', async () => {
+      const runAsUserCalls: Array<Record<string, unknown>> = [];
+      const fakeRunAsUser = async (opts: Record<string, unknown>) => {
+        runAsUserCalls.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        await mod.fetchRemote('main', '/repo', 'alice');
+
+        // Direct-spawn path was NOT used.
+        expect(spawnCalls.length).toBe(0);
+        expect(runAsUserCalls.length).toBe(1);
+        expect(runAsUserCalls[0].username).toBe('alice');
+        expect(runAsUserCalls[0].cwd).toBe('/repo');
+        expect(runAsUserCalls[0].command).toBe("'git' 'fetch' 'origin' 'main'");
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
   });
 
   describe('fetchAllRemote', () => {
@@ -132,6 +166,39 @@ describe('git remote operations', () => {
       const { fetchAllRemote, GitError } = await getGitModule();
 
       await expect(fetchAllRemote('/repo')).rejects.toBeInstanceOf(GitError);
+    });
+
+    it('uses Bun.spawn directly when requestUser is omitted (default path)', async () => {
+      setMockSpawnResult('');
+      const { fetchAllRemote } = await getGitModule();
+
+      await fetchAllRemote('/repo');
+
+      expect(spawnCalls.length).toBe(1);
+      expect(spawnCalls[0].args).toEqual(['git', 'fetch', 'origin']);
+      expect(spawnCalls[0].options.cwd).toBe('/repo');
+    });
+
+    it('routes through runAsUser when requestUser is non-empty (elevated path)', async () => {
+      const runAsUserCalls: Array<Record<string, unknown>> = [];
+      const fakeRunAsUser = async (opts: Record<string, unknown>) => {
+        runAsUserCalls.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        await mod.fetchAllRemote('/repo', 'alice');
+
+        expect(spawnCalls.length).toBe(0);
+        expect(runAsUserCalls.length).toBe(1);
+        expect(runAsUserCalls[0].username).toBe('alice');
+        expect(runAsUserCalls[0].cwd).toBe('/repo');
+        expect(runAsUserCalls[0].command).toBe("'git' 'fetch' 'origin'");
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
     });
   });
 
