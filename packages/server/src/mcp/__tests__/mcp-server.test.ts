@@ -356,6 +356,7 @@ describe('MCP Server Tools', () => {
       name,
       path: repoPath,
       createdAt: new Date().toISOString(),
+      clonedSourceRepoPath: null,
     });
     // Ensure the path exists in memfs so RepositoryManager.initialize()
     // doesn't filter it out on load.
@@ -487,6 +488,7 @@ describe('MCP Server Tools', () => {
         await sqliteRepoRepo.save({
           ...repo,
           createdAt: new Date().toISOString(),
+          clonedSourceRepoPath: null,
         });
       }
       repositoryManager = await RepositoryManager.create({
@@ -1259,6 +1261,7 @@ describe('MCP Server Tools', () => {
         await sqliteRepoRepo.save({
           ...repo,
           createdAt: new Date().toISOString(),
+          clonedSourceRepoPath: null,
         });
       }
       repositoryManager = await RepositoryManager.create({
@@ -2349,6 +2352,7 @@ describe('MCP Server Tools', () => {
         name: 'test',
         path: TEST_REPO_PATH,
         createdAt: new Date().toISOString(),
+        clonedSourceRepoPath: null,
       });
       repositoryManager = await RepositoryManager.create({
         jobQueue: testJobQueue,
@@ -2483,6 +2487,7 @@ describe('MCP Server Tools', () => {
         name: 'test',
         path: TEST_REPO_PATH,
         createdAt: new Date().toISOString(),
+        clonedSourceRepoPath: null,
       });
       repositoryManager = await RepositoryManager.create({
         jobQueue: testJobQueue,
@@ -2618,6 +2623,7 @@ describe('MCP Server Tools', () => {
         name: 'test-repo',
         path: repoPath,
         createdAt: new Date().toISOString(),
+        clonedSourceRepoPath: null,
       });
       repositoryManager = await RepositoryManager.create({
         jobQueue: testJobQueue,

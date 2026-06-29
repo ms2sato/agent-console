@@ -24,6 +24,15 @@ export interface PersistedRepository {
   envVars?: string | null;
   description?: string | null;
   defaultAgentId?: string | null;
+  /**
+   * Derived field surfaced at serving time. Carries `null` in the persisted
+   * JSON record; `withRepositoryRemote` recomputes the value against
+   * `getSourceReposDir()` on every read. Kept in the persisted shape
+   * (matching `Repository`) so `PersistedRepository` remains structurally
+   * compatible with `Repository` for callers that consume the value
+   * post-load without explicit enrichment.
+   */
+  clonedSourceRepoPath: string | null;
 }
 
 // Base for all persisted workers

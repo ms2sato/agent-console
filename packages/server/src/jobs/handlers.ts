@@ -129,59 +129,103 @@ export function registerJobHandlers(
   // as that user. Single-user / null / same-user preserves the original
   // direct `fs.rm` path (and its ENOENT idempotency).
   //
+  // When `extraDir` is set (by the manager, only when the registered repo's
+  // `path` lives under `getSourceReposDir()`), also remove that directory
+  // AFTER the main `repoDir` has been removed successfully. Same elevation
+  // decision, same idempotent / error-handling shape. If the main `repoDir`
+  // removal throws, `extraDir` is not attempted -- the job queue retries the
+  // whole job.
+  //
   // Layering note: the elevated branch uses the dedicated layer helper rather
   // than inlining a `rm -rf -- <shellEscape(path)>` command at this site;
   // `rmRecursiveAsUser` is the canonical encapsulation, analogous to how
   // `lib/git.ts` encapsulates git command construction.
   jobQueue.registerHandler<CleanupRepositoryPayload>(
     JOB_TYPES.CLEANUP_REPOSITORY,
-    async ({ repoDir, requestUsername }) => {
+    async ({ repoDir, requestUsername, extraDir }) => {
       const elevate = shouldElevateForUser(requestUsername);
-      logger.debug({ repoDir, requestUsername, elevate }, 'Executing cleanup:repository job');
+      logger.debug(
+        { repoDir, requestUsername, elevate, extraDir },
+        'Executing cleanup:repository job',
+      );
 
-      if (elevate) {
-        let result: RunAsUserResult;
-        try {
-          result = await rmRecursiveAsUserImpl(repoDir, requestUsername, {
-            timeoutMs: CLEANUP_REPOSITORY_TIMEOUT_MS,
-          });
-        } catch (error) {
-          // Spawn failure (e.g., sudo missing). Re-throw so the job queue
-          // retries; we do NOT swallow this as ENOENT — the directory may
-          // still exist.
-          logger.error({ repoDir, requestUsername, err: error }, 'cleanup:repository elevated rm spawn failed');
-          throw error;
-        }
+      /**
+       * Remove one target with the elevation + ENOENT-idempotent contract
+       * shared by both `repoDir` and `extraDir`. Closure captures `elevate`
+       * and the elevated helper so both removals make the same decision and
+       * surface the same shape of error to the job queue. Strict-thin-wrapper
+       * contract is preserved: semantic interpretation (ENOENT-swallow on the
+       * direct path, throw on elevated non-zero exit) lives here in the
+       * handler, not in the privilege-elevation helper.
+       */
+      const removeOne = async (target: string): Promise<void> => {
+        if (elevate) {
+          let result: RunAsUserResult;
+          try {
+            result = await rmRecursiveAsUserImpl(target, requestUsername, {
+              timeoutMs: CLEANUP_REPOSITORY_TIMEOUT_MS,
+            });
+          } catch (error) {
+            // Spawn failure (e.g., sudo missing). Re-throw so the job queue
+            // retries; we do NOT swallow this as ENOENT — the directory may
+            // still exist.
+            logger.error(
+              { target, requestUsername, err: error },
+              'cleanup:repository elevated rm spawn failed',
+            );
+            throw error;
+          }
 
-        if (result.timedOut || result.exitCode !== 0) {
-          // `rm -rf` is idempotent on a missing path (POSIX contract: exit 0,
-          // no stderr). Any non-zero exit therefore signals a real permission
-          // / filesystem error; surface it so the job queue retries. The
-          // helper itself stays strict — semantic interpretation is the
-          // handler's job.
-          const message = result.stderr.trim() || `exit code ${result.exitCode}`;
-          logger.error(
-            { repoDir, requestUsername, exitCode: result.exitCode, timedOut: result.timedOut, stderr: result.stderr },
-            'cleanup:repository elevated rm returned non-zero',
+          if (result.timedOut || result.exitCode !== 0) {
+            // `rm -rf` is idempotent on a missing path (POSIX contract: exit 0,
+            // no stderr). Any non-zero exit therefore signals a real permission
+            // / filesystem error; surface it so the job queue retries. The
+            // helper itself stays strict — semantic interpretation is the
+            // handler's job.
+            const message = result.stderr.trim() || `exit code ${result.exitCode}`;
+            logger.error(
+              {
+                target,
+                requestUsername,
+                exitCode: result.exitCode,
+                timedOut: result.timedOut,
+                stderr: result.stderr,
+              },
+              'cleanup:repository elevated rm returned non-zero',
+            );
+            throw new Error(`cleanup:repository elevated rm failed: ${message}`);
+          }
+
+          logger.info(
+            { target, requestUsername },
+            'Repository data cleanup completed (elevated)',
           );
-          throw new Error(`cleanup:repository elevated rm failed: ${message}`);
-        }
-
-        logger.info({ repoDir, requestUsername }, 'Repository data cleanup completed (elevated)');
-        return;
-      }
-
-      try {
-        await fs.rm(repoDir, { recursive: true });
-        logger.info({ repoDir }, 'Repository data cleanup completed');
-      } catch (error) {
-        // Handle ENOENT (file not found) gracefully - directory already gone
-        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-          logger.debug({ repoDir }, 'Repository directory does not exist, skipping cleanup');
           return;
         }
-        // Let other errors propagate to trigger job retry
-        throw error;
+
+        try {
+          await fs.rm(target, { recursive: true });
+          logger.info({ target }, 'Repository data cleanup completed');
+        } catch (error) {
+          // Handle ENOENT (file not found) gracefully - directory already gone
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+            logger.debug(
+              { target },
+              'Repository directory does not exist, skipping cleanup',
+            );
+            return;
+          }
+          // Let other errors propagate to trigger job retry
+          throw error;
+        }
+      };
+
+      // Main repoDir first. If it throws, do not attempt extraDir -- the job
+      // queue will retry and the next attempt processes both. This preserves
+      // the atomicity contract of a single CLEANUP_REPOSITORY job.
+      await removeOne(repoDir);
+      if (extraDir != null) {
+        await removeOne(extraDir);
       }
     }
   );

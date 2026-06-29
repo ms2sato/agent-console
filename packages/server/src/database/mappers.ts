@@ -403,6 +403,11 @@ export function toRepository(row: RepositoryRow): Repository {
     envVars: row.env_vars ?? null,
     description: row.description ?? null,
     defaultAgentId: row.default_agent_id ?? null,
+    // `clonedSourceRepoPath` is a derived field (not persisted). The serving
+    // path (REST / WS) enriches the value via `withRepositoryRemote`; this
+    // mapper sets the safe default so the type contract is satisfied at the
+    // edges of the persistence layer.
+    clonedSourceRepoPath: null,
   };
 }
 

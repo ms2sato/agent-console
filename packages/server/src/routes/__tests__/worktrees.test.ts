@@ -24,6 +24,7 @@ const TEST_REPO: Repository = {
   name: 'test-repo',
   path: REPO_PATH,
   createdAt: new Date().toISOString(),
+  clonedSourceRepoPath: null,
 };
 
 const WORKTREE_PATH = `${REPO_PATH}/worktrees/wt-1`;

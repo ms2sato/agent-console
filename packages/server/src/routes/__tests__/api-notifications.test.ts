@@ -51,6 +51,7 @@ describe('Notifications API', () => {
       name: 'test-repo',
       path: testRepoPath,
       createdAt: new Date().toISOString(),
+      clonedSourceRepoPath: null,
     });
 
     // Create repository manager (will load the pre-created repository)

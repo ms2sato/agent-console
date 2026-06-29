@@ -1,12 +1,15 @@
 import { Hono } from 'hono';
+import * as v from 'valibot';
 import type {
   GitHubIssueSummary,
   CloneRepositoryResponse,
   CloneJobStatusResponse,
+  DeleteRepositoryRequest,
 } from '@agent-console/shared';
 import {
   CreateRepositoryRequestSchema,
   CloneRepositoryRequestSchema,
+  DeleteRepositoryRequestSchema,
   UpdateRepositoryRequestSchema,
   FetchGitHubIssueRequestSchema,
   RepositorySlackIntegrationInputSchema,
@@ -51,10 +54,10 @@ const repositories = new Hono<AppBindings>()
       throw new ValidationError(message);
     }
   })
-  // Clone a repository and register it (Issue #834). Returns 202 Accepted with
-  // a jobId; the client polls GET /api/repositories/clone/:jobId for the
-  // final status. The clone runs as the authenticated user via the
-  // privilege-elevation helper (umbrella #837) when AUTH_MODE=multi-user.
+  // Clone a repository and register it. Returns 202 Accepted with a jobId;
+  // the client polls GET /api/repositories/clone/:jobId for the final
+  // status. The clone runs as the authenticated user via the
+  // privilege-elevation helper when AUTH_MODE=multi-user.
   .post('/clone', vValidator(CloneRepositoryRequestSchema), async (c) => {
     const body = c.req.valid('json');
     const { repositoryCloneService } = c.get('appContext');
@@ -83,7 +86,7 @@ const repositories = new Hono<AppBindings>()
       throw error;
     }
   })
-  // Poll the status of a previously-enqueued clone job (Issue #834).
+  // Poll the status of a previously-enqueued clone job.
   // Returns 404 if the jobId is unknown (e.g., expired or never existed).
   .get('/clone/:jobId', async (c) => {
     const jobId = c.req.param('jobId');
@@ -144,6 +147,30 @@ const repositories = new Hono<AppBindings>()
     const { repositoryManager, sessionManager } = c.get('appContext');
     const authUser = c.get('authUser');
 
+    // Parse the DELETE body manually because `vValidator` would 400 on a
+    // missing body / missing Content-Type. The schema's default makes an
+    // absent `removeSourceRepo` field equivalent to `false`. We
+    // differentiate three states explicitly so malformed JSON cannot fall
+    // through to the default-false path silently:
+    //   - empty / whitespace-only body -> default ({})
+    //   - non-empty body parseable as JSON -> validate via schema
+    //   - non-empty body that fails JSON.parse -> 400 ValidationError
+    const rawText = await c.req.text();
+    let raw: unknown = {};
+    if (rawText.trim() !== '') {
+      try {
+        raw = JSON.parse(rawText) as unknown;
+      } catch {
+        throw new ValidationError('Invalid JSON body');
+      }
+    }
+    const parseResult = v.safeParse(DeleteRepositoryRequestSchema, raw);
+    if (!parseResult.success) {
+      const firstIssue = parseResult.issues[0];
+      throw new ValidationError(firstIssue?.message ?? 'Validation failed');
+    }
+    const parsed: DeleteRepositoryRequest = parseResult.output;
+
     // Check if repository exists
     const repo = repositoryManager.getRepository(repoId);
     if (!repo) {
@@ -186,11 +213,16 @@ const repositories = new Hono<AppBindings>()
       logger.debug({ repositoryId: repoId }, 'No Slack integration to cleanup for repository');
     }
 
-    // Issue #884: thread the authenticated username so the CLEANUP_REPOSITORY
-    // job can elevate the recursive `rm` to that user under multi-user mode
-    // (worktree subtrees are owned by the requesting user per #838 / PR #843).
-    // Backend half of #871 (frontend in PR #873).
-    const success = await repositoryManager.unregisterRepository(repoId, authUser.username);
+    // Thread the authenticated username so the CLEANUP_REPOSITORY job can
+    // elevate the recursive `rm` to that user under multi-user mode
+    // (worktree subtrees are owned by the requesting user). Forward
+    // `removeSourceRepo` so the cleanup job optionally removes the
+    // source-repo clone in addition to the data subtree.
+    const success = await repositoryManager.unregisterRepository(
+      repoId,
+      authUser.username,
+      { removeSourceRepo: parsed.removeSourceRepo },
+    );
 
     if (!success) {
       // Repository was likely deleted between the check and unregister (race condition)
@@ -239,8 +271,8 @@ const repositories = new Hono<AppBindings>()
     try {
       // Thread the authenticated username so multi-user mode runs the agent's
       // headless command (e.g. `claude -p ...`) as the requesting user via
-      // `runAsUser` (Issue #835). In single-user mode `runAsUser` bypasses
-      // sudo because the username matches the server-process user.
+      // `runAsUser`. In single-user mode `runAsUser` bypasses sudo because
+      // the username matches the server-process user.
       const result = await generateRepositoryDescription({
         repositoryPath: repo.path,
         agent,
@@ -273,8 +305,8 @@ const repositories = new Hono<AppBindings>()
     const body = c.req.valid('json');
 
     try {
-      // Issue #885: thread the authenticated OS username so multi-user mode
-      // runs `gh api` as the requesting user (with that user's per-user gh
+      // Thread the authenticated OS username so multi-user mode runs
+      // `gh api` as the requesting user (with that user's per-user gh
       // auth token). In single-user mode `runAsUser` bypasses elevation.
       const issue: GitHubIssueSummary = await fetchGitHubIssue(
         body.reference,
@@ -301,12 +333,12 @@ const repositories = new Hono<AppBindings>()
       throw new NotFoundError('Repository');
     }
 
-    // Issue #870: thread the authenticated username so multi-user mode runs
-    // the git invocations as the requesting user. The user's PATH,
-    // ~/.gitconfig, and SSH_AUTH_SOCK are picked up from their login shell
-    // via `sudo -i`; without this elevation the server's `agentconsole`
-    // identity has no SSH credentials and hits `dubious ownership` against
-    // user-owned source repos.
+    // Thread the authenticated username so multi-user mode runs the git
+    // invocations as the requesting user. The user's PATH, ~/.gitconfig,
+    // and SSH_AUTH_SOCK are picked up from their login shell via `sudo -i`;
+    // without this elevation the server's `agentconsole` identity has no
+    // SSH credentials and hits `dubious ownership` against user-owned
+    // source repos.
     const branches = await worktreeService.listBranches(repo.path, authUser.username);
     return c.json(branches);
   })
@@ -322,7 +354,7 @@ const repositories = new Hono<AppBindings>()
     }
 
     try {
-      // Issue #870: same rationale as GET /:id/branches above — the network
+      // Same rationale as GET /:id/branches above — the network
       // `git remote set-head` runs as the requesting user so SSH-using git
       // can authenticate.
       const defaultBranch = await worktreeService.refreshDefaultBranch(repo.path, authUser.username);

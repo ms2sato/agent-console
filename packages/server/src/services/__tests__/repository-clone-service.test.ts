@@ -71,6 +71,7 @@ function createRegistrarMock() {
       createdAt: '2024-01-01T00:00:00.000Z',
       description: options?.description ?? null,
       defaultAgentId: null,
+      clonedSourceRepoPath: null,
     }),
   };
   const registrar: RepositoryRegistrar = {

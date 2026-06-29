@@ -137,6 +137,10 @@ Shared directory under the data root (`${DATA_ROOT}/source-repos` by default, e.
 - **Contrast:** the worktree subtree `<data-root>/repositories/<org>/<repo>/worktrees/...` is created and managed by agent-console; the source-repos directory is the operator-facing clone target.
 - **See:** [Shared source-repos directory in multi-user-setup-guide.md](multi-user-setup-guide.md#shared-source-repos-directory-linux-multi-user)
 
+### clonedSourceRepoPath
+Field on the Repository response that carries `repo.path` when the registered path lives under the [source-repos directory](#source-repos-directory) (`getSourceReposDir()`), and `null` otherwise. This is a pure path-containment check, NOT a provenance check: any repository whose registered path falls inside the source-repos prefix surfaces this field as non-null regardless of HOW the directory was created -- via `POST /api/repositories/clone` (Issue [#834](https://github.com/ms2sato/agent-console/issues/834)), via an operator-side `git clone` into the shared directory followed by registration through `POST /api/repositories`, or any other means. The frontend uses this field to decide whether to show the "also remove the cloned source repo" checkbox during unregister (Issue [#905](https://github.com/ms2sato/agent-console/issues/905)). When checked, the body of `DELETE /api/repositories/:id` carries `removeSourceRepo: true` and the server-side CLEANUP_REPOSITORY job removes the source-repo directory via `extraDir` in addition to the main data subtree.
+- **Used by:** `Repository` (packages/shared/src/types/repository.ts), `withRepositoryRemote` (server-side derivation against `getSourceReposDir()`), `DELETE /api/repositories/:id` semantics.
+
 ### AGENT_CONSOLE_HOME
 Environment variable selecting the agent-console data root. Defaults:
 - `AUTH_MODE=none` (single-user): `~/.agent-console`.

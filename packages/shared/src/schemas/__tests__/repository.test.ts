@@ -8,6 +8,7 @@ import {
   CreateWorktreeCustomRequestSchema,
   CreateWorktreeExistingRequestSchema,
   DeleteWorktreeRequestSchema,
+  DeleteRepositoryRequestSchema,
   PullWorktreeRequestSchema,
   FetchGitHubIssueRequestSchema,
 } from '../repository';
@@ -653,6 +654,50 @@ describe('DeleteWorktreeRequestSchema', () => {
   it('should reject non-boolean force', () => {
     const result = v.safeParse(DeleteWorktreeRequestSchema, {
       force: 'yes',
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('DeleteRepositoryRequestSchema (Issue #905)', () => {
+  it('accepts an empty object (removeSourceRepo defaults to false)', () => {
+    const result = v.safeParse(DeleteRepositoryRequestSchema, {});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.removeSourceRepo).toBe(false);
+    }
+  });
+
+  it('accepts removeSourceRepo: true', () => {
+    const result = v.safeParse(DeleteRepositoryRequestSchema, {
+      removeSourceRepo: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.removeSourceRepo).toBe(true);
+    }
+  });
+
+  it('accepts removeSourceRepo: false', () => {
+    const result = v.safeParse(DeleteRepositoryRequestSchema, {
+      removeSourceRepo: false,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.removeSourceRepo).toBe(false);
+    }
+  });
+
+  it('rejects non-boolean removeSourceRepo (string "yes")', () => {
+    const result = v.safeParse(DeleteRepositoryRequestSchema, {
+      removeSourceRepo: 'yes',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects non-boolean removeSourceRepo (number 1)', () => {
+    const result = v.safeParse(DeleteRepositoryRequestSchema, {
+      removeSourceRepo: 1,
     });
     expect(result.success).toBe(false);
   });

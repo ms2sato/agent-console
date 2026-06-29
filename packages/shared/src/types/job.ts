@@ -98,6 +98,20 @@ export interface CleanupWorkerOutputPayload {
 export interface CleanupRepositoryPayload {
   repoDir: string;
   requestUsername: string | null;
+  /**
+   * Optional source-repos clone directory to remove AFTER the main `repoDir`.
+   * Set by the manager when the unregister request opts include
+   * `removeSourceRepo === true` AND the repository's `path` lives under the
+   * shared `source-repos` directory (`getSourceReposDir()`). `null` when the
+   * client did not request source-repo removal, or when the registered path
+   * is outside the source-repos prefix (path-guard miss).
+   *
+   * The handler processes `repoDir` first; if it succeeds and `extraDir != null`,
+   * `extraDir` is removed with the same elevation decision and the same
+   * idempotent / error-handling shape as the main path. Combining both removals
+   * into one job preserves the existing single-retry / atomicity contract.
+   */
+  extraDir: string | null;
 }
 
 /**

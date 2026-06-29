@@ -41,9 +41,14 @@ const repositoryManager = {
   registerRepository: mock(() => Promise.resolve({} as any)),
   updateRepository: mock(() => Promise.resolve(undefined as any)),
   // Typed signature so tests can assert the route forwarded `authUser.username`
-  // as the second argument (Issue #884; see DELETE route test below).
+  // as the second argument (Issue #884; see DELETE route test below) and the
+  // `{ removeSourceRepo }` opts as the third (Issue #905).
   unregisterRepository: mock<
-    (id: string, requestUsername?: string | null) => Promise<boolean>
+    (
+      id: string,
+      requestUsername?: string | null,
+      opts?: { removeSourceRepo?: boolean },
+    ) => Promise<boolean>
   >(() => Promise.resolve(true)),
 };
 
@@ -217,6 +222,102 @@ describe('Repositories API', () => {
       const callArgs = repositoryManager.unregisterRepository.mock.calls[0];
       expect(callArgs[0]).toBe('repo1');
       expect(callArgs[1]).toBe('testuser');
+    });
+
+    // =========================================================================
+    // Issue #905: optional removeSourceRepo flag on the DELETE body
+    // =========================================================================
+
+    it('forwards removeSourceRepo=true to unregisterRepository (Issue #905)', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+      repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
+
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ removeSourceRepo: true }),
+      });
+      expect(res.status).toBe(200);
+
+      expect(repositoryManager.unregisterRepository).toHaveBeenCalledTimes(1);
+      const callArgs = repositoryManager.unregisterRepository.mock.calls[0];
+      expect(callArgs[2]).toEqual({ removeSourceRepo: true });
+    });
+
+    it('defaults removeSourceRepo=false when body is omitted (Issue #905)', async () => {
+      // Many DELETE clients send no body at all. The schema's `optional()`
+      // default makes the absent value `false`; the manual parse swallows
+      // the JSON parse error from an empty body.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+      repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(200);
+
+      expect(repositoryManager.unregisterRepository).toHaveBeenCalledTimes(1);
+      const callArgs = repositoryManager.unregisterRepository.mock.calls[0];
+      expect(callArgs[2]).toEqual({ removeSourceRepo: false });
+    });
+
+    it('defaults removeSourceRepo=false when body is empty object (Issue #905)', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+      repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
+
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+
+      expect(repositoryManager.unregisterRepository).toHaveBeenCalledTimes(1);
+      const callArgs = repositoryManager.unregisterRepository.mock.calls[0];
+      expect(callArgs[2]).toEqual({ removeSourceRepo: false });
+    });
+
+    it('rejects invalid removeSourceRepo type with 400 (Issue #905)', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ removeSourceRepo: 'yes' }),
+      });
+      expect(res.status).toBe(400);
+      // The route must reject before invoking the manager; otherwise an
+      // invalid type could reach the cleanup job.
+      expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed JSON body with 400 ValidationError (Issue #905)', async () => {
+      // Malformed JSON must NOT silently fall through to the
+      // `removeSourceRepo: false` default the way an empty body does. The
+      // route differentiates: empty body -> default; non-empty body that
+      // fails JSON.parse -> 400.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
+      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+
+      const res = await app.request('/api/repositories/repo1', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{not json',
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Invalid JSON body');
+      // Negative assertion confirms the route short-circuited before the
+      // manager call -- otherwise a tampered body could trigger an
+      // unintended cleanup job.
+      expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
     });
   });
 
