@@ -312,8 +312,8 @@ export async function unregisterRepository(
  * Accepted); the client polls `fetchCloneJobStatus(jobId)` until the
  * status reaches a terminal state (`succeeded` or `failed`).
  *
- * Uses raw `fetch` because the server endpoint may not yet be in the
- * Hono RPC client types (parallel implementation in Issue #834).
+ * Uses raw `fetch` because the server endpoint is not in the Hono RPC
+ * client types.
  */
 export async function cloneRepository(
   request: CloneRepositoryRequest
@@ -334,8 +334,8 @@ export async function cloneRepository(
  * Callers should stop polling when `status === 'succeeded'` or
  * `status === 'failed'`.
  *
- * Uses raw `fetch` because the server endpoint may not yet be in the
- * Hono RPC client types (parallel implementation in Issue #834).
+ * Uses raw `fetch` because the server endpoint is not in the Hono RPC
+ * client types.
  */
 export async function fetchCloneJobStatus(jobId: string): Promise<CloneJobStatusResponse> {
   const res = await fetch(`${API_BASE}/repositories/clone/${encodeURIComponent(jobId)}`);
