@@ -44,9 +44,22 @@ export function RepositoryDetailError({ error, reset }: ErrorComponentProps) {
 
 function RepositoryDetailPage() {
   const { repositoryId } = Route.useParams();
+  return <RepositoryDetailView repositoryId={repositoryId} />;
+}
+
+/**
+ * Presentational view for the repository detail page. Exposed (and exported)
+ * so route-level tests can mount it without the TanStack Router route tree.
+ * Production callers go through `RepositoryDetailPage` which reads
+ * `repositoryId` from the route params.
+ */
+export function RepositoryDetailView({ repositoryId }: { repositoryId: string }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  // Opt-in for deleting the cloned source repo; only meaningful (and only
+  // rendered as a checkbox) when `repository.clonedSourceRepoPath != null`.
+  const [removeSourceRepo, setRemoveSourceRepo] = useState(false);
   const { errorDialogProps, showError } = useErrorDialog();
 
   const { data } = useSuspenseQuery({
@@ -68,13 +81,15 @@ function RepositoryDetailPage() {
     : undefined;
 
   const deleteMutation = useMutation({
-    mutationFn: unregisterRepository,
+    mutationFn: ({ id, removeSourceRepo: remove }: { id: string; removeSourceRepo: boolean }) =>
+      unregisterRepository(id, remove ? { removeSourceRepo: true } : undefined),
     onSuccess: () => {
       queryClient.removeQueries({ queryKey: repositoryKeys.detail(repositoryId) });
       navigate({ to: '/settings/repositories' });
     },
     onError: (error) => {
       setShowDeleteConfirm(false);
+      setRemoveSourceRepo(false);
       showError('Cannot Delete Repository', error.message);
     },
   });
@@ -168,14 +183,32 @@ function RepositoryDetailPage() {
       {/* Delete Confirmation */}
       <ConfirmDialog
         open={showDeleteConfirm}
-        onOpenChange={setShowDeleteConfirm}
+        onOpenChange={(open) => {
+          setShowDeleteConfirm(open);
+          if (!open) setRemoveSourceRepo(false);
+        }}
         title="Delete Repository"
         description={`Are you sure you want to delete "${repository.name}"?`}
         confirmLabel="Delete"
         variant="danger"
-        onConfirm={() => deleteMutation.mutate(repositoryId)}
+        onConfirm={() => deleteMutation.mutate({ id: repositoryId, removeSourceRepo })}
         isLoading={deleteMutation.isPending}
-      />
+      >
+        {repository.clonedSourceRepoPath != null && (
+          <label className="flex items-start gap-2 text-sm text-gray-300">
+            <input
+              type="checkbox"
+              checked={removeSourceRepo}
+              onChange={(e) => setRemoveSourceRepo(e.target.checked)}
+              className="mt-0.5 accent-indigo-600"
+            />
+            <span>
+              Also remove the cloned source repository at{' '}
+              <code className="text-xs text-gray-400 break-all">{repository.clonedSourceRepoPath}</code>
+            </span>
+          </label>
+        )}
+      </ConfirmDialog>
       <ErrorDialog {...errorDialogProps} />
     </div>
   );

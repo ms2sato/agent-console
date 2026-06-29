@@ -343,6 +343,53 @@ describe('API Client', () => {
       expect(getLastFetchUrl()).toContain('/api/repositories/repo-id');
       expect(getLastFetchMethod()).toBe('DELETE');
     });
+
+    it('sends DELETE without a body when called with id only', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+
+      await unregisterRepository('repo-id');
+
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id');
+      expect(getLastFetchMethod()).toBe('DELETE');
+      const body = await getLastFetchBody();
+      expect(body).toBeUndefined();
+    });
+
+    it('sends DELETE with body { removeSourceRepo: true } when opts.removeSourceRepo is true', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+
+      await unregisterRepository('repo-id', { removeSourceRepo: true });
+
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id');
+      expect(getLastFetchMethod()).toBe('DELETE');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ removeSourceRepo: true });
+    });
+
+    it('sends DELETE with body { removeSourceRepo: false } when opts.removeSourceRepo is false', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+
+      await unregisterRepository('repo-id', { removeSourceRepo: false });
+
+      expect(getLastFetchUrl()).toContain('/api/repositories/repo-id');
+      expect(getLastFetchMethod()).toBe('DELETE');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ removeSourceRepo: false });
+    });
+
+    it('throws ApiError when DELETE fails', async () => {
+      mockFetch.mockResolvedValue(
+        new Response(JSON.stringify({ error: 'cleanup failed' }), {
+          status: 500,
+          statusText: 'Internal Server Error',
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      );
+
+      await expect(
+        unregisterRepository('repo-id', { removeSourceRepo: true })
+      ).rejects.toThrow('cleanup failed');
+    });
   });
 
   describe('fetchWorktrees', () => {

@@ -359,6 +359,23 @@ describe('AppServerMessageSchema', () => {
         },
       });
     });
+
+    it('should accept repository with clonedSourceRepoPath set to a string', () => {
+      expectValid({
+        type: 'repository-created',
+        repository: {
+          ...repository,
+          clonedSourceRepoPath: '/var/lib/agent-console/source-repos/org/repo',
+        },
+      });
+    });
+
+    it('should accept repository with clonedSourceRepoPath set to null', () => {
+      expectValid({
+        type: 'repository-created',
+        repository: { ...repository, clonedSourceRepoPath: null },
+      });
+    });
   });
 
   describe('worktree lifecycle messages', () => {

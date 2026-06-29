@@ -284,8 +284,23 @@ export async function registerRepository(request: CreateRepositoryRequest): Prom
   return res.json() as Promise<CreateRepositoryResponse>;
 }
 
-export async function unregisterRepository(repositoryId: string): Promise<void> {
-  const res = await api.repositories[':id'].$delete({ param: { id: repositoryId } });
+/**
+ * Unregister a repository. When `opts.removeSourceRepo` is `true`, the server
+ * also removes the app-cloned source repository on disk (only meaningful when
+ * the repository was registered via "Clone from URL"; ignored otherwise).
+ * Sending no `opts` omits the request body entirely, which the server treats
+ * as the default `removeSourceRepo: false`.
+ */
+export async function unregisterRepository(
+  repositoryId: string,
+  opts?: { removeSourceRepo?: boolean },
+): Promise<void> {
+  const init: RequestInit = { method: 'DELETE' };
+  if (opts !== undefined) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify({ removeSourceRepo: opts.removeSourceRepo });
+  }
+  const res = await fetch(`${API_BASE}/repositories/${repositoryId}`, init);
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister repository');
   }
@@ -297,8 +312,8 @@ export async function unregisterRepository(repositoryId: string): Promise<void> 
  * Accepted); the client polls `fetchCloneJobStatus(jobId)` until the
  * status reaches a terminal state (`succeeded` or `failed`).
  *
- * Uses raw `fetch` because the server endpoint may not yet be in the
- * Hono RPC client types (parallel implementation in Issue #834).
+ * Uses raw `fetch` because the server endpoint is not in the Hono RPC
+ * client types.
  */
 export async function cloneRepository(
   request: CloneRepositoryRequest
@@ -319,8 +334,8 @@ export async function cloneRepository(
  * Callers should stop polling when `status === 'succeeded'` or
  * `status === 'failed'`.
  *
- * Uses raw `fetch` because the server endpoint may not yet be in the
- * Hono RPC client types (parallel implementation in Issue #834).
+ * Uses raw `fetch` because the server endpoint is not in the Hono RPC
+ * client types.
  */
 export async function fetchCloneJobStatus(jobId: string): Promise<CloneJobStatusResponse> {
   const res = await fetch(`${API_BASE}/repositories/clone/${encodeURIComponent(jobId)}`);
