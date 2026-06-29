@@ -1511,8 +1511,10 @@ describe('MCP Server Tools', () => {
 
       expect(response.result?.isError).toBeUndefined();
 
-      // Verify fetchRemote was called (the baseBranch defaults to 'main')
-      expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', TEST_REPO_PATH);
+      // Verify fetchRemote was called (the baseBranch defaults to 'main').
+      // The 3rd arg is `requestUsername` — null here because no parent
+      // session context is provided in this test (Issue #912).
+      expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', TEST_REPO_PATH, null);
     });
 
     it('should skip fetchRemote when useRemote is explicitly false', async () => {

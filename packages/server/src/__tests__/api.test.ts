@@ -1360,8 +1360,9 @@ describe('API Routes Integration', () => {
         expect(body.behind).toBe(3);
         expect(body.ahead).toBe(2);
 
-        // Verify fetchRemote was called with correct branch
-        expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', repo.path);
+        // Verify fetchRemote was called with correct branch + the
+        // authenticated username (Issue #912: multi-user SSH elevation).
+        expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', repo.path, TEST_AUTH_USER.username);
       });
 
       it('should return 404 for non-existent repository', async () => {
@@ -1437,8 +1438,9 @@ describe('API Routes Integration', () => {
         const body = (await res.json()) as { success: boolean };
         expect(body.success).toBe(true);
 
-        // Verify fetchAllRemote was called with correct path
-        expect(mockGit.fetchAllRemote).toHaveBeenCalledWith(repo.path);
+        // Verify fetchAllRemote was called with the correct path + the
+        // authenticated username (Issue #912: multi-user SSH elevation).
+        expect(mockGit.fetchAllRemote).toHaveBeenCalledWith(repo.path, TEST_AUTH_USER.username);
       });
 
       it('should return 404 for non-existent repository', async () => {

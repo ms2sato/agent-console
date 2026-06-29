@@ -384,6 +384,15 @@ describe('Repositories API', () => {
   // =========================================================================
 
   describe('GET /api/repositories/:id/branches/:branch/remote-status', () => {
+    beforeEach(() => {
+      mockGit.fetchRemote.mockReset();
+      mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+      mockGit.getCommitsBehind.mockReset();
+      mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
+      mockGit.getCommitsAhead.mockReset();
+      mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
+    });
+
     it('should return 400 when GitError occurs', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
       mockGit.fetchRemote.mockImplementation(() => {
@@ -409,6 +418,77 @@ describe('Repositories API', () => {
       const body = (await res.json()) as { behind: number; ahead: number };
       expect(body.behind).toBe(3);
       expect(body.ahead).toBe(1);
+    });
+
+    it('forwards authUser.username to fetchRemote for multi-user SSH elevation (Issue #912)', async () => {
+      // Without this threading, `git fetch origin <branch>` runs as the
+      // `agentconsole` server user, which has no SSH credentials and fails
+      // against SSH-URL remotes with Permission denied (publickey). The
+      // default test app wires SingleUserMode with TEST_AUTH_USER.username
+      // = 'testuser'.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
+      mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
+      mockGit.getCommitsAhead.mockImplementation(() => Promise.resolve(0));
+
+      const res = await app.request('/api/repositories/repo1/branches/main/remote-status');
+      expect(res.status).toBe(200);
+
+      expect(mockGit.fetchRemote).toHaveBeenCalledTimes(1);
+      const callArgs = mockGit.fetchRemote.mock.calls[0];
+      expect(callArgs[0]).toBe('main');
+      expect(callArgs[1]).toBe('/repo');
+      expect(callArgs[2]).toBe('testuser');
+    });
+  });
+
+  // =========================================================================
+  // POST /api/repositories/:id/fetch (Issue #912)
+  // =========================================================================
+
+  describe('POST /api/repositories/:id/fetch', () => {
+    beforeEach(() => {
+      mockGit.fetchAllRemote.mockReset();
+      mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
+    });
+
+    it('forwards authUser.username to fetchAllRemote for multi-user SSH elevation (Issue #912)', async () => {
+      // Same rationale as the remote-status fetch above -- the UI Fetch
+      // button must run as the requesting user so SSH-URL remotes
+      // authenticate.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+
+      const res = await app.request('/api/repositories/repo1/fetch', { method: 'POST' });
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { success: boolean };
+      expect(body.success).toBe(true);
+
+      expect(mockGit.fetchAllRemote).toHaveBeenCalledTimes(1);
+      const callArgs = mockGit.fetchAllRemote.mock.calls[0];
+      expect(callArgs[0]).toBe('/repo');
+      expect(callArgs[1]).toBe('testuser');
+    });
+
+    it('returns 404 when the repository is not registered', async () => {
+      repositoryManager.getRepository.mockReturnValue(undefined);
+
+      const res = await app.request('/api/repositories/missing/fetch', { method: 'POST' });
+      expect(res.status).toBe(404);
+      expect(mockGit.fetchAllRemote).not.toHaveBeenCalled();
+    });
+
+    it('maps GitError to a 400 response (network failure surfaces as Validation)', async () => {
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      mockGit.fetchAllRemote.mockImplementation(() => {
+        throw new GitError('network error', 128, 'fatal: network error');
+      });
+
+      const res = await app.request('/api/repositories/repo1/fetch', { method: 'POST' });
+      expect(res.status).toBe(400);
+
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Failed to fetch remote');
     });
   });
 

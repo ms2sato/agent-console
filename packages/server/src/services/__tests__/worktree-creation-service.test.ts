@@ -152,8 +152,10 @@ describe('createWorktreeWithSession', () => {
     expect(result.session).toEqual(MOCK_SESSION);
     expect(result.setupCommandResult).toEqual({ success: true, output: 'setup done' });
 
-    // Verify fetch was called with remote branch
-    expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', '/repos/my-repo');
+    // Verify fetch was called with remote branch. `requestUsername` is
+    // forwarded from `CreateWorktreeParams` -- undefined here because
+    // DEFAULT_PARAMS does not set it (single-user defaults).
+    expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', '/repos/my-repo', undefined);
     // Verify createWorktree used origin/ prefix. `requestUsername` is
     // forwarded from `CreateWorktreeParams` -- undefined here because
     // DEFAULT_PARAMS does not set it (single-user defaults).
@@ -337,6 +339,21 @@ describe('createWorktreeWithSession', () => {
     expect(sessionRequest.templateVars).toEqual({ model: 'opus' });
     // createdBy is passed via the context parameter
     expect(passedContext).toEqual(context);
+  });
+
+  it('threads requestUsername to fetchRemote for SSH-credential elevation (Issue #912)', async () => {
+    // Without this threading, the pre-worktree `git fetch origin <baseBranch>`
+    // runs as the server user (`agentconsole`), which has no SSH credentials
+    // and silently falls back to the local branch -- exactly the symptom
+    // Issue #912 catches for SSH-URL remotes.
+    const sm = createMockSessionManager();
+    await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, requestUsername: 'alice' },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', '/repos/my-repo', 'alice');
   });
 
   it('threads requestUsername to WorktreeService.createWorktree (Issue #838)', async () => {

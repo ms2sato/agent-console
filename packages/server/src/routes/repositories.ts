@@ -373,6 +373,7 @@ const repositories = new Hono<AppBindings>()
     const repoId = c.req.param('id');
     const branch = c.req.param('branch');
     const { repositoryManager } = c.get('appContext');
+    const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -380,8 +381,10 @@ const repositories = new Hono<AppBindings>()
     }
 
     try {
-      // First fetch the specific branch to get latest remote state
-      await fetchRemote(branch, repo.path);
+      // Thread the authenticated username so multi-user mode runs the network
+      // fetch as the requesting user (picks up their SSH_AUTH_SOCK / gitconfig
+      // via sudo -i); otherwise SSH-URL remotes fail with Permission denied.
+      await fetchRemote(branch, repo.path, authUser.username);
 
       // Then count commits behind and ahead
       const [behind, ahead] = await Promise.all([
@@ -402,6 +405,7 @@ const repositories = new Hono<AppBindings>()
   .post('/:id/fetch', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager } = c.get('appContext');
+    const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -409,7 +413,9 @@ const repositories = new Hono<AppBindings>()
     }
 
     try {
-      await fetchAllRemote(repo.path);
+      // Same rationale as the per-branch remote-status fetch above — elevate
+      // the network fetch so SSH-URL remotes authenticate as the user.
+      await fetchAllRemote(repo.path, authUser.username);
       return c.json({ success: true });
     } catch (error) {
       // Handle git-specific errors (network issues, no remote, etc.)
