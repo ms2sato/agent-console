@@ -2214,6 +2214,10 @@ describe('MCP Server Tools', () => {
 
         expect(response.result?.isError).toBeUndefined();
 
+        // Assert the spy was actually invoked before reading the captured
+        // arg, so an accidental refactor that no longer goes through
+        // createSession does not silently vacuous-pass this negative test.
+        expect(spy).toHaveBeenCalled();
         const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
         const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
         expect(context?.sshAuthSockFallback).toBeUndefined();
@@ -2240,6 +2244,7 @@ describe('MCP Server Tools', () => {
 
         expect(response.result?.isError).toBeUndefined();
 
+        expect(spy).toHaveBeenCalled();
         const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
         const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
         expect(context?.sshAuthSockFallback).toBeUndefined();
@@ -2265,6 +2270,7 @@ describe('MCP Server Tools', () => {
 
         expect(response.result?.isError).toBeUndefined();
 
+        expect(spy).toHaveBeenCalled();
         const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
         const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
         expect(context?.sshAuthSockFallback).toBeUndefined();

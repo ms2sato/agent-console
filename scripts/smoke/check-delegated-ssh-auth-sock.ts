@@ -38,7 +38,7 @@
 
 import { spawn } from 'bun';
 import { existsSync, readFileSync } from 'fs';
-import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';
+import { buildElevationArgs, shellEscape } from '../../packages/server/src/services/elevation-args.js';
 
 // Inherited cwd from an ad-hoc invocation may be unreadable by the target
 // user. Neutralize at script start (see check-multiuser-pty-env.ts for the
@@ -110,21 +110,30 @@ console.log(`    socketExists=${socketExists}`);
     sshAuthSockFallback: fallbackPath,
   });
 
-  // Sanity: the helper composed the expected shell-level snippet.
+  // Sanity: the helper composed the expected shell-level snippet. The
+  // helper shell-escapes paths via the POSIX `'\''` pattern; defensively
+  // reuse the same escape here so a home directory containing a single
+  // quote does not produce a false-fail comparison.
+  const quotedFallbackPath = shellEscape(fallbackPath);
   expect(
     innerCommand.includes(`[ -z "$SSH_AUTH_SOCK" ]`),
     'helper emits SSH_AUTH_SOCK unset guard',
   );
   expect(
-    innerCommand.includes(`[ -S '${fallbackPath}' ]`),
+    innerCommand.includes(`[ -S ${quotedFallbackPath} ]`),
     'helper emits socket existence guard for fallback path',
   );
   expect(
-    innerCommand.includes(`export SSH_AUTH_SOCK='${fallbackPath}'`),
+    innerCommand.includes(`export SSH_AUTH_SOCK=${quotedFallbackPath}`),
     'helper emits export of fallback path',
   );
 
-  // Real elevation execution.
+  // Real elevation execution. The login-shell init started by `-i`
+  // applies a fresh env via the elevation chain's `env_reset` default,
+  // so the smoke invoker's own SSH_AUTH_SOCK (if any) cannot leak into
+  // the elevated child. The conditional `if [ -z "$SSH_AUTH_SOCK" ]`
+  // therefore evaluates against the elevated user's natural env, which
+  // is the production semantic we want to verify.
   const proc = spawn([ELEV_BIN, ...argv], { cwd: '/', stdout: 'pipe', stderr: 'pipe' });
   const stdout = await new Response(proc.stdout).text();
   const stderr = await new Response(proc.stderr).text();

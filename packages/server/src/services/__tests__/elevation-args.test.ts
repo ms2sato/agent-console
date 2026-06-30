@@ -261,6 +261,25 @@ describe('buildElevationArgs', () => {
       expect(typeof argv[6]).toBe('string');
     });
 
+    it('preserves an explicit SSH_AUTH_SOCK in additionalEnvVars by exporting AFTER the conditional fallback', () => {
+      // The conditional fallback must not override an explicit user value:
+      // seed additionalEnvVars.SSH_AUTH_SOCK and verify the explicit value
+      // is exported AFTER the fallback block, so the explicit export wins.
+      const { innerCommand } = buildElevationArgs({
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: { SSH_AUTH_SOCK: '/tmp/explicit.sock' },
+        sshAuthSockFallback: '/home/alice/.1password/agent.sock',
+        command: 'env',
+      });
+      const ifIdx = innerCommand.indexOf('if [ -z "$SSH_AUTH_SOCK"');
+      const explicitSockIdx = innerCommand.indexOf("SSH_AUTH_SOCK='/tmp/explicit.sock'");
+      expect(ifIdx).toBeGreaterThanOrEqual(0);
+      expect(explicitSockIdx).toBeGreaterThanOrEqual(0);
+      // Explicit export comes AFTER the conditional, so it wins on collision.
+      expect(ifIdx).toBeLessThan(explicitSockIdx);
+    });
+
     it('terminates the if-block so the following `&& export` chain is not aborted', () => {
       // The conditional must be valid POSIX shell that returns exit 0
       // regardless of the branch taken, so the subsequent `&&` chain runs.

@@ -250,23 +250,39 @@ describe('WorkerLifecycleManager', () => {
     // Delegated sessions carry an optional sshAuthSockFallback on the
     // InternalSession; createWorker must thread that value into the
     // activation context so the user-mode layer can forward it to the
-    // elevation helper. Behavior of the forwarded value at the spawn
-    // layer is covered in worker-manager-env.test.ts; this test is the
-    // sibling-coverage gate for the lifecycle-manager file.
-    it('should accept and not crash on a session carrying sshAuthSockFallback', async () => {
+    // elevation helper. We spy on WorkerManager.activateAgentWorkerPty
+    // and read the `context.sshAuthSockFallback` argument to prove
+    // propagation -- not just that the worker was created.
+    it('should propagate session.sshAuthSockFallback into agent worker activation context', async () => {
       const session = createTestSession();
-      // Decorate the in-memory session with the optional fallback field.
       (session as unknown as { sshAuthSockFallback?: string }).sshAuthSockFallback =
         '/home/alice/.1password/agent.sock';
       sessions.set(session.id, session);
 
-      const worker = await lifecycleManager.createWorker(session.id, {
-        type: 'agent',
-        agentId: CLAUDE_CODE_AGENT_ID,
-      });
+      const originalActivate = workerManager.activateAgentWorkerPty.bind(workerManager);
+      const captured: { lastContext?: { sshAuthSockFallback?: string } } = {};
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(
+        async (worker, params) => {
+          captured.lastContext = params.context;
+          return originalActivate(worker, params);
+        },
+      );
 
-      expect(worker).not.toBeNull();
-      expect(worker!.type).toBe('agent');
+      try {
+        const worker = await lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+
+        expect(worker).not.toBeNull();
+        expect(worker!.type).toBe('agent');
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(captured.lastContext?.sshAuthSockFallback).toBe(
+          '/home/alice/.1password/agent.sock',
+        );
+      } finally {
+        spy.mockRestore();
+      }
     });
 
     it('should persist session after creating a worker', async () => {
