@@ -77,6 +77,25 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
    (Lesson: Sprint 2026-06-26 PR #897 — the initial orphan-recovery design called `fsPromises.stat(worktreePath)` as the server process. In multi-user mode the worktree dir may be user-owned with mode 0700, causing EACCES on stat. The fix would have rejected valid orphan-recovery cases in multi-user mode — the very environment that surfaced the bug in dogfood. CodeRabbit MAJOR caught the EACCES blind spot before merge; pre-design environment enumeration would have caught it earlier.)
 
+10. **Schema-Type Parallel Maintenance — for PRs that add a derived/computed field to a shared type that crosses the server/client wire:**
+
+    When this PR adds a field to a shared TypeScript type (`packages/shared/src/types/`) that is populated server-side and consumed client-side over WebSocket or REST, walk this 3-step checklist:
+
+    1. **Add the field to the matching runtime schema in the same PR.** The TypeScript type is not enough. Add the same field to the corresponding `valibot` / `zod` schema in `packages/shared/src/schemas/` (e.g., `createdByUsername: v.optional(v.nullable(v.string()))`). valibot's default `v.object` silently strips unknown fields — a TS-only addition causes the field to disappear at the wire boundary, with no compile or runtime error on either side until manual QA notices the missing data.
+    2. **Add an integration test in `packages/integration/src/`** that exercises the full path: server populates the field → it serializes through the WebSocket / REST handler → the runtime schema parses it → the parsed value reaches the shape consumed by the client. Frontend unit tests that inject mock objects directly (e.g., `createMockSession({ newField: ... })`) bypass the schema parse path and cannot detect schema-level drops. The integration test is the only layer that exercises the wire boundary end-to-end.
+    3. **In any frontend test that injects the field via a mock factory, add an explicit header comment** noting the bypass:
+
+       ```ts
+       // NOTE: This test injects schema-derived fields directly via the mock
+       // factory and DOES NOT exercise the WebSocket/valibot parse path.
+       // Schema-level wire validation lives in packages/integration/src/.
+       // Adding a new derived field requires updating BOTH places.
+       ```
+
+    **Why:** valibot's `v.InferOutput<typeof schema>` derives the TypeScript type from the schema, but the reverse — propagating a TS type addition into the schema — is manual. The default permissive parse mode (silent unknown-field strip) is intentional (forward-compat for older clients receiving newer payloads), but it converts schema-vs-type drift from a loud failure into a silent one. Q3.5 closes the gap by requiring the schema update in the same PR plus an integration test that would catch the drop if either were forgotten.
+
+    (Lesson: Sprint 2026-06-30 PR #926 — backend correctly populated `Session.createdByUsername`, the WebSocket message carried it, but `SessionBaseSchema` in `packages/shared/src/schemas/app-server-message.ts` was not updated. valibot stripped the unknown field; the frontend received `undefined`. All unit tests passed because the frontend tests injected the field directly via a mock factory, bypassing the parse path entirely. The bug surfaced only when the owner ran manual Browser QA and noticed the sidebar label was absent. Three hours of cross-layer debugging followed before the schema gap was identified. The agent and the Orchestrator both had approved skipping integration tests with the rationale "derived field, simple shape, unit tests suffice" — a joint judgment failure that this question is meant to prevent. The deeper structural fix is tracked in Issue #927 — `v.strictObject` migration plus server/client schema version handshake.)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -87,6 +106,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A signature shape change with a meaningful call-site count (Question 8) — required regardless of whether other criteria match
   - A cross-runtime spawn (Question 6) — required regardless of whether other criteria match
   - A shared / persistent artifact write (Question 7) — required regardless of whether other criteria match
+  - A derived field added to a shared type that crosses the server/client wire (Question 10) — required regardless of whether other criteria match
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns
 - **Not required** for single-file bug fixes, typo corrections, or test-only additions
 

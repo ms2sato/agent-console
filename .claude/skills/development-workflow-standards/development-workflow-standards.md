@@ -63,6 +63,33 @@ it('should handle session with no workers without crashing', () => {
 
 The value of step 1 is not just "write a test" — it is *proving that the test catches the bug before you touch production code*. A green test after the fix does not guarantee coverage of the original bug; a failing test before the fix does.
 
+## Diagnostic Command Error Suppression — Avoid Conflating Failure with Absence
+
+When running diagnostic commands during bug triage or environment inspection, do not suppress stderr or substitute "not found" defaults unless you are deliberately handling that exact case. The default templates around `2>/dev/null` and `|| echo "NOT FOUND"` quietly conflate three semantically distinct outcomes:
+
+- **The thing does not exist** (the intended "not found" case)
+- **The thing exists but cannot be accessed** (permission denied, EACCES, locked file)
+- **The command itself failed for an unrelated reason** (binary missing from PATH, signal received, segfault)
+
+A grep, find, ls, ps, or cat wrapped in `2>/dev/null || echo "NOT FOUND"` returns `NOT FOUND` for all three. If the agent then reports `NOT FOUND` to the Orchestrator or the owner, the next decision is made on a false premise — most commonly "the server snapshot is stale, restart it" when the real cause is "the calling user does not have permission to read the path."
+
+### Defaults to follow
+
+1. **Leave stderr visible** by default. Run the command without `2>/dev/null` and inspect both streams. The stderr line distinguishes "file not found" from "permission denied" without any extra effort.
+2. **If you must suppress stderr** for a specific reason (e.g., output piped to another command that breaks on noise), capture it instead of discarding it:
+   ```bash
+   stderr=$(grep pattern file 2>&1 >&3)
+   ```
+   so the diagnostic information is recoverable.
+3. **Branch on exit code, not on output substitution.** `if [ -f "$path" ]` is the right "exists?" check, not `cat "$path" 2>/dev/null || echo "NOT FOUND"`. The former is unambiguous; the latter erases the failure cause.
+4. **When the diagnosis informs another party's action** (telling the Orchestrator what to do, telling the owner what to investigate), include the raw stderr or exit code in the report, not just the interpreted conclusion. The other party needs the primary information to redo the interpretation if the conclusion turns out wrong.
+
+### Why this discipline exists
+
+In any real environment with multiple users, mounted volumes, or sandboxes, "permission denied" and "file not found" are routinely confused. Sandbox boundaries, multi-user file ownership, and elevated-process working directories all produce permission errors that look identical to "the thing isn't there" when stderr is suppressed.
+
+(Lesson: Sprint 2026-06-30 PR #926 — during a bug triage dialog the agent ran a `grep ... 2>/dev/null || echo "NOT FOUND"` against `/home/agentconsole/agent-console-dev/` from the `ms2sato` user account. The path was readable by `agentconsole` but not by `ms2sato`, so the grep failed with `Permission denied` — silently suppressed and replaced with `NOT FOUND`. The agent reported "server snapshot is stale" to the owner, who then performed an unnecessary `dev:multiuser` restart before the real cause — a forgotten valibot schema entry — was identified. The wrong-cause report cost roughly one round trip in the three-hour debugging session.)
+
 ## Claude Code on the Web — Full Setup
 
 The declarative summary is in the rule. This is the full operational setup.
