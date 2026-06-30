@@ -269,6 +269,30 @@ describe('SessionManager', () => {
       expect(persisted!.initiatedBy).toBeUndefined();
     });
 
+    // SessionCreationContext.sshAuthSockFallback is carried into the
+    // in-memory session so worker activation/revive can re-emit it.
+    // Public Session does not surface the field (in-memory only, not
+    // persisted), so verification uses the lifecycle's internal hook --
+    // the worker spawned at session creation receives the value via
+    // user-mode.spawnPty (proven in worker-manager-env.test.ts). Here we
+    // confirm createSession accepts the optional field without throwing
+    // and the public session is otherwise normal.
+    it('should accept sshAuthSockFallback on SessionCreationContext without throwing', async () => {
+      const manager = await getSessionManager();
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        {
+          createdBy: 'caller-user-id',
+          sshAuthSockFallback: '/home/caller/.1password/agent.sock',
+        },
+      );
+
+      expect(session.id).toBeDefined();
+      expect(session.createdBy).toBe('caller-user-id');
+      expect(session.status).toBe('active');
+    });
+
     it('should create a new quick session with correct properties', async () => {
       const manager = await getSessionManager();
 

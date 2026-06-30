@@ -247,6 +247,28 @@ describe('WorkerLifecycleManager', () => {
       expect(worker).toBeNull();
     });
 
+    // Delegated sessions carry an optional sshAuthSockFallback on the
+    // InternalSession; createWorker must thread that value into the
+    // activation context so the user-mode layer can forward it to the
+    // elevation helper. Behavior of the forwarded value at the spawn
+    // layer is covered in worker-manager-env.test.ts; this test is the
+    // sibling-coverage gate for the lifecycle-manager file.
+    it('should accept and not crash on a session carrying sshAuthSockFallback', async () => {
+      const session = createTestSession();
+      // Decorate the in-memory session with the optional fallback field.
+      (session as unknown as { sshAuthSockFallback?: string }).sshAuthSockFallback =
+        '/home/alice/.1password/agent.sock';
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      expect(worker).not.toBeNull();
+      expect(worker!.type).toBe('agent');
+    });
+
     it('should persist session after creating a worker', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
