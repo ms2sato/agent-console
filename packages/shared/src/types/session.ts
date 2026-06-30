@@ -52,6 +52,17 @@ export interface SessionBase {
   /** User UUID (from users table) of the user who created this session (nullable for backwards compatibility) */
   createdBy?: string;
   /**
+   * OS username derived server-side from `createdBy` UUID via UserRepository.
+   * Set on Session responses for client display. Null when `createdBy` is
+   * undefined (legacy sessions) or when the user record is no longer
+   * resolvable (deleted user account).
+   *
+   * Same `derived field on shared type + conditional client render` pattern
+   * as Repository's `clonedSourceRepoPath`. The client decides visibility
+   * (e.g., only show in multi-user mode).
+   */
+  createdByUsername?: string | null;
+  /**
    * User UUID of the authenticated user who actually created this session.
    * For shared sessions, this differs from `createdBy` (which is the shared
    * account). For personal sessions, this is left undefined.
