@@ -3,6 +3,7 @@ import type { Worker } from '@agent-console/shared';
 import type { PersistedWorker } from '../persistence-service.js';
 import type { InternalWorker, InternalAgentWorker } from '../worker-types.js';
 import { SessionConverterService, type SessionConverterDeps, type RepositoryDisplayLookup, type SharedAccountLookup } from '../session-converter-service.js';
+import type { UsernameLookup } from '../username-lookup.js';
 import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
@@ -22,6 +23,7 @@ describe('SessionConverterService', () => {
   let service: SessionConverterService;
   let mockLookup: RepositoryDisplayLookup;
   let mockSharedLookup: SharedAccountLookup;
+  let mockUsernameLookup: UsernameLookup;
   let toPublicWorkerResults: Map<string, Worker>;
   let toPersistedWorkerResults: Map<string, PersistedWorker>;
 
@@ -39,12 +41,24 @@ describe('SessionConverterService', () => {
       isSharedUserId: (userId: string) => userId === 'shared-account-uuid',
     };
 
+    // Default username lookup resolves 'user-1' / 'shared-account-uuid' to
+    // canonical OS usernames. Anything else returns null (deleted / unknown).
+    // Tests override the lookup when they need different behaviour.
+    mockUsernameLookup = {
+      getUsername: (userId: string) => {
+        if (userId === 'user-1') return 'alice';
+        if (userId === 'shared-account-uuid') return 'shared-account';
+        return null;
+      },
+    };
+
     toPublicWorkerResults = new Map();
     toPersistedWorkerResults = new Map();
 
     const deps: SessionConverterDeps = {
       repositoryDisplayLookup: mockLookup,
       sharedAccountLookup: mockSharedLookup,
+      usernameLookup: mockUsernameLookup,
       toPublicWorker: (w: InternalWorker): Worker => {
         const existing = toPublicWorkerResults.get(w.id);
         if (existing) return existing;
@@ -235,6 +249,54 @@ describe('SessionConverterService', () => {
       expect(typeof result.isShared).toBe('boolean');
     });
 
+    // Issue #914: createdByUsername derived field
+    it('populates createdByUsername from the username lookup when createdBy resolves', () => {
+      // The default lookup resolves 'user-1' -> 'alice'.
+      const session = buildInternalQuickSession([], {
+        createdBy: 'user-1',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.createdByUsername).toBe('alice');
+    });
+
+    it('sets createdByUsername to null when createdBy is undefined (legacy session)', () => {
+      // No createdBy = no resolution = null. The lookup must not be called
+      // with undefined; deriveCreatedByUsername short-circuits.
+      const session = buildInternalQuickSession([], {
+        createdBy: undefined,
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.createdByUsername).toBeNull();
+    });
+
+    it('sets createdByUsername to null when the user record is no longer resolvable (deleted user)', () => {
+      // The default lookup returns null for any userId other than the
+      // canonical fixtures, simulating a deleted user.
+      const session = buildInternalQuickSession([], {
+        createdBy: 'deleted-user-uuid',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.createdByUsername).toBeNull();
+    });
+
+    it('populates createdByUsername for shared accounts via the same lookup', () => {
+      const session = buildInternalQuickSession([], {
+        createdBy: 'shared-account-uuid',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.createdByUsername).toBe('shared-account');
+      // Same session is also flagged as shared via the separate lookup.
+      expect(result.isShared).toBe(true);
+    });
+
     it('does not error and produces isShared on a session with empty worker list', () => {
       const session = buildInternalQuickSession([], {
         createdBy: 'shared-account-uuid',
@@ -256,6 +318,7 @@ describe('SessionConverterService', () => {
       const deps: SessionConverterDeps = {
         repositoryDisplayLookup: mockLookup,
         sharedAccountLookup: mockSharedLookup,
+        usernameLookup: mockUsernameLookup,
         toPublicWorker: ((): Worker => {
           throw new Error('unreachable: session has no workers');
         }) as (w: InternalWorker) => Worker,
@@ -437,6 +500,49 @@ describe('SessionConverterService', () => {
 
       expect(result.isShared).toBe(false);
       expect(typeof result.isShared).toBe('boolean');
+    });
+
+    // Issue #914: createdByUsername derived field on persisted serialization
+    it('populates createdByUsername on a persisted session when createdBy resolves', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-created-by-resolves',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        createdBy: 'user-1',
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.createdByUsername).toBe('alice');
+    });
+
+    it('sets createdByUsername to null on a persisted legacy session with no createdBy', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-legacy-username',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        // createdBy intentionally omitted (legacy row)
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.createdByUsername).toBeNull();
+    });
+
+    it('sets createdByUsername to null on a persisted session whose user is deleted', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-deleted-user',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        createdBy: 'deleted-user-uuid',
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.createdByUsername).toBeNull();
     });
   });
 

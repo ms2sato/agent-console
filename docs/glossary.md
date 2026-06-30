@@ -113,9 +113,14 @@ End-user who authenticates to the Agent Console UI.
 
 ### created_by
 Database field identifying the session owner (whose OS identity runs the PTY process).
-- **Aliases:** session owner, session creator
+- **Aliases:** session owner, session creator, worktree owner (user-facing wording for sidebar display)
 - **Contrast:** [initiated_by](#initiated_by)
-- **See:** [Session ownership in multi-user-shared-setup.md](design/multi-user-shared-setup.md#user-identity)
+- **See:** [Session ownership in multi-user-shared-setup.md](design/multi-user-shared-setup.md#user-identity), [createdByUsername](#createdbyusername)
+
+### createdByUsername
+Derived `Session` response field carrying the OS username resolved server-side from `created_by` (UUID) via `UserRepository.findById`. Always populated on the wire as either the resolved username (string) or `null` (legacy session with no `created_by`, or deleted user account). Server resolution is gated by a sync in-memory cache (`UsernameLookupService`) primed at lifecycle boundaries (session create / restore / resume / load-from-DB) so per-render `toPublicSession` stays sync without per-render DB I/O. Client uses this to render the "worktree owner" label in the active-sessions sidebar in multi-user mode (Issue [#914](https://github.com/ms2sato/agent-console/issues/914)). Same `derived field on shared type + conditional client render` pattern as Repository's [`clonedSourceRepoPath`](#clonedsourcerepopath).
+- **Used by:** `Session` (packages/shared/src/types/session.ts), `SessionConverterService.toPublicSession` / `persistedToPublicSession`, sidebar component (Issue [#914](https://github.com/ms2sato/agent-console/issues/914)).
+- **Contrast:** [created_by](#created_by) (UUID, persisted) vs createdByUsername (string, derived, never persisted).
 
 ### initiated_by
 Database field identifying the authenticated user who actually created the session (audit trail).

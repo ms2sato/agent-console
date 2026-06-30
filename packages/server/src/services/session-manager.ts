@@ -58,6 +58,7 @@ import { SessionInitializationService } from './session-initialization-service.j
 import { SessionDeletionService } from './session-deletion-service.js';
 import { SessionPauseResumeService } from './session-pause-resume-service.js';
 import { SessionConverterService, type SharedAccountLookup } from './session-converter-service.js';
+import { NULL_USERNAME_LOOKUP, type UsernameLookup, UsernameLookupService } from './username-lookup.js';
 import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup-types.js';
 
 /**
@@ -129,6 +130,15 @@ interface SessionManagerOptions {
    * path where shared sessions are never registered).
    */
   sharedAccountLookup?: SharedAccountLookup;
+  /**
+   * Optional sync lookup used to derive `Session.createdByUsername`
+   * server-side. Defaults to a stub that always returns null (safe for
+   * unit tests that don't thread a UserRepository through). Production
+   * callers (createAppContext) pass a UsernameLookupService backed by
+   * the real UserRepository. SessionManager primes the cache at
+   * lifecycle boundaries so sync serialization sees a warm cache.
+   */
+  usernameLookup?: UsernameLookup;
 }
 
 export class SessionManager {
@@ -154,6 +164,7 @@ export class SessionManager {
   private sessionDeletionService: SessionDeletionService;
   private sessionPauseResumeService: SessionPauseResumeService;
   private sessionConverterService: SessionConverterService;
+  private usernameLookup: UsernameLookup;
   private timerCleanupCallback?: (sessionId: string) => void;
   private conditionalWakeupCleanupCallback?: (sessionId: string) => void;
   private processCleanupCallback?: (sessionId: string) => void;
@@ -194,6 +205,13 @@ export class SessionManager {
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
     this.jobQueue = options?.jobQueue ?? null;
 
+    // Default to a never-resolves username lookup for the same reason as
+    // sharedAccountLookup below: unit tests that construct SessionManager
+    // directly do not need to thread a UserRepository through just to
+    // satisfy the converter dep. Production callers (createAppContext)
+    // pass a UsernameLookupService backed by the real UserRepository.
+    this.usernameLookup = options.usernameLookup ?? NULL_USERNAME_LOOKUP;
+
     this.sessionConverterService = new SessionConverterService({
       repositoryDisplayLookup: {
         getRepositoryDisplayInfo: (repositoryId) => {
@@ -207,6 +225,7 @@ export class SessionManager {
       // construct SessionManager directly do not need to thread through the
       // registry just to satisfy the converter dep.
       sharedAccountLookup: options.sharedAccountLookup ?? { isSharedUserId: () => false },
+      usernameLookup: this.usernameLookup,
       toPublicWorker: (w) => this.workerManager.toPublicWorker(w),
       toPersistedWorker: (w) => this.workerManager.toPersistedWorker(w),
       getServerPid: () => getServerPid(),
@@ -352,6 +371,38 @@ export class SessionManager {
     if (autoResumeSessionIds.length > 0) {
       logger.info({ count: autoResumeSessionIds.length }, 'Auto-resume completed');
     }
+
+    // Prime username lookup for all in-memory sessions. Sync serialization
+    // runs in toPublicSession; priming here ensures a warm cache for
+    // subsequent getSession / getAllSessions calls. Cache misses gracefully
+    // degrade to null on the wire.
+    await this.primeUsernameCacheFromInMemorySessions();
+  }
+
+  /**
+   * Prime the username lookup cache with all createdBy values from in-memory
+   * sessions. Called after initialize/auto-resume and any other path that
+   * may load multiple sessions at once.
+   */
+  private async primeUsernameCacheFromInMemorySessions(): Promise<void> {
+    if (this.usernameLookup === NULL_USERNAME_LOOKUP) return;
+    if (!(this.usernameLookup instanceof UsernameLookupService)) return;
+    const createdByIds: string[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.createdBy) createdByIds.push(session.createdBy);
+    }
+    await this.usernameLookup.primeMany(createdByIds);
+  }
+
+  /**
+   * Prime the username lookup cache for a single createdBy value. No-op
+   * when the lookup is the null stub or createdBy is undefined.
+   */
+  private async primeUsernameCache(createdBy: string | null | undefined): Promise<void> {
+    if (!createdBy) return;
+    if (this.usernameLookup === NULL_USERNAME_LOOKUP) return;
+    if (!(this.usernameLookup instanceof UsernameLookupService)) return;
+    await this.usernameLookup.prime(createdBy);
   }
 
 
@@ -579,6 +630,10 @@ export class SessionManager {
       await this.branchWatcherCallbacks?.startWatching(id, internalSession.locationPath, internalSession.worktreeId);
     }
 
+    // Prime username cache so toPublicSession can populate createdByUsername
+    // from the warm cache before the response is returned.
+    await this.primeUsernameCache(internalSession.createdBy);
+
     const publicSession = this.toPublicSession(internalSession);
     this.sessionLifecycleCallbacks?.onSessionCreated?.(publicSession);
 
@@ -601,6 +656,9 @@ export class SessionManager {
   async getPersistedSession(id: string): Promise<Session | null> {
     const persisted = await this.sessionRepository.findById(id);
     if (!persisted) return null;
+    // Prime username cache for the persisted createdBy so the public
+    // response carries createdByUsername.
+    await this.primeUsernameCache(persisted.createdBy);
     return this.persistedToPublicSession(persisted);
   }
 
@@ -635,6 +693,12 @@ export class SessionManager {
     // Filter out any that are actually active in memory (shouldn't happen, but be safe)
     const trulyPaused = pausedPersisted.filter((p) => !this.sessions.has(p.id));
 
+    // Prime username cache for all paused createdBy values so the public
+    // responses carry createdByUsername.
+    if (this.usernameLookup instanceof UsernameLookupService) {
+      await this.usernameLookup.primeMany(trulyPaused.map((p) => p.createdBy));
+    }
+
     return trulyPaused.map((p) => this.persistedToPublicSession(p));
   }
 
@@ -655,6 +719,12 @@ export class SessionManager {
    * Delegates to SessionPauseResumeService.
    */
   async resumeSession(id: string): Promise<Session | null> {
+    // Prime username cache from the persisted row BEFORE the delegate runs,
+    // so the public Session returned by resume already carries
+    // createdByUsername. The fetch is cheap; the delegate will fetch again
+    // internally for its own bookkeeping.
+    const persisted = await this.sessionRepository.findById(id);
+    if (persisted) await this.primeUsernameCache(persisted.createdBy);
     return this.sessionPauseResumeService.resumeSession(id);
   }
 

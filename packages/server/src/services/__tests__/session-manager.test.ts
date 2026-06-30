@@ -16,6 +16,9 @@ import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SingleUserMode } from '../user-mode.js';
 import type { UserMode, PtySpawnRequest } from '../user-mode.js';
 import { PtyMessageInjectionService } from '../pty-message-injection-service.js';
+import { UsernameLookupService } from '../username-lookup.js';
+import type { UserRepository } from '../../repositories/user-repository.js';
+import type { AuthUser } from '@agent-console/shared';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -631,6 +634,59 @@ describe('SessionManager', () => {
 
       const retrieved = manager.getSession(created.id);
       expect(retrieved?.isShared).toBe(false);
+    });
+  });
+
+  describe('createdByUsername wiring (usernameLookup option)', () => {
+    // Verifies the SessionManager → UsernameLookupService → UserRepository wiring
+    // for the createdByUsername derived field. The converter's own derivation
+    // boundary cases are covered in session-converter-service.test.ts; this
+    // suite verifies that createSession primes the cache so the returned
+    // public session carries the resolved username.
+
+    it('primes the username cache during createSession so the returned session carries createdByUsername', async () => {
+      // Stub UserRepository that records findById calls and resolves a
+      // specific UUID. Wrapped in the real UsernameLookupService so we
+      // exercise the production prime path end-to-end.
+      const findByIdCalls: string[] = [];
+      const stubUserRepo: UserRepository = {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          findByIdCalls.push(id);
+          if (id === 'user-alice-uuid') {
+            return { id, username: 'alice', homeDir: '/home/alice' };
+          }
+          return null;
+        },
+      };
+      const usernameLookup = new UsernameLookupService(stubUserRepo);
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        usernameLookup,
+      });
+
+      const created = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'user-alice-uuid' },
+      );
+
+      // createSession must have primed the cache via UserRepository.findById,
+      // and toPublicSession must have read the warm cache.
+      expect(findByIdCalls).toContain('user-alice-uuid');
+      expect(created.createdByUsername).toBe('alice');
+
+      // getSession() also runs through toPublicSession with the same cache.
+      const retrieved = manager.getSession(created.id);
+      expect(retrieved?.createdByUsername).toBe('alice');
     });
   });
 

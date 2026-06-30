@@ -213,6 +213,42 @@ describe('AppServerMessageSchema', () => {
       });
     });
 
+    // Issue #914: createdByUsername derived field must pass through safeParse
+    // so the client receives the server-resolved OS username for sidebar
+    // display in multi-user mode. Prior to this schema entry the field was
+    // silently stripped, leaving the label hidden even when the server emitted
+    // it.
+    it('should accept session with createdByUsername set to a string', () => {
+      const output = expectValid({
+        type: 'session-created',
+        session: { ...worktreeSession, createdBy: 'user-uuid', createdByUsername: 'ms2sato' },
+      });
+      if (output.type === 'session-created' && 'createdByUsername' in output.session) {
+        expect(output.session.createdByUsername).toBe('ms2sato');
+      } else {
+        throw new Error('createdByUsername was stripped by the schema');
+      }
+    });
+
+    it('should accept session with createdByUsername set to null (deleted user / legacy)', () => {
+      const output = expectValid({
+        type: 'session-updated',
+        session: { ...quickSession, createdByUsername: null },
+      });
+      if (output.type === 'session-updated' && 'createdByUsername' in output.session) {
+        expect(output.session.createdByUsername).toBeNull();
+      } else {
+        throw new Error('createdByUsername was stripped by the schema');
+      }
+    });
+
+    it('should reject session with non-string non-null createdByUsername', () => {
+      expectInvalid({
+        type: 'session-created',
+        session: { ...worktreeSession, createdByUsername: 123 },
+      });
+    });
+
     it('should reject missing session', () => {
       expectInvalid({ type: 'session-created' });
     });

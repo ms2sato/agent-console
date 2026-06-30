@@ -20,6 +20,7 @@ import type {
   InternalTerminalWorker,
 } from './worker-types.js';
 import type { InternalSession } from './internal-types.js';
+import type { UsernameLookup } from './username-lookup.js';
 
 /**
  * Minimum repository view needed by the converter to attach
@@ -44,6 +45,13 @@ export interface SharedAccountLookup {
 export interface SessionConverterDeps {
   repositoryDisplayLookup: RepositoryDisplayLookup;
   sharedAccountLookup: SharedAccountLookup;
+  /**
+   * Sync username lookup used to populate `Session.createdByUsername`. See
+   * `username-lookup.ts` for the contract and priming strategy. Callers
+   * that don't need the field (e.g. unit tests) can pass
+   * `NULL_USERNAME_LOOKUP`.
+   */
+  usernameLookup: UsernameLookup;
   toPublicWorker: (worker: InternalWorker) => Worker;
   toPersistedWorker: (worker: InternalWorker) => PersistedWorker;
   getServerPid: () => number | null;
@@ -76,6 +84,22 @@ export class SessionConverterService {
   private deriveIsShared(createdBy: string | null | undefined): boolean {
     if (createdBy == null) return false;
     return this.deps.sharedAccountLookup.isSharedUserId(createdBy);
+  }
+
+  /**
+   * Derive `Session.createdByUsername` from `createdBy` via the injected
+   * `UsernameLookup`. Returns `null` (not `undefined`) when:
+   * - `createdBy` is undefined (legacy session predating user-id tracking)
+   * - the cache has no entry for the userId (deleted user, or not yet primed)
+   *
+   * The field is always populated (regardless of AUTH_MODE) for the same
+   * reason `isShared` always is: a cheap in-memory lookup keeps the
+   * boundary contract simple. Client renders are mode-conditional; the
+   * server stays mode-agnostic.
+   */
+  private deriveCreatedByUsername(createdBy: string | null | undefined): string | null {
+    if (createdBy == null) return null;
+    return this.deps.usernameLookup.getUsername(createdBy);
   }
 
   computeActivationState(session: InternalSession): SessionActivationState {
@@ -151,6 +175,7 @@ export class SessionConverterService {
       parentSessionId: session.parentSessionId,
       parentWorkerId: session.parentWorkerId,
       createdBy: session.createdBy,
+      createdByUsername: this.deriveCreatedByUsername(session.createdBy),
       initiatedBy: session.initiatedBy,
       isShared: this.deriveIsShared(session.createdBy),
       recoveryState: session.recoveryState ?? 'healthy',
@@ -224,6 +249,7 @@ export class SessionConverterService {
       parentSessionId: p.parentSessionId,
       parentWorkerId: p.parentWorkerId,
       createdBy: p.createdBy,
+      createdByUsername: this.deriveCreatedByUsername(p.createdBy),
       initiatedBy: p.initiatedBy,
       isShared: this.deriveIsShared(p.createdBy),
       recoveryState: p.recoveryState ?? 'healthy',

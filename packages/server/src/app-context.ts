@@ -52,6 +52,7 @@ import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
 import { SingleUserMode, MultiUserMode } from './services/user-mode.js';
 import { SharedAccountRegistry } from './services/shared-account-registry.js';
+import { UsernameLookupService } from './services/username-lookup.js';
 import { bunPtyProvider, getPtyProvider } from './lib/pty-provider.js';
 import { serverConfig } from './lib/server-config.js';
 import { createLogger } from './lib/logger.js';
@@ -290,6 +291,10 @@ export async function createAppContext(
     jobQueue,
   });
 
+  // Sync username cache that backs Session.createdByUsername.
+  // Primed by SessionManager at lifecycle boundaries.
+  const usernameLookup = new UsernameLookupService(userRepository);
+
   const sessionManager = await SessionManagerClass.create({
     userMode,
     userRepository,
@@ -312,6 +317,7 @@ export async function createAppContext(
       getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
     },
     sharedAccountLookup: sharedAccountRegistry,
+    usernameLookup,
   });
 
   // 6.5. Create timer manager with persistence
@@ -621,6 +627,10 @@ export async function createTestContext(
     jobQueue,
   });
 
+  // Sync username cache that backs Session.createdByUsername.
+  // Test contexts get a real cache backed by the in-memory UserRepository.
+  const usernameLookup = new UsernameLookupService(userRepository);
+
   const sessionManager = await SessionManagerClass.create({
     userMode,
     userRepository,
@@ -643,6 +653,7 @@ export async function createTestContext(
       getWorktreeIndexNumber: (path) => worktreeService.getWorktreeIndexNumber(path),
     },
     sharedAccountLookup: sharedAccountRegistry,
+    usernameLookup,
   });
 
   // Wire cross-dependencies
