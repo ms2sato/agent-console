@@ -2154,6 +2154,124 @@ describe('MCP Server Tools', () => {
     });
 
     // -------------------------------------------------------------------------
+    // Issue #918: SSH_AUTH_SOCK fallback for delegated sessions
+    // -------------------------------------------------------------------------
+    //
+    // When `delegate_to_worktree` resolves a parent's `createdBy` to a real
+    // user with a non-empty `homeDir`, the handler must populate
+    // `SessionCreationContext.sshAuthSockFallback` with the Linux 1Password
+    // socket convention path `${homeDir}/.1password/agent.sock`. The value
+    // then propagates through `createWorktreeWithSession` ->
+    // `sessionManager.createSession` -> internal session -> PTY spawn.
+    //
+    // The tests below spy on `sessionManager.createSession` to capture the
+    // `context` argument and assert the `sshAuthSockFallback` field.
+    describe('Issue #918: sshAuthSockFallback propagation', () => {
+      function spyCreateSession(): ReturnType<typeof jest.spyOn> {
+        return jest.spyOn(sessionManager, 'createSession');
+      }
+
+      it('populates sshAuthSockFallback from parent user homeDir when createdBy resolves', async () => {
+        await setupDelegateEnvironment('feat/ssh-fallback');
+
+        const aliceOsUid = 9201;
+        const alice = await userRepository.upsertByOsUid(aliceOsUid, 'alice918', '/home/alice918');
+
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        }, { createdBy: alice.id });
+
+        const spy = spyCreateSession();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Test SSH_AUTH_SOCK fallback propagation',
+          branch: 'feat/ssh-fallback',
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        // The delegated session creation is the last call; the parent was
+        // created BEFORE the spy was installed.
+        const delegateCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
+        const context = delegateCall[1] as { sshAuthSockFallback?: string } | undefined;
+        expect(context?.sshAuthSockFallback).toBe('/home/alice918/.1password/agent.sock');
+      });
+
+      it('does NOT populate sshAuthSockFallback when parentSessionId is omitted', async () => {
+        await setupDelegateEnvironment('feat/ssh-no-parent');
+
+        const spy = spyCreateSession();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Direct delegation with no parent context',
+          branch: 'feat/ssh-no-parent',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
+        const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
+        expect(context?.sshAuthSockFallback).toBeUndefined();
+      });
+
+      it('does NOT populate sshAuthSockFallback when parent has no createdBy (legacy session)', async () => {
+        await setupDelegateEnvironment('feat/ssh-legacy');
+
+        // Legacy parent: no createdBy.
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        });
+
+        const spy = spyCreateSession();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Delegation from a legacy parent',
+          branch: 'feat/ssh-legacy',
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
+        const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
+        expect(context?.sshAuthSockFallback).toBeUndefined();
+      });
+
+      it('does NOT populate sshAuthSockFallback when parent createdBy UUID does not resolve', async () => {
+        await setupDelegateEnvironment('feat/ssh-orphan');
+
+        const parentSession = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: TEST_REPO_PATH,
+        }, { createdBy: 'orphan-uuid-not-in-users-table' });
+
+        const spy = spyCreateSession();
+
+        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+          repositoryId: 'test-repo',
+          prompt: 'Delegation from orphan parent',
+          branch: 'feat/ssh-orphan',
+          parentSessionId: parentSession.id,
+          parentWorkerId: 'parent-worker-id',
+        }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+
+        const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
+        const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
+        expect(context?.sshAuthSockFallback).toBeUndefined();
+      });
+    });
+
+    // -------------------------------------------------------------------------
     // Issue #876: suggestSessionMetadata receives resolved OS username
     // -------------------------------------------------------------------------
     //

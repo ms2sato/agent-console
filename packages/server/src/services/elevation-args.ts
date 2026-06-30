@@ -104,6 +104,21 @@ export interface ElevationArgsInput {
    * launch command.
    */
   command: string;
+  /**
+   * Optional SSH_AUTH_SOCK fallback path for delegated worktree sessions.
+   * When set, the inner shell command will conditionally export
+   * SSH_AUTH_SOCK from this path IF AND ONLY IF SSH_AUTH_SOCK is currently
+   * unset (or empty) AND the referenced socket file exists. The snippet is
+   * placed BEFORE the explicit `export <COMBINED>` so an explicit
+   * `SSH_AUTH_SOCK` in `additionalEnvVars` overrides the fallback.
+   *
+   * Populated only by the MCP delegate path using
+   * `${user.homeDir}/.1password/agent.sock` (Linux 1Password convention).
+   * Other code paths (REST, EnterWorktree, resume) leave this undefined
+   * and the inner command emits no SSH_AUTH_SOCK-related shell code,
+   * preserving prior behavior.
+   */
+  sshAuthSockFallback?: string;
 }
 
 export interface ElevationArgs {
@@ -137,9 +152,16 @@ export function buildElevationArgs(input: ElevationArgsInput): ElevationArgs {
   };
   const exports = buildExportString(combined);
   const cdPart = `cd ${shellEscape(input.cwd)}`;
+  // Conditional SSH_AUTH_SOCK fallback for delegated sessions.
+  // Placed BEFORE the explicit `export <COMBINED>` so an explicit
+  // SSH_AUTH_SOCK in `additionalEnvVars` still wins via the later export.
+  // The `if ... fi` block always exits 0, so the following `&&` chain runs.
+  const sshAuthSockSnippet = input.sshAuthSockFallback
+    ? ` && if [ -z "$SSH_AUTH_SOCK" ] && [ -S ${shellEscape(input.sshAuthSockFallback)} ]; then export SSH_AUTH_SOCK=${shellEscape(input.sshAuthSockFallback)}; fi`
+    : '';
   const innerCommand = exports
-    ? `${cdPart} && export ${exports}; ${input.command}`
-    : `${cdPart} && ${input.command}`;
+    ? `${cdPart}${sshAuthSockSnippet} && export ${exports}; ${input.command}`
+    : `${cdPart}${sshAuthSockSnippet} && ${input.command}`;
   return {
     argv: [
       '-u',

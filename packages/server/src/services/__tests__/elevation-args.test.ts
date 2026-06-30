@@ -165,4 +165,116 @@ describe('buildElevationArgs', () => {
     // no-export form. Verify via buildExportString returning '' for empty input.
     expect(buildExportString({})).toBe('');
   });
+
+  // ===========================================================================
+  // Issue #918: conditional SSH_AUTH_SOCK fallback for delegated sessions
+  // ===========================================================================
+  //
+  // When `sshAuthSockFallback` is provided, the inner shell command must
+  // conditionally export SSH_AUTH_SOCK from that path IF AND ONLY IF the
+  // elevated user's login init did not already set it AND the socket file
+  // exists. The snippet is placed BEFORE the explicit `export <COMBINED>`
+  // line so that an explicit `SSH_AUTH_SOCK` in `additionalEnvVars` still
+  // wins (user-explicit overrides fallback).
+  //
+  // For consumers without this requirement (single-user mode, EnterWorktree,
+  // resume), the input field is omitted and the inner command must contain
+  // zero SSH_AUTH_SOCK-related shell code (back-compatibility lock).
+  describe('Issue #918: sshAuthSockFallback', () => {
+    it('does NOT include any SSH_AUTH_SOCK-related snippet when sshAuthSockFallback is undefined', () => {
+      const { innerCommand } = buildElevationArgs({
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        command: 'env',
+      });
+      // No conditional, no export referencing SSH_AUTH_SOCK at all.
+      expect(innerCommand).not.toMatch(/SSH_AUTH_SOCK/);
+      expect(innerCommand).not.toMatch(/\.1password/);
+    });
+
+    it('injects the conditional fallback snippet when sshAuthSockFallback is provided', () => {
+      const { innerCommand } = buildElevationArgs({
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        sshAuthSockFallback: '/home/alice/.1password/agent.sock',
+        command: 'env',
+      });
+      // The snippet checks: SSH_AUTH_SOCK unset AND socket file exists, then export.
+      expect(innerCommand).toContain('[ -z "$SSH_AUTH_SOCK" ]');
+      expect(innerCommand).toContain("[ -S '/home/alice/.1password/agent.sock' ]");
+      expect(innerCommand).toContain("export SSH_AUTH_SOCK='/home/alice/.1password/agent.sock'");
+      // Wrapped in `if ... fi`.
+      expect(innerCommand).toMatch(/\bif\b/);
+      expect(innerCommand).toMatch(/\bfi\b/);
+    });
+
+    it('places the fallback snippet BEFORE the explicit `export` of combined env (so explicit SSH_AUTH_SOCK in additionalEnvVars wins)', () => {
+      const { innerCommand } = buildElevationArgs({
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        sshAuthSockFallback: '/home/alice/.1password/agent.sock',
+        command: 'env',
+      });
+      // The snippet's `if` must appear earlier in the string than the
+      // explicit `export TERM=` (color env always sets TERM).
+      const ifIdx = innerCommand.indexOf('if [ -z "$SSH_AUTH_SOCK"');
+      const exportTermIdx = innerCommand.indexOf("export TERM='xterm-256color'");
+      expect(ifIdx).toBeGreaterThanOrEqual(0);
+      expect(exportTermIdx).toBeGreaterThanOrEqual(0);
+      expect(ifIdx).toBeLessThan(exportTermIdx);
+    });
+
+    it('shellEscapes paths containing single quotes', () => {
+      const { innerCommand } = buildElevationArgs({
+        username: 'alice',
+        cwd: '/home',
+        additionalEnvVars: {},
+        sshAuthSockFallback: "/home/it's user/.1password/agent.sock",
+        command: 'env',
+      });
+      // Single quotes in path are escaped via the POSIX `'\''` pattern.
+      expect(innerCommand).toContain("[ -S '/home/it'\\''s user/.1password/agent.sock' ]");
+      expect(innerCommand).toContain(
+        "export SSH_AUTH_SOCK='/home/it'\\''s user/.1password/agent.sock'",
+      );
+    });
+
+    it('does NOT change the outer sudo argv shape when sshAuthSockFallback is provided', () => {
+      const { argv } = buildElevationArgs({
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        sshAuthSockFallback: '/home/alice/.1password/agent.sock',
+        command: 'env',
+      });
+      // argv[0..5] are stable: -u, alice, --preserve-env=FORCE_COLOR, -i, sh, -c
+      expect(argv[0]).toBe('-u');
+      expect(argv[1]).toBe('alice');
+      expect(argv[2]).toBe('--preserve-env=FORCE_COLOR');
+      expect(argv[3]).toBe('-i');
+      expect(argv[4]).toBe('sh');
+      expect(argv[5]).toBe('-c');
+      // argv[6] is the inner command string -- everything that changed is inside it.
+      expect(typeof argv[6]).toBe('string');
+    });
+
+    it('terminates the if-block so the following `&& export` chain is not aborted', () => {
+      // The conditional must be valid POSIX shell that returns exit 0
+      // regardless of the branch taken, so the subsequent `&&` chain runs.
+      // We assert structurally: a `; then ... ; fi` (or equivalent) ends
+      // with `fi` followed by ` && export` (the combined-export segment).
+      const { innerCommand } = buildElevationArgs({
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        sshAuthSockFallback: '/home/alice/.1password/agent.sock',
+        command: 'env',
+      });
+      // Look for the sequence: ...fi && export TERM=...
+      expect(innerCommand).toMatch(/fi\s+&&\s+export\s+TERM=/);
+    });
+  });
 });

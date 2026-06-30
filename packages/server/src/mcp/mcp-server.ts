@@ -652,6 +652,25 @@ export function createMcpApp(deps: McpDependencies): Hono {
           { toolName: 'delegate_to_worktree', repositoryId },
         );
 
+        // Build the SSH_AUTH_SOCK fallback path from the parent user's
+        // home so delegated worktree sessions in multi-user mode inherit
+        // a working 1Password SSH socket. Only populated when the parent's
+        // createdBy resolves to a real user record (mirrors the
+        // null-bypass contract of resolveRequestUsername above). Without
+        // this, the elevation step strips SSH_AUTH_SOCK and git commit
+        // signing fails to reach the 1Password agent. The corresponding
+        // consumer (buildElevationArgs) emits a conditional `if
+        // SSH_AUTH_SOCK unset && socket exists; then export` snippet --
+        // the file-existence check makes the value safe to pass even if
+        // 1Password isn't installed on the target user.
+        let sshAuthSockFallback: string | undefined;
+        if (parentCreatedBy) {
+          const parentUser = await userRepository.findById(parentCreatedBy);
+          if (parentUser?.homeDir) {
+            sshAuthSockFallback = `${parentUser.homeDir}/.1password/agent.sock`;
+          }
+        }
+
         // Determine branch name
         let effectiveBranch: string;
         let effectiveTitle = title;
@@ -707,6 +726,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
             parentWorkerId,
             createdBy: parentCreatedBy,
             templateVars,
+            // Thread the 1Password socket fallback through to
+            // SessionManager.createSession -> InternalSession -> PTY spawn.
+            sshAuthSockFallback,
           },
           requestUsername,
         }, sessionManager, worktreeService);

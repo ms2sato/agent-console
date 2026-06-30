@@ -27,6 +27,15 @@ export interface SessionCreationContext {
   parentWorkerId?: string;
   /** Custom template variable overrides for agent command templates */
   templateVars?: Record<string, string>;
+  /**
+   * Optional SSH_AUTH_SOCK fallback path for delegated worktree sessions.
+   * Populated by the MCP delegate path from the parent user's `homeDir`
+   * (`${homeDir}/.1password/agent.sock`, Linux 1Password convention) so
+   * that PTY workers in multi-user mode can fall back to the 1Password
+   * socket when the elevated login shell init does not set SSH_AUTH_SOCK.
+   * Undefined for every other code path; in-memory only (not persisted).
+   */
+  sshAuthSockFallback?: string;
 }
 
 export interface InternalSessionBase {
@@ -61,6 +70,16 @@ export interface InternalSessionBase {
   orphanedAt?: number | null;
   /** Machine-readable reason code for orphan. */
   orphanedReason?: string | null;
+  /**
+   * Optional SSH_AUTH_SOCK fallback path. Carries the value from
+   * {@link SessionCreationContext.sshAuthSockFallback} through the
+   * in-memory session lifetime so worker activation / revive can re-emit
+   * it into the elevated PTY's inner shell command. In-memory only; not
+   * persisted, so after a server restart a revived delegated session
+   * loses this value (acceptable degradation -- manual `export
+   * SSH_AUTH_SOCK=...` works as before).
+   */
+  sshAuthSockFallback?: string;
 }
 
 export interface InternalWorktreeSession extends InternalSessionBase {

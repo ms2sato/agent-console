@@ -64,6 +64,14 @@ interface PtySpawnRequestBase {
   additionalEnvVars: Record<string, string>;
   cols: number;
   rows: number;
+  /**
+   * Optional SSH_AUTH_SOCK fallback path. Forwarded into the elevated
+   * inner shell command via `buildElevationArgs`. Only meaningful on the
+   * `MultiUserMode.spawnSudoPty` path -- the direct (sudo-skip) path
+   * ignores this field since SSH_AUTH_SOCK is inherited naturally from
+   * `process.env` for the server-process user.
+   */
+  sshAuthSockFallback?: string;
 }
 
 export interface AgentPtySpawnRequest extends PtySpawnRequestBase {
@@ -495,6 +503,11 @@ export class MultiUserMode implements UserMode {
       additionalEnvVars: request.additionalEnvVars,
       agentConsoleVars,
       command,
+      // Forward the optional 1Password SSH socket fallback so delegated
+      // sessions inherit SSH_AUTH_SOCK across the privilege boundary when
+      // the parent session's login init does not set it. Undefined for
+      // every other code path (REST, EnterWorktree, resume).
+      sshAuthSockFallback: request.sshAuthSockFallback,
     });
 
     return this.ptyProvider.spawn('sudo', argv, {
