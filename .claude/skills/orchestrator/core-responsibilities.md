@@ -109,6 +109,34 @@ When a single design or Issue is too large for one PR (e.g., a multi-slice featu
 
 If any of the three carries a close keyword for the parent, the parent auto-closes when the squash merge lands. Recovery requires manual reopen + comment explaining the incident — far more expensive than getting the title right at delegation time. **The orchestrator's delegation prompt MUST set the PR title to `Part N of #parent` style before sending; do not let the agent produce a title that includes parent close keywords.** (Lesson: Sprint 2026-05-03 PR [#764](https://github.com/ms2sato/agent-console/pull/764) — orchestrator's delegation prompt allowed the agent to craft `(closes #678 part 1)`; parent [#678](https://github.com/ms2sato/agent-console/issues/678) auto-closed on merge despite body-level cleanup, requiring manual reopen.)
 
+### Paired Backend + Frontend Delegation Pattern
+
+When a single Issue introduces a feature that spans server (backend) and client (frontend) packages and the two halves can develop concurrently against a frozen API contract, deliver them as **two parallel PRs** rather than one large cross-package PR. This shape was first exercised in Sprint 2026-06-29 ([#905](https://github.com/ms2sato/agent-console/issues/905) → PR [#906](https://github.com/ms2sato/agent-console/pull/906) backend + PR [#908](https://github.com/ms2sato/agent-console/pull/908) frontend) and established a 4-element recipe the orchestrator should include in the delegation prompt up-front.
+
+The four elements:
+
+1. **API contract freeze before delegation.** The orchestrator defines the request/response shape (route paths, body schemas, derived response fields, validation rules) in the delegation prompt and labels it FROZEN. Both agents implement against the same contract. Schema design lives at the orchestrator level, not delegated.
+2. **Schema owner = backend.** The shared type (e.g., the field added to `packages/shared/src/types/<entity>.ts`) is owned by the backend PR. The frontend PR consumes the type. If the frontend agent must add the field locally to make types compile pre-merge, do so as a temporary **optional** marker (`?:`) and rebase to the canonical required form after backend lands.
+3. **Schema fan-out is in scope, NOT a "don't touch other package" violation.** When the backend's type change requires sync edits to client-side test fixtures (e.g., `RepositoryList.test.tsx` fixture must include the new field for typecheck to pass), the backend PR is allowed and expected to make those edits. Frame the delegation as "feature implementation lives in your package; type fan-out edits to the other package's tests are allowed as mechanical sync." This prevents the backend agent from blocking on a "should I touch client/?" judgment call.
+4. **Merge order + rebase plan is explicit.** Backend merges first (as schema owner). Frontend then rebases on `origin/main`, drops the temporary `?:` optional marker in favour of the canonical type, and force-pushes. **Force-push requires per-PR owner approval** per `workflow.md`'s Force-Push Gating section; the orchestrator must request that approval as a distinct step (do not bundle it with backend merge approval). On approval, frontend pushes and proceeds to its own merge.
+
+Phrasing template for the delegation prompts:
+
+> Backend prompt: "Your PR is the schema owner. Required Repository type field `<name>: <type>` lands here. Add sync edits to client test fixtures as needed. Frontend PR is delegated in parallel against this frozen contract; do not coordinate directly."
+>
+> Frontend prompt: "Your PR consumes the new Repository type field from the shared package. Backend PR is delegated in parallel and is the schema owner. While backend is in flight, add the field locally as optional (`?: <type>`). After backend merges, you will rebase on `origin/main` (orchestrator will signal), drop the optional marker, and force-push (orchestrator will request per-PR force-push approval at that point)."
+
+(Lesson: Sprint 2026-06-29 PR #906 + PR #908 — the four-element recipe was assembled mid-sprint after the frontend agent surfaced the optional-vs-required type contradiction. Embedding the recipe in the delegation prompt up-front would have shaved the round-trip; future paired deliveries should start with this template.)
+
+### Approval Communication Discipline
+
+When the orchestrator requests owner approval for a destructive or owner-judgment action (force-push, `--admin` merge, schema-breaking change), the request message MUST surface the **timing intent** alongside the approval ask. Specifically:
+
+- Will the orchestrator merge as soon as approval lands? Or wait for a downstream signal (CI green, dependent PR merge, manual cue)?
+- Are there parallel actions the owner can take in the same approval window (e.g., dogfood verification, secondary PR review)?
+
+(Lesson: Sprint 2026-06-29 PR #908 — orchestrator requested force-push approval for the frontend rebase without naming the merge timing intent. Owner approved force-push and then direct-merged the PR before the orchestrator's CodeRabbit-rerun observation completed, creating a "is this a stale review?" confusion. The agent's retro flagged this as an orchestrator-side message discipline issue. Future approval requests should state explicitly: "On approval, I will [push and monitor CI / merge immediately / wait for X then merge]" so the owner's parallel actions stay aligned.)
+
 ## 4. First Responder for Dev Agent Questions
 - Receive and triage questions from coding agents
 - Answer technical/architectural questions using your knowledge of the codebase and skills
