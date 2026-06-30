@@ -439,6 +439,18 @@ The script does not perform `git pull` itself — sync the source-repo to the
 intended commit before invoking, and confirm via the printed HEAD line in the
 script's `==> Pre-check` step before the build proceeds.
 
+## GitHub Webhook Setup (multi-user)
+
+For inbound GitHub webhook configuration on the systemd instance — including the
+`EnvironmentFile=-` pattern that survives the deploy script's `rsync --delete` —
+see the README's
+[GitHub Webhook Integration → Multi-user mode (Ubuntu / systemd) recipe](../README.md#multi-user-mode-ubuntu--systemd-recipe).
+
+The short version: place the secret under
+`/home/<service-user>/.config/agent-console/secrets.env` (outside the deploy
+target), reference it from the systemd unit with `EnvironmentFile=-`, then
+`systemctl daemon-reload && systemctl restart agent-console.service`.
+
 ## Environment Variables
 
 | Variable | Default | Description |
