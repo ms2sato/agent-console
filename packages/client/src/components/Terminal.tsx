@@ -11,7 +11,11 @@ import { useAppWsEvent } from '../hooks/useAppWs';
 import { disconnect, requestHistory } from '../lib/worker-websocket.js';
 import { isScrolledToBottom, stripScrollbackClear as applyScrollbackFilter, stripSystemMessages } from '../lib/terminal-utils.js';
 import { writeFullHistory } from '../lib/terminal-chunk-writer.js';
-import { saveTerminalState, loadTerminalState, clearTerminalState } from '../lib/terminal-state-cache.js';
+import { saveTerminalState, loadTerminalState, clearTerminalState, type CachedState } from '../lib/terminal-state-cache.js';
+import {
+  applyCachedSnapshotBeforeOpen,
+  buildTerminalOptionsForRestore,
+} from '../lib/terminal-restore.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -399,400 +403,446 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
   }, [error]);
 
   // Initialize xterm.js
+  //
+  // Restore order: @xterm/addon-serialize requires that cached snapshots be
+  // written into a terminal of the SAME size as the source, and recommends
+  // writing BEFORE `terminal.open()`. To honor both, the cache is loaded
+  // first; the terminal is then constructed with the cached cols/rows (if
+  // available); the snapshot is written via `applyCachedSnapshotBeforeOpen`;
+  // and only then is `open()` called. This means terminal construction is
+  // delayed by the cache load (~10-50ms). Any real-time output that arrives
+  // in that window is dropped by `handleOutput` (terminal null), but the
+  // server's output file persists everything, so the subsequent
+  // `request-history` (sent once `cacheProcessed` flips true) backfills the
+  // missing bytes.
   useEffect(() => {
     if (!containerRef.current) return;
 
     const container = containerRef.current;
-    const terminal = new XTerm({
-      cursorBlink: true,
-      fontSize: 14,
-      fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "DejaVu Sans Mono", Menlo, Monaco, "Courier New", monospace',
-      theme: {
-        background: '#1a1a2e',
-        foreground: '#eee',
-        cursor: '#eee',
-      },
-    });
 
-    const fitAddon = new FitAddon();
-    terminal.loadAddon(fitAddon);
-
-    // Enable clickable URLs in terminal output
-    // Use noopener,noreferrer to prevent reverse tabnabbing attacks
-    const webLinksAddon = new WebLinksAddon((_event, uri) => {
-      window.open(uri, '_blank', 'noopener,noreferrer');
-    });
-    terminal.loadAddon(webLinksAddon);
-
-    // Enable serialization for terminal state caching
-    const serializeAddon = new SerializeAddon();
-    terminal.loadAddon(serializeAddon);
-
-    terminal.open(container);
-
-    terminalRef.current = terminal;
-    fitAddonRef.current = fitAddon;
-    serializeAddonRef.current = serializeAddon;
-
-    // Create render diagnostics watchdog (no-op when diagnostics disabled)
-    const watchdog = createRenderWatchdog(sessionId, workerId, terminal);
-    watchdogRef.current = watchdog;
-    watchdog.start();
-
-    // WORKAROUND: xterm.js render stall auto-recovery
-    // xterm.js occasionally stops scheduling renders after terminal.write() completes,
-    // causing the terminal display to freeze while data continues to arrive.
-    // See: docs/issues/terminal-render-stall-2026-03-21.md
-    //
-    // Two known stall scenarios:
-    // 1. The event chain from buffer update to _renderDebouncer.refresh() breaks
-    //    (original issue — debouncer.refresh() simply stops being called)
-    // 2. RenderService._isPaused gets stuck as true (IntersectionObserver reports
-    //    the terminal as not visible), causing refreshRows() to short-circuit
-    //    before reaching the debouncer
-    //
-    // Detection: hook terminal.write() and _renderDebouncer.refresh().
-    // If writes happen without corresponding debouncer refresh calls within 2 seconds,
-    // force a render. Hooking the debouncer (not refreshRows) correctly detects
-    // stalls regardless of _isPaused state.
-    const renderStallRecovery = (() => {
-      let writeCount = 0;
-      let refreshCount = 0;
-      let lastWriteCount = 0;
-      let lastRefreshCount = 0;
-
-      // Hook terminal.write to count writes
-      const origWrite = terminal.write.bind(terminal);
-      terminal.write = function(data: string | Uint8Array, callback?: () => void) {
-        writeCount++;
-        return origWrite(data, callback);
-      };
-
-      // Hook _renderDebouncer.refresh to count actual render scheduling.
-      // Unlike refreshRows (which short-circuits when _isPaused is true),
-      // this counts only calls that actually reach the render debouncer.
-      const renderService = (terminal as any)._core?._renderService;
-      const debouncer = renderService?._renderDebouncer;
-      const origDebouncerRefresh = debouncer?.refresh?.bind(debouncer);
-      if (debouncer && origDebouncerRefresh) {
-        debouncer.refresh = function(start: number, end: number, rowCount: number) {
-          refreshCount++;
-          return origDebouncerRefresh(start, end, rowCount);
-        };
-      }
-
-      const intervalId = setInterval(() => {
-        const newWrites = writeCount - lastWriteCount;
-        const newRefreshes = refreshCount - lastRefreshCount;
-        const stallDetected = newWrites > 0 && newRefreshes === 0;
-        if (stallDetected) {
-          if (document.visibilityState === 'visible') {
-            const isPaused = renderService?._isPaused;
-            logger.warn('[Terminal] Render stall detected', {
-              sessionId,
-              workerId,
-              writes: newWrites,
-              isPaused,
-              needsFullRefresh: renderService?._needsFullRefresh,
-            });
-            // If _isPaused is stuck, reset it so terminal.refresh() can work
-            if (isPaused) {
-              renderService._isPaused = false;
-            }
-            terminal.refresh(0, terminal.rows - 1);
-            restoreScrollPosition(terminal, savedScrollRef.current);
-          } else {
-            // Stall detected while hidden — do NOT advance baselines.
-            // The stall will be recovered on the next visible interval.
-            return;
-          }
-        }
-        lastWriteCount = writeCount;
-        lastRefreshCount = refreshCount;
-      }, 2000);
-
-      return {
-        dispose() {
-          clearInterval(intervalId);
-          terminal.write = origWrite;
-          if (debouncer && origDebouncerRefresh) {
-            debouncer.refresh = origDebouncerRefresh;
-          }
-        },
-      };
-    })();
-
-    // Mark as mounted for conditional rendering support
+    // Synchronous bookkeeping: mount generation, abort signal, cancel flag,
+    // and stateRef updates need to be visible immediately so racing cleanups
+    // and connection callbacks see consistent values.
+    let cancelled = false;
     stateRef.current.isMounted = true;
-    // Store current worker ID for race condition detection
     stateRef.current.currentWorkerId = workerId;
-    // Increment mount generation counter to detect stale async operations
     const currentGeneration = ++stateRef.current.mountGeneration;
-    // Create AbortController for this mount cycle to cancel in-flight cache loads on tab switch
     const abortController = new AbortController();
 
-    // Register state getter with save manager for idle-based saves
-    const stateGetter = () => {
-      if (!terminalRef.current || !serializeAddonRef.current) return null;
-      // Don't save state if terminal hasn't received history yet
-      // This prevents saving empty/partial state during rapid tab switching
-      if (!stateRef.current.historyRequested) {
-        return null;
-      }
+    // Captures populated by the async init below. Cleanup must safely no-op
+    // when init is interrupted (cancel during cache load, render before
+    // construct, etc.), so every dispose handle is nullable.
+    let terminal: XTerm | null = null;
+    let fitAddon: FitAddon | null = null;
+    let serializeAddon: SerializeAddon | null = null;
+    let watchdog: RenderWatchdog | null = null;
+    let renderStallRecovery: { dispose: () => void } | null = null;
+    let scrollDisposable: { dispose: () => void } | null = null;
+    let viewportObserver: MutationObserver | null = null;
+    let viewportElement: Element | null = null;
+    let rafId: number | null = null;
+
+    let handleResize: (() => void) | null = null;
+    let handlePaste: ((event: ClipboardEvent) => void) | null = null;
+    let handleDragEnter: ((e: DragEvent) => void) | null = null;
+    let handleDragOver: ((e: DragEvent) => void) | null = null;
+    let handleDragLeave: ((e: DragEvent) => void) | null = null;
+    let handleDrop: ((e: DragEvent) => void) | null = null;
+    let handleWheel: (() => void) | null = null;
+    let handleDOMScroll: (() => void) | null = null;
+
+    void (async () => {
+      // 1. Load cached snapshot BEFORE constructing the terminal so that
+      //    construction can use the cached cols/rows.
+      let cached: CachedState | null = null;
       try {
-        return {
-          data: serializeAddonRef.current.serialize(),
-          savedAt: Date.now(),
-          cols: terminalRef.current.cols,
-          rows: terminalRef.current.rows,
-          offset: offsetRef.current,
-        };
-      } catch {
-        return null;
-      }
-    };
-    registerSaveManager(sessionId, workerId, stateGetter);
-
-    // Try to restore terminal state from cache before processing server history
-    // This eliminates flickering when switching between workers
-    loadTerminalState(sessionId, workerId, abortController.signal)
-      .then(async (cached) => {
-        // AbortController cancelled this operation (tab switched during cache load)
+        cached = await loadTerminalState(sessionId, workerId, abortController.signal);
+      } catch (e) {
         if (abortController.signal.aborted) return;
-
-        // Existing stale checks remain as defense-in-depth
-        // Race condition check: abort if component unmounted, worker changed, or mount generation changed
-        if (!stateRef.current.isMounted) {
-          logger.debug('[Terminal] Abandoned cache read: component unmounted for workerId:', workerId);
-          return;
-        }
-        if (stateRef.current.currentWorkerId !== workerId) {
-          logger.debug('[Terminal] Abandoned cache read for stale workerId:', workerId);
-          return;
-        }
-        if (stateRef.current.mountGeneration !== currentGeneration) {
-          logger.debug('[Terminal] Abandoned cache read for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
-          return;
-        }
-
-        // Use terminalRef.current instead of captured terminal variable
-        // to handle React Strict Mode double-mounting
-        const currentTerminal = terminalRef.current;
-        if (cached && cached.data && currentTerminal) {
-          // Restore cached terminal state
-          currentTerminal.write(processOutputRef.current(cached.data), () => {
-            updateScrollButtonVisibility();
-          });
-          offsetRef.current = cached.offset;
-        } else {
-          offsetRef.current = 0;
-        }
-
-        stateRef.current.cacheProcessed = true;
-        setCacheProcessed(true);
-      })
-      .catch((e) => {
-        // Silently ignore aborted operations (not an error)
-        if (abortController.signal.aborted) return;
-
         logger.warn('[Terminal] Failed to load cached state:', e);
         setCacheError('Failed to load cached terminal state');
+        cached = null;
+      }
 
-        // Race condition check: abort if component unmounted, worker changed, or mount generation changed
-        if (!stateRef.current.isMounted) {
-          logger.debug('[Terminal] Abandoned cache read (error path): component unmounted for workerId:', workerId);
-          return;
-        }
-        if (stateRef.current.currentWorkerId !== workerId) {
-          logger.debug('[Terminal] Abandoned cache read (error path) for stale workerId:', workerId);
-          return;
-        }
-        if (stateRef.current.mountGeneration !== currentGeneration) {
-          logger.debug('[Terminal] Abandoned cache read (error path) for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
-          return;
-        }
+      // Race / cancellation checks: bail before touching DOM or refs if the
+      // mount cycle is stale or cancelled.
+      if (cancelled || abortController.signal.aborted) return;
+      if (!stateRef.current.isMounted) {
+        logger.debug('[Terminal] Abandoned init: component unmounted for workerId:', workerId);
+        return;
+      }
+      if (stateRef.current.currentWorkerId !== workerId) {
+        logger.debug('[Terminal] Abandoned init for stale workerId:', workerId);
+        return;
+      }
+      if (stateRef.current.mountGeneration !== currentGeneration) {
+        logger.debug('[Terminal] Abandoned init for stale mount generation:', currentGeneration, 'current:', stateRef.current.mountGeneration);
+        return;
+      }
 
-        // Fallback: no cache, offset 0
+      // 2. Construct the terminal at the cached cols/rows when available.
+      //    Per @xterm/addon-serialize: writing the snapshot into a same-size
+      //    terminal is required for scrollback to be correctly repopulated.
+      const baseOptions = {
+        cursorBlink: true,
+        fontSize: 14,
+        fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "DejaVu Sans Mono", Menlo, Monaco, "Courier New", monospace',
+        theme: {
+          background: '#1a1a2e',
+          foreground: '#eee',
+          cursor: '#eee',
+        },
+      };
+      terminal = new XTerm(buildTerminalOptionsForRestore(baseOptions, cached));
+
+      fitAddon = new FitAddon();
+      terminal.loadAddon(fitAddon);
+
+      // Enable clickable URLs in terminal output
+      // Use noopener,noreferrer to prevent reverse tabnabbing attacks
+      const webLinksAddon = new WebLinksAddon((_event, uri) => {
+        window.open(uri, '_blank', 'noopener,noreferrer');
+      });
+      terminal.loadAddon(webLinksAddon);
+
+      // Enable serialization for terminal state caching
+      serializeAddon = new SerializeAddon();
+      terminal.loadAddon(serializeAddon);
+
+      // 3. Write the cached snapshot BEFORE open() per the library's
+      //    recommendation. updateScrollButtonVisibility is safe even though
+      //    terminalRef.current is set later — the callback only reads from
+      //    terminalRef.current which will be non-null by the time the write
+      //    callback fires (callbacks run after the next tick).
+      if (cached && cached.data) {
+        applyCachedSnapshotBeforeOpen(
+          terminal,
+          cached.data,
+          processOutputRef.current,
+          () => updateScrollButtonVisibility(),
+        );
+        offsetRef.current = cached.offset;
+      } else {
         offsetRef.current = 0;
-        stateRef.current.cacheProcessed = true;
-        setCacheProcessed(true);
-      });
+      }
 
-    // Delay fit to ensure container has dimensions
-    const fitTerminal = () => {
-      if (container.offsetHeight > 0 && container.offsetWidth > 0) {
+      // 4. Open the terminal against the container DOM node.
+      terminal.open(container);
+
+      // If a cleanup ran while we were constructing/opening, dispose what we
+      // just built and bail out before mutating refs.
+      if (cancelled) {
         try {
-          fitAddon.fit();
+          terminal.dispose();
         } catch (e) {
-          logger.warn('Failed to fit terminal:', e);
+          logger.warn('[Terminal] Dispose during cancelled init failed:', e);
         }
-      }
-    };
-
-    // Initial fit with delay
-    const rafId = requestAnimationFrame(fitTerminal);
-
-    // Handle terminal input
-    terminal.onData((data) => {
-      sendInput(data);
-    });
-
-    // Handle special key events
-    terminal.attachCustomKeyEventHandler((event) => {
-      // Skip IME composition events (Japanese input, etc.)
-      if (event.isComposing) {
-        return true; // Let IME handle it
+        terminal = null;
+        fitAddon = null;
+        serializeAddon = null;
+        return;
       }
 
-      // Handle Shift+Enter for multi-line input
-      if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
-        event.preventDefault();
-        event.stopPropagation();
-        // Send soft newline for multi-line input
-        sendInput('\x0a');
-        return false; // Prevent terminal from handling
-      }
+      terminalRef.current = terminal;
+      fitAddonRef.current = fitAddon;
+      serializeAddonRef.current = serializeAddon;
 
-      return true; // Allow default handling for other keys
-    });
+      // Create render diagnostics watchdog (no-op when diagnostics disabled)
+      watchdog = createRenderWatchdog(sessionId, workerId, terminal);
+      watchdogRef.current = watchdog;
+      watchdog.start();
 
-    // Handle resize
-    const handleResize = () => {
-      fitTerminal();
-      if (terminal.cols && terminal.rows) {
-        sendResize(terminal.cols, terminal.rows);
-      }
-    };
+      // WORKAROUND: xterm.js render stall auto-recovery
+      // xterm.js occasionally stops scheduling renders after terminal.write() completes,
+      // causing the terminal display to freeze while data continues to arrive.
+      // See: docs/issues/terminal-render-stall-2026-03-21.md
+      //
+      // Two known stall scenarios:
+      // 1. The event chain from buffer update to _renderDebouncer.refresh() breaks
+      //    (original issue — debouncer.refresh() simply stops being called)
+      // 2. RenderService._isPaused gets stuck as true (IntersectionObserver reports
+      //    the terminal as not visible), causing refreshRows() to short-circuit
+      //    before reaching the debouncer
+      //
+      // Detection: hook terminal.write() and _renderDebouncer.refresh().
+      // If writes happen without corresponding debouncer refresh calls within 2 seconds,
+      // force a render. Hooking the debouncer (not refreshRows) correctly detects
+      // stalls regardless of _isPaused state.
+      renderStallRecovery = ((t: XTerm) => {
+        let writeCount = 0;
+        let refreshCount = 0;
+        let lastWriteCount = 0;
+        let lastRefreshCount = 0;
 
-    // Handle paste with image detection
-    const handlePaste = (event: ClipboardEvent) => {
-      // Only handle paste when this terminal has focus
-      if (!container.contains(document.activeElement)) return;
+        // Hook terminal.write to count writes
+        const origWrite = t.write.bind(t);
+        t.write = function(data: string | Uint8Array, callback?: () => void) {
+          writeCount++;
+          return origWrite(data, callback);
+        };
 
-      const items = event.clipboardData?.items;
-      if (!items || !onFilesReceivedRef.current) return;
-
-      const imageFiles: File[] = [];
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
-          const blob = item.getAsFile();
-          if (blob) imageFiles.push(blob);
+        // Hook _renderDebouncer.refresh to count actual render scheduling.
+        // Unlike refreshRows (which short-circuits when _isPaused is true),
+        // this counts only calls that actually reach the render debouncer.
+        const renderService = (t as any)._core?._renderService;
+        const debouncer = renderService?._renderDebouncer;
+        const origDebouncerRefresh = debouncer?.refresh?.bind(debouncer);
+        if (debouncer && origDebouncerRefresh) {
+          debouncer.refresh = function(start: number, end: number, rowCount: number) {
+            refreshCount++;
+            return origDebouncerRefresh(start, end, rowCount);
+          };
         }
-      }
-      if (imageFiles.length > 0) {
-        event.preventDefault();
-        onFilesReceivedRef.current(imageFiles);
-      }
-      // If no image, let xterm handle normal text paste
-    };
 
-    // Handle drag-and-drop image upload
-    const handleDragEnter = (e: DragEvent) => {
-      e.preventDefault();
-      dragCounterRef.current++;
-      if (dragCounterRef.current === 1) {
-        setIsDragOver(true);
-      }
-    };
+        const intervalId = setInterval(() => {
+          const newWrites = writeCount - lastWriteCount;
+          const newRefreshes = refreshCount - lastRefreshCount;
+          const stallDetected = newWrites > 0 && newRefreshes === 0;
+          if (stallDetected) {
+            if (document.visibilityState === 'visible') {
+              const isPaused = renderService?._isPaused;
+              logger.warn('[Terminal] Render stall detected', {
+                sessionId,
+                workerId,
+                writes: newWrites,
+                isPaused,
+                needsFullRefresh: renderService?._needsFullRefresh,
+              });
+              // If _isPaused is stuck, reset it so terminal.refresh() can work
+              if (isPaused) {
+                renderService._isPaused = false;
+              }
+              t.refresh(0, t.rows - 1);
+              restoreScrollPosition(t, savedScrollRef.current);
+            } else {
+              // Stall detected while hidden — do NOT advance baselines.
+              // The stall will be recovered on the next visible interval.
+              return;
+            }
+          }
+          lastWriteCount = writeCount;
+          lastRefreshCount = refreshCount;
+        }, 2000);
 
-    const handleDragOver = (e: DragEvent) => {
-      e.preventDefault();
-    };
+        return {
+          dispose() {
+            clearInterval(intervalId);
+            t.write = origWrite;
+            if (debouncer && origDebouncerRefresh) {
+              debouncer.refresh = origDebouncerRefresh;
+            }
+          },
+        };
+      })(terminal);
 
-    const handleDragLeave = (e: DragEvent) => {
-      e.preventDefault();
-      dragCounterRef.current--;
-      if (dragCounterRef.current === 0) {
-        setIsDragOver(false);
-      }
-    };
+      // Register state getter with save manager for idle-based saves
+      const stateGetter = () => {
+        if (!terminalRef.current || !serializeAddonRef.current) return null;
+        // Don't save state if terminal hasn't received history yet
+        // This prevents saving empty/partial state during rapid tab switching
+        if (!stateRef.current.historyRequested) {
+          return null;
+        }
+        try {
+          return {
+            data: serializeAddonRef.current.serialize(),
+            savedAt: Date.now(),
+            cols: terminalRef.current.cols,
+            rows: terminalRef.current.rows,
+            offset: offsetRef.current,
+          };
+        } catch {
+          return null;
+        }
+      };
+      registerSaveManager(sessionId, workerId, stateGetter);
 
-    const handleDrop = (e: DragEvent) => {
-      e.preventDefault();
-      dragCounterRef.current = 0;
-      setIsDragOver(false);
+      // Cache processing is complete (whether or not cached data was found).
+      // This unblocks the history-request effect which fires once connected.
+      stateRef.current.cacheProcessed = true;
+      setCacheProcessed(true);
 
-      if (!onFilesReceivedRef.current) return;
-      const files = e.dataTransfer?.files;
-      if (!files || files.length === 0) return;
-      onFilesReceivedRef.current(Array.from(files));
-    };
+      // Delay fit to ensure container has dimensions
+      const fitTerminal = () => {
+        if (container.offsetHeight > 0 && container.offsetWidth > 0) {
+          try {
+            fitAddon?.fit();
+          } catch (e) {
+            logger.warn('Failed to fit terminal:', e);
+          }
+        }
+      };
 
-    // Save user's scroll position via wheel events for corruption recovery.
-    // Captures distanceFromBottom which is stable across buffer trimming
-    // (unlike absolute viewportY which shifts when old lines are removed).
-    const handleWheel = () => {
-      requestAnimationFrame(() => {
-        const t = terminalRef.current;
-        if (!t) return;
-        savedScrollRef.current.distanceFromBottom = t.buffer.active.baseY - t.buffer.active.viewportY;
+      // Initial fit with delay
+      rafId = requestAnimationFrame(fitTerminal);
+
+      // Handle terminal input
+      terminal.onData((data) => {
+        sendInput(data);
       });
-    };
-    container.addEventListener('wheel', handleWheel, { passive: true });
 
-    // Use capture phase so our handlers fire before xterm.js calls stopPropagation()
-    // on paste events (xterm's handlePasteEvent stops propagation in the bubble phase).
-    // DnD handlers also use capture for consistency and reliability.
-    container.addEventListener('paste', handlePaste, { capture: true });
-    container.addEventListener('dragenter', handleDragEnter, { capture: true });
-    container.addEventListener('dragover', handleDragOver, { capture: true });
-    container.addEventListener('dragleave', handleDragLeave, { capture: true });
-    container.addEventListener('drop', handleDrop, { capture: true });
-    window.addEventListener('resize', handleResize);
+      // Handle special key events
+      terminal.attachCustomKeyEventHandler((event) => {
+        // Skip IME composition events (Japanese input, etc.)
+        if (event.isComposing) {
+          return true; // Let IME handle it
+        }
 
-    // Listen for scroll events to update scroll-to-bottom button visibility
-    const scrollDisposable = terminal.onScroll(() => {
-      updateScrollButtonVisibility();
-    });
+        // Handle Shift+Enter for multi-line input
+        if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
+          event.preventDefault();
+          event.stopPropagation();
+          // Send soft newline for multi-line input
+          sendInput('\x0a');
+          return false; // Prevent terminal from handling
+        }
 
-    // Handle DOM scroll events from any source
-    const handleDOMScroll = () => {
-      updateScrollButtonVisibility();
-    };
+        return true; // Allow default handling for other keys
+      });
 
-    // Use capture phase to catch scroll events from children
-    container.addEventListener('scroll', handleDOMScroll, { capture: true });
+      // Handle resize
+      handleResize = () => {
+        fitTerminal();
+        if (terminal && terminal.cols && terminal.rows) {
+          sendResize(terminal.cols, terminal.rows);
+        }
+      };
 
-    // Listen to scroll events on the xterm viewport element
-    // The viewport is the actual scrollable element within xterm
-    let viewportElement: Element | null = container.querySelector('.xterm-viewport');
+      // Handle paste with image detection
+      handlePaste = (event: ClipboardEvent) => {
+        // Only handle paste when this terminal has focus
+        if (!container.contains(document.activeElement)) return;
 
-    if (viewportElement) {
-      viewportElement.addEventListener('scroll', handleDOMScroll);
-    }
+        const items = event.clipboardData?.items;
+        if (!items || !onFilesReceivedRef.current) return;
 
-    // Use MutationObserver to detect when .xterm-viewport is added to DOM
-    // This is more reliable than setTimeout because it reacts immediately when the element appears
-    let viewportListenerAdded = !!viewportElement;
-    const viewportObserver = new MutationObserver(() => {
-      if (viewportListenerAdded) return;
+        const imageFiles: File[] = [];
+        for (const item of items) {
+          if (item.type.startsWith('image/')) {
+            const blob = item.getAsFile();
+            if (blob) imageFiles.push(blob);
+          }
+        }
+        if (imageFiles.length > 0) {
+          event.preventDefault();
+          onFilesReceivedRef.current(imageFiles);
+        }
+        // If no image, let xterm handle normal text paste
+      };
 
-      const observedViewportElement = container.querySelector('.xterm-viewport');
-      if (observedViewportElement) {
-        observedViewportElement.addEventListener('scroll', handleDOMScroll);
-        viewportElement = observedViewportElement; // Update reference for cleanup
-        viewportListenerAdded = true;
-        viewportObserver.disconnect(); // Stop observing once found
+      // Handle drag-and-drop image upload
+      handleDragEnter = (e: DragEvent) => {
+        e.preventDefault();
+        dragCounterRef.current++;
+        if (dragCounterRef.current === 1) {
+          setIsDragOver(true);
+        }
+      };
+
+      handleDragOver = (e: DragEvent) => {
+        e.preventDefault();
+      };
+
+      handleDragLeave = (e: DragEvent) => {
+        e.preventDefault();
+        dragCounterRef.current--;
+        if (dragCounterRef.current === 0) {
+          setIsDragOver(false);
+        }
+      };
+
+      handleDrop = (e: DragEvent) => {
+        e.preventDefault();
+        dragCounterRef.current = 0;
+        setIsDragOver(false);
+
+        if (!onFilesReceivedRef.current) return;
+        const files = e.dataTransfer?.files;
+        if (!files || files.length === 0) return;
+        onFilesReceivedRef.current(Array.from(files));
+      };
+
+      // Save user's scroll position via wheel events for corruption recovery.
+      // Captures distanceFromBottom which is stable across buffer trimming
+      // (unlike absolute viewportY which shifts when old lines are removed).
+      handleWheel = () => {
+        requestAnimationFrame(() => {
+          const t = terminalRef.current;
+          if (!t) return;
+          savedScrollRef.current.distanceFromBottom = t.buffer.active.baseY - t.buffer.active.viewportY;
+        });
+      };
+      container.addEventListener('wheel', handleWheel, { passive: true });
+
+      // Use capture phase so our handlers fire before xterm.js calls stopPropagation()
+      // on paste events (xterm's handlePasteEvent stops propagation in the bubble phase).
+      // DnD handlers also use capture for consistency and reliability.
+      container.addEventListener('paste', handlePaste, { capture: true });
+      container.addEventListener('dragenter', handleDragEnter, { capture: true });
+      container.addEventListener('dragover', handleDragOver, { capture: true });
+      container.addEventListener('dragleave', handleDragLeave, { capture: true });
+      container.addEventListener('drop', handleDrop, { capture: true });
+      window.addEventListener('resize', handleResize);
+
+      // Listen for scroll events to update scroll-to-bottom button visibility
+      scrollDisposable = terminal.onScroll(() => {
+        updateScrollButtonVisibility();
+      });
+
+      // Handle DOM scroll events from any source
+      handleDOMScroll = () => {
+        updateScrollButtonVisibility();
+      };
+
+      // Use capture phase to catch scroll events from children
+      container.addEventListener('scroll', handleDOMScroll, { capture: true });
+
+      // Listen to scroll events on the xterm viewport element
+      // The viewport is the actual scrollable element within xterm
+      viewportElement = container.querySelector('.xterm-viewport');
+
+      if (viewportElement) {
+        viewportElement.addEventListener('scroll', handleDOMScroll);
       }
-    });
 
-    viewportObserver.observe(container, {
-      childList: true,
-      subtree: true
+      // Use MutationObserver to detect when .xterm-viewport is added to DOM
+      // This is more reliable than setTimeout because it reacts immediately when the element appears
+      let viewportListenerAdded = !!viewportElement;
+      viewportObserver = new MutationObserver(() => {
+        if (viewportListenerAdded) return;
+
+        const observedViewportElement = container.querySelector('.xterm-viewport');
+        if (observedViewportElement && handleDOMScroll) {
+          observedViewportElement.addEventListener('scroll', handleDOMScroll);
+          viewportElement = observedViewportElement; // Update reference for cleanup
+          viewportListenerAdded = true;
+          viewportObserver?.disconnect(); // Stop observing once found
+        }
+      });
+
+      viewportObserver.observe(container, {
+        childList: true,
+        subtree: true
+      });
+    })().catch((e) => {
+      logger.error('[Terminal] Init failed:', e);
     });
 
     return () => {
+      cancelled = true;
+
       // Dispose render stall auto-recovery before watchdog
-      renderStallRecovery.dispose();
+      renderStallRecovery?.dispose();
 
       // Dispose render diagnostics watchdog
-      watchdog.dispose();
+      watchdog?.dispose();
       watchdogRef.current = null;
 
       // Abort any in-flight cache load to prevent stale data from being written to terminal
       abortController.abort();
 
-      // Unregister from save manager - this triggers final save (async, best-effort)
+      // Unregister from save manager - this triggers final save (async, best-effort).
+      // Safe to call even if registration was skipped (init aborted before registering).
       unregisterSaveManager(sessionId, workerId)
         .catch((e) => logger.warn('[Terminal] Failed to save on unmount:', e));
 
@@ -810,39 +860,46 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       setCacheProcessed(false);
       offsetRef.current = 0;
 
-      cancelAnimationFrame(rafId);
-      viewportObserver.disconnect();
+      if (rafId !== null) cancelAnimationFrame(rafId);
+      viewportObserver?.disconnect();
 
-      container.removeEventListener('wheel', handleWheel);
-      container.removeEventListener('paste', handlePaste, { capture: true });
-      container.removeEventListener('dragenter', handleDragEnter, { capture: true });
-      container.removeEventListener('dragover', handleDragOver, { capture: true });
-      container.removeEventListener('dragleave', handleDragLeave, { capture: true });
-      container.removeEventListener('drop', handleDrop, { capture: true });
+      if (handleWheel) container.removeEventListener('wheel', handleWheel);
+      if (handlePaste) container.removeEventListener('paste', handlePaste, { capture: true });
+      if (handleDragEnter) container.removeEventListener('dragenter', handleDragEnter, { capture: true });
+      if (handleDragOver) container.removeEventListener('dragover', handleDragOver, { capture: true });
+      if (handleDragLeave) container.removeEventListener('dragleave', handleDragLeave, { capture: true });
+      if (handleDrop) container.removeEventListener('drop', handleDrop, { capture: true });
       dragCounterRef.current = 0;
-      window.removeEventListener('resize', handleResize);
-      container.removeEventListener('scroll', handleDOMScroll, { capture: true });
-      if (viewportElement) {
+      if (handleResize) window.removeEventListener('resize', handleResize);
+      if (handleDOMScroll) container.removeEventListener('scroll', handleDOMScroll, { capture: true });
+      if (viewportElement && handleDOMScroll) {
         viewportElement.removeEventListener('scroll', handleDOMScroll);
       }
-      scrollDisposable.dispose();
-      // Delay disposal to allow any pending xterm.js operations to complete
-      // This prevents "Cannot read properties of undefined (reading 'dimensions')" errors
-      // from xterm.js internal code trying to access disposed terminal
-      setTimeout(() => {
-        // Null out refs just before disposal to allow callbacks to write to terminal
-        // until the last moment (important for React Strict Mode double-render)
-        if (terminalRef.current === terminal) {
-          terminalRef.current = null;
-        }
-        if (fitAddonRef.current === fitAddon) {
-          fitAddonRef.current = null;
-        }
-        if (serializeAddonRef.current === serializeAddon) {
-          serializeAddonRef.current = null;
-        }
-        terminal.dispose();
-      }, 0);
+      scrollDisposable?.dispose();
+
+      // Delay disposal to allow any pending xterm.js operations to complete.
+      // Skip when the async init was aborted before construction (terminal === null).
+      if (terminal) {
+        const terminalToDispose = terminal;
+        const fitAddonAtCleanup = fitAddon;
+        const serializeAddonAtCleanup = serializeAddon;
+        // This prevents "Cannot read properties of undefined (reading 'dimensions')" errors
+        // from xterm.js internal code trying to access disposed terminal
+        setTimeout(() => {
+          // Null out refs just before disposal to allow callbacks to write to terminal
+          // until the last moment (important for React Strict Mode double-render)
+          if (terminalRef.current === terminalToDispose) {
+            terminalRef.current = null;
+          }
+          if (fitAddonRef.current === fitAddonAtCleanup) {
+            fitAddonRef.current = null;
+          }
+          if (serializeAddonRef.current === serializeAddonAtCleanup) {
+            serializeAddonRef.current = null;
+          }
+          terminalToDispose.dispose();
+        }, 0);
+      }
     };
   }, [sessionId, workerId, sendInput, sendResize, updateScrollButtonVisibility]);
 
