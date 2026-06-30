@@ -1426,3 +1426,38 @@ describe('Terminal fontFamily stack', () => {
   });
 });
 
+/**
+ * Scrollback restore order wiring (Issue #922).
+ *
+ * The fix re-orders Terminal.tsx initialization so the cache snapshot is
+ * written into a same-size terminal BEFORE `terminal.open()` is called,
+ * per `@xterm/addon-serialize/typings/addon-serialize.d.ts:24-29`. The
+ * actual ordering and dimension-matching helpers live in
+ * `lib/terminal-restore.ts`; the helper file's tests cover their pure
+ * behavior. This sibling test pins the wiring: Terminal.tsx must import
+ * and call both helpers, and `terminal.open()` must appear after the
+ * snapshot-write call. Reverting either part would silently regress the
+ * bug, so we anchor the wiring with source-text introspection.
+ */
+describe('Terminal restore order wiring (Issue #922)', () => {
+  it('imports the restore helpers from lib/terminal-restore', async () => {
+    const terminalSourcePath = new URL('../Terminal.tsx', import.meta.url);
+    const source = await Bun.file(terminalSourcePath).text();
+
+    expect(source).toMatch(/from\s+['"]\.\.\/lib\/terminal-restore(?:\.js)?['"]/);
+    expect(source).toContain('buildTerminalOptionsForRestore');
+    expect(source).toContain('applyCachedSnapshotBeforeOpen');
+  });
+
+  it('writes the cached snapshot before terminal.open()', async () => {
+    const terminalSourcePath = new URL('../Terminal.tsx', import.meta.url);
+    const source = await Bun.file(terminalSourcePath).text();
+
+    const applyIndex = source.indexOf('applyCachedSnapshotBeforeOpen(');
+    const openIndex = source.indexOf('terminal.open(container)');
+
+    expect(applyIndex).toBeGreaterThan(-1);
+    expect(openIndex).toBeGreaterThan(-1);
+    expect(applyIndex).toBeLessThan(openIndex);
+  });
+});
