@@ -410,6 +410,38 @@ Agent Console can receive GitHub webhooks and route them to active sessions. Whe
    - **Secret**: Same value as `GITHUB_WEBHOOK_SECRET`
    - **Events**: Select individual events: `Workflow runs`, `Issues`, `Pull requests`
 
+### Multi-user mode (Ubuntu / systemd) recipe
+
+Place the secret in a file **outside the deploy target** so that the rsync `--delete` in `scripts/update-and-deploy-for-multiuser-ubuntu.sh` does not wipe it on the next redeploy. The recommended path is `/home/<service-user>/.config/agent-console/secrets.env`, owned by the service user with mode `0600`. Then point the systemd unit at it via `EnvironmentFile=-`.
+
+```bash
+# 1. Secret file outside the deploy target
+sudo mkdir -p /home/agentconsole/.config/agent-console
+echo "GITHUB_WEBHOOK_SECRET=$(openssl rand -hex 32)" | \
+  sudo tee /home/agentconsole/.config/agent-console/secrets.env
+sudo chown -R agentconsole:agentconsole /home/agentconsole/.config/agent-console
+sudo chmod 600 /home/agentconsole/.config/agent-console/secrets.env
+
+# 2. Reference from the systemd unit
+sudo systemctl edit --full agent-console.service
+# In [Service], add:
+#   EnvironmentFile=-/home/agentconsole/.config/agent-console/secrets.env
+# The leading `-` makes the unit start even if the file is absent.
+
+# 3. Reload + restart
+sudo systemctl daemon-reload
+sudo systemctl restart agent-console.service
+
+# 4. Verify (see "Verifying webhook configuration" below for the auth-cookie variant)
+# From a logged-in browser DevTools console:
+#   fetch('/api/system/health').then(r => r.json()).then(console.log)
+# → { webhookSecretConfigured: true, ... }
+```
+
+**Why outside the deploy target.** `scripts/update-and-deploy-for-multiuser-ubuntu.sh` syncs the source-repo into the deploy target with `rsync -a --delete`, excluding only `node_modules` and `.git`. A secret file placed at `<deploy-target>/.env` would work on the first deploy (Bun auto-loads env files at `WorkingDirectory`) but would be deleted on the next `update-and-deploy-for-multiuser-ubuntu.sh` invocation, because env files are excluded from the source-repo by `.gitignore`. Placing the secret under `/home/<service-user>/.config/agent-console/` and referencing it via `EnvironmentFile=-` keeps deploys and secret management on independent lifecycles.
+
+**Tunneling for inbound webhooks** (Cloudflare Tunnel, ngrok, etc.) works the same as in the single-user instructions above — point the public URL at the server's `HOST:PORT` (e.g. `127.0.0.1:8080` for the bootstrap default).
+
 ### Supported Events
 
 | GitHub Event | Condition | Inbound Event | Actions |
