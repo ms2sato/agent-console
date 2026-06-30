@@ -439,9 +439,9 @@ Agent Console can receive GitHub webhooks and route them to active sessions. Whe
   ```js
   fetch('/api/system/health').then(r => r.json()).then(console.log)
   ```
-- **With curl, providing the auth cookie:** Copy the `auth=...` cookie value from your browser's DevTools (Application → Cookies) and pass it via `--cookie`:
+- **With curl, providing the auth cookie:** Copy the `auth_token=...` cookie value from your browser's DevTools (Application → Cookies) and pass it via `--cookie`. The cookie name is `auth_token` (defined in `packages/server/src/lib/auth-constants.ts`):
   ```bash
-  curl -s --cookie "auth=<your-auth-cookie-value>" http://localhost:8080/api/system/health | jq
+  curl -s --cookie "auth_token=<your-auth-cookie-value>" http://localhost:8080/api/system/health | jq
   ```
 
 A simple unauthenticated `curl -sf http://localhost:8080/api/system/health` returns an empty body (silent failure on 401), which is easy to misread as "the webhook is unconfigured." Use one of the authenticated paths above.
