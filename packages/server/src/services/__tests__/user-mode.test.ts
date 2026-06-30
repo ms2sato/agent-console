@@ -437,6 +437,26 @@ describe('MultiUserMode', () => {
     });
   });
 
+  describe('PtySpawnRequestBase carries sshAuthSockFallback', () => {
+    // Confirms the request shape supports the new optional field at the type
+    // boundary user-mode.ts owns. The behavior of the field is verified
+    // separately in multi-user-mode.test.ts (the consumer side) and
+    // elevation-args.test.ts (the helper that emits the shell snippet).
+    it('accepts optional sshAuthSockFallback on a TerminalPtySpawnRequest without compile error', () => {
+      const req: TerminalPtySpawnRequest = {
+        type: 'terminal',
+        username: 'alice',
+        cwd: '/home/alice',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        sshAuthSockFallback: '/home/alice/.1password/agent.sock',
+      };
+      // Trivial runtime check so the request value is not dead code.
+      expect(req.sshAuthSockFallback).toBe('/home/alice/.1password/agent.sock');
+    });
+  });
+
   describe('validateLinux uses Bun.spawn with array args', () => {
     it('should call pamtester with array args and write password to stdin', async () => {
       platformSpy = spyOn(os, 'platform').mockReturnValue('linux');

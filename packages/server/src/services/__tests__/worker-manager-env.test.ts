@@ -346,4 +346,92 @@ describe('WorkerManager - AgentConsole env var injection', () => {
       expect(env!.AGENT_CONSOLE_REPOSITORY_ID).toBeUndefined();
     });
   });
+
+  // ===========================================================================
+  // Issue #918: sshAuthSockFallback propagation from context to spawnPty
+  // ===========================================================================
+  //
+  // The delegated `delegate_to_worktree` path populates
+  // `SessionCreationContext.sshAuthSockFallback`; the in-memory session keeps
+  // it in `InternalSession.sshAuthSockFallback`; on worker activation the
+  // value is read from `context.sshAuthSockFallback` and threaded into the
+  // PTY spawn request. Verified here by capturing the request shape via
+  // SingleUserMode.spawnPty — even though the SingleUserMode path ignores the
+  // field for env semantics (PTY direct path), the field MUST still reach the
+  // user-mode layer so MultiUserMode can use it.
+  describe('Issue #918: sshAuthSockFallback in PTY spawn request', () => {
+    // SingleUserMode passes the PtySpawnRequest through to spawnDirectPty
+    // which discards the field at the env-layer; for verification we wrap
+    // the userMode's `spawnPty` inline below and capture the request shape
+    // itself (this is the layer the WorkerManager hands the request to).
+    it('forwards context.sshAuthSockFallback to userMode.spawnPty as request.sshAuthSockFallback (agent)', async () => {
+      const worker = buildInternalAgentWorker({ id: 'wkr-ssh-fwd' });
+
+      // Capture the PtySpawnRequest by monkey-patching the userMode's
+      // spawnPty. The internal WorkerManager already holds the userMode
+      // reference; we intercept on the next call.
+      const captured: { request?: unknown } = {};
+      const userModeRef = (workerManager as unknown as { userMode: { spawnPty: (req: unknown) => unknown } }).userMode;
+      const origSpawnPty = userModeRef.spawnPty.bind(userModeRef);
+      userModeRef.spawnPty = (req: unknown) => {
+        captured.request = req;
+        return origSpawnPty(req);
+      };
+
+      try {
+        await workerManager.activateAgentWorkerPty(worker, {
+          sessionId: 'sess-ssh-fwd',
+          locationPath: '/test/path',
+          repositoryEnvVars: {},
+          username: 'testuser',
+          resolver: new SessionDataPathResolver('/test/config/_quick'),
+          agentId: 'claude-code',
+          continueConversation: false,
+          context: {
+            sshAuthSockFallback: '/home/testuser/.1password/agent.sock',
+          },
+          revived: false,
+        });
+      } finally {
+        userModeRef.spawnPty = origSpawnPty;
+      }
+
+      const req = captured.request as { type: string; sshAuthSockFallback?: string };
+      expect(req).toBeDefined();
+      expect(req.type).toBe('agent');
+      expect(req.sshAuthSockFallback).toBe('/home/testuser/.1password/agent.sock');
+    });
+
+    it('forwards undefined when context.sshAuthSockFallback is not set (default / back-compat)', async () => {
+      const worker = buildInternalAgentWorker({ id: 'wkr-ssh-default' });
+
+      const captured: { request?: unknown } = {};
+      const userModeRef = (workerManager as unknown as { userMode: { spawnPty: (req: unknown) => unknown } }).userMode;
+      const origSpawnPty = userModeRef.spawnPty.bind(userModeRef);
+      userModeRef.spawnPty = (req: unknown) => {
+        captured.request = req;
+        return origSpawnPty(req);
+      };
+
+      try {
+        await workerManager.activateAgentWorkerPty(worker, {
+          sessionId: 'sess-ssh-default',
+          locationPath: '/test/path',
+          repositoryEnvVars: {},
+          username: 'testuser',
+          resolver: new SessionDataPathResolver('/test/config/_quick'),
+          agentId: 'claude-code',
+          continueConversation: false,
+          // No context.sshAuthSockFallback
+          revived: false,
+        });
+      } finally {
+        userModeRef.spawnPty = origSpawnPty;
+      }
+
+      const req = captured.request as { sshAuthSockFallback?: string };
+      expect(req).toBeDefined();
+      expect(req.sshAuthSockFallback).toBeUndefined();
+    });
+  });
 });

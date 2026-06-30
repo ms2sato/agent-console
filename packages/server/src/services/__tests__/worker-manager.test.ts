@@ -293,6 +293,22 @@ describe('WorkerManager', () => {
       expect(worker.activityState).toBe('idle');
       expect(globalCallback).toHaveBeenCalledWith('sess-cb', 'agent-cb', 'idle');
     });
+
+    // Activation does not crash when `context.sshAuthSockFallback` is set --
+    // the field is forwarded straight to UserMode.spawnPty. The detailed
+    // forwarding assertion lives in worker-manager-env.test.ts; this test
+    // is the sibling-coverage gate for this file.
+    it('should not throw when context.sshAuthSockFallback is set', async () => {
+      const worker = createTestAgentWorker('agent-ssh');
+      await workerManager.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        sessionId: 'sess-ssh',
+        context: {
+          sshAuthSockFallback: '/home/testuser/.1password/agent.sock',
+        },
+      });
+      expect(worker.pty).not.toBeNull();
+    });
   });
 
   describe('activateTerminalWorkerPty', () => {

@@ -14,6 +14,7 @@ import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SingleUserMode } from '../user-mode.js';
+import type { UserMode, PtySpawnRequest } from '../user-mode.js';
 import { PtyMessageInjectionService } from '../pty-message-injection-service.js';
 
 // Test config directory
@@ -267,6 +268,60 @@ describe('SessionManager', () => {
 
       const persisted = await manager.getSessionRepository().findById(session.id);
       expect(persisted!.initiatedBy).toBeUndefined();
+    });
+
+    // SessionCreationContext.sshAuthSockFallback is carried into the
+    // in-memory session and then re-emitted as `request.sshAuthSockFallback`
+    // when the lifecycle spawns the initial agent worker. Public Session
+    // does not surface the field (in-memory only, not persisted), so we
+    // verify propagation by intercepting UserMode.spawnPty and asserting
+    // the captured request shape. Detailed shell-shape behavior of the
+    // field at the elevated branch is covered separately in
+    // elevation-args.test.ts and multi-user-mode.test.ts.
+    it('forwards sshAuthSockFallback from context through to UserMode.spawnPty.request', async () => {
+      // Build a wrapping UserMode that captures the spawn request and
+      // delegates to a real SingleUserMode underneath so the rest of
+      // createSession orchestration (worker setup, file init) still runs.
+      const inner = new SingleUserMode(ptyFactory.provider, {
+        id: 'test-user-id',
+        username: 'testuser',
+        homeDir: '/home/testuser',
+      });
+      const captured: { requests: PtySpawnRequest[] } = { requests: [] };
+      const wrappingUserMode: UserMode = {
+        authenticate: (resolveToken) => inner.authenticate(resolveToken),
+        login: (u, p) => inner.login(u, p),
+        spawnPty: (req) => {
+          captured.requests.push(req);
+          return inner.spawnPty(req);
+        },
+      };
+
+      // Reuse the same factory but with the wrapping UserMode injected.
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: wrappingUserMode,
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        {
+          createdBy: 'caller-user-id',
+          sshAuthSockFallback: '/home/caller/.1password/agent.sock',
+        },
+      );
+
+      // The agent worker spawn must have happened, with the field forwarded.
+      const agentReq = captured.requests.find((r) => r.type === 'agent');
+      expect(agentReq).toBeDefined();
+      expect(agentReq!.sshAuthSockFallback).toBe('/home/caller/.1password/agent.sock');
+      expect(session.id).toBeDefined();
+      expect(session.createdBy).toBe('caller-user-id');
     });
 
     it('should create a new quick session with correct properties', async () => {

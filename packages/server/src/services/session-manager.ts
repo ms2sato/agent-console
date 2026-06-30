@@ -537,6 +537,10 @@ export class SessionManager {
       dataScope,
       dataScopeSlug,
       recoveryState: 'healthy' as const,
+      // In-memory carry of the SSH_AUTH_SOCK fallback for delegated
+      // worktree sessions. Read at PTY activation/revive time by
+      // WorkerLifecycleManager.
+      sshAuthSockFallback: context?.sshAuthSockFallback,
     };
 
     const internalSession: InternalSession = request.type === 'worktree'

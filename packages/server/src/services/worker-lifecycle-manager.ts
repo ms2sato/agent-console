@@ -158,6 +158,9 @@ export class WorkerLifecycleManager {
           parentSessionId: session.parentSessionId,
           parentWorkerId: session.parentWorkerId,
           templateVars,
+          // Forward the delegated session's 1Password socket fallback into
+          // PTY activation. Undefined for non-delegated paths.
+          sshAuthSockFallback: session.sshAuthSockFallback,
         },
         revived: false,
       });
@@ -265,6 +268,8 @@ export class WorkerLifecycleManager {
           parentSessionId: session.parentSessionId,
           parentWorkerId: session.parentWorkerId,
           templateVars: session.templateVars,
+          // Re-emit the SSH_AUTH_SOCK fallback on lazy activation.
+          sshAuthSockFallback: session.sshAuthSockFallback,
         },
         revived: true,
       });
@@ -425,6 +430,8 @@ export class WorkerLifecycleManager {
         parentSessionId: session.parentSessionId,
         parentWorkerId: session.parentWorkerId,
         templateVars: session.templateVars,
+        // Preserve the SSH_AUTH_SOCK fallback across restart.
+        sshAuthSockFallback: session.sshAuthSockFallback,
       },
       // File was just truncated by resetWorkerOutput above, so the
       // file-absolute offset is 0 — equivalent to fresh creation.
@@ -568,6 +575,8 @@ export class WorkerLifecycleManager {
             parentSessionId: session.parentSessionId,
             parentWorkerId: session.parentWorkerId,
             templateVars: session.templateVars,
+            // Re-emit the SSH_AUTH_SOCK fallback on restore.
+            sshAuthSockFallback: session.sshAuthSockFallback,
           },
           revived: true,
         });

@@ -373,6 +373,10 @@ export class WorkerManager {
       rows: 30,
       command,
       agentConsoleContext,
+      // Forward the optional SSH_AUTH_SOCK fallback from the session
+      // creation context. Populated only by the MCP delegate path;
+      // undefined for every other path so existing behavior is preserved.
+      sshAuthSockFallback: context?.sshAuthSockFallback,
     });
 
     const activityDetector = new ActivityDetector({

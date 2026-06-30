@@ -891,5 +891,125 @@ describe('MultiUserMode', () => {
       const innerCommand = args[6];
       expect(innerCommand).toContain("cd '/home/alice'");
     });
+
+    // Issue #918: forward `sshAuthSockFallback` to buildElevationArgs so the
+    // inner shell command includes the conditional SSH_AUTH_SOCK fallback.
+    it('should forward sshAuthSockFallback into the inner command when provided (agent)', async () => {
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'other-user',
+        cwd: '/workspace',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+        sshAuthSockFallback: '/home/other-user/.1password/agent.sock',
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args] = getLastSpawnCall();
+      expect(cmd).toBe('sudo');
+      const innerCommand = args[6];
+      expect(innerCommand).toContain('[ -z "$SSH_AUTH_SOCK" ]');
+      expect(innerCommand).toContain("[ -S '/home/other-user/.1password/agent.sock' ]");
+      expect(innerCommand).toContain(
+        "export SSH_AUTH_SOCK='/home/other-user/.1password/agent.sock'",
+      );
+    });
+
+    it('should NOT inject any SSH_AUTH_SOCK snippet when sshAuthSockFallback is not provided (agent)', async () => {
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'other-user',
+        cwd: '/workspace',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+      };
+
+      mode.spawnPty(request);
+
+      const [, args] = getLastSpawnCall();
+      const innerCommand = args[6];
+      expect(innerCommand).not.toMatch(/SSH_AUTH_SOCK/);
+      expect(innerCommand).not.toMatch(/\.1password/);
+    });
+  });
+
+  // ===========================================================================
+  // Issue #918: single-user (sudo-skip) path ignores sshAuthSockFallback
+  // ===========================================================================
+  //
+  // When the request's username matches the server process user, MultiUserMode
+  // falls back to direct spawning. In that path, SSH_AUTH_SOCK is inherited
+  // naturally from process.env, and the sshAuthSockFallback field MUST NOT
+  // produce a shell-level conditional in the spawned command (the spawn happens
+  // via `sh -c <unsetPrefix><command>` with env passed via opts.env, not via
+  // an exported sudo-wrapped script).
+  describe('Issue #918: sudo-skip (direct) path ignores sshAuthSockFallback', () => {
+    async function createMode(): Promise<MultiUserMode> {
+      return MultiUserMode.create(ptyFactory.provider, userRepository);
+    }
+
+    function getServerUsername(): string {
+      const os = require('os');
+      return os.userInfo().username;
+    }
+
+    function getLastSpawnCall(): [string, string[], PtySpawnOptions] {
+      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
+      return calls[calls.length - 1];
+    }
+
+    it('does NOT inject any SSH_AUTH_SOCK shell snippet in the direct path even when sshAuthSockFallback is provided', async () => {
+      const mode = await createMode();
+      const serverUsername = getServerUsername();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: serverUsername,
+        cwd: '/workspace',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+        // Provided, but the direct (sudo-skip) path ignores it.
+        sshAuthSockFallback: '/home/whatever/.1password/agent.sock',
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args, opts] = getLastSpawnCall();
+      // Direct path: `sh -c <command>` with env on opts.env.
+      expect(cmd).toBe('sh');
+      // The shell command must NOT contain any SSH_AUTH_SOCK conditional or
+      // export -- the field is ignored on this path.
+      expect(args[1]).not.toMatch(/SSH_AUTH_SOCK/);
+      expect(args[1]).not.toMatch(/\.1password/);
+      // env on the spawn options must not have a synthesized SSH_AUTH_SOCK
+      // either (the field is not converted into env at this layer).
+      expect(opts.env?.SSH_AUTH_SOCK).toBeUndefined();
+    });
   });
 });
