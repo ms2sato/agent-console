@@ -439,6 +439,36 @@ The script does not perform `git pull` itself — sync the source-repo to the
 intended commit before invoking, and confirm via the printed HEAD line in the
 script's `==> Pre-check` step before the build proceeds.
 
+## Multiple Repositories on the Same Instance
+
+A single multi-user (production or dev) instance can host more than one
+registered repository at the same time. Each repository keeps its own
+`source-repos/<repo-name>` directory under `AGENT_CONSOLE_DATA_ROOT` and its
+own `repositories/<owner>/<repo>/worktrees/<...>` tree, and sessions for each
+repository run side by side from the shared `agentconsole` server process.
+
+Operator implications:
+
+- When inspecting the running process tree (`ps -ef | grep AGENT_CONSOLE_SESSION_ID`)
+  before stopping or restarting an instance, expect to see active delegated
+  sessions for any of the registered repositories — not just the one whose
+  worktree the operator was using most recently. Stopping the instance
+  terminates all of them.
+- The dev instance's repository registry is independent of the production
+  instance's registry. A repository registered against
+  `/var/lib/agent-console-dev/` is not visible from the production server on
+  port 8080, and vice versa.
+- The Orchestrator's `list_repositories` MCP call returns only the registry of
+  the instance the calling session is hosted on. To inventory the other
+  instance, query that instance's UI or its `source-repos/` directory
+  directly on disk.
+
+The Sprint 2026-06-30 retrospective surfaced this as implicit knowledge: a
+running `dev-multiuser.sh` was found to host sessions from a sibling
+repository the agent had no prior visibility into, which complicated a
+restart proposal. Documenting the multi-repo property up front avoids
+that surprise.
+
 ## GitHub Webhook Setup (multi-user)
 
 For inbound GitHub webhook configuration on the systemd instance — including the
