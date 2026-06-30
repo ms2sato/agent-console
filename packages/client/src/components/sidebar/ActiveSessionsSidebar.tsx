@@ -101,6 +101,7 @@ interface SessionItemProps {
 
 function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: SessionItemProps) {
   const { session, activityState } = sessionWithActivity;
+  const { isMultiUser } = useAuth();
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
   const label = getActivityLabel(activityState);
   const isOrphaned = session.recoveryState === 'orphaned';
@@ -108,6 +109,7 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
   const orphanedTooltip = isOrphaned
     ? `${tooltip} (Unrecoverable)${sharedSuffix}`
     : `${tooltip}${sharedSuffix}`;
+  const showCreatorUsername = isMultiUser && Boolean(session.createdByUsername);
 
   if (collapsed) {
     return (
@@ -130,18 +132,27 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
   return (
     <button
       onClick={onClick}
-      className={`w-full p-3 text-left hover:bg-slate-800 transition-colors ${
+      className={`relative w-full p-3 text-left hover:bg-slate-800 transition-colors ${
         isActive ? 'bg-slate-800' : ''
       }`}
       title={orphanedTooltip}
     >
+      {showCreatorUsername && (
+        <span
+          data-testid="session-creator-username"
+          className="absolute top-2 right-2 max-w-[6rem] truncate text-[10px] font-mono text-gray-500"
+          title={session.createdByUsername ?? undefined}
+        >
+          {session.createdByUsername}
+        </span>
+      )}
       <div className="flex items-start gap-2">
         {isOrphaned ? (
           <AlertCircleIcon className="w-3 h-3 text-red-400 mt-1.5 shrink-0" />
         ) : (
           <ActivityIndicator state={activityState} className="mt-1.5" />
         )}
-        <div className="min-w-0 flex-1">
+        <div className={`min-w-0 flex-1 ${showCreatorUsername ? 'pr-20' : ''}`}>
           <div className="flex items-center gap-1.5 min-w-0">
             <span className={`text-sm font-medium truncate ${isOrphaned ? 'text-gray-500 line-through' : 'text-gray-300'}`}>
               {primary}

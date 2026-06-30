@@ -8,7 +8,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
-import { setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
+import { setAuthMode, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session } from '@agent-console/shared';
 
 // Helper to create mock worktree session
@@ -803,6 +803,102 @@ describe('ActiveSessionsSidebar', () => {
         btn.getAttribute('title')?.includes('shared-repo / shared-branch')
       );
       expect(sessionButton?.getAttribute('title')).toContain('[Shared]');
+    });
+  });
+
+  describe('Worktree owner label (createdByUsername)', () => {
+    it('should render creator username in multi-user mode when createdByUsername is set', async () => {
+      setAuthMode('multi-user');
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'multi-user-repo',
+            createdByUsername: 'alice',
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      const label = screen.getByTestId('session-creator-username');
+      expect(label.textContent).toBe('alice');
+    });
+
+    it('should NOT render creator username span when createdByUsername is null (legacy session)', async () => {
+      setAuthMode('multi-user');
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'legacy-repo',
+            createdByUsername: null,
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      // The session item still renders, but the creator-username span must
+      // not be mounted at all (truthy gate prevents <span>{null}</span> from
+      // being emitted as an empty placeholder element).
+      expect(screen.getByText('legacy-repo')).toBeTruthy();
+      expect(screen.queryByTestId('session-creator-username')).toBeNull();
+    });
+
+    it('should NOT render creator username in single-user mode even when createdByUsername is set', async () => {
+      // authMode defaults to 'none' from resetAuth(); do NOT call setAuthMode here
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'single-user-repo',
+            createdByUsername: 'alice',
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      // Gating: in single-user (authMode === 'none'), even a populated
+      // createdByUsername must not be displayed.
+      expect(screen.getByText('single-user-repo')).toBeTruthy();
+      expect(screen.queryByTestId('session-creator-username')).toBeNull();
+    });
+
+    it('should render BOTH [Shared] badge and creator username for shared sessions (no collision)', async () => {
+      setAuthMode('multi-user');
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'shared-repo',
+            isShared: true,
+            createdByUsername: 'shared-acct',
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      // Both UI elements visible — they live in distinct DOM nodes so no
+      // textual collision; visual collision is prevented by reserved
+      // padding (pr-20 on the inner content column when the label renders).
+      expect(screen.getByText('shared-repo')).toBeTruthy();
+      const sharedBadge = screen.getByText('Shared');
+      const creatorLabel = screen.getByTestId('session-creator-username');
+      expect(sharedBadge).toBeTruthy();
+      expect(creatorLabel.textContent).toBe('shared-acct');
+      // Sanity: they are different DOM nodes (not the same element).
+      expect(sharedBadge).not.toBe(creatorLabel);
     });
   });
 
