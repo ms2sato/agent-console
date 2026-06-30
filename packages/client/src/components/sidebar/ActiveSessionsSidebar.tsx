@@ -101,7 +101,7 @@ interface SessionItemProps {
 
 function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: SessionItemProps) {
   const { session, activityState } = sessionWithActivity;
-  const { isMultiUser } = useAuth();
+  const { isMultiUser, currentUser } = useAuth();
   const { primary, secondary, tooltip } = getSessionDisplayInfo(session);
   const label = getActivityLabel(activityState);
   const isOrphaned = session.recoveryState === 'orphaned';
@@ -110,6 +110,17 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
     ? `${tooltip} (Unrecoverable)${sharedSuffix}`
     : `${tooltip}${sharedSuffix}`;
   const showCreatorUsername = isMultiUser && Boolean(session.createdByUsername);
+  // Color the creator badge differently for "my sessions" vs "others'
+  // sessions" so users can scan the sidebar and immediately spot which
+  // sessions they themselves created vs ones owned by other authenticated
+  // users. Match is by stable user UUID, not username string.
+  const isSelfSession =
+    currentUser !== null &&
+    session.createdBy !== undefined &&
+    currentUser.id === session.createdBy;
+  const creatorBadgeColorClass = isSelfSession
+    ? 'bg-indigo-500/20 text-indigo-200'
+    : 'bg-amber-500/20 text-amber-200';
 
   if (collapsed) {
     return (
@@ -140,7 +151,7 @@ function SessionItem({ sessionWithActivity, collapsed, isActive, onClick }: Sess
       {showCreatorUsername && (
         <span
           data-testid="session-creator-username"
-          className="absolute top-2 right-2 max-w-[6rem] truncate text-[10px] font-mono text-gray-500"
+          className={`absolute top-2 right-2 max-w-[6rem] truncate text-[10px] font-mono px-1.5 py-0.5 rounded ${creatorBadgeColorClass}`}
           title={session.createdByUsername ?? undefined}
         >
           {session.createdByUsername}

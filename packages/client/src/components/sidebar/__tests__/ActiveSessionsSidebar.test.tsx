@@ -8,7 +8,7 @@ import {
   SIDEBAR_DEFAULT_WIDTH,
 } from '../../../hooks/useSidebarState';
 import type { SessionWithActivity } from '../../../hooks/useActiveSessionsWithActivity';
-import { setAuthMode, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
+import { setAuthMode, setCurrentUser, setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 import type { AgentActivityState, WorktreeSession, QuickSession, Session } from '@agent-console/shared';
 
 // Helper to create mock worktree session
@@ -870,6 +870,88 @@ describe('ActiveSessionsSidebar', () => {
       // createdByUsername must not be displayed.
       expect(screen.getByText('single-user-repo')).toBeTruthy();
       expect(screen.queryByTestId('session-creator-username')).toBeNull();
+    });
+
+    it('should style creator badge with indigo (self) when session.createdBy matches currentUser.id', async () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ id: 'self-uuid', username: 'me', homeDir: '/home/me' });
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'my-own-repo',
+            createdBy: 'self-uuid',
+            createdByUsername: 'me',
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      const label = screen.getByTestId('session-creator-username');
+      const classes = label.className.split(' ');
+      // Self: indigo present, amber absent (polarity-flip pair).
+      // Uses Tailwind alpha-shorthand `bg-<color>-500/20` so the badge
+      // tints the existing slate sidebar rather than punching a solid block.
+      expect(classes).toContain('bg-indigo-500/20');
+      expect(classes).toContain('text-indigo-200');
+      expect(classes).not.toContain('bg-amber-500/20');
+      expect(classes).not.toContain('text-amber-200');
+    });
+
+    it('should style creator badge with amber (other) when session.createdBy differs from currentUser.id', async () => {
+      setAuthMode('multi-user');
+      setCurrentUser({ id: 'self-uuid', username: 'me', homeDir: '/home/me' });
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'someone-elses-repo',
+            createdBy: 'other-uuid',
+            createdByUsername: 'alice',
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      const label = screen.getByTestId('session-creator-username');
+      const classes = label.className.split(' ');
+      // Other: amber present, indigo absent (polarity-flip pair)
+      expect(classes).toContain('bg-amber-500/20');
+      expect(classes).toContain('text-amber-200');
+      expect(classes).not.toContain('bg-indigo-500/20');
+      expect(classes).not.toContain('text-indigo-200');
+    });
+
+    it('should style creator badge as "other" (amber) when currentUser is null (e.g. session loaded before login resolves)', async () => {
+      setAuthMode('multi-user');
+      // currentUser intentionally not set (null after resetAuth)
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({
+            repositoryName: 'unknown-viewer-repo',
+            createdBy: 'some-uuid',
+            createdByUsername: 'alice',
+          }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />
+      );
+
+      const label = screen.getByTestId('session-creator-username');
+      const classes = label.className.split(' ');
+      // Without a known viewer identity we conservatively treat the session
+      // as "not mine" so it never falsely flags as the viewer's own.
+      expect(classes).toContain('bg-amber-500/20');
+      expect(classes).not.toContain('bg-indigo-500/20');
     });
 
     it('should render BOTH [Shared] badge and creator username for shared sessions (no collision)', async () => {
