@@ -4,11 +4,18 @@ import type { HookCommandResult, Worktree } from '@agent-console/shared';
 import type { SessionManager } from '../session-manager.js';
 import { buildWorktreeSession } from '../../__tests__/utils/build-test-data.js';
 import { GitError, mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
+import {
+  EmptyRepositoryError,
+  EMPTY_REPOSITORY_ERROR_MESSAGE,
+} from '../worktree-service.js';
 // --- Mock worktreeService (now passed as parameter, no mock.module needed) ---
 
 const mockVerifyRepoAccessible = mock<(repoPath: string) => Promise<void>>(() =>
   Promise.resolve(),
 );
+const mockEnsureRepoHasCommits = mock<
+  (repoPath: string, requestUsername?: string | null) => Promise<void>
+>(() => Promise.resolve());
 const mockCreateWorktree = mock<
   (
     repoPath: string,
@@ -37,6 +44,7 @@ const mockExecuteHookCommand = mock<
 
 const mockWorktreeService = {
   verifyRepoAccessible: mockVerifyRepoAccessible,
+  ensureRepoHasCommits: mockEnsureRepoHasCommits,
   createWorktree: mockCreateWorktree,
   removeWorktree: mockRemoveWorktree,
   executeHookCommand: mockExecuteHookCommand,
@@ -109,12 +117,14 @@ describe('createWorktreeWithSession', () => {
   beforeEach(() => {
     resetGitMocks();
     mockVerifyRepoAccessible.mockReset();
+    mockEnsureRepoHasCommits.mockReset();
     mockCreateWorktree.mockReset();
     mockRemoveWorktree.mockReset();
     mockExecuteHookCommand.mockReset();
 
     // Default implementations
     mockVerifyRepoAccessible.mockImplementation(() => Promise.resolve());
+    mockEnsureRepoHasCommits.mockImplementation(() => Promise.resolve());
     mockCreateWorktree.mockImplementation(() =>
       Promise.resolve({ worktreePath: CREATED_PATH, index: 2 }),
     );
@@ -162,6 +172,11 @@ describe('createWorktreeWithSession', () => {
     expect(mockCreateWorktree).toHaveBeenCalledWith(
       '/repos/my-repo', 'feature-new', 'repo-1', 'origin/main', undefined,
     );
+    // Verify the Issue #921 pre-check runs on the happy path with the same
+    // `requestUsername` (undefined for single-user defaults). Guarantees the
+    // pre-check does not silently regress to no-op.
+    expect(mockEnsureRepoHasCommits).toHaveBeenCalledTimes(1);
+    expect(mockEnsureRepoHasCommits).toHaveBeenCalledWith('/repos/my-repo', undefined);
     expect(sm.createSession).toHaveBeenCalledTimes(1);
   });
 
@@ -268,6 +283,62 @@ describe('createWorktreeWithSession', () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe('Cannot access repository: unexpected boom');
     expect(mockCreateWorktree).not.toHaveBeenCalled();
+  });
+
+  // --- Issue #921: empty source-repo pre-check ---
+
+  it('returns actionable domain error when source repo has no commits (Issue #921)', async () => {
+    // `git worktree add <path> main` on an unborn HEAD would surface as
+    // `fatal: invalid reference: main`, which does not tell the user what
+    // to do. The pre-check translates this into a fixed, actionable message
+    // BEFORE any filesystem side effect.
+    mockEnsureRepoHasCommits.mockImplementation(() =>
+      Promise.reject(new EmptyRepositoryError()),
+    );
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe(EMPTY_REPOSITORY_ERROR_MESSAGE);
+    // Exact-string check: the user-facing message must not drift silently.
+    expect(result.error).toBe(
+      'The source repository has no commits yet. Create at least one commit (an empty commit is fine: git commit --allow-empty -m "initial commit") in the source repo before creating a worktree.',
+    );
+    // Pre-check must abort BEFORE any filesystem or network side effect.
+    expect(mockGit.fetchRemote).not.toHaveBeenCalled();
+    expect(mockCreateWorktree).not.toHaveBeenCalled();
+    expect(mockRemoveWorktree).not.toHaveBeenCalled();
+    expect(sm.createSession).not.toHaveBeenCalled();
+  });
+
+  it('surfaces plain Error message when ensureRepoHasCommits throws non-EmptyRepositoryError (Issue #921)', async () => {
+    // Any error OTHER than EmptyRepositoryError propagates its message
+    // verbatim (mirrors the verifyRepoAccessible non-GitError branch above).
+    mockEnsureRepoHasCommits.mockImplementation(() =>
+      Promise.reject(new Error('rev-parse spawn crashed')),
+    );
+
+    const sm = createMockSessionManager();
+    const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('rev-parse spawn crashed');
+    expect(mockCreateWorktree).not.toHaveBeenCalled();
+  });
+
+  it('threads requestUsername to ensureRepoHasCommits for multi-user pre-check (Issue #921)', async () => {
+    // The pre-check must run as the same user the subsequent `git worktree
+    // add` runs as, so it observes the same repo state (e.g. under a
+    // per-user `safe.directory` gitconfig).
+    const sm = createMockSessionManager();
+    await createWorktreeWithSession(
+      { ...DEFAULT_PARAMS, requestUsername: 'alice' },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(mockEnsureRepoHasCommits).toHaveBeenCalledWith('/repos/my-repo', 'alice');
   });
 
   it('rolls back and returns "directory is missing" when sanity-net stat fails (Issue #854)', async () => {

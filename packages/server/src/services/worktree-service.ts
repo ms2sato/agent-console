@@ -3,6 +3,7 @@ import * as path from 'path';
 import type { Worktree, HookCommandResult } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
 import {
+  git,
   getRemoteUrl,
   parseOrgRepo,
   listWorktrees as gitListWorktrees,
@@ -35,6 +36,29 @@ import type { WorktreeRepository, WorktreeRecord } from '../repositories/worktre
 import { SqliteWorktreeRepository } from '../repositories/sqlite-worktree-repository.js';
 
 const logger = createLogger('worktree-service');
+
+/**
+ * Actionable, user-facing message returned when the source repository has
+ * no commits yet (unborn HEAD). The `git worktree add <path> main` call in
+ * `createWorktree` would otherwise surface as `fatal: invalid reference:
+ * main`, which does not tell the user what to do. Exported so tests can
+ * assert on the exact string.
+ */
+export const EMPTY_REPOSITORY_ERROR_MESSAGE =
+  'The source repository has no commits yet. Create at least one commit (an empty commit is fine: git commit --allow-empty -m "initial commit") in the source repo before creating a worktree.';
+
+/**
+ * Domain error thrown by {@link WorktreeService.ensureRepoHasCommits} when
+ * the source repo has no commits (unborn HEAD). Callers surface
+ * `error.message` verbatim to the user; the message is always
+ * {@link EMPTY_REPOSITORY_ERROR_MESSAGE}.
+ */
+export class EmptyRepositoryError extends Error {
+  constructor(message: string = EMPTY_REPOSITORY_ERROR_MESSAGE) {
+    super(message);
+    this.name = 'EmptyRepositoryError';
+  }
+}
 
 /**
  * Timeout for `git worktree add` invocations that route through `runAsUser`.
@@ -256,6 +280,44 @@ export class WorktreeService {
   async verifyRepoAccessible(repoPath: string): Promise<void> {
     // We discard the return value; only the throw-or-not signal is needed.
     await gitListWorktrees(repoPath);
+  }
+
+  /**
+   * Verify the source repository has at least one commit (HEAD resolves to
+   * a commit). Throws {@link EmptyRepositoryError} with an actionable message
+   * when the repo has no commits yet (unborn HEAD).
+   *
+   * Uses the same elevation pipeline as {@link createWorktree}: when
+   * `requestUsername` is provided in multi-user mode, `git rev-parse` runs as
+   * that user via `runAsUser` (through `lib/git.ts:git()`), so the pre-check
+   * sees the same repo state that the subsequent `git worktree add` will.
+   *
+   * Called before `git worktree add` from
+   * `worktree-creation-service.ts:createWorktreeWithSession` so users see an
+   * actionable domain error instead of the raw `fatal: invalid reference:
+   * main` git surfaces on an unborn HEAD.
+   *
+   * @throws EmptyRepositoryError when `git rev-parse --verify HEAD^{commit}`
+   *   fails (any non-zero exit is treated as "no commits yet"; the underlying
+   *   `GitError.stderr` is logged for diagnostics but the caller receives the
+   *   fixed, user-facing message).
+   */
+  async ensureRepoHasCommits(
+    repoPath: string,
+    requestUsername?: string | null,
+  ): Promise<void> {
+    try {
+      await git(['rev-parse', '--verify', 'HEAD^{commit}'], repoPath, undefined, requestUsername);
+    } catch (error) {
+      if (error instanceof GitError) {
+        logger.warn(
+          { repoPath, stderr: error.stderr, exitCode: error.exitCode },
+          'Source repository has no commits (unborn HEAD); pre-check will surface actionable error',
+        );
+        throw new EmptyRepositoryError();
+      }
+      throw error;
+    }
   }
 
   /**

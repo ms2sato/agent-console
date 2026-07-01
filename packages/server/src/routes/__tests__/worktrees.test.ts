@@ -40,6 +40,9 @@ function createMockWorktreeService() {
     // tests that don't care about the probe see the legacy behaviour;
     // probe-failure tests override per-call.
     verifyRepoAccessible: mock(() => Promise.resolve()),
+    // Issue #921 pre-check: default no-op (repo has commits). Tests that
+    // exercise the empty-repo branch override this per-call.
+    ensureRepoHasCommits: mock(() => Promise.resolve()),
     isWorktreeOf: mock(() => Promise.resolve(true)),
     getDefaultBranch: mock(() => Promise.resolve('main')),
     listLocalBranches: mock(() => Promise.resolve([])),
