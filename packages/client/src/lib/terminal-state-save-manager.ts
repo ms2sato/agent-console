@@ -138,7 +138,13 @@ export async function unregister(
   // This prevents saving stale state while the cache is being cleared
   if (truncationCheckFunction(sessionId, workerId)) {
     logger.debug('[SaveManager] Skipping save during truncation recovery');
-    registry.delete(key);
+    // Identity guard: only delete if the entry is still ours.
+    // A concurrent register() during the await above may have overwritten
+    // the slot with a fresh entry for the next mount; deleting it would
+    // silently drop the next Terminal's cache-save registration.
+    if (registry.get(key) === workerState) {
+      registry.delete(key);
+    }
     return;
   }
 
@@ -147,7 +153,10 @@ export async function unregister(
     await saveWorkerState(sessionId, workerId, workerState);
   }
 
-  registry.delete(key);
+  // Identity guard: see note above.
+  if (registry.get(key) === workerState) {
+    registry.delete(key);
+  }
 }
 
 /**
