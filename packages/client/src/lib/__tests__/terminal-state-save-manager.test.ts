@@ -50,6 +50,10 @@ describe('terminal-state-save-manager', () => {
     saveTerminalStateCalls.length = 0;
     resetIdleSaveDelay();
     resetSaveFunction();
+    // Reset truncation-check unconditionally so an assertion failure in a
+    // test that overrode it does not leak the forced-true behavior into
+    // subsequent tests.
+    resetTruncationCheckFunction();
   });
 
   const createValidState = (
@@ -473,8 +477,7 @@ describe('terminal-state-save-manager', () => {
       // With the fix: identity guard also protects the truncation-branch delete.
       // Without the fix: entry B is deleted from the truncation branch.
       expect(getRegistrySize()).toBe(1);
-
-      resetTruncationCheckFunction();
+      // afterEach resets the truncation-check function; no need to reset here.
     });
   });
 

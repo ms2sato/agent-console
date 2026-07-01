@@ -1478,12 +1478,23 @@ describe('Terminal cache save race on rapid unmount/remount (Issue #929)', () =>
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     // === Mount B (same sessionId:workerId) mounts before A's cleanup finishes ===
+    // Raise the idle delay to something far larger than the test can wall-clock,
+    // so Mount B's idle timer CANNOT fire before we manually unregister below.
+    // This isolates the assertion to the unregister-path save specifically —
+    // otherwise the test could green-light via the idle-timer path if scheduling
+    // stalls under load, masking the bug the fix targets.
+    setIdleSaveDelay(60_000);
     registerSaveManager('session-1', 'worker-1', () => stateB);
     markSaveManagerDirty('session-1', 'worker-1');
 
     // === Release Mount A's slow save so its cleanup can finish ===
     resolveSlowSave!();
     await unregisterPromiseA;
+
+    // Sanity check: only Mount A's save has been captured so far. If Mount B's
+    // idle timer had somehow fired, this assertion would catch it before the
+    // final assertion becomes ambiguous.
+    expect(capturedSaves).toHaveLength(1);
 
     // === Mount B unmounts ===
     await unregisterSaveManager('session-1', 'worker-1');
