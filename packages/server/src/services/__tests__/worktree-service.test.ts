@@ -281,6 +281,117 @@ detached
     });
   });
 
+  describe('ensureRepoHasCommits (Issue #921)', () => {
+    // Pre-check that surfaces an actionable domain error when the source
+    // repo has no commits (unborn HEAD). Wraps `git rev-parse --verify
+    // HEAD^{commit}` -- any GitError becomes an EmptyRepositoryError with a
+    // fixed user-facing message; other errors propagate as-is.
+    beforeEach(() => {
+      mockGit.git.mockReset();
+      // Default: git resolves (repo has commits). Individual tests override
+      // to reject when they need to exercise the empty-repo branch.
+      mockGit.git.mockImplementation(() => Promise.resolve(''));
+    });
+
+    it('throws EmptyRepositoryError with the exact user-facing message when git rev-parse fails', async () => {
+      // Simulate `git rev-parse --verify HEAD^{commit}` failing because the
+      // repo has no commits yet.
+      mockGit.git.mockImplementation(() =>
+        Promise.reject(
+          new GitError(
+            "git rev-parse failed: fatal: Needed a single revision",
+            128,
+            'fatal: Needed a single revision',
+          ),
+        ),
+      );
+
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const { EmptyRepositoryError, EMPTY_REPOSITORY_ERROR_MESSAGE } =
+        await import(`../worktree-service.js?v=${importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.ensureRepoHasCommits('/repo/empty');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(EmptyRepositoryError);
+      expect((caught as Error).message).toBe(EMPTY_REPOSITORY_ERROR_MESSAGE);
+      // The exact string must not drift silently -- Issue #921's user-facing
+      // contract.
+      expect((caught as Error).message).toBe(
+        'The source repository has no commits yet. Create at least one commit (an empty commit is fine: git commit --allow-empty -m "initial commit") in the source repo before creating a worktree.',
+      );
+    });
+
+    it('propagates non-GitError unchanged', async () => {
+      // Only GitError is translated to EmptyRepositoryError; other errors
+      // (e.g. spawn failure) surface verbatim so operators see the real
+      // cause.
+      const cause = new Error('spawn crashed');
+      mockGit.git.mockImplementation(() => Promise.reject(cause));
+
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.ensureRepoHasCommits('/repo');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBe(cause);
+    });
+
+    it('resolves when git accepts the rev-parse', async () => {
+      // Default beforeEach already wires git() to resolve; happy path just
+      // returns undefined without throwing.
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      const result = await service.ensureRepoHasCommits('/repo/main');
+      expect(result).toBeUndefined();
+    });
+
+    it('forwards null requestUsername to git() (single-user branch)', async () => {
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      await service.ensureRepoHasCommits('/repo/main');
+
+      // 4th positional arg (`requestUser`) should be undefined when the
+      // caller does not provide it. This is the single-user code path --
+      // `git()` uses its direct-spawn branch.
+      expect(mockGit.git).toHaveBeenCalledWith(
+        ['rev-parse', '--verify', 'HEAD^{commit}'],
+        '/repo/main',
+        undefined,
+        undefined,
+      );
+    });
+
+    it('forwards non-null requestUsername to git() (multi-user branch)', async () => {
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      await service.ensureRepoHasCommits('/repo/main', 'alice');
+
+      // 4th positional arg is the request username, routed through
+      // `git()` -> `runAsUser` so the pre-check observes the same repo
+      // state as the subsequent `git worktree add`.
+      expect(mockGit.git).toHaveBeenCalledWith(
+        ['rev-parse', '--verify', 'HEAD^{commit}'],
+        '/repo/main',
+        undefined,
+        'alice',
+      );
+    });
+  });
+
   describe('createWorktree', () => {
     // `runAsUser` is now the single execution point for `git worktree add`,
     // so the tests inject a capture mock via `runAsUserImpl` rather than

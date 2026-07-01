@@ -4,11 +4,16 @@ import type { Session } from '@agent-console/shared';
 import type { SessionManager } from './session-manager.js';
 import type { SessionCreationContext } from './internal-types.js';
 import type { WorktreeService } from './worktree-service.js';
+import { EmptyRepositoryError } from './worktree-service.js';
 
 /** Narrow subset of WorktreeService methods needed by the creation service. */
 type CreateWorktreeServiceDeps = Pick<
   WorktreeService,
-  'verifyRepoAccessible' | 'createWorktree' | 'removeWorktree' | 'executeHookCommand'
+  | 'verifyRepoAccessible'
+  | 'ensureRepoHasCommits'
+  | 'createWorktree'
+  | 'removeWorktree'
+  | 'executeHookCommand'
 >;
 import { fetchRemote, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -110,7 +115,32 @@ export async function createWorktreeWithSession(
     return { success: false, error: `Cannot access repository: ${detail}` };
   }
 
-  // 2. Handle remote fetch if requested
+  // 2. Pre-check: source repo must have at least one commit. `git worktree
+  // add <path> main` on an unborn HEAD would otherwise fail with the raw
+  // `fatal: invalid reference: main`, which does not tell the user what to
+  // do. Surfaces an actionable domain error before any filesystem side
+  // effect. Threads `requestUsername` so multi-user mode runs the check as
+  // the requesting user — the same user the subsequent `git worktree add`
+  // runs as.
+  try {
+    await worktreeService.ensureRepoHasCommits(repoPath, requestUsername);
+  } catch (emptyRepoErr) {
+    if (emptyRepoErr instanceof EmptyRepositoryError) {
+      logger.warn(
+        { repoId, repoPath },
+        'Source repo has no commits (unborn HEAD); aborting worktree create',
+      );
+      return { success: false, error: emptyRepoErr.message };
+    }
+    const detail = emptyRepoErr instanceof Error ? emptyRepoErr.message : String(emptyRepoErr);
+    logger.warn(
+      { repoId, repoPath, err: emptyRepoErr },
+      'ensureRepoHasCommits failed unexpectedly; aborting worktree create',
+    );
+    return { success: false, error: detail };
+  }
+
+  // 3. Handle remote fetch if requested
   let effectiveBaseBranch = baseBranch;
   let fetchFailed = false;
   let fetchError: string | undefined;
@@ -133,7 +163,7 @@ export async function createWorktreeWithSession(
     }
   }
 
-  // 3. Create worktree
+  // 4. Create worktree
   const wtResult = await worktreeService.createWorktree(
     repoPath,
     branch,
@@ -148,7 +178,7 @@ export async function createWorktreeWithSession(
 
   const createdWorktreePath = wtResult.worktreePath;
 
-  // 4. Sanity safety net: confirm the directory actually exists. `git worktree
+  // 5. Sanity safety net: confirm the directory actually exists. `git worktree
   // add` is reliable -- exit 0 means the worktree is registered -- so this
   // check is expected to fire approximately never. Kept defensively so a
   // genuinely unexpected failure (e.g., filesystem race, out-of-band deletion)
@@ -179,7 +209,7 @@ export async function createWorktreeWithSession(
   };
 
   try {
-    // 5. Execute setup command if configured
+    // 6. Execute setup command if configured
     let setupCommandResult: HookCommandResult | undefined;
     if (setupCommand && wtResult.index !== undefined) {
       setupCommandResult = await worktreeService.executeHookCommand(
@@ -194,7 +224,7 @@ export async function createWorktreeWithSession(
       );
     }
 
-    // 6. Create session (unless explicitly skipped)
+    // 7. Create session (unless explicitly skipped)
     let session: Session | undefined;
     if (autoStartSession) {
       session = await sessionManager.createSession({
