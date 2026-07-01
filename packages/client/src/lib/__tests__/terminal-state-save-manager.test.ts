@@ -13,6 +13,8 @@ import {
   getIdleSaveDelay,
   setSaveFunction,
   resetSaveFunction,
+  setTruncationCheckFunction,
+  resetTruncationCheckFunction,
   DEFAULT_IDLE_SAVE_DELAY_MS,
 } from '../terminal-state-save-manager';
 
@@ -371,6 +373,108 @@ describe('terminal-state-save-manager', () => {
 
       // Should not have saved (registry was cleared)
       expect(saveTerminalStateCalls.length).toBe(0);
+    });
+  });
+
+  describe('unregister race with concurrent re-register (Issue #929)', () => {
+    // These tests reproduce the following race:
+    // 1. Terminal A unmounts -> React cleanup fires `unregister(...)` fire-and-forget.
+    // 2. Inside unregister, execution suspends on `await workerState.pendingSave`.
+    // 3. A new Terminal (same sessionId:workerId, e.g. a fast tab switch back)
+    //    mounts and calls `register(...)`, which OVERWRITES the registry slot.
+    // 4. Suspended unregister resumes and unconditionally calls
+    //    `registry.delete(key)`, wiping the newly-registered entry.
+    // 5. On the next unmount, `unregister` sees no entry and the second
+    //    Terminal's cache save is silently lost.
+    //
+    // The fix guards `registry.delete(key)` with an object-identity check
+    // (`registry.get(key) === workerState`) so an in-flight unregister for
+    // a stale entry never touches a replacement entry.
+
+    it('should not delete a re-registered entry after the in-flight save completes', async () => {
+      let resolveSlowSave: (() => void) | null = null;
+      const slowSavePromise = new Promise<void>((resolve) => {
+        resolveSlowSave = resolve;
+      });
+      setSaveFunction(async (sessionId, workerId, state) => {
+        saveTerminalStateCalls.push({ sessionId, workerId, state });
+        await slowSavePromise;
+      });
+
+      const stateA = createValidState({ data: 'state-A' });
+      const stateB = createValidState({ data: 'state-B' });
+
+      // Mount A: register + markDirty. Wait for the idle timer to fire so the
+      // executeIdleSave path assigns `workerState.pendingSave` to the slow save.
+      register('session-1', 'worker-1', () => stateA);
+      markDirty('session-1', 'worker-1');
+      await new Promise((resolve) =>
+        setTimeout(resolve, TEST_IDLE_DELAY_MS + 20)
+      );
+      expect(saveTerminalStateCalls.length).toBe(1);
+
+      // Fire-and-forget unregister — suspends on `await workerState.pendingSave`.
+      const unregisterPromise = unregister('session-1', 'worker-1');
+      // Yield a microtask so unregister enters the await state.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // Concurrent re-register (simulating a fast Terminal re-mount).
+      register('session-1', 'worker-1', () => stateB);
+      expect(getRegistrySize()).toBe(1);
+
+      // Release the slow save so the in-flight unregister resumes and runs its
+      // trailing `registry.delete(key)`.
+      resolveSlowSave!();
+      await unregisterPromise;
+
+      // With the fix: identity guard skips the delete because the entry was
+      // replaced. Without the fix: entry B is deleted here.
+      expect(getRegistrySize()).toBe(1);
+
+      // Additionally, markDirty must still target entry B — proving the
+      // surviving entry is entry B, not a resurrected entry A.
+      markDirty('session-1', 'worker-1');
+      expect(hasPendingSaves()).toBe(true);
+    });
+
+    it('should not delete a re-registered entry when unregister exits via truncation branch', async () => {
+      let resolveSlowSave: (() => void) | null = null;
+      const slowSavePromise = new Promise<void>((resolve) => {
+        resolveSlowSave = resolve;
+      });
+      setSaveFunction(async (sessionId, workerId, state) => {
+        saveTerminalStateCalls.push({ sessionId, workerId, state });
+        await slowSavePromise;
+      });
+
+      const stateA = createValidState({ data: 'state-A' });
+      const stateB = createValidState({ data: 'state-B' });
+
+      register('session-1', 'worker-1', () => stateA);
+      markDirty('session-1', 'worker-1');
+      await new Promise((resolve) =>
+        setTimeout(resolve, TEST_IDLE_DELAY_MS + 20)
+      );
+
+      const unregisterPromise = unregister('session-1', 'worker-1');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      register('session-1', 'worker-1', () => stateB);
+      expect(getRegistrySize()).toBe(1);
+
+      // Force the unregister to take the truncation branch when it resumes.
+      // The truncation branch has its own `registry.delete(key)` at the top of
+      // the else path — it must also be identity-guarded.
+      setTruncationCheckFunction(() => true);
+
+      resolveSlowSave!();
+      await unregisterPromise;
+
+      // With the fix: identity guard also protects the truncation-branch delete.
+      // Without the fix: entry B is deleted from the truncation branch.
+      expect(getRegistrySize()).toBe(1);
+
+      resetTruncationCheckFunction();
     });
   });
 

@@ -1392,6 +1392,116 @@ describe('Terminal cache-save payload contract', () => {
 });
 
 /**
+ * Repro-level test for the Terminal cache save race on rapid unmount/remount
+ * (Issue #929).
+ *
+ * Terminal.tsx's cleanup calls `unregisterSaveManager(...)` fire-and-forget
+ * (React does not await sync return values from useEffect cleanup, see
+ * Terminal.tsx around line 846). When the user rapidly switches to another
+ * session tab and back, a new Terminal mounts with the same sessionId:workerId
+ * BEFORE the previous unregister has finished (its `await pendingSave` is
+ * still in-flight). Without an identity guard, the trailing
+ * `registry.delete(key)` inside the stale unregister wipes the newly-mounted
+ * Terminal's registry entry, and the second unmount's save is silently lost.
+ *
+ * The Terminal component cannot be rendered in unit tests (xterm.js mocking
+ * pollutes global state) so this test drives the save-manager via the same
+ * public API Terminal.tsx uses and asserts the observable end state: the
+ * second mount's `unregister` must save its dirty state.
+ */
+describe('Terminal cache save race on rapid unmount/remount (Issue #929)', () => {
+  const TEST_IDLE_DELAY_MS = 20;
+  const capturedSaves: Array<{
+    sessionId: string;
+    workerId: string;
+    state: CachedState;
+  }> = [];
+
+  beforeEach(() => {
+    clearSaveManagerRegistry();
+    capturedSaves.length = 0;
+    setIdleSaveDelay(TEST_IDLE_DELAY_MS);
+  });
+
+  afterEach(() => {
+    clearSaveManagerRegistry();
+    capturedSaves.length = 0;
+    resetIdleSaveDelay();
+    resetSaveFunction();
+  });
+
+  it('saves the second-mount state after fire-and-forget unmount + immediate remount', async () => {
+    // The first save (Mount A's idle save) is deliberately slow so that
+    // Mount A's `unregister` is still suspended on `await pendingSave` when
+    // Mount B registers. Subsequent saves resolve immediately.
+    let saveCallCount = 0;
+    let resolveSlowSave: (() => void) | null = null;
+    const slowSavePromise = new Promise<void>((resolve) => {
+      resolveSlowSave = resolve;
+    });
+
+    setSaveFunction(async (sessionId, workerId, state) => {
+      saveCallCount++;
+      capturedSaves.push({ sessionId, workerId, state });
+      if (saveCallCount === 1) {
+        await slowSavePromise;
+      }
+    });
+
+    const stateA: CachedState = {
+      data: 'mount-A-data',
+      savedAt: 1,
+      cols: 80,
+      rows: 24,
+      offset: 100,
+    };
+    const stateB: CachedState = {
+      data: 'mount-B-data',
+      savedAt: 2,
+      cols: 80,
+      rows: 24,
+      offset: 200,
+    };
+
+    // === Mount A ===
+    registerSaveManager('session-1', 'worker-1', () => stateA);
+    markSaveManagerDirty('session-1', 'worker-1');
+    // Idle timer fires -> executeIdleSave sets pendingSave to the slow save
+    await new Promise((resolve) =>
+      setTimeout(resolve, TEST_IDLE_DELAY_MS + 20)
+    );
+    expect(capturedSaves).toHaveLength(1);
+
+    // === Mount A unmounts (fire-and-forget, mirrors Terminal.tsx cleanup) ===
+    const unregisterPromiseA = unregisterSaveManager('session-1', 'worker-1');
+    // Yield so unregisterA enters `await workerState.pendingSave`
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    // === Mount B (same sessionId:workerId) mounts before A's cleanup finishes ===
+    registerSaveManager('session-1', 'worker-1', () => stateB);
+    markSaveManagerDirty('session-1', 'worker-1');
+
+    // === Release Mount A's slow save so its cleanup can finish ===
+    resolveSlowSave!();
+    await unregisterPromiseA;
+
+    // === Mount B unmounts ===
+    await unregisterSaveManager('session-1', 'worker-1');
+
+    // Expected observable behavior:
+    //   - Mount A saved stateA during its idle timer (before unmount).
+    //   - Mount B saved stateB during its unmount.
+    //
+    // Without the fix, Mount A's trailing `registry.delete(key)` wipes
+    // Mount B's registry entry, so Mount B's unregister sees no entry and
+    // silently skips the save. `capturedSaves` then only contains stateA.
+    expect(capturedSaves).toHaveLength(2);
+    expect(capturedSaves[0].state.data).toBe('mount-A-data');
+    expect(capturedSaves[1].state.data).toBe('mount-B-data');
+  });
+});
+
+/**
  * Tests for the xterm.js fontFamily stack configured in Terminal.tsx.
  *
  * Background (#818): The original fontFamily only named Mac fonts (Menlo, Monaco,
