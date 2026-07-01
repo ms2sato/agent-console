@@ -1392,8 +1392,7 @@ describe('Terminal cache-save payload contract', () => {
 });
 
 /**
- * Repro-level test for the Terminal cache save race on rapid unmount/remount
- * (Issue #929).
+ * Repro-level test for the Terminal cache save race on rapid unmount/remount.
  *
  * Terminal.tsx's cleanup calls `unregisterSaveManager(...)` fire-and-forget
  * (React does not await sync return values from useEffect cleanup, see
@@ -1409,7 +1408,7 @@ describe('Terminal cache-save payload contract', () => {
  * public API Terminal.tsx uses and asserts the observable end state: the
  * second mount's `unregister` must save its dirty state.
  */
-describe('Terminal cache save race on rapid unmount/remount (Issue #929)', () => {
+describe('Terminal cache save race on rapid unmount/remount', () => {
   const TEST_IDLE_DELAY_MS = 20;
   const capturedSaves: Array<{
     sessionId: string;

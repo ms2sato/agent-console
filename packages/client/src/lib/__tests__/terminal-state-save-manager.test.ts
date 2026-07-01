@@ -380,7 +380,7 @@ describe('terminal-state-save-manager', () => {
     });
   });
 
-  describe('unregister race with concurrent re-register (Issue #929)', () => {
+  describe('unregister race with concurrent re-register', () => {
     // These tests reproduce the following race:
     // 1. Terminal A unmounts -> React cleanup fires `unregister(...)` fire-and-forget.
     // 2. Inside unregister, execution suspends on `await workerState.pendingSave`.
