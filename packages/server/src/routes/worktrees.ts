@@ -184,6 +184,7 @@ const worktrees = new Hono<AppBindings>()
   .post('/:id/worktrees/pull', vValidator(PullWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, worktreeService, broadcastToApp } = c.get('appContext');
+    const authUser = c.get('authUser');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -257,8 +258,13 @@ const worktrees = new Hono<AppBindings>()
         // Get current branch for the success message
         const branch = await getCurrentBranch(worktreePath);
 
-        // Execute git pull --ff-only
-        const commitsPulled = await pullFastForward(worktreePath);
+        // Execute git pull --ff-only. Thread the authenticated OS username so
+        // multi-user mode runs the network fetch as the requesting user (picks
+        // up their SSH_AUTH_SOCK / gitconfig via the elevation helper);
+        // otherwise SSH-URL remotes fail with Permission denied. In single-user
+        // mode, `runAsUser` reads this value but `AUTH_MODE` gates the
+        // elevation to a no-op.
+        const commitsPulled = await pullFastForward(worktreePath, authUser.username);
 
         broadcastToApp({
           type: 'worktree-pull-completed',

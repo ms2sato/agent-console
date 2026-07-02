@@ -450,6 +450,36 @@ describe('Worktrees API', () => {
       expect(body.accepted).toBe(true);
     });
 
+    it('forwards authUser.username as requestUser to pullFastForward', async () => {
+      // The pull is fire-and-forget; observe the pullFastForward invocation
+      // deterministically by resolving a captured-args promise from inside
+      // the mock. The default SingleUserMode used by asAppContext is
+      // constructed with TEST_AUTH_USER (username='testuser'), so the route
+      // MUST forward 'testuser' as the 2nd positional arg. Without this,
+      // multi-user pull of an SSH-URL remote fails with Permission denied
+      // because the git process runs as the server user rather than the
+      // requesting user (no SSH_AUTH_SOCK, no gh auth token).
+      let resolveCall!: (args: unknown[]) => void;
+      const captured = new Promise<unknown[]>((resolve) => {
+        resolveCall = resolve;
+      });
+      mockGit.pullFastForward.mockImplementation((...args: unknown[]) => {
+        resolveCall(args);
+        return Promise.resolve(0);
+      });
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees/pull`,
+        pullRequest(WORKTREE_PATH),
+      );
+
+      expect(res.status).toBe(202);
+
+      const args = await captured;
+      expect(args[0]).toBe(WORKTREE_PATH);
+      expect(args[1]).toBe('testuser');
+    });
+
     it('should return 202 even when background pull encounters an error', async () => {
       // Simulate pullFastForward throwing — the fire-and-forget IIFE's
       // internal try-catch handles it, and the outer .catch() guards

@@ -611,6 +611,77 @@ index abc1234..def5678 100644
         expect(call.options.cwd).toBe('/my/worktree/path');
       }
     });
+
+    it('uses Bun.spawn directly when requestUser is omitted (default path)', async () => {
+      setSequentialMockResults([
+        { stdout: 'abc1234\n' },       // git rev-parse HEAD (before)
+        { stdout: '' },                 // git pull --ff-only
+        { stdout: 'abc1234\n' },       // git rev-parse HEAD (after, up to date)
+      ]);
+      const { pullFastForward } = await getGitModule();
+
+      const result = await pullFastForward('/repo');
+      // HEAD unchanged → up-to-date → 0 commits pulled, rev-list not called.
+      expect(result).toBe(0);
+
+      // Direct-spawn path was used for every internal git invocation.
+      expect(spawnCalls.length).toBe(3);
+      expect(spawnCalls[0].args).toEqual(['git', 'rev-parse', 'HEAD']);
+      expect(spawnCalls[1].args).toEqual(['git', 'pull', '--ff-only']);
+      expect(spawnCalls[2].args).toEqual(['git', 'rev-parse', 'HEAD']);
+      for (const call of spawnCalls) {
+        expect(call.options.cwd).toBe('/repo');
+      }
+    });
+
+    it('routes every internal git call through runAsUser when requestUser is non-empty (elevated path)', async () => {
+      // The bug this test guards against: pullFastForward previously did not
+      // accept a requestUser param, so the internal `git pull --ff-only`
+      // always ran as the server user and failed against SSH-URL remotes
+      // in multi-user mode. Assert that ALL four internal git invocations
+      // route through the runAsUser seam with the caller's username.
+      const runAsUserCalls: Array<Record<string, unknown>> = [];
+      const fakeRunAsUser = async (opts: Record<string, unknown>) => {
+        runAsUserCalls.push(opts);
+        // Return distinct HEADs so the fourth `rev-list --count` call runs too.
+        const command = String(opts.command ?? '');
+        if (command.includes("'rev-parse' 'HEAD'")) {
+          // First rev-parse returns headBefore; second returns headAfter.
+          const revParseCallsSoFar = runAsUserCalls.filter(
+            (c) => String(c.command ?? '').includes("'rev-parse' 'HEAD'"),
+          ).length;
+          const stdout = revParseCallsSoFar === 1 ? 'abc1234' : 'def5678';
+          return { stdout, stderr: '', exitCode: 0, timedOut: false };
+        }
+        if (command.includes("'rev-list' '--count'")) {
+          return { stdout: '3', stderr: '', exitCode: 0, timedOut: false };
+        }
+        // git pull --ff-only
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const mod = await getGitModule();
+      mod.__setRunAsUserForTesting(fakeRunAsUser);
+      try {
+        const result = await mod.pullFastForward('/repo', 'alice');
+
+        expect(result).toBe(3);
+        // Direct-spawn path was NOT used.
+        expect(spawnCalls.length).toBe(0);
+        // Each of the four internal git calls routed through runAsUser.
+        expect(runAsUserCalls.length).toBe(4);
+        for (const call of runAsUserCalls) {
+          expect(call.username).toBe('alice');
+          expect(call.cwd).toBe('/repo');
+        }
+        expect(runAsUserCalls[0].command).toBe("'git' 'rev-parse' 'HEAD'");
+        expect(runAsUserCalls[1].command).toBe("'git' 'pull' '--ff-only'");
+        expect(runAsUserCalls[2].command).toBe("'git' 'rev-parse' 'HEAD'");
+        expect(runAsUserCalls[3].command).toBe("'git' 'rev-list' '--count' 'abc1234..def5678'");
+      } finally {
+        mod.__setRunAsUserForTesting(null);
+      }
+    });
   });
 
   describe('removeWorktree', () => {
