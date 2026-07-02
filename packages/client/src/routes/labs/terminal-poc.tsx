@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fetchWorkers } from '../../lib/api';
 import { getOrCreatePocTerminal } from '../../labs/terminal-poc/poc-terminal-store';
 import { PocTerminalView } from '../../labs/terminal-poc/PocTerminalView';
@@ -40,6 +40,27 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
 
   const focusInput = () => inputRef.current?.focus();
 
+  // Image-paste / file-drop receipt toast. Stands in for the MessagePanel wiring
+  // that lands with the adapter phase (PR-3), so the onFilesReceived contract is
+  // E2E-visible in labs.
+  const [receipt, setReceipt] = useState<FileReceipt | null>(null);
+  const receiptTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleFilesReceived = useCallback((files: File[]) => {
+    if (files.length === 0) return;
+    setReceipt({
+      id: Date.now(),
+      files: files.map((f) => ({ name: f.name, size: f.size })),
+    });
+    if (receiptTimer.current) clearTimeout(receiptTimer.current);
+    receiptTimer.current = setTimeout(() => setReceipt(null), FILE_RECEIPT_TTL_MS);
+  }, []);
+  useEffect(
+    () => () => {
+      if (receiptTimer.current) clearTimeout(receiptTimer.current);
+    },
+    [],
+  );
+
   // Snapshot-free page: all live-state reads happen in subscribed children.
   return (
     <div
@@ -53,11 +74,87 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
 
       <StatusLine instance={instance} />
 
-      <PocTerminalView instance={instance} onRequestFocus={focusInput} />
+      <LoadingHistoryBar instance={instance} />
+      <NoticeBanner instance={instance} />
+      <WorkerErrorStrip instance={instance} />
 
-      <PocKeyboardInput ref={inputRef} instance={instance} />
+      <PocTerminalView
+        instance={instance}
+        onRequestFocus={focusInput}
+        onFilesReceived={handleFilesReceived}
+        inputRef={inputRef}
+      />
+
+      <PocKeyboardInput ref={inputRef} instance={instance} onFilesReceived={handleFilesReceived} />
 
       <ExitBanner instance={instance} />
+
+      {receipt && <FileReceiptToast key={receipt.id} files={receipt.files} />}
+    </div>
+  );
+}
+
+const FILE_RECEIPT_TTL_MS = 5000;
+
+interface FileReceipt {
+  id: number;
+  files: { name: string; size: number }[];
+}
+
+function FileReceiptToast({ files }: { files: FileReceipt['files'] }) {
+  return (
+    <div className="pointer-events-none absolute bottom-16 left-1/2 z-30 w-[min(90%,28rem)] -translate-x-1/2 rounded-lg border border-amber-700 bg-amber-950/90 px-4 py-3 text-amber-100 shadow-lg">
+      <div className="text-sm font-medium">
+        ⚠ {files.length} file(s) received — NOT yet sent to Claude (delivery activates when
+        integrated into the session screen)
+      </div>
+      <ul className="mt-1 space-y-0.5 text-xs text-amber-200/90">
+        {files.map((f, i) => (
+          <li key={i} className="flex justify-between gap-3">
+            <span className="truncate font-mono">{f.name || '(unnamed)'}</span>
+            <span className="shrink-0 tabular-nums">{f.size} B</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function LoadingHistoryBar({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+  const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
+  if (!snapshot.loadingHistory) return null;
+  return (
+    <div className="bg-blue-900/50 px-3 py-1 text-center text-xs text-blue-200 animate-pulse">
+      Loading history…
+    </div>
+  );
+}
+
+function NoticeBanner({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+  const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
+  if (!snapshot.notice) return null;
+  return (
+    <div className="flex items-center justify-between gap-2 bg-amber-900/60 px-3 py-1 text-xs text-amber-200">
+      <span>{snapshot.notice}</span>
+      <button
+        type="button"
+        onClick={() => instance.dismissNotice()}
+        className="rounded bg-amber-700/60 px-2 py-0.5 hover:bg-amber-600/60"
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
+function WorkerErrorStrip({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+  const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
+  if (!snapshot.workerError) return null;
+  const { message, code } = snapshot.workerError;
+  return (
+    <div className="bg-red-900/70 px-3 py-1 text-xs text-red-200">
+      {message}
+      {code ? ` (${code})` : ''}
     </div>
   );
 }

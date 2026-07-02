@@ -1,9 +1,14 @@
 import { forwardRef, useRef, useState } from 'react';
-import type { KeyboardEvent, CompositionEvent, FormEvent } from 'react';
+import type { KeyboardEvent, CompositionEvent, FormEvent, ClipboardEvent } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
+import { extractImageFiles } from './image-paste';
 
 interface PocKeyboardInputProps {
   instance: PocTerminalInstance;
+  // Called when an image is pasted (image-only or image+text clipboard). The
+  // adapter phase (PR-3) wires this to MessagePanel; the labs route surfaces a
+  // toast so the contract is E2E-visible.
+  onFilesReceived?: (files: File[]) => void;
 }
 
 // Special keys -> escape sequences. Arrow keys use the normal (non-application)
@@ -25,7 +30,7 @@ const SPECIAL_KEYS: Record<string, string> = {
  * keyboard. A soft-key bar provides keys that are hard to reach on mobile.
  */
 export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInputProps>(
-  function PocKeyboardInput({ instance }, ref) {
+  function PocKeyboardInput({ instance, onFilesReceived }, ref) {
     const composingRef = useRef(false);
     const [composeText, setComposeText] = useState('');
 
@@ -57,6 +62,25 @@ export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInput
         send(el.value);
         clearTextarea(el);
       }
+    };
+
+    const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Paste during IME composition is an edge case; let the default happen.
+      if (composingRef.current) return;
+      // Image precedence matches production (Terminal.tsx): when the clipboard
+      // carries an image, route it to onFilesReceived and swallow the event —
+      // no text is sent, even if text is also present.
+      const imageFiles = extractImageFiles(e.clipboardData.items);
+      if (imageFiles.length > 0 && onFilesReceived) {
+        e.preventDefault();
+        onFilesReceived(imageFiles);
+        return;
+      }
+      const text = e.clipboardData.getData('text/plain');
+      // No text (e.g. an image-only clipboard with no handler): let default run.
+      if (!text) return;
+      e.preventDefault();
+      instance.paste(text);
     };
 
     const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -100,6 +124,7 @@ export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInput
           onCompositionEnd={handleCompositionEnd}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           autoCapitalize="off"
           autoCorrect="off"
           autoComplete="off"
