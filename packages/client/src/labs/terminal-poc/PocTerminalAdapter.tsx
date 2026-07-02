@@ -36,8 +36,19 @@ export function PocTerminalAdapter({
   // React mounts. stripScrollbackClear is read once at creation (config is fixed
   // per instance lifetime); passing it here again on prop change is a harmless
   // no-op because getOrCreate returns the existing instance.
+  //
+  // When the prop is undefined, OMIT the option so the store default governs —
+  // this keeps an adapter-first instance behaving identically to a labs-route-
+  // first instance for the same worker (a `?? false` here would flip the store
+  // default and diverge intra-labs). Production SessionPage always passes an
+  // explicit boolean, so drop-in parity is unaffected.
   const instance = useMemo(
-    () => getOrCreatePocTerminal(sessionId, workerId, { stripScrollbackClear: stripScrollbackClear ?? false }),
+    () =>
+      getOrCreatePocTerminal(
+        sessionId,
+        workerId,
+        stripScrollbackClear === undefined ? undefined : { stripScrollbackClear },
+      ),
     [sessionId, workerId, stripScrollbackClear],
   );
 
@@ -75,6 +86,7 @@ export function PocTerminalAdapter({
           instance={instance}
           onRequestFocus={focusInput}
           onFilesReceived={onFilesReceived}
+          inputRef={inputRef}
         />
         <AdapterRecoveryOverlay
           instance={instance}

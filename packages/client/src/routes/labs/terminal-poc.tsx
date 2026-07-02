@@ -82,6 +82,7 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
         instance={instance}
         onRequestFocus={focusInput}
         onFilesReceived={handleFilesReceived}
+        inputRef={inputRef}
       />
 
       <PocKeyboardInput ref={inputRef} instance={instance} onFilesReceived={handleFilesReceived} />

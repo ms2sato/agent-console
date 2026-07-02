@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, DragEvent as ReactDragEvent, ReactNode } from 'react';
+import type { CSSProperties, DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
 import type { PocRow, PocSegment, PocStyle } from './buffer-to-rows';
 import type { LinkRange } from './link-detection';
@@ -26,6 +26,12 @@ interface PocTerminalViewProps {
   // Called when files are dropped onto the terminal. Threaded to the same
   // handler as image paste; the labs route surfaces a toast.
   onFilesReceived?: (files: File[]) => void;
+  // This view's OWN hidden input (the same ref passed to PocKeyboardInput).
+  // Cmd/Ctrl+A select-all is gated on this element being focused, so on a page
+  // hosting multiple terminals (e.g. /labs/terminal-compare) select-all in one
+  // terminal never selects another's rows. When omitted, select-all is disabled
+  // (safer than matching any focused textarea).
+  inputRef?: RefObject<HTMLTextAreaElement | null>;
 }
 
 function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
@@ -113,7 +119,7 @@ const Row = memo(function Row({ row }: { row: PocRow }) {
   );
 });
 
-export function PocTerminalView({ instance, onRequestFocus, onFilesReceived }: PocTerminalViewProps) {
+export function PocTerminalView({ instance, onRequestFocus, onFilesReceived, inputRef }: PocTerminalViewProps) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   const scrollRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
@@ -376,13 +382,14 @@ export function PocTerminalView({ instance, onRequestFocus, onFilesReceived }: P
       releaseDangling();
     };
 
-    // Cmd/Ctrl+A while the hidden terminal input is focused selects the TERMINAL
+    // Cmd/Ctrl+A while THIS view's hidden input is focused selects the TERMINAL
     // content only (scrollback + viewport = the whole rows container), not the
-    // page. Gated on activeElement being a textarea (our hidden input) so we do
-    // not hijack select-all elsewhere.
+    // page. Gated on our OWN input element (not any textarea) so on a page with
+    // multiple terminals, select-all in one never selects another's rows. No
+    // input ref -> select-all disabled (safer than a wrong-instance selection).
     const onKeyDownSelectAll = (e: KeyboardEvent) => {
       if (e.key !== 'a' || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-      if (!(document.activeElement instanceof HTMLTextAreaElement)) return;
+      if (inputRef?.current == null || document.activeElement !== inputRef.current) return;
       const sel = window.getSelection();
       if (!sel) return;
       e.preventDefault();
@@ -440,7 +447,7 @@ export function PocTerminalView({ instance, onRequestFocus, onFilesReceived }: P
       // Unmount mid-drag: pair the outstanding press so the TUI is not stuck.
       releaseDangling();
     };
-  }, [instance]);
+  }, [instance, inputRef]);
 
   return (
     <div
