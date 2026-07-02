@@ -16,6 +16,8 @@ import {
   applyCachedSnapshotBeforeOpen,
   buildTerminalOptionsForRestore,
 } from '../lib/terminal-restore.js';
+import { buildBaseTerminalOptions } from '../lib/terminal-options.js';
+import { createCustomKeyEventHandler } from '../lib/terminal-key-handler.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -483,16 +485,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // 2. Construct the terminal at the cached cols/rows when available.
       //    Per @xterm/addon-serialize: writing the snapshot into a same-size
       //    terminal is required for scrollback to be correctly repopulated.
-      const baseOptions = {
-        cursorBlink: true,
-        fontSize: 14,
-        fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "DejaVu Sans Mono", Menlo, Monaco, "Courier New", monospace',
-        theme: {
-          background: '#1a1a2e',
-          foreground: '#eee',
-          cursor: '#eee',
-        },
-      };
+      const baseOptions = buildBaseTerminalOptions();
       terminal = new XTerm(buildTerminalOptionsForRestore(baseOptions, cached));
 
       fitAddon = new FitAddon();
@@ -682,23 +675,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       });
 
       // Handle special key events
-      terminal.attachCustomKeyEventHandler((event) => {
-        // Skip IME composition events (Japanese input, etc.)
-        if (event.isComposing) {
-          return true; // Let IME handle it
-        }
-
-        // Handle Shift+Enter for multi-line input
-        if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
-          event.preventDefault();
-          event.stopPropagation();
-          // Send soft newline for multi-line input
-          sendInput('\x0a');
-          return false; // Prevent terminal from handling
-        }
-
-        return true; // Allow default handling for other keys
-      });
+      const t = terminal;
+      terminal.attachCustomKeyEventHandler(
+        createCustomKeyEventHandler({ sendInput, selectAll: () => t.selectAll() }),
+      );
 
       // Handle resize
       handleResize = () => {

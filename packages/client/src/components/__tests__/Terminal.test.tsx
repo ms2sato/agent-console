@@ -13,6 +13,7 @@ import { restoreScrollPosition, type ScrollableTerminal } from '../Terminal';
 import { render, screen, cleanup } from '@testing-library/react';
 import { TerminalLoadingBar } from '../ui/TerminalLoadingBar';
 import type { CachedState } from '../../lib/terminal-state-cache';
+import { buildBaseTerminalOptions } from '../../lib/terminal-options';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -1512,7 +1513,7 @@ describe('Terminal cache save race on rapid unmount/remount', () => {
 });
 
 /**
- * Tests for the xterm.js fontFamily stack configured in Terminal.tsx.
+ * Tests for the xterm.js fontFamily stack configured via buildBaseTerminalOptions.
  *
  * Background (#818): The original fontFamily only named Mac fonts (Menlo, Monaco,
  * Courier New). On Linux and Windows browsers without those fonts installed,
@@ -1522,23 +1523,14 @@ describe('Terminal cache save race on rapid unmount/remount', () => {
  * Source Code Pro, DejaVu Sans Mono) so installed monospace fonts are picked
  * first on each OS.
  *
- * The Terminal component cannot be rendered in unit tests (xterm.js mocking
- * pollutes global state), so we cannot intercept the XTerm constructor options
- * directly. Instead, we pin the contract by reading the production source file
- * and asserting the fontFamily string contains at least one of the prepended
- * Linux-friendly fonts. This fails if someone reverts the widening change.
+ * The base options were previously hard-coded inline at the XTerm constructor
+ * call site, so this test had to introspect the Terminal.tsx source text. The
+ * options now live in `lib/terminal-options.ts` and are directly importable, so
+ * we assert against the builder's return value instead of the source file.
  */
 describe('Terminal fontFamily stack', () => {
-  it('should configure Linux-friendly monospace fonts in the font stack', async () => {
-    // Source-text introspection: the fontFamily value is hard-coded inline at
-    // the XTerm constructor call site, so we cannot import it. Reading the
-    // production source file pins the user-visible contract.
-    const terminalSourcePath = new URL('../Terminal.tsx', import.meta.url);
-    const source = await Bun.file(terminalSourcePath).text();
-
-    const fontFamilyMatch = source.match(/fontFamily:\s*'([^']+)'/);
-    expect(fontFamilyMatch).not.toBeNull();
-    const fontFamily = fontFamilyMatch![1];
+  it('should configure Linux-friendly monospace fonts in the font stack', () => {
+    const fontFamily = buildBaseTerminalOptions().fontFamily;
 
     // The fix (#818) prepends these fonts so Linux/Windows browsers render
     // a readable monospace before falling back to the original Mac fonts.
