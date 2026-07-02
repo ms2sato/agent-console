@@ -103,11 +103,12 @@ interface FileReceipt {
 
 function FileReceiptToast({ files }: { files: FileReceipt['files'] }) {
   return (
-    <div className="pointer-events-none absolute bottom-16 left-1/2 z-30 w-[min(90%,28rem)] -translate-x-1/2 rounded-lg border border-emerald-700 bg-emerald-900/90 px-4 py-3 text-emerald-100 shadow-lg">
+    <div className="pointer-events-none absolute bottom-16 left-1/2 z-30 w-[min(90%,28rem)] -translate-x-1/2 rounded-lg border border-amber-700 bg-amber-950/90 px-4 py-3 text-amber-100 shadow-lg">
       <div className="text-sm font-medium">
-        {files.length} file(s) received (MessagePanel wiring lands with the adapter phase)
+        ⚠ {files.length} file(s) received — NOT yet sent to Claude (delivery activates when
+        integrated into the session screen)
       </div>
-      <ul className="mt-1 space-y-0.5 text-xs text-emerald-200">
+      <ul className="mt-1 space-y-0.5 text-xs text-amber-200/90">
         {files.map((f, i) => (
           <li key={i} className="flex justify-between gap-3">
             <span className="truncate font-mono">{f.name || '(unnamed)'}</span>
