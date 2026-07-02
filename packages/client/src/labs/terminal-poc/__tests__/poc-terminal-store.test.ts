@@ -242,6 +242,60 @@ describe('poc-terminal-store', () => {
     expect(instance.getSnapshot().bufferType).toBe('normal');
   });
 
+  it('reportMouseButton emits SGR left-button press/release when tracking is on', async () => {
+    const instance = getOrCreatePocTerminal('mb1', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    // Enable button-event tracking (1002) + SGR encoding (1006).
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002h\x1b[?1006h', offset: 0 }));
+    await flush();
+
+    instance.reportMouseButton('press', { x: 5, y: 3 });
+    instance.reportMouseButton('release', { x: 5, y: 3 });
+
+    const frames = inputFrames(ws!);
+    expect(frames).toContain('\x1b[<0;5;3M'); // press
+    expect(frames).toContain('\x1b[<0;5;3m'); // release
+  });
+
+  it('reportMouseButton clamps coordinates to the grid', async () => {
+    const instance = getOrCreatePocTerminal('mb2', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002h', offset: 0 }));
+    await flush();
+
+    instance.reportMouseButton('press', { x: 9999, y: 9999 });
+    expect(inputFrames(ws!)).toContain('\x1b[<0;80;24M'); // clamped to cols 80, rows 24
+  });
+
+  it('reportMouseButton is a no-op when mouse tracking is off', () => {
+    const instance = getOrCreatePocTerminal('mb3', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.reportMouseButton('press', { x: 5, y: 3 });
+    instance.reportMouseButton('release', { x: 5, y: 3 });
+
+    // Polarity guard: no SGR mouse frame is sent while tracking is 'none'.
+    expect(inputFrames(ws!).some((f) => f.startsWith('\x1b[<0;'))).toBe(false);
+  });
+
+  it('mouseTracking flips in the snapshot on DECSET enable / disable', async () => {
+    const instance = getOrCreatePocTerminal('mb4', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    expect(instance.getSnapshot().mouseTracking).toBe(false);
+
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002h', offset: 0 }));
+    await flush();
+    expect(instance.getSnapshot().mouseTracking).toBe(true);
+
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002l', offset: 8 }));
+    await flush();
+    expect(instance.getSnapshot().mouseTracking).toBe(false);
+  });
+
   it('sendInput sends a correct input frame', () => {
     const instance = getOrCreatePocTerminal('s5', 'w5');
     const ws = MockWebSocket.getLastInstance();

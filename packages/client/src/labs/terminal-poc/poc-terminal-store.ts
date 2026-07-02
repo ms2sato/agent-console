@@ -46,6 +46,7 @@ export interface PocSnapshot {
   cols: number;
   terminalRows: number;
   bufferType: 'normal' | 'alternate'; // 'alternate' = full-screen app (scroll is forwarded)
+  mouseTracking: boolean; // app has DECSET mouse tracking on -> report clicks to the TUI
   notice: string | null; // dismissible banner (restart / truncation)
   workerError: { message: string; code?: WorkerErrorCode } | null;
   activityState: AgentActivityState | null;
@@ -59,6 +60,8 @@ export interface PocTerminalInstance {
   resize(cols: number, rows: number): void;
   /** Forward scroll to the app in alternate-screen mode. positive = toward newer. */
   forwardScroll(lines: number, cell: { x: number; y: number }): void;
+  /** Report a left-button press/release to the TUI (only when mouse tracking is on). */
+  reportMouseButton(kind: 'press' | 'release', cell: { x: number; y: number }): void;
   dismissNotice(): void;
   /** Mount reference; returns an idempotent release (Strict-Mode safe). */
   acquire(): () => void;
@@ -150,6 +153,7 @@ class PocTerminal implements PocTerminalInstance {
       cols: DEFAULT_COLS,
       terminalRows: DEFAULT_ROWS,
       bufferType: 'normal',
+      mouseTracking: false,
       notice: null,
       workerError: null,
       activityState: null,
@@ -216,6 +220,19 @@ class PocTerminal implements PocTerminalInstance {
       data = seq.repeat(steps);
     }
     this.sendInput(data);
+  };
+
+  reportMouseButton = (kind: 'press' | 'release', cell: { x: number; y: number }): void => {
+    // Only report when the app enabled DECSET mouse tracking; otherwise a click
+    // is a local focus gesture, not TUI input.
+    if (this.terminal.modes.mouseTrackingMode === 'none') return;
+    const col = clampCell(cell.x, this.terminal.cols);
+    const row = clampCell(cell.y, this.terminal.rows);
+    // SGR encoding, left button (0): press ends with 'M', release with 'm'.
+    // x10 tracking has no release event, but SGR-encoding both is fine for the
+    // PoC (a spurious release is harmless to the TUIs we target).
+    const terminator = kind === 'press' ? 'M' : 'm';
+    this.sendInput(`\x1b[<0;${col};${row}${terminator}`);
   };
 
   dismissNotice = (): void => {
@@ -564,6 +581,7 @@ class PocTerminal implements PocTerminalInstance {
       cols,
       terminalRows: this.terminal.rows,
       bufferType: buffer.type,
+      mouseTracking: this.terminal.modes.mouseTrackingMode !== 'none',
     };
   }
 
