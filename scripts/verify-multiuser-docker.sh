@@ -24,7 +24,7 @@
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-COMPOSE_FILE="${REPO_ROOT}/docker/docker-compose.yml"
+COMPOSE_FILE="${REPO_ROOT}/docker/docker-compose.verification.yml"
 PORT="${PORT:-8080}"
 BASE_URL="http://localhost:${PORT}"
 KEEP=0

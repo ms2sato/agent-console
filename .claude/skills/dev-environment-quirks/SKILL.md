@@ -1,6 +1,6 @@
 ---
 name: dev-environment-quirks
-description: Non-obvious operational details of the local dev environments (single-user `dev.sh`, multi-user `dev-multiuser.sh`) — port layout, source-code propagation, sudo boundaries, multi-repo coexistence. Read when a delegated agent or the Orchestrator first needs to interact with the running dev instance, especially for Browser QA, log inspection, or restart workflows.
+description: Non-obvious operational details of the local dev environments (single-user `dev.sh`, multi-user `dev-multiuser.sh`, Docker dev stack `docker/docker-compose.yml`) — port layout, source-code propagation, sudo boundaries, multi-repo coexistence. Read when a delegated agent or the Orchestrator first needs to interact with the running dev instance, especially for Browser QA, log inspection, or restart workflows.
 ---
 
 # Dev Environment Quirks
@@ -13,6 +13,19 @@ This skill captures the operational reality of the dev environments that is not 
 - `scripts/dev-multiuser.sh` — multi-user instance under `/var/lib/agent-console-dev`. Runs the server as the production service user (`agentconsole`) with production-mirrored ownership (`agentconsole:agent-console-users 2775`, setgid). The developer accesses the data via group membership + `core.sharedRepository=group`.
 
 **Only one can run at a time** — both use port 3457 for the backend and port 5173 for vite (client), and both write to `/var/lib/agent-console-dev` (multi-user) or `$HOME/.agent-console-dev` (single-user). Concurrent runs collide on ports and corrupt each other's session DB.
+
+## Docker dev stack: the AI-drivable multi-user environment
+
+`docker/docker-compose.yml` is a third dev environment: a **multi-user dev server inside a container**, launchable with `docker` group membership alone — no privilege elevation, no password prompt. This is the default choice when a delegated agent needs to start / restart / debug a multi-user instance autonomously. Full guide: `docker/README.md`.
+
+Operational facts that differ from the host-side scripts:
+
+- **No rsync step.** The repo is bind-mounted; the server's `bun --watch` and vite HMR both react to host-side edits live. The `dev-multiuser.sh` "server code is a frozen snapshot" trap does not exist here.
+- **Ports are env-mapped.** Container-internal ports are fixed (vite `5173`, server `3457`); host mapping is set at `up` time via `DEV_CLIENT_PORT` / `DEV_SERVER_PORT`. Because host `5173`/`3457` are often taken by `dev.sh`, `dev-multiuser.sh`, or another repo's vite, prefer explicit overrides (e.g. `DEV_CLIENT_PORT=15173 DEV_SERVER_PORT=13457 docker compose -f docker/docker-compose.yml up -d`). Changing the mapping requires `up -d` (recreate), not `restart`.
+- **Login uses baked test users** (`alice` / `bob`, passwords in `docker/README.md`), not host OS accounts. The elevation path (`shouldElevateForUser` → PTY as the target user) is genuinely exercised in-container.
+- **It does NOT exercise host OS quirks.** sudoers drift, PAM config, PATH/login-shell issues on the real host still need `dev-multiuser.sh` or the production instance.
+- **Coexists with the verification stack** (`docker/docker-compose.verification.yml`, host port 8080 — which on the dogfood host is also the production port, so give the verification stack a different `PORT` when production is running).
+- Logs / restart / shell: `docker compose -f docker/docker-compose.yml logs --tail 100 -f`, `... restart agent-console-dev`, `... exec -u agentconsole agent-console-dev sh`.
 
 ## Multi-user dev: source propagation is rsync, not live
 
@@ -66,6 +79,7 @@ Sequence the owner usually wants after applying a server-side fix:
 ## Cross-references
 
 - `scripts/dev.sh` and `scripts/dev-multiuser.sh` — canonical scripts (the prologues are required reading).
+- `docker/README.md` — the Docker dev stack (AI-drivable multi-user environment) and the verification stack.
 - `docs/multi-user-setup-guide.md` — operator-side setup, including the multi-repo-coexistence note.
 - `.claude/skills/development-workflow-standards/development-workflow-standards.md` "Diagnostic Command Error Suppression" — the discipline that prevents misinterpreting permission denied as not-found inside this environment.
 - `.claude/skills/orchestrator/core-responsibilities.md` "Delegation Prompt Mandatory Checklist" item 4 — environment constraint pre-disclosure for delegated agents.
