@@ -80,7 +80,9 @@ export const mockGit = {
 
   // Working directory operations
   isWorkingDirectoryClean: mock(() => Promise.resolve(true)) as Mock<(cwd: string) => Promise<boolean>>,
-  pullFastForward: mock(() => Promise.resolve(0)) as Mock<(cwd: string) => Promise<number>>,
+  pullFastForward: mock(() => Promise.resolve(0)) as Mock<
+    (cwd: string, requestUser?: string | null) => Promise<number>
+  >,
 
   // Diff operations
   getMergeBase: mock(() => Promise.resolve('abc1234')) as Mock<(ref1: string, ref2: string, cwd: string, requestUser?: string | null) => Promise<string>>,

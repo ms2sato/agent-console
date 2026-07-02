@@ -775,17 +775,21 @@ export async function isWorkingDirectoryClean(cwd: string): Promise<boolean> {
  * Pull with fast-forward only strategy.
  * Returns the number of commits pulled (0 if already up to date).
  *
+ * @param requestUser - See {@link git}.
  * @throws GitError if pull fails (e.g., branches have diverged, no remote tracking branch)
  */
-export async function pullFastForward(cwd: string): Promise<number> {
+export async function pullFastForward(
+  cwd: string,
+  requestUser?: string | null,
+): Promise<number> {
   // Get the current HEAD before pulling
-  const headBefore = await git(['rev-parse', 'HEAD'], cwd);
+  const headBefore = await git(['rev-parse', 'HEAD'], cwd, undefined, requestUser);
 
   // Execute git pull --ff-only
-  await git(['pull', '--ff-only'], cwd, NETWORK_GIT_TIMEOUT_MS);
+  await git(['pull', '--ff-only'], cwd, NETWORK_GIT_TIMEOUT_MS, requestUser);
 
   // Get the HEAD after pulling
-  const headAfter = await git(['rev-parse', 'HEAD'], cwd);
+  const headAfter = await git(['rev-parse', 'HEAD'], cwd, undefined, requestUser);
 
   // If HEAD didn't change, already up to date
   if (headBefore === headAfter) {
@@ -793,7 +797,12 @@ export async function pullFastForward(cwd: string): Promise<number> {
   }
 
   // Count commits between old and new HEAD
-  const countStr = await git(['rev-list', '--count', `${headBefore}..${headAfter}`], cwd);
+  const countStr = await git(
+    ['rev-list', '--count', `${headBefore}..${headAfter}`],
+    cwd,
+    undefined,
+    requestUser,
+  );
   const commitsPulled = Number.parseInt(countStr, 10);
   if (Number.isNaN(commitsPulled)) {
     throw new GitError(`Invalid commit count from git rev-list: "${countStr}"`, -1, countStr);
