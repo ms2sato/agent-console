@@ -13,6 +13,32 @@ import {
   FetchGitHubIssueRequestSchema,
 } from '../repository';
 
+describe('strict-parse contract (unknown-key rejection)', () => {
+  it('CreateRepositoryRequestSchema rejects an unknown key', () => {
+    const result = v.safeParse(CreateRepositoryRequestSchema, {
+      path: '/path/to/repository',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+    }
+  });
+
+  it('CreateWorktreeRequestSchema rejects an unknown key on the prompt-mode member of the union', () => {
+    const result = v.safeParse(CreateWorktreeRequestSchema, {
+      taskId: 'task-1',
+      mode: 'prompt',
+      initialPrompt: 'Fix bug',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.issues)).toContain('unexpectedField');
+    }
+  });
+});
+
 describe('CreateRepositoryRequestSchema', () => {
   it('should validate valid repository request', () => {
     const result = v.safeParse(CreateRepositoryRequestSchema, {

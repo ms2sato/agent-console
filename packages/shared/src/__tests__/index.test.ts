@@ -1,6 +1,23 @@
 import { describe, it, expect } from 'bun:test';
+import * as v from 'valibot';
 
 describe('shared index exports', () => {
+  it('should re-export SCHEMA_VERSION as a 16-hex-char content hash', async () => {
+    const mod = await import('../index.js');
+    expect(typeof mod.SCHEMA_VERSION).toBe('string');
+    expect(mod.SCHEMA_VERSION).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('should re-export SchemaVersionMessageSchema that parses a valid schema-version frame', async () => {
+    const mod = await import('../index.js');
+    expect(mod.SchemaVersionMessageSchema).toBeDefined();
+    const result = v.safeParse(mod.SchemaVersionMessageSchema, {
+      type: 'schema-version',
+      version: mod.SCHEMA_VERSION,
+    });
+    expect(result.success).toBe(true);
+  });
+
   it('should export InteractiveProcessInfo type', async () => {
     const mod = await import('../index.js');
     // InteractiveProcessInfo is a type-only export — verify the module loads successfully

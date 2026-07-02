@@ -880,3 +880,50 @@ describe('AgentDefinitionSchema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('strict-parse contract (unknown-key rejection)', () => {
+  it('CreateAgentRequestSchema still accepts a fully valid request after the entries-spread restructure', () => {
+    const result = v.safeParse(CreateAgentRequestSchema, {
+      name: 'Test Agent',
+      commandTemplate: 'test-cli {{prompt}}',
+      continueTemplate: 'test-cli --continue',
+      headlessTemplate: 'test-cli -p {{prompt}}',
+      description: 'A test agent',
+      activityPatterns: { askingPatterns: ['pattern'] },
+      baseAgentId: 'preset-1',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('CreateAgentRequestSchema rejects an unknown key (previously silently stripped by v.intersect)', () => {
+    const result = v.safeParse(CreateAgentRequestSchema, {
+      name: 'Test Agent',
+      commandTemplate: 'test-cli {{prompt}}',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+    }
+  });
+
+  it('AgentDefinitionSchema rejects an unknown key', () => {
+    const result = v.safeParse(AgentDefinitionSchema, {
+      id: 'agent-123',
+      name: 'Test Agent',
+      commandTemplate: 'test-cli {{prompt}}',
+      isBuiltIn: false,
+      createdAt: '2024-01-01T00:00:00Z',
+      capabilities: {
+        supportsContinue: false,
+        supportsHeadlessMode: false,
+        supportsActivityDetection: false,
+      },
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+    }
+  });
+});
