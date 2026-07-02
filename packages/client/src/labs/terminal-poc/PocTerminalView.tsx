@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyn
 import type { CSSProperties } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
 import type { PocRow, PocSegment, PocStyle } from './buffer-to-rows';
+import { PocScrollIndicator } from './PocScrollIndicator';
 
 const FONT_FAMILY =
   "'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace";
@@ -62,11 +63,13 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
     }
   }, [snapshot]);
 
+  const [scrollTick, setScrollTick] = useState(0);
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     setAtBottom(distance <= BOTTOM_THRESHOLD_PX);
+    setScrollTick((t) => t + 1);
   }, []);
 
   const scrollToBottom = useCallback(() => {
@@ -146,6 +149,10 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
           <Row key={row.key} row={row} />
         ))}
       </div>
+
+      {/* tick = scroll events + snapshot version, so the thumb appears on scroll
+          and on content growth, then fades after inactivity. */}
+      <PocScrollIndicator containerRef={scrollRef} tick={scrollTick + snapshot.version} />
 
       {!atBottom && (
         <button
