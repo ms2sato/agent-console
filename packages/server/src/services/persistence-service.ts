@@ -13,7 +13,7 @@ import { AgentDefinitionSchema } from '@agent-console/shared';
  * unknown keys (matching the historical persisted-load behavior); it is never
  * used for wire validation.
  */
-const PersistedAgentDefinitionSchema = v.object(AgentDefinitionSchema.entries);
+export const PersistedAgentDefinitionSchema = v.object(AgentDefinitionSchema.entries);
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 

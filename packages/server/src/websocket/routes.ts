@@ -484,7 +484,13 @@ export async function setupWebSocketRoutes(
           // Advertise the wire-schema version as the very first frame, before
           // any sync data, so the client can detect a server/client schema
           // mismatch and reload before it attempts to parse newer payloads.
-          ws.send(JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION }));
+          // Guard the send: if the socket is already closing this must not throw
+          // and abort the rest of onOpen (client registration + initial sync).
+          try {
+            ws.send(JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION }));
+          } catch (e) {
+            logger.warn({ err: e }, 'Failed to send schema-version frame');
+          }
 
           logger.info('App WebSocket connected, sending initial sync');
 
