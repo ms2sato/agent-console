@@ -620,7 +620,9 @@ index abc1234..def5678 100644
       ]);
       const { pullFastForward } = await getGitModule();
 
-      await pullFastForward('/repo');
+      const result = await pullFastForward('/repo');
+      // HEAD unchanged → up-to-date → 0 commits pulled, rev-list not called.
+      expect(result).toBe(0);
 
       // Direct-spawn path was used for every internal git invocation.
       expect(spawnCalls.length).toBe(3);
