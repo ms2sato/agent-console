@@ -12,6 +12,12 @@ function lastSentMessages(ws: MockWebSocket): unknown[] {
   return calls.map((call) => JSON.parse(call[0]));
 }
 
+function inputFrames(ws: MockWebSocket): string[] {
+  return (lastSentMessages(ws) as { type: string; data?: string }[])
+    .filter((m) => m.type === 'input')
+    .map((m) => m.data ?? '');
+}
+
 function allText(instance: ReturnType<typeof getOrCreatePocTerminal>): string {
   return instance
     .getSnapshot()
@@ -146,6 +152,71 @@ describe('poc-terminal-store', () => {
     const text = allText(instance);
     expect(text).toContain('visible');
     expect(text).not.toContain('internal:timer');
+  });
+
+  it('forwardScroll with mouse tracking active emits SGR wheel reports with clamped coords', async () => {
+    const instance = getOrCreatePocTerminal('smt', 'wmt');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    // Enable mouse tracking (DECSET 1002 = button-event tracking).
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002h', offset: 0 }));
+    await flush();
+
+    instance.forwardScroll(-1, { x: 5, y: 3 }); // scroll up -> button 64
+    instance.forwardScroll(2, { x: 5, y: 3 }); // scroll down x2 -> button 65
+    // Coords beyond the grid clamp to [1..cols]/[1..rows].
+    instance.forwardScroll(1, { x: 9999, y: 9999 });
+
+    const frames = inputFrames(ws!);
+    expect(frames).toContain('\x1b[<64;5;3M');
+    expect(frames).toContain('\x1b[<65;5;3M\x1b[<65;5;3M');
+    // Coords clamped to grid (cols 80, rows 24); never emits the raw 9999.
+    expect(frames).toContain('\x1b[<65;80;24M');
+  });
+
+  it('forwardScroll without mouse tracking emits arrow keys (CSI A/B)', () => {
+    const instance = getOrCreatePocTerminal('sar', 'war');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.forwardScroll(-2, { x: 1, y: 1 }); // up x2
+    instance.forwardScroll(1, { x: 1, y: 1 }); // down x1
+
+    const frames = inputFrames(ws!);
+    expect(frames).toContain('\x1b[A\x1b[A');
+    expect(frames).toContain('\x1b[B');
+  });
+
+  it('forwardScroll without tracking + DECCKM on emits SS3 arrows (ESC O A/B)', async () => {
+    const instance = getOrCreatePocTerminal('sck', 'wck');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    // Application Cursor Keys (DECCKM, DECSET 1).
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1h', offset: 0 }));
+    await flush();
+
+    instance.forwardScroll(-1, { x: 1, y: 1 });
+    instance.forwardScroll(1, { x: 1, y: 1 });
+
+    const frames = inputFrames(ws!);
+    expect(frames).toContain('\x1bOA');
+    expect(frames).toContain('\x1bOB');
+  });
+
+  it('bufferType appears in snapshot and flips on alt-screen enter/exit', async () => {
+    const instance = getOrCreatePocTerminal('sbt', 'wbt');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    expect(instance.getSnapshot().bufferType).toBe('normal');
+
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1049h', offset: 0 }));
+    await flush();
+    expect(instance.getSnapshot().bufferType).toBe('alternate');
+
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1049l', offset: 8 }));
+    await flush();
+    expect(instance.getSnapshot().bufferType).toBe('normal');
   });
 
   it('sendInput sends a correct input frame', () => {

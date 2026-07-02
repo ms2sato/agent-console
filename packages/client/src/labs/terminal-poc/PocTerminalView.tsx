@@ -47,6 +47,11 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
   const wasAtBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
 
+  // Read by the native wheel/touch listeners (attached once, keyed on instance)
+  // so they know whether to forward scroll to the app or let native scroll run.
+  const bufferTypeRef = useRef<'normal' | 'alternate'>('normal');
+  bufferTypeRef.current = snapshot.bufferType;
+
   // Record whether the user is pinned to the bottom BEFORE the DOM updates, so
   // the layout effect below can decide whether to auto-scroll.
   const container = scrollRef.current;
@@ -110,6 +115,79 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
     return () => {
       observer.disconnect();
       if (timer) clearTimeout(timer);
+    };
+  }, [instance]);
+
+  // Alternate-screen scroll forwarding. Native (non-passive) wheel + touch
+  // listeners so preventDefault works; attached once per instance and gated on
+  // bufferTypeRef so we do not re-subscribe on every snapshot.
+  useEffect(() => {
+    const el = scrollRef.current;
+    const measure = measureRef.current;
+    if (!el || !measure) return;
+
+    // Fractional line remainder carried between events for smooth stepping.
+    let remainder = 0;
+    let touchLastY: number | null = null;
+
+    const cellMetrics = () => {
+      const r = measure.getBoundingClientRect();
+      return { charW: r.width || 8, charH: r.height || 16 };
+    };
+    const cellFromPoint = (clientX: number, clientY: number, charW: number, charH: number) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        x: Math.floor((clientX - rect.left) / charW) + 1,
+        y: Math.floor((clientY - rect.top) / charH) + 1,
+      };
+    };
+    const stepFrom = (deltaPx: number, charH: number): number => {
+      const total = remainder + deltaPx;
+      const steps = Math.trunc(total / charH);
+      remainder = total - steps * charH;
+      return steps;
+    };
+
+    const onWheel = (e: WheelEvent) => {
+      if (bufferTypeRef.current !== 'alternate') return; // main screen: native scroll
+      e.preventDefault();
+      const { charW, charH } = cellMetrics();
+      const steps = stepFrom(e.deltaY, charH);
+      if (steps === 0) return;
+      instance.forwardScroll(steps, cellFromPoint(e.clientX, e.clientY, charW, charH));
+    };
+
+    const onTouchStart = (e: TouchEvent) => {
+      if (bufferTypeRef.current !== 'alternate') return;
+      touchLastY = e.touches[0]?.clientY ?? null;
+      remainder = 0;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (bufferTypeRef.current !== 'alternate') return;
+      const touch = e.touches[0];
+      if (!touch || touchLastY === null) return;
+      e.preventDefault(); // suppress rubber-banding
+      const { charW, charH } = cellMetrics();
+      // Finger up (clientY decreases) => content scrolls toward newer (down).
+      const steps = stepFrom(touchLastY - touch.clientY, charH);
+      if (steps === 0) return;
+      touchLastY = touch.clientY;
+      instance.forwardScroll(steps, cellFromPoint(touch.clientX, touch.clientY, charW, charH));
+    };
+    const onTouchEnd = () => {
+      touchLastY = null;
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false });
+    el.addEventListener('touchstart', onTouchStart, { passive: false });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd);
+
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
     };
   }, [instance]);
 

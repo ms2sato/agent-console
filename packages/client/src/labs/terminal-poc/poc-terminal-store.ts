@@ -40,6 +40,7 @@ export interface PocSnapshot {
   cursor: { x: number; y: number; visible: boolean }; // y = absolute row index
   cols: number;
   terminalRows: number;
+  bufferType: 'normal' | 'alternate'; // 'alternate' = full-screen app (scroll is forwarded)
 }
 
 export interface PocTerminalInstance {
@@ -47,6 +48,8 @@ export interface PocTerminalInstance {
   getSnapshot(): PocSnapshot;
   sendInput(data: string): void;
   resize(cols: number, rows: number): void;
+  /** Forward scroll to the app in alternate-screen mode. positive = toward newer. */
+  forwardScroll(lines: number, cell: { x: number; y: number }): void;
   dispose(): void;
 }
 
@@ -100,10 +103,14 @@ class PocTerminal implements PocTerminalInstance {
       cursor: { x: 0, y: 0, visible: true },
       cols: DEFAULT_COLS,
       terminalRows: DEFAULT_ROWS,
+      bufferType: 'normal',
     };
 
     this.terminal.onScroll(() => this.scheduleNotify());
     this.terminal.onCursorMove(() => this.scheduleNotify());
+    // The alt-screen enter/exit itself must trigger a fresh snapshot.
+    // onBufferChange lives on the buffer namespace, not the Terminal.
+    this.terminal.buffer.onBufferChange(() => this.scheduleNotify());
 
     this.connect();
   }
@@ -132,6 +139,27 @@ class PocTerminal implements PocTerminalInstance {
     this.terminal.resize(cols, rows);
     this.send({ type: 'resize', cols, rows });
     this.scheduleNotify();
+  };
+
+  forwardScroll = (lines: number, cell: { x: number; y: number }): void => {
+    const steps = Math.abs(Math.trunc(lines));
+    if (steps === 0) return;
+    const down = lines > 0; // toward newer content
+    let data: string;
+
+    if (this.terminal.modes.mouseTrackingMode !== 'none') {
+      // SGR mouse wheel report per line. Button 64 = wheel up, 65 = wheel down.
+      const col = clampCell(cell.x, this.terminal.cols);
+      const row = clampCell(cell.y, this.terminal.rows);
+      const button = down ? 65 : 64;
+      data = `\x1b[<${button};${col};${row}M`.repeat(steps);
+    } else {
+      // No mouse tracking: emit arrow keys (SS3 form under DECCKM).
+      const app = this.terminal.modes.applicationCursorKeysMode;
+      const seq = down ? (app ? '\x1bOB' : '\x1b[B') : app ? '\x1bOA' : '\x1b[A';
+      data = seq.repeat(steps);
+    }
+    this.sendInput(data);
   };
 
   dispose = (): void => {
@@ -337,12 +365,18 @@ class PocTerminal implements PocTerminalInstance {
       cursor: { x: cursorX, y: cursorY, visible: true },
       cols,
       terminalRows: this.terminal.rows,
+      bufferType: buffer.type,
     };
   }
 
   private notify(): void {
     for (const listener of this.listeners) listener();
   }
+}
+
+/** Clamp a 1-based cell coordinate into [1, max]. */
+function clampCell(value: number, max: number): number {
+  return Math.min(max, Math.max(1, Math.round(value)));
 }
 
 // --- Module-level registry ---
