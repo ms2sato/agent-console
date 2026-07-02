@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { getChildProcessEnv, getUnsetEnvPrefix, filterRepositoryEnvVars } from '../env-filter.js';
+import {
+  getChildProcessEnv,
+  getUnsetEnvPrefix,
+  filterRepositoryEnvVars,
+  isInheritedClaudeSessionVar,
+} from '../env-filter.js';
 import { SERVER_ONLY_ENV_VARS } from '../../lib/server-config.js';
 
 describe('env-filter', () => {
@@ -100,6 +105,50 @@ describe('env-filter', () => {
 
       expect(childEnv.TERM).toBe('xterm-256color');
     });
+
+    it('should exclude inherited Claude Code session vars (Issue #949)', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SESSION_ID = 'parent-id';
+      process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+
+      const childEnv = getChildProcessEnv();
+
+      expect('CLAUDECODE' in childEnv).toBe(false);
+      expect('CLAUDE_CODE_SESSION_ID' in childEnv).toBe(false);
+      expect('CLAUDE_CODE_ENTRYPOINT' in childEnv).toBe(false);
+    });
+
+    it('should keep vars that only resemble Claude Code session vars', () => {
+      // Prefix rule is exactly `CLAUDE_CODE_`; `CLAUDE_CODEX` must NOT match,
+      // and the exact name is `CLAUDECODE`, so `MY_CLAUDECODE` must NOT match.
+      process.env.CLAUDE_CODEX = 'keep-me';
+      process.env.MY_CLAUDECODE = 'keep-me-too';
+      process.env.CLAUDE_CODE_X = 'strip-me';
+
+      const childEnv = getChildProcessEnv();
+
+      expect(childEnv.CLAUDE_CODEX).toBe('keep-me');
+      expect(childEnv.MY_CLAUDECODE).toBe('keep-me-too');
+      expect('CLAUDE_CODE_X' in childEnv).toBe(false);
+    });
+  });
+
+  describe('isInheritedClaudeSessionVar', () => {
+    it('should match CLAUDECODE and CLAUDE_CODE_* names', () => {
+      expect(isInheritedClaudeSessionVar('CLAUDECODE')).toBe(true);
+      expect(isInheritedClaudeSessionVar('CLAUDE_CODE_SESSION_ID')).toBe(true);
+      expect(isInheritedClaudeSessionVar('CLAUDE_CODE_ENTRYPOINT')).toBe(true);
+      expect(isInheritedClaudeSessionVar('CLAUDE_CODE_X')).toBe(true);
+    });
+
+    it('should not match near-miss names', () => {
+      // `CLAUDE_CODEX` shares the `CLAUDE_CODE` stem but not the `CLAUDE_CODE_`
+      // prefix; `MY_CLAUDECODE` is not the exact `CLAUDECODE` name.
+      expect(isInheritedClaudeSessionVar('CLAUDE_CODEX')).toBe(false);
+      expect(isInheritedClaudeSessionVar('MY_CLAUDECODE')).toBe(false);
+      expect(isInheritedClaudeSessionVar('CLAUDE_API_KEY')).toBe(false);
+      expect(isInheritedClaudeSessionVar('ANTHROPIC_API_KEY')).toBe(false);
+    });
   });
 
   describe('getUnsetEnvPrefix', () => {
@@ -117,6 +166,15 @@ describe('env-filter', () => {
     });
 
     it('should include all blocked env vars in the unset command', () => {
+      // Remove any inherited Claude Code session vars so this baseline test
+      // asserts exactly the blocked-var set (Issue #949: getUnsetEnvPrefix
+      // also unsets CLAUDE_CODE_* dynamically when present).
+      for (const key of Object.keys(process.env)) {
+        if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) {
+          delete process.env[key];
+        }
+      }
+
       const prefix = getUnsetEnvPrefix();
 
       // Parse the variables from the unset command
@@ -139,6 +197,46 @@ describe('env-filter', () => {
       // This regex validates the format
       const validFormat = /^unset [A-Z_]+( [A-Z_]+)*; $/;
       expect(validFormat.test(prefix)).toBe(true);
+    });
+
+    it('should dynamically unset inherited Claude Code session vars (Issue #949)', () => {
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SESSION_ID = 'parent-id';
+
+      const prefix = getUnsetEnvPrefix();
+
+      expect(prefix).toContain('CLAUDECODE');
+      expect(prefix).toContain('CLAUDE_CODE_SESSION_ID');
+    });
+
+    it('should not include a var that only resembles a Claude Code session var', () => {
+      // Remove any real inherited session vars, then add near-miss names.
+      for (const key of Object.keys(process.env)) {
+        if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) {
+          delete process.env[key];
+        }
+      }
+      process.env.CLAUDE_CODEX = 'x';
+      process.env.MY_CLAUDECODE = 'y';
+
+      const prefix = getUnsetEnvPrefix();
+
+      // Whole-word check via the space/boundary-delimited unset list.
+      const unsetVars = prefix.slice('unset '.length, -'; '.length).split(' ');
+      expect(unsetVars).not.toContain('CLAUDE_CODEX');
+      expect(unsetVars).not.toContain('MY_CLAUDECODE');
+    });
+
+    it('should equal blocked-only behavior when no Claude Code session vars are set', () => {
+      for (const key of Object.keys(process.env)) {
+        if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) {
+          delete process.env[key];
+        }
+      }
+
+      const prefix = getUnsetEnvPrefix();
+
+      expect(prefix).toBe(`unset ${SERVER_ONLY_ENV_VARS.join(' ')}; `);
     });
   });
 
