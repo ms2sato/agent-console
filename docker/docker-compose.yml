@@ -72,7 +72,9 @@ services:
       # `docker compose down` / `up` cycles.
       - dev-data:/var/lib/agent-console
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('http://localhost:3457/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      # Healthy only when BOTH dev servers answer: the API server and the
+      # vite client (either alone can be down while the other runs).
+      test: ["CMD", "bun", "-e", "Promise.all([fetch('http://localhost:3457/api/config'),fetch('http://localhost:5173')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 5s
       retries: 60
