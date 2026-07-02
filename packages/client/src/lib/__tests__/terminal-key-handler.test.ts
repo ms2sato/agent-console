@@ -5,7 +5,7 @@
  * The handler is xterm.js's attachCustomKeyEventHandler callback. Returning
  * false stops xterm from handling the key; true lets it through.
  *
- * The "D' package" fix adds a Cmd+A branch: it selects the whole buffer so
+ * This handler adds a Cmd+A branch: it selects the whole buffer so
  * Cmd+C can copy it even while a TUI has DEC mouse tracking enabled (which
  * disables xterm's SelectionService, so drag-copy is dead). Ctrl+A is
  * deliberately NOT intercepted — it is readline's beginning-of-line and must

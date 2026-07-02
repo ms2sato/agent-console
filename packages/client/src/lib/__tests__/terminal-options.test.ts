@@ -1,7 +1,7 @@
 /**
  * Tests for buildBaseTerminalOptions (packages/client/src/lib/terminal-options.ts).
  *
- * The "D' package" fix restores drag-copy in the web terminal while a TUI
+ * These options restore drag-copy in the web terminal while a TUI
  * (e.g. Claude Code's fullscreen UI) has DEC mouse tracking enabled. When
  * mouse tracking is on, xterm.js disables its SelectionService, killing
  * drag-selection. Three xterm.js constructor options are the fix:
@@ -16,7 +16,7 @@
 import { describe, expect, it } from 'bun:test';
 import { buildBaseTerminalOptions } from '../terminal-options';
 
-describe('buildBaseTerminalOptions D\' mouse-tracking copy options', () => {
+describe('buildBaseTerminalOptions mouse-tracking copy options', () => {
   it('should not select a word on right-click (keeps existing selection for Copy)', () => {
     expect(buildBaseTerminalOptions().rightClickSelectsWord).toBe(false);
   });
@@ -33,10 +33,10 @@ describe('buildBaseTerminalOptions D\' mouse-tracking copy options', () => {
 /**
  * Contract pins — regression guards for the pre-existing base options. These
  * pass in BOTH the pre-fix (refactor) and post-fix states, so they are NOT
- * part of the D' polarity set; they only guard against accidental changes to
- * the unrelated base configuration.
+ * part of the copy-fix polarity set; they only guard against accidental
+ * changes to the unrelated base configuration.
  */
-describe('buildBaseTerminalOptions contract pins (not part of the D\' polarity set)', () => {
+describe('buildBaseTerminalOptions contract pins (not part of the copy-fix polarity set)', () => {
   it('should enable cursor blink', () => {
     expect(buildBaseTerminalOptions().cursorBlink).toBe(true);
   });
