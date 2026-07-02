@@ -16,6 +16,11 @@ import {
   applyCachedSnapshotBeforeOpen,
   buildTerminalOptionsForRestore,
 } from '../lib/terminal-restore.js';
+import { buildBaseTerminalOptions } from '../lib/terminal-options.js';
+import { createCustomKeyEventHandler } from '../lib/terminal-key-handler.js';
+import { installMouseProtocolGuard } from '../lib/terminal-mouse-protocol-guard.js';
+import { installCopyPrimeCleanup } from '../lib/terminal-copy-prime-cleanup.js';
+import { installCopyOnSelect } from '../lib/terminal-copy-on-select.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -437,6 +442,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     let serializeAddon: SerializeAddon | null = null;
     let watchdog: RenderWatchdog | null = null;
     let renderStallRecovery: { dispose: () => void } | null = null;
+    let mouseProtocolGuard: { dispose: () => void } | null = null;
+    let copyPrimeCleanup: { dispose: () => void } | null = null;
+    let copyOnSelect: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
     let viewportObserver: MutationObserver | null = null;
     let viewportElement: Element | null = null;
@@ -483,16 +491,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // 2. Construct the terminal at the cached cols/rows when available.
       //    Per @xterm/addon-serialize: writing the snapshot into a same-size
       //    terminal is required for scrollback to be correctly repopulated.
-      const baseOptions = {
-        cursorBlink: true,
-        fontSize: 14,
-        fontFamily: '"JetBrains Mono", "Fira Code", "Cascadia Code", "Source Code Pro", "DejaVu Sans Mono", Menlo, Monaco, "Courier New", monospace',
-        theme: {
-          background: '#1a1a2e',
-          foreground: '#eee',
-          cursor: '#eee',
-        },
-      };
+      const baseOptions = buildBaseTerminalOptions();
       terminal = new XTerm(buildTerminalOptionsForRestore(baseOptions, cached));
 
       fitAddon = new FitAddon();
@@ -508,6 +507,24 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // Enable serialization for terminal state caching
       serializeAddon = new SerializeAddon();
       terminal.loadAddon(serializeAddon);
+
+      // Guard against selection-destroying mouse-protocol re-assertion from
+      // CLIs that re-emit their DEC mouse tracking setup on every redraw.
+      // See lib/terminal-mouse-protocol-guard.ts for the mechanism.
+      mouseProtocolGuard = installMouseProtocolGuard(terminal);
+
+      // Clear xterm's stale right-click copy prime once its selection is
+      // gone, so a later Cmd+C without a live selection does not re-copy old
+      // text. See lib/terminal-copy-prime-cleanup.ts for the mechanism.
+      copyPrimeCleanup = installCopyPrimeCleanup(terminal);
+
+      // Copy the selection to the clipboard at creation time while mouse
+      // tracking is active — under tracking mouse reports clear the selection
+      // synchronously, so select-then-copy cannot work. Normal shells are
+      // unaffected. See lib/terminal-copy-on-select.ts for the mechanism.
+      copyOnSelect = installCopyOnSelect(terminal, undefined, (e) =>
+        logger.debug('[Terminal] copy-on-select clipboard write failed:', e),
+      );
 
       // 3. Write the cached snapshot BEFORE open() per the library's
       //    recommendation. updateScrollButtonVisibility is safe even though
@@ -682,23 +699,10 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       });
 
       // Handle special key events
-      terminal.attachCustomKeyEventHandler((event) => {
-        // Skip IME composition events (Japanese input, etc.)
-        if (event.isComposing) {
-          return true; // Let IME handle it
-        }
-
-        // Handle Shift+Enter for multi-line input
-        if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
-          event.preventDefault();
-          event.stopPropagation();
-          // Send soft newline for multi-line input
-          sendInput('\x0a');
-          return false; // Prevent terminal from handling
-        }
-
-        return true; // Allow default handling for other keys
-      });
+      const t = terminal;
+      terminal.attachCustomKeyEventHandler(
+        createCustomKeyEventHandler({ sendInput, selectAll: () => t.selectAll() }),
+      );
 
       // Handle resize
       handleResize = () => {
@@ -830,6 +834,15 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
     return () => {
       cancelled = true;
+
+      // Dispose the mouse-protocol guard (removes the parser handler)
+      mouseProtocolGuard?.dispose();
+
+      // Dispose the copy-prime cleanup (removes the selection listener)
+      copyPrimeCleanup?.dispose();
+
+      // Dispose copy-on-select (removes the selection listener)
+      copyOnSelect?.dispose();
 
       // Dispose render stall auto-recovery before watchdog
       renderStallRecovery?.dispose();
