@@ -122,4 +122,48 @@ describe('extractRowWithCursor', () => {
     const cursorSeg = row.segments.find((s) => s.style?.bg === '#eeeeee');
     expect(cursorSeg?.text).toBe('X');
   });
+
+  it('cursor at end of text: trailing blanks after the cursor cell are trimmed, cursor cell remains', async () => {
+    // Cursor sits on the blank cell just after 'abc' (column 3).
+    await write(term, 'abc');
+    const buffer = term.buffer.active;
+    const line = buffer.getLine(0);
+    if (!line) throw new Error('no line');
+    const row = extractRowWithCursor(line, term.cols, buffer.getNullCell(), 0, 3);
+
+    // The cursor cell (a single blank block) is the last segment - no trailing
+    // full-width whitespace segment survives after it.
+    const lastSeg = row.segments[row.segments.length - 1];
+    expect(lastSeg.style?.bg).toBe('#eeeeee');
+    expect(lastSeg.text).toBe(' ');
+    const text = row.segments.map((s) => s.text).join('');
+    expect(text).toBe('abc '); // 'abc' + single cursor blank, no full-width padding
+  });
+
+  it('cursor mid-text: content unchanged except trailing trim', async () => {
+    await write(term, 'abc');
+    const buffer = term.buffer.active;
+    const line = buffer.getLine(0);
+    if (!line) throw new Error('no line');
+    const row = extractRowWithCursor(line, term.cols, buffer.getNullCell(), 0, 1);
+    const text = row.segments.map((s) => s.text).join('');
+    expect(text).toBe('abc'); // no trailing blank cells beyond the text
+  });
+
+  it('parity: cursor row visible text matches extractRow plus cursor styling', async () => {
+    await write(term, 'abc');
+    const buffer = term.buffer.active;
+    const line = buffer.getLine(0);
+    if (!line) throw new Error('no line');
+    const plain = extractRow(line, term.cols, buffer.getNullCell(), 0);
+    const withCursor = extractRowWithCursor(line, term.cols, buffer.getNullCell(), 0, 1);
+
+    const plainText = plain.segments.map((s) => s.text).join('');
+    const cursorText = withCursor.segments.map((s) => s.text).join('');
+    expect(cursorText).toBe(plainText);
+
+    // The 'b' cell carries cursor styling in the cursor row but not the plain row.
+    expect(withCursor.segments.find((s) => s.text === 'b')?.style?.bg).toBe('#eeeeee');
+    expect(plain.segments.find((s) => s.style?.bg === '#eeeeee')).toBeUndefined();
+  });
 });

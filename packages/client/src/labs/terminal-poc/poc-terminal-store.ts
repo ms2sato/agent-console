@@ -334,6 +334,16 @@ class PocTerminal implements PocTerminalInstance {
 }
 
 // --- Module-level registry ---
+//
+// INTENTIONAL LIFETIME: instances are deliberately NOT disposed when a React
+// route/component unmounts. Surviving mounts is the architectural point of this
+// PoC — the live headless Terminal + WebSocket replace the serialize/restore
+// cache layer, so navigating away and back reuses the already-parsed buffer with
+// zero rehydration. The trade-off is that instances live until dispose() is
+// called explicitly (only the test helper does so today), which a static
+// analyzer reads as a leak. A production adoption would add reference counting
+// (mount/unmount) + idle eviction (TTL after the last WS activity); both are out
+// of PoC scope.
 
 const instances = new Map<string, PocTerminal>();
 

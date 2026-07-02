@@ -160,6 +160,12 @@ export function extractRowWithCursor(
   cursorX: number,
 ): PocRow {
   const segments = walkCells(line, cols, nullCell, cursorX);
+  // Trim trailing default-style blanks like extractRow, but protect the cursor
+  // segment (and everything up to it): the cursor commonly sits on a blank cell
+  // just after the text, so only whitespace strictly AFTER the cursor is trimmed.
+  const cursorIndex = segments.findIndex((s) => s.style === CURSOR_STYLE);
+  const protectedCount = cursorIndex === -1 ? 0 : cursorIndex + 1;
+  trimTrailingDefaultWhitespace(segments, protectedCount);
   if (segments.length === 0) {
     segments.push({ text: '', style: null });
   }
@@ -222,10 +228,11 @@ function walkCells(
 /**
  * Trim trailing whitespace from the last segment when that segment has no
  * style (default background), keeping the DOM light without altering visible
- * colored cells.
+ * colored cells. `protectedCount` leading segments are never trimmed or popped
+ * (used to keep the cursor segment on the cursor row).
  */
-function trimTrailingDefaultWhitespace(segments: PocSegment[]): void {
-  while (segments.length > 0) {
+function trimTrailingDefaultWhitespace(segments: PocSegment[], protectedCount = 0): void {
+  while (segments.length > protectedCount) {
     const last = segments[segments.length - 1];
     if (last.style !== null) break;
     const trimmed = last.text.replace(/ +$/, '');
