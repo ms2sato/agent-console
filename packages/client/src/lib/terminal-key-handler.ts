@@ -18,6 +18,20 @@ export function createCustomKeyEventHandler(
       return true; // Let IME handle it
     }
 
+    // Cmd+A: select the whole buffer so Cmd+C can copy it even while a
+    // TUI has mouse tracking enabled (selectAll bypasses the disabled
+    // selection service). Ctrl+A is deliberately NOT intercepted: it is
+    // readline's beginning-of-line and must keep reaching the PTY.
+    if (
+      event.type === 'keydown' &&
+      event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey &&
+      event.key.toLowerCase() === 'a'
+    ) {
+      event.preventDefault();
+      deps.selectAll();
+      return false;
+    }
+
     // Handle Shift+Enter for multi-line input
     if (event.type === 'keydown' && event.key === 'Enter' && event.shiftKey) {
       event.preventDefault();

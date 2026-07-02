@@ -16,5 +16,21 @@ export function buildBaseTerminalOptions(): ITerminalOptions & ITerminalInitOnly
       foreground: '#eee',
       cursor: '#eee',
     },
+    // Allow Option+drag selection even while a TUI (e.g. Claude Code's
+    // fullscreen UI) has DEC mouse tracking enabled. Without this, macOS
+    // has no bypass at all: xterm.js only honors Shift+drag on non-Mac
+    // platforms (SelectionService.shouldForceSelection).
+    macOptionClickForcesSelection: true,
+    // Off by default only on non-Mac. On Mac this defaults to true and a
+    // right-click outside the current selection replaces it with a
+    // one-word selection, destroying the "select -> right-click -> Copy"
+    // flow. Disabling keeps the existing selection for the context menu.
+    rightClickSelectsWord: false,
+    // With macOptionClickForcesSelection enabled, a short Option+click
+    // would otherwise emit cursor-move escape sequences (arrow keys) into
+    // the PTY (SelectionService alt-click handling) — stray input for the
+    // running CLI. Disable it; the feature only ever worked while mouse
+    // tracking was off.
+    altClickMovesCursor: false,
   };
 }
