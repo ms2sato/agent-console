@@ -20,6 +20,7 @@ import { buildBaseTerminalOptions } from '../lib/terminal-options.js';
 import { createCustomKeyEventHandler } from '../lib/terminal-key-handler.js';
 import { installMouseProtocolGuard } from '../lib/terminal-mouse-protocol-guard.js';
 import { installCopyPrimeCleanup } from '../lib/terminal-copy-prime-cleanup.js';
+import { installCopyOnSelect } from '../lib/terminal-copy-on-select.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -443,6 +444,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     let renderStallRecovery: { dispose: () => void } | null = null;
     let mouseProtocolGuard: { dispose: () => void } | null = null;
     let copyPrimeCleanup: { dispose: () => void } | null = null;
+    let copyOnSelect: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
     let viewportObserver: MutationObserver | null = null;
     let viewportElement: Element | null = null;
@@ -515,6 +517,14 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // gone, so a later Cmd+C without a live selection does not re-copy old
       // text. See lib/terminal-copy-prime-cleanup.ts for the mechanism.
       copyPrimeCleanup = installCopyPrimeCleanup(terminal);
+
+      // Copy the selection to the clipboard at creation time while mouse
+      // tracking is active — under tracking mouse reports clear the selection
+      // synchronously, so select-then-copy cannot work. Normal shells are
+      // unaffected. See lib/terminal-copy-on-select.ts for the mechanism.
+      copyOnSelect = installCopyOnSelect(terminal, undefined, (e) =>
+        logger.debug('[Terminal] copy-on-select clipboard write failed:', e),
+      );
 
       // 3. Write the cached snapshot BEFORE open() per the library's
       //    recommendation. updateScrollButtonVisibility is safe even though
@@ -830,6 +840,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
       // Dispose the copy-prime cleanup (removes the selection listener)
       copyPrimeCleanup?.dispose();
+
+      // Dispose copy-on-select (removes the selection listener)
+      copyOnSelect?.dispose();
 
       // Dispose render stall auto-recovery before watchdog
       renderStallRecovery?.dispose();
