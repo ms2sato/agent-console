@@ -135,7 +135,7 @@ describe('App WebSocket sync-queue handling', () => {
 
     const mockWs = createMockWs();
     const handlers = capturedAppHandlerFactory!({ req: { param: () => '' } });
-    handlers.onOpen({}, mockWs as unknown as WSContext);
+    handlers.onOpen({}, mockWs);
 
     // The synchronous first send happens before any async sync work.
     expect(mockWs.sentMessages.length).toBeGreaterThan(0);

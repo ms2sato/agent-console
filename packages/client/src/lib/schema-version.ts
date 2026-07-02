@@ -194,7 +194,7 @@ export function installSchemaVersionFetchInspector(): void {
   if (fetchInspectorInstalled) return;
   fetchInspectorInstalled = true;
 
-  const originalFetch = globalThis.fetch;
+  const originalFetch = globalThis.fetch.bind(globalThis);
   const wrapped = async (
     input: Parameters<typeof globalThis.fetch>[0],
     init?: Parameters<typeof globalThis.fetch>[1],
