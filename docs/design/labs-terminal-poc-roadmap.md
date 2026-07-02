@@ -82,7 +82,7 @@ Classification legend:
 | Image paste → `onFilesReceived` | `Terminal.tsx:668-687` | missing | Capture-phase paste listener with image extraction, forwarding to `MessagePanel.addFiles` (`SessionPage.tsx:516`). Port nearly verbatim to the adapter. |
 | Drag & drop files + overlay | `Terminal.tsx:689-719, 968-973` | missing | Same port. |
 | Clickable links (WebLinksAddon) | `Terminal.tsx:420-425` | missing | In a DOM renderer this is URL detection over row text → `<a>` (or click handler) — simpler and safer than the addon (`noopener,noreferrer` preserved). |
-| Output filters (`stripSystemMessages`, `stripScrollbackClear`) | `Terminal.tsx:92-107`, `terminal-utils.ts:62-88` | missing | Pure-string filters applied before `terminal.write`. Port as a store-level `processOutput` configured per worker (agent's `stripScrollbackClear` flag comes through the adapter, `SessionPage.tsx:434-438`). |
+| Output filters (`stripSystemMessages`, `stripScrollbackClear`) | `Terminal.tsx:92-107`, `terminal-utils.ts:62-88` | covered (fast-tracked) | Fast-tracked into #934 after owner dogfood surfaced that Claude Code's CSI 3J redraws left nothing to scroll: the PoC reuses the production filters, always-on. The remaining PR-1 work is making `stripScrollbackClear` conditional per agent config (flag arrives through the adapter, `SessionPage.tsx:434-438`). |
 
 ### E. Integration surface
 
