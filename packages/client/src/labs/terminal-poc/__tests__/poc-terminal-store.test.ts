@@ -367,6 +367,45 @@ describe('poc-terminal-store', () => {
     }
   });
 
+  it('F1: repeated DECSET mode bursts keep the snapshot stable and touch no selection state', async () => {
+    const instance = getOrCreatePocTerminal('f1', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: 'hello world', offset: 0 }));
+    await flush();
+    const contentBefore = allText(instance);
+
+    // Claude's mode re-send burst, repeated 3x (the #943 F1 pattern).
+    const burst = '\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h';
+    for (let i = 0; i < 3; i++) {
+      ws!.simulateMessage(JSON.stringify({ type: 'output', data: burst, offset: 20 + i }));
+      await flush();
+    }
+
+    expect(instance.getSnapshot().mouseTracking).toBe(true);
+    // No reset thrash: rendered content is unchanged across the bursts.
+    expect(allText(instance)).toBe(contentBefore);
+  });
+
+  it('F2: mouse/scroll reports do not bump the snapshot version (reports are not user input)', async () => {
+    const instance = getOrCreatePocTerminal('f2', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002h', offset: 0 }));
+    await flush();
+
+    const versionBefore = instance.getSnapshot().version;
+    instance.reportMouseButton('press', { x: 2, y: 2 });
+    instance.reportMouseButton('release', { x: 2, y: 2 });
+    instance.forwardScroll(1, { x: 2, y: 2 });
+    // Drain a frame: a scheduled notify would bump the version here if a report
+    // wrongly triggered one.
+    await flush();
+
+    // Reports go out to the PTY only; they must not trigger a React re-render.
+    expect(instance.getSnapshot().version).toBe(versionBefore);
+  });
+
   it('sendInput sends a correct input frame', () => {
     const instance = getOrCreatePocTerminal('s5', 'w5');
     const ws = MockWebSocket.getLastInstance();

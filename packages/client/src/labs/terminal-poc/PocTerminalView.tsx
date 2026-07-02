@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
 import type { PocRow, PocSegment, PocStyle } from './buffer-to-rows';
 import type { LinkRange } from './link-detection';
+import { joinSelectedRows, collectSelectedRowPieces } from './copy-text';
 import { PocScrollIndicator } from './PocScrollIndicator';
 
 const FONT_FAMILY =
@@ -341,6 +342,43 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
       releaseDangling();
     };
 
+    // Cmd/Ctrl+A while the hidden terminal input is focused selects the TERMINAL
+    // content only (scrollback + viewport = the whole rows container), not the
+    // page. Gated on activeElement being a textarea (our hidden input) so we do
+    // not hijack select-all elsewhere.
+    const onKeyDownSelectAll = (e: KeyboardEvent) => {
+      if (e.key !== 'a' || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (!(document.activeElement instanceof HTMLTextAreaElement)) return;
+      const sel = window.getSelection();
+      if (!sel) return;
+      e.preventDefault();
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    };
+
+    // Soft-wrap-aware copy: terminals join wrapped rows into one logical line on
+    // copy (a wrapped URL pastes as one line). We rebuild the clipboard text from
+    // each selected row's exact selected text (so partial first/last-row edges
+    // are preserved) joined per the snapshot's isWrapped flags. Single-row
+    // selections keep the native behavior (already correct).
+    const onCopy = (e: ClipboardEvent) => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+      const selRange = sel.getRangeAt(0);
+      if (!el.contains(selRange.commonAncestorContainer)) return; // selection outside terminal
+      const snapshotRows = instance.getSnapshot().rows;
+      const pieces = collectSelectedRowPieces(
+        el,
+        selRange,
+        (i) => snapshotRows[i]?.isWrapped ?? false,
+      );
+      if (pieces.length < 2) return; // single row: native copy is already correct
+      e.clipboardData?.setData('text/plain', joinSelectedRows(pieces));
+      e.preventDefault();
+    };
+
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('touchstart', onTouchStart, { passive: false });
     el.addEventListener('touchmove', onTouchMove, { passive: false });
@@ -348,8 +386,10 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
     el.addEventListener('pointerdown', onPointerDown);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerCancel);
+    el.addEventListener('copy', onCopy);
     window.addEventListener('pointerup', onWindowPointerUp);
     window.addEventListener('pointercancel', releaseDangling);
+    window.addEventListener('keydown', onKeyDownSelectAll);
 
     return () => {
       el.removeEventListener('wheel', onWheel);
@@ -359,8 +399,10 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
       el.removeEventListener('pointerdown', onPointerDown);
       el.removeEventListener('pointerup', onPointerUp);
       el.removeEventListener('pointercancel', onPointerCancel);
+      el.removeEventListener('copy', onCopy);
       window.removeEventListener('pointerup', onWindowPointerUp);
       window.removeEventListener('pointercancel', releaseDangling);
+      window.removeEventListener('keydown', onKeyDownSelectAll);
       // Unmount mid-drag: pair the outstanding press so the TUI is not stuck.
       releaseDangling();
     };

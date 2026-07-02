@@ -204,6 +204,12 @@ class PocTerminal implements PocTerminalInstance {
     this.scheduleNotify();
   };
 
+  // NOTE (#943 F2): scroll/mouse reports are output TO the app, not user input
+  // to us. They only sendInput — they never mutate the snapshot, bump the
+  // version, or touch any selection state. The store holds NO selection state at
+  // all (native browser selection owns it), so there is nothing here that could
+  // clear a selection on "input". Do not add xterm-style clear-selection-on-key
+  // behavior to these paths.
   forwardScroll = (lines: number, cell: { x: number; y: number }): void => {
     const steps = Math.abs(Math.trunc(lines));
     if (steps === 0) return;
