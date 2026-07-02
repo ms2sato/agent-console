@@ -19,6 +19,7 @@ import {
 import { buildBaseTerminalOptions } from '../lib/terminal-options.js';
 import { createCustomKeyEventHandler } from '../lib/terminal-key-handler.js';
 import { installMouseProtocolGuard } from '../lib/terminal-mouse-protocol-guard.js';
+import { installCopyPrimeCleanup } from '../lib/terminal-copy-prime-cleanup.js';
 import {
   register as registerSaveManager,
   unregister as unregisterSaveManager,
@@ -441,6 +442,7 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
     let watchdog: RenderWatchdog | null = null;
     let renderStallRecovery: { dispose: () => void } | null = null;
     let mouseProtocolGuard: { dispose: () => void } | null = null;
+    let copyPrimeCleanup: { dispose: () => void } | null = null;
     let scrollDisposable: { dispose: () => void } | null = null;
     let viewportObserver: MutationObserver | null = null;
     let viewportElement: Element | null = null;
@@ -508,6 +510,11 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
       // CLIs that re-emit their DEC mouse tracking setup on every redraw.
       // See lib/terminal-mouse-protocol-guard.ts for the mechanism.
       mouseProtocolGuard = installMouseProtocolGuard(terminal);
+
+      // Clear xterm's stale right-click copy prime once its selection is
+      // gone, so a later Cmd+C without a live selection does not re-copy old
+      // text. See lib/terminal-copy-prime-cleanup.ts for the mechanism.
+      copyPrimeCleanup = installCopyPrimeCleanup(terminal);
 
       // 3. Write the cached snapshot BEFORE open() per the library's
       //    recommendation. updateScrollButtonVisibility is safe even though
@@ -820,6 +827,9 @@ export function Terminal({ sessionId, workerId, onStatusChange, onActivityChange
 
       // Dispose the mouse-protocol guard (removes the parser handler)
       mouseProtocolGuard?.dispose();
+
+      // Dispose the copy-prime cleanup (removes the selection listener)
+      copyPrimeCleanup?.dispose();
 
       // Dispose render stall auto-recovery before watchdog
       renderStallRecovery?.dispose();
