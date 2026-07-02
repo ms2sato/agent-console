@@ -1,9 +1,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties, DragEvent as ReactDragEvent, ReactNode } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
 import type { PocRow, PocSegment, PocStyle } from './buffer-to-rows';
 import type { LinkRange } from './link-detection';
 import { joinSelectedRows, collectSelectedRowPieces } from './copy-text';
+import { reduceDragCounter } from './drag-state';
 import { PocScrollIndicator } from './PocScrollIndicator';
 
 const FONT_FAMILY =
@@ -22,6 +23,9 @@ const CLICK_MOVE_THRESHOLD_PX = 5;
 interface PocTerminalViewProps {
   instance: PocTerminalInstance;
   onRequestFocus?: () => void;
+  // Called when files are dropped onto the terminal. Threaded to the same
+  // handler as image paste; the labs route surfaces a toast.
+  onFilesReceived?: (files: File[]) => void;
 }
 
 function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
@@ -109,12 +113,42 @@ const Row = memo(function Row({ row }: { row: PocRow }) {
   );
 });
 
-export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewProps) {
+export function PocTerminalView({ instance, onRequestFocus, onFilesReceived }: PocTerminalViewProps) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   const scrollRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const wasAtBottomRef = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
+
+  // Drag-and-drop file upload. The depth counter (drag-state.ts) nets out the
+  // enter/leave events that bubble from child rows so the overlay does not
+  // flicker while dragging across cells.
+  const dragCounterRef = useRef(0);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const applyDragAction = (action: 'enter' | 'leave' | 'drop') => {
+    const next = reduceDragCounter(dragCounterRef.current, action);
+    dragCounterRef.current = next.count;
+    setIsDragOver(next.isDragOver);
+  };
+  const onDragEnter = (e: ReactDragEvent) => {
+    e.preventDefault();
+    applyDragAction('enter');
+  };
+  // preventDefault on dragover is mandatory for the drop event to fire.
+  const onDragOver = (e: ReactDragEvent) => {
+    e.preventDefault();
+  };
+  const onDragLeave = (e: ReactDragEvent) => {
+    e.preventDefault();
+    applyDragAction('leave');
+  };
+  const onDrop = (e: ReactDragEvent) => {
+    e.preventDefault();
+    applyDragAction('drop');
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    onFilesReceived?.(Array.from(files));
+  };
 
   // Read by the native wheel/touch listeners (attached once, keyed on instance)
   // so they know whether to forward scroll to the app or let native scroll run.
@@ -409,7 +443,20 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
   }, [instance]);
 
   return (
-    <div className="relative flex-1 min-h-0">
+    <div
+      className="relative flex-1 min-h-0"
+      onDragEnter={onDragEnter}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      {/* Drag-over overlay for file drop (mirrors production Terminal.tsx). */}
+      {isDragOver && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center border-2 border-dashed border-blue-400 bg-blue-500/20 pointer-events-none">
+          <span className="text-lg font-medium text-blue-300">Drop file here</span>
+        </div>
+      )}
+
       {/* Hidden single-cell probe for measuring monospace cell metrics. */}
       <span
         ref={measureRef}
