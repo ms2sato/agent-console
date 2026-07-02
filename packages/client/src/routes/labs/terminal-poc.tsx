@@ -53,11 +53,54 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
 
       <StatusLine instance={instance} />
 
+      <LoadingHistoryBar instance={instance} />
+      <NoticeBanner instance={instance} />
+      <WorkerErrorStrip instance={instance} />
+
       <PocTerminalView instance={instance} onRequestFocus={focusInput} />
 
       <PocKeyboardInput ref={inputRef} instance={instance} />
 
       <ExitBanner instance={instance} />
+    </div>
+  );
+}
+
+function LoadingHistoryBar({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+  const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
+  if (!snapshot.loadingHistory) return null;
+  return (
+    <div className="bg-blue-900/50 px-3 py-1 text-center text-xs text-blue-200 animate-pulse">
+      Loading history…
+    </div>
+  );
+}
+
+function NoticeBanner({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+  const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
+  if (!snapshot.notice) return null;
+  return (
+    <div className="flex items-center justify-between gap-2 bg-amber-900/60 px-3 py-1 text-xs text-amber-200">
+      <span>{snapshot.notice}</span>
+      <button
+        type="button"
+        onClick={() => instance.dismissNotice()}
+        className="rounded bg-amber-700/60 px-2 py-0.5 hover:bg-amber-600/60"
+      >
+        Dismiss
+      </button>
+    </div>
+  );
+}
+
+function WorkerErrorStrip({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+  const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
+  if (!snapshot.workerError) return null;
+  const { message, code } = snapshot.workerError;
+  return (
+    <div className="bg-red-900/70 px-3 py-1 text-xs text-red-200">
+      {message}
+      {code ? ` (${code})` : ''}
     </div>
   );
 }

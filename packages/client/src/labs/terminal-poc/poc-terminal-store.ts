@@ -3,8 +3,13 @@ import {
   WORKER_SERVER_MESSAGE_TYPES,
   type WorkerServerMessage,
   type WorkerClientMessage,
+  type WorkerErrorCode,
+  type AgentActivityState,
+  type AppServerMessage,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from '../../lib/websocket-url.js';
+import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
+import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
 import { stripSystemMessages, stripScrollbackClear } from '../../lib/terminal-utils.js';
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, type PocRow } from './buffer-to-rows';
@@ -41,6 +46,10 @@ export interface PocSnapshot {
   cols: number;
   terminalRows: number;
   bufferType: 'normal' | 'alternate'; // 'alternate' = full-screen app (scroll is forwarded)
+  notice: string | null; // dismissible banner (restart / truncation)
+  workerError: { message: string; code?: WorkerErrorCode } | null;
+  activityState: AgentActivityState | null;
+  loadingHistory: boolean; // a request-history is in flight
 }
 
 export interface PocTerminalInstance {
@@ -50,14 +59,36 @@ export interface PocTerminalInstance {
   resize(cols: number, rows: number): void;
   /** Forward scroll to the app in alternate-screen mode. positive = toward newer. */
   forwardScroll(lines: number, cell: { x: number; y: number }): void;
+  dismissNotice(): void;
+  /** Mount reference; returns an idempotent release (Strict-Mode safe). */
+  acquire(): () => void;
   dispose(): void;
 }
 
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const SCROLLBACK = 5000;
-const RECONNECT_DELAY_MS = 1500;
-const MAX_RECONNECT_ATTEMPTS = 10;
+
+// Memory-management + reconnect timings. Mutable so tests can shorten them via
+// _setTimings; production values are the DEFAULT_TIMINGS below.
+const DEFAULT_TIMINGS = {
+  idleTtlMs: 15 * 60 * 1000, // refCount 0 -> evict after 15 min
+  exitedTtlMs: 5 * 60 * 1000, // exited instances evict sooner (no live process)
+  maxInstances: 12, // LRU hard cap
+  maxReconnectAttempts: 100, // production parity
+  reconnectDelayMs: null as number | null, // null -> getReconnectDelay (test override only)
+};
+type Timings = typeof DEFAULT_TIMINGS;
+let timings: Timings = { ...DEFAULT_TIMINGS };
+
+// App-WS subscribe seam: production uses the real module-level subscribe; tests
+// inject a capturable fake to drive worker-restarted / session-deleted.
+let appSubscribeImpl: typeof subscribeApp = subscribeApp;
+
+const nowMs: () => number =
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? () => performance.now()
+    : () => Date.now();
 
 // rAF batching: guard for non-browser (bun test) where requestAnimationFrame
 // may be absent — fall back to a ~1-frame timeout.
@@ -79,6 +110,21 @@ class PocTerminal implements PocTerminalInstance {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private historyRequested = false; // per WS connection
+  private noReconnect = false; // set on SESSION_DELETED / SESSION_PAUSED
+
+  // Offset tracking for reconnect catch-up and truncation detection.
+  private lastOffset = 0;
+  private requestedFromOffset = 0;
+
+  // Cold-start instrumentation.
+  private historyStartMs = 0;
+  private lastHistoryLoadMs: number | null = null;
+
+  // Memory management.
+  private refCount = 0;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastReleasedAt = 0;
+  private appUnsub: () => void = () => {};
 
   // Row cache: rows below baseY are immutable scrollback; reuse the same object
   // reference so React.memo skips re-render. Cleared on shrink / history rewrite.
@@ -104,6 +150,10 @@ class PocTerminal implements PocTerminalInstance {
       cols: DEFAULT_COLS,
       terminalRows: DEFAULT_ROWS,
       bufferType: 'normal',
+      notice: null,
+      workerError: null,
+      activityState: null,
+      loadingHistory: false,
     };
 
     this.terminal.onScroll(() => this.scheduleNotify());
@@ -112,7 +162,13 @@ class PocTerminal implements PocTerminalInstance {
     // onBufferChange lives on the buffer namespace, not the Terminal.
     this.terminal.buffer.onBufferChange(() => this.scheduleNotify());
 
+    this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
+
     this.connect();
+  }
+
+  get lastHistoryLoadDurationMs(): number | null {
+    return this.lastHistoryLoadMs;
   }
 
   // Interface-facing methods are arrow-function fields so consumers (e.g.
@@ -162,15 +218,91 @@ class PocTerminal implements PocTerminalInstance {
     this.sendInput(data);
   };
 
+  dismissNotice = (): void => {
+    if (this.snapshot.notice === null) return;
+    this.patchMeta({ notice: null });
+  };
+
+  acquire = (): (() => void) => {
+    this.refCount += 1;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    let released = false;
+    return () => {
+      if (released) return; // idempotent under Strict-Mode double-invoke
+      released = true;
+      this.refCount = Math.max(0, this.refCount - 1);
+      if (this.refCount === 0) {
+        this.lastReleasedAt = Date.now();
+        this.startIdleTimer();
+      }
+    };
+  };
+
   dispose = (): void => {
+    if (this.disposed) return;
     this.disposed = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    this.appUnsub();
     this.closeWs();
     this.terminal.dispose();
     this.listeners.clear();
     removeInstance(this.sessionId, this.workerId);
   };
+
+  // --- Memory management ---
+
+  get refCountForTest(): number {
+    return this.refCount;
+  }
+
+  get lastReleasedAtForTest(): number {
+    return this.lastReleasedAt;
+  }
+
+  get reconnectPendingForTest(): boolean {
+    return this.reconnectTimer !== null;
+  }
+
+  get reconnectAttemptsForTest(): number {
+    return this.reconnectAttempts;
+  }
+
+  get disposedForTest(): boolean {
+    return this.disposed;
+  }
+
+  private startIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    const ttl = this.snapshot.status === 'exited' ? timings.exitedTtlMs : timings.idleTtlMs;
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.refCount === 0) this.dispose();
+    }, ttl);
+  }
+
+  // --- App-WS driven events ---
+
+  private handleAppMessage(msg: AppServerMessage): void {
+    if (this.disposed) return;
+    if (msg.type === 'worker-restarted') {
+      if (msg.sessionId !== this.sessionId || msg.workerId !== this.workerId) return;
+      this.terminal.reset();
+      this.rowCache.clear();
+      this.lastBufferLength = 0;
+      this.lastOffset = 0;
+      this.patchMeta({ notice: 'Terminal restarted', workerError: null });
+      this.reconnect();
+    } else if (msg.type === 'session-deleted') {
+      if (msg.sessionId !== this.sessionId) return;
+      this.dispose();
+    }
+  }
 
   // --- WebSocket ---
 
@@ -185,10 +317,11 @@ class PocTerminal implements PocTerminalInstance {
       if (this.disposed) return;
       this.reconnectAttempts = 0;
       this.updateStatus('connected');
-      // Request full history once per connection; server does not push it.
+      // Request history from the last received offset (0 on first connect);
+      // the server returns only the delta and catches us up after a drop.
       if (!this.historyRequested) {
         this.historyRequested = true;
-        this.send({ type: 'request-history', fromOffset: 0 });
+        this.requestHistory();
       }
       this.send({ type: 'resize', cols: this.terminal.cols, rows: this.terminal.rows });
     };
@@ -202,27 +335,51 @@ class PocTerminal implements PocTerminalInstance {
       logger.warn(`[poc-terminal] ws error ${this.sessionId}:${this.workerId}`);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       if (this.disposed) return;
       this.ws = null;
       // A terminated process closes the socket after the 'exit' message; keep
       // the 'exited' status and do not reconnect to a dead PTY.
       if (this.snapshot.status === 'exited') return;
       this.updateStatus('disconnected');
+      // SESSION_DELETED / SESSION_PAUSED: server closes deliberately; do not
+      // reconnect (mirrors worker-websocket.ts error semantics).
+      if (this.noReconnect) return;
+      if (!shouldReconnect(event.code)) return;
       this.scheduleReconnect();
     };
+  }
+
+  private requestHistory(): void {
+    this.requestedFromOffset = this.lastOffset;
+    this.historyStartMs = nowMs();
+    this.patchMeta({ loadingHistory: true });
+    this.send({ type: 'request-history', fromOffset: this.lastOffset });
+  }
+
+  /** Force a fresh WS connection (worker-restarted flow). */
+  private reconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.closeWs();
+    this.updateStatus('connecting');
+    this.connect();
   }
 
   private scheduleReconnect(): void {
     if (this.disposed) return;
     if (this.snapshot.status === 'exited') return;
-    if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) return;
+    if (this.noReconnect) return;
+    if (this.reconnectAttempts >= timings.maxReconnectAttempts) return;
+    const delay = timings.reconnectDelayMs ?? getReconnectDelay(this.reconnectAttempts);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this.updateStatus('connecting');
       this.connect();
-    }, RECONNECT_DELAY_MS);
+    }, delay);
   }
 
   private closeWs(): void {
@@ -256,27 +413,59 @@ class PocTerminal implements PocTerminalInstance {
 
     switch (message.type) {
       case 'history':
-        // Full ANSI stream. Reset first if the buffer already has content
-        // (e.g. a reconnect re-requested history) to avoid double-write.
-        if (this.terminal.buffer.active.length > 1 || this.lastBufferLength > 0) {
-          this.terminal.reset();
-          this.rowCache.clear();
-        }
-        this.terminal.write(processOutput(message.data), () => this.scheduleNotify());
+        this.handleHistory(message.data, message.offset);
         break;
       case 'output':
+        this.lastOffset = message.offset;
         this.terminal.write(processOutput(message.data), () => this.scheduleNotify());
         break;
       case 'exit':
         this.updateStatus('exited', { code: message.exitCode, signal: message.signal });
         break;
       case 'output-truncated':
-        // History was truncated server-side; nothing to render, just note it.
+        // Server dropped older output; advance our offset and surface a banner.
+        this.lastOffset = message.newOffset;
+        this.patchMeta({ notice: message.message });
         break;
       case 'error':
-        logger.warn(`[poc-terminal] server error: ${message.message}`);
+        this.handleError(message.message, message.code);
         break;
-      // activity / server-restarted: not rendered in the PoC.
+      case 'activity':
+        this.patchMeta({ activityState: message.state });
+        break;
+      // server-restarted: no cache to invalidate; ignore.
+    }
+  }
+
+  private handleHistory(data: string, offset: number): void {
+    // Truncation regression: the server's available data starts below what we
+    // asked for (restart / rotation) -> reset and treat the payload as full.
+    if (offset < this.requestedFromOffset) {
+      this.terminal.reset();
+      this.rowCache.clear();
+      this.lastBufferLength = 0;
+    }
+    this.lastOffset = offset;
+    const bytes = data.length;
+    this.terminal.write(processOutput(data), () => {
+      this.lastHistoryLoadMs = nowMs() - this.historyStartMs;
+      logger.debug(
+        `[poc-terminal] history loaded: ${bytes} bytes in ${Math.round(this.lastHistoryLoadMs)} ms`,
+      );
+      this.patchMeta({ loadingHistory: false });
+      this.scheduleNotify();
+    });
+  }
+
+  private handleError(message: string, code?: WorkerErrorCode): void {
+    this.patchMeta({ workerError: { message, code } });
+    if (code === 'SESSION_DELETED' || code === 'SESSION_PAUSED') {
+      // Server will close after this error; ensure we never reconnect.
+      this.noReconnect = true;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
     }
   }
 
@@ -290,6 +479,15 @@ class PocTerminal implements PocTerminalInstance {
       ...this.snapshot,
       status,
       exitInfo: exitInfo ?? this.snapshot.exitInfo,
+      version: this.snapshot.version + 1,
+    };
+    this.notify();
+  }
+
+  private patchMeta(partial: Partial<PocSnapshot>): void {
+    this.snapshot = {
+      ...this.snapshot,
+      ...partial,
       version: this.snapshot.version + 1,
     };
     this.notify();
@@ -381,15 +579,9 @@ function clampCell(value: number, max: number): number {
 
 // --- Module-level registry ---
 //
-// INTENTIONAL LIFETIME: instances are deliberately NOT disposed when a React
-// route/component unmounts. Surviving mounts is the architectural point of this
-// PoC — the live headless Terminal + WebSocket replace the serialize/restore
-// cache layer, so navigating away and back reuses the already-parsed buffer with
-// zero rehydration. The trade-off is that instances live until dispose() is
-// called explicitly (only the test helper does so today), which a static
-// analyzer reads as a leak. A production adoption would add reference counting
-// (mount/unmount) + idle eviction (TTL after the last WS activity); both are out
-// of PoC scope.
+// Instances survive React unmounts (invariant 1) but not forever: reference
+// counting + idle TTL + an LRU hard cap keep memory bounded (roadmap "Memory
+// management design"). refCount>0 instances are never evicted.
 
 const instances = new Map<string, PocTerminal>();
 
@@ -402,20 +594,68 @@ function removeInstance(sessionId: string, workerId: string): void {
   instances.delete(keyOf(sessionId, workerId));
 }
 
+/** Evict the least-recently-released refCount-0 instance to honor the LRU cap. */
+function evictOverCap(): void {
+  if (instances.size < timings.maxInstances) return;
+  let victim: PocTerminal | null = null;
+  for (const instance of instances.values()) {
+    if (instance.refCountForTest > 0) continue;
+    if (victim === null || instance.lastReleasedAtForTest < victim.lastReleasedAtForTest) {
+      victim = instance;
+    }
+  }
+  // No idle instance to evict (all busy) -> allow overflow rather than drop a
+  // mounted terminal.
+  victim?.dispose();
+}
+
 export function getOrCreatePocTerminal(sessionId: string, workerId: string): PocTerminalInstance {
   const key = keyOf(sessionId, workerId);
   let instance = instances.get(key);
   if (!instance) {
+    evictOverCap();
     instance = new PocTerminal(sessionId, workerId);
     instances.set(key, instance);
   }
   return instance;
 }
 
-/** @internal Test helper: dispose and clear all live instances. */
+/** @internal Test helper: dispose and clear all live instances + reset config. */
 export function _resetPocTerminals(): void {
   for (const instance of Array.from(instances.values())) {
     instance.dispose();
   }
   instances.clear();
+  timings = { ...DEFAULT_TIMINGS };
+  appSubscribeImpl = subscribeApp;
+}
+
+/** @internal Test helper: override memory-management / reconnect timings. */
+export function _setTimings(partial: Partial<Timings>): void {
+  timings = { ...timings, ...partial };
+}
+
+/** @internal Test helper: inject a capturable app-WS subscribe seam. */
+export function _setAppSubscribe(impl: typeof subscribeApp): void {
+  appSubscribeImpl = impl;
+}
+
+/** @internal Test helper: read internal state for assertions. */
+export function _inspect(instance: PocTerminalInstance): {
+  refCount: number;
+  lastReleasedAt: number;
+  reconnectPending: boolean;
+  reconnectAttempts: number;
+  disposed: boolean;
+  lastHistoryLoadMs: number | null;
+} {
+  const t = instance as PocTerminal;
+  return {
+    refCount: t.refCountForTest,
+    lastReleasedAt: t.lastReleasedAtForTest,
+    reconnectPending: t.reconnectPendingForTest,
+    reconnectAttempts: t.reconnectAttemptsForTest,
+    disposed: t.disposedForTest,
+    lastHistoryLoadMs: t.lastHistoryLoadDurationMs,
+  };
 }

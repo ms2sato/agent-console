@@ -52,6 +52,14 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
   const bufferTypeRef = useRef<'normal' | 'alternate'>('normal');
   bufferTypeRef.current = snapshot.bufferType;
 
+  // Mount reference for memory management: the instance is kept alive while this
+  // view is mounted and becomes idle-evictable after unmount. release() is
+  // idempotent, so Strict-Mode's double invoke is safe.
+  useEffect(() => {
+    const release = instance.acquire();
+    return release;
+  }, [instance]);
+
   // Record whether the user is pinned to the bottom BEFORE the DOM updates, so
   // the layout effect below can decide whether to auto-scroll.
   const container = scrollRef.current;

@@ -1,6 +1,29 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import type { AppServerMessage } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
-import { getOrCreatePocTerminal, _resetPocTerminals } from '../poc-terminal-store';
+import {
+  getOrCreatePocTerminal,
+  _resetPocTerminals,
+  _setTimings,
+  _setAppSubscribe,
+  _inspect,
+} from '../poc-terminal-store';
+
+/**
+ * Capturable app-WS subscribe seam: records every listener the store registers
+ * so a test can emit AppServerMessages to all live instances.
+ */
+function makeAppBus() {
+  const listeners = new Set<(msg: AppServerMessage) => void>();
+  const subscribe = (listener: (msg: AppServerMessage) => void) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  const emit = (msg: AppServerMessage) => {
+    for (const l of Array.from(listeners)) l(msg);
+  };
+  return { subscribe, emit };
+}
 
 /** Let write callbacks + the rAF/timeout snapshot flush run. */
 function flush(): Promise<void> {
@@ -286,5 +309,262 @@ describe('poc-terminal-store', () => {
     ws!.simulateOpen(); // updateStatus -> notify
     expect(notified).toBeGreaterThan(0);
     expect(() => unsubscribe()).not.toThrow();
+  });
+
+  // --- PR-1: protocol hardening ---
+
+  it('does not schedule a reconnect for a non-reconnectable close code', () => {
+    const instance = getOrCreatePocTerminal('rc1', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateClose(1000); // NORMAL_CLOSURE -> shouldReconnect === false
+
+    expect(_inspect(instance).reconnectPending).toBe(false);
+    expect(_inspect(instance).reconnectAttempts).toBe(0);
+    expect(instance.getSnapshot().status).toBe('disconnected');
+  });
+
+  it('schedules a reconnect and counts the attempt for a reconnectable close', () => {
+    const instance = getOrCreatePocTerminal('rc2', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateClose(); // ABNORMAL_CLOSURE (default) -> reconnectable
+
+    expect(_inspect(instance).reconnectPending).toBe(true);
+    expect(_inspect(instance).reconnectAttempts).toBe(1);
+  });
+
+  it('re-requests history from lastOffset on reconnect (delta catch-up)', async () => {
+    _setTimings({ reconnectDelayMs: 0 });
+    getOrCreatePocTerminal('off1', 'w');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+    ws1!.simulateMessage(JSON.stringify({ type: 'output', data: 'x', offset: 42 }));
+    await flush();
+
+    ws1!.simulateClose(); // reconnectable, 0ms delay
+    await flush();
+
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2!.simulateOpen();
+    const history = lastSentMessages(ws2!).find(
+      (m) => (m as { type: string }).type === 'request-history',
+    );
+    expect(history).toEqual({ type: 'request-history', fromOffset: 42 });
+  });
+
+  it('resets and treats history as full when the response offset regressed (truncation)', async () => {
+    _setTimings({ reconnectDelayMs: 0 });
+    const instance = getOrCreatePocTerminal('trunc', 'w');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+    // First history at a high offset.
+    ws1!.simulateMessage(JSON.stringify({ type: 'history', data: 'OLD', offset: 100 }));
+    await flush();
+    expect(allText(instance)).toContain('OLD');
+
+    ws1!.simulateClose();
+    await flush();
+    const ws2 = MockWebSocket.getLastInstance();
+    ws2!.simulateOpen(); // requests fromOffset=100
+    // Server can only serve from offset 50 -> regression -> reset + full.
+    ws2!.simulateMessage(JSON.stringify({ type: 'history', data: 'FRESH', offset: 50 }));
+    await flush();
+
+    const text = allText(instance);
+    expect(text).toContain('FRESH');
+    expect(text).not.toContain('OLD');
+  });
+
+  it('output-truncated sets a dismissible notice and advances the offset', async () => {
+    _setTimings({ reconnectDelayMs: 0 });
+    const instance = getOrCreatePocTerminal('otr', 'w');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+    ws1!.simulateMessage(
+      JSON.stringify({ type: 'output-truncated', message: 'Output truncated', newOffset: 900 }),
+    );
+    expect(instance.getSnapshot().notice).toBe('Output truncated');
+
+    instance.dismissNotice();
+    expect(instance.getSnapshot().notice).toBeNull();
+
+    // Offset advanced to 900: next reconnect requests from there.
+    ws1!.simulateClose();
+    await flush();
+    const ws2 = MockWebSocket.getLastInstance();
+    ws2!.simulateOpen();
+    const history = lastSentMessages(ws2!).find(
+      (m) => (m as { type: string }).type === 'request-history',
+    );
+    expect(history).toEqual({ type: 'request-history', fromOffset: 900 });
+  });
+
+  it('worker-restarted (app-WS) resets the buffer, reconnects, and shows a notice', async () => {
+    const bus = makeAppBus();
+    _setAppSubscribe(bus.subscribe);
+    const instance = getOrCreatePocTerminal('wr', 'w');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+    ws1!.simulateMessage(JSON.stringify({ type: 'output', data: 'before', offset: 10 }));
+    await flush();
+    expect(allText(instance)).toContain('before');
+
+    bus.emit({ type: 'worker-restarted', sessionId: 'wr', workerId: 'w', activityState: 'idle' });
+
+    expect(instance.getSnapshot().notice).toBe('Terminal restarted');
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1); // reconnected
+    ws2!.simulateOpen();
+    const history = lastSentMessages(ws2!).find(
+      (m) => (m as { type: string }).type === 'request-history',
+    );
+    expect(history).toEqual({ type: 'request-history', fromOffset: 0 }); // offset reset
+    await flush();
+    expect(allText(instance)).not.toContain('before'); // buffer reset
+  });
+
+  it('worker-restarted for a different worker is ignored', () => {
+    const bus = makeAppBus();
+    _setAppSubscribe(bus.subscribe);
+    const instance = getOrCreatePocTerminal('wr2', 'w');
+    MockWebSocket.getLastInstance()!.simulateOpen();
+    const before = MockWebSocket.getInstances().length;
+
+    bus.emit({ type: 'worker-restarted', sessionId: 'other', workerId: 'w', activityState: 'idle' });
+
+    expect(instance.getSnapshot().notice).toBeNull();
+    expect(MockWebSocket.getInstances().length).toBe(before);
+  });
+
+  it('session-deleted (app-WS) disposes the instance', () => {
+    const bus = makeAppBus();
+    _setAppSubscribe(bus.subscribe);
+    const instance = getOrCreatePocTerminal('sd', 'w');
+    MockWebSocket.getLastInstance()!.simulateOpen();
+
+    bus.emit({ type: 'session-deleted', sessionId: 'sd' });
+
+    expect(_inspect(instance).disposed).toBe(true);
+    // getOrCreate returns a fresh instance after disposal.
+    expect(getOrCreatePocTerminal('sd', 'w')).not.toBe(instance);
+  });
+
+  it('activity message is surfaced in the snapshot', () => {
+    const instance = getOrCreatePocTerminal('act', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'activity', state: 'asking' }));
+
+    expect(instance.getSnapshot().activityState).toBe('asking');
+  });
+
+  it('SESSION_PAUSED error prevents reconnect after the subsequent close', () => {
+    const instance = getOrCreatePocTerminal('pause', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'error', message: 'Session paused', code: 'SESSION_PAUSED' }),
+    );
+    expect(instance.getSnapshot().workerError).toEqual({
+      message: 'Session paused',
+      code: 'SESSION_PAUSED',
+    });
+
+    ws!.simulateClose(); // reconnectable code, but noReconnect is set
+    expect(_inspect(instance).reconnectPending).toBe(false);
+    expect(_inspect(instance).reconnectAttempts).toBe(0);
+  });
+
+  it('records a history load duration for cold-start instrumentation', async () => {
+    const instance = getOrCreatePocTerminal('perf', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'history', data: 'hello', offset: 5 }));
+    await flush();
+
+    expect(_inspect(instance).lastHistoryLoadMs).not.toBeNull();
+    expect(_inspect(instance).lastHistoryLoadMs).toBeGreaterThanOrEqual(0);
+    expect(instance.getSnapshot().loadingHistory).toBe(false);
+  });
+
+  // --- PR-1: memory management ---
+
+  it('acquire/release refcount is idempotent under double release', () => {
+    const instance = getOrCreatePocTerminal('mm1', 'w');
+    const release1 = instance.acquire();
+    const release2 = instance.acquire();
+    expect(_inspect(instance).refCount).toBe(2);
+
+    release1();
+    release1(); // idempotent: no double decrement
+    expect(_inspect(instance).refCount).toBe(1);
+
+    release2();
+    expect(_inspect(instance).refCount).toBe(0);
+  });
+
+  it('disposes after the idle TTL once refCount reaches 0', async () => {
+    _setTimings({ idleTtlMs: 10 });
+    const instance = getOrCreatePocTerminal('mm2', 'w');
+    const release = instance.acquire();
+    release();
+    expect(_inspect(instance).disposed).toBe(false);
+
+    await new Promise((r) => setTimeout(r, 30));
+    expect(_inspect(instance).disposed).toBe(true);
+  });
+
+  it('uses the shorter exited TTL for exited instances', async () => {
+    _setTimings({ idleTtlMs: 100000, exitedTtlMs: 10 });
+    const instance = getOrCreatePocTerminal('mm3', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'exit', exitCode: 0, signal: null }));
+
+    const release = instance.acquire();
+    release(); // starts timer with exitedTtlMs (10ms), not idleTtlMs
+    await new Promise((r) => setTimeout(r, 30));
+    expect(_inspect(instance).disposed).toBe(true);
+  });
+
+  it('remount cancels a pending idle disposal', async () => {
+    _setTimings({ idleTtlMs: 20 });
+    const instance = getOrCreatePocTerminal('mm4', 'w');
+    const release = instance.acquire();
+    release(); // idle timer armed
+    instance.acquire(); // remount cancels it
+    await new Promise((r) => setTimeout(r, 40));
+    expect(_inspect(instance).disposed).toBe(false);
+  });
+
+  it('LRU-evicts the least-recently-released idle instance over the cap', async () => {
+    _setTimings({ maxInstances: 2 });
+    const a = getOrCreatePocTerminal('lru-a', 'w');
+    a.acquire()(); // refCount 0, released first
+    await new Promise((r) => setTimeout(r, 2));
+    const b = getOrCreatePocTerminal('lru-b', 'w');
+    b.acquire()(); // refCount 0, released later
+    await new Promise((r) => setTimeout(r, 2));
+
+    // Creating a third instance over the cap evicts the oldest idle one (a).
+    const c = getOrCreatePocTerminal('lru-c', 'w');
+    expect(_inspect(a).disposed).toBe(true);
+    expect(_inspect(b).disposed).toBe(false);
+    expect(_inspect(c).disposed).toBe(false);
+  });
+
+  it('never evicts an instance with refCount > 0', () => {
+    _setTimings({ maxInstances: 2 });
+    const a = getOrCreatePocTerminal('busy-a', 'w');
+    a.acquire(); // refCount 1 -> pinned
+    const b = getOrCreatePocTerminal('busy-b', 'w');
+    b.acquire()(); // idle
+
+    // c over the cap: a is pinned, so b (the only idle one) is evicted.
+    getOrCreatePocTerminal('busy-c', 'w');
+    expect(_inspect(a).disposed).toBe(false);
+    expect(_inspect(b).disposed).toBe(true);
   });
 });
