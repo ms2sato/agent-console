@@ -6,8 +6,16 @@ import { PocScrollIndicator } from './PocScrollIndicator';
 
 const FONT_FAMILY =
   "'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace";
+const FONT_SIZE_PX = 14;
+// Fixed per-row height. Every row div is pinned to this so blank rows still
+// occupy one cell (an empty span collapses to 0), keeping the DOM row grid a
+// 1:1 pixel map of the buffer — required for correct pointer->cell math.
+const LINE_HEIGHT_PX = 18;
 const RESIZE_DEBOUNCE_MS = 150;
 const BOTTOM_THRESHOLD_PX = 4;
+// A touch pointer that moves more than this between down and up is a scroll
+// gesture (forwarded as wheel), not a tap — do not report it as a TUI click.
+const CLICK_MOVE_THRESHOLD_PX = 5;
 
 interface PocTerminalViewProps {
   instance: PocTerminalInstance;
@@ -30,7 +38,7 @@ function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
 
 const Row = memo(function Row({ row }: { row: PocRow }) {
   return (
-    <div style={{ whiteSpace: 'pre' }}>
+    <div style={{ whiteSpace: 'pre', height: LINE_HEIGHT_PX, lineHeight: `${LINE_HEIGHT_PX}px` }}>
       {row.segments.map((seg: PocSegment, i) => (
         <span key={i} style={segmentStyle(seg.style)}>
           {seg.text}
@@ -51,6 +59,8 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
   // so they know whether to forward scroll to the app or let native scroll run.
   const bufferTypeRef = useRef<'normal' | 'alternate'>('normal');
   bufferTypeRef.current = snapshot.bufferType;
+  const mouseTrackingRef = useRef(false);
+  mouseTrackingRef.current = snapshot.mouseTracking;
 
   // Mount reference for memory management: the instance is kept alive while this
   // view is mounted and becomes idle-evictable after unmount. release() is
@@ -138,16 +148,23 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
     let remainder = 0;
     let touchLastY: number | null = null;
 
+    // Container padding is static (Tailwind px-2 py-1); read once.
+    const computedPadding = getComputedStyle(el);
+    const paddingLeft = parseFloat(computedPadding.paddingLeft) || 0;
+    const paddingTop = parseFloat(computedPadding.paddingTop) || 0;
+
     const cellMetrics = () => {
       const r = measure.getBoundingClientRect();
       return { charW: r.width || 8, charH: r.height || 16 };
     };
-    const cellFromPoint = (clientX: number, clientY: number, charW: number, charH: number) => {
+    // 1-based cell coords. Row height is fixed at LINE_HEIGHT_PX (fixed row divs)
+    // so y maps exactly; add scrollTop (normal-buffer scrollback) and subtract
+    // padding. x uses the measured monospace cell width.
+    const cellFromPoint = (clientX: number, clientY: number, charW: number) => {
       const rect = el.getBoundingClientRect();
-      return {
-        x: Math.floor((clientX - rect.left) / charW) + 1,
-        y: Math.floor((clientY - rect.top) / charH) + 1,
-      };
+      const x = Math.floor((clientX - rect.left - paddingLeft) / charW) + 1;
+      const y = Math.floor((clientY - rect.top - paddingTop + el.scrollTop) / LINE_HEIGHT_PX) + 1;
+      return { x: Math.max(1, x), y: Math.max(1, y) };
     };
     const stepFrom = (deltaPx: number, charH: number): number => {
       const total = remainder + deltaPx;
@@ -162,7 +179,7 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
       const { charW, charH } = cellMetrics();
       const steps = stepFrom(e.deltaY, charH);
       if (steps === 0) return;
-      instance.forwardScroll(steps, cellFromPoint(e.clientX, e.clientY, charW, charH));
+      instance.forwardScroll(steps, cellFromPoint(e.clientX, e.clientY, charW));
     };
 
     const onTouchStart = (e: TouchEvent) => {
@@ -180,22 +197,84 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
       const steps = stepFrom(touchLastY - touch.clientY, charH);
       if (steps === 0) return;
       touchLastY = touch.clientY;
-      instance.forwardScroll(steps, cellFromPoint(touch.clientX, touch.clientY, charW, charH));
+      instance.forwardScroll(steps, cellFromPoint(touch.clientX, touch.clientY, charW));
     };
     const onTouchEnd = () => {
       touchLastY = null;
+    };
+
+    // --- Mouse button reporting to the TUI (focus parity) ---
+    // We never preventDefault here, so click-to-focus and native selection keep
+    // working. Under mouse tracking a mouse press+release reaches the TUI as a
+    // click at that cell; a mouse drag reports press(down)+release(up) and the
+    // TUI (e.g. Claude Code) paints its own in-TUI selection — that is expected
+    // parity behavior (#943). Browser text selection is the Shift path (Shift
+    // held -> we do not report, xterm convention). Right-click is never reported
+    // (browser context menu wins). Touch defers to pointerup and only reports a
+    // tap (movement <= threshold) so a scroll drag is not a phantom click.
+    let mousePressActive = false; // a mouse press was emitted, awaiting release
+    let touchDownX = 0;
+    let touchDownY = 0;
+    let touchDownCell: { x: number; y: number } | null = null;
+
+    const reportable = (e: PointerEvent): boolean =>
+      mouseTrackingRef.current && e.button === 0 && e.isPrimary && !e.shiftKey;
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (!reportable(e)) return;
+      const { charW } = cellMetrics();
+      const cell = cellFromPoint(e.clientX, e.clientY, charW);
+      if (e.pointerType === 'touch') {
+        touchDownX = e.clientX;
+        touchDownY = e.clientY;
+        touchDownCell = cell;
+        mousePressActive = false;
+      } else {
+        instance.reportMouseButton('press', cell);
+        mousePressActive = true;
+      }
+    };
+
+    const onPointerUp = (e: PointerEvent) => {
+      if (e.button !== 0) return; // left-button release only
+      const { charW } = cellMetrics();
+      const cell = cellFromPoint(e.clientX, e.clientY, charW);
+      if (e.pointerType === 'touch') {
+        if (touchDownCell && mouseTrackingRef.current && !e.shiftKey) {
+          const moved = Math.hypot(e.clientX - touchDownX, e.clientY - touchDownY);
+          if (moved <= CLICK_MOVE_THRESHOLD_PX) {
+            instance.reportMouseButton('press', touchDownCell);
+            instance.reportMouseButton('release', cell);
+          }
+        }
+        touchDownCell = null;
+      } else if (mousePressActive) {
+        instance.reportMouseButton('release', cell);
+        mousePressActive = false;
+      }
+    };
+
+    const onPointerCancel = () => {
+      touchDownCell = null;
+      mousePressActive = false;
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
     el.addEventListener('touchstart', onTouchStart, { passive: false });
     el.addEventListener('touchmove', onTouchMove, { passive: false });
     el.addEventListener('touchend', onTouchEnd);
+    el.addEventListener('pointerdown', onPointerDown);
+    el.addEventListener('pointerup', onPointerUp);
+    el.addEventListener('pointercancel', onPointerCancel);
 
     return () => {
       el.removeEventListener('wheel', onWheel);
       el.removeEventListener('touchstart', onTouchStart);
       el.removeEventListener('touchmove', onTouchMove);
       el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('pointerdown', onPointerDown);
+      el.removeEventListener('pointerup', onPointerUp);
+      el.removeEventListener('pointercancel', onPointerCancel);
     };
   }, [instance]);
 
@@ -209,8 +288,8 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
           position: 'absolute',
           visibility: 'hidden',
           fontFamily: FONT_FAMILY,
-          fontSize: 14,
-          lineHeight: '18px',
+          fontSize: FONT_SIZE_PX,
+          lineHeight: `${LINE_HEIGHT_PX}px`,
           whiteSpace: 'pre',
         }}
       >
@@ -231,8 +310,8 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
         className="h-full overflow-y-auto bg-[#1a1a2e] text-[#eeeeee] px-2 py-1"
         style={{
           fontFamily: FONT_FAMILY,
-          fontSize: 14,
-          lineHeight: '18px',
+          fontSize: FONT_SIZE_PX,
+          lineHeight: `${LINE_HEIGHT_PX}px`,
           overscrollBehavior: 'contain',
           fontVariantLigatures: 'none',
           WebkitOverflowScrolling: 'touch',
