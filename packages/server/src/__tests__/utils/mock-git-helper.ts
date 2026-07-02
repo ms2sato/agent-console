@@ -35,8 +35,12 @@ type AsyncVoidFn = (...args: unknown[]) => Promise<void>;
 
 // Exported mock functions - configure these in beforeEach
 export const mockGit = {
-  // Low-level
-  git: mock(() => Promise.resolve('')) as Mock<AsyncStringFn>,
+  // Low-level. Default `'1\n'` matches `git rev-list --all --count` on a
+  // non-empty repo (see WorktreeService.ensureRepoHasCommits, Issue #921)
+  // so tests that do not explicitly configure this mock get a sensible
+  // "repo has commits" response by default. Tests exercising empty-repo
+  // shapes override via `mockGit.git.mockImplementation(...)`.
+  git: mock(() => Promise.resolve('1\n')) as Mock<AsyncStringFn>,
   gitRaw: mock(() => Promise.resolve('')) as Mock<(args: string[], cwd: string, timeoutMs?: number, requestUser?: string | null) => Promise<string>>,
   gitSafe: mock(() => Promise.resolve(null)) as Mock<(args: string[], cwd: string, requestUser?: string | null) => Promise<string | null>>,
   gitRefExists: mock(() => Promise.resolve(false)) as Mock<(ref: string, cwd: string, requestUser?: string | null) => Promise<boolean>>,
@@ -136,8 +140,11 @@ export function resetGitMocks(): void {
   mockGit.getUntrackedFiles.mockReset();
   mockGit.getStatusPorcelain.mockReset();
 
-  // Set default implementations
-  mockGit.git.mockImplementation(() => Promise.resolve(''));
+  // Set default implementations. `mockGit.git` defaults to '1\n' so
+  // WorktreeService.ensureRepoHasCommits (which parses this output as a
+  // commit count) does not accidentally trip the empty-repo branch in
+  // tests that do not override this mock (Issue #921).
+  mockGit.git.mockImplementation(() => Promise.resolve('1\n'));
   mockGit.gitRaw.mockImplementation(() => Promise.resolve(''));
   mockGit.gitSafe.mockImplementation(() => Promise.resolve(null));
   mockGit.gitRefExists.mockImplementation(() => Promise.resolve(false));

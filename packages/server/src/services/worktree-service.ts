@@ -283,40 +283,56 @@ export class WorktreeService {
   }
 
   /**
-   * Verify the source repository has at least one commit (HEAD resolves to
-   * a commit). Throws {@link EmptyRepositoryError} with an actionable message
-   * when the repo has no commits yet (unborn HEAD).
+   * Verify the source repository has at least one commit reachable from any
+   * ref (local branches, remote-tracking branches, tags, or the reflog).
+   * Throws {@link EmptyRepositoryError} with an actionable message when the
+   * repo has zero reachable commits.
+   *
+   * Uses `git rev-list --all --count` rather than `HEAD^{commit}` so that a
+   * fresh `git init` whose local HEAD is unborn but that has already fetched
+   * commits from a configured remote (`origin/*`) is treated as non-empty —
+   * `git worktree add -b <branch> <path> origin/<base>` succeeds in that case
+   * even though local HEAD is still unborn. The caller in
+   * `worktree-creation-service.ts` therefore runs this pre-check AFTER the
+   * remote-fetch step so remote-supplied refs are counted.
    *
    * Uses the same elevation pipeline as {@link createWorktree}: when
-   * `requestUsername` is provided in multi-user mode, `git rev-parse` runs as
+   * `requestUsername` is provided in multi-user mode, `git rev-list` runs as
    * that user via `runAsUser` (through `lib/git.ts:git()`), so the pre-check
    * sees the same repo state that the subsequent `git worktree add` will.
    *
-   * Called before `git worktree add` from
-   * `worktree-creation-service.ts:createWorktreeWithSession` so users see an
-   * actionable domain error instead of the raw `fatal: invalid reference:
-   * main` git surfaces on an unborn HEAD.
-   *
-   * @throws EmptyRepositoryError when `git rev-parse --verify HEAD^{commit}`
-   *   fails (any non-zero exit is treated as "no commits yet"; the underlying
-   *   `GitError.stderr` is logged for diagnostics but the caller receives the
-   *   fixed, user-facing message).
+   * @throws EmptyRepositoryError when `git rev-list --all --count` returns 0
+   *   or the underlying git call fails (both mean "no commits reachable"; the
+   *   GitError stderr is logged for diagnostics).
    */
   async ensureRepoHasCommits(
     repoPath: string,
     requestUsername?: string | null,
   ): Promise<void> {
+    let output: string;
     try {
-      await git(['rev-parse', '--verify', 'HEAD^{commit}'], repoPath, undefined, requestUsername);
+      output = await git(['rev-list', '--all', '--count'], repoPath, undefined, requestUsername);
     } catch (error) {
       if (error instanceof GitError) {
         logger.warn(
           { repoPath, stderr: error.stderr, exitCode: error.exitCode },
-          'Source repository has no commits (unborn HEAD); pre-check will surface actionable error',
+          'Source repository rev-list failed; treating as empty',
         );
         throw new EmptyRepositoryError();
       }
       throw error;
+    }
+    const count = Number.parseInt(output, 10);
+    if (Number.isNaN(count)) {
+      // Unexpected git output shape -- do not silently treat as empty.
+      throw new Error(`Unexpected output from 'git rev-list --all --count': ${output}`);
+    }
+    if (count === 0) {
+      logger.warn(
+        { repoPath },
+        'Source repository has no reachable commits; pre-check will surface actionable error',
+      );
+      throw new EmptyRepositoryError();
     }
   }
 

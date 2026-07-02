@@ -283,28 +283,20 @@ detached
 
   describe('ensureRepoHasCommits (Issue #921)', () => {
     // Pre-check that surfaces an actionable domain error when the source
-    // repo has no commits (unborn HEAD). Wraps `git rev-parse --verify
-    // HEAD^{commit}` -- any GitError becomes an EmptyRepositoryError with a
+    // repo has zero reachable commits. Wraps `git rev-list --all --count` --
+    // a "0" result OR a GitError becomes an EmptyRepositoryError with a
     // fixed user-facing message; other errors propagate as-is.
     beforeEach(() => {
       mockGit.git.mockReset();
-      // Default: git resolves (repo has commits). Individual tests override
-      // to reject when they need to exercise the empty-repo branch.
-      mockGit.git.mockImplementation(() => Promise.resolve(''));
+      // Default: git resolves with a non-zero count (repo has commits).
+      // Individual tests override to exercise the empty branch.
+      mockGit.git.mockImplementation(() => Promise.resolve('1\n'));
     });
 
-    it('throws EmptyRepositoryError with the exact user-facing message when git rev-parse fails', async () => {
-      // Simulate `git rev-parse --verify HEAD^{commit}` failing because the
-      // repo has no commits yet.
-      mockGit.git.mockImplementation(() =>
-        Promise.reject(
-          new GitError(
-            "git rev-parse failed: fatal: Needed a single revision",
-            128,
-            'fatal: Needed a single revision',
-          ),
-        ),
-      );
+    it('throws EmptyRepositoryError with the exact user-facing message when rev-list returns 0', async () => {
+      // Fresh `git init` with no refs anywhere: `git rev-list --all --count`
+      // returns "0" (zero reachable commits from any ref).
+      mockGit.git.mockImplementation(() => Promise.resolve('0\n'));
 
       const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
       const { EmptyRepositoryError, EMPTY_REPOSITORY_ERROR_MESSAGE } =
@@ -327,6 +319,30 @@ detached
       );
     });
 
+    it('throws EmptyRepositoryError when the underlying rev-list itself fails', async () => {
+      // Some corrupt-repo shapes make `git rev-list` fail entirely rather
+      // than return "0". Treat that as empty too (the message still tells
+      // the user the right recovery step).
+      mockGit.git.mockImplementation(() =>
+        Promise.reject(
+          new GitError('git rev-list failed', 128, 'fatal: bad revision'),
+        ),
+      );
+
+      const { WorktreeService, EmptyRepositoryError } =
+        await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.ensureRepoHasCommits('/repo/broken');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(EmptyRepositoryError);
+    });
+
     it('propagates non-GitError unchanged', async () => {
       // Only GitError is translated to EmptyRepositoryError; other errors
       // (e.g. spawn failure) surface verbatim so operators see the real
@@ -347,9 +363,31 @@ detached
       expect(caught).toBe(cause);
     });
 
-    it('resolves when git accepts the rev-parse', async () => {
-      // Default beforeEach already wires git() to resolve; happy path just
-      // returns undefined without throwing.
+    it('throws a plain Error when rev-list returns an unparseable value', async () => {
+      // Defensive guard against unexpected git output. NOT translated to
+      // EmptyRepositoryError -- the message would be misleading if the true
+      // cause is something else (e.g. a helper wrapping git output).
+      mockGit.git.mockImplementation(() => Promise.resolve('nonsense'));
+
+      const { WorktreeService, EmptyRepositoryError } =
+        await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.ensureRepoHasCommits('/repo');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect(caught).not.toBeInstanceOf(EmptyRepositoryError);
+      expect((caught as Error).message).toContain("git rev-list --all --count");
+    });
+
+    it('resolves when rev-list reports a positive count', async () => {
+      // Default beforeEach already wires git() to resolve with "1\n"; happy
+      // path just returns undefined without throwing.
       const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
       const service = new WorktreeService({ worktreeRepository: mockRepo });
 
@@ -357,7 +395,7 @@ detached
       expect(result).toBeUndefined();
     });
 
-    it('forwards null requestUsername to git() (single-user branch)', async () => {
+    it('forwards omitted requestUsername to git() as undefined (single-user branch)', async () => {
       const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
       const service = new WorktreeService({ worktreeRepository: mockRepo });
 
@@ -367,7 +405,7 @@ detached
       // caller does not provide it. This is the single-user code path --
       // `git()` uses its direct-spawn branch.
       expect(mockGit.git).toHaveBeenCalledWith(
-        ['rev-parse', '--verify', 'HEAD^{commit}'],
+        ['rev-list', '--all', '--count'],
         '/repo/main',
         undefined,
         undefined,
@@ -384,7 +422,7 @@ detached
       // `git()` -> `runAsUser` so the pre-check observes the same repo
       // state as the subsequent `git worktree add`.
       expect(mockGit.git).toHaveBeenCalledWith(
-        ['rev-parse', '--verify', 'HEAD^{commit}'],
+        ['rev-list', '--all', '--count'],
         '/repo/main',
         undefined,
         'alice',

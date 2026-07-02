@@ -115,32 +115,7 @@ export async function createWorktreeWithSession(
     return { success: false, error: `Cannot access repository: ${detail}` };
   }
 
-  // 2. Pre-check: source repo must have at least one commit. `git worktree
-  // add <path> main` on an unborn HEAD would otherwise fail with the raw
-  // `fatal: invalid reference: main`, which does not tell the user what to
-  // do. Surfaces an actionable domain error before any filesystem side
-  // effect. Threads `requestUsername` so multi-user mode runs the check as
-  // the requesting user — the same user the subsequent `git worktree add`
-  // runs as.
-  try {
-    await worktreeService.ensureRepoHasCommits(repoPath, requestUsername);
-  } catch (emptyRepoErr) {
-    if (emptyRepoErr instanceof EmptyRepositoryError) {
-      logger.warn(
-        { repoId, repoPath },
-        'Source repo has no commits (unborn HEAD); aborting worktree create',
-      );
-      return { success: false, error: emptyRepoErr.message };
-    }
-    const detail = emptyRepoErr instanceof Error ? emptyRepoErr.message : String(emptyRepoErr);
-    logger.warn(
-      { repoId, repoPath, err: emptyRepoErr },
-      'ensureRepoHasCommits failed unexpectedly; aborting worktree create',
-    );
-    return { success: false, error: detail };
-  }
-
-  // 3. Handle remote fetch if requested
+  // 2. Handle remote fetch if requested
   let effectiveBaseBranch = baseBranch;
   let fetchFailed = false;
   let fetchError: string | undefined;
@@ -161,6 +136,35 @@ export async function createWorktreeWithSession(
       fetchError = 'Failed to fetch remote branch, created from local branch instead';
       // Keep local baseBranch as-is
     }
+  }
+
+  // 3. Pre-check: source repo must have at least one commit reachable from
+  // ANY ref. `git worktree add <path> main` on an unborn HEAD with no other
+  // refs would otherwise fail with the raw `fatal: invalid reference: main`,
+  // which does not tell the user what to do. Surfaces an actionable domain
+  // error before the filesystem side effect. Runs AFTER the fetch step so a
+  // fresh `git init` whose local HEAD is unborn but that just fetched
+  // `origin/<base>` is NOT rejected (that scenario is viable —
+  // `git worktree add -b <branch> <path> origin/<base>` succeeds even with
+  // an unborn HEAD). Threads `requestUsername` so multi-user mode runs the
+  // check as the requesting user, matching the subsequent `git worktree
+  // add`'s effective identity.
+  try {
+    await worktreeService.ensureRepoHasCommits(repoPath, requestUsername);
+  } catch (emptyRepoErr) {
+    if (emptyRepoErr instanceof EmptyRepositoryError) {
+      logger.warn(
+        { repoId, repoPath },
+        'Source repo has no reachable commits; aborting worktree create',
+      );
+      return { success: false, error: emptyRepoErr.message };
+    }
+    const detail = emptyRepoErr instanceof Error ? emptyRepoErr.message : String(emptyRepoErr);
+    logger.warn(
+      { repoId, repoPath, err: emptyRepoErr },
+      'ensureRepoHasCommits failed unexpectedly; aborting worktree create',
+    );
+    return { success: false, error: detail };
   }
 
   // 4. Create worktree

@@ -291,7 +291,9 @@ describe('createWorktreeWithSession', () => {
     // `git worktree add <path> main` on an unborn HEAD would surface as
     // `fatal: invalid reference: main`, which does not tell the user what
     // to do. The pre-check translates this into a fixed, actionable message
-    // BEFORE any filesystem side effect.
+    // BEFORE the worktree filesystem side effect. Fetch runs first (the
+    // pre-check is post-fetch by design so a fresh init that just fetched
+    // origin/<base> is NOT rejected).
     mockEnsureRepoHasCommits.mockImplementation(() =>
       Promise.reject(new EmptyRepositoryError()),
     );
@@ -305,8 +307,7 @@ describe('createWorktreeWithSession', () => {
     expect(result.error).toBe(
       'The source repository has no commits yet. Create at least one commit (an empty commit is fine: git commit --allow-empty -m "initial commit") in the source repo before creating a worktree.',
     );
-    // Pre-check must abort BEFORE any filesystem or network side effect.
-    expect(mockGit.fetchRemote).not.toHaveBeenCalled();
+    // Pre-check must abort BEFORE the worktree filesystem side effect.
     expect(mockCreateWorktree).not.toHaveBeenCalled();
     expect(mockRemoveWorktree).not.toHaveBeenCalled();
     expect(sm.createSession).not.toHaveBeenCalled();
@@ -316,14 +317,14 @@ describe('createWorktreeWithSession', () => {
     // Any error OTHER than EmptyRepositoryError propagates its message
     // verbatim (mirrors the verifyRepoAccessible non-GitError branch above).
     mockEnsureRepoHasCommits.mockImplementation(() =>
-      Promise.reject(new Error('rev-parse spawn crashed')),
+      Promise.reject(new Error('rev-list spawn crashed')),
     );
 
     const sm = createMockSessionManager();
     const result = await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
 
     expect(result.success).toBe(false);
-    expect(result.error).toBe('rev-parse spawn crashed');
+    expect(result.error).toBe('rev-list spawn crashed');
     expect(mockCreateWorktree).not.toHaveBeenCalled();
   });
 
@@ -339,6 +340,35 @@ describe('createWorktreeWithSession', () => {
     );
 
     expect(mockEnsureRepoHasCommits).toHaveBeenCalledWith('/repos/my-repo', 'alice');
+  });
+
+  it('runs ensureRepoHasCommits AFTER fetchRemote so remote-only base refs are counted (Issue #921)', async () => {
+    // Post-fetch placement is load-bearing: on a fresh `git init` where
+    // useRemote+baseBranch just fetched `origin/main`, the local HEAD is
+    // unborn but `git worktree add -b <branch> <path> origin/main`
+    // succeeds. `ensureRepoHasCommits` counts commits from any ref
+    // (including origin/*), so this scenario must NOT be rejected. The
+    // ordering is verified by recording the invocation timestamp of each
+    // mock.
+    const order: string[] = [];
+    mockGit.fetchRemote.mockImplementation(() => {
+      order.push('fetchRemote');
+      return Promise.resolve();
+    });
+    mockEnsureRepoHasCommits.mockImplementation(() => {
+      order.push('ensureRepoHasCommits');
+      return Promise.resolve();
+    });
+    mockCreateWorktree.mockImplementation(() => {
+      order.push('createWorktree');
+      return Promise.resolve({ worktreePath: CREATED_PATH, index: 2 });
+    });
+
+    const sm = createMockSessionManager();
+    await createWorktreeWithSession(DEFAULT_PARAMS, sm, mockWorktreeService);
+
+    // Fetch precedes the pre-check; the pre-check precedes createWorktree.
+    expect(order).toEqual(['fetchRemote', 'ensureRepoHasCommits', 'createWorktree']);
   });
 
   it('rolls back and returns "directory is missing" when sanity-net stat fails (Issue #854)', async () => {
