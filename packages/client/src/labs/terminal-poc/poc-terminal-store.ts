@@ -13,6 +13,7 @@ import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
 import { stripSystemMessages, stripScrollbackClear } from '../../lib/terminal-utils.js';
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, type PocRow } from './buffer-to-rows';
+import { detectRowLinks } from './link-detection';
 
 /**
  * Filters applied to every history/output chunk before writing to the buffer.
@@ -558,6 +559,9 @@ class PocTerminal implements PocTerminalInstance {
     const cursorX = buffer.cursorX;
 
     const rows: PocRow[] = [];
+    const freshYs = new Set<number>(); // rows (re)built this frame
+    const freshScrollbackYs: number[] = []; // fresh scrollback rows to cache after links
+    let minFreshY = -1;
     for (let y = 0; y < length; y++) {
       const isScrollback = y < baseY;
       const isCursorRow = y === cursorY;
@@ -571,20 +575,38 @@ class PocTerminal implements PocTerminalInstance {
       }
 
       const line = buffer.getLine(y);
-      if (!line) {
-        rows.push({ key: y, segments: [{ text: '', style: null }] });
-        continue;
-      }
+      const row: PocRow = line
+        ? isCursorRow
+          ? extractRowWithCursor(line, cols, nullCell, y, cursorX)
+          : extractRow(line, cols, nullCell, y)
+        : { key: y, segments: [{ text: '', style: null }], isWrapped: false, links: [] };
 
-      const row = isCursorRow
-        ? extractRowWithCursor(line, cols, nullCell, y, cursorX)
-        : extractRow(line, cols, nullCell, y);
-
-      // Cache immutable scrollback rows (not the cursor row, which changes).
-      if (isScrollback && !isCursorRow) {
-        this.rowCache.set(y, row);
-      }
       rows.push(row);
+      freshYs.add(y);
+      if (minFreshY === -1) minFreshY = y;
+      // Cache immutable scrollback rows AFTER links are attached (below).
+      if (isScrollback && !isCursorRow) freshScrollbackYs.push(y);
+    }
+
+    // Detect links only for freshly-built rows, expanding left to the head of a
+    // soft-wrapped logical line so a URL that wraps across the cache boundary is
+    // joined. Cached rows keep the links computed when they were built (correct:
+    // a wrapped line's rows scroll into cache together, after the join existed).
+    if (minFreshY !== -1) {
+      let windowStart = minFreshY;
+      while (windowStart > 0 && rows[windowStart].isWrapped) windowStart--;
+      const window = rows.slice(windowStart).map((r) => ({
+        key: r.key,
+        text: rowText(r),
+        isWrapped: r.isWrapped,
+      }));
+      const linkMap = detectRowLinks(window);
+      for (const y of freshYs) {
+        rows[y].links = linkMap.get(rows[y].key) ?? [];
+      }
+    }
+    for (const y of freshScrollbackYs) {
+      this.rowCache.set(y, rows[y]);
     }
 
     this.snapshot = {
@@ -607,6 +629,11 @@ class PocTerminal implements PocTerminalInstance {
 /** Clamp a 1-based cell coordinate into [1, max]. */
 function clampCell(value: number, max: number): number {
   return Math.min(max, Math.max(1, Math.round(value)));
+}
+
+/** Concatenated text of a row's segments (the offset space link ranges use). */
+function rowText(row: PocRow): string {
+  return row.segments.map((s) => s.text).join('');
 }
 
 // --- Module-level registry ---

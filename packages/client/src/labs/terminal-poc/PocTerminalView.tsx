@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
 import type { PocRow, PocSegment, PocStyle } from './buffer-to-rows';
+import type { LinkRange } from './link-detection';
 import { PocScrollIndicator } from './PocScrollIndicator';
 
 const FONT_FAMILY =
@@ -36,14 +37,73 @@ function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
   return css;
 }
 
+// Split a segment's text at link boundaries. `segStart` is the segment's offset
+// into the row's concatenated text; `links` are ranges in that same space.
+function renderSegment(seg: PocSegment, segStart: number, key: number, links: LinkRange[]) {
+  const style = segmentStyle(seg.style);
+  const segEnd = segStart + seg.text.length;
+  const overlapping = links.filter((l) => l.start < segEnd && l.end > segStart);
+  if (overlapping.length === 0) {
+    return (
+      <span key={key} style={style}>
+        {seg.text}
+      </span>
+    );
+  }
+  // Walk the segment, emitting plain spans and <a> for the link portions.
+  const parts: ReactNode[] = [];
+  let cursor = segStart;
+  let pi = 0;
+  for (const link of overlapping) {
+    const linkStart = Math.max(link.start, segStart);
+    const linkEnd = Math.min(link.end, segEnd);
+    if (cursor < linkStart) {
+      parts.push(
+        <span key={pi++} style={style}>
+          {seg.text.slice(cursor - segStart, linkStart - segStart)}
+        </span>,
+      );
+    }
+    parts.push(
+      <a
+        key={pi++}
+        href={link.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        // Link click opens the URL; stop propagation so the container's
+        // click-to-focus / mouse-report paths do not also fire. No
+        // preventDefault so navigation happens.
+        onClick={(e) => e.stopPropagation()}
+        style={{ ...style, textDecoration: 'underline dotted', cursor: 'pointer' }}
+      >
+        {seg.text.slice(linkStart - segStart, linkEnd - segStart)}
+      </a>,
+    );
+    cursor = linkEnd;
+  }
+  if (cursor < segEnd) {
+    parts.push(
+      <span key={pi++} style={style}>
+        {seg.text.slice(cursor - segStart)}
+      </span>,
+    );
+  }
+  return (
+    <span key={key} style={style}>
+      {parts}
+    </span>
+  );
+}
+
 const Row = memo(function Row({ row }: { row: PocRow }) {
+  let offset = 0;
   return (
     <div style={{ whiteSpace: 'pre', height: LINE_HEIGHT_PX, lineHeight: `${LINE_HEIGHT_PX}px` }}>
-      {row.segments.map((seg: PocSegment, i) => (
-        <span key={i} style={segmentStyle(seg.style)}>
-          {seg.text}
-        </span>
-      ))}
+      {row.segments.map((seg: PocSegment, i) => {
+        const node = renderSegment(seg, offset, i, row.links);
+        offset += seg.text.length;
+        return node;
+      })}
     </div>
   );
 });
@@ -223,6 +283,8 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
 
     const onPointerDown = (e: PointerEvent) => {
       if (!reportable(e)) return;
+      // A press on a link should open it, not report a mouse click to the TUI.
+      if ((e.target as Element | null)?.closest?.('a')) return;
       const { charW } = cellMetrics();
       const cell = cellFromPoint(e.clientX, e.clientY, charW);
       if (e.pointerType === 'touch') {

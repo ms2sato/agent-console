@@ -1,4 +1,5 @@
 import { Terminal } from '@xterm/headless';
+import type { LinkRange } from './link-detection';
 
 /**
  * Pure extraction from an xterm headless buffer line into a React-renderable
@@ -29,6 +30,8 @@ export interface PocSegment {
 export interface PocRow {
   key: number; // absolute row index in the buffer
   segments: PocSegment[];
+  isWrapped: boolean; // true = this row is a soft-wrap continuation of the previous
+  links: LinkRange[]; // URL column ranges over the row's concatenated text (empty = none)
 }
 
 // Standard xterm dark-theme 16-color palette (ANSI 0-15).
@@ -140,7 +143,7 @@ export function extractRow(
     segments.push({ text: '', style: null });
   }
 
-  return { key, segments };
+  return { key, segments, isWrapped: line.isWrapped, links: [] };
 }
 
 // Cursor cell rendering: a solid block (light bg, dark fg) at the cursor cell.
@@ -169,7 +172,7 @@ export function extractRowWithCursor(
   if (segments.length === 0) {
     segments.push({ text: '', style: null });
   }
-  return { key, segments };
+  return { key, segments, isWrapped: line.isWrapped, links: [] };
 }
 
 /**

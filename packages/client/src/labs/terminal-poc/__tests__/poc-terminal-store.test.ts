@@ -337,6 +337,36 @@ describe('poc-terminal-store', () => {
     expect(frames.some((f) => f.includes('\x1b[200~'))).toBe(false);
   });
 
+  it('attaches detected link ranges to snapshot rows', async () => {
+    const instance = getOrCreatePocTerminal('lnk1', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'output', data: 'go http://example.com now', offset: 0 }),
+    );
+    await flush();
+
+    const rowWithLink = instance.getSnapshot().rows.find((r) => r.links.length > 0);
+    expect(rowWithLink).toBeDefined();
+    expect(rowWithLink!.links[0].href).toBe('http://example.com');
+  });
+
+  it('joins a URL wrapped across rows into one href on the snapshot', async () => {
+    const instance = getOrCreatePocTerminal('lnk2', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    // Longer than the 80-col default -> the terminal soft-wraps it.
+    const url = 'http://example.com/' + 'a'.repeat(90);
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: url, offset: 0 }));
+    await flush();
+
+    const linkedRows = instance.getSnapshot().rows.filter((r) => r.links.length > 0);
+    expect(linkedRows.length).toBeGreaterThanOrEqual(2); // wrapped across >= 2 rows
+    for (const r of linkedRows) {
+      expect(r.links[0].href).toBe(url); // every wrapped piece carries the full URL
+    }
+  });
+
   it('sendInput sends a correct input frame', () => {
     const instance = getOrCreatePocTerminal('s5', 'w5');
     const ws = MockWebSocket.getLastInstance();
