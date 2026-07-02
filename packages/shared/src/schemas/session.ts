@@ -3,7 +3,7 @@ import * as v from 'valibot';
 /**
  * Schema for creating a worktree session
  */
-export const CreateWorktreeSessionRequestSchema = v.object({
+export const CreateWorktreeSessionRequestSchema = v.strictObject({
   type: v.literal('worktree'),
   repositoryId: v.pipe(
     v.string(),
@@ -50,7 +50,7 @@ export const CreateWorktreeSessionRequestSchema = v.object({
 /**
  * Schema for creating a quick session
  */
-export const CreateQuickSessionRequestSchema = v.object({
+export const CreateQuickSessionRequestSchema = v.strictObject({
   type: v.literal('quick'),
   locationPath: v.pipe(
     v.string(),
@@ -107,7 +107,7 @@ export const branchNameErrorMessage = 'Invalid branch name. Use alphanumeric, do
  * Schema for updating a session (title only)
  * Branch renaming is now handled via the restart worker endpoint.
  */
-export const UpdateSessionRequestSchema = v.object({
+export const UpdateSessionRequestSchema = v.strictObject({
   title: v.optional(v.pipe(v.string(), v.trim())),
 });
 
@@ -116,7 +116,7 @@ export const UpdateSessionRequestSchema = v.object({
  * Quick sessions are deleted synchronously without task management.
  * For worktree sessions with async deletion, use the worktree deletion endpoint instead.
  */
-export const DeleteSessionRequestSchema = v.object({});
+export const DeleteSessionRequestSchema = v.strictObject({});
 
 // Inferred types from schemas
 export type CreateWorktreeSessionRequest = v.InferOutput<typeof CreateWorktreeSessionRequestSchema>;

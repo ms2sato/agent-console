@@ -9,8 +9,14 @@ import { setAuthMode, setCurrentUser, setSharedAccountsAvailable } from './lib/a
 import { setCapabilities } from './lib/capabilities';
 import { onPolicyViolation, disconnect as disconnectAppWs } from './lib/app-websocket';
 import { clearStoredFilterMode } from './hooks/useSessionFilter';
+import { installSchemaVersionFetchInspector } from './lib/schema-version';
 import { logger } from './lib/logger';
 import './styles.css';
+
+// Inspect every REST response for the X-Schema-Version header before any fetch
+// runs (including the first config fetch), so a server/client schema mismatch is
+// detected as early as possible.
+installSchemaVersionFetchInspector();
 
 // Tracks the policy violation unsubscribe function to prevent duplicate registrations on retry
 let policyViolationCleanup: (() => void) | null = null;

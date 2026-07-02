@@ -7,6 +7,7 @@ import { MobileHeaderControls } from '../components/header/MobileHeaderControls'
 import { JobsNavLink, AgentsNavLink, RepositoriesNavLink, SettingsNavLink, ReviewNavLink, LogoutButton, ValidationWarningIndicator } from '../components/header/NavLinks';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
+import { SchemaVersionBanner } from '../components/ui/SchemaVersionBanner';
 import { WebhookConfigBanner } from '../components/ui/WebhookConfigBanner';
 import { ActiveSessionsSidebar } from '../components/sidebar/ActiveSessionsSidebar';
 import { useAppWsState } from '../hooks/useAppWs';
@@ -251,6 +252,7 @@ function RootLayout() {
             />
           </header>
           <ConnectionBanner connected={connected} hasEverConnected={hasEverConnected} />
+          <SchemaVersionBanner />
           <WebhookConfigBanner />
           <div className="flex-1 flex min-h-0 overflow-hidden">
             {!isMobile && (

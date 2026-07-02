@@ -4,7 +4,7 @@ import { branchNamePattern, branchNameErrorMessage } from './session';
 /**
  * Schema for creating a repository
  */
-export const CreateRepositoryRequestSchema = v.object({
+export const CreateRepositoryRequestSchema = v.strictObject({
   path: v.pipe(
     v.string(),
     v.trim(),
@@ -61,7 +61,7 @@ const repoNamePattern = /^[A-Za-z0-9_.][A-Za-z0-9._-]{0,99}$/;
  * Validates at request boundary so the URL / name never reach a subprocess
  * spawn unless they pass the documented shape.
  */
-export const CloneRepositoryRequestSchema = v.object({
+export const CloneRepositoryRequestSchema = v.strictObject({
   url: v.pipe(
     v.string(),
     v.trim(),
@@ -200,7 +200,7 @@ const RequiredBranchSchema = v.pipe(
 /**
  * Base schema for worktree creation requests
  */
-const CreateWorktreeBaseSchema = v.object({
+const CreateWorktreeBaseSchema = v.strictObject({
   /** Client-generated UUID for async request-response correlation */
   taskId: v.pipe(
     v.string(),
@@ -216,7 +216,7 @@ const CreateWorktreeBaseSchema = v.object({
 /**
  * Schema for creating worktree with prompt-based branch name
  */
-export const CreateWorktreePromptRequestSchema = v.object({
+export const CreateWorktreePromptRequestSchema = v.strictObject({
   ...CreateWorktreeBaseSchema.entries,
   mode: v.literal('prompt'),
   initialPrompt: v.pipe(
@@ -231,7 +231,7 @@ export const CreateWorktreePromptRequestSchema = v.object({
 /**
  * Schema for creating worktree with custom branch name
  */
-export const CreateWorktreeCustomRequestSchema = v.object({
+export const CreateWorktreeCustomRequestSchema = v.strictObject({
   ...CreateWorktreeBaseSchema.entries,
   mode: v.literal('custom'),
   branch: RequiredBranchSchema,
@@ -242,7 +242,7 @@ export const CreateWorktreeCustomRequestSchema = v.object({
 /**
  * Schema for creating worktree from existing branch
  */
-export const CreateWorktreeExistingRequestSchema = v.object({
+export const CreateWorktreeExistingRequestSchema = v.strictObject({
   ...CreateWorktreeBaseSchema.entries,
   mode: v.literal('existing'),
   branch: RequiredBranchSchema,
@@ -260,7 +260,7 @@ export const CreateWorktreeRequestSchema = v.union([
 /**
  * Schema for fetching a GitHub issue by reference
  */
-export const FetchGitHubIssueRequestSchema = v.object({
+export const FetchGitHubIssueRequestSchema = v.strictObject({
   reference: v.pipe(
     v.string(),
     v.trim(),
@@ -271,7 +271,7 @@ export const FetchGitHubIssueRequestSchema = v.object({
 /**
  * Schema for a GitHub issue summary
  */
-export const GitHubIssueSummarySchema = v.object({
+export const GitHubIssueSummarySchema = v.strictObject({
   org: v.string(),
   repo: v.string(),
   number: v.number(),
@@ -284,7 +284,7 @@ export const GitHubIssueSummarySchema = v.object({
 /**
  * Schema for deleting a worktree
  */
-export const DeleteWorktreeRequestSchema = v.object({
+export const DeleteWorktreeRequestSchema = v.strictObject({
   force: v.optional(v.boolean()),
 });
 
@@ -298,14 +298,14 @@ export const DeleteWorktreeRequestSchema = v.object({
  * an absent body keeps the historical behaviour of removing only the data
  * subtree.
  */
-export const DeleteRepositoryRequestSchema = v.object({
+export const DeleteRepositoryRequestSchema = v.strictObject({
   removeSourceRepo: v.optional(v.boolean(), false),
 });
 
 /**
  * Schema for pulling a worktree (git pull --ff-only)
  */
-export const PullWorktreeRequestSchema = v.object({
+export const PullWorktreeRequestSchema = v.strictObject({
   /** The absolute path of the worktree to pull */
   worktreePath: v.pipe(
     v.string(),
@@ -323,7 +323,7 @@ export const PullWorktreeRequestSchema = v.object({
 /**
  * Schema for updating a repository
  */
-export const UpdateRepositoryRequestSchema = v.object({
+export const UpdateRepositoryRequestSchema = v.strictObject({
   setupCommand: v.nullish(v.pipe(v.string(), v.trim())),
   cleanupCommand: v.nullish(v.pipe(v.string(), v.trim())),
   envVars: v.nullish(v.pipe(v.string(), v.trim())),
@@ -334,14 +334,14 @@ export const UpdateRepositoryRequestSchema = v.object({
 /**
  * Schema for the response of refreshing a repository's default branch
  */
-export const RefreshDefaultBranchResponseSchema = v.object({
+export const RefreshDefaultBranchResponseSchema = v.strictObject({
   defaultBranch: v.pipe(v.string(), v.minLength(1, 'Default branch name is required')),
 });
 
 /**
  * Schema for remote branch status response
  */
-export const RemoteBranchStatusSchema = v.object({
+export const RemoteBranchStatusSchema = v.strictObject({
   behind: v.number(),
   ahead: v.number(),
 });

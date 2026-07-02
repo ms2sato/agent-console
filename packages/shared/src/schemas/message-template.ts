@@ -1,12 +1,12 @@
 import * as v from 'valibot';
 
-export const CreateMessageTemplateRequestSchema = v.object({
+export const CreateMessageTemplateRequestSchema = v.strictObject({
   title: v.pipe(v.string(), v.trim(), v.minLength(1, 'Title is required')),
   content: v.pipe(v.string(), v.trim(), v.minLength(1, 'Content is required')),
 });
 
 export const UpdateMessageTemplateRequestSchema = v.pipe(
-  v.object({
+  v.strictObject({
     title: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Title is required'))),
     content: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Content is required'))),
   }),
@@ -16,7 +16,7 @@ export const UpdateMessageTemplateRequestSchema = v.pipe(
   ),
 );
 
-export const ReorderMessageTemplatesRequestSchema = v.object({
+export const ReorderMessageTemplatesRequestSchema = v.strictObject({
   orderedIds: v.pipe(
     v.array(v.string()),
     v.minLength(1, 'At least one ID is required'),

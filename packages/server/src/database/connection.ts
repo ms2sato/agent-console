@@ -1546,7 +1546,11 @@ async function migrateAgentsFromJson(database: Kysely<Database>): Promise<void> 
       // - registeredAt -> createdAt (renamed in SQLite migration)
       const item = transformLegacyFields(rawItem);
 
-      const result = v.safeParse(AgentDefinitionSchema, item);
+      // Lenient parse: agents.json is internal storage that may carry legacy
+      // fields from older builds. The wire AgentDefinitionSchema is strict, so
+      // derive a non-strict object variant here to strip (not reject) unknown
+      // keys during the one-time JSON -> SQLite migration.
+      const result = v.safeParse(v.object(AgentDefinitionSchema.entries), item);
       if (result.success) {
         const agent = result.output as AgentDefinition;
         // Skip built-in agents - they should never be persisted

@@ -4,6 +4,16 @@ import * as crypto from 'crypto';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
 import { AgentDefinitionSchema } from '@agent-console/shared';
+
+/**
+ * Lenient derivation of AgentDefinitionSchema for validating persisted agents.
+ * The wire schema is strict, but agents.json is internal storage that may carry
+ * legacy fields written by older builds; those must be tolerated on load rather
+ * than rejecting the whole record. A non-strict `object` schema strips the
+ * unknown keys (matching the historical persisted-load behavior); it is never
+ * used for wire validation.
+ */
+const PersistedAgentDefinitionSchema = v.object(AgentDefinitionSchema.entries);
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -264,7 +274,7 @@ export class PersistenceService {
     const validAgents: AgentDefinition[] = [];
 
     for (const item of raw) {
-      const result = v.safeParse(AgentDefinitionSchema, item);
+      const result = v.safeParse(PersistedAgentDefinitionSchema, item);
       if (result.success) {
         validAgents.push(result.output as AgentDefinition);
       } else {

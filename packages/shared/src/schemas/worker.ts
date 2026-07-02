@@ -4,7 +4,7 @@ import { branchNamePattern, branchNameErrorMessage } from './session.js';
 /**
  * Base options for worker creation
  */
-const WorkerOptionsSchema = v.object({
+const WorkerOptionsSchema = v.strictObject({
   name: v.optional(v.string()),
   continueConversation: v.optional(v.boolean()),
 });
@@ -12,7 +12,7 @@ const WorkerOptionsSchema = v.object({
 /**
  * Schema for creating an agent worker (internal use only)
  */
-const CreateAgentWorkerParamsSchema = v.object({
+const CreateAgentWorkerParamsSchema = v.strictObject({
   ...WorkerOptionsSchema.entries,
   type: v.literal('agent'),
   agentId: v.pipe(
@@ -24,7 +24,7 @@ const CreateAgentWorkerParamsSchema = v.object({
 /**
  * Schema for creating a terminal worker
  */
-const CreateTerminalWorkerParamsSchema = v.object({
+const CreateTerminalWorkerParamsSchema = v.strictObject({
   ...WorkerOptionsSchema.entries,
   type: v.literal('terminal'),
 });
@@ -32,7 +32,7 @@ const CreateTerminalWorkerParamsSchema = v.object({
 /**
  * Schema for creating a git diff worker (internal use only)
  */
-const CreateGitDiffWorkerParamsSchema = v.object({
+const CreateGitDiffWorkerParamsSchema = v.strictObject({
   name: v.optional(v.string()),
   type: v.literal('git-diff'),
   // baseCommit is optional - if not provided, server calculates merge-base with default branch
@@ -47,7 +47,7 @@ export const CreateWorkerRequestSchema = CreateTerminalWorkerParamsSchema;
 /**
  * Schema for restarting a worker
  */
-export const RestartWorkerRequestSchema = v.object({
+export const RestartWorkerRequestSchema = v.strictObject({
   continueConversation: v.optional(v.boolean()),
   agentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Agent ID must not be empty'))),
   branch: v.optional(v.pipe(

@@ -5,9 +5,10 @@
  * @see docs/websocket-reconnection.md for design rationale
  */
 import * as v from 'valibot';
-import { AppServerMessageSchema, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
+import { AppServerMessageSchema, SchemaVersionMessageSchema, WS_CLOSE_CODE, type AppServerMessage, type AppClientMessage } from '@agent-console/shared';
 import { getAppWsUrl } from './websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from './websocket-reconnect.js';
+import { checkServerSchemaVersion } from './schema-version.js';
 import { logger } from './logger.js';
 
 // Store state type
@@ -79,6 +80,21 @@ function setState(partial: Partial<AppWebSocketState>) {
 function handleMessage(event: MessageEvent) {
   try {
     const raw: unknown = JSON.parse(event.data);
+
+    // Handle the schema-version frame before full-envelope parsing. The version
+    // frame must remain decodable even when other message variants have drifted,
+    // so version-mismatch detection is never blocked behind an envelope parse
+    // failure. It is intercepted here and never forwarded to message listeners.
+    if (typeof raw === 'object' && raw !== null && (raw as { type?: unknown }).type === 'schema-version') {
+      const result = v.safeParse(SchemaVersionMessageSchema, raw);
+      if (result.success) {
+        checkServerSchemaVersion(result.output.version);
+      } else {
+        logger.error('[WebSocket] Invalid schema-version frame:', raw);
+      }
+      return;
+    }
+
     const parsed = parseMessage(raw);
     if (!parsed) {
       logger.error('[WebSocket] Invalid message:', raw);

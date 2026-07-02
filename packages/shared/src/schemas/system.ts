@@ -3,7 +3,7 @@ import * as v from 'valibot';
 /**
  * Schema for system/open request
  */
-export const SystemOpenRequestSchema = v.object({
+export const SystemOpenRequestSchema = v.strictObject({
   path: v.pipe(
     v.string(),
     v.trim(),
@@ -14,7 +14,7 @@ export const SystemOpenRequestSchema = v.object({
 /**
  * Schema for system/open-in-vscode request
  */
-export const SystemOpenVSCodeRequestSchema = v.object({
+export const SystemOpenVSCodeRequestSchema = v.strictObject({
   path: v.pipe(
     v.string(),
     v.trim(),

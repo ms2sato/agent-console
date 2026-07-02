@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc",
+    "build": "bun ../../scripts/generate-schema-version.mjs && tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "test": "bun test src/",
