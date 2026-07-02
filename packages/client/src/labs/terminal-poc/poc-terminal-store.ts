@@ -62,6 +62,8 @@ export interface PocTerminalInstance {
   forwardScroll(lines: number, cell: { x: number; y: number }): void;
   /** Report a left-button press/release to the TUI (only when mouse tracking is on). */
   reportMouseButton(kind: 'press' | 'release', cell: { x: number; y: number }): void;
+  /** Paste text, honoring the app's bracketed-paste (DECSET 2004) state. */
+  paste(text: string): void;
   dismissNotice(): void;
   /** Mount reference; returns an idempotent release (Strict-Mode safe). */
   acquire(): () => void;
@@ -233,6 +235,18 @@ class PocTerminal implements PocTerminalInstance {
     // PoC (a spurious release is harmless to the TUIs we target).
     const terminator = kind === 'press' ? 'M' : 'm';
     this.sendInput(`\x1b[<0;${col};${row}${terminator}`);
+  };
+
+  paste = (text: string): void => {
+    // The PTY expects CR line endings; normalize \r\n and lone \n to \r (xterm's
+    // IPasteEvent behavior).
+    const normalized = text.replace(/\r\n/g, '\r').replace(/\n/g, '\r');
+    if (this.terminal.modes.bracketedPasteMode) {
+      // One frame so the app sees the paste atomically between the markers.
+      this.sendInput(`\x1b[200~${normalized}\x1b[201~`);
+    } else {
+      this.sendInput(normalized);
+    }
   };
 
   dismissNotice = (): void => {

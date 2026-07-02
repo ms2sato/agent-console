@@ -296,6 +296,47 @@ describe('poc-terminal-store', () => {
     expect(instance.getSnapshot().mouseTracking).toBe(false);
   });
 
+  it('paste wraps in bracketed-paste markers and normalizes newlines when DECSET 2004 is on', async () => {
+    const instance = getOrCreatePocTerminal('pst1', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?2004h', offset: 0 }));
+    await flush();
+
+    instance.paste('a\nb\r\nc');
+
+    const frames = inputFrames(ws!);
+    expect(frames).toContain('\x1b[200~a\rb\rc\x1b[201~'); // wrapped + CR-normalized, one frame
+  });
+
+  it('paste sends raw CR-normalized text when bracketed paste is off', () => {
+    const instance = getOrCreatePocTerminal('pst2', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.paste('a\nb\r\nc');
+
+    const frames = inputFrames(ws!);
+    expect(frames).toContain('a\rb\rc');
+    expect(frames.some((f) => f.includes('\x1b[200~'))).toBe(false);
+  });
+
+  it('paste reverts to raw after DECSET 2004 is disabled', async () => {
+    const instance = getOrCreatePocTerminal('pst3', 'w');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?2004h', offset: 0 }));
+    await flush();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?2004l', offset: 8 }));
+    await flush();
+
+    instance.paste('x\ny');
+
+    const frames = inputFrames(ws!);
+    expect(frames).toContain('x\ry');
+    expect(frames.some((f) => f.includes('\x1b[200~'))).toBe(false);
+  });
+
   it('sendInput sends a correct input frame', () => {
     const instance = getOrCreatePocTerminal('s5', 'w5');
     const ws = MockWebSocket.getLastInstance();

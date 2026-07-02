@@ -1,5 +1,5 @@
 import { forwardRef, useRef, useState } from 'react';
-import type { KeyboardEvent, CompositionEvent, FormEvent } from 'react';
+import type { KeyboardEvent, CompositionEvent, FormEvent, ClipboardEvent } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
 
 interface PocKeyboardInputProps {
@@ -59,6 +59,17 @@ export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInput
       }
     };
 
+    const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+      // Paste during IME composition is an edge case; let the default happen.
+      if (composingRef.current) return;
+      const text = e.clipboardData.getData('text/plain');
+      // No text (e.g. image-only clipboard): do nothing for now — image paste
+      // is phase 5.
+      if (!text) return;
+      e.preventDefault();
+      instance.paste(text);
+    };
+
     const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (composingRef.current || e.nativeEvent.isComposing) return;
 
@@ -100,6 +111,7 @@ export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInput
           onCompositionEnd={handleCompositionEnd}
           onInput={handleInput}
           onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
           autoCapitalize="off"
           autoCorrect="off"
           autoComplete="off"

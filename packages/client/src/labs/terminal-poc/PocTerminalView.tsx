@@ -213,6 +213,7 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
     // (browser context menu wins). Touch defers to pointerup and only reports a
     // tap (movement <= threshold) so a scroll drag is not a phantom click.
     let mousePressActive = false; // a mouse press was emitted, awaiting release
+    let mousePressCell: { x: number; y: number } | null = null; // cell of that press
     let touchDownX = 0;
     let touchDownY = 0;
     let touchDownCell: { x: number; y: number } | null = null;
@@ -232,6 +233,7 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
       } else {
         instance.reportMouseButton('press', cell);
         mousePressActive = true;
+        mousePressCell = cell;
       }
     };
 
@@ -249,14 +251,32 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
         }
         touchDownCell = null;
       } else if (mousePressActive) {
+        // Release inside the container: report at the exact current cell.
         instance.reportMouseButton('release', cell);
         mousePressActive = false;
+        mousePressCell = null;
       }
     };
 
     const onPointerCancel = () => {
-      touchDownCell = null;
+      touchDownCell = null; // touch gesture aborted; mouse cancel handled on window
+    };
+
+    // Emit the release at the last press cell when the pointer is released (or
+    // cancelled) OUTSIDE the container, so a mouse press never goes unpaired and
+    // leaves the TUI in a dragging state. For an in-container up, the container
+    // handler above runs first (bubble order) and clears the flag, so this
+    // guard makes the window path a no-op — no double emission. No
+    // setPointerCapture (it would re-route events and disturb native selection).
+    const releaseDangling = () => {
+      if (!mousePressActive || !mousePressCell) return;
+      instance.reportMouseButton('release', mousePressCell);
       mousePressActive = false;
+      mousePressCell = null;
+    };
+    const onWindowPointerUp = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      releaseDangling();
     };
 
     el.addEventListener('wheel', onWheel, { passive: false });
@@ -266,6 +286,8 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
     el.addEventListener('pointerdown', onPointerDown);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerCancel);
+    window.addEventListener('pointerup', onWindowPointerUp);
+    window.addEventListener('pointercancel', releaseDangling);
 
     return () => {
       el.removeEventListener('wheel', onWheel);
@@ -275,6 +297,10 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
       el.removeEventListener('pointerdown', onPointerDown);
       el.removeEventListener('pointerup', onPointerUp);
       el.removeEventListener('pointercancel', onPointerCancel);
+      window.removeEventListener('pointerup', onWindowPointerUp);
+      window.removeEventListener('pointercancel', releaseDangling);
+      // Unmount mid-drag: pair the outstanding press so the TUI is not stuck.
+      releaseDangling();
     };
   }, [instance]);
 
