@@ -12,6 +12,13 @@ function lastSentMessages(ws: MockWebSocket): unknown[] {
   return calls.map((call) => JSON.parse(call[0]));
 }
 
+function allText(instance: ReturnType<typeof getOrCreatePocTerminal>): string {
+  return instance
+    .getSnapshot()
+    .rows.map((r) => r.segments.map((s) => s.text).join(''))
+    .join('\n');
+}
+
 describe('poc-terminal-store', () => {
   let restoreWebSocket: () => void;
   let originalLocation: PropertyDescriptor | undefined;
@@ -83,6 +90,62 @@ describe('poc-terminal-store', () => {
       .rows.map((r) => r.segments.map((s) => s.text).join(''))
       .join('');
     expect(text).toContain('restored line');
+  });
+
+  it('preserves scrollback: CSI 3J in a later output does not erase earlier text', async () => {
+    const instance = getOrCreatePocTerminal('s3j', 'w3j');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    // Push 'first line' above the 24-row screen so it lives in scrollback, which
+    // is exactly what raw CSI 3J erases (and the filter preserves).
+    const filler = Array.from({ length: 40 }, (_, i) => `filler ${i}`).join('\r\n');
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'output', data: `first line\r\n${filler}\r\n`, offset: 0 }),
+    );
+    await flush();
+    // A redraw that would normally wipe scrollback via CSI 3J.
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[3Jsecond line', offset: 500 }));
+    await flush();
+
+    const text = allText(instance);
+    expect(text).toContain('first line');
+    expect(text).toContain('second line');
+  });
+
+  it('CSI 2J is rewritten to cursor-home + erase-below (post-clear write lands at home)', async () => {
+    const instance = getOrCreatePocTerminal('s2j', 'w2j');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    // Move the cursor down to row 2, then clear + write. The filter rewrites 2J
+    // to `\x1b[H\x1b[J`, so the cursor homes and 'after' lands on row 0. Raw 2J
+    // leaves the cursor on row 2, so without the filter this assertion fails.
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'output', data: 'line0\r\nline1\r\nline2', offset: 0 }),
+    );
+    await flush();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[2Jafter', offset: 17 }));
+    await flush();
+
+    const snap = instance.getSnapshot();
+    expect(snap.cursor.y).toBe(0); // homed by the 2J rewrite
+    expect(snap.rows[0].segments.map((s) => s.text).join('')).toContain('after');
+  });
+
+  it('strips [internal:...] system lines from rendered output', async () => {
+    const instance = getOrCreatePocTerminal('sint', 'wint');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'output', data: 'visible\r\n[internal:timer] hidden', offset: 0 }),
+    );
+    await flush();
+
+    const text = allText(instance);
+    expect(text).toContain('visible');
+    expect(text).not.toContain('internal:timer');
   });
 
   it('sendInput sends a correct input frame', () => {

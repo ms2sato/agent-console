@@ -5,8 +5,20 @@ import {
   type WorkerClientMessage,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from '../../lib/websocket-url.js';
+import { stripSystemMessages, stripScrollbackClear } from '../../lib/terminal-utils.js';
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, type PocRow } from './buffer-to-rows';
+
+/**
+ * Filters applied to every history/output chunk before writing to the buffer.
+ * stripScrollbackClear neutralizes CSI 3J/2J so Claude Code's per-redraw
+ * scrollback wipe does not destroy history. Always-on in the PoC; the
+ * production port makes stripScrollbackClear conditional per agent config
+ * (`stripScrollbackClear` flag; roadmap PR-1 scope).
+ */
+function processOutput(data: string): string {
+  return stripScrollbackClear(stripSystemMessages(data));
+}
 
 /**
  * Module-level store: the headless Terminal + WebSocket for each worker live
@@ -222,10 +234,10 @@ class PocTerminal implements PocTerminalInstance {
           this.terminal.reset();
           this.rowCache.clear();
         }
-        this.terminal.write(message.data, () => this.scheduleNotify());
+        this.terminal.write(processOutput(message.data), () => this.scheduleNotify());
         break;
       case 'output':
-        this.terminal.write(message.data, () => this.scheduleNotify());
+        this.terminal.write(processOutput(message.data), () => this.scheduleNotify());
         break;
       case 'exit':
         this.updateStatus('exited', { code: message.exitCode, signal: message.signal });
