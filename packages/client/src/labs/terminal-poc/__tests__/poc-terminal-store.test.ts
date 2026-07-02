@@ -162,6 +162,90 @@ describe('poc-terminal-store', () => {
     expect(snap.rows[0].segments.map((s) => s.text).join('')).toContain('after');
   });
 
+  it('stripScrollbackClear:false leaves CSI 3J in place, so scrollback IS erased', async () => {
+    // Polarity vs the always-on default (the '...3J does not erase...' test
+    // above): with the filter OFF, raw 3J wipes the scrollback that held the
+    // earlier line.
+    const instance = getOrCreatePocTerminal('sNoStrip', 'wNoStrip', { stripScrollbackClear: false });
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const filler = Array.from({ length: 40 }, (_, i) => `filler ${i}`).join('\r\n');
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'output', data: `first line\r\n${filler}\r\n`, offset: 0 }),
+    );
+    await flush();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[3Jsecond line', offset: 500 }));
+    await flush();
+
+    const text = allText(instance);
+    expect(text).not.toContain('first line'); // scrollback erased (filter off)
+    expect(text).toContain('second line');
+  });
+
+  it('stripScrollbackClear:true preserves scrollback across CSI 3J', async () => {
+    const instance = getOrCreatePocTerminal('sStrip', 'wStrip', { stripScrollbackClear: true });
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const filler = Array.from({ length: 40 }, (_, i) => `filler ${i}`).join('\r\n');
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'output', data: `first line\r\n${filler}\r\n`, offset: 0 }),
+    );
+    await flush();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[3Jsecond line', offset: 500 }));
+    await flush();
+
+    const text = allText(instance);
+    expect(text).toContain('first line');
+    expect(text).toContain('second line');
+  });
+
+  it('config is fixed per instance lifetime: a later opts value is ignored', async () => {
+    // First creation wins (stripScrollbackClear:false). A second getOrCreate with
+    // a different flag returns the SAME instance and does NOT change behavior.
+    const first = getOrCreatePocTerminal('sFix', 'wFix', { stripScrollbackClear: false });
+    const second = getOrCreatePocTerminal('sFix', 'wFix', { stripScrollbackClear: true });
+    expect(second).toBe(first);
+
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+    const filler = Array.from({ length: 40 }, (_, i) => `filler ${i}`).join('\r\n');
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'output', data: `first line\r\n${filler}\r\n`, offset: 0 }),
+    );
+    await flush();
+    ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[3Jsecond line', offset: 500 }));
+    await flush();
+
+    // Behavior follows the FIRST call (false -> not stripped -> scrollback erased).
+    expect(allText(second)).not.toContain('first line');
+  });
+
+  it('retry clears the worker error and opens a fresh connection', async () => {
+    const instance = getOrCreatePocTerminal('sRetry', 'wRetry');
+    const firstWs = MockWebSocket.getLastInstance();
+    firstWs!.simulateOpen();
+
+    // A recoverable error surfaces (server closes deliberately with SESSION_PAUSED,
+    // which also latches noReconnect).
+    firstWs!.simulateMessage(
+      JSON.stringify({ type: 'error', message: 'paused', code: 'SESSION_PAUSED' }),
+    );
+    await flush();
+    expect(instance.getSnapshot().workerError).not.toBeNull();
+
+    instance.retry();
+    await flush();
+
+    // Error cleared and a brand-new WebSocket was opened (reconnect), distinct
+    // from the first — proving retry overrides the noReconnect latch.
+    expect(instance.getSnapshot().workerError).toBeNull();
+    const secondWs = MockWebSocket.getLastInstance();
+    expect(secondWs).not.toBe(firstWs);
+    expect(instance.getSnapshot().status).toBe('connecting');
+  });
+
   it('strips [internal:...] system lines from rendered output', async () => {
     const instance = getOrCreatePocTerminal('sint', 'wint');
     const ws = MockWebSocket.getLastInstance();

@@ -10,21 +10,10 @@ import {
 import { getWorkerWsUrl } from '../../lib/websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
 import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
-import { stripSystemMessages, stripScrollbackClear } from '../../lib/terminal-utils.js';
+import { stripSystemMessages, stripScrollbackClear as applyScrollbackFilter } from '../../lib/terminal-utils.js';
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, type PocRow } from './buffer-to-rows';
 import { detectRowLinks } from './link-detection';
-
-/**
- * Filters applied to every history/output chunk before writing to the buffer.
- * stripScrollbackClear neutralizes CSI 3J/2J so Claude Code's per-redraw
- * scrollback wipe does not destroy history. Always-on in the PoC; the
- * production port makes stripScrollbackClear conditional per agent config
- * (`stripScrollbackClear` flag; roadmap PR-1 scope).
- */
-function processOutput(data: string): string {
-  return stripScrollbackClear(stripSystemMessages(data));
-}
 
 /**
  * Module-level store: the headless Terminal + WebSocket for each worker live
@@ -65,6 +54,8 @@ export interface PocTerminalInstance {
   reportMouseButton(kind: 'press' | 'release', cell: { x: number; y: number }): void;
   /** Paste text, honoring the app's bracketed-paste (DECSET 2004) state. */
   paste(text: string): void;
+  /** Clear the current worker error and force a fresh WS connection (recovery). */
+  retry(): void;
   dismissNotice(): void;
   /** Mount reference; returns an idempotent release (Strict-Mode safe). */
   acquire(): () => void;
@@ -140,6 +131,11 @@ class PocTerminal implements PocTerminalInstance {
   constructor(
     private sessionId: string,
     private workerId: string,
+    // Fixed for the instance's lifetime (see getOrCreatePocTerminal). When true,
+    // CSI 3J/2J scrollback wipes are neutralized so Claude Code's per-redraw
+    // clear does not destroy history; mirrors production's stripScrollbackClear
+    // agent-config flag.
+    private stripScrollbackClear: boolean,
   ) {
     this.terminal = new Terminal({
       cols: DEFAULT_COLS,
@@ -256,10 +252,32 @@ class PocTerminal implements PocTerminalInstance {
     }
   };
 
+  retry = (): void => {
+    if (this.disposed) return;
+    // Recovery: drop the error, re-enable reconnect (a SESSION_* error may have
+    // latched noReconnect), and open a fresh connection to the same worker. The
+    // parsed buffer is preserved (mirrors production's disconnect + retry, which
+    // reconnects rather than recreating the terminal).
+    this.patchMeta({ workerError: null });
+    this.noReconnect = false;
+    this.reconnectAttempts = 0;
+    this.reconnect();
+  };
+
   dismissNotice = (): void => {
     if (this.snapshot.notice === null) return;
     this.patchMeta({ notice: null });
   };
+
+  /**
+   * Filters applied to every history/output chunk before writing to the buffer.
+   * stripSystemMessages is always applied; the CSI 3J/2J scrollback-clear filter
+   * is gated on the per-instance stripScrollbackClear flag.
+   */
+  private processOutput(data: string): string {
+    const stripped = stripSystemMessages(data);
+    return this.stripScrollbackClear ? applyScrollbackFilter(stripped) : stripped;
+  }
 
   acquire = (): (() => void) => {
     this.refCount += 1;
@@ -455,7 +473,7 @@ class PocTerminal implements PocTerminalInstance {
         break;
       case 'output':
         this.lastOffset = message.offset;
-        this.terminal.write(processOutput(message.data), () => this.scheduleNotify());
+        this.terminal.write(this.processOutput(message.data), () => this.scheduleNotify());
         break;
       case 'exit':
         this.updateStatus('exited', { code: message.exitCode, signal: message.signal });
@@ -485,7 +503,7 @@ class PocTerminal implements PocTerminalInstance {
     }
     this.lastOffset = offset;
     const bytes = data.length;
-    this.terminal.write(processOutput(data), () => {
+    this.terminal.write(this.processOutput(data), () => {
       this.lastHistoryLoadMs = nowMs() - this.historyStartMs;
       logger.debug(
         `[poc-terminal] history loaded: ${bytes} bytes in ${Math.round(this.lastHistoryLoadMs)} ms`,
@@ -674,12 +692,29 @@ function evictOverCap(): void {
   victim?.dispose();
 }
 
-export function getOrCreatePocTerminal(sessionId: string, workerId: string): PocTerminalInstance {
+export interface PocTerminalOptions {
+  /**
+   * When true, neutralize CSI 3J/2J scrollback wipes (Claude Code redraw). The
+   * flag is read ONCE, when the instance is first created. Because the registry
+   * returns the existing instance for a repeated key, a differing flag on a
+   * later call is IGNORED — config is fixed per instance lifetime. This is
+   * acceptable because the agent's stripScrollbackClear config is static per
+   * worker. Defaults to true to preserve the always-on labs behavior; the
+   * production-parity adapter passes an explicit value.
+   */
+  stripScrollbackClear?: boolean;
+}
+
+export function getOrCreatePocTerminal(
+  sessionId: string,
+  workerId: string,
+  opts?: PocTerminalOptions,
+): PocTerminalInstance {
   const key = keyOf(sessionId, workerId);
   let instance = instances.get(key);
   if (!instance) {
     evictOverCap();
-    instance = new PocTerminal(sessionId, workerId);
+    instance = new PocTerminal(sessionId, workerId, opts?.stripScrollbackClear ?? true);
     instances.set(key, instance);
   }
   return instance;
