@@ -29,6 +29,20 @@ const PROTECTED_ENV_VARS: readonly string[] = [
 ];
 
 /**
+ * Identify environment variables that carry the PARENT process's Claude Code
+ * session identity (`CLAUDECODE`, `CLAUDE_CODE_*`). These are set when the
+ * server is launched from inside a Claude Code session and are never correct
+ * for child PTY workers — a worker's own `claude` must establish its own
+ * session identity. Leaking them makes a worker adopt the parent's
+ * `CLAUDE_CODE_SESSION_ID`, append its conversation to the parent agent's
+ * transcript file, and break `claude -c` restart-with-continue
+ * ("No conversation found to continue").
+ */
+export function isInheritedClaudeSessionVar(key: string): boolean {
+  return key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_');
+}
+
+/**
  * Filter environment variables for child PTY processes.
  * Removes server-specific variables that could interfere with child behavior.
  *
@@ -41,7 +55,7 @@ export function getChildProcessEnv(): Record<string, string> {
   const env: Record<string, string> = {};
 
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && !BLOCKED_ENV_VARS.includes(key)) {
+    if (value !== undefined && !BLOCKED_ENV_VARS.includes(key) && !isInheritedClaudeSessionVar(key)) {
       env[key] = value;
     }
   }
@@ -64,13 +78,22 @@ export function getChildProcessEnv(): Record<string, string> {
  * Simply excluding variables from the env object doesn't work - they still
  * get inherited from the parent process.
  *
+ * The concrete set of inherited Claude Code session vars depends on how the
+ * server was launched, so they are resolved dynamically from process.env at
+ * call time (there is no portable glob for `unset`). The dynamic part is
+ * sorted for deterministic output.
+ *
  * @returns Shell command prefix like "unset VAR1 VAR2; " or empty string if no vars to unset
  */
 export function getUnsetEnvPrefix(): string {
-  if (BLOCKED_ENV_VARS.length === 0) {
+  const inheritedClaudeVars = Object.keys(process.env)
+    .filter(isInheritedClaudeSessionVar)
+    .sort();
+  const varsToUnset = Array.from(new Set([...BLOCKED_ENV_VARS, ...inheritedClaudeVars]));
+  if (varsToUnset.length === 0) {
     return '';
   }
-  return `unset ${BLOCKED_ENV_VARS.join(' ')}; `;
+  return `unset ${varsToUnset.join(' ')}; `;
 }
 
 /**
