@@ -220,7 +220,14 @@ export function PocTerminalView({ instance, onRequestFocus }: PocTerminalViewPro
       <div
         ref={scrollRef}
         onScroll={handleScroll}
-        onPointerDown={onRequestFocus}
+        // Focus on click (not pointerdown): click fires after the browser's
+        // default mousedown focus handling, so our focus() sticks. pointerdown
+        // focus is immediately undone by the default handler (focus -> BODY).
+        // Skip when a text selection was just made so native drag-select works.
+        onClick={() => {
+          if (window.getSelection()?.toString()) return;
+          onRequestFocus?.();
+        }}
         className="h-full overflow-y-auto bg-[#1a1a2e] text-[#eeeeee] px-2 py-1"
         style={{
           fontFamily: FONT_FAMILY,
