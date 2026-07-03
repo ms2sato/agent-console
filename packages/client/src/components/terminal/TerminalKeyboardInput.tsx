@@ -1,11 +1,11 @@
 import { forwardRef, useRef, useState } from 'react';
 import type { KeyboardEvent, CompositionEvent, FormEvent, ClipboardEvent } from 'react';
-import type { PocTerminalInstance } from './poc-terminal-store';
+import type { TerminalInstance } from './terminal-store';
 import { extractImageFiles } from './image-paste';
 import { useIsMobile } from '../../hooks/useIsMobile';
 
-interface PocKeyboardInputProps {
-  instance: PocTerminalInstance;
+interface TerminalKeyboardInputProps {
+  instance: TerminalInstance;
   // Called when an image is pasted (image-only or image+text clipboard). The
   // adapter phase (PR-3) wires this to MessagePanel; the labs route surfaces a
   // toast so the contract is E2E-visible.
@@ -13,7 +13,7 @@ interface PocKeyboardInputProps {
 }
 
 // Special keys -> escape sequences. Arrow keys use the normal (non-application)
-// cursor sequences, which is correct for the PoC.
+// cursor sequences, which is correct for the terminal renderer.
 const SPECIAL_KEYS: Record<string, string> = {
   Enter: '\r',
   Backspace: '\x7f',
@@ -30,8 +30,8 @@ const SPECIAL_KEYS: Record<string, string> = {
  * composition. Tapping the terminal focuses it, which pops the mobile soft
  * keyboard. A soft-key bar provides keys that are hard to reach on mobile.
  */
-export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInputProps>(
-  function PocKeyboardInput({ instance, onFilesReceived }, ref) {
+export const TerminalKeyboardInput = forwardRef<HTMLTextAreaElement, TerminalKeyboardInputProps>(
+  function TerminalKeyboardInput({ instance, onFilesReceived }, ref) {
     const composingRef = useRef(false);
     const [composeText, setComposeText] = useState('');
     // The soft-key bar only helps on touch devices without a physical keyboard;

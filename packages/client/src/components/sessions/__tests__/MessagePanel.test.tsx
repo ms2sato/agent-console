@@ -42,11 +42,11 @@ mock.module('../../../lib/api', () => ({
 // store's factory so the Escape handler resolves to a spyable instance without
 // opening a real WebSocket.
 const mockSendInput = mock((_data: string) => {});
-const mockGetOrCreatePocTerminal = mock((_sessionId: string, _workerId: string) => ({
+const mockGetOrCreateTerminal = mock((_sessionId: string, _workerId: string) => ({
   sendInput: mockSendInput,
 }));
-mock.module('../../../labs/terminal-poc/poc-terminal-store', () => ({
-  getOrCreatePocTerminal: mockGetOrCreatePocTerminal,
+mock.module('../../../components/terminal/terminal-store', () => ({
+  getOrCreateTerminal: mockGetOrCreateTerminal,
 }));
 
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
@@ -156,7 +156,7 @@ describe('MessagePanel', () => {
     mockSendWorkerMessage.mockClear();
     mockFetchSkills.mockClear();
     mockSendInput.mockClear();
-    mockGetOrCreatePocTerminal.mockClear();
+    mockGetOrCreateTerminal.mockClear();
     mockFetchMessageTemplates.mockClear();
     mockCreateMessageTemplate.mockClear();
     mockUpdateMessageTemplate.mockClear();
@@ -398,7 +398,7 @@ describe('MessagePanel', () => {
     // Resolves the store instance for THIS session/worker, then sends the ESC
     // byte through it. Polarity: reverting to worker-websocket.sendInput leaves
     // both spies untouched (the real transport is a no-op with no connection).
-    expect(mockGetOrCreatePocTerminal).toHaveBeenCalledWith('session-1', 'agent-1');
+    expect(mockGetOrCreateTerminal).toHaveBeenCalledWith('session-1', 'agent-1');
     expect(mockSendInput).toHaveBeenCalledWith('\x1b');
   });
 

@@ -1,4 +1,4 @@
-import type { PocSegment } from './buffer-to-rows';
+import type { TerminalSegment } from './buffer-to-rows';
 
 /**
  * Row-transform pipeline (issue #958), first stage: segment decorators.
@@ -18,14 +18,14 @@ export interface TransformContext {
   repoFullName: string | null;
 }
 
-export type SegmentDecorator = (segments: PocSegment[], ctx: TransformContext) => PocSegment[];
+export type SegmentDecorator = (segments: TerminalSegment[], ctx: TransformContext) => TerminalSegment[];
 
 /** Run each decorator in order, threading the output of one into the next. */
 export function applySegmentDecorators(
-  segments: PocSegment[],
+  segments: TerminalSegment[],
   decorators: readonly SegmentDecorator[],
   ctx: TransformContext,
-): PocSegment[] {
+): TerminalSegment[] {
   let result = segments;
   for (const decorate of decorators) {
     result = decorate(result, ctx);

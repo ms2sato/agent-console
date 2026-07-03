@@ -12,7 +12,7 @@ import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnec
 import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
 import { stripSystemMessages, stripScrollbackClear as applyScrollbackFilter } from '../../lib/terminal-utils.js';
 import { logger } from '../../lib/logger';
-import { extractRow, extractRowWithCursor, type PocRow } from './buffer-to-rows';
+import { extractRow, extractRowWithCursor, type TerminalRow } from './buffer-to-rows';
 import { detectRowLinks } from './link-detection';
 
 /**
@@ -22,16 +22,16 @@ import { detectRowLinks } from './link-detection';
  * navigation, no serialize/restore of terminal state is ever needed — returning
  * to the route reuses the same instance and its already-parsed buffer.
  *
- * This is the architectural point of the PoC.
+ * This is the architectural point of the module-store renderer.
  */
 
-export type PocStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
+export type TerminalStatus = 'connecting' | 'connected' | 'disconnected' | 'exited';
 
-export interface PocSnapshot {
+export interface TerminalSnapshot {
   version: number; // bumped on every batched buffer change
-  status: PocStatus;
+  status: TerminalStatus;
   exitInfo: { code: number; signal: string | null } | null;
-  rows: PocRow[]; // full scrollback + viewport
+  rows: TerminalRow[]; // full scrollback + viewport
   cursor: { x: number; y: number; visible: boolean }; // y = absolute row index
   cols: number;
   terminalRows: number;
@@ -43,9 +43,9 @@ export interface PocSnapshot {
   loadingHistory: boolean; // a request-history is in flight
 }
 
-export interface PocTerminalInstance {
+export interface TerminalInstance {
   subscribe(listener: () => void): () => void;
-  getSnapshot(): PocSnapshot;
+  getSnapshot(): TerminalSnapshot;
   sendInput(data: string): void;
   resize(cols: number, rows: number): void;
   /** Forward scroll to the app in alternate-screen mode. positive = toward newer. */
@@ -96,11 +96,11 @@ const scheduleFrame: (fn: () => void) => void =
         setTimeout(fn, 16);
       };
 
-class PocTerminal implements PocTerminalInstance {
+class TerminalController implements TerminalInstance {
   private terminal: Terminal;
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();
-  private snapshot: PocSnapshot;
+  private snapshot: TerminalSnapshot;
   private frameScheduled = false;
   private disposed = false;
 
@@ -125,13 +125,13 @@ class PocTerminal implements PocTerminalInstance {
 
   // Row cache: rows below baseY are immutable scrollback; reuse the same object
   // reference so React.memo skips re-render. Cleared on shrink / history rewrite.
-  private rowCache = new Map<number, PocRow>();
+  private rowCache = new Map<number, TerminalRow>();
   private lastBufferLength = 0;
 
   constructor(
     private sessionId: string,
     private workerId: string,
-    // Fixed for the instance's lifetime (see getOrCreatePocTerminal). When true,
+    // Fixed for the instance's lifetime (see getOrCreateTerminal). When true,
     // CSI 3J/2J scrollback wipes are neutralized so Claude Code's per-redraw
     // clear does not destroy history; mirrors production's stripScrollbackClear
     // agent-config flag.
@@ -184,7 +184,7 @@ class PocTerminal implements PocTerminalInstance {
     };
   };
 
-  getSnapshot = (): PocSnapshot => {
+  getSnapshot = (): TerminalSnapshot => {
     return this.snapshot;
   };
 
@@ -235,7 +235,7 @@ class PocTerminal implements PocTerminalInstance {
     const row = clampCell(cell.y, this.terminal.rows);
     // SGR encoding, left button (0): press ends with 'M', release with 'm'.
     // x10 tracking has no release event, but SGR-encoding both is fine for the
-    // PoC (a spurious release is harmless to the TUIs we target).
+    // renderer (a spurious release is harmless to the TUIs we target).
     const terminator = kind === 'press' ? 'M' : 'm';
     this.sendInput(`\x1b[<0;${col};${row}${terminator}`);
   };
@@ -388,7 +388,7 @@ class PocTerminal implements PocTerminalInstance {
     };
 
     ws.onerror = () => {
-      logger.warn(`[poc-terminal] ws error ${this.sessionId}:${this.workerId}`);
+      logger.warn(`[terminal] ws error ${this.sessionId}:${this.workerId}`);
     };
 
     ws.onclose = (event) => {
@@ -506,7 +506,7 @@ class PocTerminal implements PocTerminalInstance {
     this.terminal.write(this.processOutput(data), () => {
       this.lastHistoryLoadMs = nowMs() - this.historyStartMs;
       logger.debug(
-        `[poc-terminal] history loaded: ${bytes} bytes in ${Math.round(this.lastHistoryLoadMs)} ms`,
+        `[terminal] history loaded: ${bytes} bytes in ${Math.round(this.lastHistoryLoadMs)} ms`,
       );
       this.patchMeta({ loadingHistory: false });
       this.scheduleNotify();
@@ -528,7 +528,7 @@ class PocTerminal implements PocTerminalInstance {
   // --- Snapshot building ---
 
   private updateStatus(
-    status: PocStatus,
+    status: TerminalStatus,
     exitInfo?: { code: number; signal: string | null },
   ): void {
     this.snapshot = {
@@ -540,7 +540,7 @@ class PocTerminal implements PocTerminalInstance {
     this.notify();
   }
 
-  private patchMeta(partial: Partial<PocSnapshot>): void {
+  private patchMeta(partial: Partial<TerminalSnapshot>): void {
     this.snapshot = {
       ...this.snapshot,
       ...partial,
@@ -582,7 +582,7 @@ class PocTerminal implements PocTerminalInstance {
     const cursorY = baseY + buffer.cursorY;
     const cursorX = buffer.cursorX;
 
-    const rows: PocRow[] = [];
+    const rows: TerminalRow[] = [];
     const freshYs = new Set<number>(); // rows (re)built this frame
     const freshScrollbackYs: number[] = []; // fresh scrollback rows to cache after links
     let minFreshY = -1;
@@ -599,7 +599,7 @@ class PocTerminal implements PocTerminalInstance {
       }
 
       const line = buffer.getLine(y);
-      const row: PocRow = line
+      const row: TerminalRow = line
         ? isCursorRow
           ? extractRowWithCursor(line, cols, nullCell, y, cursorX)
           : extractRow(line, cols, nullCell, y)
@@ -656,7 +656,7 @@ function clampCell(value: number, max: number): number {
 }
 
 /** Concatenated text of a row's segments (the offset space link ranges use). */
-function rowText(row: PocRow): string {
+function rowText(row: TerminalRow): string {
   return row.segments.map((s) => s.text).join('');
 }
 
@@ -666,7 +666,7 @@ function rowText(row: PocRow): string {
 // counting + idle TTL + an LRU hard cap keep memory bounded (roadmap "Memory
 // management design"). refCount>0 instances are never evicted.
 
-const instances = new Map<string, PocTerminal>();
+const instances = new Map<string, TerminalController>();
 
 function keyOf(sessionId: string, workerId: string): string {
   // JSON-encoded tuple so no separator character can cause a key collision.
@@ -680,7 +680,7 @@ function removeInstance(sessionId: string, workerId: string): void {
 /** Evict the least-recently-released refCount-0 instance to honor the LRU cap. */
 function evictOverCap(): void {
   if (instances.size < timings.maxInstances) return;
-  let victim: PocTerminal | null = null;
+  let victim: TerminalController | null = null;
   for (const instance of instances.values()) {
     if (instance.refCountForTest > 0) continue;
     if (victim === null || instance.lastReleasedAtForTest < victim.lastReleasedAtForTest) {
@@ -692,7 +692,7 @@ function evictOverCap(): void {
   victim?.dispose();
 }
 
-export interface PocTerminalOptions {
+export interface TerminalOptions {
   /**
    * When true, neutralize CSI 3J/2J scrollback wipes (Claude Code redraw). The
    * flag is read ONCE, when the instance is first created. Because the registry
@@ -705,23 +705,23 @@ export interface PocTerminalOptions {
   stripScrollbackClear?: boolean;
 }
 
-export function getOrCreatePocTerminal(
+export function getOrCreateTerminal(
   sessionId: string,
   workerId: string,
-  opts?: PocTerminalOptions,
-): PocTerminalInstance {
+  opts?: TerminalOptions,
+): TerminalInstance {
   const key = keyOf(sessionId, workerId);
   let instance = instances.get(key);
   if (!instance) {
     evictOverCap();
-    instance = new PocTerminal(sessionId, workerId, opts?.stripScrollbackClear ?? true);
+    instance = new TerminalController(sessionId, workerId, opts?.stripScrollbackClear ?? true);
     instances.set(key, instance);
   }
   return instance;
 }
 
 /** @internal Test helper: dispose and clear all live instances + reset config. */
-export function _resetPocTerminals(): void {
+export function _resetTerminals(): void {
   for (const instance of Array.from(instances.values())) {
     instance.dispose();
   }
@@ -741,7 +741,7 @@ export function _setAppSubscribe(impl: typeof subscribeApp): void {
 }
 
 /** @internal Test helper: read internal state for assertions. */
-export function _inspect(instance: PocTerminalInstance): {
+export function _inspect(instance: TerminalInstance): {
   refCount: number;
   lastReleasedAt: number;
   reconnectPending: boolean;
@@ -749,7 +749,7 @@ export function _inspect(instance: PocTerminalInstance): {
   disposed: boolean;
   lastHistoryLoadMs: number | null;
 } {
-  const t = instance as PocTerminal;
+  const t = instance as TerminalController;
   return {
     refCount: t.refCountForTest,
     lastReleasedAt: t.lastReleasedAtForTest,

@@ -4,7 +4,7 @@ import { computeIndicatorGeometry, hasOverflow } from './scroll-indicator-math';
 
 const FADE_OUT_DELAY_MS = 800;
 
-interface PocScrollIndicatorProps {
+interface TerminalScrollIndicatorProps {
   /** The scroll container to track. */
   containerRef: RefObject<HTMLElement | null>;
   /** Signal that recomputes geometry (scroll count + snapshot version). */
@@ -16,7 +16,7 @@ interface PocScrollIndicatorProps {
  * appears while scrolling and fades out after inactivity. Reads container
  * metrics directly (never via the store) so it stays cheap and event-driven.
  */
-export function PocScrollIndicator({ containerRef, tick }: PocScrollIndicatorProps) {
+export function TerminalScrollIndicator({ containerRef, tick }: TerminalScrollIndicatorProps) {
   const [geometry, setGeometry] = useState<{ height: number; top: number } | null>(null);
   const [visible, setVisible] = useState(false);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);

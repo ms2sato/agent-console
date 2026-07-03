@@ -2,12 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import type { AppServerMessage } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import {
-  getOrCreatePocTerminal,
-  _resetPocTerminals,
+  getOrCreateTerminal,
+  _resetTerminals,
   _setTimings,
   _setAppSubscribe,
   _inspect,
-} from '../poc-terminal-store';
+} from '../terminal-store';
 
 /**
  * Capturable app-WS subscribe seam: records every listener the store registers
@@ -41,14 +41,14 @@ function inputFrames(ws: MockWebSocket): string[] {
     .map((m) => m.data ?? '');
 }
 
-function allText(instance: ReturnType<typeof getOrCreatePocTerminal>): string {
+function allText(instance: ReturnType<typeof getOrCreateTerminal>): string {
   return instance
     .getSnapshot()
     .rows.map((r) => r.segments.map((s) => s.text).join(''))
     .join('\n');
 }
 
-describe('poc-terminal-store', () => {
+describe('terminal-store', () => {
   let restoreWebSocket: () => void;
   let originalLocation: PropertyDescriptor | undefined;
 
@@ -63,7 +63,7 @@ describe('poc-terminal-store', () => {
   });
 
   afterEach(() => {
-    _resetPocTerminals();
+    _resetTerminals();
     restoreWebSocket();
     if (originalLocation) {
       Object.defineProperty(window, 'location', originalLocation);
@@ -71,7 +71,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('requests full history with fromOffset 0 on open', () => {
-    getOrCreatePocTerminal('s1', 'w1');
+    getOrCreateTerminal('s1', 'w1');
     const ws = MockWebSocket.getLastInstance();
     expect(ws).toBeDefined();
     ws!.simulateOpen();
@@ -82,7 +82,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('sends initial resize on open', () => {
-    getOrCreatePocTerminal('s2', 'w2');
+    getOrCreateTerminal('s2', 'w2');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -92,7 +92,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('renders output into snapshot rows and bumps version', async () => {
-    const instance = getOrCreatePocTerminal('s3', 'w3');
+    const instance = getOrCreateTerminal('s3', 'w3');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -107,7 +107,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('renders history message content', async () => {
-    const instance = getOrCreatePocTerminal('s4', 'w4');
+    const instance = getOrCreateTerminal('s4', 'w4');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -122,7 +122,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('preserves scrollback: CSI 3J in a later output does not erase earlier text', async () => {
-    const instance = getOrCreatePocTerminal('s3j', 'w3j');
+    const instance = getOrCreateTerminal('s3j', 'w3j');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -143,7 +143,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('CSI 2J is rewritten to cursor-home + erase-below (post-clear write lands at home)', async () => {
-    const instance = getOrCreatePocTerminal('s2j', 'w2j');
+    const instance = getOrCreateTerminal('s2j', 'w2j');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -166,7 +166,7 @@ describe('poc-terminal-store', () => {
     // Polarity vs the always-on default (the '...3J does not erase...' test
     // above): with the filter OFF, raw 3J wipes the scrollback that held the
     // earlier line.
-    const instance = getOrCreatePocTerminal('sNoStrip', 'wNoStrip', { stripScrollbackClear: false });
+    const instance = getOrCreateTerminal('sNoStrip', 'wNoStrip', { stripScrollbackClear: false });
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -184,7 +184,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('stripScrollbackClear:true preserves scrollback across CSI 3J', async () => {
-    const instance = getOrCreatePocTerminal('sStrip', 'wStrip', { stripScrollbackClear: true });
+    const instance = getOrCreateTerminal('sStrip', 'wStrip', { stripScrollbackClear: true });
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -204,8 +204,8 @@ describe('poc-terminal-store', () => {
   it('config is fixed per instance lifetime: a later opts value is ignored', async () => {
     // First creation wins (stripScrollbackClear:false). A second getOrCreate with
     // a different flag returns the SAME instance and does NOT change behavior.
-    const first = getOrCreatePocTerminal('sFix', 'wFix', { stripScrollbackClear: false });
-    const second = getOrCreatePocTerminal('sFix', 'wFix', { stripScrollbackClear: true });
+    const first = getOrCreateTerminal('sFix', 'wFix', { stripScrollbackClear: false });
+    const second = getOrCreateTerminal('sFix', 'wFix', { stripScrollbackClear: true });
     expect(second).toBe(first);
 
     const ws = MockWebSocket.getLastInstance();
@@ -223,7 +223,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('retry clears the worker error and opens a fresh connection', async () => {
-    const instance = getOrCreatePocTerminal('sRetry', 'wRetry');
+    const instance = getOrCreateTerminal('sRetry', 'wRetry');
     const firstWs = MockWebSocket.getLastInstance();
     firstWs!.simulateOpen();
 
@@ -247,7 +247,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('strips [internal:...] system lines from rendered output', async () => {
-    const instance = getOrCreatePocTerminal('sint', 'wint');
+    const instance = getOrCreateTerminal('sint', 'wint');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -262,7 +262,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('forwardScroll with mouse tracking active emits SGR wheel reports with clamped coords', async () => {
-    const instance = getOrCreatePocTerminal('smt', 'wmt');
+    const instance = getOrCreateTerminal('smt', 'wmt');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     // Enable mouse tracking (DECSET 1002 = button-event tracking).
@@ -282,7 +282,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('forwardScroll without mouse tracking emits arrow keys (CSI A/B)', () => {
-    const instance = getOrCreatePocTerminal('sar', 'war');
+    const instance = getOrCreateTerminal('sar', 'war');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -295,7 +295,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('forwardScroll without tracking + DECCKM on emits SS3 arrows (ESC O A/B)', async () => {
-    const instance = getOrCreatePocTerminal('sck', 'wck');
+    const instance = getOrCreateTerminal('sck', 'wck');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     // Application Cursor Keys (DECCKM, DECSET 1).
@@ -311,7 +311,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('bufferType appears in snapshot and flips on alt-screen enter/exit', async () => {
-    const instance = getOrCreatePocTerminal('sbt', 'wbt');
+    const instance = getOrCreateTerminal('sbt', 'wbt');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -327,7 +327,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('reportMouseButton emits SGR left-button press/release when tracking is on', async () => {
-    const instance = getOrCreatePocTerminal('mb1', 'w');
+    const instance = getOrCreateTerminal('mb1', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     // Enable button-event tracking (1002) + SGR encoding (1006).
@@ -343,7 +343,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('reportMouseButton clamps coordinates to the grid', async () => {
-    const instance = getOrCreatePocTerminal('mb2', 'w');
+    const instance = getOrCreateTerminal('mb2', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002h', offset: 0 }));
@@ -354,7 +354,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('reportMouseButton is a no-op when mouse tracking is off', () => {
-    const instance = getOrCreatePocTerminal('mb3', 'w');
+    const instance = getOrCreateTerminal('mb3', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -366,7 +366,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('mouseTracking flips in the snapshot on DECSET enable / disable', async () => {
-    const instance = getOrCreatePocTerminal('mb4', 'w');
+    const instance = getOrCreateTerminal('mb4', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     expect(instance.getSnapshot().mouseTracking).toBe(false);
@@ -381,7 +381,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('paste wraps in bracketed-paste markers and normalizes newlines when DECSET 2004 is on', async () => {
-    const instance = getOrCreatePocTerminal('pst1', 'w');
+    const instance = getOrCreateTerminal('pst1', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?2004h', offset: 0 }));
@@ -394,7 +394,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('paste sends raw CR-normalized text when bracketed paste is off', () => {
-    const instance = getOrCreatePocTerminal('pst2', 'w');
+    const instance = getOrCreateTerminal('pst2', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -406,7 +406,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('paste reverts to raw after DECSET 2004 is disabled', async () => {
-    const instance = getOrCreatePocTerminal('pst3', 'w');
+    const instance = getOrCreateTerminal('pst3', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?2004h', offset: 0 }));
@@ -422,7 +422,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('attaches detected link ranges to snapshot rows', async () => {
-    const instance = getOrCreatePocTerminal('lnk1', 'w');
+    const instance = getOrCreateTerminal('lnk1', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(
@@ -436,7 +436,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('joins a URL wrapped across rows into one href on the snapshot', async () => {
-    const instance = getOrCreatePocTerminal('lnk2', 'w');
+    const instance = getOrCreateTerminal('lnk2', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     // Longer than the 80-col default -> the terminal soft-wraps it.
@@ -452,7 +452,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('F1: repeated DECSET mode bursts keep the snapshot stable and touch no selection state', async () => {
-    const instance = getOrCreatePocTerminal('f1', 'w');
+    const instance = getOrCreateTerminal('f1', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'output', data: 'hello world', offset: 0 }));
@@ -472,7 +472,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('F2: mouse/scroll reports do not bump the snapshot version (reports are not user input)', async () => {
-    const instance = getOrCreatePocTerminal('f2', 'w');
+    const instance = getOrCreateTerminal('f2', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1002h', offset: 0 }));
@@ -491,7 +491,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('sendInput sends a correct input frame', () => {
-    const instance = getOrCreatePocTerminal('s5', 'w5');
+    const instance = getOrCreateTerminal('s5', 'w5');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -501,7 +501,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('sets status to exited on exit message', () => {
-    const instance = getOrCreatePocTerminal('s6', 'w6');
+    const instance = getOrCreateTerminal('s6', 'w6');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -512,7 +512,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('keeps status exited and does not reconnect when the socket closes after exit', () => {
-    const instance = getOrCreatePocTerminal('s6b', 'w6b');
+    const instance = getOrCreateTerminal('s6b', 'w6b');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'exit', exitCode: 0, signal: null }));
@@ -527,7 +527,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('sets status to disconnected on an unexpected close (contrast: not exited)', () => {
-    const instance = getOrCreatePocTerminal('s6c', 'w6c');
+    const instance = getOrCreateTerminal('s6c', 'w6c');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
@@ -536,13 +536,13 @@ describe('poc-terminal-store', () => {
   });
 
   it('reuses the same instance for the same session/worker key', () => {
-    const a = getOrCreatePocTerminal('s7', 'w7');
-    const b = getOrCreatePocTerminal('s7', 'w7');
+    const a = getOrCreateTerminal('s7', 'w7');
+    const b = getOrCreateTerminal('s7', 'w7');
     expect(a).toBe(b);
   });
 
   it('interface methods survive being destructured (useSyncExternalStore contract)', () => {
-    const instance = getOrCreatePocTerminal('s8', 'w8');
+    const instance = getOrCreateTerminal('s8', 'w8');
     // React calls these detached from the instance, so `this` must be bound.
     const { subscribe, getSnapshot } = instance;
 
@@ -562,7 +562,7 @@ describe('poc-terminal-store', () => {
   // --- PR-1: protocol hardening ---
 
   it('does not schedule a reconnect for a non-reconnectable close code', () => {
-    const instance = getOrCreatePocTerminal('rc1', 'w');
+    const instance = getOrCreateTerminal('rc1', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateClose(1000); // NORMAL_CLOSURE -> shouldReconnect === false
@@ -573,7 +573,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('schedules a reconnect and counts the attempt for a reconnectable close', () => {
-    const instance = getOrCreatePocTerminal('rc2', 'w');
+    const instance = getOrCreateTerminal('rc2', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateClose(); // ABNORMAL_CLOSURE (default) -> reconnectable
@@ -584,7 +584,7 @@ describe('poc-terminal-store', () => {
 
   it('re-requests history from lastOffset on reconnect (delta catch-up)', async () => {
     _setTimings({ reconnectDelayMs: 0 });
-    getOrCreatePocTerminal('off1', 'w');
+    getOrCreateTerminal('off1', 'w');
     const ws1 = MockWebSocket.getLastInstance();
     ws1!.simulateOpen();
     ws1!.simulateMessage(JSON.stringify({ type: 'output', data: 'x', offset: 42 }));
@@ -604,7 +604,7 @@ describe('poc-terminal-store', () => {
 
   it('resets and treats history as full when the response offset regressed (truncation)', async () => {
     _setTimings({ reconnectDelayMs: 0 });
-    const instance = getOrCreatePocTerminal('trunc', 'w');
+    const instance = getOrCreateTerminal('trunc', 'w');
     const ws1 = MockWebSocket.getLastInstance();
     ws1!.simulateOpen();
     // First history at a high offset.
@@ -627,7 +627,7 @@ describe('poc-terminal-store', () => {
 
   it('output-truncated sets a dismissible notice and advances the offset', async () => {
     _setTimings({ reconnectDelayMs: 0 });
-    const instance = getOrCreatePocTerminal('otr', 'w');
+    const instance = getOrCreateTerminal('otr', 'w');
     const ws1 = MockWebSocket.getLastInstance();
     ws1!.simulateOpen();
     ws1!.simulateMessage(
@@ -652,7 +652,7 @@ describe('poc-terminal-store', () => {
   it('worker-restarted (app-WS) resets the buffer, reconnects, and shows a notice', async () => {
     const bus = makeAppBus();
     _setAppSubscribe(bus.subscribe);
-    const instance = getOrCreatePocTerminal('wr', 'w');
+    const instance = getOrCreateTerminal('wr', 'w');
     const ws1 = MockWebSocket.getLastInstance();
     ws1!.simulateOpen();
     ws1!.simulateMessage(JSON.stringify({ type: 'output', data: 'before', offset: 10 }));
@@ -676,7 +676,7 @@ describe('poc-terminal-store', () => {
   it('worker-restarted for a different worker is ignored', () => {
     const bus = makeAppBus();
     _setAppSubscribe(bus.subscribe);
-    const instance = getOrCreatePocTerminal('wr2', 'w');
+    const instance = getOrCreateTerminal('wr2', 'w');
     MockWebSocket.getLastInstance()!.simulateOpen();
     const before = MockWebSocket.getInstances().length;
 
@@ -689,18 +689,18 @@ describe('poc-terminal-store', () => {
   it('session-deleted (app-WS) disposes the instance', () => {
     const bus = makeAppBus();
     _setAppSubscribe(bus.subscribe);
-    const instance = getOrCreatePocTerminal('sd', 'w');
+    const instance = getOrCreateTerminal('sd', 'w');
     MockWebSocket.getLastInstance()!.simulateOpen();
 
     bus.emit({ type: 'session-deleted', sessionId: 'sd' });
 
     expect(_inspect(instance).disposed).toBe(true);
     // getOrCreate returns a fresh instance after disposal.
-    expect(getOrCreatePocTerminal('sd', 'w')).not.toBe(instance);
+    expect(getOrCreateTerminal('sd', 'w')).not.toBe(instance);
   });
 
   it('activity message is surfaced in the snapshot', () => {
-    const instance = getOrCreatePocTerminal('act', 'w');
+    const instance = getOrCreateTerminal('act', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'activity', state: 'asking' }));
@@ -709,7 +709,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('SESSION_PAUSED error prevents reconnect after the subsequent close', () => {
-    const instance = getOrCreatePocTerminal('pause', 'w');
+    const instance = getOrCreateTerminal('pause', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(
@@ -726,7 +726,7 @@ describe('poc-terminal-store', () => {
   });
 
   it('records a history load duration for cold-start instrumentation', async () => {
-    const instance = getOrCreatePocTerminal('perf', 'w');
+    const instance = getOrCreateTerminal('perf', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'history', data: 'hello', offset: 5 }));
@@ -740,7 +740,7 @@ describe('poc-terminal-store', () => {
   // --- PR-1: memory management ---
 
   it('acquire/release refcount is idempotent under double release', () => {
-    const instance = getOrCreatePocTerminal('mm1', 'w');
+    const instance = getOrCreateTerminal('mm1', 'w');
     const release1 = instance.acquire();
     const release2 = instance.acquire();
     expect(_inspect(instance).refCount).toBe(2);
@@ -755,7 +755,7 @@ describe('poc-terminal-store', () => {
 
   it('disposes after the idle TTL once refCount reaches 0', async () => {
     _setTimings({ idleTtlMs: 10 });
-    const instance = getOrCreatePocTerminal('mm2', 'w');
+    const instance = getOrCreateTerminal('mm2', 'w');
     const release = instance.acquire();
     release();
     expect(_inspect(instance).disposed).toBe(false);
@@ -766,7 +766,7 @@ describe('poc-terminal-store', () => {
 
   it('uses the shorter exited TTL for exited instances', async () => {
     _setTimings({ idleTtlMs: 100000, exitedTtlMs: 10 });
-    const instance = getOrCreatePocTerminal('mm3', 'w');
+    const instance = getOrCreateTerminal('mm3', 'w');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
     ws!.simulateMessage(JSON.stringify({ type: 'exit', exitCode: 0, signal: null }));
@@ -779,7 +779,7 @@ describe('poc-terminal-store', () => {
 
   it('remount cancels a pending idle disposal', async () => {
     _setTimings({ idleTtlMs: 20 });
-    const instance = getOrCreatePocTerminal('mm4', 'w');
+    const instance = getOrCreateTerminal('mm4', 'w');
     const release = instance.acquire();
     release(); // idle timer armed
     instance.acquire(); // remount cancels it
@@ -789,15 +789,15 @@ describe('poc-terminal-store', () => {
 
   it('LRU-evicts the least-recently-released idle instance over the cap', async () => {
     _setTimings({ maxInstances: 2 });
-    const a = getOrCreatePocTerminal('lru-a', 'w');
+    const a = getOrCreateTerminal('lru-a', 'w');
     a.acquire()(); // refCount 0, released first
     await new Promise((r) => setTimeout(r, 2));
-    const b = getOrCreatePocTerminal('lru-b', 'w');
+    const b = getOrCreateTerminal('lru-b', 'w');
     b.acquire()(); // refCount 0, released later
     await new Promise((r) => setTimeout(r, 2));
 
     // Creating a third instance over the cap evicts the oldest idle one (a).
-    const c = getOrCreatePocTerminal('lru-c', 'w');
+    const c = getOrCreateTerminal('lru-c', 'w');
     expect(_inspect(a).disposed).toBe(true);
     expect(_inspect(b).disposed).toBe(false);
     expect(_inspect(c).disposed).toBe(false);
@@ -805,13 +805,13 @@ describe('poc-terminal-store', () => {
 
   it('never evicts an instance with refCount > 0', () => {
     _setTimings({ maxInstances: 2 });
-    const a = getOrCreatePocTerminal('busy-a', 'w');
+    const a = getOrCreateTerminal('busy-a', 'w');
     a.acquire(); // refCount 1 -> pinned
-    const b = getOrCreatePocTerminal('busy-b', 'w');
+    const b = getOrCreateTerminal('busy-b', 'w');
     b.acquire()(); // idle
 
     // c over the cap: a is pinned, so b (the only idle one) is evicted.
-    getOrCreatePocTerminal('busy-c', 'w');
+    getOrCreateTerminal('busy-c', 'w');
     expect(_inspect(a).disposed).toBe(false);
     expect(_inspect(b).disposed).toBe(true);
   });

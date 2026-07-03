@@ -6,10 +6,10 @@ import { WorkerErrorRecovery } from '../../components/WorkerErrorRecovery';
 import { TerminalLoadingBar } from '../../components/ui/TerminalLoadingBar';
 import { deleteSession } from '../../lib/api';
 import { emitSessionDeleted } from '../../lib/app-websocket';
-import { getOrCreatePocTerminal, type PocStatus, type PocTerminalInstance } from './poc-terminal-store';
-import { PocTerminalView } from './PocTerminalView';
-import { PocKeyboardInput } from './PocKeyboardInput';
-import { toStatusChangeArgs } from './poc-status-mapping';
+import { getOrCreateTerminal, type TerminalStatus, type TerminalInstance } from './terminal-store';
+import { TerminalView } from './TerminalView';
+import { TerminalKeyboardInput } from './TerminalKeyboardInput';
+import { toStatusChangeArgs } from './status-mapping';
 import { githubRefDecorator } from './transforms/github-refs';
 import type { SegmentDecorator, TransformContext } from './row-transforms';
 import { useSessionRepoFullName } from './useSessionRepoFullName';
@@ -20,11 +20,11 @@ const SEGMENT_DECORATORS: readonly SegmentDecorator[] = [githubRefDecorator];
 /**
  * Drop-in replacement for `components/Terminal.tsx` implementing the exact
  * `TerminalProps` contract, so the eventual flag swap in `SessionPage.tsx` is a
- * one-import change. It composes the PoC store + view + keyboard input and
+ * one-import change. It composes the terminal store + view + keyboard input and
  * reuses the production `WorkerErrorRecovery` overlay and `TerminalLoadingBar`
  * as-is (renderer-agnostic).
  */
-export function PocTerminalAdapter({
+export function TerminalAdapter({
   sessionId,
   workerId,
   onStatusChange,
@@ -50,7 +50,7 @@ export function PocTerminalAdapter({
   // explicit boolean, so drop-in parity is unaffected.
   const instance = useMemo(
     () =>
-      getOrCreatePocTerminal(
+      getOrCreateTerminal(
         sessionId,
         workerId,
         stripScrollbackClear === undefined ? undefined : { stripScrollbackClear },
@@ -93,7 +93,7 @@ export function PocTerminalAdapter({
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         <AdapterLoadingBar instance={instance} />
-        <PocTerminalView
+        <TerminalView
           instance={instance}
           onRequestFocus={focusInput}
           onFilesReceived={onFilesReceived}
@@ -111,7 +111,7 @@ export function PocTerminalAdapter({
         />
       </div>
 
-      <PocKeyboardInput ref={inputRef} instance={instance} onFilesReceived={onFilesReceived} />
+      <TerminalKeyboardInput ref={inputRef} instance={instance} onFilesReceived={onFilesReceived} />
 
       <AdapterExitBanner instance={instance} />
     </div>
@@ -127,7 +127,7 @@ function StatusCallbackBridge({
   onStatusChange,
   onActivityChange,
 }: {
-  instance: PocTerminalInstance;
+  instance: TerminalInstance;
   onStatusChange: TerminalProps['onStatusChange'];
   onActivityChange: TerminalProps['onActivityChange'];
 }) {
@@ -148,7 +148,7 @@ function StatusCallbackBridge({
   return null;
 }
 
-function AdapterStatusBar({ instance }: { instance: PocTerminalInstance }) {
+function AdapterStatusBar({ instance }: { instance: TerminalInstance }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   const color =
     snapshot.status === 'connected'
@@ -167,7 +167,7 @@ function AdapterStatusBar({ instance }: { instance: PocTerminalInstance }) {
 }
 
 function statusText(
-  status: PocStatus,
+  status: TerminalStatus,
   exitInfo: { code: number; signal: string | null } | null,
 ): string {
   switch (status) {
@@ -186,12 +186,12 @@ function statusText(
   }
 }
 
-function AdapterLoadingBar({ instance }: { instance: PocTerminalInstance }) {
+function AdapterLoadingBar({ instance }: { instance: TerminalInstance }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   return <TerminalLoadingBar visible={snapshot.loadingHistory} />;
 }
 
-function AdapterNoticeBanner({ instance }: { instance: PocTerminalInstance }) {
+function AdapterNoticeBanner({ instance }: { instance: TerminalInstance }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   if (!snapshot.notice) return null;
   return (
@@ -208,7 +208,7 @@ function AdapterNoticeBanner({ instance }: { instance: PocTerminalInstance }) {
   );
 }
 
-function AdapterExitBanner({ instance }: { instance: PocTerminalInstance }) {
+function AdapterExitBanner({ instance }: { instance: TerminalInstance }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   if (snapshot.status !== 'exited' || !snapshot.exitInfo) return null;
   return (
@@ -227,7 +227,7 @@ function AdapterRecoveryOverlay({
   onRestart,
   onResumeSession,
 }: {
-  instance: PocTerminalInstance;
+  instance: TerminalInstance;
   onRetry: () => void;
   onDeleteSession: () => void;
   onGoToDashboard: () => void;

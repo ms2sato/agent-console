@@ -1,4 +1,4 @@
-import type { PocSegment, PocStyle } from '../buffer-to-rows';
+import type { TerminalSegment, TerminalStyle } from '../buffer-to-rows';
 import type { SegmentDecorator, TransformContext } from '../row-transforms';
 
 /**
@@ -39,11 +39,11 @@ function resolveHref(repo: string | undefined, num: string, ctx: TransformContex
  */
 function decorateSegmentText(
   text: string,
-  style: PocStyle | null,
+  style: TerminalStyle | null,
   ctx: TransformContext,
-): PocSegment[] | null {
+): TerminalSegment[] | null {
   GITHUB_REF_RE.lastIndex = 0;
-  const pieces: PocSegment[] = [];
+  const pieces: TerminalSegment[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = GITHUB_REF_RE.exec(text)) !== null) {
@@ -64,7 +64,7 @@ function decorateSegmentText(
 }
 
 export const githubRefDecorator: SegmentDecorator = (segments, ctx) => {
-  const out: PocSegment[] = [];
+  const out: TerminalSegment[] = [];
   for (const seg of segments) {
     // Do not re-decorate a segment that already carries a link.
     if (seg.link) {

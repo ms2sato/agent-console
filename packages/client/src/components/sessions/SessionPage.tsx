@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { PocTerminalAdapter } from '../../labs/terminal-poc/PocTerminalAdapter';
-import type { ConnectionStatus } from '../../labs/terminal-poc/terminal-contract';
+import { TerminalAdapter } from '../../components/terminal/TerminalAdapter';
+import type { ConnectionStatus } from '../../components/terminal/terminal-contract';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
 import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
@@ -507,7 +507,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             workerId={activeTab.id}
           />
         ) : (
-          <PocTerminalAdapter
+          <TerminalAdapter
             sessionId={sessionId}
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}

@@ -1,7 +1,7 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { render, screen, cleanup } from '@testing-library/react';
-import { PocKeyboardInput } from '../PocKeyboardInput';
-import type { PocTerminalInstance, PocSnapshot } from '../poc-terminal-store';
+import { TerminalKeyboardInput } from '../TerminalKeyboardInput';
+import type { TerminalInstance, TerminalSnapshot } from '../terminal-store';
 
 // Fully-typed MediaQueryList stub (no double-cast). The soft-key gate only reads
 // `.matches`; the rest of the interface is inert so useIsMobile's subscribe path
@@ -23,7 +23,7 @@ function installMatchMedia(matches: boolean): void {
   window.matchMedia = mock((_query: string) => createMatchMediaList(matches));
 }
 
-const SNAPSHOT_STUB: PocSnapshot = {
+const SNAPSHOT_STUB: TerminalSnapshot = {
   version: 0,
   status: 'connecting',
   exitInfo: null,
@@ -39,9 +39,9 @@ const SNAPSHOT_STUB: PocSnapshot = {
   loadingHistory: false,
 };
 
-// Render-only stub: PocKeyboardInput never subscribes or reads the snapshot
+// Render-only stub: TerminalKeyboardInput never subscribes or reads the snapshot
 // during render; the methods exist only to satisfy the interface.
-function makeMockInstance(): PocTerminalInstance {
+function makeMockInstance(): TerminalInstance {
   return {
     subscribe: () => () => {},
     getSnapshot: () => SNAPSHOT_STUB,
@@ -57,7 +57,7 @@ function makeMockInstance(): PocTerminalInstance {
   };
 }
 
-describe('PocKeyboardInput soft-key bar visibility', () => {
+describe('TerminalKeyboardInput soft-key bar visibility', () => {
   const originalMatchMedia = window.matchMedia;
 
   afterEach(() => {
@@ -67,7 +67,7 @@ describe('PocKeyboardInput soft-key bar visibility', () => {
 
   it('renders the soft-key bar on mobile', () => {
     installMatchMedia(true);
-    render(<PocKeyboardInput instance={makeMockInstance()} />);
+    render(<TerminalKeyboardInput instance={makeMockInstance()} />);
 
     expect(screen.getByText('Esc')).toBeTruthy();
     expect(screen.getByText('Ctrl+C')).toBeTruthy();
@@ -77,7 +77,7 @@ describe('PocKeyboardInput soft-key bar visibility', () => {
 
   it('hides the soft-key bar on desktop but keeps the hidden input', () => {
     installMatchMedia(false);
-    render(<PocKeyboardInput instance={makeMockInstance()} />);
+    render(<TerminalKeyboardInput instance={makeMockInstance()} />);
 
     // No soft keys on desktop.
     expect(screen.queryByText('Esc')).toBeNull();
