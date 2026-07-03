@@ -811,15 +811,18 @@ export class WorkerOutputFileManager {
       const dir = this.getWorkerDir(sessionId, resolver);
       const manifestPath = this.getManifestPath(sessionId, workerId, resolver);
 
+      // Mint the new epoch up-front so BOTH the happy path and the error path
+      // agree on the exact value (guard against a same-ms / regressed clock vs
+      // the old incarnation). readManifest returns null on any read error, so
+      // this never throws.
+      const oldManifest = await readManifest(manifestPath);
+      let newEpoch = this.mintEpoch();
+      if (oldManifest && newEpoch <= oldManifest.epoch) {
+        newEpoch = oldManifest.epoch + 1;
+      }
+
       try {
         await fs.mkdir(dir, { recursive: true });
-
-        // Mint a new epoch distinct from the old one (guard against same-ms restart).
-        const oldManifest = await readManifest(manifestPath);
-        let newEpoch = this.mintEpoch();
-        if (oldManifest && newEpoch <= oldManifest.epoch) {
-          newEpoch = oldManifest.epoch + 1;
-        }
 
         // Delete existing content: live file, legacy compressed, and all segments.
         await this.deleteContentFiles(dir, sessionId, workerId, resolver, oldManifest);
@@ -836,7 +839,30 @@ export class WorkerOutputFileManager {
         return newEpoch;
       } catch (error) {
         logger.error({ sessionId, workerId, err: error }, 'Failed to reset worker output file');
-        return this.mintEpoch();
+        // Best-effort: persist the NEW epoch so the on-disk manifest matches the
+        // epoch the restarted worker will carry. NEVER fall back to the old
+        // epoch: a reset rewinds the absolute stream to 0, so reusing the old
+        // generation would let a client holding a pre-reset offset later accept
+        // unrelated new-incarnation bytes as authoritative — exactly the
+        // coordinate-aliasing hazard the epoch exists to prevent (§3.4).
+        try {
+          await fs.mkdir(dir, { recursive: true });
+          await writeManifestDurable(manifestPath, createInitialManifest(newEpoch));
+          this.recovered.add(key);
+          return newEpoch;
+        } catch (persistError) {
+          // Residual divergence window: the new epoch could not be persisted, so
+          // the returned (in-memory) epoch leads the on-disk manifest until the
+          // next successful manifest write. Because reads honor an epoch hint
+          // ONLY when the manifest is missing, a stale old manifest that survived
+          // on disk would still read as the old epoch until a later successful
+          // reset/init rewrites it. Logged at error level so this is visible.
+          logger.error(
+            { sessionId, workerId, err: persistError, epoch: newEpoch },
+            'Failed to persist new epoch on reset error path; in-memory epoch is unpersisted (residual divergence until the next successful manifest write)',
+          );
+          return newEpoch;
+        }
       }
     });
   }

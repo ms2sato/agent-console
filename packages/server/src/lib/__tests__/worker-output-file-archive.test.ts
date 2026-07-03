@@ -229,6 +229,49 @@ describe('WorkerOutputFileManager — segmented archive', () => {
       // Date.now() is far below MAX_SAFE_INTEGER, so the guard bumps to old+1.
       expect(reset).toBe(before + 1);
     });
+
+    it('resetWorkerOutput persists the NEW epoch to disk when content deletion fails (never the old epoch)', async () => {
+      const oldEpoch = await manager.initializeWorkerOutput(S, W, resolver, 1000);
+      expect(oldEpoch).toBe(1000);
+
+      // Force the content-deletion step to fail; the catch must STILL persist the
+      // new epoch (returning/leaving the old epoch would re-alias the rewound
+      // stream to the old generation — the §3.4 hazard).
+      const seam = manager as unknown as { deleteContentFiles: (...a: unknown[]) => Promise<void> };
+      seam.deleteContentFiles = async () => { throw new Error('unlink boom'); };
+
+      const ret = await manager.resetWorkerOutput(S, W, resolver);
+
+      const man = await readManifest(manifestPath);
+      expect(man).not.toBeNull();
+      expect(man!.epoch).toBe(ret);      // on-disk manifest matches the returned epoch
+      expect(ret).not.toBe(1000);        // a NEW incarnation, never the old epoch
+      expect(man!.liveBaseOffset).toBe(0);
+      expect(man!.segments).toHaveLength(0);
+    });
+
+    it('resetWorkerOutput returns a fresh epoch (never the old) even when the manifest cannot be persisted at all', async () => {
+      const oldEpoch = await manager.initializeWorkerOutput(S, W, resolver, 1000);
+      expect(oldEpoch).toBe(1000);
+
+      // Break every dir/manifest write for this reset: point the worker dir under
+      // a regular file so mkdir(dir) throws in BOTH the try and the catch's
+      // best-effort persist. The manifest path stays real so the old epoch is
+      // still read for the guard.
+      const blocker = path.join(workerDir, 'blocker-file');
+      vol.writeFileSync(blocker, 'x');
+      const seam = manager as unknown as { getWorkerDir: () => string };
+      seam.getWorkerDir = () => path.join(blocker, 'sub'); // under a file -> ENOTDIR
+
+      const ret = await manager.resetWorkerOutput(S, W, resolver);
+
+      expect(typeof ret).toBe('number');
+      expect(ret).not.toBe(1000);        // fresh epoch, never the old one
+      expect(ret).toBeGreaterThan(1000);
+      // The persist failed (documented residual window): on-disk manifest is
+      // unchanged and still holds the old epoch — the in-memory return leads it.
+      expect((await readManifest(manifestPath))!.epoch).toBe(1000);
+    });
   });
 
   describe('crash recovery (two-phase cut)', () => {
