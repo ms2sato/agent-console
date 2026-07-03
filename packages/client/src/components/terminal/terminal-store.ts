@@ -66,6 +66,12 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const SCROLLBACK = 5000;
 
+// Default auto-dismiss delay for a store notice banner (issue #968). The legacy
+// renderer auto-dismissed restart-class notices after 5s; this restores that
+// parity. Exposed as a per-call parameter on setNotice so a future notice class
+// can choose a longer/shorter TTL without touching the producer default.
+const DEFAULT_NOTICE_TTL_MS = 5000;
+
 // Memory-management + reconnect timings. Mutable so tests can shorten them via
 // _setTimings; production values are the DEFAULT_TIMINGS below.
 const DEFAULT_TIMINGS = {
@@ -106,6 +112,7 @@ class TerminalController implements TerminalInstance {
 
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private noticeTimer: ReturnType<typeof setTimeout> | null = null; // auto-dismiss (issue #968)
   private historyRequested = false; // per WS connection
   private noReconnect = false; // set on SESSION_DELETED / SESSION_PAUSED
 
@@ -265,9 +272,39 @@ class TerminalController implements TerminalInstance {
   };
 
   dismissNotice = (): void => {
+    // Manual dismiss cancels the pending auto-dismiss (issue #968).
+    this.clearNoticeTimer();
     if (this.snapshot.notice === null) return;
     this.patchMeta({ notice: null });
   };
+
+  /**
+   * Show a notice banner that auto-dismisses after `ttlMs` (issue #968). A new
+   * notice replaces any pending auto-dismiss (the clock resets); manual dismiss
+   * and dispose cancel it. `ttlMs` is a per-call parameter so future notice
+   * classes can opt into a different duration.
+   */
+  private setNotice(message: string, ttlMs: number = DEFAULT_NOTICE_TTL_MS): void {
+    this.clearNoticeTimer();
+    this.patchMeta({ notice: message });
+    // Capture this timer's own handle so a stale (replaced) callback is inert: it
+    // must neither null the CURRENT timer reference nor clear a successor notice.
+    // Unreachable at runtime (clearTimeout is synchronous, so a replaced timer's
+    // callback never fires); the guard is state-hygiene, not a live race fix.
+    const handle = setTimeout(() => {
+      if (this.disposed || this.noticeTimer !== handle) return;
+      this.noticeTimer = null;
+      this.patchMeta({ notice: null });
+    }, ttlMs);
+    this.noticeTimer = handle;
+  }
+
+  private clearNoticeTimer(): void {
+    if (this.noticeTimer) {
+      clearTimeout(this.noticeTimer);
+      this.noticeTimer = null;
+    }
+  }
 
   /**
    * Filters applied to every history/output chunk before writing to the buffer.
@@ -304,6 +341,7 @@ class TerminalController implements TerminalInstance {
     this.reconnectTimer = null;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
+    this.clearNoticeTimer();
     this.appUnsub();
     this.closeWs();
     this.terminal.dispose();
@@ -333,6 +371,10 @@ class TerminalController implements TerminalInstance {
     return this.disposed;
   }
 
+  get noticeTimerForTest(): ReturnType<typeof setTimeout> | null {
+    return this.noticeTimer;
+  }
+
   private startIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     const ttl = this.snapshot.status === 'exited' ? timings.exitedTtlMs : timings.idleTtlMs;
@@ -352,7 +394,9 @@ class TerminalController implements TerminalInstance {
       this.rowCache.clear();
       this.lastBufferLength = 0;
       this.lastOffset = 0;
-      this.patchMeta({ notice: 'Terminal restarted', workerError: null });
+      // Clear any stale error and show an auto-dismissing restart notice (#968).
+      this.patchMeta({ workerError: null });
+      this.setNotice('Terminal restarted');
       this.reconnect();
     } else if (msg.type === 'session-deleted') {
       if (msg.sessionId !== this.sessionId) return;
@@ -743,6 +787,7 @@ export function _inspect(instance: TerminalInstance): {
   reconnectAttempts: number;
   disposed: boolean;
   lastHistoryLoadMs: number | null;
+  noticeTimer: ReturnType<typeof setTimeout> | null;
 } {
   const t = instance as TerminalController;
   return {
@@ -752,5 +797,6 @@ export function _inspect(instance: TerminalInstance): {
     reconnectAttempts: t.reconnectAttemptsForTest,
     disposed: t.disposedForTest,
     lastHistoryLoadMs: t.lastHistoryLoadDurationMs,
+    noticeTimer: t.noticeTimerForTest,
   };
 }
