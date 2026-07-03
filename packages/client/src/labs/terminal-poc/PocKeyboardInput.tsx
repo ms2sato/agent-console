@@ -2,6 +2,7 @@ import { forwardRef, useRef, useState } from 'react';
 import type { KeyboardEvent, CompositionEvent, FormEvent, ClipboardEvent } from 'react';
 import type { PocTerminalInstance } from './poc-terminal-store';
 import { extractImageFiles } from './image-paste';
+import { useIsMobile } from '../../hooks/useIsMobile';
 
 interface PocKeyboardInputProps {
   instance: PocTerminalInstance;
@@ -33,6 +34,10 @@ export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInput
   function PocKeyboardInput({ instance, onFilesReceived }, ref) {
     const composingRef = useRef(false);
     const [composeText, setComposeText] = useState('');
+    // The soft-key bar only helps on touch devices without a physical keyboard;
+    // on desktop it wastes space. The hidden textarea + IME + key handling below
+    // stay active on both — desktop still needs the input path.
+    const isMobile = useIsMobile();
 
     const send = (data: string) => instance.sendInput(data);
 
@@ -134,7 +139,9 @@ export const PocKeyboardInput = forwardRef<HTMLTextAreaElement, PocKeyboardInput
           style={{ width: 1, height: 1, left: 0, top: 0, resize: 'none', border: 'none', padding: 0 }}
         />
 
-        <SoftKeyBar onKey={send} />
+        {/* Mobile only. The border/padding live on the bar itself, so omitting
+            it on desktop leaves no stray divider. */}
+        {isMobile && <SoftKeyBar onKey={send} />}
       </>
     );
   },
