@@ -130,7 +130,9 @@ export const WORKER_SERVER_MESSAGE_TYPES = {
   'history': 3,
   'activity': 4,
   'error': 5,
-  'output-truncated': 6,
+  // Ordinal 6 ('output-truncated') is retired and intentionally NOT reused:
+  // archival never rebases offsets, so the message has no remaining meaning
+  // (terminal-history-paging.md §3.2).
   'server-restarted': 7,
 } as const;
 
@@ -149,12 +151,14 @@ export type WorkerErrorCode =
   | 'SESSION_PAUSED';       // Session was paused while WebSocket was connected
 
 export type WorkerServerMessage =
-  | { type: 'output'; data: string; offset: number }
+  // `offset` is the absolute end position in the worker's cumulative output
+  // stream; `epoch` is the incarnation generation identifier (§3.1 / §3.4).
+  | { type: 'output'; data: string; offset: number; epoch: number }
   | { type: 'exit'; exitCode: number; signal: string | null; reason?: ExitReason }
-  | { type: 'history'; data: string; offset: number; timedOut?: boolean }
+  // `startOffset` is the absolute start of `data`; `offset` its absolute end.
+  | { type: 'history'; data: string; offset: number; startOffset: number; epoch: number; timedOut?: boolean }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
   | { type: 'error'; message: string; code?: WorkerErrorCode }
-  | { type: 'output-truncated'; message: string; newOffset: number }
   | { type: 'server-restarted'; serverPid: number };  // Server was restarted, client should invalidate cache
 
 export interface WorkerActivityInfo {

@@ -236,6 +236,7 @@ export class WorkerManager {
       pty: null,
       outputBuffer: '',
       outputOffset: 0,
+      epoch: Date.now(),
       activityState: 'unknown',
       activityDetector: null,
       connectionCallbacks: new Map(),
@@ -259,6 +260,7 @@ export class WorkerManager {
       pty: null,
       outputBuffer: '',
       outputOffset: 0,
+      epoch: Date.now(),
       connectionCallbacks: new Map(),
     };
 
@@ -321,6 +323,18 @@ export class WorkerManager {
         sessionId,
         worker.id,
         params.resolver,
+      );
+      // On revival the stream continues under the persisted generation, so load
+      // the epoch from the manifest (overriding the placeholder minted at
+      // restore time). Fresh / restarted workers already carry the correct
+      // epoch on the worker object and write it into the manifest, so this load
+      // is skipped for them — keeping the create path free of extra I/O before
+      // the worker is registered (§3.4).
+      worker.epoch = await this.workerOutputFileManager.getEpoch(
+        sessionId,
+        worker.id,
+        params.resolver,
+        worker.epoch,
       );
     }
 
@@ -431,6 +445,13 @@ export class WorkerManager {
         worker.id,
         params.resolver,
       );
+      // Load the persisted epoch on revival (see activateAgentWorkerPty).
+      worker.epoch = await this.workerOutputFileManager.getEpoch(
+        sessionId,
+        worker.id,
+        params.resolver,
+        worker.epoch,
+      );
     }
 
     // additionalEnvVars: repository env vars only
@@ -476,7 +497,7 @@ export class WorkerManager {
 
       worker.outputOffset += Buffer.byteLength(data, 'utf-8');
 
-      this.workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver);
+      this.workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver, worker.epoch);
 
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.processOutput(data);
@@ -484,7 +505,7 @@ export class WorkerManager {
 
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
       for (const callbacks of callbacksSnapshot) {
-        callbacks.onData(data, worker.outputOffset);
+        callbacks.onData(data, worker.outputOffset, worker.epoch);
       }
     });
     if (onDataDisposable) {
@@ -598,6 +619,11 @@ export class WorkerManager {
       pty: null,
       outputBuffer: '',
       outputOffset: 0,
+      // Placeholder; the authoritative epoch is loaded from the manifest at
+      // activation (getEpoch). Never reaches the wire before activation because
+      // `output` only flows after the PTY is active and `history` reads the
+      // manifest epoch directly.
+      epoch: Date.now(),
     };
 
     for (const pw of persistedWorkers) {

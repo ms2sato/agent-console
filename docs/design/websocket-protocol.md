@@ -75,47 +75,61 @@ Per-worker WebSocket for terminal I/O.
 
 | Type | Payload | Description |
 |------|---------|-------------|
-| `output` | `{ data: string, offset: number }` | PTY output with current byte offset |
+| `output` | `{ data: string, offset: number, epoch: number }` | PTY output. `offset` is the absolute end position in the cumulative stream; `epoch` is the incarnation generation identifier (see below). |
 | `exit` | `{ exitCode: number, signal: string \| null }` | Process exit |
-| `history` | `{ data: string, offset: number, timedOut?: boolean }` | Terminal output history with current offset. `timedOut: true` if history load timed out (client can continue without full history). |
+| `history` | `{ data: string, offset: number, startOffset: number, epoch: number, timedOut?: boolean }` | Terminal output history. `offset` is the absolute end of the returned window, `startOffset` the absolute start of `data`, `epoch` the generation identifier. `timedOut: true` if history load timed out (client can continue without full history). |
 | `activity` | `{ state: AgentActivityState }` | Agent activity state change (agent workers only) |
-| `output-truncated` | `{ message: string, newOffset: number }` | Output file was truncated (size cap exceeded). `newOffset` is the new file-absolute byte position the client should use for any subsequent `request-history`. Client must invalidate / rebase its cached terminal state to this offset. |
 | `error` | `{ message: string, code?: WorkerErrorCode }` | Error notification (e.g., worker not found) |
+
+> **`output-truncated` was removed** (Issue #959, `terminal-history-paging.md` §3.2). Output overflow now *archives* the oldest bytes into gzip segments instead of destroying them, so offsets are never rebased and the message has no remaining meaning. Its wire ordinal (6) in `WORKER_SERVER_MESSAGE_TYPES` stays reserved and is not reused.
 
 ### Output Offset Semantics
 
+> **Absolute cumulative offsets + generation epoch (Issue #959).** As of the
+> segmented-archive change (`docs/design/terminal-history-paging.md` §3), every
+> `offset` on the worker wire means **the absolute byte position in the worker's
+> cumulative output stream since worker creation (or last restart)** — position
+> 0 is the first byte the PTY ever emitted; the stream only grows; archival
+> never rebases it. The stream is physically stored as archived gzip segments
+> (oldest) + the live output file + the pending flush buffer (newest), and a
+> per-worker manifest records `liveBaseOffset` (the absolute position of the
+> live file's first byte). Mechanically the values equal the old file-relative
+> offsets until the first archive cut, so the sequence diagrams below still hold
+> for the fresh-worker happy path. Each message also carries an `epoch`
+> (§3.4) — the incarnation's creation timestamp in ms — so the client detects a
+> worker restart (offsets reset to 0 under a new epoch) by an epoch mismatch
+> rather than by offset magnitude.
+
 All `offset` fields exchanged over the worker WebSocket — `output.offset`,
-`history.offset`, `output-truncated.newOffset`, and the client-cached
-`fromOffset` — represent **the absolute byte position from the start of the
-worker's persistent output file**. They are never cumulative since PTY
-activation, and never reset on hibernation / resume.
+`history.offset` / `history.startOffset`, and the client-cached `fromOffset` —
+represent the absolute cumulative stream position described above.
 
 The server keeps a single source of truth for this offset:
 `worker.outputOffset` is advanced per write by the byte length of the chunk
-being appended to the output file, and the file size on disk is the
-authoritative reference whenever the in-memory counter is reseeded.
+(cumulative, never rebased by archival), and `getCurrentOffset()` returns
+`liveBaseOffset + fileSize` whenever the in-memory counter is reseeded.
 
 #### Lifecycle phase × offset table
 
-| Phase | `worker.outputOffset` (server) | `output.offset` (event) | `history.offset` (event) | `output-truncated.newOffset` |
-|---|---|---|---|---|
-| `createWorker` (fresh) | `0` (file size = 0) | file-absolute | file-absolute | — |
-| live output | advances by chunk byte length per write (= file size) | file-absolute | file-absolute | — |
-| PTY died (server restart / hibernation) | last value frozen, `pty = null` | — (no live output) | file-absolute (read from file) | — |
-| **Activation (revived)** | **seeded from `getCurrentOffset()` (file size) before PTY spawn** | file-absolute | file-absolute | — |
-| `restartWorker` | `0` (file truncated to 0 by `resetWorkerOutput`) | file-absolute | file-absolute | — |
-| Truncation (>10MB cap) | trimmed file size | file-absolute | file-absolute | trimmed file size |
+| Phase | `worker.outputOffset` (server) | `output.offset` (event) | `history.offset` (event) |
+|---|---|---|---|
+| `createWorker` (fresh) | `0` | absolute | absolute |
+| live output | advances by chunk byte length per write | absolute | absolute |
+| PTY died (server restart / hibernation) | last value frozen, `pty = null` | — (no live output) | absolute (`liveBaseOffset + fileSize`) |
+| **Activation (revived)** | **seeded from `getCurrentOffset()` = `liveBaseOffset + fileSize` before PTY spawn** | absolute | absolute |
+| `restartWorker` | `0` (segments + live file dropped, new epoch minted) | absolute | absolute |
+| Archive cut (>10MB cap) | unchanged (offsets never rebased; oldest ~20% archived to a gzip segment) | absolute | absolute |
 
 The "revived" row is the contract enforced by the
 `AgentActivationParams.revived` / `TerminalActivationParams.revived` flag
 (true for `restoreWorker`, `getAvailableWorker` activation, and pause/resume;
 false for `createWorker` and `restartWorker`). Without that seed, the
 counter restarts from `0` after every revival and silently drifts away from
-the file-absolute offset that the client's IndexedDB cache holds — see
+the absolute offset that the client's IndexedDB cache holds — see
 sequence (b) below.
 
 The client's `offsetRef` mirrors the same semantic: it stores whatever
-file-absolute value it most recently observed (from `history.offset` /
+absolute cumulative offset it most recently observed (from `history.offset` /
 `output.offset` / a cache hit) and only ever feeds that value back to the
 server via `request-history.fromOffset`.
 

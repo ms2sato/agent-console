@@ -387,7 +387,7 @@ describe('SessionManager', () => {
       pty.simulateData('Hello World');
 
       // onData is called with (data, offset) where offset is the cumulative byte offset
-      expect(onData).toHaveBeenCalledWith('Hello World', expect.any(Number));
+      expect(onData).toHaveBeenCalledWith('Hello World', expect.any(Number), expect.any(Number));
     });
 
     it('should call onExit callback when PTY exits', async () => {
@@ -1221,7 +1221,7 @@ describe('SessionManager', () => {
       // Verify new callbacks are used
       ptyFactory.instances[0].simulateData('new data');
       // onData is called with (data, offset) where offset is the cumulative byte offset
-      expect(newOnData).toHaveBeenCalledWith('new data', expect.any(Number));
+      expect(newOnData).toHaveBeenCalledWith('new data', expect.any(Number), expect.any(Number));
     });
 
     it('should detach callbacks by connection ID', async () => {
@@ -1283,8 +1283,8 @@ describe('SessionManager', () => {
 
       // Data should trigger both callbacks (with offset as second argument)
       ptyFactory.instances[0].simulateData('shared data');
-      expect(onData1).toHaveBeenCalledWith('shared data', expect.any(Number));
-      expect(onData2).toHaveBeenCalledWith('shared data', expect.any(Number));
+      expect(onData1).toHaveBeenCalledWith('shared data', expect.any(Number), expect.any(Number));
+      expect(onData2).toHaveBeenCalledWith('shared data', expect.any(Number), expect.any(Number));
 
       // Detaching one should not affect the other
       manager.detachWorkerCallbacks(session.id, workerId, connId1!);
@@ -1293,7 +1293,7 @@ describe('SessionManager', () => {
 
       ptyFactory.instances[0].simulateData('after detach 1');
       expect(onData1).not.toHaveBeenCalled();
-      expect(onData2).toHaveBeenCalledWith('after detach 1', expect.any(Number));
+      expect(onData2).toHaveBeenCalledWith('after detach 1', expect.any(Number), expect.any(Number));
     });
 
     it('should return null for non-existent session', async () => {
@@ -1616,6 +1616,26 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('getWorkerEpoch', () => {
+    it('returns null for a non-existent worker', async () => {
+      const manager = await getSessionManager();
+      expect(manager.getWorkerEpoch('non-existent', 'worker-1')).toBeNull();
+    });
+
+    it('returns a numeric generation epoch for a created agent worker', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const epoch = manager.getWorkerEpoch(session.id, agentWorker.id);
+      expect(typeof epoch).toBe('number');
+      expect(epoch).toBeGreaterThan(0);
+    });
+  });
+
   describe('edge cases', () => {
     it('should handle empty input string', async () => {
       const manager = await getSessionManager();
@@ -1655,7 +1675,7 @@ describe('SessionManager', () => {
       pty.simulateData(binaryLike);
 
       // onData is called with (data, offset) where offset is the cumulative byte offset
-      expect(onData).toHaveBeenCalledWith(binaryLike, expect.any(Number));
+      expect(onData).toHaveBeenCalledWith(binaryLike, expect.any(Number), expect.any(Number));
       expect(manager.getWorkerOutputBuffer(session.id, workerId)).toBe(binaryLike);
     });
 
@@ -1680,7 +1700,7 @@ describe('SessionManager', () => {
       pty.simulateData(unicode);
 
       // onData is called with (data, offset) where offset is the cumulative byte offset
-      expect(onData).toHaveBeenCalledWith(unicode, expect.any(Number));
+      expect(onData).toHaveBeenCalledWith(unicode, expect.any(Number), expect.any(Number));
       expect(manager.getWorkerOutputBuffer(session.id, workerId)).toBe(unicode);
     });
 

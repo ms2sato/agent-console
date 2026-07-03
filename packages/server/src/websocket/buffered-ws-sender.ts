@@ -19,6 +19,9 @@ export class BufferedWebSocketSender {
   private outputBuffer = '';
   private outputBufferBytes = 0;
   private lastOffset = 0;
+  // Generation epoch of the buffered chunks. All coalesced chunks share one
+  // epoch — a restart closes the socket, so a sender never spans two epochs.
+  private lastEpoch = 0;
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private highWaterMarkLogged = false;
@@ -45,7 +48,7 @@ export class BufferedWebSocketSender {
     }
 
     if (msg.type === 'output') {
-      this.bufferOutput(msg.data, msg.offset);
+      this.bufferOutput(msg.data, msg.offset, msg.epoch);
     } else {
       // Flush pending output before non-output messages to preserve ordering
       this.flush();
@@ -88,7 +91,7 @@ export class BufferedWebSocketSender {
     );
 
     try {
-      this.ws.send(JSON.stringify({ type: 'output', data: this.outputBuffer, offset: this.lastOffset }));
+      this.ws.send(JSON.stringify({ type: 'output', data: this.outputBuffer, offset: this.lastOffset, epoch: this.lastEpoch }));
       this.outputBuffer = '';
       this.outputBufferBytes = 0;
       this.highWaterMarkLogged = false;
@@ -129,10 +132,11 @@ export class BufferedWebSocketSender {
    * the same semantic used by the old inline code and matches how
    * worker.outputOffset is computed in worker-manager.ts.
    */
-  private bufferOutput(data: string, offset: number): void {
+  private bufferOutput(data: string, offset: number, epoch: number): void {
     this.outputBuffer += data;
     this.outputBufferBytes += Buffer.byteLength(data, 'utf-8');
     this.lastOffset = offset;
+    this.lastEpoch = epoch;
 
     // Log once when buffer exceeds 50% of threshold
     if (this.outputBufferBytes >= this.flushThreshold * 0.5 && !this.highWaterMarkLogged) {

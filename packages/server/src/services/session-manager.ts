@@ -847,6 +847,11 @@ export class SessionManager {
     return this.workerLifecycleManager.getWorkerOutputBuffer(sessionId, workerId);
   }
 
+  /** Get the current generation epoch for a worker (null if missing/git-diff). */
+  getWorkerEpoch(sessionId: string, workerId: string): number | null {
+    return this.workerLifecycleManager.getWorkerEpoch(sessionId, workerId);
+  }
+
   /** Get the activity state for an agent worker. */
   getWorkerActivityState(sessionId: string, workerId: string): AgentActivityState | undefined {
     return this.workerLifecycleManager.getWorkerActivityState(sessionId, workerId);

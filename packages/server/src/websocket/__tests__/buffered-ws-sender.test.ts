@@ -61,8 +61,8 @@ describe('BufferedWebSocketSender', () => {
 
   describe('output buffering', () => {
     it('should buffer output messages and flush after interval', async () => {
-      sender.send({ type: 'output', data: 'hello', offset: 5 });
-      sender.send({ type: 'output', data: ' world', offset: 11 });
+      sender.send({ type: 'output', data: 'hello', offset: 5, epoch: 0 });
+      sender.send({ type: 'output', data: ' world', offset: 11, epoch: 0 });
 
       // Not yet flushed
       expect(mockWs.send).not.toHaveBeenCalled();
@@ -72,12 +72,12 @@ describe('BufferedWebSocketSender', () => {
 
       expect(mockWs.send).toHaveBeenCalledTimes(1);
       const sent = JSON.parse(mockWs.send.mock.calls[0][0] as string);
-      expect(sent).toEqual({ type: 'output', data: 'hello world', offset: 11 });
+      expect(sent).toEqual({ type: 'output', data: 'hello world', offset: 11, epoch: 0 });
     });
 
     it('should flush immediately when buffer exceeds threshold', () => {
       const largeData = 'x'.repeat(TEST_FLUSH_THRESHOLD);
-      sender.send({ type: 'output', data: largeData, offset: TEST_FLUSH_THRESHOLD });
+      sender.send({ type: 'output', data: largeData, offset: TEST_FLUSH_THRESHOLD, epoch: 0 });
 
       // Should have flushed immediately without waiting for timer
       expect(mockWs.send).toHaveBeenCalledTimes(1);
@@ -93,7 +93,7 @@ describe('BufferedWebSocketSender', () => {
         throw new Error('WebSocket send failed');
       });
 
-      sender.send({ type: 'output', data: 'important data', offset: 14 });
+      sender.send({ type: 'output', data: 'important data', offset: 14, epoch: 0 });
 
       await waitForFlush();
 
@@ -103,7 +103,7 @@ describe('BufferedWebSocketSender', () => {
       // Buffer should be cleared (not retried) - data preserved server-side
       // Send new data to verify buffer was cleared
       mockWs.send.mockImplementation(() => {}); // restore
-      sender.send({ type: 'output', data: 'new data', offset: 22 });
+      sender.send({ type: 'output', data: 'new data', offset: 22, epoch: 0 });
 
       await waitForFlush();
 
@@ -132,14 +132,14 @@ describe('BufferedWebSocketSender', () => {
       });
 
       const largeData = 'x'.repeat(TEST_FLUSH_THRESHOLD);
-      sender.send({ type: 'output', data: largeData, offset: TEST_FLUSH_THRESHOLD });
+      sender.send({ type: 'output', data: largeData, offset: TEST_FLUSH_THRESHOLD, epoch: 0 });
 
       // Send was attempted (threshold flush)
       expect(mockWs.send).toHaveBeenCalledTimes(1);
 
       // Buffer should be cleared despite failure
       mockWs.send.mockImplementation(() => {});
-      sender.send({ type: 'output', data: 'new', offset: TEST_FLUSH_THRESHOLD + 3 });
+      sender.send({ type: 'output', data: 'new', offset: TEST_FLUSH_THRESHOLD + 3, epoch: 0 });
       sender.flush();
 
       expect(mockWs.send).toHaveBeenCalledTimes(2);
@@ -150,7 +150,7 @@ describe('BufferedWebSocketSender', () => {
 
   describe('readyState checks', () => {
     it('should skip send if readyState is not OPEN', async () => {
-      sender.send({ type: 'output', data: 'hello', offset: 5 });
+      sender.send({ type: 'output', data: 'hello', offset: 5, epoch: 0 });
 
       // Transition to CLOSING before flush
       readyState = WS_READY_STATE.CLOSING;
@@ -176,7 +176,7 @@ describe('BufferedWebSocketSender', () => {
 
       // Output messages are buffered regardless of readyState
       // (readyState is checked at flush time)
-      sender.send({ type: 'output', data: 'hello', offset: 5 });
+      sender.send({ type: 'output', data: 'hello', offset: 5, epoch: 0 });
 
       // Force flush - should skip due to readyState
       sender.flush();
@@ -187,7 +187,7 @@ describe('BufferedWebSocketSender', () => {
     it('should allow send when readyState is undefined (adapter does not expose it)', async () => {
       readyState = undefined;
 
-      sender.send({ type: 'output', data: 'hello', offset: 5 });
+      sender.send({ type: 'output', data: 'hello', offset: 5, epoch: 0 });
       await waitForFlush();
 
       // Should have sent (undefined falls through the guard)
@@ -195,7 +195,7 @@ describe('BufferedWebSocketSender', () => {
     });
 
     it('should skip send when readyState is CONNECTING', async () => {
-      sender.send({ type: 'output', data: 'hello', offset: 5 });
+      sender.send({ type: 'output', data: 'hello', offset: 5, epoch: 0 });
       readyState = 0; // CONNECTING
 
       await waitForFlush();
@@ -207,7 +207,7 @@ describe('BufferedWebSocketSender', () => {
   describe('message ordering', () => {
     it('should flush pending output before non-output messages', () => {
       // Buffer some output
-      sender.send({ type: 'output', data: 'output data', offset: 11 });
+      sender.send({ type: 'output', data: 'output data', offset: 11, epoch: 0 });
 
       // Send a non-output message - should flush output first
       sender.send({ type: 'exit', exitCode: 0, signal: null });
@@ -223,7 +223,7 @@ describe('BufferedWebSocketSender', () => {
     });
 
     it('should flush pending output before activity messages', () => {
-      sender.send({ type: 'output', data: 'some output', offset: 11 });
+      sender.send({ type: 'output', data: 'some output', offset: 11, epoch: 0 });
       sender.send({ type: 'activity', state: 'idle' });
 
       expect(mockWs.send).toHaveBeenCalledTimes(2);
@@ -236,7 +236,7 @@ describe('BufferedWebSocketSender', () => {
     });
 
     it('should flush pending output before server-restarted messages', () => {
-      sender.send({ type: 'output', data: 'pre-restart output', offset: 18 });
+      sender.send({ type: 'output', data: 'pre-restart output', offset: 18, epoch: 0 });
       sender.send({ type: 'server-restarted', serverPid: 12345 });
 
       expect(mockWs.send).toHaveBeenCalledTimes(2);
@@ -269,7 +269,7 @@ describe('BufferedWebSocketSender', () => {
 
   describe('dispose', () => {
     it('should clear timer and prevent further sends', async () => {
-      sender.send({ type: 'output', data: 'buffered', offset: 8 });
+      sender.send({ type: 'output', data: 'buffered', offset: 8, epoch: 0 });
 
       // Dispose before timer fires
       sender.dispose();
@@ -284,7 +284,7 @@ describe('BufferedWebSocketSender', () => {
       sender.dispose();
 
       // All operations should be no-ops
-      sender.send({ type: 'output', data: 'ignored', offset: 7 });
+      sender.send({ type: 'output', data: 'ignored', offset: 7, epoch: 0 });
       sender.send({ type: 'exit', exitCode: 0, signal: null });
       sender.flush();
 
@@ -311,7 +311,7 @@ describe('BufferedWebSocketSender', () => {
     });
 
     it('should clear the flush timer on manual flush', async () => {
-      sender.send({ type: 'output', data: 'data', offset: 4 });
+      sender.send({ type: 'output', data: 'data', offset: 4, epoch: 0 });
 
       // Manual flush
       sender.flush();
