@@ -25,6 +25,10 @@ export interface PocStyle {
 export interface PocSegment {
   text: string;
   style: PocStyle | null; // null = default style (CSS inherits)
+  // Optional link attached by a row-transform decorator (issue #958). When set,
+  // the whole segment renders as an anchor. Not produced by buffer extraction —
+  // only by presentation-layer decorators (see row-transforms.ts).
+  link?: { href: string };
 }
 
 export interface PocRow {

@@ -6,6 +6,11 @@ import { getOrCreatePocTerminal } from '../../labs/terminal-poc/poc-terminal-sto
 import { PocTerminalView } from '../../labs/terminal-poc/PocTerminalView';
 import { PocKeyboardInput } from '../../labs/terminal-poc/PocKeyboardInput';
 import { useVisualViewportHeight } from '../../labs/terminal-poc/useVisualViewportHeight';
+import { githubRefDecorator } from '../../labs/terminal-poc/transforms/github-refs';
+import type { SegmentDecorator, TransformContext } from '../../labs/terminal-poc/row-transforms';
+import { useSessionRepoFullName } from '../../labs/terminal-poc/useSessionRepoFullName';
+
+const SEGMENT_DECORATORS: readonly SegmentDecorator[] = [githubRefDecorator];
 
 interface TerminalPocSearch {
   sessionId?: string;
@@ -39,6 +44,10 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
   );
 
   const focusInput = () => inputRef.current?.focus();
+
+  // Linkify GitHub refs (#958); null repo -> bare refs stay plain text.
+  const repoFullName = useSessionRepoFullName(sessionId);
+  const transformContext = useMemo<TransformContext>(() => ({ repoFullName }), [repoFullName]);
 
   // Image-paste / file-drop receipt toast. Stands in for the MessagePanel wiring
   // that lands with the adapter phase (PR-3), so the onFilesReceived contract is
@@ -83,6 +92,8 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
         onRequestFocus={focusInput}
         onFilesReceived={handleFilesReceived}
         inputRef={inputRef}
+        segmentDecorators={SEGMENT_DECORATORS}
+        transformContext={transformContext}
       />
 
       <PocKeyboardInput ref={inputRef} instance={instance} onFilesReceived={handleFilesReceived} />

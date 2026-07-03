@@ -10,6 +10,12 @@ import { getOrCreatePocTerminal, type PocStatus, type PocTerminalInstance } from
 import { PocTerminalView } from './PocTerminalView';
 import { PocKeyboardInput } from './PocKeyboardInput';
 import { toStatusChangeArgs } from './poc-status-mapping';
+import { githubRefDecorator } from './transforms/github-refs';
+import type { SegmentDecorator, TransformContext } from './row-transforms';
+import { useSessionRepoFullName } from './useSessionRepoFullName';
+
+// Constant decorator list — memoized identity so the memoized Row is stable.
+const SEGMENT_DECORATORS: readonly SegmentDecorator[] = [githubRefDecorator];
 
 /**
  * Drop-in replacement for `components/Terminal.tsx` implementing the exact
@@ -54,6 +60,11 @@ export function PocTerminalAdapter({
 
   const focusInput = useCallback(() => inputRef.current?.focus(), []);
 
+  // Linkify GitHub refs (#958). repoFullName is null for quick sessions / repos
+  // without a GitHub remote — bare refs then stay plain text.
+  const repoFullName = useSessionRepoFullName(sessionId);
+  const transformContext = useMemo<TransformContext>(() => ({ repoFullName }), [repoFullName]);
+
   // Mirror Terminal.tsx delete-session recovery: delete via API, then broadcast
   // session-deleted and return to the dashboard.
   const deleteSessionMutation = useMutation({
@@ -87,6 +98,8 @@ export function PocTerminalAdapter({
           onRequestFocus={focusInput}
           onFilesReceived={onFilesReceived}
           inputRef={inputRef}
+          segmentDecorators={SEGMENT_DECORATORS}
+          transformContext={transformContext}
         />
         <AdapterRecoveryOverlay
           instance={instance}
