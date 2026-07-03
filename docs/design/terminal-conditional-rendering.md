@@ -1,5 +1,8 @@
 # Terminal Conditional Rendering Design
 
+> **SUPERSEDED (2026-07-03, PR #962 / Issue #941).** This document describes the removed legacy xterm.js renderer and its IndexedDB cache layer. That architecture no longer exists: the sole terminal renderer is now the headless-VT + React DOM implementation under `packages/client/src/labs/terminal-poc/` (see `labs-terminal-poc-roadmap.md`), which keeps live parsed state in a module-scope store and re-syncs from server history instead of caching serialized snapshots. Kept for historical context; do not use as a reference for current behavior. Consolidation is tracked in #963.
+
+
 ## Why This Change?
 
 ### The Problem We're Solving
