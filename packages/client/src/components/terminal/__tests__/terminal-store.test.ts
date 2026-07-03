@@ -769,6 +769,33 @@ describe('terminal-store', () => {
       clearTimeoutSpy.mockRestore();
     });
 
+    it('a stale (replaced) timer callback cannot clear the successor notice', () => {
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+      const { instance, emitRestart } = makeRestartedInstance('n5');
+
+      emitRestart(); // notice #1, timer #1
+      const firstCallback = noticeTimeoutCalls(setTimeoutSpy)[0][0] as () => void;
+      const firstTimer = _inspect(instance).noticeTimer;
+
+      emitRestart(); // notice #2 replaces #1 (timer #1 canceled, timer #2 scheduled)
+      const secondTimer = _inspect(instance).noticeTimer;
+      expect(secondTimer).not.toBe(firstTimer);
+
+      // Force-invoke the STALE first callback: it must be inert — it must NOT
+      // clear the current notice nor null the successor's timer handle.
+      firstCallback();
+      expect(instance.getSnapshot().notice).toBe('Terminal restarted');
+      expect(_inspect(instance).noticeTimer).toBe(secondTimer);
+
+      // The current (second) callback still clears normally.
+      const secondCallback = noticeTimeoutCalls(setTimeoutSpy)[1][0] as () => void;
+      secondCallback();
+      expect(instance.getSnapshot().notice).toBeNull();
+      expect(_inspect(instance).noticeTimer).toBeNull();
+
+      setTimeoutSpy.mockRestore();
+    });
+
     it('cancels the pending auto-dismiss on manual dismiss', () => {
       const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
       const { instance, emitRestart } = makeRestartedInstance('n3');

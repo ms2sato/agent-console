@@ -287,11 +287,16 @@ class TerminalController implements TerminalInstance {
   private setNotice(message: string, ttlMs: number = DEFAULT_NOTICE_TTL_MS): void {
     this.clearNoticeTimer();
     this.patchMeta({ notice: message });
-    this.noticeTimer = setTimeout(() => {
+    // Capture this timer's own handle so a stale (replaced) callback is inert: it
+    // must neither null the CURRENT timer reference nor clear a successor notice.
+    // Unreachable at runtime (clearTimeout is synchronous, so a replaced timer's
+    // callback never fires); the guard is state-hygiene, not a live race fix.
+    const handle = setTimeout(() => {
+      if (this.disposed || this.noticeTimer !== handle) return;
       this.noticeTimer = null;
-      if (this.disposed) return;
       this.patchMeta({ notice: null });
     }, ttlMs);
+    this.noticeTimer = handle;
   }
 
   private clearNoticeTimer(): void {
