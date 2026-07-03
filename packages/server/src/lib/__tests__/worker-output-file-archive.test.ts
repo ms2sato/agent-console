@@ -426,6 +426,42 @@ describe('WorkerOutputFileManager — segmented archive', () => {
       // Absolute offset equals the full cumulative total.
       expect(man!.liveBaseOffset + live).toBe(totalBytes);
     });
+
+    it('deleteSessionOutputs drains an in-flight locked read before removing the directory', async () => {
+      await manager.initializeWorkerOutput(S, W, resolver, 7);
+      vol.writeFileSync(logPath, 'live data');
+
+      // Controllable gate held INSIDE a locked read: override the private
+      // readLiveBuffer (called within readHistoryWithOffset's lock) to block on
+      // first call, so the read keeps the per-worker lock until we release it.
+      let releaseRead!: () => void;
+      const readGate = new Promise<void>((r) => { releaseRead = r; });
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const m = manager as unknown as { readLiveBuffer: (...a: unknown[]) => Promise<Buffer> };
+      const origReadLive = m.readLiveBuffer.bind(manager);
+      let gated = false;
+      m.readLiveBuffer = async (...args: unknown[]) => {
+        if (!gated) { gated = true; await readGate; }
+        return origReadLive(...args);
+      };
+
+      const readPromise = manager.readHistoryWithOffset(S, W, resolver, undefined);
+      // Let the read enter the lock and reach the gate.
+      await new Promise((r) => setTimeout(r, 10));
+
+      let deleteResolved = false;
+      const deletePromise = manager.deleteSessionOutputs(S, resolver).then(() => { deleteResolved = true; });
+      // The delete must NOT complete while the read holds the lock.
+      await new Promise((r) => setTimeout(r, 20));
+      expect(deleteResolved).toBe(false);
+
+      releaseRead();
+      await Promise.all([readPromise, deletePromise]);
+
+      expect(deleteResolved).toBe(true);
+      // Directory removed only after the drain; no race recreated it.
+      expect(vol.existsSync(workerDir)).toBe(false);
+    });
   });
 
   describe('migration from pre-upgrade destructive truncation (§3.3 / §8)', () => {

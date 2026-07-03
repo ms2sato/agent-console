@@ -55,6 +55,12 @@ interface PendingFlush {
   buffer: string;
   timer: ReturnType<typeof setTimeout> | null;
   resolver: SessionDataPathResolver;
+  /**
+   * The worker object's epoch, forwarded so a flush that has to lazily create
+   * the manifest (e.g. after an initialize I/O failure) records the SAME epoch
+   * the live `output` stream is tagged with, rather than minting a divergent one.
+   */
+  epochHint?: number;
 }
 
 /**
@@ -401,13 +407,15 @@ export class WorkerOutputFileManager {
    * Buffer output data for periodic flushing to file.
    * Flushes immediately if buffer exceeds threshold.
    */
-  bufferOutput(sessionId: string, workerId: string, data: string, resolver: SessionDataPathResolver): void {
+  bufferOutput(sessionId: string, workerId: string, data: string, resolver: SessionDataPathResolver, epochHint?: number): void {
     const key = this.getKey(sessionId, workerId);
     let pending = this.pendingFlushes.get(key);
 
     if (!pending) {
-      pending = { buffer: '', timer: null, resolver };
+      pending = { buffer: '', timer: null, resolver, epochHint };
       this.pendingFlushes.set(key, pending);
+    } else if (epochHint !== undefined) {
+      pending.epochHint = epochHint;
     }
 
     pending.buffer += data;
@@ -466,7 +474,10 @@ export class WorkerOutputFileManager {
       await fs.mkdir(path.dirname(filePath), { recursive: true });
 
       // Ensure recovery has run and the manifest is loaded (needed for cut base).
-      const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
+      // Forward the worker's epoch so that if this flush is the first op to
+      // create the manifest (initialize I/O failed earlier), it records the same
+      // epoch the live `output` stream carries instead of minting a divergent one.
+      const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver, pending.epochHint);
 
       const actualFile = await this.getActualFilePath(sessionId, workerId, resolver);
       if (actualFile?.isCompressed) {
@@ -907,22 +918,26 @@ export class WorkerOutputFileManager {
    * flushes for known workers, then removes the whole `outputs/<sessionId>` dir.
    */
   async deleteSessionOutputs(sessionId: string, resolver: SessionDataPathResolver): Promise<void> {
-    // Cancel timers and take known keys for this session.
-    const keysToDelete: string[] = [];
+    const prefix = `${sessionId}/`;
+
+    // Cancel pending flush timers for this session and drop their buffers.
     for (const [key, pending] of this.pendingFlushes) {
-      if (key.startsWith(`${sessionId}/`)) {
+      if (key.startsWith(prefix)) {
         if (pending.timer) clearTimeout(pending.timer);
-        keysToDelete.push(key);
+        this.pendingFlushes.delete(key);
+        this.recovered.delete(key);
       }
     }
-    for (const key of keysToDelete) {
-      this.pendingFlushes.delete(key);
-      this.recovered.delete(key);
-    }
 
-    // Drain any in-flight operations for those workers so nothing recreates
-    // files after the directory removal.
-    await Promise.all(keysToDelete.map((key) => this.runExclusive(key, async () => {})));
+    // Drain EVERY in-flight locked operation for this session — not just those
+    // with a pending flush. A concurrent range/history read or cut holds a lock
+    // in `this.locks` (every runExclusive registers there) but may have no
+    // pendingFlushes entry; draining only the flush keys would let such an op
+    // recreate files after the directory removal. Joining each worker's lock
+    // chain here makes the rm atomic with respect to any locked op.
+    const lockKeys = Array.from(this.locks.keys()).filter((key) => key.startsWith(prefix));
+    for (const key of lockKeys) this.recovered.delete(key);
+    await Promise.all(lockKeys.map((key) => this.runExclusive(key, async () => {})));
 
     const sessionDir = path.join(resolver.getOutputsDir(), sessionId);
     try {

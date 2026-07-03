@@ -497,7 +497,7 @@ export class WorkerManager {
 
       worker.outputOffset += Buffer.byteLength(data, 'utf-8');
 
-      this.workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver);
+      this.workerOutputFileManager.bufferOutput(sessionId, worker.id, data, resolver, worker.epoch);
 
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.processOutput(data);

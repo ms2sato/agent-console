@@ -192,12 +192,17 @@ export function notifySessionPaused(sessionId: string): void {
 }
 
 /**
- * Close all open Worker WebSocket connections for a worker with a normal-closure
- * code, forcing a reconnect. Used on worker restart: restart installs a new
- * worker object without rebinding already-attached sockets' callbacks, so an
- * attached client would otherwise never receive a new-epoch message. The
- * reconnect lands on the new incarnation and gets the new epoch via the initial
- * `history` response (terminal-history-paging.md §3.4 / §4.5).
+ * Close all open Worker WebSocket connections for a worker with the dedicated
+ * `WORKER_RESTARTED` (4001) code, forcing a reconnect. Used on worker restart:
+ * restart installs a new worker object without rebinding already-attached
+ * sockets' callbacks, so an attached client would otherwise never receive a
+ * new-epoch message. The reconnect lands on the new incarnation and gets the new
+ * epoch via the initial `history` response (terminal-history-paging.md §3.4 / §4.5).
+ *
+ * The code must NOT be `NORMAL_CLOSURE` (1000): the client treats 1000 as a
+ * deliberate no-reconnect close (SESSION_DELETED semantics; see
+ * `websocket-reconnect.ts` NO_RECONNECT_CLOSE_CODES), which would strand the
+ * terminal at "disconnected". 4001 is outside that set, so the client reconnects.
  */
 function closeWorkerSocketsForRestart(sessionId: string, workerId: string): void {
   const connections = registry.getWorkerConnections(sessionId, workerId);
@@ -208,7 +213,7 @@ function closeWorkerSocketsForRestart(sessionId: string, workerId: string): void
   // Snapshot before closing — onClose mutates the registry set.
   for (const ws of Array.from(connections)) {
     try {
-      ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'worker restarted');
+      ws.close(WS_CLOSE_CODE.WORKER_RESTARTED, 'worker restarted');
     } catch (e) {
       logger.warn({ sessionId, workerId, err: e }, 'Failed to close worker socket on restart');
     }

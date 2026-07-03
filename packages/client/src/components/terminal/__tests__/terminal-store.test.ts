@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import type { AppServerMessage } from '@agent-console/shared';
+import { WS_CLOSE_CODE } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import {
   getOrCreateTerminal,
@@ -580,6 +581,32 @@ describe('terminal-store', () => {
 
     expect(_inspect(instance).reconnectPending).toBe(true);
     expect(_inspect(instance).reconnectAttempts).toBe(1);
+  });
+
+  it('reconnects on WORKER_RESTARTED (4001) close and re-requests history (unlike NORMAL_CLOSURE)', async () => {
+    // The server closes worker sockets with 4001 on restart so the client
+    // reconnects onto the new incarnation and re-fetches history (which carries
+    // the new epoch). 4001 must be treated as reconnectable — unlike 1000.
+    expect(WS_CLOSE_CODE.WORKER_RESTARTED).toBe(4001);
+    _setTimings({ reconnectDelayMs: 0 });
+    const instance = getOrCreateTerminal('rc-restart', 'w');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+
+    ws1!.simulateClose(WS_CLOSE_CODE.WORKER_RESTARTED);
+    expect(_inspect(instance).reconnectPending).toBe(true);
+    expect(_inspect(instance).reconnectAttempts).toBe(1);
+    await flush();
+
+    // A fresh connection is opened and issues a new request-history (the
+    // per-connection historyRequested flag resets on connect).
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2!.simulateOpen();
+    const history = lastSentMessages(ws2!).find(
+      (m) => (m as { type: string }).type === 'request-history',
+    );
+    expect(history).toBeDefined();
   });
 
   it('re-requests history from lastOffset on reconnect (delta catch-up)', async () => {
