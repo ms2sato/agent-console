@@ -35,9 +35,9 @@ interface PocTerminalViewProps {
   onFilesReceived?: (files: File[]) => void;
   // This view's OWN hidden input (the same ref passed to PocKeyboardInput).
   // Cmd/Ctrl+A select-all is gated on this element being focused, so on a page
-  // hosting multiple terminals (e.g. /labs/terminal-compare) select-all in one
-  // terminal never selects another's rows. When omitted, select-all is disabled
-  // (safer than matching any focused textarea).
+  // hosting multiple terminals, select-all in one terminal never selects
+  // another's rows. When omitted, select-all is disabled (safer than matching
+  // any focused textarea).
   inputRef?: RefObject<HTMLTextAreaElement | null>;
   // Presentation-layer row-transform decorators (issue #958) applied per row at
   // render time, plus their context. Callers memoize both so the memoized Row

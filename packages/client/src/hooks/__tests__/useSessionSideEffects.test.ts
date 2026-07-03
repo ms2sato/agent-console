@@ -49,7 +49,6 @@ function createMockWorktreeDeletionTasks(): UseWorktreeDeletionTasksReturn {
 }
 
 interface DefaultOptions {
-  sessions: Session[];
   handleSessionsSync: ReturnType<typeof mock>;
   handleSessionCreated: ReturnType<typeof mock>;
   handleSessionUpdated: ReturnType<typeof mock>;
@@ -64,7 +63,6 @@ interface DefaultOptions {
 
 function createDefaultOptions(overrides: Partial<DefaultOptions> = {}): DefaultOptions {
   return {
-    sessions: [],
     handleSessionsSync: mock(() => {}),
     handleSessionCreated: mock(() => {}),
     handleSessionUpdated: mock(() => {}),
@@ -119,7 +117,6 @@ describe('useSessionSideEffects', () => {
   it('should accept all required options', () => {
     const session = createMockSession();
     const options = createDefaultOptions({
-      sessions: [session],
       workerActivityStates: { [session.id]: { 'w1': 'active' as AgentActivityState } },
     });
 
@@ -131,10 +128,8 @@ describe('useSessionSideEffects', () => {
     const options = createDefaultOptions();
     const { rerender } = renderWithQueryClient(options);
 
-    // Update with new sessions
-    const newOptions = createDefaultOptions({
-      sessions: [createMockSession()],
-    });
+    // Update with a fresh options object
+    const newOptions = createDefaultOptions();
     rerender(newOptions);
 
     // No errors on rerender
@@ -147,28 +142,20 @@ describe('useSessionSideEffects', () => {
     draftsMap.set('session-to-delete:w2', 'draft 2');
     draftsMap.set('other-session:w1', 'should remain');
 
-    const session = createMockSession({
-      id: 'session-to-delete',
-      workers: [
-        { id: 'w1', name: 'Worker 1', type: 'agent', agentId: 'a1', activated: true, createdAt: '2026-01-01T00:00:00Z' },
-        { id: 'w2', name: 'Worker 2', type: 'agent', agentId: 'a1', activated: true, createdAt: '2026-01-01T00:00:00Z' },
-      ] as Session['workers'],
-    });
     const handleSessionDeleted = mock(() => {});
 
     const options = createDefaultOptions({
-      sessions: [session],
       handleSessionDeleted,
     });
 
     renderWithQueryClient(options);
 
     // Simulate what happens when the session-deleted event arrives:
-    // The hook wraps handleSessionDeleted to also clear terminal state and drafts.
-    // Since triggering the WebSocket event requires full mock infrastructure,
-    // we verify that clearDraftsForSession (called by the wrapper) correctly
-    // cleans up the shared drafts map. The unit test for clearDraftsForSession
-    // is in useDraftMessage.test.ts; here we verify the integration path.
+    // The hook wraps handleSessionDeleted to also clear drafts. Since triggering
+    // the WebSocket event requires full mock infrastructure, we verify that
+    // clearDraftsForSession (called by the wrapper) correctly cleans up the
+    // shared drafts map. The unit test for clearDraftsForSession is in
+    // useDraftMessage.test.ts; here we verify the integration path.
     clearDraftsForSession('session-to-delete');
 
     expect(draftsMap.has('session-to-delete:w1')).toBe(false);

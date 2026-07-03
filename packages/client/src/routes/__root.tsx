@@ -91,7 +91,6 @@ function RootLayout() {
 
   // Wire up cross-cutting side effects (validation, cache cleanup, favicon, WebSocket subscription)
   useSessionSideEffects({
-    sessions,
     handleSessionsSync,
     handleSessionCreated,
     handleSessionUpdated,

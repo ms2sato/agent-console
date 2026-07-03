@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from '../../components/Terminal';
+import type { ConnectionStatus } from './terminal-contract';
 import type { PocSnapshot } from './poc-terminal-store';
 
 export interface StatusChangeArgs {
