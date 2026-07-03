@@ -5,7 +5,14 @@ import type { PocRow, PocSegment, PocStyle } from './buffer-to-rows';
 import type { LinkRange } from './link-detection';
 import { joinSelectedRows, collectSelectedRowPieces } from './copy-text';
 import { reduceDragCounter } from './drag-state';
+import { applySegmentDecorators, type SegmentDecorator, type TransformContext } from './row-transforms';
 import { PocScrollIndicator } from './PocScrollIndicator';
+
+const EMPTY_DECORATORS: readonly SegmentDecorator[] = [];
+const DEFAULT_TRANSFORM_CONTEXT: TransformContext = { repoFullName: null };
+// A dotted underline distinguishes decorator links (e.g. GitHub refs) without
+// the heavier solid underline; matches the URL-link affordance.
+const LINK_STYLE: CSSProperties = { textDecoration: 'underline dotted', cursor: 'pointer' };
 
 const FONT_FAMILY =
   "'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', monospace";
@@ -32,6 +39,11 @@ interface PocTerminalViewProps {
   // another's rows. When omitted, select-all is disabled (safer than matching
   // any focused textarea).
   inputRef?: RefObject<HTMLTextAreaElement | null>;
+  // Presentation-layer row-transform decorators (issue #958) applied per row at
+  // render time, plus their context. Callers memoize both so the memoized Row
+  // is not invalidated every render.
+  segmentDecorators?: readonly SegmentDecorator[];
+  transformContext?: TransformContext;
 }
 
 function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
@@ -52,6 +64,23 @@ function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
 // into the row's concatenated text; `links` are ranges in that same space.
 function renderSegment(seg: PocSegment, segStart: number, key: number, links: LinkRange[]) {
   const style = segmentStyle(seg.style);
+  // A decorator-attached link (issue #958) renders the whole segment as one
+  // anchor. stopPropagation keeps the container's click-to-focus / mouse-report
+  // paths from swallowing the click; no preventDefault so navigation happens.
+  if (seg.link) {
+    return (
+      <a
+        key={key}
+        href={seg.link.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        style={{ ...style, ...LINK_STYLE }}
+      >
+        {seg.text}
+      </a>
+    );
+  }
   const segEnd = segStart + seg.text.length;
   const overlapping = links.filter((l) => l.start < segEnd && l.end > segStart);
   if (overlapping.length === 0) {
@@ -106,11 +135,23 @@ function renderSegment(seg: PocSegment, segStart: number, key: number, links: Li
   );
 }
 
-const Row = memo(function Row({ row }: { row: PocRow }) {
+const Row = memo(function Row({
+  row,
+  decorators,
+  ctx,
+}: {
+  row: PocRow;
+  decorators: readonly SegmentDecorator[];
+  ctx: TransformContext;
+}) {
+  // Decorators split segments but preserve the row's concatenated text, so the
+  // URL `links` column offsets used by renderSegment stay aligned.
+  const segments =
+    decorators.length > 0 ? applySegmentDecorators(row.segments, decorators, ctx) : row.segments;
   let offset = 0;
   return (
     <div style={{ whiteSpace: 'pre', height: LINE_HEIGHT_PX, lineHeight: `${LINE_HEIGHT_PX}px` }}>
-      {row.segments.map((seg: PocSegment, i) => {
+      {segments.map((seg: PocSegment, i) => {
         const node = renderSegment(seg, offset, i, row.links);
         offset += seg.text.length;
         return node;
@@ -119,7 +160,14 @@ const Row = memo(function Row({ row }: { row: PocRow }) {
   );
 });
 
-export function PocTerminalView({ instance, onRequestFocus, onFilesReceived, inputRef }: PocTerminalViewProps) {
+export function PocTerminalView({
+  instance,
+  onRequestFocus,
+  onFilesReceived,
+  inputRef,
+  segmentDecorators = EMPTY_DECORATORS,
+  transformContext = DEFAULT_TRANSFORM_CONTEXT,
+}: PocTerminalViewProps) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   const scrollRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
@@ -502,7 +550,7 @@ export function PocTerminalView({ instance, onRequestFocus, onFilesReceived, inp
         }}
       >
         {snapshot.rows.map((row) => (
-          <Row key={row.key} row={row} />
+          <Row key={row.key} row={row} decorators={segmentDecorators} ctx={transformContext} />
         ))}
       </div>
 
