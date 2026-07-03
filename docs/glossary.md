@@ -206,6 +206,22 @@ Real-time bidirectional communication channel between client and server.
 - **Types:** App Connection (`/ws/app`), Worker Connection (`/ws/session/:id/worker/:id`)
 - **See:** [WebSocket protocol in websocket-protocol.md](design/websocket-protocol.md)
 
+### Archive Segment
+
+A gzip-compressed slice of a worker's historical output stream (`<workerId>.seg-<N>.log.gz`), produced when the live output file exceeds its size limit. Replaces destructive truncation. Immutable once written; mapped to absolute stream offsets by the Segment Manifest. Defined in [terminal-history-paging.md](design/terminal-history-paging.md).
+
+### Segment Manifest
+
+Sidecar JSON (`<workerId>.segments.json`) recording each Archive Segment's absolute offset range plus `liveBaseOffset` (the absolute position of the live file's first byte). The single source for mapping a history-range request to a file. Defined in [terminal-history-paging.md](design/terminal-history-paging.md).
+
+### Absolute Stream Offset
+
+The byte position in a worker's cumulative output stream since worker creation (or last restart). Never rebased by archival. After the #959 accounting change, every `offset` on the worker WebSocket protocol uses this coordinate system (previously `history` offsets were live-file-relative and diverged from `output` offsets after truncation). Defined in [terminal-history-paging.md](design/terminal-history-paging.md).
+
+### Worker Epoch
+
+A monotonic per-worker generation counter, bumped on every worker restart and persisted in the Segment Manifest. Carried on `output` / `history` / `history-range` messages so clients detect incarnation changes without relying on the separate app-WebSocket broadcast; prevents a stale Absolute Stream Offset from aliasing into a new incarnation's data during backwards paging. Defined in [terminal-history-paging.md](design/terminal-history-paging.md).
+
 ## Maintenance
 
 This glossary is canonical. When the following changes are introduced, the glossary must be updated in the same PR:
