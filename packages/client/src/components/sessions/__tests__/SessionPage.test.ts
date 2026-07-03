@@ -91,6 +91,12 @@ describe('findAgentWorker', () => {
 
     expect(findAgentWorker(workers)).toBeUndefined();
   });
+
+  it('should return undefined for an empty worker list (vacuous boundary)', () => {
+    // Boundary: [].find(...) is undefined. A session that reaches restart with no
+    // workers must not crash — the caller surfaces "no agent worker" instead.
+    expect(findAgentWorker([])).toBeUndefined();
+  });
 });
 
 describe('executeWorkerRestart', () => {
