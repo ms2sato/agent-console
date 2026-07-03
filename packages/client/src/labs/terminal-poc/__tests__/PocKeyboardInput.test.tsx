@@ -3,14 +3,24 @@ import { render, screen, cleanup } from '@testing-library/react';
 import { PocKeyboardInput } from '../PocKeyboardInput';
 import type { PocTerminalInstance, PocSnapshot } from '../poc-terminal-store';
 
-// matchMedia mock following src/hooks/__tests__/useIsMobile.test.ts.
-function installMatchMedia(matches: boolean): void {
-  const mql = {
+// Fully-typed MediaQueryList stub (no double-cast). The soft-key gate only reads
+// `.matches`; the rest of the interface is inert so useIsMobile's subscribe path
+// is a no-op under test.
+function createMatchMediaList(matches: boolean): MediaQueryList {
+  return {
     matches,
-    addEventListener: mock(() => {}),
-    removeEventListener: mock(() => {}),
+    media: '(max-width: 767px)',
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
   };
-  window.matchMedia = mock(() => mql as unknown as MediaQueryList);
+}
+
+function installMatchMedia(matches: boolean): void {
+  window.matchMedia = mock((_query: string) => createMatchMediaList(matches));
 }
 
 const SNAPSHOT_STUB: PocSnapshot = {
