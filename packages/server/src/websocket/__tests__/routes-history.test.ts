@@ -189,13 +189,16 @@ describe('Worker WebSocket history and notifications', () => {
       expect(typeof historyMessages[0].offset).toBe('number');
     });
 
-    it('should handle incremental sync with fromOffset > 0 by skipping line limit', async () => {
+    it('should pass the recent-window line cap for incremental sync (fromOffset > 0)', async () => {
       const { sessionId, workerId, handlers, mockWs } = await createSessionAndConnect();
 
-      // Spy on getWorkerOutputHistory to verify it receives no maxLines for incremental sync
+      // The incremental read receives the recent-window line cap so the
+      // archived-out / stale fallback branches (§3.1) can bound their payload.
       const spy = spyOn(sessionManager, 'getWorkerOutputHistory').mockResolvedValue({
         data: 'incremental data',
         offset: 700,
+        startOffset: 500,
+        epoch: 111,
       });
 
       // Clear messages from connection setup
@@ -208,8 +211,13 @@ describe('Worker WebSocket history and notifications', () => {
       // Wait for async history fetch
       await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Verify getWorkerOutputHistory was called with fromOffset=500 and maxLines=undefined
-      expect(spy).toHaveBeenCalledWith(sessionId, workerId, 500, undefined);
+      // Verify getWorkerOutputHistory was called with fromOffset=500 and a numeric line cap
+      expect(spy).toHaveBeenCalled();
+      const call = spy.mock.calls[0];
+      expect(call[0]).toBe(sessionId);
+      expect(call[1]).toBe(workerId);
+      expect(call[2]).toBe(500);
+      expect(typeof call[3]).toBe('number');
 
       const historyMessages = mockWs.sentMessages
         .map(m => JSON.parse(m))
@@ -218,6 +226,8 @@ describe('Worker WebSocket history and notifications', () => {
       expect(historyMessages).toHaveLength(1);
       expect(historyMessages[0].data).toBe('incremental data');
       expect(historyMessages[0].offset).toBe(700);
+      expect(historyMessages[0].startOffset).toBe(500);
+      expect(historyMessages[0].epoch).toBe(111);
     });
 
     it('should apply line limit for initial load (fromOffset = 0)', async () => {
@@ -226,6 +236,8 @@ describe('Worker WebSocket history and notifications', () => {
       const spy = spyOn(sessionManager, 'getWorkerOutputHistory').mockResolvedValue({
         data: 'initial data',
         offset: 100,
+        startOffset: 0,
+        epoch: 222,
       });
 
       mockWs.sentMessages.length = 0;
@@ -298,94 +310,30 @@ describe('Worker WebSocket history and notifications', () => {
   });
 
   // =========================================================================
-  // Output truncation notification tests
+  // History messages carry absolute startOffset + epoch (§3.1 / §3.4)
   // =========================================================================
 
-  describe('output-truncated notification', () => {
-    it('should send output-truncated message to connected worker clients', async () => {
-      const { sessionId, workerId, mockWs } = await createSessionAndConnect();
+  describe('history startOffset + epoch', () => {
+    it('an initial history response carries startOffset and epoch fields', async () => {
+      const { handlers, mockWs } = await createSessionAndConnect();
 
-      // Clear messages from connection setup
-      mockWs.sentMessages.length = 0;
-
-      // Directly call the truncation notification via the registry
-      // The notifyWorkerOutputTruncated function uses registry.getWorkerConnections
-      // We simulate this by getting connections and sending the message
-      const connections = testRegistry.getWorkerConnections(sessionId, workerId);
-      expect(connections).toBeDefined();
-      expect(connections!.size).toBeGreaterThan(0);
-
-      // The actual notifyWorkerOutputTruncated is a module-level function registered as callback.
-      // Since we passed testRegistry, the function uses our registry.
-      // We need to trigger it via the WorkerOutputFileManager callback mechanism.
-      // Instead, we import and test the function's behavior through integration:
-      // simulate what happens when truncation occurs by sending the message pattern directly
-      const truncMsg = {
-        type: 'output-truncated',
-        message: 'Output history truncated due to size limits',
-        newOffset: 1024,
-      };
-
-      for (const ws of connections!) {
-        ws.send(JSON.stringify(truncMsg));
-      }
-
-      const truncMessages = mockWs.sentMessages
-        .map(m => JSON.parse(m))
-        .filter(m => m.type === 'output-truncated');
-
-      expect(truncMessages).toHaveLength(1);
-      expect(truncMessages[0].newOffset).toBe(1024);
-      expect(truncMessages[0].message).toBe('Output history truncated due to size limits');
-    });
-
-    it('should send output-truncated only to targeted worker connections', async () => {
-      // Create two sessions with workers
-      const { sessionId: sid1, workerId: wid1, mockWs: mockWs1 } = await createSessionAndConnect();
-
-      const session2 = await sessionManager.createSession({
-        type: 'quick',
-        locationPath: '/test/path2',
-        agentId: 'claude-code',
+      const spy = spyOn(sessionManager, 'getWorkerOutputHistory').mockResolvedValue({
+        data: 'recent window',
+        offset: 4242,
+        startOffset: 4000,
+        epoch: 1782950400000,
       });
-      const worker2 = session2.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const mockContext2 = {
-        req: {
-          param: (name: string) => {
-            if (name === 'sessionId') return session2.id;
-            if (name === 'workerId') return worker2.id;
-            return '';
-          },
-        },
-      };
-      const handlers2 = capturedWorkerHandlerFactory!(mockContext2);
-      const mockWs2 = createMockWs();
-      handlers2.onOpen({}, mockWs2);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      mockWs.sentMessages.length = 0;
+      handlers.onMessage({ data: JSON.stringify({ type: 'request-history' }) }, mockWs);
+      await new Promise(resolve => setTimeout(resolve, 200));
 
-      // Clear all messages
-      mockWs1.sentMessages.length = 0;
-      mockWs2.sentMessages.length = 0;
-
-      // Send truncation notification only to worker 1's connections
-      const connections1 = testRegistry.getWorkerConnections(sid1, wid1);
-      expect(connections1).toBeDefined();
-
-      for (const ws of connections1!) {
-        ws.send(JSON.stringify({
-          type: 'output-truncated',
-          message: 'Output history truncated due to size limits',
-          newOffset: 2048,
-        }));
-      }
-
-      // Only mockWs1 should have received the message
-      const trunc1 = mockWs1.sentMessages.filter(m => JSON.parse(m).type === 'output-truncated');
-      const trunc2 = mockWs2.sentMessages.filter(m => JSON.parse(m).type === 'output-truncated');
-
-      expect(trunc1).toHaveLength(1);
-      expect(trunc2).toHaveLength(0);
+      const history = mockWs.sentMessages.map(m => JSON.parse(m)).filter(m => m.type === 'history');
+      expect(history).toHaveLength(1);
+      expect(history[0].startOffset).toBe(4000);
+      expect(history[0].epoch).toBe(1782950400000);
+      expect(history[0].offset).toBe(4242);
+      spy.mockRestore();
     });
   });
 

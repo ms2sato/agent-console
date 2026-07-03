@@ -132,6 +132,7 @@ export function buildInternalAgentWorker(
     pty: null,
     outputBuffer: '',
     outputOffset: 0,
+    epoch: 1_700_000_000_000,
     connectionCallbacks: new Map(),
     activityState: 'unknown',
     activityDetector: null,
@@ -150,6 +151,7 @@ export function buildInternalTerminalWorker(
     pty: null,
     outputBuffer: '',
     outputOffset: 0,
+    epoch: 1_700_000_000_000,
     connectionCallbacks: new Map(),
     ...overrides,
   };

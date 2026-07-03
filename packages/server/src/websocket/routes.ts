@@ -19,7 +19,6 @@ import { createLogger } from '../lib/logger.js';
 import { getServerPid } from '../lib/config.js';
 import { serverConfig } from '../lib/server-config.js';
 import { sendSessionsSync, createAppMessageHandler } from './app-handler.js';
-import { setOutputTruncatedCallback } from '../lib/worker-output-file.js';
 import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
 import { withRepositoryRemote } from '../lib/repository-remote.js';
@@ -193,35 +192,29 @@ export function notifySessionPaused(sessionId: string): void {
 }
 
 /**
- * Notify all Worker WebSocket connections for a specific worker that output was truncated.
- * Sends output-truncated message to inform the client that history was trimmed.
- *
- * Registered as callback in setupWebSocketRoutes() to avoid circular dependency.
- * Called by WorkerOutputFileManager when output file exceeds size limits.
+ * Close all open Worker WebSocket connections for a worker with a normal-closure
+ * code, forcing a reconnect. Used on worker restart: restart installs a new
+ * worker object without rebinding already-attached sockets' callbacks, so an
+ * attached client would otherwise never receive a new-epoch message. The
+ * reconnect lands on the new incarnation and gets the new epoch via the initial
+ * `history` response (terminal-history-paging.md §3.4 / §4.5).
  */
-function notifyWorkerOutputTruncated(sessionId: string, workerId: string, newOffset: number): void {
+function closeWorkerSocketsForRestart(sessionId: string, workerId: string): void {
   const connections = registry.getWorkerConnections(sessionId, workerId);
   if (!connections || connections.size === 0) {
-    logger.debug({ sessionId, workerId }, 'No worker connections to notify for output truncation');
     return;
   }
 
-  const msg: WorkerServerMessage = {
-    type: 'output-truncated',
-    message: 'Output history truncated due to size limits',
-    newOffset,
-  };
-  const msgStr = JSON.stringify(msg);
-
-  for (const ws of connections) {
+  // Snapshot before closing — onClose mutates the registry set.
+  for (const ws of Array.from(connections)) {
     try {
-      ws.send(msgStr);
+      ws.close(WS_CLOSE_CODE.NORMAL_CLOSURE, 'worker restarted');
     } catch (e) {
-      logger.warn({ sessionId, workerId, err: e }, 'Failed to send truncation notification');
+      logger.warn({ sessionId, workerId, err: e }, 'Failed to close worker socket on restart');
     }
   }
 
-  logger.debug({ sessionId, workerId, connectionCount: connections.size }, 'Sent truncation notification');
+  logger.info({ sessionId, workerId, connectionCount: connections.size }, 'Closed worker sockets for restart');
 }
 
 /**
@@ -230,7 +223,6 @@ function notifyWorkerOutputTruncated(sessionId: string, workerId: string, newOff
  * Used by assertFullyInitialized() to detect missing initialization steps.
  */
 const REQUIRED_INIT_STEPS = [
-  'setOutputTruncatedCallback',
   'setSessionExistsCallback',
   'setGlobalActivityCallback',
   'setGlobalWorkerExitCallback',
@@ -291,11 +283,6 @@ export async function setupWebSocketRoutes(
 
   // Track which initialization steps have been completed
   const completedSteps = new Set<string>();
-
-  // Register output truncation callback to avoid circular dependency
-  // worker-output-file.ts needs to notify clients but can't import routes.ts directly
-  setOutputTruncatedCallback(notifyWorkerOutputTruncated);
-  completedSteps.add('setOutputTruncatedCallback');
 
   // Create worker message handler with the properly initialized sessionManager
   const handleWorkerMessage = createWorkerMessageHandler({ sessionManager });
@@ -375,6 +362,10 @@ export async function setupWebSocketRoutes(
     onWorkerRestarted: (sessionId, workerId, activityState) => {
       logger.debug({ sessionId, workerId }, 'Broadcasting worker-restarted');
       broadcastToApp({ type: 'worker-restarted', sessionId, workerId, activityState });
+      // Force any attached worker sockets to reconnect onto the new incarnation
+      // so they receive the new epoch (the app-ws event above is a UX fast-path
+      // only and can be missed). See terminal-history-paging.md §3.4 / §4.5.
+      closeWorkerSocketsForRestart(sessionId, workerId);
     },
     onSessionPaused: (session) => {
       logger.debug({ sessionId: session.id }, 'Broadcasting session-paused');
@@ -589,8 +580,8 @@ export async function setupWebSocketRoutes(
 
         // Register callbacks for new output
         connectionId = sessionManager.attachWorkerCallbacks(sessionId, workerId, {
-          onData: (data, offset) => {
-            sender?.send({ type: 'output', data, offset });
+          onData: (data, offset, epoch) => {
+            sender?.send({ type: 'output', data, offset, epoch });
           },
           onExit: (exitCode, signal, reason) => {
             sender?.send({ type: 'exit', exitCode, signal, reason });
@@ -810,13 +801,18 @@ export async function setupWebSocketRoutes(
               // Extract fromOffset from the request (optional, defaults to 0)
               const fromOffset = typeof parsed.fromOffset === 'number' ? parsed.fromOffset : 0;
 
+              // Epoch for the fallback / timeout paths that do not read the
+              // manifest. Successful reads carry the manifest epoch instead.
+              const fallbackEpoch = sessionManager.getWorkerEpoch(sessionId, workerId) ?? 0;
+
               const timeoutPromise = new Promise<null>((_, reject) => {
                 setTimeout(() => reject(new Error('History request timeout')), HISTORY_REQUEST_TIMEOUT_MS);
               });
 
-              // If fromOffset > 0, we're doing incremental sync (no line limit)
-              // If fromOffset === 0, we're doing initial load (apply line limit)
-              const maxLines = fromOffset === 0 ? serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES : undefined;
+              // Line cap: the initial-load limit for fromOffset 0, and the
+              // recent-window fallback cap for the archived-out / stale branches
+              // of an incremental read (§3.1).
+              const maxLines = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES;
 
               Promise.race([
                 sessionManager.getWorkerOutputHistory(
@@ -833,18 +829,23 @@ export async function setupWebSocketRoutes(
                       type: 'history',
                       data: historyResult.data,
                       offset: historyResult.offset,
+                      startOffset: historyResult.startOffset,
+                      epoch: historyResult.epoch,
                     };
                     ws.send(JSON.stringify(historyMsg));
-                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length, offset: historyResult.offset, fromOffset }, 'Sent history on request');
+                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length, offset: historyResult.offset, startOffset: historyResult.startOffset, fromOffset }, 'Sent history on request');
                   } else {
                     // Fallback to in-memory buffer (only for initial load)
                     if (fromOffset === 0) {
                       const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
                       if (history) {
+                        const byteLength = Buffer.byteLength(history, 'utf-8');
                         const historyMsg: WorkerServerMessage = {
                           type: 'history',
                           data: history,
-                          offset: Buffer.byteLength(history, 'utf-8'),
+                          offset: byteLength,
+                          startOffset: 0,
+                          epoch: fallbackEpoch,
                         };
                         ws.send(JSON.stringify(historyMsg));
                         logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
@@ -854,6 +855,8 @@ export async function setupWebSocketRoutes(
                           type: 'history',
                           data: '',
                           offset: 0,
+                          startOffset: 0,
+                          epoch: fallbackEpoch,
                         };
                         ws.send(JSON.stringify(historyMsg));
                         logger.debug({ sessionId, workerId }, 'Sent empty history on request');
@@ -864,6 +867,8 @@ export async function setupWebSocketRoutes(
                         type: 'history',
                         data: '',
                         offset: fromOffset,
+                        startOffset: fromOffset,
+                        epoch: fallbackEpoch,
                       };
                       ws.send(JSON.stringify(historyMsg));
                       logger.debug({ sessionId, workerId, fromOffset }, 'Sent empty incremental history on request');
@@ -883,6 +888,8 @@ export async function setupWebSocketRoutes(
                         type: 'history',
                         data: '',
                         offset: fromOffset,
+                        startOffset: fromOffset,
+                        epoch: fallbackEpoch,
                         timedOut: true,
                       };
                       ws.send(JSON.stringify(historyMsg));

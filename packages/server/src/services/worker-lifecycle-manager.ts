@@ -201,9 +201,16 @@ export class WorkerLifecycleManager {
     session.workers.set(workerId, worker);
 
     // Initialize output file immediately for PTY workers (agent/terminal)
-    // This prevents race conditions where WebSocket connects before any output is buffered
-    if (request.type === 'agent' || request.type === 'terminal') {
-      await this.deps.workerOutputFileManager.initializeWorkerOutput(sessionId, workerId, resolver);
+    // This prevents race conditions where WebSocket connects before any output is buffered.
+    // Record the worker's already-minted epoch in the manifest so history reads
+    // and live output messages carry the same generation identifier (§3.4).
+    if (worker.type === 'agent' || worker.type === 'terminal') {
+      worker.epoch = await this.deps.workerOutputFileManager.initializeWorkerOutput(
+        sessionId,
+        workerId,
+        resolver,
+        worker.epoch,
+      );
     }
 
     await this.deps.persistSession(session);
@@ -403,9 +410,12 @@ export class WorkerLifecycleManager {
     // Kill existing worker
     await this.deps.workerManager.killWorker(existingWorker, sessionId);
 
-    // Reset the output file to prevent offset mismatch with client cache.
+    // Reset the output file to prevent offset mismatch with client cache. This
+    // mints a NEW generation epoch (the stream restarts at 0 under a new
+    // generation); the new worker object must carry it so `output` messages and
+    // `history` responses agree (§3.4 / §4.5).
     const resolver = this.deps.getPathResolver(session);
-    await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
+    const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
 
     // Create new worker with same ID, preserving original createdAt for tab order
     const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
@@ -417,6 +427,10 @@ export class WorkerLifecycleManager {
       createdAt: workerCreatedAt,
       agentId: workerAgentId,
     });
+    // Adopt the epoch minted by resetWorkerOutput so the manifest and the
+    // in-memory worker agree from the first live chunk (activation is
+    // revived:false, so it does not reload the epoch).
+    newWorker.epoch = newEpoch;
     await this.deps.workerManager.activateAgentWorkerPty(newWorker, {
       sessionId,
       locationPath,
@@ -669,9 +683,11 @@ export class WorkerLifecycleManager {
    * Get worker output history from file with optional offset for incremental sync.
    * @param sessionId Session ID
    * @param workerId Worker ID
-   * @param fromOffset If specified, return only data after this offset
-   * @param maxLines If specified and fromOffset is 0 or undefined, limit to last N lines
-   * @returns History data and current offset, or null if not available
+   * @param fromOffset If specified, return only data after this absolute offset
+   * @param maxLines Recent-window line cap: the initial-load limit when fromOffset
+   *   is 0/undefined, and the fallback cap for the archived-out / stale branches
+   *   of an incremental read (§3.1)
+   * @returns History data and absolute offsets, or null if not available
    */
   async getWorkerOutputHistory(
     sessionId: string,
@@ -695,7 +711,19 @@ export class WorkerLifecycleManager {
       return this.deps.workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines, resolver);
     }
 
-    return this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver, fromOffset);
+    return this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver, fromOffset, maxLines);
+  }
+
+  /**
+   * Get the current generation epoch for a worker (in-memory incarnation tag).
+   * Used to stamp history responses assembled from the in-memory buffer or the
+   * empty/timeout fallbacks, which do not read the manifest. Returns null for
+   * missing or git-diff workers.
+   */
+  getWorkerEpoch(sessionId: string, workerId: string): number | null {
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type === 'git-diff') return null;
+    return worker.epoch;
   }
 
   /**

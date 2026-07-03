@@ -411,6 +411,25 @@ describe('WorkerManager', () => {
       expect(onData1).toHaveBeenCalledTimes(1);
       expect(onData2).toHaveBeenCalledTimes(1);
     });
+
+    it('should deliver the worker generation epoch as the third onData argument', async () => {
+      const worker = createTestTerminalWorker();
+      // Freshly-minted workers carry a positive epoch (incarnation timestamp).
+      expect(worker.epoch).toBeGreaterThan(0);
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+
+      const calls: Array<[string, number, number]> = [];
+      const onData = mock((data: string, offset: number, epoch: number) => {
+        calls.push([data, offset, epoch]);
+      });
+      workerManager.attachCallbacks(worker, { onData, onExit: mock(() => {}) });
+
+      ptyFactory.instances[0].simulateData('chunk');
+
+      expect(calls).toHaveLength(1);
+      // The third argument is the worker's current generation epoch.
+      expect(calls[0][2]).toBe(worker.epoch);
+    });
   });
 
   describe('getOutputBuffer', () => {

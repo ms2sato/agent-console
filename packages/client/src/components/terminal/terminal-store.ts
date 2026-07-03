@@ -478,11 +478,6 @@ class TerminalController implements TerminalInstance {
       case 'exit':
         this.updateStatus('exited', { code: message.exitCode, signal: message.signal });
         break;
-      case 'output-truncated':
-        // Server dropped older output; advance our offset and surface a banner.
-        this.lastOffset = message.newOffset;
-        this.patchMeta({ notice: message.message });
-        break;
       case 'error':
         this.handleError(message.message, message.code);
         break;

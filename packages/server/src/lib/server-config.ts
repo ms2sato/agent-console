@@ -33,10 +33,18 @@ export const serverConfig = {
   WORKER_OUTPUT_BUFFER_SIZE: parseInt(process.env.WORKER_OUTPUT_BUFFER_SIZE || '100000', 10),
   /**
    * Maximum size of worker output file (in bytes).
-   * Output files larger than this are truncated from the beginning.
+   * When the live output file exceeds this, the oldest ~20% is archived into a
+   * gzip segment (not destroyed) and the live file is rewritten to the remainder.
    * Default: 10MB (10 * 1024 * 1024 bytes)
    */
   WORKER_OUTPUT_FILE_MAX_SIZE: parseInt(process.env.WORKER_OUTPUT_FILE_MAX_SIZE || String(10 * 1024 * 1024), 10),
+  /**
+   * Maximum number of archived gzip segments retained per worker.
+   * When exceeded after a cut, the oldest segments are deleted (their history
+   * becomes unreachable). `0` opts into unlimited retention.
+   * Default: 100 segments (~200MB raw / ~20MB gz at the default segment size).
+   */
+  WORKER_OUTPUT_MAX_SEGMENTS: parseInt(process.env.WORKER_OUTPUT_MAX_SEGMENTS || '100', 10),
   /**
    * Interval for flushing buffered output to file (in milliseconds).
    * Default: 100ms

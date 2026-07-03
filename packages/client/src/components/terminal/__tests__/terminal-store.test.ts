@@ -625,28 +625,21 @@ describe('terminal-store', () => {
     expect(text).not.toContain('OLD');
   });
 
-  it('output-truncated sets a dismissible notice and advances the offset', async () => {
-    _setTimings({ reconnectDelayMs: 0 });
-    const instance = getOrCreateTerminal('otr', 'w');
+  it('ignores additive epoch/startOffset fields on history/output (forward-compat)', async () => {
+    // PR-A adds `epoch` to output and `startOffset`/`epoch` to history. The
+    // current client ignores them (consumed in the PR-C client work); receiving
+    // them must not break rendering or offset tracking.
+    const instance = getOrCreateTerminal('epoch-additive', 'w');
     const ws1 = MockWebSocket.getLastInstance();
     ws1!.simulateOpen();
     ws1!.simulateMessage(
-      JSON.stringify({ type: 'output-truncated', message: 'Output truncated', newOffset: 900 }),
+      JSON.stringify({ type: 'history', data: 'HELLO', offset: 5, startOffset: 0, epoch: 1782950400000 }),
     );
-    expect(instance.getSnapshot().notice).toBe('Output truncated');
-
-    instance.dismissNotice();
-    expect(instance.getSnapshot().notice).toBeNull();
-
-    // Offset advanced to 900: next reconnect requests from there.
-    ws1!.simulateClose();
+    ws1!.simulateMessage(
+      JSON.stringify({ type: 'output', data: ' WORLD', offset: 11, epoch: 1782950400000 }),
+    );
     await flush();
-    const ws2 = MockWebSocket.getLastInstance();
-    ws2!.simulateOpen();
-    const history = lastSentMessages(ws2!).find(
-      (m) => (m as { type: string }).type === 'request-history',
-    );
-    expect(history).toEqual({ type: 'request-history', fromOffset: 900 });
+    expect(allText(instance)).toContain('HELLO WORLD');
   });
 
   it('worker-restarted (app-WS) resets the buffer, reconnects, and shows a notice', async () => {

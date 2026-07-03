@@ -463,6 +463,12 @@ describe('WorkerLifecycleManager', () => {
       // Old PTY killed, new PTY spawned
       expect(ptyFactory.instances[0].killed).toBe(true);
       expect(ptyFactory.instances.length).toBe(2);
+
+      // Restart mints a new generation epoch; the new worker object adopts it so
+      // live output and history reads agree (§3.4 / §4.5).
+      const newEpoch = lifecycleManager.getWorkerEpoch(session.id, originalId);
+      expect(typeof newEpoch).toBe('number');
+      expect(newEpoch).toBeGreaterThan(0);
     });
 
     it('should restart with different agent ID', async () => {
@@ -923,6 +929,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -953,6 +960,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         connectionCallbacks: new Map(),
       };
       session.workers.set(terminalWorker.id, terminalWorker);
@@ -1028,6 +1036,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1064,6 +1073,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1091,6 +1101,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1116,6 +1127,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1143,6 +1155,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1186,6 +1199,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         connectionCallbacks: new Map(),
       };
       session.workers.set(terminalWorker.id, terminalWorker);
@@ -1248,6 +1262,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         connectionCallbacks: new Map(),
       };
       session.workers.set(terminalWorker.id, terminalWorker);
@@ -1269,6 +1284,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         connectionCallbacks: new Map(),
       };
       session.workers.set(terminalWorker.id, terminalWorker);
@@ -1293,6 +1309,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         connectionCallbacks: new Map(),
       };
       session.workers.set(terminalWorker.id, terminalWorker);
@@ -1525,6 +1542,39 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  describe('getWorkerEpoch', () => {
+    it('returns the worker generation epoch for a PTY worker', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, { type: 'terminal' });
+      const epoch = lifecycleManager.getWorkerEpoch(session.id, worker!.id);
+
+      expect(typeof epoch).toBe('number');
+      expect(epoch).toBeGreaterThan(0);
+    });
+
+    it('returns null for a missing worker', () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      expect(lifecycleManager.getWorkerEpoch(session.id, 'non-existent')).toBeNull();
+    });
+
+    it('returns null for a git-diff worker', () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'git-diff-epoch',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'abc123',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+      expect(lifecycleManager.getWorkerEpoch(session.id, gitDiffWorker.id)).toBeNull();
+    });
+  });
+
   describe('getWorkerActivityState', () => {
     it('should return activity state for agent worker', async () => {
       const session = createTestSession();
@@ -1667,7 +1717,7 @@ describe('WorkerLifecycleManager', () => {
       ptyFactory.instances[0].simulateData('test output');
 
       // onData receives (data, offset) - the cumulative byte offset
-      expect(onData).toHaveBeenCalledWith('test output', expect.any(Number));
+      expect(onData).toHaveBeenCalledWith('test output', expect.any(Number), expect.any(Number));
     });
 
     it('should handle PTY exit callbacks', async () => {
@@ -1731,6 +1781,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1763,6 +1814,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1842,6 +1894,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
@@ -1868,6 +1921,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         connectionCallbacks: new Map(),
       };
       session.workers.set(terminalWorker.id, terminalWorker);
@@ -1892,6 +1946,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         connectionCallbacks: new Map(),
       };
       session.workers.set(terminalWorker.id, terminalWorker);
@@ -1969,6 +2024,7 @@ describe('WorkerLifecycleManager', () => {
         pty: null,
         outputBuffer: '',
         outputOffset: 0,
+        epoch: 1_700_000_000_000,
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
