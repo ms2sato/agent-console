@@ -13,9 +13,7 @@ import {
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState, pickTerminalComponent } from '../SessionPage';
-import { MemoizedTerminal } from '../../Terminal';
-import { PocTerminalAdapter } from '../../../labs/terminal-poc/PocTerminalAdapter';
+import { sessionToPageState } from '../SessionPage';
 
 // Test helpers
 
@@ -281,16 +279,6 @@ describe('executeWorkerRestart', () => {
       // Should use the first agent worker (agent-1), not terminal-1 or agent-2
       expect(mockRestartAgentWorker.mock.calls[0][1]).toBe('agent-1');
     });
-  });
-});
-
-describe('pickTerminalComponent', () => {
-  it('returns the production Terminal for the legacy renderer', () => {
-    expect(pickTerminalComponent('legacy')).toBe(MemoizedTerminal);
-  });
-
-  it('returns the PoC adapter for the next renderer', () => {
-    expect(pickTerminalComponent('next')).toBe(PocTerminalAdapter);
   });
 });
 

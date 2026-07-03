@@ -1,12 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { ComponentType } from 'react';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { MemoizedTerminal as Terminal, type ConnectionStatus, type TerminalProps } from '../Terminal';
 import { PocTerminalAdapter } from '../../labs/terminal-poc/PocTerminalAdapter';
-import {
-  useTerminalRenderer,
-  type TerminalRenderer,
-} from '../../labs/terminal-poc/renderer-flag';
+import type { ConnectionStatus } from '../../labs/terminal-poc/terminal-contract';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
 import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
@@ -30,16 +25,6 @@ import { logger } from '../../lib/logger';
 
 export { sessionToPageState } from './hooks/useSessionPageState';
 export type { PageState } from './hooks/useSessionPageState';
-
-/**
- * Pick the terminal implementation for the active renderer flag. Both accept the
- * same `TerminalProps`, so the swap is a component-identity switch with no prop
- * changes. Exported as a pure seam so the flag branch is unit-testable without
- * rendering the whole SessionPage.
- */
-export function pickTerminalComponent(renderer: TerminalRenderer): ComponentType<TerminalProps> {
-  return renderer === 'next' ? PocTerminalAdapter : Terminal;
-}
 
 // Get branch name from session (for worktree sessions)
 function getBranchName(session: Session): string {
@@ -104,8 +89,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const { agents } = useAgents();
   const messagePanelRef = useRef<MessagePanelHandle>(null);
   const navigate = useNavigate();
-  // Feature-flag: legacy production Terminal vs the labs PoC renderer (PR-4).
-  const terminalRenderer = useTerminalRenderer();
   // State for resuming paused session
   const [isResuming, setIsResuming] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
@@ -454,7 +437,6 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const activeAgentId = activeWorker?.type === 'agent' ? activeWorker.agentId : undefined;
   const activeAgent = activeAgentId ? agents.find(a => a.id === activeAgentId) : undefined;
   const shouldStripScrollback = activeAgent?.stripScrollbackClear ?? false;
-  const TerminalComponent = pickTerminalComponent(terminalRenderer);
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
@@ -525,7 +507,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             workerId={activeTab.id}
           />
         ) : (
-          <TerminalComponent
+          <PocTerminalAdapter
             sessionId={sessionId}
             workerId={activeTab.id}
             onStatusChange={handleStatusChange}

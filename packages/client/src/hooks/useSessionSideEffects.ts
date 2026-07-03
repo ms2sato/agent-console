@@ -5,14 +5,11 @@ import type { UseWorktreeCreationTasksReturn } from './useWorktreeCreationTasks'
 import type { UseWorktreeDeletionTasksReturn } from './useWorktreeDeletionTasks';
 import { useAppWsEvent } from './useAppWs';
 import { worktreeKeys, sessionKeys } from '../lib/query-keys';
-import { clearTerminalState } from '../lib/terminal-state-cache';
 import { disconnectSession } from '../lib/worker-websocket';
 import { clearDraftsForSession } from './useDraftMessage';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
-import { logger } from '../lib/logger';
 
 interface UseSessionSideEffectsOptions {
-  sessions: Session[];
   handleSessionsSync: (sessions: Session[], activityStates: WorkerActivityInfo[]) => void;
   handleSessionCreated: (session: Session) => void;
   handleSessionUpdated: (session: Session) => void;
@@ -30,14 +27,12 @@ interface UseSessionSideEffectsOptions {
  *
  * Responsibilities:
  * - Invalidates session validation cache after session CRUD
- * - Clears terminal state cache on session delete and worker restart
  * - Disconnects WebSocket on session pause
  * - Invalidates worktree queries on deletion complete
  * - Subscribes to app WebSocket events
  * - Updates favicon based on worker activity
  */
 export function useSessionSideEffects({
-  sessions,
   handleSessionsSync,
   handleSessionCreated,
   handleSessionUpdated,
@@ -63,20 +58,10 @@ export function useSessionSideEffects({
   }, [handleSessionCreated, invalidateValidation]);
 
   const handleSessionDeletedWithValidation = useCallback((sessionId: string) => {
-    // Capture the worker list BEFORE removing the session from state,
-    // so we can clean up their IndexedDB terminal state cache entries.
-    const session = sessions.find(s => s.id === sessionId);
-    if (session) {
-      for (const worker of session.workers) {
-        clearTerminalState(sessionId, worker.id).catch((e) =>
-          logger.warn('[RootLayout] Failed to clear terminal cache on session delete:', e)
-        );
-      }
-    }
     clearDraftsForSession(sessionId);
     handleSessionDeleted(sessionId);
     invalidateValidation();
-  }, [sessions, handleSessionDeleted, invalidateValidation]);
+  }, [handleSessionDeleted, invalidateValidation]);
 
   const handleSessionUpdatedWithValidation = useCallback((...args: Parameters<typeof handleSessionUpdated>) => {
     handleSessionUpdated(...args);
@@ -104,14 +89,8 @@ export function useSessionSideEffects({
     queryClient.invalidateQueries({ queryKey: worktreeKeys.root() });
   }, [worktreeDeletionTasks, queryClient]);
 
-  // Clear IndexedDB terminal cache when a worker is restarted.
-  // The active (mounted) Terminal component handles its own cache clearing,
-  // but unmounted workers on inactive tabs would retain stale cache entries.
   const handleWorkerRestarted = useCallback((sessionId: string, workerId: string, activityState: AgentActivityState) => {
     handleWorkerActivity(sessionId, workerId, activityState);
-    clearTerminalState(sessionId, workerId).catch((e) =>
-      logger.warn('[RootLayout] Failed to clear terminal cache on worker restart:', e)
-    );
   }, [handleWorkerActivity]);
 
   // Subscribe to app WebSocket events for real-time session updates
