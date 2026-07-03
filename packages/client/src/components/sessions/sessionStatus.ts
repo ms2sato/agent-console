@@ -1,4 +1,4 @@
-import type { ConnectionStatus } from '../../labs/terminal-poc/terminal-contract';
+import type { ConnectionStatus } from '../../components/terminal/terminal-contract';
 import type { AgentActivityState } from '@agent-console/shared';
 
 type WorkerType = 'agent' | 'terminal' | 'git-diff';

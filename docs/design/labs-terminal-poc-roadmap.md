@@ -154,6 +154,8 @@ Trigger: owner declares bake period over (suggested: 2+ weeks of default-on dogf
 Estimated diff: large negative (~-2000 lines). Depends on PR-4 + bake.
 
 > **Execution note (2026-07-03, PR #962):** the deletion shipped as scoped above, but two PR-5 items were deliberately deferred to keep the removal a pure single-revert deletion: the `labs/terminal-poc/` → `components/terminal/` rename and the glossary/design-doc consolidation. Both are tracked in [#963](https://github.com/ms2sato/agent-console/issues/963). The bake period was cut short by owner decision after the evidence recorded in #940 (the intermediate default-flip was skipped for the same reason).
+>
+> **Update (#963):** the `labs/terminal-poc/` → `components/terminal/` move landed, and the `Poc` prefix was dropped from all identifiers (`PocTerminalAdapter` → `TerminalAdapter`, `poc-terminal-store` → `terminal-store`, etc.); the dev scratch route moved to `/labs/terminal`. `labs/terminal-poc/*` path references elsewhere in this document are retained as historical spec (line references were captured against the pre-move tree).
 
 ## Memory management design (PR-1)
 

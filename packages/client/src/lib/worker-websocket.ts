@@ -3,10 +3,10 @@
  * Manages WebSocket connections for git-diff workers.
  * Follows the same singleton pattern as app-websocket.ts.
  *
- * Terminal/agent PTY transport used to live here too, but the next renderer's
- * poc-terminal-store owns its own WebSocket (issue #941 removed the legacy
- * renderer; #961 removed the orphaned terminal transport). git-diff is the only
- * worker type routed through this module now.
+ * Terminal/agent PTY transport used to live here too, but the terminal store
+ * (components/terminal/terminal-store) owns its own WebSocket (issue #941 removed
+ * the legacy renderer; #961 removed the orphaned terminal transport). git-diff is
+ * the only worker type routed through this module now.
  *
  * Key design decisions:
  * - Each worker has its own WebSocket connection (different from app-websocket which is single)

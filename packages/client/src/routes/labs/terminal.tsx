@@ -2,44 +2,44 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useQuery } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fetchWorkers } from '../../lib/api';
-import { getOrCreatePocTerminal } from '../../labs/terminal-poc/poc-terminal-store';
-import { PocTerminalView } from '../../labs/terminal-poc/PocTerminalView';
-import { PocKeyboardInput } from '../../labs/terminal-poc/PocKeyboardInput';
-import { useVisualViewportHeight } from '../../labs/terminal-poc/useVisualViewportHeight';
-import { githubRefDecorator } from '../../labs/terminal-poc/transforms/github-refs';
-import type { SegmentDecorator, TransformContext } from '../../labs/terminal-poc/row-transforms';
-import { useSessionRepoFullName } from '../../labs/terminal-poc/useSessionRepoFullName';
+import { getOrCreateTerminal } from '../../components/terminal/terminal-store';
+import { TerminalView } from '../../components/terminal/TerminalView';
+import { TerminalKeyboardInput } from '../../components/terminal/TerminalKeyboardInput';
+import { useVisualViewportHeight } from '../../components/terminal/useVisualViewportHeight';
+import { githubRefDecorator } from '../../components/terminal/transforms/github-refs';
+import type { SegmentDecorator, TransformContext } from '../../components/terminal/row-transforms';
+import { useSessionRepoFullName } from '../../components/terminal/useSessionRepoFullName';
 
 const SEGMENT_DECORATORS: readonly SegmentDecorator[] = [githubRefDecorator];
 
-interface TerminalPocSearch {
+interface TerminalSearch {
   sessionId?: string;
   workerId?: string;
 }
 
-export const Route = createFileRoute('/labs/terminal-poc')({
-  validateSearch: (search: Record<string, unknown>): TerminalPocSearch => ({
+export const Route = createFileRoute('/labs/terminal')({
+  validateSearch: (search: Record<string, unknown>): TerminalSearch => ({
     sessionId: typeof search.sessionId === 'string' ? search.sessionId : undefined,
     workerId: typeof search.workerId === 'string' ? search.workerId : undefined,
   }),
-  component: TerminalPocRoute,
+  component: TerminalRoute,
 });
 
-function TerminalPocRoute() {
+function TerminalRoute() {
   const { sessionId, workerId } = Route.useSearch();
   if (sessionId && workerId) {
-    return <TerminalPocPage sessionId={sessionId} workerId={workerId} />;
+    return <TerminalPage sessionId={sessionId} workerId={workerId} />;
   }
-  return <TerminalPocPicker initialSessionId={sessionId} />;
+  return <TerminalPicker initialSessionId={sessionId} />;
 }
 
-function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId: string }) {
+function TerminalPage({ sessionId, workerId }: { sessionId: string; workerId: string }) {
   const vvh = useVisualViewportHeight();
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Instance is keyed by sessionId:workerId and lives in the module store, so
   // this memo just fetches the live handle (never re-creates on re-render).
   const instance = useMemo(
-    () => getOrCreatePocTerminal(sessionId, workerId),
+    () => getOrCreateTerminal(sessionId, workerId),
     [sessionId, workerId],
   );
 
@@ -77,7 +77,7 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
       style={{ height: vvh || '100vh' }}
     >
       <header className="flex items-center justify-between border-b border-slate-700 bg-slate-900 px-3 py-2 text-white">
-        <span className="text-sm font-medium">Terminal Renderer PoC (labs)</span>
+        <span className="text-sm font-medium">Terminal Renderer (labs)</span>
         <span className="text-xs text-slate-400">{sessionId.slice(0, 8)} / {workerId.slice(0, 8)}</span>
       </header>
 
@@ -87,7 +87,7 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
       <NoticeBanner instance={instance} />
       <WorkerErrorStrip instance={instance} />
 
-      <PocTerminalView
+      <TerminalView
         instance={instance}
         onRequestFocus={focusInput}
         onFilesReceived={handleFilesReceived}
@@ -96,7 +96,7 @@ function TerminalPocPage({ sessionId, workerId }: { sessionId: string; workerId:
         transformContext={transformContext}
       />
 
-      <PocKeyboardInput ref={inputRef} instance={instance} onFilesReceived={handleFilesReceived} />
+      <TerminalKeyboardInput ref={inputRef} instance={instance} onFilesReceived={handleFilesReceived} />
 
       <ExitBanner instance={instance} />
 
@@ -131,7 +131,7 @@ function FileReceiptToast({ files }: { files: FileReceipt['files'] }) {
   );
 }
 
-function LoadingHistoryBar({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+function LoadingHistoryBar({ instance }: { instance: ReturnType<typeof getOrCreateTerminal> }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   if (!snapshot.loadingHistory) return null;
   return (
@@ -141,7 +141,7 @@ function LoadingHistoryBar({ instance }: { instance: ReturnType<typeof getOrCrea
   );
 }
 
-function NoticeBanner({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+function NoticeBanner({ instance }: { instance: ReturnType<typeof getOrCreateTerminal> }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   if (!snapshot.notice) return null;
   return (
@@ -158,7 +158,7 @@ function NoticeBanner({ instance }: { instance: ReturnType<typeof getOrCreatePoc
   );
 }
 
-function WorkerErrorStrip({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+function WorkerErrorStrip({ instance }: { instance: ReturnType<typeof getOrCreateTerminal> }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   if (!snapshot.workerError) return null;
   const { message, code } = snapshot.workerError;
@@ -170,7 +170,7 @@ function WorkerErrorStrip({ instance }: { instance: ReturnType<typeof getOrCreat
   );
 }
 
-function StatusLine({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+function StatusLine({ instance }: { instance: ReturnType<typeof getOrCreateTerminal> }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   const color =
     snapshot.status === 'connected'
@@ -188,7 +188,7 @@ function StatusLine({ instance }: { instance: ReturnType<typeof getOrCreatePocTe
   );
 }
 
-function ExitBanner({ instance }: { instance: ReturnType<typeof getOrCreatePocTerminal> }) {
+function ExitBanner({ instance }: { instance: ReturnType<typeof getOrCreateTerminal> }) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   if (snapshot.status !== 'exited' || !snapshot.exitInfo) return null;
   return (
@@ -199,20 +199,20 @@ function ExitBanner({ instance }: { instance: ReturnType<typeof getOrCreatePocTe
   );
 }
 
-function TerminalPocPicker({ initialSessionId }: { initialSessionId?: string }) {
+function TerminalPicker({ initialSessionId }: { initialSessionId?: string }) {
   const navigate = useNavigate();
   const [sessionInput, setSessionInput] = useState(initialSessionId ?? '');
   const [activeSessionId, setActiveSessionId] = useState(initialSessionId ?? '');
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['poc-workers', activeSessionId],
+    queryKey: ['terminal-workers', activeSessionId],
     queryFn: () => fetchWorkers(activeSessionId),
     enabled: activeSessionId.length > 0,
   });
 
   return (
     <div className="mx-auto max-w-lg px-4 py-8 text-slate-200">
-      <h1 className="mb-1 text-xl font-semibold">Terminal Renderer PoC (labs)</h1>
+      <h1 className="mb-1 text-xl font-semibold">Terminal Renderer (labs)</h1>
       <p className="mb-6 text-sm text-slate-400">
         Enter a session ID, then pick a worker to open the experimental renderer.
       </p>
@@ -253,7 +253,7 @@ function TerminalPocPicker({ initialSessionId }: { initialSessionId?: string }) 
                 type="button"
                 onClick={() =>
                   navigate({
-                    to: '/labs/terminal-poc',
+                    to: '/labs/terminal',
                     search: { sessionId: activeSessionId, workerId: worker.id },
                   })
                 }

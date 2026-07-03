@@ -1,10 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import { applySegmentDecorators, type SegmentDecorator, type TransformContext } from '../row-transforms';
-import type { PocSegment } from '../buffer-to-rows';
+import type { TerminalSegment } from '../buffer-to-rows';
 
 const CTX: TransformContext = { repoFullName: 'acme/widgets' };
 
-function segs(...texts: string[]): PocSegment[] {
+function segs(...texts: string[]): TerminalSegment[] {
   return texts.map((text) => ({ text, style: null }));
 }
 

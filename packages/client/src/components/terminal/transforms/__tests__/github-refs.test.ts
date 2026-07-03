@@ -1,16 +1,16 @@
 import { describe, it, expect } from 'bun:test';
 import { githubRefDecorator } from '../github-refs';
 import type { TransformContext } from '../../row-transforms';
-import type { PocSegment, PocStyle } from '../../buffer-to-rows';
+import type { TerminalSegment, TerminalStyle } from '../../buffer-to-rows';
 
 const REPO: TransformContext = { repoFullName: 'acme/widgets' };
 const NO_REPO: TransformContext = { repoFullName: null };
 
-function seg(text: string, style: PocStyle | null = null, link?: { href: string }): PocSegment {
+function seg(text: string, style: TerminalStyle | null = null, link?: { href: string }): TerminalSegment {
   return link ? { text, style, link } : { text, style };
 }
 
-function run(segments: PocSegment[], ctx: TransformContext): PocSegment[] {
+function run(segments: TerminalSegment[], ctx: TransformContext): TerminalSegment[] {
   return githubRefDecorator(segments, ctx);
 }
 
@@ -53,7 +53,7 @@ describe('githubRefDecorator', () => {
   });
 
   it('preserves the segment style on every split piece', () => {
-    const style: PocStyle = { bold: true, fg: '#ff0000' };
+    const style: TerminalStyle = { bold: true, fg: '#ff0000' };
     const out = run([seg('a #9 b', style)], REPO);
     expect(out).toEqual([
       { text: 'a ', style },

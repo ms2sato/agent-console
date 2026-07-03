@@ -3,7 +3,7 @@ import { useSyncExternalStore } from 'react';
 /**
  * Tracks the visual viewport height. On mobile the visual viewport shrinks when
  * the soft keyboard opens (unlike window.innerHeight / layout viewport), so the
- * PoC page uses this value as its root height to keep the input bar above the
+ * The terminal page uses this value as its root height to keep the input bar above the
  * keyboard instead of hidden behind it.
  */
 

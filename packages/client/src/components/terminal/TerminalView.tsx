@@ -1,12 +1,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent as ReactDragEvent, ReactNode, RefObject } from 'react';
-import type { PocTerminalInstance } from './poc-terminal-store';
-import type { PocRow, PocSegment, PocStyle } from './buffer-to-rows';
+import type { TerminalInstance } from './terminal-store';
+import type { TerminalRow, TerminalSegment, TerminalStyle } from './buffer-to-rows';
 import type { LinkRange } from './link-detection';
 import { joinSelectedRows, collectSelectedRowPieces } from './copy-text';
 import { reduceDragCounter } from './drag-state';
 import { applySegmentDecorators, type SegmentDecorator, type TransformContext } from './row-transforms';
-import { PocScrollIndicator } from './PocScrollIndicator';
+import { TerminalScrollIndicator } from './TerminalScrollIndicator';
 
 const EMPTY_DECORATORS: readonly SegmentDecorator[] = [];
 const DEFAULT_TRANSFORM_CONTEXT: TransformContext = { repoFullName: null };
@@ -27,13 +27,13 @@ const BOTTOM_THRESHOLD_PX = 4;
 // gesture (forwarded as wheel), not a tap — do not report it as a TUI click.
 const CLICK_MOVE_THRESHOLD_PX = 5;
 
-interface PocTerminalViewProps {
-  instance: PocTerminalInstance;
+interface TerminalViewProps {
+  instance: TerminalInstance;
   onRequestFocus?: () => void;
   // Called when files are dropped onto the terminal. Threaded to the same
   // handler as image paste; the labs route surfaces a toast.
   onFilesReceived?: (files: File[]) => void;
-  // This view's OWN hidden input (the same ref passed to PocKeyboardInput).
+  // This view's OWN hidden input (the same ref passed to TerminalKeyboardInput).
   // Cmd/Ctrl+A select-all is gated on this element being focused, so on a page
   // hosting multiple terminals, select-all in one terminal never selects
   // another's rows. When omitted, select-all is disabled (safer than matching
@@ -46,7 +46,7 @@ interface PocTerminalViewProps {
   transformContext?: TransformContext;
 }
 
-function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
+function segmentStyle(style: TerminalStyle | null): CSSProperties | undefined {
   if (!style) return undefined;
   const css: CSSProperties = {};
   if (style.fg) css.color = style.fg;
@@ -62,7 +62,7 @@ function segmentStyle(style: PocStyle | null): CSSProperties | undefined {
 
 // Split a segment's text at link boundaries. `segStart` is the segment's offset
 // into the row's concatenated text; `links` are ranges in that same space.
-function renderSegment(seg: PocSegment, segStart: number, key: number, links: LinkRange[]) {
+function renderSegment(seg: TerminalSegment, segStart: number, key: number, links: LinkRange[]) {
   const style = segmentStyle(seg.style);
   // A decorator-attached link (issue #958) renders the whole segment as one
   // anchor. stopPropagation keeps the container's click-to-focus / mouse-report
@@ -140,7 +140,7 @@ const Row = memo(function Row({
   decorators,
   ctx,
 }: {
-  row: PocRow;
+  row: TerminalRow;
   decorators: readonly SegmentDecorator[];
   ctx: TransformContext;
 }) {
@@ -151,7 +151,7 @@ const Row = memo(function Row({
   let offset = 0;
   return (
     <div style={{ whiteSpace: 'pre', height: LINE_HEIGHT_PX, lineHeight: `${LINE_HEIGHT_PX}px` }}>
-      {segments.map((seg: PocSegment, i) => {
+      {segments.map((seg: TerminalSegment, i) => {
         const node = renderSegment(seg, offset, i, row.links);
         offset += seg.text.length;
         return node;
@@ -160,14 +160,14 @@ const Row = memo(function Row({
   );
 });
 
-export function PocTerminalView({
+export function TerminalView({
   instance,
   onRequestFocus,
   onFilesReceived,
   inputRef,
   segmentDecorators = EMPTY_DECORATORS,
   transformContext = DEFAULT_TRANSFORM_CONTEXT,
-}: PocTerminalViewProps) {
+}: TerminalViewProps) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
   const scrollRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
@@ -556,7 +556,7 @@ export function PocTerminalView({
 
       {/* tick = scroll events + snapshot version, so the thumb appears on scroll
           and on content growth, then fades after inactivity. */}
-      <PocScrollIndicator containerRef={scrollRef} tick={scrollTick + snapshot.version} />
+      <TerminalScrollIndicator containerRef={scrollRef} tick={scrollTick + snapshot.version} />
 
       {!atBottom && (
         <button

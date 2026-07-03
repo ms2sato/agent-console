@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { toStatusChangeArgs } from '../poc-status-mapping';
+import { toStatusChangeArgs } from '../status-mapping';
 
 describe('toStatusChangeArgs', () => {
   it('passes connecting through with no exitInfo', () => {

@@ -12,7 +12,7 @@ import type { LinkRange } from './link-detection';
 type IBufferCell = ReturnType<Terminal['buffer']['active']['getNullCell']>;
 export type IBufferLine = NonNullable<ReturnType<Terminal['buffer']['active']['getLine']>>;
 
-export interface PocStyle {
+export interface TerminalStyle {
   fg?: string;
   bg?: string;
   bold?: boolean;
@@ -22,18 +22,18 @@ export interface PocStyle {
   strikethrough?: boolean;
 }
 
-export interface PocSegment {
+export interface TerminalSegment {
   text: string;
-  style: PocStyle | null; // null = default style (CSS inherits)
+  style: TerminalStyle | null; // null = default style (CSS inherits)
   // Optional link attached by a row-transform decorator (issue #958). When set,
   // the whole segment renders as an anchor. Not produced by buffer extraction —
   // only by presentation-layer decorators (see row-transforms.ts).
   link?: { href: string };
 }
 
-export interface PocRow {
+export interface TerminalRow {
   key: number; // absolute row index in the buffer
-  segments: PocSegment[];
+  segments: TerminalSegment[];
   isWrapped: boolean; // true = this row is a soft-wrap continuation of the previous
   links: LinkRange[]; // URL column ranges over the row's concatenated text (empty = none)
 }
@@ -86,7 +86,7 @@ function resolveColor(cell: IBufferCell, which: ColorResolver): string | undefin
   return undefined;
 }
 
-function cellStyle(cell: IBufferCell): PocStyle | null {
+function cellStyle(cell: IBufferCell): TerminalStyle | null {
   let fg = resolveColor(cell, 'fg');
   let bg = resolveColor(cell, 'bg');
 
@@ -98,7 +98,7 @@ function cellStyle(cell: IBufferCell): PocStyle | null {
     bg = swappedBg;
   }
 
-  const style: PocStyle = {};
+  const style: TerminalStyle = {};
   if (fg !== undefined) style.fg = fg;
   if (bg !== undefined) style.bg = bg;
   if (cell.isBold()) style.bold = true;
@@ -129,7 +129,7 @@ function styleKey(cell: IBufferCell): string {
 }
 
 /**
- * Extract one buffer line into a PocRow. Consecutive cells with identical
+ * Extract one buffer line into a TerminalRow. Consecutive cells with identical
  * style merge into a single segment. Width-0 cells (the trailing half of a
  * CJK wide glyph) are skipped so wide characters are not duplicated.
  */
@@ -138,7 +138,7 @@ export function extractRow(
   cols: number,
   nullCell: IBufferCell,
   key: number,
-): PocRow {
+): TerminalRow {
   const segments = walkCells(line, cols, nullCell, -1);
   trimTrailingDefaultWhitespace(segments);
 
@@ -151,7 +151,7 @@ export function extractRow(
 }
 
 // Cursor cell rendering: a solid block (light bg, dark fg) at the cursor cell.
-const CURSOR_STYLE: PocStyle = { fg: DEFAULT_BG, bg: DEFAULT_FG };
+const CURSOR_STYLE: TerminalStyle = { fg: DEFAULT_BG, bg: DEFAULT_FG };
 
 /**
  * Like extractRow but forces the cell at column `cursorX` into its own segment
@@ -165,7 +165,7 @@ export function extractRowWithCursor(
   nullCell: IBufferCell,
   key: number,
   cursorX: number,
-): PocRow {
+): TerminalRow {
   const segments = walkCells(line, cols, nullCell, cursorX);
   // Trim trailing default-style blanks like extractRow, but protect the cursor
   // segment (and everything up to it): the cursor commonly sits on a blank cell
@@ -189,11 +189,11 @@ function walkCells(
   cols: number,
   nullCell: IBufferCell,
   cursorX: number,
-): PocSegment[] {
-  const segments: PocSegment[] = [];
+): TerminalSegment[] {
+  const segments: TerminalSegment[] = [];
   let currentKey: string | null = null;
   let currentText = '';
-  let currentStyle: PocStyle | null = null;
+  let currentStyle: TerminalStyle | null = null;
 
   const flush = () => {
     if (currentKey !== null) {
@@ -238,7 +238,7 @@ function walkCells(
  * colored cells. `protectedCount` leading segments are never trimmed or popped
  * (used to keep the cursor segment on the cursor row).
  */
-function trimTrailingDefaultWhitespace(segments: PocSegment[], protectedCount = 0): void {
+function trimTrailingDefaultWhitespace(segments: TerminalSegment[], protectedCount = 0): void {
   while (segments.length > protectedCount) {
     const last = segments[segments.length - 1];
     if (last.style !== null) break;

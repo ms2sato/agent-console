@@ -46,7 +46,7 @@ describe('worker-websocket', () => {
   });
 
   // git-diff is the only worker type routed through this module (terminal/agent
-  // PTY transport moved to poc-terminal-store; see issues #941 / #961).
+  // PTY transport moved to the terminal store; see issues #941 / #961).
   const createGitDiffCallbacks = (): GitDiffWorkerCallbacks => ({
     type: 'git-diff',
     onDiffData: mock(() => {}),
