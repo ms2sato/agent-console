@@ -1,0 +1,78 @@
+import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { render, screen, cleanup } from '@testing-library/react';
+import { PocKeyboardInput } from '../PocKeyboardInput';
+import type { PocTerminalInstance, PocSnapshot } from '../poc-terminal-store';
+
+// matchMedia mock following src/hooks/__tests__/useIsMobile.test.ts.
+function installMatchMedia(matches: boolean): void {
+  const mql = {
+    matches,
+    addEventListener: mock(() => {}),
+    removeEventListener: mock(() => {}),
+  };
+  window.matchMedia = mock(() => mql as unknown as MediaQueryList);
+}
+
+const SNAPSHOT_STUB: PocSnapshot = {
+  version: 0,
+  status: 'connecting',
+  exitInfo: null,
+  rows: [],
+  cursor: { x: 0, y: 0, visible: true },
+  cols: 80,
+  terminalRows: 24,
+  bufferType: 'normal',
+  mouseTracking: false,
+  notice: null,
+  workerError: null,
+  activityState: null,
+  loadingHistory: false,
+};
+
+// Render-only stub: PocKeyboardInput never subscribes or reads the snapshot
+// during render; the methods exist only to satisfy the interface.
+function makeMockInstance(): PocTerminalInstance {
+  return {
+    subscribe: () => () => {},
+    getSnapshot: () => SNAPSHOT_STUB,
+    sendInput: () => {},
+    resize: () => {},
+    forwardScroll: () => {},
+    reportMouseButton: () => {},
+    paste: () => {},
+    retry: () => {},
+    dismissNotice: () => {},
+    acquire: () => () => {},
+    dispose: () => {},
+  };
+}
+
+describe('PocKeyboardInput soft-key bar visibility', () => {
+  const originalMatchMedia = window.matchMedia;
+
+  afterEach(() => {
+    cleanup();
+    window.matchMedia = originalMatchMedia;
+  });
+
+  it('renders the soft-key bar on mobile', () => {
+    installMatchMedia(true);
+    render(<PocKeyboardInput instance={makeMockInstance()} />);
+
+    expect(screen.getByText('Esc')).toBeTruthy();
+    expect(screen.getByText('Ctrl+C')).toBeTruthy();
+    // The hidden input path is present on mobile too.
+    expect(screen.getByLabelText('Terminal input')).toBeTruthy();
+  });
+
+  it('hides the soft-key bar on desktop but keeps the hidden input', () => {
+    installMatchMedia(false);
+    render(<PocKeyboardInput instance={makeMockInstance()} />);
+
+    // No soft keys on desktop.
+    expect(screen.queryByText('Esc')).toBeNull();
+    expect(screen.queryByText('Ctrl+C')).toBeNull();
+    // Input path must remain active so a physical keyboard still works.
+    expect(screen.getByLabelText('Terminal input')).toBeTruthy();
+  });
+});
