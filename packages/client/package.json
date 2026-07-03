@@ -25,7 +25,6 @@
     "clsx": "^2.1.1",
     "diff": "^8.0.2",
     "hono": "^4.11.9",
-    "idb-keyval": "^6.2.2",
     "prism-react-renderer": "^2.4.1",
     "prismjs": "^1.29.0",
     "react": "^18.3.1",
