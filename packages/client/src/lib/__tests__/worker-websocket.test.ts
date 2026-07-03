@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
-import { WS_CLOSE_CODE } from '@agent-console/shared';
+import { WS_CLOSE_CODE, type GitDiffData } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 import {
   connect,
@@ -8,7 +8,7 @@ import {
   getState,
   subscribeState,
   _reset,
-  type TerminalWorkerCallbacks,
+  type GitDiffWorkerCallbacks,
 } from '../worker-websocket';
 
 describe('worker-websocket', () => {
@@ -45,103 +45,17 @@ describe('worker-websocket', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  const createTerminalCallbacks = (): TerminalWorkerCallbacks => ({
-    type: 'terminal',
-    onOutput: mock(() => {}),
-    onHistory: mock(() => {}),
-    onExit: mock(() => {}),
-    onActivity: mock(() => {}),
-    onError: mock(() => {}),
-  });
-
-  // DISABLED: Visibility-based reconnection is currently disabled to avoid performance overhead.
-  // The event listener registration in worker-websocket.ts is commented out.
-  // These tests are skipped until the feature is re-enabled.
-  describe.skip('visibility-based reconnection', () => {
-    let originalVisibilityState: PropertyDescriptor | undefined;
-
-    beforeEach(() => {
-      // Store original visibilityState descriptor
-      originalVisibilityState = Object.getOwnPropertyDescriptor(document, 'visibilityState');
-    });
-
-    afterEach(() => {
-      // Restore original visibilityState
-      if (originalVisibilityState) {
-        Object.defineProperty(document, 'visibilityState', originalVisibilityState);
-      } else {
-        // If there was no original descriptor, delete it to restore default behavior
-        // We need to reset to 'visible' state
-        Object.defineProperty(document, 'visibilityState', {
-          configurable: true,
-          get: () => 'visible',
-        });
-      }
-    });
-
-    function setVisibilityState(state: 'visible' | 'hidden') {
-      Object.defineProperty(document, 'visibilityState', {
-        configurable: true,
-        get: () => state,
-      });
-    }
-
-    function dispatchVisibilityChange() {
-      document.dispatchEvent(new Event('visibilitychange'));
-    }
-
-    it('should disconnect when page becomes hidden', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Verify connected
-      expect(ws?.readyState).toBe(MockWebSocket.OPEN);
-
-      // Simulate page becoming hidden
-      setVisibilityState('hidden');
-      dispatchVisibilityChange();
-
-      // Verify WebSocket was closed
-      expect(ws?.close).toHaveBeenCalled();
-    });
-
-    it('should reconnect without fromOffset when page becomes visible (always fetch full history)', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws1 = MockWebSocket.getLastInstance();
-      ws1?.simulateOpen();
-
-      // Receive history with offset
-      ws1?.simulateMessage(JSON.stringify({ type: 'history', data: 'terminal history', offset: 5678 }));
-
-      // Simulate page becoming hidden
-      setVisibilityState('hidden');
-      dispatchVisibilityChange();
-
-      // Clear instances to track new WebSocket creation
-      const instanceCountBeforeVisible = MockWebSocket.getInstances().length;
-
-      // Simulate page becoming visible
-      setVisibilityState('visible');
-      dispatchVisibilityChange();
-
-      // Verify new WebSocket was created
-      const instances = MockWebSocket.getInstances();
-      expect(instances.length).toBe(instanceCountBeforeVisible + 1);
-
-      // Verify new WebSocket URL does NOT contain fromOffset (always fetch full history)
-      const ws2 = MockWebSocket.getLastInstance();
-      expect(ws2?.url).not.toContain('fromOffset');
-    });
+  // git-diff is the only worker type routed through this module (terminal/agent
+  // PTY transport moved to poc-terminal-store; see issues #941 / #961).
+  const createGitDiffCallbacks = (): GitDiffWorkerCallbacks => ({
+    type: 'git-diff',
+    onDiffData: mock(() => {}),
+    onDiffError: mock(() => {}),
   });
 
   describe('disconnectSession', () => {
     it('should disconnect all workers in the session', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       // Connect two workers in the same session
       connect('session-1', 'worker-1', callbacks);
@@ -161,7 +75,7 @@ describe('worker-websocket', () => {
     });
 
     it('should not affect workers in other sessions', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       // Connect workers in different sessions
       connect('session-1', 'worker-1', callbacks);
@@ -182,190 +96,56 @@ describe('worker-websocket', () => {
     });
   });
 
-  describe('history message handling', () => {
-    it('should call onHistory callback with data and offset', () => {
-      const callbacks = createTerminalCallbacks();
+  describe('git-diff message handling', () => {
+    it('updates state and calls onDiffError for a diff-error message', () => {
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      // Send history message with offset
-      ws?.simulateMessage(JSON.stringify({ type: 'history', data: 'terminal history', offset: 5678 }));
+      ws?.simulateMessage(JSON.stringify({ type: 'diff-error', error: 'bad diff' }));
 
-      expect(callbacks.onHistory).toHaveBeenCalledWith('terminal history', 5678);
-    });
-  });
-
-  describe('output message handling', () => {
-    it('should call onOutput callback with data and offset', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Send output message with offset
-      ws?.simulateMessage(JSON.stringify({ type: 'output', data: 'terminal output', offset: 1234 }));
-
-      expect(callbacks.onOutput).toHaveBeenCalledWith('terminal output', 1234);
-    });
-  });
-
-  describe('error message handling', () => {
-    it('should call onError callback with HISTORY_LOAD_FAILED code', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Send error message with HISTORY_LOAD_FAILED code
-      ws?.simulateMessage(JSON.stringify({
-        type: 'error',
-        message: 'Loading terminal history timed out. Try refreshing the page.',
-        code: 'HISTORY_LOAD_FAILED'
-      }));
-
-      expect(callbacks.onError).toHaveBeenCalledWith(
-        'Loading terminal history timed out. Try refreshing the page.',
-        'HISTORY_LOAD_FAILED'
-      );
+      expect(getState('session-1', 'worker-1').diffError).toBe('bad diff');
+      expect(callbacks.onDiffError).toHaveBeenCalledWith('bad diff');
     });
 
-    it('should call onError callback without code when code is missing', () => {
-      const callbacks = createTerminalCallbacks();
+    it('updates state and calls onDiffData for a diff-data message', () => {
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      // Send error message without code
-      ws?.simulateMessage(JSON.stringify({
-        type: 'error',
-        message: 'Some error occurred'
-      }));
+      const diffData: GitDiffData = {
+        summary: {
+          baseCommit: 'abc123',
+          targetRef: 'working-dir',
+          files: [],
+          totalAdditions: 0,
+          totalDeletions: 0,
+          updatedAt: '2026-07-03T00:00:00.000Z',
+        },
+        rawDiff: '',
+      };
+      ws?.simulateMessage(JSON.stringify({ type: 'diff-data', data: diffData }));
 
-      expect(callbacks.onError).toHaveBeenCalledWith(
-        'Some error occurred',
-        undefined
-      );
+      expect(getState('session-1', 'worker-1').diffData).toEqual(diffData);
+      expect(getState('session-1', 'worker-1').diffLoading).toBe(false);
+      expect(callbacks.onDiffData).toHaveBeenCalledWith(diffData);
     });
 
-    it('should call onError callback with other error codes', () => {
-      const callbacks = createTerminalCallbacks();
+    it('sets an error state for an unrecognized message type', () => {
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
 
-      // Send error message with WORKER_NOT_FOUND code
-      ws?.simulateMessage(JSON.stringify({
-        type: 'error',
-        message: 'Worker not found',
-        code: 'WORKER_NOT_FOUND'
-      }));
+      ws?.simulateMessage(JSON.stringify({ type: 'not-a-real-type' }));
 
-      expect(callbacks.onError).toHaveBeenCalledWith(
-        'Worker not found',
-        'WORKER_NOT_FOUND'
-      );
-    });
-
-    it('should remove connection from map on SESSION_PAUSED error to prevent reconnection', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Verify connection exists
-      expect(getState('session-1', 'worker-1').connected).toBe(true);
-
-      // Send SESSION_PAUSED error
-      ws?.simulateMessage(JSON.stringify({
-        type: 'error',
-        message: 'Session was paused',
-        code: 'SESSION_PAUSED'
-      }));
-
-      // Connection should be removed from the map
-      // (getState returns the default disconnected state when no connection exists)
-      const state = getState('session-1', 'worker-1');
-      expect(state.connected).toBe(false);
-
-      // Subsequent close event should NOT trigger reconnection
-      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
-
-      // Verify no reconnection was scheduled
-      const reconnectLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
-        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Reconnecting session-'))
-      );
-      expect(reconnectLogged).toBe(false);
-    });
-
-    it('should remove connection from map on SESSION_DELETED error to prevent reconnection', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Send SESSION_DELETED error
-      ws?.simulateMessage(JSON.stringify({
-        type: 'error',
-        message: 'Session was deleted',
-        code: 'SESSION_DELETED'
-      }));
-
-      // Connection should be removed from the map
-      const state = getState('session-1', 'worker-1');
-      expect(state.connected).toBe(false);
-
-      // Subsequent close event should NOT trigger reconnection
-      ws?.simulateClose(WS_CLOSE_CODE.ABNORMAL_CLOSURE);
-
-      const reconnectLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
-        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Reconnecting session-'))
-      );
-      expect(reconnectLogged).toBe(false);
-    });
-
-    it('should not remove connection from map for non-lifecycle error codes', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Send a non-lifecycle error (e.g., HISTORY_LOAD_FAILED)
-      ws?.simulateMessage(JSON.stringify({
-        type: 'error',
-        message: 'History load failed',
-        code: 'HISTORY_LOAD_FAILED'
-      }));
-
-      // Connection should still exist
-      expect(getState('session-1', 'worker-1').connected).toBe(true);
-    });
-  });
-
-  describe('server-restarted message handling', () => {
-    it('should handle server-restarted message without errors', () => {
-      const callbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', callbacks);
-
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Send server-restarted message - should not throw
-      ws?.simulateMessage(JSON.stringify({ type: 'server-restarted', serverPid: 12345 }));
-
-      // Verify the message was logged (debug level)
-      const serverRestartLogged = consoleLogSpy.mock.calls.some((call: unknown[]) =>
-        call.some((arg: unknown) => typeof arg === 'string' && arg.includes('Server restarted notification received'))
-      );
-      expect(serverRestartLogged).toBe(true);
+      expect(getState('session-1', 'worker-1').diffError).toBe('Invalid server message');
+      expect(getState('session-1', 'worker-1').diffLoading).toBe(false);
     });
   });
 
@@ -378,7 +158,7 @@ describe('worker-websocket', () => {
     }
 
     it('should not reconnect on NORMAL_CLOSURE (1000)', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
@@ -390,7 +170,7 @@ describe('worker-websocket', () => {
     });
 
     it('should not reconnect on GOING_AWAY (1001)', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
@@ -402,7 +182,7 @@ describe('worker-websocket', () => {
     });
 
     it('should not reconnect on POLICY_VIOLATION (1008)', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
@@ -414,7 +194,7 @@ describe('worker-websocket', () => {
     });
 
     it('should reconnect on ABNORMAL_CLOSURE (1006)', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
@@ -426,7 +206,7 @@ describe('worker-websocket', () => {
     });
 
     it('should reconnect on INTERNAL_ERROR (1011)', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
@@ -441,7 +221,7 @@ describe('worker-websocket', () => {
   describe('exponential backoff', () => {
     it('should use exponential backoff delays', () => {
       const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       connect('session-1', 'worker-1', callbacks);
       const ws = MockWebSocket.getLastInstance();
@@ -482,7 +262,7 @@ describe('worker-websocket', () => {
       // With random=0.5, jitter=0, so delay = baseDelay exactly
       const mathRandomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
 
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
@@ -514,7 +294,7 @@ describe('worker-websocket', () => {
 
     it('should add jitter to prevent thundering herd', () => {
       const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       // Test with random=0 (minimum jitter: baseDelay * 0.3 * (0*2 - 1) = -0.3 * baseDelay)
       const mathRandomSpy = spyOn(Math, 'random').mockReturnValue(0);
@@ -558,7 +338,7 @@ describe('worker-websocket', () => {
     it('should reset retry count on successful reconnection', () => {
       const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
       const mathRandomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       connect('session-1', 'worker-1', callbacks);
       const ws1 = MockWebSocket.getLastInstance();
@@ -602,7 +382,7 @@ describe('worker-websocket', () => {
       );
       const mathRandomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
 
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
@@ -646,7 +426,7 @@ describe('worker-websocket', () => {
       );
       const mathRandomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
 
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
       const ws = MockWebSocket.getLastInstance();
       ws?.simulateOpen();
@@ -680,7 +460,7 @@ describe('worker-websocket', () => {
 
     it('should cancel pending reconnection on explicit disconnect', () => {
       const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       connect('session-1', 'worker-1', callbacks);
       const ws = MockWebSocket.getLastInstance();
@@ -695,7 +475,7 @@ describe('worker-websocket', () => {
     });
 
     it('should not create duplicate connections on concurrent connect calls', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       // Call connect multiple times with the same sessionId/workerId
       connect('session-1', 'worker-1', callbacks);
@@ -707,7 +487,7 @@ describe('worker-websocket', () => {
     });
 
     it('should not create duplicate connections when already connected', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       connect('session-1', 'worker-1', callbacks);
       const ws = MockWebSocket.getLastInstance();
@@ -725,7 +505,7 @@ describe('worker-websocket', () => {
     it('should preserve retryCount during reconnection', () => {
       const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
       const mathRandomSpy = spyOn(Math, 'random').mockReturnValue(0.5);
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       connect('session-1', 'worker-1', callbacks);
       const ws1 = MockWebSocket.getLastInstance();
@@ -756,7 +536,7 @@ describe('worker-websocket', () => {
     });
 
     it('should not reconnect when connection was explicitly disconnected before close fires', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
@@ -777,7 +557,7 @@ describe('worker-websocket', () => {
     });
 
     it('should update connection state to disconnected on close', () => {
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
       const listener = mock(() => {});
       subscribeState(listener);
 
@@ -795,7 +575,7 @@ describe('worker-websocket', () => {
 
     it('should cancel pending reconnection when disconnectSession is called', () => {
       const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
-      const callbacks = createTerminalCallbacks();
+      const callbacks = createGitDiffCallbacks();
 
       connect('session-1', 'worker-1', callbacks);
       connect('session-1', 'worker-2', callbacks);
@@ -817,76 +597,24 @@ describe('worker-websocket', () => {
     });
   });
 
-  describe('request-history message behavior', () => {
-    it('should NOT send request-history automatically on WebSocket connection', async () => {
-      // This test verifies that worker-websocket does NOT automatically send request-history.
-      // History requests are now the responsibility of Terminal.tsx, which decides
-      // the appropriate fromOffset based on cache state.
-      const callbacks = createTerminalCallbacks();
+  describe('connection open behavior', () => {
+    it('should NOT auto-send any client message on WebSocket open', async () => {
+      // git-diff connections request data on demand (refresh / set-base-commit),
+      // never automatically on open. Guards against a spurious auto-send regression.
+      const callbacks = createGitDiffCallbacks();
 
-      // Create a new connection
       connect('session-1', 'worker-1', callbacks);
 
       const ws = MockWebSocket.getLastInstance();
       expect(ws).toBeDefined();
 
-      // Simulate WebSocket connection opening
       ws?.simulateOpen();
 
       // Wait a bit to ensure no delayed request is sent
-      await new Promise((resolve) => setTimeout(resolve, 300));
+      await new Promise((resolve) => setTimeout(resolve, 100));
 
-      // request-history should NOT be sent automatically
       const calls = ws?.send.mock.calls as unknown as unknown[][];
-      const requestHistoryCalls = calls?.filter(
-        (call) => {
-          try {
-            const msg = JSON.parse(call[0] as string);
-            return msg.type === 'request-history';
-          } catch {
-            return false;
-          }
-        }
-      );
-      expect(requestHistoryCalls?.length ?? 0).toBe(0);
-    });
-
-    it('should NOT send request-history automatically on tab switch (remount with existing OPEN connection)', async () => {
-      // This test verifies that connect() does NOT automatically send request-history
-      // even when called with an existing OPEN connection (tab switch scenario).
-      const callbacks = createTerminalCallbacks();
-
-      // Create initial connection and establish it
-      connect('session-1', 'worker-1', callbacks);
-      const ws = MockWebSocket.getLastInstance();
-      ws?.simulateOpen();
-
-      // Wait for initial setup
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Clear the mock to track subsequent calls
-      ws?.send.mockClear();
-
-      // Simulate tab switch: connect() is called again with the existing OPEN connection
-      const newCallbacks = createTerminalCallbacks();
-      connect('session-1', 'worker-1', newCallbacks);
-
-      // Wait a bit to ensure no delayed request is sent
-      await new Promise((resolve) => setTimeout(resolve, 300));
-
-      // request-history should NOT be sent automatically
-      const calls = ws?.send.mock.calls as unknown as unknown[][];
-      const requestHistoryCalls = calls?.filter(
-        (call) => {
-          try {
-            const msg = JSON.parse(call[0] as string);
-            return msg.type === 'request-history';
-          } catch {
-            return false;
-          }
-        }
-      );
-      expect(requestHistoryCalls?.length ?? 0).toBe(0);
+      expect(calls?.length ?? 0).toBe(0);
     });
   });
 });

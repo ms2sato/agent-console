@@ -1,7 +1,12 @@
 /**
  * Worker WebSocket manager module.
- * Manages WebSocket connections for individual workers (terminal, agent, git-diff).
+ * Manages WebSocket connections for git-diff workers.
  * Follows the same singleton pattern as app-websocket.ts.
+ *
+ * Terminal/agent PTY transport used to live here too, but the next renderer's
+ * poc-terminal-store owns its own WebSocket (issue #941 removed the legacy
+ * renderer; #961 removed the orphaned terminal transport). git-diff is the only
+ * worker type routed through this module now.
  *
  * Key design decisions:
  * - Each worker has its own WebSocket connection (different from app-websocket which is single)
@@ -10,17 +15,12 @@
  * - Automatically handles wss:// vs ws:// based on page protocol
  */
 import {
-  WORKER_SERVER_MESSAGE_TYPES,
   GIT_DIFF_SERVER_MESSAGE_TYPES,
   WS_CLOSE_CODE,
-  type WorkerServerMessage,
-  type WorkerClientMessage,
   type GitDiffServerMessage,
   type GitDiffClientMessage,
-  type AgentActivityState,
   type GitDiffData,
   type GitDiffTarget,
-  type WorkerErrorCode,
   type ExpandedLineChunk,
   type ReviewAnnotationSet,
 } from '@agent-console/shared';
@@ -29,17 +29,6 @@ import { getReconnectDelay, shouldReconnect } from './websocket-reconnect.js';
 import { logger } from './logger.js';
 
 const MAX_RETRY_COUNT = 100;
-
-/**
- * Validate that a parsed message is a valid WorkerServerMessage.
- */
-function isValidWorkerMessage(msg: unknown): msg is WorkerServerMessage {
-  if (typeof msg !== 'object' || msg === null) {
-    return false;
-  }
-  const { type } = msg as { type?: unknown };
-  return typeof type === 'string' && type in WORKER_SERVER_MESSAGE_TYPES;
-}
 
 /**
  * Validate that a parsed message is a valid GitDiffServerMessage.
@@ -75,25 +64,14 @@ interface WorkerConnection {
   workerId: string;
 }
 
-// Callbacks for terminal/agent workers
-export interface TerminalWorkerCallbacks {
-  type: 'terminal' | 'agent';
-  onOutput: (data: string, offset: number) => void;
-  onHistory: (data: string, offset: number) => void;
-  onExit: (exitCode: number, signal: string | null) => void;
-  onActivity?: (state: AgentActivityState) => void;
-  onError?: (message: string, code?: WorkerErrorCode) => void;
-  onOutputTruncated?: (message: string, newOffset: number) => void;
-}
-
-// Callbacks for git-diff workers
+// Callbacks for git-diff workers (the only worker type routed through this module).
 export interface GitDiffWorkerCallbacks {
   type: 'git-diff';
   onDiffData?: (data: GitDiffData) => void;
   onDiffError?: (error: string) => void;
 }
 
-type WorkerCallbacks = TerminalWorkerCallbacks | GitDiffWorkerCallbacks;
+type WorkerCallbacks = GitDiffWorkerCallbacks;
 
 // Connection storage
 const connections = new Map<string, WorkerConnection>();
@@ -188,7 +166,9 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
 
   const initialState: WorkerConnectionState = {
     connected: false,
-    ...(callbacks.type === 'git-diff' ? { diffData: null, diffError: null, diffLoading: true } : {}),
+    diffData: null,
+    diffError: null,
+    diffLoading: true,
   };
 
   const conn: WorkerConnection = {
@@ -204,71 +184,7 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
   // Notify subscribers that the connection state is now available.
   updateState(key, {});
 
-  setupWebSocketHandlers(key, ws, callbacks);
-}
-
-/**
- * Handle incoming WebSocket message for terminal/agent workers.
- */
-function handleTerminalMessage(
-  msg: WorkerServerMessage,
-  callbacks: TerminalWorkerCallbacks,
-  sessionId: string,
-  workerId: string
-): void {
-  const key = getConnectionKey(sessionId, workerId);
-
-  switch (msg.type) {
-    case 'output':
-      callbacks.onOutput(msg.data, msg.offset);
-      break;
-    case 'history':
-      callbacks.onHistory(msg.data, msg.offset);
-      break;
-    case 'exit':
-      callbacks.onExit(msg.exitCode, msg.signal);
-      break;
-    case 'activity':
-      callbacks.onActivity?.(msg.state);
-      break;
-    case 'error':
-      callbacks.onError?.(msg.message, msg.code);
-      // Prevent reconnection for terminal lifecycle errors.
-      // When a session is paused or deleted, the server sends an error message
-      // followed by a close frame. Remove the connection from the map BEFORE
-      // the close event fires so that the onclose handler sees no entry and
-      // skips reconnection scheduling.
-      if (msg.code === 'SESSION_DELETED' || msg.code === 'SESSION_PAUSED') {
-        const conn = connections.get(key);
-        if (conn) {
-          if (conn.retryTimeout) {
-            clearTimeout(conn.retryTimeout);
-            conn.retryTimeout = null;
-          }
-          connections.delete(key);
-        }
-      }
-      break;
-    case 'output-truncated':
-      // Notify the terminal renderer about the truncation; it resyncs from the
-      // new offset. (The old IndexedDB cache clear was removed with the legacy
-      // renderer — the next renderer holds no persistent cache.)
-      callbacks.onOutputTruncated?.(msg.message, msg.newOffset);
-      break;
-    case 'server-restarted':
-      // Server restart notification received on an active worker WebSocket.
-      // The next renderer reconstructs state from server history on reconnect;
-      // server-side offset-based truncation detection triggers a full-history
-      // resync if the offset is beyond the server's current range.
-      logger.debug('[WorkerWS] Server restarted notification received, serverPid:', msg.serverPid);
-      break;
-    default: {
-      // Exhaustive check: TypeScript will error if a new message type is added
-      // but not handled in this switch statement
-      const _exhaustive: never = msg;
-      logger.error('[WorkerWS] Unknown terminal message type:', _exhaustive);
-    }
-  }
+  setupWebSocketHandlers(key, ws);
 }
 
 /**
@@ -315,23 +231,18 @@ function handleGitDiffMessage(key: string, msg: GitDiffServerMessage, callbacks:
 }
 
 /**
- * Set up WebSocket event handlers.
+ * Set up WebSocket event handlers. The handlers read the current callbacks from
+ * the connection map (they may be swapped via connect() on remount), so no
+ * callbacks argument is threaded here.
  */
-function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCallbacks): void {
+function setupWebSocketHandlers(key: string, ws: WebSocket): void {
   ws.onopen = () => {
     const conn = connections.get(key);
 
     if (conn) {
       conn.retryCount = 0; // Reset retry count on successful connection
     }
-    updateState(key, { connected: true });
-    if (callbacks.type === 'git-diff') {
-      updateState(key, { diffLoading: true });
-    }
-
-    // Note: History request is NOT sent automatically here.
-    // Terminal.tsx is responsible for requesting history with the appropriate fromOffset
-    // (either 0 for fresh load, or cached.offset for incremental sync after cache restoration).
+    updateState(key, { connected: true, diffLoading: true });
   };
 
   ws.onmessage = (event) => {
@@ -343,25 +254,15 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
     try {
       const parsed: unknown = JSON.parse(event.data);
 
-      if (currentCallbacks.type === 'git-diff') {
-        if (!isValidGitDiffMessage(parsed)) {
-          logger.error('[WorkerWS] Invalid git-diff message type:', parsed);
-          updateState(key, { diffError: 'Invalid server message', diffLoading: false });
-          return;
-        }
-        handleGitDiffMessage(key, parsed, currentCallbacks);
-      } else {
-        if (!isValidWorkerMessage(parsed)) {
-          logger.error('[WorkerWS] Invalid worker message type:', parsed);
-          return;
-        }
-        handleTerminalMessage(parsed, currentCallbacks, currentConn.sessionId, currentConn.workerId);
+      if (!isValidGitDiffMessage(parsed)) {
+        logger.error('[WorkerWS] Invalid git-diff message type:', parsed);
+        updateState(key, { diffError: 'Invalid server message', diffLoading: false });
+        return;
       }
+      handleGitDiffMessage(key, parsed, currentCallbacks);
     } catch (e) {
       logger.error('[WorkerWS] Failed to parse message:', e);
-      if (currentCallbacks.type === 'git-diff') {
-        updateState(key, { diffError: 'Failed to parse server message', diffLoading: false });
-      }
+      updateState(key, { diffError: 'Failed to parse server message', diffLoading: false });
     }
   };
 
@@ -385,9 +286,8 @@ function setupWebSocketHandlers(key: string, ws: WebSocket, callbacks: WorkerCal
 
   ws.onerror = (error) => {
     logger.error('[WorkerWS] Error:', error);
-    // Get current callbacks from connection
     const currentConn = connections.get(key);
-    if (currentConn?.callbacks.type === 'git-diff') {
+    if (currentConn) {
       updateState(key, { diffError: 'WebSocket connection error', diffLoading: false });
     }
   };
@@ -417,9 +317,7 @@ export function connect(
     }
 
     // If connection is open, update callbacks and return
-    // This avoids unnecessary connection churn when component remounts
-    // Note: History request is NOT sent automatically here.
-    // Terminal.tsx is responsible for requesting history with the appropriate fromOffset.
+    // This avoids unnecessary connection churn when component remounts.
     if (existing.ws.readyState === WebSocket.OPEN) {
       // Update callbacks for the new component instance
       existing.callbacks = callbacks;
@@ -440,7 +338,9 @@ export function connect(
 
   const initialState: WorkerConnectionState = {
     connected: false,
-    ...(callbacks.type === 'git-diff' ? { diffData: null, diffError: null, diffLoading: true } : {}),
+    diffData: null,
+    diffError: null,
+    diffLoading: true,
   };
 
   const conn: WorkerConnection = {
@@ -456,7 +356,7 @@ export function connect(
   // Notify subscribers that the connection state is now available.
   updateState(key, {});
 
-  setupWebSocketHandlers(key, ws, callbacks);
+  setupWebSocketHandlers(key, ws);
 
   return true;
 }
@@ -495,21 +395,6 @@ export function updateCallbacks(sessionId: string, workerId: string, callbacks: 
 }
 
 /**
- * Send a message to a terminal/agent worker.
- * @returns true if sent, false if not connected
- */
-export function sendTerminalMessage(sessionId: string, workerId: string, msg: WorkerClientMessage): boolean {
-  const key = getConnectionKey(sessionId, workerId);
-  const conn = connections.get(key);
-
-  if (conn && conn.ws.readyState === WebSocket.OPEN) {
-    conn.ws.send(JSON.stringify(msg));
-    return true;
-  }
-  return false;
-}
-
-/**
  * Send a message to a git-diff worker.
  * @returns true if sent, false if not connected
  */
@@ -530,28 +415,6 @@ export function sendGitDiffMessage(sessionId: string, workerId: string, msg: Git
     updateState(key, { diffError: 'Connection lost. Please try again.', diffLoading: false });
   }
   return false;
-}
-
-// Convenience methods for terminal workers
-export function sendInput(sessionId: string, workerId: string, data: string): boolean {
-  return sendTerminalMessage(sessionId, workerId, { type: 'input', data });
-}
-
-export function sendResize(sessionId: string, workerId: string, cols: number, rows: number): boolean {
-  return sendTerminalMessage(sessionId, workerId, { type: 'resize', cols, rows });
-}
-
-/**
- * Request history data from the server.
- * Used when a previously invisible tab becomes visible for the first time.
- * @param fromOffset If specified, request only data after this offset (incremental sync)
- * @returns true if sent, false if not connected
- */
-export function requestHistory(sessionId: string, workerId: string, fromOffset?: number): boolean {
-  return sendTerminalMessage(sessionId, workerId, {
-    type: 'request-history',
-    fromOffset: fromOffset ?? 0
-  });
 }
 
 // Convenience methods for git-diff workers

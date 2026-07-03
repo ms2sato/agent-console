@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { WorkerMessage, SkillDefinition } from '@agent-console/shared';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { sendWorkerMessage, fetchSkills } from '../../lib/api';
-import { sendInput as sendPtyInput } from '../../lib/worker-websocket';
+import { getOrCreatePocTerminal } from '../../labs/terminal-poc/poc-terminal-store';
 import { useDraftMessage } from '../../hooks/useDraftMessage';
 import { useMessageTemplates } from '../../hooks/useMessageTemplates';
 import { skillKeys } from '../../lib/query-keys';
@@ -189,7 +189,11 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
 
     if (e.key === 'Escape') {
       e.preventDefault();
-      sendPtyInput(sessionId, targetWorkerId, '\x1b');
+      // Route ESC through the next renderer's terminal store (issue #961). The
+      // legacy worker-websocket transport was orphaned by #941, so its sendInput
+      // was a silent no-op. MessagePanel only renders inside an open session
+      // page where the instance already exists; getOrCreatePocTerminal returns it.
+      getOrCreatePocTerminal(sessionId, targetWorkerId).sendInput('\x1b');
     }
   }, [handleSend, sessionId, targetWorkerId, showCompletion, templateSelectorOpen, filteredCommands, clampedIndex, selectCommand]);
 
