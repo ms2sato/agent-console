@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { AppServerMessage } from '@agent-console/shared';
 import { WS_CLOSE_CODE } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
@@ -704,6 +704,117 @@ describe('terminal-store', () => {
 
     expect(instance.getSnapshot().notice).toBeNull();
     expect(MockWebSocket.getInstances().length).toBe(before);
+  });
+
+  // Notice auto-dismiss (issue #968). The notice producer is worker-restarted
+  // ('Terminal restarted'); its banner must self-clear after a TTL, reset that
+  // clock when replaced, and be canceled by manual dismiss and dispose.
+  // The store's auto-dismiss delay (DEFAULT_NOTICE_TTL_MS in terminal-store.ts).
+  const NOTICE_TTL_MS = 5000;
+
+  function makeRestartedInstance(sessionId: string) {
+    const bus = makeAppBus();
+    _setAppSubscribe(bus.subscribe);
+    const instance = getOrCreateTerminal(sessionId, 'w');
+    MockWebSocket.getLastInstance()!.simulateOpen();
+    const emitRestart = () =>
+      bus.emit({ type: 'worker-restarted', sessionId, workerId: 'w', activityState: 'idle' });
+    return { instance, emitRestart };
+  }
+
+  /** The pending setTimeout call scheduled for the notice auto-dismiss. */
+  function noticeTimeoutCalls(spy: ReturnType<typeof spyOn>) {
+    return spy.mock.calls.filter((call: unknown[]) => call[1] === NOTICE_TTL_MS);
+  }
+
+  describe('notice auto-dismiss (#968)', () => {
+    it('auto-clears the notice after the TTL', () => {
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+      const { instance, emitRestart } = makeRestartedInstance('n1');
+
+      emitRestart();
+      expect(instance.getSnapshot().notice).toBe('Terminal restarted');
+      expect(_inspect(instance).noticeTimer).not.toBeNull();
+
+      // Deterministically fire the auto-dismiss timer (no real wait).
+      const scheduled = noticeTimeoutCalls(setTimeoutSpy);
+      expect(scheduled.length).toBe(1);
+      (scheduled[0][0] as () => void)();
+
+      expect(instance.getSnapshot().notice).toBeNull();
+      expect(_inspect(instance).noticeTimer).toBeNull();
+      setTimeoutSpy.mockRestore();
+    });
+
+    it('resets the clock when a new notice replaces a pending one', () => {
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+      const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
+      const { instance, emitRestart } = makeRestartedInstance('n2');
+
+      emitRestart();
+      const firstTimer = _inspect(instance).noticeTimer;
+      expect(firstTimer).not.toBeNull();
+      expect(noticeTimeoutCalls(setTimeoutSpy).length).toBe(1);
+
+      emitRestart(); // second notice replaces the first
+      // Old timer canceled, a fresh one scheduled (clock reset).
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(firstTimer);
+      const secondTimer = _inspect(instance).noticeTimer;
+      expect(secondTimer).not.toBeNull();
+      expect(secondTimer).not.toBe(firstTimer);
+      expect(noticeTimeoutCalls(setTimeoutSpy).length).toBe(2);
+      expect(instance.getSnapshot().notice).toBe('Terminal restarted');
+
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    });
+
+    it('cancels the pending auto-dismiss on manual dismiss', () => {
+      const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
+      const { instance, emitRestart } = makeRestartedInstance('n3');
+
+      emitRestart();
+      const timer = _inspect(instance).noticeTimer;
+      expect(timer).not.toBeNull();
+      expect(instance.getSnapshot().notice).toBe('Terminal restarted');
+
+      instance.dismissNotice();
+
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(timer);
+      expect(_inspect(instance).noticeTimer).toBeNull();
+      expect(instance.getSnapshot().notice).toBeNull();
+      clearTimeoutSpy.mockRestore();
+    });
+
+    it('cancels the pending auto-dismiss on dispose and does not notify afterward', () => {
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+      const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
+      const { instance, emitRestart } = makeRestartedInstance('n4');
+
+      emitRestart();
+      const timer = _inspect(instance).noticeTimer;
+      expect(timer).not.toBeNull();
+      // Capture the auto-dismiss callback to prove it is inert after dispose.
+      const noticeCallback = noticeTimeoutCalls(setTimeoutSpy)[0][0] as () => void;
+
+      let notified = 0;
+      instance.subscribe(() => {
+        notified += 1;
+      });
+
+      instance.dispose();
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(timer);
+      expect(_inspect(instance).disposed).toBe(true);
+
+      // Even if the (canceled) timer callback were force-invoked, it must not
+      // patch a disposed instance nor notify listeners.
+      notified = 0;
+      noticeCallback();
+      expect(notified).toBe(0);
+
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    });
   });
 
   it('session-deleted (app-WS) disposes the instance', () => {
