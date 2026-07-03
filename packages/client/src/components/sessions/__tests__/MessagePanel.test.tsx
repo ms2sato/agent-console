@@ -38,9 +38,15 @@ mock.module('../../../lib/api', () => ({
   reorderMessageTemplates: mockReorderMessageTemplates,
 }));
 
-const mockSendInput = mock(() => true);
-mock.module('../../../lib/worker-websocket', () => ({
+// ESC routes through the next renderer's terminal store (issue #961). Mock the
+// store's factory so the Escape handler resolves to a spyable instance without
+// opening a real WebSocket.
+const mockSendInput = mock((_data: string) => {});
+const mockGetOrCreatePocTerminal = mock((_sessionId: string, _workerId: string) => ({
   sendInput: mockSendInput,
+}));
+mock.module('../../../labs/terminal-poc/poc-terminal-store', () => ({
+  getOrCreatePocTerminal: mockGetOrCreatePocTerminal,
 }));
 
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
@@ -150,6 +156,7 @@ describe('MessagePanel', () => {
     mockSendWorkerMessage.mockClear();
     mockFetchSkills.mockClear();
     mockSendInput.mockClear();
+    mockGetOrCreatePocTerminal.mockClear();
     mockFetchMessageTemplates.mockClear();
     mockCreateMessageTemplate.mockClear();
     mockUpdateMessageTemplate.mockClear();
@@ -379,7 +386,7 @@ describe('MessagePanel', () => {
     expect((textarea3 as HTMLTextAreaElement).value).toBe('draft for agent-1');
   });
 
-  it('ESC key sends escape character to PTY via WebSocket', async () => {
+  it('ESC key sends escape through the terminal store for this session/worker', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -388,7 +395,11 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Escape' });
     });
 
-    expect(mockSendInput).toHaveBeenCalledWith('session-1', 'agent-1', '\x1b');
+    // Resolves the store instance for THIS session/worker, then sends the ESC
+    // byte through it. Polarity: reverting to worker-websocket.sendInput leaves
+    // both spies untouched (the real transport is a no-op with no connection).
+    expect(mockGetOrCreatePocTerminal).toHaveBeenCalledWith('session-1', 'agent-1');
+    expect(mockSendInput).toHaveBeenCalledWith('\x1b');
   });
 
   it('ESC key preserves draft content in textarea', async () => {
@@ -404,7 +415,7 @@ describe('MessagePanel', () => {
     });
 
     expect((textarea as HTMLTextAreaElement).value).toBe('my draft');
-    expect(mockSendInput).toHaveBeenCalledWith('session-1', 'agent-1', '\x1b');
+    expect(mockSendInput).toHaveBeenCalledWith('\x1b');
   });
 
   it('ESC key does not trigger HTTP message send', async () => {
