@@ -58,6 +58,24 @@ export function RepositoriesNavLink() {
   );
 }
 
+export function SettingsNavLink() {
+  const location = useLocation();
+  // Exact match: the Repositories link lives at /settings/repositories, so a
+  // startsWith('/settings') here would double-highlight both links on that path.
+  const isActive = location.pathname === '/settings';
+
+  return (
+    <Link
+      to="/settings"
+      className={`text-sm py-1 px-2 rounded no-underline ${
+        isActive ? 'text-white bg-white/10' : 'text-slate-400'
+      }`}
+    >
+      Settings
+    </Link>
+  );
+}
+
 export function ReviewNavLink() {
   const location = useLocation();
   const queryClient = useQueryClient();

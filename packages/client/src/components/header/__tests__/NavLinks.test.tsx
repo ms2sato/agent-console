@@ -7,6 +7,7 @@ import {
   JobsNavLink,
   AgentsNavLink,
   RepositoriesNavLink,
+  SettingsNavLink,
   ReviewNavLink,
   LogoutButton,
   ValidationWarningIndicator,
@@ -128,6 +129,29 @@ describe('RepositoriesNavLink', () => {
     await renderWithRouter(<RepositoriesNavLink />, '/settings/other');
     const link = screen.getByText('Repositories');
     expect(link.className).toContain('text-slate-400');
+  });
+});
+
+describe('SettingsNavLink', () => {
+  it('should render a link with text "Settings"', async () => {
+    await renderWithRouter(<SettingsNavLink />);
+    const link = screen.getByText('Settings');
+    expect(link).toBeTruthy();
+    expect(link.getAttribute('href')).toBe('/settings');
+  });
+
+  it('should have active styling on exact /settings path', async () => {
+    await renderWithRouter(<SettingsNavLink />, '/settings');
+    const link = screen.getByText('Settings');
+    expect(link.className).toContain('text-white');
+    expect(link.className).toContain('bg-white/10');
+  });
+
+  it('should NOT be active on /settings/repositories (no double-highlight)', async () => {
+    await renderWithRouter(<SettingsNavLink />, '/settings/repositories');
+    const link = screen.getByText('Settings');
+    expect(link.className).toContain('text-slate-400');
+    expect(link.className).not.toContain('bg-white/10');
   });
 });
 

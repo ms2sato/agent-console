@@ -14,6 +14,9 @@ describe('MobileNavMenu', () => {
       expect(screen.getByText('Jobs')).toBeTruthy();
       expect(screen.getByText('Agents')).toBeTruthy();
       expect(screen.getByText('Repositories')).toBeTruthy();
+      const settings = screen.getByText('Settings');
+      expect(settings).toBeTruthy();
+      expect(settings.closest('a')!.getAttribute('href')).toBe('/settings');
     });
 
     it('should not render when closed', async () => {
@@ -21,6 +24,20 @@ describe('MobileNavMenu', () => {
       expect(screen.queryByText('Jobs')).toBeNull();
       expect(screen.queryByText('Agents')).toBeNull();
       expect(screen.queryByText('Repositories')).toBeNull();
+      expect(screen.queryByText('Settings')).toBeNull();
+    });
+
+    it('should mark Settings active only on the exact /settings path, not /settings/repositories', async () => {
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/settings/repositories');
+      // On /settings/repositories, Repositories is active and Settings is not
+      // (guards against startsWith double-highlighting both).
+      expect(screen.getByText('Repositories').className).toContain('bg-white/10');
+      expect(screen.getByText('Settings').className).not.toContain('bg-white/10');
+
+      cleanup();
+
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/settings');
+      expect(screen.getByText('Settings').className).toContain('bg-white/10');
     });
 
     it('should have Main navigation aria-label', async () => {
