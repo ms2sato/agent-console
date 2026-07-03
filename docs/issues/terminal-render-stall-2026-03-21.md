@@ -3,7 +3,15 @@
 **Date:** 2026-03-21
 **Branch:** debug/terminal-render-stall-diagnostics
 **PRs:** #360 (diagnostics), #369 (auto-recovery v2)
-**Status:** Auto-recovery implemented (v2), root cause monitoring in progress
+**Status:** RESOLVED (2026-07 / roadmap PR-5, #941)
+
+> **Resolved.** This stall was a property of the xterm.js DOM renderer used by
+> the legacy `components/Terminal.tsx`. That renderer, its render watchdog, and
+> the auto-recovery workaround were removed when the terminal renderer was
+> replaced by the `@xterm/headless` VT core + custom React DOM renderer
+> (`labs/terminal-poc`, roadmap PRs #937-#941). The new renderer does not use
+> xterm.js's DOM layer, so this stall class no longer applies. The historical
+> analysis below is retained for context only.
 
 ## Summary
 

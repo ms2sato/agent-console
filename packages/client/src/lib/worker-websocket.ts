@@ -25,10 +25,8 @@ import {
   type ReviewAnnotationSet,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from './websocket-url.js';
-import { clearTerminalState, setCurrentServerPid } from './terminal-state-cache.js';
 import { getReconnectDelay, shouldReconnect } from './websocket-reconnect.js';
 import { logger } from './logger.js';
-import { diagLog } from './render-diagnostics.js';
 
 const MAX_RETRY_COUNT = 100;
 
@@ -75,9 +73,6 @@ interface WorkerConnection {
   retryTimeout: ReturnType<typeof setTimeout> | null;
   sessionId: string;
   workerId: string;
-  // Flag to indicate truncation recovery is in progress
-  // Used to prevent saving stale terminal state during cache clear
-  truncationInProgress: boolean;
 }
 
 // Callbacks for terminal/agent workers
@@ -204,7 +199,6 @@ function reconnect(sessionId: string, workerId: string, callbacks: WorkerCallbac
     retryTimeout: null,
     sessionId,
     workerId,
-    truncationInProgress: false,
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -223,12 +217,6 @@ function handleTerminalMessage(
   workerId: string
 ): void {
   const key = getConnectionKey(sessionId, workerId);
-
-  diagLog('WorkerWS', `message:${msg.type}`, {
-    ...(msg.type === 'output' ? { dataLen: msg.data.length, offset: msg.offset } : {}),
-    sessionId,
-    workerId,
-  });
 
   switch (msg.type) {
     case 'output':
@@ -261,43 +249,18 @@ function handleTerminalMessage(
         }
       }
       break;
-    case 'output-truncated': {
-      // Set truncation flag to prevent save manager from saving stale state
-      const conn = connections.get(key);
-      if (conn) {
-        conn.truncationInProgress = true;
-      }
-
-      // Clear terminal cache since offsets are now invalid after truncation
-      clearTerminalState(sessionId, workerId)
-        .then(() => {
-          const currentConn = connections.get(key);
-          if (currentConn) {
-            currentConn.truncationInProgress = false;
-          }
-        })
-        .catch((err) => {
-          logger.error('[WorkerWS] Failed to clear terminal cache on truncation:', err);
-          const currentConn = connections.get(key);
-          if (currentConn) {
-            currentConn.truncationInProgress = false;
-          }
-        });
-
-      // Notify the terminal component about the truncation
+    case 'output-truncated':
+      // Notify the terminal renderer about the truncation; it resyncs from the
+      // new offset. (The old IndexedDB cache clear was removed with the legacy
+      // renderer — the next renderer holds no persistent cache.)
       callbacks.onOutputTruncated?.(msg.message, msg.newOffset);
       break;
-    }
     case 'server-restarted':
       // Server restart notification received on an active worker WebSocket.
-      // Record the new server PID for observability. Cache is retained —
-      // server-side offset-based truncation detection (`readHistoryWithOffset`)
-      // will trigger a full-history resync on reconnect if the cached offset
-      // is beyond the server's current range.
+      // The next renderer reconstructs state from server history on reconnect;
+      // server-side offset-based truncation detection triggers a full-history
+      // resync if the offset is beyond the server's current range.
       logger.debug('[WorkerWS] Server restarted notification received, serverPid:', msg.serverPid);
-      setCurrentServerPid(msg.serverPid).catch((err) => {
-        logger.error('[WorkerWS] Failed to update server PID on restart:', err);
-      });
       break;
     default: {
       // Exhaustive check: TypeScript will error if a new message type is added
@@ -488,7 +451,6 @@ export function connect(
     retryTimeout: null,
     sessionId,
     workerId,
-    truncationInProgress: false,
   };
   connections.set(key, conn);
   // Notify subscribers that the connection state is now available.
@@ -645,16 +607,6 @@ export function isConnected(sessionId: string, workerId: string): boolean {
   const key = getConnectionKey(sessionId, workerId);
   const conn = connections.get(key);
   return conn?.ws.readyState === WebSocket.OPEN;
-}
-
-/**
- * Check if truncation recovery is in progress for a worker.
- * Used by terminal-state-save-manager to skip saving during truncation.
- */
-export function isTruncationInProgress(sessionId: string, workerId: string): boolean {
-  const key = getConnectionKey(sessionId, workerId);
-  const conn = connections.get(key);
-  return conn?.truncationInProgress ?? false;
 }
 
 /**

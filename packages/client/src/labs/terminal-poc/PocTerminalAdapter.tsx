@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useNavigate } from '@tanstack/react-router';
 import { useMutation } from '@tanstack/react-query';
-import type { TerminalProps } from '../../components/Terminal';
+import type { TerminalProps } from './terminal-contract';
 import { WorkerErrorRecovery } from '../../components/WorkerErrorRecovery';
 import { TerminalLoadingBar } from '../../components/ui/TerminalLoadingBar';
 import { deleteSession } from '../../lib/api';

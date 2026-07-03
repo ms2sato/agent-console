@@ -11,12 +11,6 @@ import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { Spinner } from '../../components/ui/Spinner';
 import { useAppWsState } from '../../hooks/useAppWs';
-import {
-  TERMINAL_RENDERERS,
-  type TerminalRenderer,
-  useTerminalRenderer,
-  setTerminalRenderer,
-} from '../../labs/terminal-poc/renderer-flag';
 
 export const Route = createFileRoute('/settings/')({
   component: SettingsPage,
@@ -129,9 +123,6 @@ function SettingsPage() {
         </div>
       )}
 
-      {/* Labs */}
-      <LabsSection />
-
       {/* Delete Agent Confirmation */}
       <ConfirmDialog
         open={agentToDelete !== null}
@@ -148,55 +139,6 @@ function SettingsPage() {
         isLoading={unregisterMutation.isPending}
       />
       <ErrorDialog {...errorDialogProps} />
-    </div>
-  );
-}
-
-const RENDERER_LABELS: Record<TerminalRenderer, string> = {
-  legacy: 'legacy',
-  next: 'next (PoC)',
-};
-
-function LabsSection() {
-  const renderer = useTerminalRenderer();
-
-  return (
-    <div className="mt-10">
-      <h2 className="text-lg font-semibold mb-3">Labs</h2>
-      <div className="card">
-        <div className="flex items-center justify-between gap-4">
-          <div className="min-w-0">
-            <div className="font-medium">Terminal renderer</div>
-            <p className="text-sm text-gray-500">
-              Per-browser setting. 'next' renders sessions with the labs terminal renderer.
-            </p>
-          </div>
-          <div
-            role="group"
-            aria-label="Terminal renderer"
-            className="flex shrink-0 overflow-hidden rounded-md border border-slate-600"
-          >
-            {TERMINAL_RENDERERS.map((value) => {
-              const selected = renderer === value;
-              return (
-                <button
-                  key={value}
-                  type="button"
-                  aria-pressed={selected}
-                  onClick={() => setTerminalRenderer(value)}
-                  className={`px-3 py-1.5 text-sm ${
-                    selected
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-slate-800 text-gray-300 hover:bg-slate-700'
-                  }`}
-                >
-                  {RENDERER_LABELS[value]}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }

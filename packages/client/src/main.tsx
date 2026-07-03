@@ -6,12 +6,7 @@ import { routeTree } from './routeTree.gen';
 import { fetchConfig, fetchCurrentUser } from './lib/api';
 import { setHomeDir } from './lib/path';
 import { setAuthMode, setCurrentUser, setSharedAccountsAvailable } from './lib/auth';
-import {
-  hasPendingSaves,
-  flush as flushSaveManager,
-} from './lib/terminal-state-save-manager';
 import { setCapabilities } from './lib/capabilities';
-import { setCurrentServerPid, cleanupOldStates } from './lib/terminal-state-cache';
 import { onPolicyViolation, disconnect as disconnectAppWs } from './lib/app-websocket';
 import { clearStoredFilterMode } from './hooks/useSessionFilter';
 import { logger } from './lib/logger';
@@ -179,15 +174,6 @@ async function initApp() {
     }
 
     setCapabilities(config.capabilities);
-
-    // Record the current server PID for observability. Cache retention is
-    // handled by server-side offset-based truncation detection on reconnect.
-    await setCurrentServerPid(config.serverPid);
-
-    // Clean up expired terminal states (older than MAX_AGE_MS).
-    cleanupOldStates().catch((e) => {
-      logger.warn('Failed to cleanup old terminal states:', e);
-    });
   } catch (e) {
     logger.error('Failed to fetch config:', e);
     showConnectionError(e);
@@ -202,15 +188,5 @@ async function initApp() {
     </StrictMode>
   );
 }
-
-// Best-effort flush of pending terminal state saves on page unload
-// Note: Cannot await in beforeunload - this is a best-effort attempt
-window.addEventListener('beforeunload', () => {
-  if (hasPendingSaves()) {
-    flushSaveManager().catch((e) => {
-      logger.error('[SaveManager] Failed to flush on beforeunload:', e);
-    });
-  }
-});
 
 initApp();
