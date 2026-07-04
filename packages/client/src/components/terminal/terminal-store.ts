@@ -52,6 +52,12 @@ export interface TerminalSnapshot {
   pagedRowCount: number; // total rows prepended from the archive
   pagedTopChunkRowCount: number; // rows in the oldest paged chunk (eviction math)
   pagedCapReached: boolean; // MAX_PAGED_ROWS hit -> fetch refused, notice shown
+  // Server has evicted the archive below the current top: no more history remains
+  // (hasMoreHistory false) yet the top still sits above the stream origin
+  // (oldestOffset > 0). Purely derived; the view shows a "no longer retained"
+  // notice. Distinct from pagedCapReached (client-side memory pause, releasable)
+  // (#980).
+  retentionFloorReached: boolean;
 }
 
 export interface TerminalInstance {
@@ -249,6 +255,7 @@ class TerminalController implements TerminalInstance {
       pagedRowCount: 0,
       pagedTopChunkRowCount: 0,
       pagedCapReached: false,
+      retentionFloorReached: false,
     };
 
     this.terminal.onScroll(() => this.scheduleNotify());
@@ -1102,6 +1109,16 @@ class TerminalController implements TerminalInstance {
     );
   }
 
+  // Server-side retention floor: no more archive remains above the current top
+  // (hasMoreHistory false) yet the top still sits above the stream origin
+  // (oldestOffset > 0), i.e. the server evicted the bytes we would page next.
+  // Purely derived from existing paging state — no mutable field of its own
+  // (#980). Row-independent, so it is safe to publish from both the immediate
+  // syncPagingMeta patch and the rAF pagingMetaPatch.
+  private computeRetentionFloorReached(): boolean {
+    return !this.hasMoreHistory && this.oldestOffset > 0;
+  }
+
   private pagingMetaPatch(): Partial<TerminalSnapshot> {
     // Paged rows are a normal-buffer scrollback concept; the alt-screen has no
     // scrollback. Gate the published COUNTS on the active buffer type so they
@@ -1117,6 +1134,7 @@ class TerminalController implements TerminalInstance {
       pagedRowCount: inNormal ? this.pagedRowCount : 0,
       pagedTopChunkRowCount: inNormal ? (this.pagedChunks[0]?.rows.length ?? 0) : 0,
       pagedCapReached: this.pagedCapReached,
+      retentionFloorReached: this.computeRetentionFloorReached(),
     };
   }
 
@@ -1141,6 +1159,7 @@ class TerminalController implements TerminalInstance {
       loadingOlder: this.loadingOlder,
       canRequestOlder: this.computeCanRequestOlder(),
       pagedCapReached: this.pagedCapReached,
+      retentionFloorReached: this.computeRetentionFloorReached(),
     });
   }
 

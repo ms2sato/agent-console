@@ -443,6 +443,96 @@ describe('terminal-store paging', () => {
     expect(p.pagedCapReached).toBe(false);
   });
 
+  describe('retentionFloorReached (#980)', () => {
+    // Derived boolean: !hasMoreHistory && oldestOffset > 0. The pair of expected
+    // values (true when the server evicted below the top; false when we truly
+    // reached the stream origin, and false after eviction re-opens headroom) is
+    // what makes these tests intrinsically polarity-guarding — a constant cannot
+    // satisfy both directions.
+
+    it('is true when the server has no more history above a non-zero top', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 50 });
+      // Range served, but hasMore=false with a top still above the origin (30>0):
+      // the server evicted the bytes below 30.
+      await pageChunk(ws, instance, {
+        data: 'chunk\r\n',
+        startOffset: 30,
+        endOffset: 50,
+        hasMore: false,
+        epoch: 1000,
+      });
+      const p = _inspect(instance).paging;
+      expect(p.hasMoreHistory).toBe(false);
+      expect(p.oldestOffset).toBe(30);
+      expect(instance.getSnapshot().retentionFloorReached).toBe(true);
+    });
+
+    it('is false when paging reaches the true stream origin (offset 0)', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 50 });
+      // Range reaches offset 0: end-of-history is the origin, not an eviction.
+      await pageChunk(ws, instance, {
+        data: 'first bytes\r\n',
+        startOffset: 0,
+        endOffset: 50,
+        hasMore: false,
+        epoch: 1000,
+      });
+      const p = _inspect(instance).paging;
+      expect(p.hasMoreHistory).toBe(false);
+      expect(p.oldestOffset).toBe(0);
+      expect(instance.getSnapshot().retentionFloorReached).toBe(false);
+    });
+
+    it('is true when an empty (pruned) range signals end-of-history above a non-zero top', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 50 });
+      // Empty data at the current top: the server pruned the archive below 50.
+      await pageChunk(ws, instance, {
+        data: '',
+        startOffset: 50,
+        endOffset: 50,
+        hasMore: false,
+        epoch: 1000,
+      });
+      const p = _inspect(instance).paging;
+      expect(p.hasMoreHistory).toBe(false);
+      expect(p.oldestOffset).toBe(50);
+      expect(instance.getSnapshot().retentionFloorReached).toBe(true);
+    });
+
+    it('clears after eviction re-opens headroom below the new top', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 50 });
+      await pageChunk(ws, instance, {
+        data: 'chunk-a\r\n',
+        startOffset: 30,
+        endOffset: 50,
+        hasMore: true,
+        epoch: 1000,
+      });
+      // Second page hits the retention floor (hasMore=false, top=10>0).
+      await pageChunk(ws, instance, {
+        data: 'chunk-b\r\n',
+        startOffset: 10,
+        endOffset: 30,
+        hasMore: false,
+        epoch: 1000,
+      });
+      expect(instance.getSnapshot().retentionFloorReached).toBe(true);
+
+      // Evicting the top chunk raises oldestOffset to 30 and re-enables fetch;
+      // the self-limiting notice clears (§6.4 lifecycle).
+      instance.evictTopChunk();
+      await flush();
+      const p = _inspect(instance).paging;
+      expect(p.oldestOffset).toBe(30);
+      expect(p.hasMoreHistory).toBe(true);
+      expect(instance.getSnapshot().retentionFloorReached).toBe(false);
+    });
+  });
+
   it('refuses further fetch once the paged-row cap is reached', async () => {
     const { instance, ws } = open('s', 'w');
     await seedHistory(ws, { startOffset: 50 });

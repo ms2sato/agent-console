@@ -27,6 +27,7 @@ const EXITED_SNAPSHOT: TerminalSnapshot = Object.freeze({
   pagedRowCount: 0,
   pagedTopChunkRowCount: 0,
   pagedCapReached: false,
+  retentionFloorReached: false,
 }) as TerminalSnapshot;
 
 const stubInstance: TerminalInstance = {

@@ -625,15 +625,28 @@ export function TerminalView({
       {/* History-paging status (terminal-history-paging.md §6.1/§6.4). Rendered
           as top overlays rather than in-flow rows so they never disturb the
           fixed LINE_HEIGHT_PX row grid (pointer->cell math) or the prepend
-          anchor delta. Cap notice takes precedence over the loading spinner. */}
+          anchor delta.
+
+          Precedence: cap (client memory pause, releasable) > loading spinner >
+          retention floor (server-side eviction, terminal). The retention-floor
+          notice is intentionally NOT special-cased for the alt-screen: it is a
+          statement about the archive, not the current buffer, and it is
+          self-limiting — once the user scrolls down and §6.4 eviction drops the
+          top chunk, evictTopChunk resets hasMoreHistory from oldestOffset and
+          the derived retentionFloorReached clears on the next syncPagingMeta, so
+          the notice disappears on its own without any dismiss affordance. */}
       {snapshot.pagedCapReached ? (
         <div className="absolute top-0 left-0 right-0 z-10 bg-slate-800/90 text-amber-200 text-xs px-3 py-1 text-center pointer-events-none">
           Older history paused — scroll down to release memory, then page again
         </div>
+      ) : snapshot.loadingOlder ? (
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 z-10 bg-slate-800/90 text-slate-300 text-xs px-3 py-1 rounded-b pointer-events-none">
+          Loading older history…
+        </div>
       ) : (
-        snapshot.loadingOlder && (
-          <div className="absolute top-0 left-1/2 -translate-x-1/2 z-10 bg-slate-800/90 text-slate-300 text-xs px-3 py-1 rounded-b pointer-events-none">
-            Loading older history…
+        snapshot.retentionFloorReached && (
+          <div className="absolute top-0 left-0 right-0 z-10 bg-slate-800/90 text-slate-400 text-xs px-3 py-1 text-center pointer-events-none">
+            Older history is no longer retained
           </div>
         )
       )}

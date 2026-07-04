@@ -49,6 +49,7 @@ function makeSnapshot(rows: TerminalRow[]): TerminalSnapshot {
     pagedRowCount: 0,
     pagedTopChunkRowCount: 0,
     pagedCapReached: false,
+    retentionFloorReached: false,
   };
 }
 
@@ -155,6 +156,29 @@ describe('TerminalView history-paging trigger', () => {
     const snapshot = { ...makeSnapshot(ROWS), pagedCapReached: true };
     render(<TerminalView instance={makeInstance(snapshot)} />);
     expect(screen.getByText(/older history paused/i)).toBeTruthy();
+  });
+
+  it('shows the retention-floor notice when the server evicted older history (#980)', () => {
+    const snapshot = { ...makeSnapshot(ROWS), retentionFloorReached: true };
+    render(<TerminalView instance={makeInstance(snapshot)} />);
+    expect(screen.getByText(/no longer retained/i)).toBeTruthy();
+  });
+
+  it('prefers the cap notice over the retention-floor notice (#980 precedence)', () => {
+    const snapshot = {
+      ...makeSnapshot(ROWS),
+      pagedCapReached: true,
+      retentionFloorReached: true,
+    };
+    render(<TerminalView instance={makeInstance(snapshot)} />);
+    expect(screen.getByText(/older history paused/i)).toBeTruthy();
+    expect(screen.queryByText(/no longer retained/i)).toBeNull();
+  });
+
+  it('renders no retention-floor notice when the floor is not reached (#980)', () => {
+    const snapshot = { ...makeSnapshot(ROWS), retentionFloorReached: false };
+    render(<TerminalView instance={makeInstance(snapshot)} />);
+    expect(screen.queryByText(/no longer retained/i)).toBeNull();
   });
 });
 

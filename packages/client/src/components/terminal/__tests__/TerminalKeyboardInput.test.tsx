@@ -42,6 +42,7 @@ const SNAPSHOT_STUB: TerminalSnapshot = {
   pagedRowCount: 0,
   pagedTopChunkRowCount: 0,
   pagedCapReached: false,
+  retentionFloorReached: false,
 };
 
 // Render-only stub: TerminalKeyboardInput never subscribes or reads the snapshot
