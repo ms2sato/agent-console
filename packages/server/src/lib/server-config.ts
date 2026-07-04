@@ -124,14 +124,15 @@ export const serverConfig = {
   })(),
   /**
    * PTY backend selector.
-   * - 'bun-pty' (default): use the bun-pty native shared library.
-   * - 'bun-terminal': use `Bun.spawn({ terminal: ... })` (Bun >= 1.3.5).
+   * - 'bun-terminal' (default): use `Bun.spawn({ terminal: ... })` (Bun >= 1.3.5).
+   * - 'bun-pty': use the bun-pty native shared library.
    *
    * See docs in `lib/pty-provider.ts` and Issue #824 for the migration
-   * evaluation. Default preserves historical behavior.
+   * evaluation. Stage 2 flips the default to 'bun-terminal'; 'bun-pty'
+   * remains selectable as a rollback escape hatch until Stage 3 retires it.
    */
   PTY_PROVIDER: (() => {
-    const value = process.env.PTY_PROVIDER ?? 'bun-pty';
+    const value = process.env.PTY_PROVIDER ?? 'bun-terminal';
     if (value !== 'bun-pty' && value !== 'bun-terminal') {
       throw new Error(`Invalid PTY_PROVIDER: '${value}'. Must be 'bun-pty' or 'bun-terminal'.`);
     }
