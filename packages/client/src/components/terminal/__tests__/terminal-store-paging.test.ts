@@ -367,6 +367,45 @@ describe('terminal-store paging', () => {
     expect(p.hasMoreHistory).toBe(true);
   });
 
+  it('never publishes paged row counts ahead of the prepended rows (#959)', async () => {
+    const { instance, ws } = open('s', 'w');
+    await seedHistory(ws, { startOffset: 50 });
+
+    // Invariant: on EVERY notify, snapshot.pagedRowCount must equal the number of
+    // rows currently in snapshot.rows that carry a negative (paged) key. A count
+    // that leads the rows (apply) or trails them (evict) is the #959 hazard: the
+    // view's anchor/eviction math would key on a count inconsistent with the DOM.
+    const violations: Array<{ count: number; negRows: number }> = [];
+    const check = () => {
+      const snap = instance.getSnapshot();
+      const negRows = snap.rows.filter((r) => r.key < 0).length;
+      if (snap.pagedRowCount !== negRows) {
+        violations.push({ count: snap.pagedRowCount, negRows });
+      }
+    };
+    const unsub = instance.subscribe(check);
+
+    // Apply a real paged chunk: the immediate post-apply notify must not carry
+    // pagedRowCount=N while snapshot.rows still holds only live rows.
+    await pageChunk(ws, instance, {
+      data: 'older content\r\n',
+      startOffset: 10,
+      endOffset: 50,
+      hasMore: true,
+      epoch: 1000,
+    });
+    expect(_inspect(instance).paging.pagedChunkCount).toBe(1);
+    expect(instance.getSnapshot().pagedRowCount).toBeGreaterThan(0);
+
+    // Evict: the count must not drop to 0 before the paged rows leave snapshot.rows.
+    instance.evictTopChunk();
+    await flush();
+    expect(_inspect(instance).paging.pagedChunkCount).toBe(0);
+
+    unsub();
+    expect(violations).toEqual([]);
+  });
+
   it('evicts the oldest chunk and re-enables fetch', async () => {
     const { instance, ws } = open('s', 'w');
     await seedHistory(ws, { startOffset: 50 });

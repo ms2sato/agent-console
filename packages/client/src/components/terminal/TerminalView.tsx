@@ -172,7 +172,32 @@ export function TerminalView({
   const scrollRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
   const wasAtBottomRef = useRef(true);
+  // Pre-commit scrollTop, captured every render before the DOM updates. The
+  // anchor effect uses it as its compensation base so a browser shrink-clamp
+  // (which mutates el.scrollTop before layout effects run) cannot corrupt it.
+  const preCommitScrollTopRef = useRef(0);
   const [atBottom, setAtBottom] = useState(true);
+
+  // Marks a scrollTop write the component itself performed (anchor compensation,
+  // bottom-follow, jump-to-bottom). The scroll event it fires must NOT run the
+  // §6.4 eviction check: eviction is for a user who genuinely scrolled away,
+  // and evicting on our own adjustment can cannibalize a just-applied chunk
+  // (issue #959). handleScroll consumes and clears the flag on the next scroll
+  // event.
+  const programmaticScrollRef = useRef(false);
+  // Assign scrollTop, flagging the write as programmatic. The flag is set BEFORE
+  // the assignment: a browser dispatches the scroll event asynchronously (next
+  // frame), so setting it either side works there — but a synchronous scroll
+  // dispatch runs handleScroll DURING the assignment, before any trailing
+  // flag-set. Setting it first makes the gate correct under both timings. An
+  // unchanged (clamped) scrollTop fires no scroll event, so unflag in that case,
+  // otherwise the stale flag would wrongly suppress the next genuine user scroll.
+  const assignScrollTop = (el: HTMLElement, top: number) => {
+    const prev = el.scrollTop;
+    programmaticScrollRef.current = true;
+    el.scrollTop = top;
+    if (el.scrollTop === prev) programmaticScrollRef.current = false;
+  };
 
   // Drag-and-drop file upload. The depth counter (drag-state.ts) nets out the
   // enter/leave events that bubble from child rows so the overlay does not
@@ -228,11 +253,17 @@ export function TerminalView({
   }, [instance]);
 
   // Record whether the user is pinned to the bottom BEFORE the DOM updates, so
-  // the layout effect below can decide whether to auto-scroll.
+  // the layout effect below can decide whether to auto-scroll. Also capture the
+  // PRE-COMMIT scrollTop for the anchor effect: on a DOM SHRINK (eviction) the
+  // browser clamps scrollTop to the new (smaller) max BEFORE layout effects run,
+  // so reading el.scrollTop inside the effect yields an already-clamped base.
+  // The anchor must compensate from the position the user actually had before
+  // the change (§6.3), not the clamped one — see the effect below.
   const container = scrollRef.current;
   if (container) {
     const distance = container.scrollHeight - container.scrollTop - container.clientHeight;
     wasAtBottomRef.current = distance <= BOTTOM_THRESHOLD_PX;
+    preCommitScrollTopRef.current = container.scrollTop;
   }
 
   // Prepend / eviction scroll anchoring (terminal-history-paging.md §6.3). Every
@@ -252,14 +283,27 @@ export function TerminalView({
     if (!el || curr === prev) return;
     if (wasAtBottomRef.current) return; // bottom-follow owns this frame
     if (el.scrollHeight <= el.clientHeight) return; // nothing to compensate
-    el.scrollTop += (curr - prev) * LINE_HEIGHT_PX;
+    // Compensate from the PRE-COMMIT scrollTop (captured in the render-phase
+    // block above), NOT el.scrollTop. On an eviction (rows removed at the top)
+    // the DOM shrinks and the browser clamps scrollTop to the new max before this
+    // layout effect runs; a clamped base under-compensates, so
+    // `clampedBase + (0 - N)*18` lands the viewport at 0 — inside the fetch
+    // trigger (scrollTop < 2*clientHeight) — which instantly re-fetches the chunk
+    // we just evicted (eviction self-defeats) and jumps the viewport upward. The
+    // pre-commit base preserves the user's exact position (§6.3) and, because the
+    // eviction threshold is chunkHeight + 2*clientHeight, keeps the result
+    // structurally >= 2*clientHeight — outside the fetch trigger. Growth (prepend)
+    // never clamps, so pre-commit and post-commit bases are identical there.
+    // Programmatic adjustment: must not trigger §6.4 eviction (see assignScrollTop).
+    assignScrollTop(el, preCommitScrollTopRef.current + (curr - prev) * LINE_HEIGHT_PX);
   }, [snapshot]);
 
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     if (wasAtBottomRef.current) {
-      el.scrollTop = el.scrollHeight;
+      // Programmatic bottom-follow: must not trigger §6.4 eviction.
+      assignScrollTop(el, el.scrollHeight);
     }
   }, [snapshot]);
 
@@ -267,6 +311,12 @@ export function TerminalView({
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
+    // Consume the programmatic flag first: this scroll event may have been
+    // fired by our own scrollTop write (anchor compensation / bottom-follow /
+    // jump-to-bottom). Only the §6.4 eviction check is gated on it below; the
+    // scroll-to-top fetch trigger and atBottom tracking run unconditionally.
+    const wasProgrammatic = programmaticScrollRef.current;
+    programmaticScrollRef.current = false;
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     setAtBottom(distance <= BOTTOM_THRESHOLD_PX);
     setScrollTick((t) => t + 1);
@@ -286,8 +336,11 @@ export function TerminalView({
 
     // Top-side eviction (§6.4): drop the oldest paged chunk once the viewport is
     // 2+ viewport-heights below its bottom edge. Fixed row height makes the top
-    // chunk's bottom exactly rows * LINE_HEIGHT_PX.
-    if (pagedTopChunkRowCount > 0) {
+    // chunk's bottom exactly rows * LINE_HEIGHT_PX. Gated on !wasProgrammatic so
+    // eviction only fires when the USER genuinely scrolled away — never from our
+    // own bottom-follow / anchor-compensation writes, which would otherwise let
+    // a programmatic pin cannibalize a just-applied chunk (issue #959).
+    if (!wasProgrammatic && pagedTopChunkRowCount > 0) {
       const topChunkBottomPx = pagedTopChunkRowCount * LINE_HEIGHT_PX;
       if (el.scrollTop - topChunkBottomPx >= el.clientHeight * 2) {
         instance.evictTopChunk();
@@ -298,7 +351,8 @@ export function TerminalView({
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    // Programmatic jump-to-bottom: must not trigger §6.4 eviction.
+    assignScrollTop(el, el.scrollHeight);
     setAtBottom(true);
   }, []);
 

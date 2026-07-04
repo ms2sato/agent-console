@@ -976,7 +976,27 @@ class TerminalController implements TerminalInstance {
   }
 
   private syncPagingMeta(): void {
-    this.patchMeta(this.pagingMetaPatch());
+    // Immediate patch carries ONLY the row-independent flags. The row COUNTS
+    // (pagedRowCount / pagedTopChunkRowCount) are published exclusively by
+    // rebuildSnapshot (via pagingMetaPatch), in lockstep with snapshot.rows.
+    //
+    // WHY the counts must not publish here: the view's prepend/eviction anchor
+    // compensation and the §6.4 eviction math key on the counts being exactly
+    // consistent with snapshot.rows. applyRangeChunk mutates pagedRowCount
+    // synchronously but the prepended rows only enter snapshot.rows on the next
+    // rAF rebuildSnapshot. If syncPagingMeta published the new count now, the
+    // view would see "N paged rows" while snapshot.rows (and the DOM) still hold
+    // none, and the anchor effect would compensate scrollTop against a DOM
+    // without those rows — the scroll jump that let §6.4 eviction cannibalize a
+    // just-applied chunk (issue #959). The same hazard exists in the shrink
+    // direction (evict / cols-drop): a count dropping to 0 before the rows are
+    // removed would jump the viewport upward. Keeping counts on rebuildSnapshot
+    // only makes both directions atomic with the rows.
+    this.patchMeta({
+      loadingOlder: this.loadingOlder,
+      canRequestOlder: this.computeCanRequestOlder(),
+      pagedCapReached: this.pagedCapReached,
+    });
   }
 
   // --- Snapshot building ---
