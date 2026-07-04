@@ -14,7 +14,7 @@ import { stripSystemMessages, stripScrollbackClear as applyScrollbackFilter } fr
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, type TerminalRow } from './buffer-to-rows';
 import { detectRowLinks } from './link-detection';
-import { replayHistoryChunk } from './history-replay';
+import { replayHistoryChunk, replayHistoryPair } from './history-replay';
 import { rowText } from './row-pipeline';
 
 /**
@@ -179,7 +179,17 @@ class TerminalController implements TerminalInstance {
   private oldestOffset = 0;
   // Paged chunks, oldest first (a deque). Each carries its absolute range so
   // contiguity/eviction can reason about boundaries without re-deriving them.
-  private pagedChunks: Array<{ rows: TerminalRow[]; startOffset: number; endOffset: number }> = [];
+  // `rawData` is retained ONLY on the current top (oldest) chunk, for the
+  // older-neighbor pair re-replay seam correction (§6.2); bound: one range
+  // request's maxBytes. It is dropped when the chunk stops being the top (a newer
+  // pair takes over), or when the chunk goes away (eviction / cols-drop / resync
+  // / teardown clear the whole array).
+  private pagedChunks: Array<{
+    rows: TerminalRow[];
+    startOffset: number;
+    endOffset: number;
+    rawData?: string;
+  }> = [];
   private pagedRowCount = 0;
   private hasMoreHistory = true; // more archive remains above oldestOffset
   private loadingOlder = false; // a range request is in flight
@@ -491,6 +501,9 @@ class TerminalController implements TerminalInstance {
     queuedOutputCount: number;
     queuedBytes: number;
     historyInFlight: boolean;
+    topChunkHasRaw: boolean;
+    topChunkRawBytes: number;
+    pagedRawCount: number;
   } {
     return {
       epoch: this.epoch,
@@ -507,6 +520,9 @@ class TerminalController implements TerminalInstance {
       queuedOutputCount: this.queuedOutput.length,
       queuedBytes: this.queuedBytes,
       historyInFlight: this.historyInFlight,
+      topChunkHasRaw: this.pagedChunks[0]?.rawData !== undefined,
+      topChunkRawBytes: this.pagedChunks[0]?.rawData?.length ?? 0,
+      pagedRawCount: this.pagedChunks.filter((c) => c.rawData !== undefined).length,
     };
   }
 
@@ -1007,6 +1023,83 @@ class TerminalController implements TerminalInstance {
     // mismatch only shifts where transient chrome settles, so a rows-only resize
     // does NOT invalidate already-paged chunks.
     const rows = this.terminal.rows;
+
+    // Seam correction (§6.2): if the current top chunk retained its raw bytes,
+    // replay THIS (older) chunk together with the top so the top's leading
+    // repaints see the state its predecessor established. Otherwise standalone.
+    const topChunk = this.pagedChunks[0];
+    const topRaw = topChunk?.rawData;
+    if (topRaw === undefined) {
+      await this.applyStandaloneChunk(msg, reqMaxBytes, cols, rows);
+      return;
+    }
+
+    let pair: Awaited<ReturnType<typeof replayHistoryPair>>;
+    try {
+      pair = await replayHistoryPair(msg.data, topRaw, cols, rows, (d) => this.processOutput(d));
+    } catch {
+      return;
+    }
+    if (this.disposed) return;
+    // The window may have moved while awaiting (resync / reconnect / resize /
+    // cols drop); only apply if still contiguous with the current top. When this
+    // holds, topChunk is still pagedChunks[0] (the single-in-flight guard and an
+    // unchanged oldestOffset together rule out any concurrent mutation).
+    if (msg.endOffset !== this.oldestOffset) return;
+
+    if (pair.overflow) {
+      // The joined pair overflowed the throwaway scrollback: fall back to a
+      // standalone replay of C_new for THIS fetch. One interior seam stays
+      // uncorrected; the fetch loop is not perturbed (§6.2 Fallback).
+      await this.applyStandaloneChunk(msg, reqMaxBytes, cols, rows);
+      return;
+    }
+
+    // Advance the cursor regardless of renderable content (§6.2). BYTE RANGES are
+    // untouched: each chunk keeps its own start/endOffset exactly as fetched —
+    // row attribution may shift across the boundary but eviction bookkeeping is
+    // byte-range-based.
+    this.oldestOffset = msg.startOffset;
+    this.hasMoreHistory = msg.hasMore;
+
+    // The seam-corrected rows always replace the top chunk's rows (strictly
+    // better). Fresh negative keys for all rows of BOTH replaced chunks (§6.3
+    // never reuses keys; the old rows' keys are not returned to the pool).
+    this.rekeyDownward(pair.topChunkRows);
+    topChunk.rows = pair.topChunkRows;
+
+    if (pair.newChunkRows.length > 0) {
+      // A real new top takes over: it retains the raw for the NEXT older fetch;
+      // the former top no longer needs its raw (its seam is now corrected).
+      this.rekeyDownward(pair.newChunkRows);
+      delete topChunk.rawData;
+      this.pagedChunks.unshift({
+        rows: pair.newChunkRows,
+        startOffset: msg.startOffset,
+        endOffset: msg.endOffset,
+        rawData: msg.data,
+      });
+    } else {
+      // Edge: the older range was all-blank -> no new chunk is pushed (advance-
+      // only, mirroring the standalone empty-chunk case), but the top-chunk row
+      // replacement still applies. KEEP the top's rawData: it stays the top, and
+      // the NEXT older fetch pairs against it again (the next boundary sits below
+      // it, between the next fetch and this chunk).
+    }
+
+    this.recomputePagedRowCount();
+    this.syncPagingMeta();
+    this.scheduleNotify();
+  }
+
+  /** Standalone throwaway replay + apply of a single older chunk (the pre-seam-
+   * correction path, and the pair-overflow fallback). */
+  private async applyStandaloneChunk(
+    msg: { data: string; startOffset: number; endOffset: number; hasMore: boolean },
+    reqMaxBytes: number,
+    cols: number,
+    rows: number,
+  ): Promise<void> {
     let result: Awaited<ReturnType<typeof replayHistoryChunk>>;
     try {
       result = await replayHistoryChunk(msg.data, cols, rows, (d) => this.processOutput(d));
@@ -1014,8 +1107,6 @@ class TerminalController implements TerminalInstance {
       return;
     }
     if (this.disposed) return;
-    // The window may have moved while awaiting (resync / reconnect / resize /
-    // cols drop); only apply if still contiguous with the current top.
     if (msg.endOffset !== this.oldestOffset) return;
 
     if (result.overflow) {
@@ -1031,22 +1122,43 @@ class TerminalController implements TerminalInstance {
 
     if (result.rows.length > 0) {
       // Fresh negative keys, allocated downward, never reused (§6.3).
-      for (const row of result.rows) {
-        this.negKeyCounter -= 1;
-        row.key = this.negKeyCounter;
-      }
+      this.rekeyDownward(result.rows);
+      // Raw is retained on the current top only: the arriving chunk becomes the
+      // new top, so drop the previous top's raw (no-op when it had none).
+      if (this.pagedChunks[0]) delete this.pagedChunks[0].rawData;
       // Each new chunk is older than all prior paged chunks -> front of the deque.
       this.pagedChunks.unshift({
         rows: result.rows,
         startOffset: msg.startOffset,
         endOffset: msg.endOffset,
+        rawData: msg.data,
       });
-      this.pagedRowCount += result.rows.length;
-      if (this.pagedRowCount >= MAX_PAGED_ROWS) this.pagedCapReached = true;
+    } else {
+      // All-blank chunk: advance-only (no chunk pushed). Drop any retained top
+      // raw — this consumed range now sits between the top and the next fetch, so
+      // a pair replay across it would be non-contiguous. The next fetch replays
+      // standalone (an accepted, rare seam).
+      if (this.pagedChunks[0]) delete this.pagedChunks[0].rawData;
     }
 
+    this.recomputePagedRowCount();
     this.syncPagingMeta();
     this.scheduleNotify();
+  }
+
+  /** Assign fresh downward negative keys to a batch of rows (§6.3). */
+  private rekeyDownward(rows: TerminalRow[]): void {
+    for (const row of rows) {
+      this.negKeyCounter -= 1;
+      row.key = this.negKeyCounter;
+    }
+  }
+
+  /** Recompute pagedRowCount from the chunks and latch the §6.4 cap. The cap is
+   * a latch cleared only by eviction, so this never clears it. */
+  private recomputePagedRowCount(): void {
+    this.pagedRowCount = this.pagedChunks.reduce((sum, c) => sum + c.rows.length, 0);
+    if (this.pagedRowCount >= MAX_PAGED_ROWS) this.pagedCapReached = true;
   }
 
   /** Full teardown of paged state (resync / restart). Keys are never reused, so

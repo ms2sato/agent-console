@@ -512,6 +512,61 @@ describe('TerminalView §6.4 eviction gating (#959)', () => {
     expect(requestOlderHistory).not.toHaveBeenCalled();
   });
 
+  it('anchors a pair re-replay row-count change without triggering eviction (§6.2)', () => {
+    // A seam-correction pair re-replay REPLACES the top chunks' rows, changing
+    // pagedRowCount N -> N' atomically with the rows. The anchor must compensate
+    // by (N'-N)*LINE_HEIGHT_PX from the pre-commit base, and the compensating
+    // (programmatic) scroll must NOT trip §6.4 eviction — even when the resulting
+    // position is eviction-worthy — because it was our own write, not the user's.
+    const evictTopChunk = mock(() => {});
+    const requestOlderHistory = mock(() => {});
+    const listeners = new Set<() => void>();
+    let snap: TerminalSnapshot = {
+      ...makeSnapshot(makeRows(760, 700)), // 700 paged + 60 live
+      pagedRowCount: 700,
+      pagedTopChunkRowCount: 700,
+      canRequestOlder: true,
+    };
+    const instance: TerminalInstance = {
+      ...makeInstance(snap),
+      subscribe: (l) => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      getSnapshot: () => snap,
+      evictTopChunk,
+      requestOlderHistory,
+    };
+    const setSnapshot = (s: TerminalSnapshot) => {
+      snap = s;
+      for (const l of Array.from(listeners)) l();
+    };
+
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const geom = installGeometry(scroller, 180);
+    // Park the user well below the top chunk's bottom — an eviction-worthy spot
+    // for a GENUINE scroll: scrollTop(13060) - chunkBottom(700*18=12600) = 460 >=
+    // 2*clientHeight(360). The compensation write lands here-plus-delta.
+    geom.setSilent(700 * LINE_HEIGHT_PX + 2 * 180 + 100); // 13060
+
+    // Pair re-replay grows the paged region by 5 rows (seam-corrected partition).
+    act(() => {
+      setSnapshot({
+        ...makeSnapshot(makeRows(765, 705)),
+        pagedRowCount: 705,
+        pagedTopChunkRowCount: 705,
+        canRequestOlder: true,
+      });
+    });
+
+    // Anchor compensated from the pre-commit base by the +5-row delta.
+    expect(scroller.scrollTop).toBe(13060 + 5 * LINE_HEIGHT_PX); // 13150
+    // The programmatic gate held: no self-cannibalizing eviction, no re-fetch.
+    expect(evictTopChunk).not.toHaveBeenCalled();
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
   it('a no-op programmatic write does not suppress a subsequent genuine user eviction', () => {
     const evictTopChunk = mock(() => {});
     const listeners = new Set<() => void>();

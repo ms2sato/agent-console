@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'bun:test';
-import { replayHistoryChunk } from '../history-replay';
+import { describe, it, expect, afterEach } from 'bun:test';
+import { replayHistoryChunk, replayHistoryPair, _setReplayScrollbackForTest } from '../history-replay';
 
 const identity = (d: string) => d;
 
@@ -103,5 +103,109 @@ describe('replayHistoryChunk', () => {
       expect(text).toContain('L01');
       expect(text).toContain('L30');
     });
+  });
+});
+
+describe('replayHistoryPair (seam correction §6.2)', () => {
+  afterEach(() => {
+    // Restore the real scrollback bound after any override.
+    _setReplayScrollbackForTest(null);
+  });
+
+  // Fixture perspective (matches the store's): `newer` is the OLDER range that
+  // the pair writes FIRST; `older`/`OLDER_RANGE` here is C_new's bytes and
+  // `NEWER_RANGE` is C_top's bytes (the current top chunk, written SECOND).
+  const OLDER_RANGE = Array.from({ length: 40 }, (_, i) => `R${String(i + 1).padStart(2, '0')}`)
+    .map((s) => `${s}\r\n`)
+    .join('');
+  // C_top begins mid-repaint: a relative CUU that assumes its predecessor left
+  // the cursor just after committed content (`\x1b[2A` up, `\r\x1b[K` clear the
+  // line, write the chrome bar there), then continues with fresh committed
+  // lines. Started from an EMPTY screen the CUU clamps at the top and the chrome
+  // is misplaced as a leading settled row — the #979 seam artifact.
+  const NEWER_RANGE =
+    '\x1b[2A\r\x1b[K' +
+    'CHROME-BAR' +
+    '\r\n\r\n' +
+    Array.from({ length: 20 }, (_, i) => `N${String(i + 1).padStart(2, '0')}`)
+      .map((s) => `${s}\r\n`)
+      .join('');
+
+  // NOTE (fixture deviation): this synthetic fixture asserts the seam artifact at
+  // the CHUNK BOUNDARY (the first row of the seam-sensitive chunk), not the
+  // "chrome scrolled deep into scrollback" shape of a real captured relative-
+  // repaint TUI. A static synthetic stream cannot reproduce the latter: the
+  // scrollback-always-kept vs below-cursor-discarded extraction rules couple such
+  // that any fixture making standalone leak chrome into settled rows also makes
+  // the paired replay keep it (both accumulate the same scrollback), and any
+  // fixture where the paired replay discards the chrome clamps the standalone to
+  // a single row. The real-capture shape is covered by the E2E acceptance
+  // (per the coordinator). What this fixture DOES prove is the load-bearing
+  // invariant: the chunk's BOUNDARY row is correct only because the predecessor's
+  // bytes were replayed first — intrinsically polarity-guarding, since a pair
+  // that behaved like a standalone replay would surface the artifact at the seam.
+
+  it('standalone replay of the newer range misplaces chrome as a leading settled row', async () => {
+    const { rows } = await replayHistoryChunk(NEWER_RANGE, 80, 24, (d) => d);
+    // Polarity half: without the predecessor's state the CUU clamps at the top
+    // and the chrome bar lands as the FIRST (settled, non-final) row.
+    expect(textOf(rows)[0]).toBe('CHROME-BAR');
+    // The real committed content still follows, in order.
+    expect(textOf(rows).filter((r) => /^N\d\d$/.test(r))).toEqual(
+      Array.from({ length: 20 }, (_, i) => `N${String(i + 1).padStart(2, '0')}`),
+    );
+  });
+
+  it('pair re-replay corrects the seam: the boundary row is content, not chrome', async () => {
+    const pair = await replayHistoryPair(OLDER_RANGE, NEWER_RANGE, 80, 24, (d) => d);
+    expect(pair.overflow).toBe(false);
+    // The top chunk (C_top) is the seam-sensitive one. With the predecessor
+    // replayed first, its leading (boundary) row is real content, NOT the
+    // spurious chrome the standalone replay produced.
+    expect(textOf(pair.topChunkRows)[0]).not.toBe('CHROME-BAR');
+    expect(textOf(pair.topChunkRows)[0]).toBe('R18');
+    // The partition is content-contiguous across the boundary: C_new's settled
+    // tail then C_top's rows, no duplication or loss at the seam.
+    const newTail = textOf(pair.newChunkRows).slice(-3);
+    expect(newTail).toEqual(['R15', 'R16', 'R17']);
+    expect(textOf(pair.topChunkRows).slice(0, 4)).toEqual(['R18', 'R19', 'R20', 'R21']);
+  });
+
+  it('partitions a pure line-flow pair with no duplication or loss at the boundary', async () => {
+    const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const B = Array.from({ length: 15 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const sa = await replayHistoryChunk(A, 80, 24, (d) => d);
+    const sb = await replayHistoryChunk(B, 80, 24, (d) => d);
+    const pair = await replayHistoryPair(A, B, 80, 24, (d) => d);
+    // The joined partition equals the concatenation of the two standalone
+    // extractions (the split index differs — splitBaseY counts only C_new's
+    // scrolled rows — but the JOINED set is loss- and duplication-free).
+    expect([...textOf(pair.newChunkRows), ...textOf(pair.topChunkRows)]).toEqual([
+      ...textOf(sa.rows),
+      ...textOf(sb.rows),
+    ]);
+  });
+
+  it('reports overflow when the JOINED pair exceeds the scrollback cap (fallback path)', async () => {
+    _setReplayScrollbackForTest(50);
+    const A = Array.from({ length: 10 }, (_, i) => `A${i}\r\n`).join('');
+    // B alone stays under the cap; A + B together exceed it.
+    const B = Array.from({ length: 45 }, (_, i) => `B${i}\r\n`).join('');
+    const pairResult = await replayHistoryPair(A, B, 80, 24, (d) => d);
+    const standaloneB = await replayHistoryChunk(B, 80, 24, (d) => d);
+    expect(pairResult.overflow).toBe(true); // joined overflowed -> store falls back
+    expect(pairResult.newChunkRows).toEqual([]);
+    expect(pairResult.topChunkRows).toEqual([]);
+    expect(standaloneB.overflow).toBe(false); // the standalone fallback fits
+  });
+
+  it('joins a URL that wraps across the corrected chunk boundary (side benefit)', async () => {
+    // The URL is split across the C_new / C_top byte boundary within one logical
+    // (wrapped) line; link detection over the joined extraction reconnects it.
+    const newer = 'start of line https://example.com/very/long/';
+    const top = 'path/that/continues/here end\r\n';
+    const pair = await replayHistoryPair(newer, top, 20, 24, (d) => d);
+    const hrefs = [...pair.newChunkRows, ...pair.topChunkRows].flatMap((r) => r.links.map((l) => l.href));
+    expect(hrefs.some((h) => h.includes('very/long/path/that/continues'))).toBe(true);
   });
 });

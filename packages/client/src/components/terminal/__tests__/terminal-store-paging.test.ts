@@ -26,6 +26,14 @@ function flush(ms = 60): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 30 lines: enough to scroll the 24-row throwaway replay screen so a paired
+// re-replay's splitBaseY is > 0 and BOTH partitions are non-empty. A tiny
+// single-line chunk would replay to splitBaseY === 0, folding its rows into the
+// top chunk's partition (the designed attribution shift, §6.2) — so tests that
+// need two distinct paged chunks after pairing use scroll-sized data.
+const manyLines = (prefix: string) =>
+  Array.from({ length: 30 }, (_, i) => `${prefix}${String(i + 1).padStart(2, '0')}`).join('\r\n') + '\r\n';
+
 function sentMessages(ws: MockWebSocket): Array<{ type: string; [k: string]: unknown }> {
   return ws.send.mock.calls.map((c) => JSON.parse(c[0]));
 }
@@ -419,15 +427,17 @@ describe('terminal-store paging', () => {
   it('evicts the oldest chunk and re-enables fetch', async () => {
     const { instance, ws } = open('s', 'w');
     await seedHistory(ws, { startOffset: 50 });
+    // Scroll-sized so the pair re-replay of the second fetch yields a distinct
+    // second chunk (splitBaseY > 0) rather than folding into the top.
     await pageChunk(ws, instance, {
-      data: 'chunk-a\r\n',
+      data: manyLines('A'),
       startOffset: 30,
       endOffset: 50,
       hasMore: true,
       epoch: 1000,
     });
     await pageChunk(ws, instance, {
-      data: 'chunk-b\r\n',
+      data: manyLines('B'),
       startOffset: 10,
       endOffset: 30,
       hasMore: true,
@@ -505,8 +515,10 @@ describe('terminal-store paging', () => {
     it('clears after eviction re-opens headroom below the new top', async () => {
       const { instance, ws } = open('s', 'w');
       await seedHistory(ws, { startOffset: 50 });
+      // Scroll-sized so the second fetch's pair re-replay yields a distinct
+      // second chunk to evict (splitBaseY > 0).
       await pageChunk(ws, instance, {
-        data: 'chunk-a\r\n',
+        data: manyLines('A'),
         startOffset: 30,
         endOffset: 50,
         hasMore: true,
@@ -514,7 +526,7 @@ describe('terminal-store paging', () => {
       });
       // Second page hits the retention floor (hasMore=false, top=10>0).
       await pageChunk(ws, instance, {
-        data: 'chunk-b\r\n',
+        data: manyLines('B'),
         startOffset: 10,
         endOffset: 30,
         hasMore: false,
@@ -793,5 +805,192 @@ describe('terminal-store paging', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  // --- Seam correction: older-neighbor pair re-replay (§6.2, #979) ---
+  describe('seam correction (pair re-replay)', () => {
+    const negKeys = (instance: ReturnType<typeof getOrCreateTerminal>) =>
+      instance
+        .getSnapshot()
+        .rows.filter((r) => r.key < 0)
+        .map((r) => r.key);
+
+    it('re-replays the top chunk on the next older fetch, retaining raw on the new top only', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 100 });
+
+      // First chunk: standalone replay, retains its raw for pairing.
+      await pageChunk(ws, instance, {
+        data: manyLines('A'),
+        startOffset: 70,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      let p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(1);
+      expect(p.topChunkHasRaw).toBe(true);
+      expect(p.pagedRawCount).toBe(1);
+      const keysBefore = negKeys(instance);
+
+      // Older chunk: pair path (the top chunk has raw). It replaces BOTH chunks'
+      // rows with fresh keys and moves raw retention to the new top.
+      await pageChunk(ws, instance, {
+        data: manyLines('B'),
+        startOffset: 40,
+        endOffset: 70,
+        hasMore: true,
+        epoch: 1000,
+      });
+      p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(2);
+      expect(p.oldestOffset).toBe(40); // advanced to B.startOffset (byte range untouched)
+      expect(p.topChunkHasRaw).toBe(true); // B is the new top, retains raw
+      expect(p.pagedRawCount).toBe(1); // only ONE raw held: A's was dropped
+
+      // Both replaced chunks got fresh negative keys (§6.3 never reuses keys).
+      const keysAfter = negKeys(instance);
+      for (const k of keysAfter) expect(keysBefore).not.toContain(k);
+
+      // Test-1 invariant: pagedRowCount === number of negative-key rows in the
+      // snapshot (counts stay in lockstep with the DOM after the replacement).
+      expect(p.pagedRowCount).toBe(negKeys(instance).length);
+    });
+
+    it('eviction after a pair re-replay restores the exact byte offset and leaves the new top raw-less', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 100 });
+      await pageChunk(ws, instance, {
+        data: manyLines('A'),
+        startOffset: 70,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      await pageChunk(ws, instance, {
+        data: manyLines('B'),
+        startOffset: 40,
+        endOffset: 70,
+        hasMore: true,
+        epoch: 1000,
+      });
+      expect(_inspect(instance).paging.pagedChunkCount).toBe(2);
+
+      // Evict the top (B): byte bookkeeping is range-based and unaffected by the
+      // pair's row re-attribution — oldestOffset returns to B's exact endOffset.
+      instance.evictTopChunk();
+      let p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(1);
+      expect(p.oldestOffset).toBe(70); // B.endOffset exactly
+      expect(p.topChunkHasRaw).toBe(false); // A's raw was dropped when B took over
+      expect(p.pagedRawCount).toBe(0);
+
+      // The next older fetch therefore replays STANDALONE and re-retains raw.
+      await pageChunk(ws, instance, {
+        data: manyLines('C'),
+        startOffset: 50,
+        endOffset: 70,
+        hasMore: true,
+        epoch: 1000,
+      });
+      p = _inspect(instance).paging;
+      expect(p.topChunkHasRaw).toBe(true);
+      expect(p.pagedRawCount).toBe(1);
+    });
+
+    it('drops retained raw on a cols resize', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 100 });
+      await pageChunk(ws, instance, {
+        data: manyLines('A'),
+        startOffset: 70,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      expect(_inspect(instance).paging.topChunkHasRaw).toBe(true);
+
+      instance.resize(100, 24); // cols change 80 -> 100 drops all paged chunks
+      const p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(0);
+      expect(p.topChunkHasRaw).toBe(false);
+      expect(p.pagedRawCount).toBe(0);
+    });
+
+    it('drops retained raw on worker restart (teardown)', async () => {
+      const bus = makeAppBus();
+      _setAppSubscribe(bus.subscribe);
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 100 });
+      await pageChunk(ws, instance, {
+        data: manyLines('A'),
+        startOffset: 70,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      expect(_inspect(instance).paging.topChunkHasRaw).toBe(true);
+
+      bus.emit({ type: 'worker-restarted', sessionId: 's', workerId: 'w' } as AppServerMessage);
+      const p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(0);
+      expect(p.topChunkHasRaw).toBe(false);
+      expect(p.pagedRawCount).toBe(0);
+    });
+
+    it('drops retained raw on an epoch resync', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 100, epoch: 1000 });
+      await pageChunk(ws, instance, {
+        data: manyLines('A'),
+        startOffset: 70,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      expect(_inspect(instance).paging.topChunkHasRaw).toBe(true);
+
+      // A newer epoch triggers a resync that clears all paged state (incl. raw).
+      ws.simulateMessage(JSON.stringify({ type: 'output', data: 'X', offset: 110, epoch: 2000 }));
+      await flush();
+      const p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(0);
+      expect(p.topChunkHasRaw).toBe(false);
+      expect(p.pagedRawCount).toBe(0);
+    });
+
+    it('folds a sub-viewport older chunk into the top and keeps the top raw (empty-newChunk edge)', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 100 });
+      await pageChunk(ws, instance, {
+        data: manyLines('A'),
+        startOffset: 70,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      const chunkCountBefore = _inspect(instance).paging.pagedChunkCount;
+      expect(chunkCountBefore).toBe(1);
+
+      // An older chunk whose replayed content fits within the throwaway viewport
+      // (< 24 rows) yields splitBaseY === 0, so the pair's newChunkRows partition
+      // is EMPTY. Per §6.2 the store advances the cursor and applies the seam-
+      // corrected rows to the top chunk, but pushes NO new chunk and KEEPS the
+      // top's raw (it stays the top; the next older fetch pairs against it again).
+      await pageChunk(ws, instance, {
+        data: 'small-older-chunk\r\n',
+        startOffset: 40,
+        endOffset: 70,
+        hasMore: true,
+        epoch: 1000,
+      });
+      const p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(1); // folded in, no new chunk
+      expect(p.oldestOffset).toBe(40); // cursor still advanced (byte range consumed)
+      expect(p.topChunkHasRaw).toBe(true); // top keeps its raw for the next pair
+      expect(p.pagedRawCount).toBe(1);
+      // The folded content is visible (attributed to the top chunk's rows).
+      expect(allText(instance)).toContain('small-older-chunk');
+    });
   });
 });
