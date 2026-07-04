@@ -485,6 +485,54 @@ describe('TerminalView §6.4 eviction gating (#959)', () => {
     expect(requestOlderHistory).not.toHaveBeenCalled();
   });
 
+  it('a no-op programmatic write does not suppress a subsequent genuine user eviction', () => {
+    const evictTopChunk = mock(() => {});
+    const listeners = new Set<() => void>();
+    let snap: TerminalSnapshot = {
+      ...makeSnapshot(makeRows(760, 700)),
+      pagedRowCount: 700,
+      pagedTopChunkRowCount: 700,
+    };
+    const instance: TerminalInstance = {
+      ...makeInstance(snap),
+      subscribe: (l) => {
+        listeners.add(l);
+        return () => listeners.delete(l);
+      },
+      getSnapshot: () => snap,
+      evictTopChunk,
+    };
+    const setSnapshot = (s: TerminalSnapshot) => {
+      snap = s;
+      for (const l of Array.from(listeners)) l();
+    };
+
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    const geom = installGeometry(scroller, 180);
+    geom.setSilent(scroller.scrollHeight); // pin exactly at the (clamped) bottom
+
+    // A snapshot bump while already exactly at the bottom makes bottom-follow
+    // write scrollTop = scrollHeight, which clamps to the SAME value: a NO-OP
+    // programmatic write that fires no scroll event. assignScrollTop must UNFLAG
+    // on this no-op — otherwise the stale programmatic flag would suppress the
+    // NEXT genuine scroll's eviction. (paged count unchanged, so the anchor
+    // effect is a no-op and only bottom-follow runs.)
+    act(() => {
+      setSnapshot({
+        ...makeSnapshot(makeRows(760, 700)),
+        pagedRowCount: 700,
+        pagedTopChunkRowCount: 700,
+      });
+    });
+
+    // Genuine user scroll: still far below the chunk bottom (13500 - 12600 = 900
+    // >= 2*180), so §6.4 must evict — the no-op write must not have latched the
+    // programmatic flag.
+    fireEvent.scroll(scroller);
+    expect(evictTopChunk).toHaveBeenCalled();
+  });
+
   it('DOES evict on a genuine user scroll away from the chunk', () => {
     const evictTopChunk = mock(() => {});
     const snapshot = { ...makeSnapshot(ROWS), pagedTopChunkRowCount: 700 };

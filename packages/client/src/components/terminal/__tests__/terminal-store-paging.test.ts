@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import type { AppServerMessage } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
-import { getOrCreateTerminal, _resetTerminals, _setAppSubscribe, _inspect } from '../terminal-store';
+import {
+  getOrCreateTerminal,
+  _resetTerminals,
+  _setAppSubscribe,
+  _setTimings,
+  _inspect,
+} from '../terminal-store';
 
 /** Capturable app-WS subscribe seam (worker-restarted emission). */
 function makeAppBus() {
@@ -455,5 +461,243 @@ describe('terminal-store paging', () => {
     const before = countOfType(ws, 'request-history-range');
     instance.requestOlderHistory();
     expect(countOfType(ws, 'request-history-range')).toBe(before);
+  });
+
+  // --- Item 1: single-flight request-history during epoch resync (#959) ---
+
+  it('single-flights request-history across an epoch resync (adopts the in-flight request)', async () => {
+    _setTimings({ reconnectDelayMs: 0 });
+    const { instance, ws } = open('s', 'w');
+    await seedHistory(ws, { data: 'GEN1-OLD\r\n', offset: 100, startOffset: 50, epoch: 1000 });
+    expect(_inspect(instance).paging.epoch).toBe(1000);
+
+    // Socket drops with a reconnectable code; reconnect fires (delay 0).
+    ws.simulateClose();
+    await flush();
+    const ws2 = MockWebSocket.getLastInstance();
+    if (!ws2 || ws2 === ws) throw new Error('expected a fresh socket');
+    ws2.simulateOpen(); // onopen -> request-history (in flight, old incarnation offset)
+
+    // A newer incarnation's output (epoch 2000) arrives BEFORE the history
+    // response -> epoch mismatch -> resync. This triggering output is consumed by
+    // the epoch gate (not queued). Single-flight must ADOPT the pending request
+    // rather than send a second, uncorrelated one.
+    ws2.simulateMessage(JSON.stringify({ type: 'output', data: 'TRIGGER\r\n', offset: 141, epoch: 2000 }));
+    await flush();
+    expect(_inspect(instance).paging.resyncing).toBe(true);
+    expect(countOfType(ws2, 'request-history')).toBe(1); // exactly one, not two
+
+    // A subsequent live output (same recorded epoch) is now QUEUED for replay.
+    ws2.simulateMessage(JSON.stringify({ type: 'output', data: 'LIVE-2\r\n', offset: 142, epoch: 2000 }));
+    await flush();
+    expect(_inspect(instance).paging.queuedOutputCount).toBe(1);
+
+    // The adopted request completes with the new incarnation's fresh history.
+    // startOffset (100) COINCIDES with the adopted request's requestedFromOffset
+    // (the old incarnation's lastOffset 100), so only the resync-forces-fresh rule
+    // takes the fresh path and seeds the paging cursor; the continuation path
+    // would leave paging disabled (oldestOffset 0). The queued output (offset 142
+    // > 140) replays after the fresh content.
+    ws2.simulateMessage(
+      JSON.stringify({ type: 'history', data: 'GEN2-FRESH\r\n', offset: 140, startOffset: 100, epoch: 2000 }),
+    );
+    await flush();
+
+    const p = _inspect(instance).paging;
+    expect(p.resyncing).toBe(false);
+    expect(p.epoch).toBe(2000);
+    expect(p.queuedOutputCount).toBe(0);
+    // Resync forces the fresh path AND seeds the paging cursor from startOffset.
+    expect(p.oldestOffset).toBe(100);
+    expect(instance.getSnapshot().canRequestOlder).toBe(true);
+
+    const text = allText(instance);
+    expect(text).toContain('GEN2-FRESH');
+    expect(text).not.toContain('GEN1-OLD');
+    // Queued output replayed exactly once, after the fresh content.
+    expect(text.split('LIVE-2').length - 1).toBe(1);
+    expect(text.indexOf('LIVE-2')).toBeGreaterThan(text.indexOf('GEN2-FRESH'));
+  });
+
+  it('discards an older-epoch straggler without resyncing to it', async () => {
+    const { instance, ws } = open('s', 'w');
+    await seedHistory(ws, { data: 'GEN2\r\n', offset: 100, startOffset: 50, epoch: 2000 });
+    expect(_inspect(instance).paging.epoch).toBe(2000);
+    const requestsBefore = countOfType(ws, 'request-history');
+
+    // Stragglers tagged with an OLDER epoch (1000): dropped silently, no resync.
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: 'STALE-OUT\r\n', offset: 110, epoch: 1000 }));
+    ws.simulateMessage(
+      JSON.stringify({ type: 'history', data: 'STALE-HIST\r\n', offset: 60, startOffset: 0, epoch: 1000 }),
+    );
+    await flush();
+
+    const p = _inspect(instance).paging;
+    expect(p.epoch).toBe(2000);
+    expect(p.resyncing).toBe(false);
+    expect(countOfType(ws, 'request-history')).toBe(requestsBefore); // no resync request
+    const text = allText(instance);
+    expect(text).toContain('GEN2');
+    expect(text).not.toContain('STALE');
+  });
+
+  // --- Item 2: resync queue back-pressure (#959) ---
+
+  it('hard-resets when the resync queue overflows its entry cap', async () => {
+    const { instance, ws } = open('s', 'w');
+    await seedHistory(ws, { data: 'GEN1\r\n', offset: 100, startOffset: 50, epoch: 1000 });
+    // Trigger a resync (this first epoch-2000 output is NOT itself queued).
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: 'x', offset: 101, epoch: 2000 }));
+    expect(_inspect(instance).paging.resyncing).toBe(true);
+    const requestsAfterResync = countOfType(ws, 'request-history');
+    expect(requestsAfterResync).toBe(2); // seed + resync
+
+    // Flood the queue one past RESYNC_QUEUE_MAX_ENTRIES (500).
+    for (let i = 0; i < 501; i++) {
+      ws.simulateMessage(JSON.stringify({ type: 'output', data: 'q', offset: 200 + i, epoch: 2000 }));
+    }
+    const p = _inspect(instance).paging;
+    expect(p.resyncing).toBe(true); // still awaiting the fresh history
+    expect(p.queuedOutputCount).toBe(0); // hard reset emptied the queue
+    expect(p.queuedBytes).toBe(0);
+    // Single-flight: no request-history spam on the reset path.
+    expect(countOfType(ws, 'request-history')).toBe(2);
+
+    // The eventual fresh history yields clean content.
+    ws.simulateMessage(JSON.stringify({ type: 'history', data: 'GEN2\r\n', offset: 15, startOffset: 0, epoch: 2000 }));
+    await flush();
+    expect(_inspect(instance).paging.resyncing).toBe(false);
+    const text = allText(instance);
+    expect(text).toContain('GEN2');
+    expect(text).not.toContain('GEN1');
+  });
+
+  it('hard-resets a resync that times out without a fresh history', async () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const captured: { resyncCb: (() => void) | null } = { resyncCb: null };
+    const spy = spyOn(globalThis, 'setTimeout').mockImplementation(
+      ((...args: Parameters<typeof setTimeout>) => {
+        const [cb, delay] = args;
+        if (delay === 5000) {
+          // The only 5000ms timer here is the resync timeout (no range request).
+          captured.resyncCb = cb as () => void;
+          return realSetTimeout(() => {}, 1_000_000);
+        }
+        return realSetTimeout(...args);
+      }) as typeof setTimeout,
+    );
+    try {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { data: 'GEN1\r\n', offset: 100, startOffset: 50, epoch: 1000 });
+      ws.simulateMessage(JSON.stringify({ type: 'output', data: 'live', offset: 101, epoch: 2000 }));
+      ws.simulateMessage(JSON.stringify({ type: 'output', data: 'q1', offset: 200, epoch: 2000 }));
+      expect(_inspect(instance).paging.resyncing).toBe(true);
+      expect(_inspect(instance).paging.queuedOutputCount).toBe(1);
+      const requestsBefore = countOfType(ws, 'request-history');
+
+      // Fire the resync timeout.
+      expect(captured.resyncCb).not.toBeNull();
+      captured.resyncCb?.();
+
+      const p = _inspect(instance).paging;
+      expect(p.resyncing).toBe(true); // still awaiting the adopted in-flight request
+      expect(p.queuedOutputCount).toBe(0); // hard reset emptied the queue
+      expect(p.historyInFlight).toBe(true);
+      expect(countOfType(ws, 'request-history')).toBe(requestsBefore); // single-flight: no spam
+
+      // The fresh history still completes the resync afterward.
+      ws.simulateMessage(JSON.stringify({ type: 'history', data: 'GEN2\r\n', offset: 15, startOffset: 0, epoch: 2000 }));
+      await flush();
+      expect(_inspect(instance).paging.resyncing).toBe(false);
+      expect(allText(instance)).toContain('GEN2');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  // --- Item 3: alt-screen must not render paged rows (#959) ---
+
+  it('suppresses paged rows on the alt-screen and restores them on return', async () => {
+    const { instance, ws } = open('s', 'w');
+    await seedHistory(ws, { startOffset: 50 });
+    await pageChunk(ws, instance, {
+      data: 'archived-A\r\n',
+      startOffset: 10,
+      endOffset: 50,
+      hasMore: true,
+      epoch: 1000,
+    });
+    expect(_inspect(instance).paging.pagedChunkCount).toBe(1);
+    expect(instance.getSnapshot().pagedRowCount).toBeGreaterThan(0);
+
+    // Invariant across the whole transition: on EVERY notify, pagedRowCount must
+    // equal the number of negative-key (paged) rows in snapshot.rows.
+    const violations: Array<{ count: number; negRows: number }> = [];
+    const check = () => {
+      const snap = instance.getSnapshot();
+      const negRows = snap.rows.filter((r) => r.key < 0).length;
+      if (snap.pagedRowCount !== negRows) violations.push({ count: snap.pagedRowCount, negRows });
+    };
+    const unsub = instance.subscribe(check);
+
+    // Enter the alt-screen: paged rows and their counts must drop to 0 together.
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1049h', offset: 200, epoch: 1000 }));
+    await flush();
+    let snap = instance.getSnapshot();
+    expect(snap.bufferType).toBe('alternate');
+    expect(snap.rows.some((r) => r.key < 0)).toBe(false);
+    expect(snap.pagedRowCount).toBe(0);
+    expect(snap.pagedTopChunkRowCount).toBe(0);
+    // The chunk itself is retained, not dropped.
+    expect(_inspect(instance).paging.pagedChunkCount).toBe(1);
+
+    // Exit the alt-screen: paged rows and counts reappear.
+    ws.simulateMessage(JSON.stringify({ type: 'output', data: '\x1b[?1049l', offset: 210, epoch: 1000 }));
+    await flush();
+    snap = instance.getSnapshot();
+    expect(snap.bufferType).toBe('normal');
+    expect(snap.rows.some((r) => r.key < 0)).toBe(true);
+    expect(snap.pagedRowCount).toBeGreaterThan(0);
+
+    unsub();
+    expect(violations).toEqual([]);
+  });
+
+  // --- Item 4: range timer cleared on ws close (#959) ---
+
+  it('clears the in-flight range request on ws close and never marks paging unsupported', async () => {
+    const realSetTimeout = globalThis.setTimeout;
+    const captured: { rangeCb: (() => void) | null } = { rangeCb: null };
+    const spy = spyOn(globalThis, 'setTimeout').mockImplementation(
+      ((...args: Parameters<typeof setTimeout>) => {
+        const [cb, delay] = args;
+        if (delay === 5000) {
+          captured.rangeCb = cb as () => void;
+          return realSetTimeout(() => {}, 1_000_000);
+        }
+        return realSetTimeout(...args);
+      }) as typeof setTimeout,
+    );
+    try {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 50 });
+      instance.requestOlderHistory(); // range request in flight, 5s rangeTimer armed
+      expect(_inspect(instance).paging.rangeRequestId).not.toBeNull();
+      expect(captured.rangeCb).not.toBeNull();
+
+      // Socket closes while the range request is in flight.
+      ws.simulateClose();
+      let p = _inspect(instance).paging;
+      expect(p.rangeRequestId).toBeNull();
+      expect(p.loadingOlder).toBe(false);
+
+      // The (now-stale) 5s range callback must be inert: firing it must NOT mark
+      // paging unsupported (the request was already invalidated by the close).
+      captured.rangeCb?.();
+      p = _inspect(instance).paging;
+      expect(p.pagingUnsupported).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -97,6 +97,16 @@ const RANGE_MIN_BYTES = 16384;
 // within this window marks paging unsupported for the connection (§5.1).
 const RANGE_TIMEOUT_MS = 5000;
 
+// Resync back-pressure (§3.4). While a fresh initial history is pending, live
+// output is queued. Cap the queue (entries AND summed bytes) so an incarnation
+// that never delivers its fresh history cannot grow the queue without bound; a
+// breach hard-resets the buffer and relies on the pending/fresh history request
+// to repopulate it. Time-box the resync itself so a lost history response does
+// not leave the terminal hung in the queuing state forever.
+const RESYNC_QUEUE_MAX_ENTRIES = 500;
+const RESYNC_QUEUE_MAX_BYTES = 1_048_576; // 1MB, sum of queued data lengths
+const RESYNC_TIMEOUT_MS = 5000;
+
 // Default auto-dismiss delay for a store notice banner (issue #968). The legacy
 // renderer auto-dismissed restart-class notices after 5s; this restores that
 // parity. Exposed as a per-call parameter on setNotice so a future notice class
@@ -183,6 +193,12 @@ class TerminalController implements TerminalInstance {
   // live output is queued (not applied) and replayed after the history lands.
   private resyncing = false;
   private queuedOutput: Array<{ data: string; offset: number }> = [];
+  private queuedBytes = 0; // sum of queuedOutput data lengths (cap enforcement)
+  private resyncTimer: ReturnType<typeof setTimeout> | null = null;
+  // A request-history is outstanding on the current socket (single-flight, §3.4).
+  // Uncorrelated (no requestId), so at most one may be in flight: a second would
+  // race the first and let a stale response be mis-applied as a continuation.
+  private historyInFlight = false;
 
   // Cold-start instrumentation.
   private historyStartMs = 0;
@@ -419,6 +435,7 @@ class TerminalController implements TerminalInstance {
     this.idleTimer = null;
     this.clearNoticeTimer();
     this.clearRangeTimer();
+    this.clearResyncTimer();
     this.appUnsub();
     this.closeWs();
     this.terminal.dispose();
@@ -465,6 +482,8 @@ class TerminalController implements TerminalInstance {
     rangeRequestId: number | null;
     resyncing: boolean;
     queuedOutputCount: number;
+    queuedBytes: number;
+    historyInFlight: boolean;
   } {
     return {
       epoch: this.epoch,
@@ -479,6 +498,8 @@ class TerminalController implements TerminalInstance {
       rangeRequestId: this.rangeRequestId,
       resyncing: this.resyncing,
       queuedOutputCount: this.queuedOutput.length,
+      queuedBytes: this.queuedBytes,
+      historyInFlight: this.historyInFlight,
     };
   }
 
@@ -508,6 +529,8 @@ class TerminalController implements TerminalInstance {
       this.epoch = null;
       this.resyncing = false;
       this.queuedOutput = [];
+      this.queuedBytes = 0;
+      this.clearResyncTimer();
       // Clear any stale error and show an auto-dismissing restart notice (#968).
       this.patchMeta({ workerError: null });
       this.setNotice('Terminal restarted');
@@ -532,6 +555,13 @@ class TerminalController implements TerminalInstance {
     this.rangeRequestId = null;
     this.pendingRange = null;
     this.loadingOlder = false;
+    // A new socket invalidates any request-history that was in flight on the old
+    // one (it died with the socket). The onopen handler re-requests below.
+    this.historyInFlight = false;
+    // If a resync is still pending across this reconnect, the onopen re-request
+    // (or an adopted in-flight one) will complete it; re-arm the timeout so a
+    // dead new socket does not leave the resync hung forever.
+    if (this.resyncing) this.armResyncTimer();
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -560,6 +590,14 @@ class TerminalController implements TerminalInstance {
     ws.onclose = (event) => {
       if (this.disposed) return;
       this.ws = null;
+      // Any close invalidates an in-flight range request (its response can never
+      // arrive on this dead socket). Clear it so the 5s range timer cannot fire
+      // while disconnected and falsely mark paging unsupported (§5.1 / #959). This
+      // runs regardless of the exited/noReconnect early returns below — the range
+      // request is dead in every close path.
+      this.clearRangeInFlight();
+      this.loadingOlder = false;
+      this.syncPagingMeta();
       // A terminated process closes the socket after the 'exit' message; keep
       // the 'exited' status and do not reconnect to a dead PTY.
       if (this.snapshot.status === 'exited') return;
@@ -575,6 +613,7 @@ class TerminalController implements TerminalInstance {
   private requestHistory(): void {
     this.requestedFromOffset = this.lastOffset;
     this.historyStartMs = nowMs();
+    this.historyInFlight = true;
     this.patchMeta({ loadingHistory: true });
     this.send({ type: 'request-history', fromOffset: this.lastOffset });
   }
@@ -635,6 +674,12 @@ class TerminalController implements TerminalInstance {
 
     switch (message.type) {
       case 'history':
+        // A history message answers the outstanding request-history, so the
+        // request is no longer in flight — clear the single-flight flag BEFORE
+        // the epoch check, which may discard this payload and (on a larger epoch)
+        // begin a resync. Clearing here lets that resync issue a fresh request
+        // rather than adopt a request that has just been answered (§3.4).
+        this.historyInFlight = false;
         // Epoch is additive; a pre-upgrade server omits it (undefined) and the
         // epoch check is a no-op until the first tagged message records one.
         if (!this.acceptEpoch(message.epoch)) break;
@@ -643,9 +688,10 @@ class TerminalController implements TerminalInstance {
       case 'output':
         if (!this.acceptEpoch(message.epoch)) break;
         // During a resync, live output is queued (not applied) until the fresh
-        // initial history lands, then replayed in order (§3.4).
+        // initial history lands, then replayed in order (§3.4). The queue is
+        // capped; a breach hard-resets rather than growing without bound.
         if (this.resyncing) {
-          this.queuedOutput.push({ data: message.data, offset: message.offset });
+          this.enqueueResyncOutput(message.data, message.offset);
           break;
         }
         this.lastOffset = message.offset;
@@ -668,10 +714,18 @@ class TerminalController implements TerminalInstance {
   }
 
   /**
-   * Epoch gate (§3.4). Records the first epoch seen; on any later mismatch it
-   * discards the triggering payload (the caller must `break`), tears down live +
-   * paged state, and issues a fresh initial history under the new generation.
-   * Returns false when a mismatch was handled (payload must be dropped).
+   * Epoch gate (§3.4). Records the first epoch seen. On a later mismatch it
+   * discards the triggering payload (the caller must `break`) and, for a NEWER
+   * generation, tears down live + paged state and resyncs. Returns false when a
+   * mismatch was handled (payload must be dropped).
+   *
+   * Epochs are server mint-timestamps (Date.now(), monotonically increasing
+   * across restarts — see server worker-output-file.ts mintEpoch, with a +1
+   * tiebreak). So a SMALLER epoch than the recorded one is a straggler from an
+   * older incarnation (e.g. buffered output from the pre-restart socket): discard
+   * it silently WITHOUT resyncing — a blanket mismatch-resync would resync
+   * "backward" onto the older generation. Only a LARGER epoch is a genuine newer
+   * incarnation worth resyncing to.
    *
    * `epoch` is optional so pre-upgrade servers (which omit the additive field)
    * are tolerated: an undefined epoch never records and never mismatches.
@@ -683,6 +737,8 @@ class TerminalController implements TerminalInstance {
       return true;
     }
     if (epoch === this.epoch) return true;
+    // Stale straggler from an older incarnation: drop without tearing down.
+    if (epoch < this.epoch) return false;
     this.beginEpochResync(epoch);
     return false;
   }
@@ -696,8 +752,80 @@ class TerminalController implements TerminalInstance {
     this.epoch = newEpoch;
     this.resyncing = true;
     this.queuedOutput = [];
-    // Fresh initial history under the new generation (fromOffset 0).
-    this.requestHistory();
+    this.queuedBytes = 0;
+    this.armResyncTimer();
+    // Single-flight (§3.4): if a request-history is already outstanding on the
+    // CURRENT socket, ADOPT it as this resync's completion instead of sending a
+    // second, uncorrelated request. Safe because a worker restart force-closes
+    // the socket, so any request in flight here targets the current incarnation;
+    // its response completes the resync (handleHistory forces the fresh path
+    // while resyncing). A second request-history would race the first: two
+    // uncorrelated responses over one shared requestedFromOffset/resyncing, so a
+    // stale response could be applied as a continuation and the other appended
+    // (duplicated/garbled content).
+    if (!this.historyInFlight) {
+      this.requestHistory();
+    }
+  }
+
+  /**
+   * Enqueue live output arriving during a resync, enforcing the queue caps. On a
+   * breach, hard-reset the buffer (the triggering chunk is dropped; the fresh
+   * history request repopulates the buffer) rather than growing unbounded.
+   */
+  private enqueueResyncOutput(data: string, offset: number): void {
+    if (
+      this.queuedOutput.length + 1 > RESYNC_QUEUE_MAX_ENTRIES ||
+      this.queuedBytes + data.length > RESYNC_QUEUE_MAX_BYTES
+    ) {
+      this.hardResetResync('overflow');
+      return;
+    }
+    this.queuedOutput.push({ data, offset });
+    this.queuedBytes += data.length;
+  }
+
+  /**
+   * Hard-reset a stuck resync (queue overflow or timeout). Wipe the buffer and
+   * queue but KEEP the epoch + resyncing state: we are still waiting for THIS
+   * incarnation's fresh history. Re-arm the timeout and, respecting single-flight
+   * (§3.4), issue a fresh request only when none is outstanding — an already
+   * in-flight (adopted) response completes the resync against the clean buffer.
+   */
+  private hardResetResync(reason: 'overflow' | 'timeout'): void {
+    this.terminal.reset();
+    this.rowCache.clear();
+    this.lastBufferLength = 0;
+    this.lastOffset = 0;
+    this.queuedOutput = [];
+    this.queuedBytes = 0;
+    this.armResyncTimer();
+    if (!this.historyInFlight) {
+      this.requestHistory();
+    }
+    // Overflow dropped queued output, so notify the user; the timeout path is a
+    // stalled server (no data lost yet) and stays silent.
+    if (reason === 'overflow') {
+      this.setNotice('Terminal resynchronized after overflow');
+    }
+  }
+
+  private armResyncTimer(): void {
+    this.clearResyncTimer();
+    this.resyncTimer = setTimeout(() => this.onResyncTimeout(), RESYNC_TIMEOUT_MS);
+  }
+
+  private clearResyncTimer(): void {
+    if (this.resyncTimer) {
+      clearTimeout(this.resyncTimer);
+      this.resyncTimer = null;
+    }
+  }
+
+  private onResyncTimeout(): void {
+    this.resyncTimer = null;
+    if (this.disposed || !this.resyncing) return;
+    this.hardResetResync('timeout');
   }
 
   private handleHistory(data: string, offset: number, startOffset: number | undefined): void {
@@ -706,10 +834,17 @@ class TerminalController implements TerminalInstance {
     // (archived-out: startOffset > request; stale/diverged: window ends below
     // the request) is a fresh load and resets the buffer. When the server omits
     // startOffset (pre-upgrade), fall back to the legacy offset-based heuristic.
+    //
+    // A resync ALWAYS forces the fresh path: beginEpochResync already reset the
+    // buffer, so the completing response must be applied as a fresh load and must
+    // re-seed the paging cursor from its startOffset. Without this, an adopted
+    // request whose requestedFromOffset happens to equal the response startOffset
+    // would take the continuation path and leave paging disabled (§3.4).
     const isFresh =
-      typeof startOffset === 'number'
+      this.resyncing ||
+      (typeof startOffset === 'number'
         ? startOffset !== this.requestedFromOffset
-        : offset < this.requestedFromOffset;
+        : offset < this.requestedFromOffset);
     if (isFresh) {
       this.terminal.reset();
       this.rowCache.clear();
@@ -745,8 +880,10 @@ class TerminalController implements TerminalInstance {
 
   private flushResyncQueue(historyOffset: number): void {
     this.resyncing = false;
+    this.clearResyncTimer();
     const queued = this.queuedOutput;
     this.queuedOutput = [];
+    this.queuedBytes = 0;
     for (const item of queued) {
       // Entries whose end position is at or below the history offset are already
       // covered by the history payload; drop them to avoid double-application.
@@ -966,11 +1103,19 @@ class TerminalController implements TerminalInstance {
   }
 
   private pagingMetaPatch(): Partial<TerminalSnapshot> {
+    // Paged rows are a normal-buffer scrollback concept; the alt-screen has no
+    // scrollback. Gate the published COUNTS on the active buffer type so they
+    // flip to 0 in the SAME rebuild that drops the paged rows from snapshot.rows
+    // (Test 1 invariant: pagedRowCount === number of negative-key rows). The
+    // chunks themselves are retained and their counts return on the normal
+    // buffer. Only rebuildSnapshot uses this patch (syncPagingMeta publishes the
+    // row-independent flags separately), so counts and rows always flip together.
+    const inNormal = this.terminal.buffer.active.type === 'normal';
     return {
       loadingOlder: this.loadingOlder,
       canRequestOlder: this.computeCanRequestOlder(),
-      pagedRowCount: this.pagedRowCount,
-      pagedTopChunkRowCount: this.pagedChunks[0]?.rows.length ?? 0,
+      pagedRowCount: inNormal ? this.pagedRowCount : 0,
+      pagedTopChunkRowCount: inNormal ? (this.pagedChunks[0]?.rows.length ?? 0) : 0,
       pagedCapReached: this.pagedCapReached,
     };
   }
@@ -1109,8 +1254,13 @@ class TerminalController implements TerminalInstance {
 
     // Paged history rows (archive) render ABOVE the live window. They carry
     // their own links (from the replay pipeline) and stable negative keys, and
-    // never enter the live rowCache (§6.3).
-    const pagedRows = this.pagedChunks.length > 0 ? this.pagedChunks.flatMap((c) => c.rows) : [];
+    // never enter the live rowCache (§6.3). Suppressed on the alt-screen (no
+    // scrollback semantics); the counts in pagingMetaPatch flip to 0 in lockstep
+    // in this same rebuild. The chunks are retained and reappear on normal.
+    const pagedRows =
+      buffer.type === 'normal' && this.pagedChunks.length > 0
+        ? this.pagedChunks.flatMap((c) => c.rows)
+        : [];
 
     this.snapshot = {
       ...this.snapshot,

@@ -277,6 +277,11 @@ export function TerminalView({
   const prevPagedRowsRef = useRef(0);
   useLayoutEffect(() => {
     const el = scrollRef.current;
+    // Anchoring is a normal-buffer scrollback concept; the alt-screen carries no
+    // paged rows (their counts flip to 0 while in alt) and has its own scroll
+    // model. Skip here AND do not advance prevPagedRowsRef, so returning to the
+    // normal buffer (count 0->N) is a no-op rather than a spurious N-row jump.
+    if (snapshot.bufferType !== 'normal') return;
     const prev = prevPagedRowsRef.current;
     const curr = snapshot.pagedRowCount;
     prevPagedRowsRef.current = curr;
