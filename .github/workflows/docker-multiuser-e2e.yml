@@ -11,8 +11,10 @@ name: Docker Multi-User E2E
 # home must still spawn a PTY and resolve whoami.
 #
 # Docker build is heavier than the unit suite, so this is path-filtered to the
-# multi-user surface (the harness, the auth route, and the user-mode service).
-# It is NOT a required check for unrelated PRs.
+# multi-user surface (the harness, the auth route, the user-mode service, and
+# the worktree-creation elevation surface where the source repo is server-owned
+# and the requesting user's first git invocation depends on safe.directory
+# bootstrap ordering). It is NOT a required check for unrelated PRs.
 
 on:
   push:
@@ -22,6 +24,9 @@ on:
       - 'scripts/verify-multiuser-docker.sh'
       - 'packages/server/src/services/user-mode.ts'
       - 'packages/server/src/routes/auth.ts'
+      - 'packages/server/src/services/worktree-creation-service.ts'
+      - 'packages/server/src/services/worktree-service.ts'
+      - 'packages/server/src/services/privilege-elevation.ts'
       - '.github/workflows/docker-multiuser-e2e.yml'
   pull_request:
     branches: [main]
@@ -30,6 +35,9 @@ on:
       - 'scripts/verify-multiuser-docker.sh'
       - 'packages/server/src/services/user-mode.ts'
       - 'packages/server/src/routes/auth.ts'
+      - 'packages/server/src/services/worktree-creation-service.ts'
+      - 'packages/server/src/services/worktree-service.ts'
+      - 'packages/server/src/services/privilege-elevation.ts'
       - '.github/workflows/docker-multiuser-e2e.yml'
 
 # This job only checks out the repo and builds/runs docker locally; it never

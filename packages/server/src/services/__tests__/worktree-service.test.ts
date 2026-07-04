@@ -284,13 +284,29 @@ detached
   describe('ensureRepoHasCommits (Issue #921)', () => {
     // Pre-check that surfaces an actionable domain error when the source
     // repo has no commits (unborn HEAD). Wraps `git rev-parse --verify
-    // HEAD^{commit}` -- any GitError becomes an EmptyRepositoryError with a
-    // fixed user-facing message; other errors propagate as-is.
+    // HEAD^{commit}` -- a GitError whose stderr matches a known unborn-HEAD
+    // signature becomes an EmptyRepositoryError with a fixed user-facing
+    // message; every other error (including other GitErrors, e.g. dubious
+    // ownership) propagates unchanged.
+    let originalAuthMode: string | undefined;
+
     beforeEach(() => {
       mockGit.git.mockReset();
       // Default: git resolves (repo has commits). Individual tests override
       // to reject when they need to exercise the empty-repo branch.
       mockGit.git.mockImplementation(() => Promise.resolve(''));
+      // Default single-user environment (no elevation, no safe.directory
+      // bootstrap). The multi-user test opts in explicitly.
+      originalAuthMode = process.env.AUTH_MODE;
+      delete process.env.AUTH_MODE;
+    });
+
+    afterEach(() => {
+      if (originalAuthMode === undefined) {
+        delete process.env.AUTH_MODE;
+      } else {
+        process.env.AUTH_MODE = originalAuthMode;
+      }
     });
 
     it('throws EmptyRepositoryError with the exact user-facing message when git rev-parse fails', async () => {
@@ -389,6 +405,137 @@ detached
         undefined,
         'alice',
       );
+    });
+
+    it('throws EmptyRepositoryError for the "unknown revision" unborn-HEAD stderr variant', async () => {
+      // The second unborn-HEAD signature git can emit. Both variants must map
+      // to the same user-facing empty-repository message.
+      mockGit.git.mockImplementation(() =>
+        Promise.reject(
+          new GitError(
+            'git rev-parse failed: fatal: unknown revision or path not in the working tree',
+            128,
+            'fatal: unknown revision or path not in the working tree',
+          ),
+        ),
+      );
+
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const { EmptyRepositoryError, EMPTY_REPOSITORY_ERROR_MESSAGE } =
+        await import(`../worktree-service.js?v=${importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.ensureRepoHasCommits('/repo/empty');
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(EmptyRepositoryError);
+      expect((caught as Error).message).toBe(EMPTY_REPOSITORY_ERROR_MESSAGE);
+    });
+
+    it('re-throws a non-unborn GitError (dubious ownership) unchanged instead of masking it as EmptyRepositoryError', async () => {
+      // Single-user path (no requestUsername -> no bootstrap). A dubious
+      // ownership failure is NOT an unborn HEAD; the caller must see the real
+      // cause, not the empty-repository message.
+      const gitErr = new GitError(
+        "git rev-parse failed: fatal: detected dubious ownership in repository at '/repo'",
+        128,
+        "fatal: detected dubious ownership in repository at '/repo'",
+      );
+      mockGit.git.mockImplementation(() => Promise.reject(gitErr));
+
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const { EmptyRepositoryError, EMPTY_REPOSITORY_ERROR_MESSAGE } =
+        await import(`../worktree-service.js?v=${importCounter}`);
+      const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+      let caught: unknown;
+      try {
+        await service.ensureRepoHasCommits('/repo');
+      } catch (err) {
+        caught = err;
+      }
+
+      // The original GitError propagates: same instance, GitError (not
+      // EmptyRepositoryError), and the empty-repository message never appears.
+      expect(caught).toBe(gitErr);
+      expect(caught).toBeInstanceOf(GitError);
+      expect(caught).not.toBeInstanceOf(EmptyRepositoryError);
+      expect((caught as Error).message).toContain('dubious ownership');
+      expect((caught as Error).message).not.toBe(EMPTY_REPOSITORY_ERROR_MESSAGE);
+    });
+
+    it('bootstraps safe.directory BEFORE the rev-parse pre-check on the multi-user first-time flow', async () => {
+      // First-time multi-user user: the server-owned source repo has no
+      // safe.directory entry yet, so a rev-parse as that user fails with
+      // dubious ownership UNTIL the bootstrap runs. The pre-check must run the
+      // bootstrap first, after which rev-parse succeeds and no error surfaces.
+      process.env.AUTH_MODE = 'multi-user';
+
+      const events: string[] = [];
+      let bootstrapped = false;
+
+      runAsUserMock.responder.fn = async (opts) => {
+        if (opts.command.includes('safe.directory')) {
+          bootstrapped = true;
+          events.push('bootstrap');
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      mockGit.git.mockImplementation(() => {
+        events.push('rev-parse');
+        if (!bootstrapped) {
+          return Promise.reject(
+            new GitError(
+              "git rev-parse failed: fatal: detected dubious ownership in repository at '/repo'",
+              128,
+              "fatal: detected dubious ownership in repository at '/repo'",
+            ),
+          );
+        }
+        return Promise.resolve('');
+      });
+
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      // Resolves without throwing because the bootstrap fixes the ownership
+      // check before the rev-parse runs.
+      const result = await service.ensureRepoHasCommits('/repo', 'alice-multiuser-test');
+      expect(result).toBeUndefined();
+
+      // Ordering: the bootstrap MUST precede the rev-parse pre-check.
+      expect(events).toEqual(['bootstrap', 'rev-parse']);
+
+      // The captured bootstrap call ran as the requesting user with the
+      // repo path in the safe.directory command.
+      const bootstrapCall = runAsUserMock.calls.find((c) => c.command.includes('safe.directory'));
+      expect(bootstrapCall).toBeDefined();
+      expect(bootstrapCall!.username).toBe('alice-multiuser-test');
+      expect(bootstrapCall!.command).toContain("'/repo'");
+    });
+
+    it('does not run the safe.directory bootstrap on the single-user path', async () => {
+      // No AUTH_MODE=multi-user, no requestUsername -> elevation is bypassed,
+      // so the bootstrap must not fire and the happy path resolves normally.
+      const { WorktreeService } = await import(`../worktree-service.js?v=${++importCounter}`);
+      const service = new WorktreeService({
+        worktreeRepository: mockRepo,
+        runAsUserImpl: runAsUserMock.runAsUserImpl,
+      });
+
+      const result = await service.ensureRepoHasCommits('/repo/main');
+
+      expect(result).toBeUndefined();
+      // No elevated bootstrap call was made.
+      expect(runAsUserMock.calls.length).toBe(0);
     });
   });
 
