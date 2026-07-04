@@ -25,7 +25,9 @@ export class MockWebSocket {
     MockWebSocket.instances.push(this);
   }
 
-  send = mock(() => {});
+  // Typed with a string data param so `send.mock.calls[i][0]` is `string` — the
+  // tests always send JSON strings, and this lets callers parse without casts.
+  send = mock((_data: string) => {});
 
   /**
    * Mock close method with browser-compatible validation.

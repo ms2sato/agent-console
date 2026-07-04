@@ -211,6 +211,14 @@ export function TerminalView({
   const mouseTrackingRef = useRef(false);
   mouseTrackingRef.current = snapshot.mouseTracking;
 
+  // Paging-relevant snapshot bits read by the (stable) scroll handler without a
+  // stale closure. See the scroll-to-top trigger + eviction in handleScroll.
+  const pagingRef = useRef({ canRequestOlder: false, pagedTopChunkRowCount: 0 });
+  pagingRef.current = {
+    canRequestOlder: snapshot.canRequestOlder,
+    pagedTopChunkRowCount: snapshot.pagedTopChunkRowCount,
+  };
+
   // Mount reference for memory management: the instance is kept alive while this
   // view is mounted and becomes idle-evictable after unmount. release() is
   // idempotent, so Strict-Mode's double invoke is safe.
@@ -227,6 +235,26 @@ export function TerminalView({
     wasAtBottomRef.current = distance <= BOTTOM_THRESHOLD_PX;
   }
 
+  // Prepend / eviction scroll anchoring (terminal-history-paging.md §6.3). Every
+  // row is a fixed LINE_HEIGHT_PX, so rows added (prepend) or removed (evict) at
+  // the TOP shift existing content by exactly delta*LINE_HEIGHT_PX. Compensating
+  // scrollTop by that keeps the viewport visually stable and is immune to
+  // concurrent bottom growth (unlike a whole-container scrollHeight delta) — the
+  // fixed-row-height specialization of the keyed anchor-row technique. Must run
+  // BEFORE the bottom-follow effect below; the two are mutually exclusive via the
+  // wasAtBottom guard, and both bail in the degenerate short-content case.
+  const prevPagedRowsRef = useRef(0);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const prev = prevPagedRowsRef.current;
+    const curr = snapshot.pagedRowCount;
+    prevPagedRowsRef.current = curr;
+    if (!el || curr === prev) return;
+    if (wasAtBottomRef.current) return; // bottom-follow owns this frame
+    if (el.scrollHeight <= el.clientHeight) return; // nothing to compensate
+    el.scrollTop += (curr - prev) * LINE_HEIGHT_PX;
+  }, [snapshot]);
+
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -242,7 +270,30 @@ export function TerminalView({
     const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
     setAtBottom(distance <= BOTTOM_THRESHOLD_PX);
     setScrollTick((t) => t + 1);
-  }, []);
+
+    // Scroll-to-top history paging (terminal-history-paging.md §6.1). Only in
+    // the normal buffer (alt-screen scroll is forwarded to the app); the store
+    // gates the rest (in-flight, unsupported, cap, oldestOffset>0, hasMore).
+    const { canRequestOlder, pagedTopChunkRowCount } = pagingRef.current;
+    const topTrigger = el.clientHeight * 2;
+    if (
+      bufferTypeRef.current === 'normal' &&
+      canRequestOlder &&
+      el.scrollTop < topTrigger
+    ) {
+      instance.requestOlderHistory();
+    }
+
+    // Top-side eviction (§6.4): drop the oldest paged chunk once the viewport is
+    // 2+ viewport-heights below its bottom edge. Fixed row height makes the top
+    // chunk's bottom exactly rows * LINE_HEIGHT_PX.
+    if (pagedTopChunkRowCount > 0) {
+      const topChunkBottomPx = pagedTopChunkRowCount * LINE_HEIGHT_PX;
+      if (el.scrollTop - topChunkBottomPx >= el.clientHeight * 2) {
+        instance.evictTopChunk();
+      }
+    }
+  }, [instance]);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;
@@ -512,6 +563,22 @@ export function TerminalView({
         </div>
       )}
 
+      {/* History-paging status (terminal-history-paging.md §6.1/§6.4). Rendered
+          as top overlays rather than in-flow rows so they never disturb the
+          fixed LINE_HEIGHT_PX row grid (pointer->cell math) or the prepend
+          anchor delta. Cap notice takes precedence over the loading spinner. */}
+      {snapshot.pagedCapReached ? (
+        <div className="absolute top-0 left-0 right-0 z-10 bg-slate-800/90 text-amber-200 text-xs px-3 py-1 text-center pointer-events-none">
+          Older history paused — scroll down to release memory, then page again
+        </div>
+      ) : (
+        snapshot.loadingOlder && (
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 z-10 bg-slate-800/90 text-slate-300 text-xs px-3 py-1 rounded-b pointer-events-none">
+            Loading older history…
+          </div>
+        )
+      )}
+
       {/* Hidden single-cell probe for measuring monospace cell metrics. */}
       <span
         ref={measureRef}
@@ -547,6 +614,9 @@ export function TerminalView({
           overscrollBehavior: 'contain',
           fontVariantLigatures: 'none',
           WebkitOverflowScrolling: 'touch',
+          // The browser's own anchoring heuristic would race the manual prepend
+          // compensation above; disable it so the layout effect owns anchoring.
+          overflowAnchor: 'none',
         }}
       >
         {snapshot.rows.map((row) => (

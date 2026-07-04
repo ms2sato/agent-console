@@ -14,6 +14,8 @@ import { stripSystemMessages, stripScrollbackClear as applyScrollbackFilter } fr
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, type TerminalRow } from './buffer-to-rows';
 import { detectRowLinks } from './link-detection';
+import { replayHistoryChunk } from './history-replay';
+import { rowText } from './row-pipeline';
 
 /**
  * Module-level store: the headless Terminal + WebSocket for each worker live
@@ -41,6 +43,15 @@ export interface TerminalSnapshot {
   workerError: { message: string; code?: WorkerErrorCode } | null;
   activityState: AgentActivityState | null;
   loadingHistory: boolean; // a request-history is in flight
+  // --- Scroll-back history paging (terminal-history-paging.md §6) ---
+  loadingOlder: boolean; // a request-history-range is in flight
+  // Whether the view may fetch older history: oldestOffset > 0, more remains,
+  // paging not marked unsupported, not already loading, cap not reached. The
+  // view ANDs this with its scroll-at-top + normal-buffer checks (§6.1).
+  canRequestOlder: boolean;
+  pagedRowCount: number; // total rows prepended from the archive
+  pagedTopChunkRowCount: number; // rows in the oldest paged chunk (eviction math)
+  pagedCapReached: boolean; // MAX_PAGED_ROWS hit -> fetch refused, notice shown
 }
 
 export interface TerminalInstance {
@@ -57,6 +68,13 @@ export interface TerminalInstance {
   /** Clear the current worker error and force a fresh WS connection (recovery). */
   retry(): void;
   dismissNotice(): void;
+  /** Fetch the next older history range (scroll-to-top trigger, §6.1). No-op
+   * when a request is in flight, paging is unsupported, the cap is reached, or
+   * nothing older remains. */
+  requestOlderHistory(): void;
+  /** Evict the oldest paged chunk once the viewport is well below it (§6.4).
+   * Raises the paging cursor and re-enables fetch. No-op when no chunk paged. */
+  evictTopChunk(): void;
   /** Mount reference; returns an idempotent release (Strict-Mode safe). */
   acquire(): () => void;
   dispose(): void;
@@ -65,6 +83,19 @@ export interface TerminalInstance {
 const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const SCROLLBACK = 5000;
+
+// --- Scroll-back history paging (terminal-history-paging.md §6) ---
+// Paged-window row cap (~3x live SCROLLBACK). At the cap, upward fetch is
+// refused and an inline notice renders; eviction restores headroom (§6.4).
+const MAX_PAGED_ROWS = 15000;
+// Per range-request byte hint; the server applies its own cap (§5.1/§6.1).
+const RANGE_MAX_BYTES = 262144;
+// Overflow degradation floor: at 16KB even the one-byte-per-row worst case
+// fits the throwaway 100k scrollback, so the loop terminates (§6.2).
+const RANGE_MIN_BYTES = 16384;
+// New-client / old-server (or server rollback) guard: no matching history-range
+// within this window marks paging unsupported for the connection (§5.1).
+const RANGE_TIMEOUT_MS = 5000;
 
 // Default auto-dismiss delay for a store notice banner (issue #968). The legacy
 // renderer auto-dismissed restart-class notices after 5s; this restores that
@@ -120,6 +151,39 @@ class TerminalController implements TerminalInstance {
   private lastOffset = 0;
   private requestedFromOffset = 0;
 
+  // --- Scroll-back history paging state (terminal-history-paging.md §6) ---
+  // Worker incarnation generation (§3.4). null until the first tagged message;
+  // any later message with a different epoch triggers a full resync.
+  private epoch: number | null = null;
+  // Absolute start of the live window (startOffset of the fresh initial load).
+  // The floor the paging cursor returns to on a cols-resize drop (§6.2).
+  private liveStartOffset = 0;
+  // Absolute start of everything currently represented (live + paged). Seeded
+  // by the fresh history.startOffset, moved down by each history-range (§6.1).
+  private oldestOffset = 0;
+  // Paged chunks, oldest first (a deque). Each carries its absolute range so
+  // contiguity/eviction can reason about boundaries without re-deriving them.
+  private pagedChunks: Array<{ rows: TerminalRow[]; startOffset: number; endOffset: number }> = [];
+  private pagedRowCount = 0;
+  private hasMoreHistory = true; // more archive remains above oldestOffset
+  private loadingOlder = false; // a range request is in flight
+  private pagingUnsupported = false; // per-connection: old server / rollback (§5.1)
+  private pagedCapReached = false; // MAX_PAGED_ROWS hit -> fetch refused (§6.4)
+  // Single in-flight range request: its id, the range it covers (for overflow
+  // re-request), and its timeout handle.
+  private rangeRequestId: number | null = null;
+  private nextRequestId = 1;
+  private pendingRange: { beforeOffset: number; maxBytes: number } | null = null;
+  private rangeTimer: ReturnType<typeof setTimeout> | null = null;
+  // Monotonically decreasing negative-key allocator for paged rows (§6.3). Never
+  // reset, keys never reused: an evicted-then-refetched chunk gets fresh keys and
+  // can never collide with a still-mounted row.
+  private negKeyCounter = 0;
+  // Epoch-resync bookkeeping (§3.4): while a fresh initial history is pending,
+  // live output is queued (not applied) and replayed after the history lands.
+  private resyncing = false;
+  private queuedOutput: Array<{ data: string; offset: number }> = [];
+
   // Cold-start instrumentation.
   private historyStartMs = 0;
   private lastHistoryLoadMs: number | null = null;
@@ -164,6 +228,11 @@ class TerminalController implements TerminalInstance {
       workerError: null,
       activityState: null,
       loadingHistory: false,
+      loadingOlder: false,
+      canRequestOlder: false,
+      pagedRowCount: 0,
+      pagedTopChunkRowCount: 0,
+      pagedCapReached: false,
     };
 
     this.terminal.onScroll(() => this.scheduleNotify());
@@ -202,8 +271,15 @@ class TerminalController implements TerminalInstance {
   resize = (cols: number, rows: number): void => {
     if (cols <= 0 || rows <= 0) return;
     if (cols === this.terminal.cols && rows === this.terminal.rows) return;
+    const colsChanged = cols !== this.terminal.cols;
     this.terminal.resize(cols, rows);
     this.send({ type: 'resize', cols, rows });
+    // Paged chunks were replayed at the old cols; mixing widths would corrupt
+    // row geometry and wrapped-line link windows, so drop them all on a cols
+    // change (§6.2). The user re-pages if needed at the new width.
+    if (colsChanged && this.pagedChunks.length > 0) {
+      this.dropPagedChunks();
+    }
     this.scheduleNotify();
   };
 
@@ -342,6 +418,7 @@ class TerminalController implements TerminalInstance {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = null;
     this.clearNoticeTimer();
+    this.clearRangeTimer();
     this.appUnsub();
     this.closeWs();
     this.terminal.dispose();
@@ -375,6 +452,36 @@ class TerminalController implements TerminalInstance {
     return this.noticeTimer;
   }
 
+  get pagingStateForTest(): {
+    epoch: number | null;
+    oldestOffset: number;
+    liveStartOffset: number;
+    pagedRowCount: number;
+    pagedChunkCount: number;
+    hasMoreHistory: boolean;
+    loadingOlder: boolean;
+    pagingUnsupported: boolean;
+    pagedCapReached: boolean;
+    rangeRequestId: number | null;
+    resyncing: boolean;
+    queuedOutputCount: number;
+  } {
+    return {
+      epoch: this.epoch,
+      oldestOffset: this.oldestOffset,
+      liveStartOffset: this.liveStartOffset,
+      pagedRowCount: this.pagedRowCount,
+      pagedChunkCount: this.pagedChunks.length,
+      hasMoreHistory: this.hasMoreHistory,
+      loadingOlder: this.loadingOlder,
+      pagingUnsupported: this.pagingUnsupported,
+      pagedCapReached: this.pagedCapReached,
+      rangeRequestId: this.rangeRequestId,
+      resyncing: this.resyncing,
+      queuedOutputCount: this.queuedOutput.length,
+    };
+  }
+
   private startIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     const ttl = this.snapshot.status === 'exited' ? timings.exitedTtlMs : timings.idleTtlMs;
@@ -394,6 +501,13 @@ class TerminalController implements TerminalInstance {
       this.rowCache.clear();
       this.lastBufferLength = 0;
       this.lastOffset = 0;
+      // Restart resets the absolute stream to 0 under a new epoch (§4.5). Drop
+      // the paged window and forget the epoch so the reconnect's initial history
+      // records the new generation without a spurious mismatch resync.
+      this.clearPagedState();
+      this.epoch = null;
+      this.resyncing = false;
+      this.queuedOutput = [];
       // Clear any stale error and show an auto-dismissing restart notice (#968).
       this.patchMeta({ workerError: null });
       this.setNotice('Terminal restarted');
@@ -410,6 +524,14 @@ class TerminalController implements TerminalInstance {
     if (this.disposed) return;
     const url = getWorkerWsUrl(this.sessionId, this.workerId);
     this.historyRequested = false;
+    // Paging-unsupported is per-connection (§5.1): a reconnect may land on an
+    // upgraded server, so re-probe. Any in-flight range request is abandoned by
+    // the socket teardown; clear its flags so the fresh connection starts clean.
+    this.pagingUnsupported = false;
+    this.clearRangeTimer();
+    this.rangeRequestId = null;
+    this.pendingRange = null;
+    this.loadingOlder = false;
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -513,17 +635,30 @@ class TerminalController implements TerminalInstance {
 
     switch (message.type) {
       case 'history':
-        this.handleHistory(message.data, message.offset);
+        // Epoch is additive; a pre-upgrade server omits it (undefined) and the
+        // epoch check is a no-op until the first tagged message records one.
+        if (!this.acceptEpoch(message.epoch)) break;
+        this.handleHistory(message.data, message.offset, message.startOffset);
         break;
       case 'output':
+        if (!this.acceptEpoch(message.epoch)) break;
+        // During a resync, live output is queued (not applied) until the fresh
+        // initial history lands, then replayed in order (§3.4).
+        if (this.resyncing) {
+          this.queuedOutput.push({ data: message.data, offset: message.offset });
+          break;
+        }
         this.lastOffset = message.offset;
         this.terminal.write(this.processOutput(message.data), () => this.scheduleNotify());
+        break;
+      case 'history-range':
+        this.handleHistoryRange(message);
         break;
       case 'exit':
         this.updateStatus('exited', { code: message.exitCode, signal: message.signal });
         break;
       case 'error':
-        this.handleError(message.message, message.code);
+        this.handleError(message.message, message.code, message.requestId);
         break;
       case 'activity':
         this.patchMeta({ activityState: message.state });
@@ -532,13 +667,66 @@ class TerminalController implements TerminalInstance {
     }
   }
 
-  private handleHistory(data: string, offset: number): void {
-    // Truncation regression: the server's available data starts below what we
-    // asked for (restart / rotation) -> reset and treat the payload as full.
-    if (offset < this.requestedFromOffset) {
+  /**
+   * Epoch gate (§3.4). Records the first epoch seen; on any later mismatch it
+   * discards the triggering payload (the caller must `break`), tears down live +
+   * paged state, and issues a fresh initial history under the new generation.
+   * Returns false when a mismatch was handled (payload must be dropped).
+   *
+   * `epoch` is optional so pre-upgrade servers (which omit the additive field)
+   * are tolerated: an undefined epoch never records and never mismatches.
+   */
+  private acceptEpoch(epoch: number | undefined): boolean {
+    if (typeof epoch !== 'number') return true;
+    if (this.epoch === null) {
+      this.epoch = epoch;
+      return true;
+    }
+    if (epoch === this.epoch) return true;
+    this.beginEpochResync(epoch);
+    return false;
+  }
+
+  private beginEpochResync(newEpoch: number): void {
+    this.terminal.reset();
+    this.rowCache.clear();
+    this.lastBufferLength = 0;
+    this.lastOffset = 0;
+    this.clearPagedState();
+    this.epoch = newEpoch;
+    this.resyncing = true;
+    this.queuedOutput = [];
+    // Fresh initial history under the new generation (fromOffset 0).
+    this.requestHistory();
+  }
+
+  private handleHistory(data: string, offset: number, startOffset: number | undefined): void {
+    // Resync predicate (§3.1): a response is a contiguous forward continuation
+    // only when its window begins exactly where we asked. Any other position
+    // (archived-out: startOffset > request; stale/diverged: window ends below
+    // the request) is a fresh load and resets the buffer. When the server omits
+    // startOffset (pre-upgrade), fall back to the legacy offset-based heuristic.
+    const isFresh =
+      typeof startOffset === 'number'
+        ? startOffset !== this.requestedFromOffset
+        : offset < this.requestedFromOffset;
+    if (isFresh) {
       this.terminal.reset();
       this.rowCache.clear();
       this.lastBufferLength = 0;
+      this.clearPagedState();
+      // Seed the paging cursor at the window's absolute start (§6.1). Without a
+      // server-supplied startOffset, paging past the live window is unavailable
+      // (oldestOffset stays 0, hasMoreHistory false).
+      if (typeof startOffset === 'number') {
+        this.liveStartOffset = startOffset;
+        this.oldestOffset = startOffset;
+        this.hasMoreHistory = startOffset > 0;
+      } else {
+        this.liveStartOffset = 0;
+        this.oldestOffset = 0;
+        this.hasMoreHistory = false;
+      }
     }
     this.lastOffset = offset;
     const bytes = data.length;
@@ -548,11 +736,36 @@ class TerminalController implements TerminalInstance {
         `[terminal] history loaded: ${bytes} bytes in ${Math.round(this.lastHistoryLoadMs)} ms`,
       );
       this.patchMeta({ loadingHistory: false });
+      // Replay any output queued during the resync, dropping entries already
+      // covered by this history payload (§3.4).
+      if (this.resyncing) this.flushResyncQueue(offset);
       this.scheduleNotify();
     });
   }
 
-  private handleError(message: string, code?: WorkerErrorCode): void {
+  private flushResyncQueue(historyOffset: number): void {
+    this.resyncing = false;
+    const queued = this.queuedOutput;
+    this.queuedOutput = [];
+    for (const item of queued) {
+      // Entries whose end position is at or below the history offset are already
+      // covered by the history payload; drop them to avoid double-application.
+      if (item.offset <= historyOffset) continue;
+      this.lastOffset = item.offset;
+      this.terminal.write(this.processOutput(item.data), () => this.scheduleNotify());
+    }
+  }
+
+  private handleError(message: string, code?: WorkerErrorCode, requestId?: number): void {
+    // A range-request failure (HISTORY_LOAD_FAILED carrying the request's id)
+    // clears the correlated in-flight state without surfacing a worker error;
+    // the socket stays healthy and the user can re-page (§5.1).
+    if (typeof requestId === 'number' && requestId === this.rangeRequestId) {
+      this.clearRangeInFlight();
+      this.loadingOlder = false;
+      this.syncPagingMeta();
+      return;
+    }
     this.patchMeta({ workerError: { message, code } });
     if (code === 'SESSION_DELETED' || code === 'SESSION_PAUSED') {
       // Server will close after this error; ensure we never reconnect.
@@ -562,6 +775,208 @@ class TerminalController implements TerminalInstance {
         this.reconnectTimer = null;
       }
     }
+  }
+
+  // --- Scroll-back history paging (terminal-history-paging.md §6) ---
+
+  requestOlderHistory = (): void => {
+    if (this.disposed) return;
+    if (this.loadingOlder || this.pagingUnsupported || this.pagedCapReached) return;
+    if (this.resyncing || !this.hasMoreHistory || this.oldestOffset <= 0) return;
+    this.sendRangeRequest(this.oldestOffset, RANGE_MAX_BYTES);
+  };
+
+  evictTopChunk = (): void => {
+    if (this.disposed || this.pagedChunks.length === 0) return;
+    const evicted = this.pagedChunks.shift();
+    if (!evicted) return;
+    this.pagedRowCount -= evicted.rows.length;
+    // Raise the cursor to the evicted chunk's end (= the new top's start), so a
+    // later fetch chains contiguously; restore headroom and re-enable fetch.
+    this.oldestOffset = evicted.endOffset;
+    this.hasMoreHistory = this.oldestOffset > 0;
+    this.pagedCapReached = false;
+    this.syncPagingMeta();
+    this.scheduleNotify();
+  };
+
+  private sendRangeRequest(beforeOffset: number, maxBytes: number): void {
+    // Only meaningful over an open socket; a phantom timeout while disconnected
+    // would falsely mark paging unsupported (the reconnect re-probes anyway).
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    const requestId = this.nextRequestId++;
+    this.rangeRequestId = requestId;
+    this.pendingRange = { beforeOffset, maxBytes };
+    this.loadingOlder = true;
+    this.armRangeTimer();
+    this.syncPagingMeta();
+    this.send({ type: 'request-history-range', requestId, beforeOffset, maxBytes });
+  }
+
+  private handleHistoryRange(msg: {
+    requestId: number;
+    data: string;
+    startOffset: number;
+    endOffset: number;
+    hasMore: boolean;
+    epoch: number;
+  }): void {
+    // Correlation (§5.1): only the single in-flight request matters. A response
+    // whose id does not match is stale (survived a reset / reconnect / eviction)
+    // -> discard silently without disturbing in-flight flags.
+    if (this.rangeRequestId === null || msg.requestId !== this.rangeRequestId) return;
+    // Correlated response: capture the request's maxBytes for a possible overflow
+    // re-request, then clear the in-flight slot + timer.
+    const reqMaxBytes = this.pendingRange?.maxBytes ?? RANGE_MAX_BYTES;
+    this.clearRangeInFlight();
+    this.loadingOlder = false;
+
+    // Epoch mismatch: discard (a range starts at an arbitrary VT midpoint and
+    // can never be applied as a fresh load) and resync (§3.4).
+    if (typeof msg.epoch === 'number' && this.epoch !== null && msg.epoch !== this.epoch) {
+      this.syncPagingMeta();
+      this.beginEpochResync(msg.epoch);
+      return;
+    }
+    // Contiguity: the response must abut the current window top (§5.1).
+    if (msg.endOffset !== this.oldestOffset) {
+      this.syncPagingMeta();
+      return;
+    }
+    // Unavailable / pruned range: nothing more reachable above.
+    if (msg.data === '') {
+      this.hasMoreHistory = false;
+      this.syncPagingMeta();
+      return;
+    }
+    void this.applyRangeChunk(msg, reqMaxBytes);
+  }
+
+  private async applyRangeChunk(
+    msg: { data: string; startOffset: number; endOffset: number; hasMore: boolean },
+    reqMaxBytes: number,
+  ): Promise<void> {
+    const cols = this.terminal.cols;
+    let result: Awaited<ReturnType<typeof replayHistoryChunk>>;
+    try {
+      result = await replayHistoryChunk(msg.data, cols, (d) => this.processOutput(d));
+    } catch {
+      return;
+    }
+    if (this.disposed) return;
+    // The window may have moved while awaiting (resync / reconnect / resize /
+    // cols drop); only apply if still contiguous with the current top.
+    if (msg.endOffset !== this.oldestOffset) return;
+
+    if (result.overflow) {
+      // Degrade: re-request the SAME range at a quartered maxBytes (floor 16KB).
+      this.sendRangeRequest(this.oldestOffset, Math.max(RANGE_MIN_BYTES, Math.floor(reqMaxBytes / 4)));
+      return;
+    }
+
+    // Advance the cursor regardless of renderable content (an all-blank chunk
+    // still consumed its range and paging must continue past it).
+    this.oldestOffset = msg.startOffset;
+    this.hasMoreHistory = msg.hasMore;
+
+    if (result.rows.length > 0) {
+      // Fresh negative keys, allocated downward, never reused (§6.3).
+      for (const row of result.rows) {
+        this.negKeyCounter -= 1;
+        row.key = this.negKeyCounter;
+      }
+      // Each new chunk is older than all prior paged chunks -> front of the deque.
+      this.pagedChunks.unshift({
+        rows: result.rows,
+        startOffset: msg.startOffset,
+        endOffset: msg.endOffset,
+      });
+      this.pagedRowCount += result.rows.length;
+      if (this.pagedRowCount >= MAX_PAGED_ROWS) this.pagedCapReached = true;
+    }
+
+    this.syncPagingMeta();
+    this.scheduleNotify();
+  }
+
+  /** Full teardown of paged state (resync / restart). Keys are never reused, so
+   * negKeyCounter is deliberately NOT reset. */
+  private clearPagedState(): void {
+    this.pagedChunks = [];
+    this.pagedRowCount = 0;
+    this.oldestOffset = 0;
+    this.liveStartOffset = 0;
+    this.hasMoreHistory = true;
+    this.pagedCapReached = false;
+    this.loadingOlder = false;
+    this.clearRangeInFlight();
+  }
+
+  /** Drop paged chunks on a cols resize (§6.2): return the cursor to the live
+   * window's start so re-paging refetches at the new width. */
+  private dropPagedChunks(): void {
+    this.pagedChunks = [];
+    this.pagedRowCount = 0;
+    this.oldestOffset = this.liveStartOffset;
+    this.hasMoreHistory = this.liveStartOffset > 0;
+    this.pagedCapReached = false;
+    this.loadingOlder = false;
+    this.clearRangeInFlight();
+    this.syncPagingMeta();
+  }
+
+  private clearRangeInFlight(): void {
+    this.clearRangeTimer();
+    this.rangeRequestId = null;
+    this.pendingRange = null;
+  }
+
+  private armRangeTimer(): void {
+    this.clearRangeTimer();
+    this.rangeTimer = setTimeout(() => this.onRangeTimeout(), RANGE_TIMEOUT_MS);
+  }
+
+  private clearRangeTimer(): void {
+    if (this.rangeTimer) {
+      clearTimeout(this.rangeTimer);
+      this.rangeTimer = null;
+    }
+  }
+
+  private onRangeTimeout(): void {
+    this.rangeTimer = null;
+    if (this.disposed || this.rangeRequestId === null) return;
+    // No matching history-range within the window: old server / rollback (§5.1).
+    this.pagingUnsupported = true;
+    this.rangeRequestId = null;
+    this.pendingRange = null;
+    this.loadingOlder = false;
+    this.syncPagingMeta();
+  }
+
+  private computeCanRequestOlder(): boolean {
+    return (
+      !this.loadingOlder &&
+      !this.pagingUnsupported &&
+      !this.pagedCapReached &&
+      !this.resyncing &&
+      this.hasMoreHistory &&
+      this.oldestOffset > 0
+    );
+  }
+
+  private pagingMetaPatch(): Partial<TerminalSnapshot> {
+    return {
+      loadingOlder: this.loadingOlder,
+      canRequestOlder: this.computeCanRequestOlder(),
+      pagedRowCount: this.pagedRowCount,
+      pagedTopChunkRowCount: this.pagedChunks[0]?.rows.length ?? 0,
+      pagedCapReached: this.pagedCapReached,
+    };
+  }
+
+  private syncPagingMeta(): void {
+    this.patchMeta(this.pagingMetaPatch());
   }
 
   // --- Snapshot building ---
@@ -672,15 +1087,21 @@ class TerminalController implements TerminalInstance {
       this.rowCache.set(y, rows[y]);
     }
 
+    // Paged history rows (archive) render ABOVE the live window. They carry
+    // their own links (from the replay pipeline) and stable negative keys, and
+    // never enter the live rowCache (§6.3).
+    const pagedRows = this.pagedChunks.length > 0 ? this.pagedChunks.flatMap((c) => c.rows) : [];
+
     this.snapshot = {
       ...this.snapshot,
       version: this.snapshot.version + 1,
-      rows,
+      rows: pagedRows.length > 0 ? [...pagedRows, ...rows] : rows,
       cursor: { x: cursorX, y: cursorY, visible: true },
       cols,
       terminalRows: this.terminal.rows,
       bufferType: buffer.type,
       mouseTracking: this.terminal.modes.mouseTrackingMode !== 'none',
+      ...this.pagingMetaPatch(),
     };
   }
 
@@ -692,11 +1113,6 @@ class TerminalController implements TerminalInstance {
 /** Clamp a 1-based cell coordinate into [1, max]. */
 function clampCell(value: number, max: number): number {
   return Math.min(max, Math.max(1, Math.round(value)));
-}
-
-/** Concatenated text of a row's segments (the offset space link ranges use). */
-function rowText(row: TerminalRow): string {
-  return row.segments.map((s) => s.text).join('');
 }
 
 // --- Module-level registry ---
@@ -788,6 +1204,7 @@ export function _inspect(instance: TerminalInstance): {
   disposed: boolean;
   lastHistoryLoadMs: number | null;
   noticeTimer: ReturnType<typeof setTimeout> | null;
+  paging: TerminalController['pagingStateForTest'];
 } {
   const t = instance as TerminalController;
   return {
@@ -798,5 +1215,6 @@ export function _inspect(instance: TerminalInstance): {
     disposed: t.disposedForTest,
     lastHistoryLoadMs: t.lastHistoryLoadDurationMs,
     noticeTimer: t.noticeTimerForTest,
+    paging: t.pagingStateForTest,
   };
 }

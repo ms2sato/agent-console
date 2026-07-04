@@ -21,6 +21,11 @@ const EXITED_SNAPSHOT: TerminalSnapshot = Object.freeze({
   workerError: null,
   activityState: null,
   loadingHistory: false,
+  loadingOlder: false,
+  canRequestOlder: false,
+  pagedRowCount: 0,
+  pagedTopChunkRowCount: 0,
+  pagedCapReached: false,
 }) as TerminalSnapshot;
 
 const stubInstance: TerminalInstance = {
@@ -33,6 +38,8 @@ const stubInstance: TerminalInstance = {
   paste: () => {},
   retry: () => {},
   dismissNotice: () => {},
+  requestOlderHistory: () => {},
+  evictTopChunk: () => {},
   acquire: () => () => {},
   dispose: () => {},
 };

@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from 'bun:test';
-import { render, screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, afterEach, mock } from 'bun:test';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { TerminalView } from '../TerminalView';
 import type { TerminalInstance, TerminalSnapshot } from '../terminal-store';
 import type { TerminalRow } from '../buffer-to-rows';
@@ -42,6 +42,11 @@ function makeSnapshot(rows: TerminalRow[]): TerminalSnapshot {
     workerError: null,
     activityState: null,
     loadingHistory: false,
+    loadingOlder: false,
+    canRequestOlder: false,
+    pagedRowCount: 0,
+    pagedTopChunkRowCount: 0,
+    pagedCapReached: false,
   };
 }
 
@@ -58,6 +63,8 @@ function makeInstance(snapshot: TerminalSnapshot): TerminalInstance {
     paste: () => {},
     retry: () => {},
     dismissNotice: () => {},
+    requestOlderHistory: () => {},
+    evictTopChunk: () => {},
     acquire: () => () => {},
     dispose: () => {},
   };
@@ -92,5 +99,59 @@ describe('TerminalView row rendering', () => {
     expect(link.getAttribute('href')).toBe('https://github.com/acme/widgets/issues/123');
     expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+});
+
+// Layout-dependent geometry (scrollTop / clientHeight) is not produced by
+// happy-dom, so these tests define it explicitly on the scroll container. The
+// precise anchor-rect physics are verified by the coordinator's E2E; here we
+// assert only the trigger wiring: scroll-at-top + canRequestOlder -> the store
+// method fires, and the gate holds when the store says paging is not allowed.
+describe('TerminalView history-paging trigger', () => {
+  afterEach(cleanup);
+
+  function setGeometry(el: HTMLElement, scrollTop: number) {
+    Object.defineProperty(el, 'clientHeight', { value: 100, configurable: true });
+    Object.defineProperty(el, 'scrollHeight', { value: 1000, configurable: true });
+    Object.defineProperty(el, 'scrollTop', { value: scrollTop, writable: true, configurable: true });
+  }
+
+  it('requests older history when scrolled near the top and paging is allowed', () => {
+    const requestOlderHistory = mock(() => {});
+    const snapshot = { ...makeSnapshot(ROWS), canRequestOlder: true };
+    const instance = { ...makeInstance(snapshot), requestOlderHistory };
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    setGeometry(scroller, 50); // 50 < 2 * clientHeight (200) -> near the top
+    fireEvent.scroll(scroller);
+    expect(requestOlderHistory).toHaveBeenCalled();
+  });
+
+  it('does not request older history when the store disallows it', () => {
+    const requestOlderHistory = mock(() => {});
+    const snapshot = { ...makeSnapshot(ROWS), canRequestOlder: false };
+    const instance = { ...makeInstance(snapshot), requestOlderHistory };
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    setGeometry(scroller, 50);
+    fireEvent.scroll(scroller);
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
+  it('does not request older history when scrolled far from the top', () => {
+    const requestOlderHistory = mock(() => {});
+    const snapshot = { ...makeSnapshot(ROWS), canRequestOlder: true };
+    const instance = { ...makeInstance(snapshot), requestOlderHistory };
+    const { container } = render(<TerminalView instance={instance} />);
+    const scroller = container.querySelector('.overflow-y-auto') as HTMLElement;
+    setGeometry(scroller, 500); // 500 >= 200 -> not near the top
+    fireEvent.scroll(scroller);
+    expect(requestOlderHistory).not.toHaveBeenCalled();
+  });
+
+  it('shows the cap-reached notice overlay', () => {
+    const snapshot = { ...makeSnapshot(ROWS), pagedCapReached: true };
+    render(<TerminalView instance={makeInstance(snapshot)} />);
+    expect(screen.getByText(/older history paused/i)).toBeTruthy();
   });
 });

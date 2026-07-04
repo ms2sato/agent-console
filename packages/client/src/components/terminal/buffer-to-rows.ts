@@ -32,7 +32,11 @@ export interface TerminalSegment {
 }
 
 export interface TerminalRow {
-  key: number; // absolute row index in the buffer
+  // Live rows: the absolute row index in the buffer (>= 0). Paged history rows
+  // (terminal-history-paging.md §6.3): synthetic negative ids from a
+  // monotonically decreasing per-instance counter, never reused, so an
+  // evicted-then-refetched chunk can never collide with a still-mounted row.
+  key: number;
   segments: TerminalSegment[];
   isWrapped: boolean; // true = this row is a soft-wrap continuation of the previous
   links: LinkRange[]; // URL column ranges over the row's concatenated text (empty = none)

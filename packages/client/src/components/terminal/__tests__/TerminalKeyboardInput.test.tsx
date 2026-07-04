@@ -37,6 +37,11 @@ const SNAPSHOT_STUB: TerminalSnapshot = {
   workerError: null,
   activityState: null,
   loadingHistory: false,
+  loadingOlder: false,
+  canRequestOlder: false,
+  pagedRowCount: 0,
+  pagedTopChunkRowCount: 0,
+  pagedCapReached: false,
 };
 
 // Render-only stub: TerminalKeyboardInput never subscribes or reads the snapshot
@@ -52,6 +57,8 @@ function makeMockInstance(): TerminalInstance {
     paste: () => {},
     retry: () => {},
     dismissNotice: () => {},
+    requestOlderHistory: () => {},
+    evictTopChunk: () => {},
     acquire: () => () => {},
     dispose: () => {},
   };
