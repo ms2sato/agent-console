@@ -87,3 +87,36 @@ describe('ReorderMessageTemplatesRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('strict-parse contract (unknown-key rejection)', () => {
+  it('CreateMessageTemplateRequestSchema rejects an unknown key', () => {
+    const result = v.safeParse(CreateMessageTemplateRequestSchema, {
+      title: 'My Template',
+      content: 'Hello world',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+    }
+  });
+
+  it('UpdateMessageTemplateRequestSchema (v.pipe-wrapped) rejects an unknown key', () => {
+    const result = v.safeParse(UpdateMessageTemplateRequestSchema, {
+      title: 'Updated Title',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.issues)).toContain('unexpectedField');
+    }
+  });
+
+  it('ReorderMessageTemplatesRequestSchema rejects an unknown key', () => {
+    const result = v.safeParse(ReorderMessageTemplatesRequestSchema, {
+      orderedIds: ['id-1'],
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+  });
+});

@@ -6,7 +6,7 @@ import type {
   AppServerMessage,
   GitDiffWorker,
 } from '@agent-console/shared';
-import { WS_READY_STATE, WS_CLOSE_CODE } from '@agent-console/shared';
+import { WS_READY_STATE, WS_CLOSE_CODE, SCHEMA_VERSION } from '@agent-console/shared';
 import type { WSContext, WSMessageReceive } from 'hono/ws';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AppContext } from '../app-context.js';
@@ -481,6 +481,17 @@ export async function setupWebSocketRoutes(
     upgradeWebSocket((_c) => {
       return {
         onOpen(_event: Event, ws: WSContext) {
+          // Advertise the wire-schema version as the very first frame, before
+          // any sync data, so the client can detect a server/client schema
+          // mismatch and reload before it attempts to parse newer payloads.
+          // Guard the send: if the socket is already closing this must not throw
+          // and abort the rest of onOpen (client registration + initial sync).
+          try {
+            ws.send(JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION }));
+          } catch (e) {
+            logger.warn({ err: e }, 'Failed to send schema-version frame');
+          }
+
           logger.info('App WebSocket connected, sending initial sync');
 
           // Add to clients immediately but mark as syncing to prevent race conditions

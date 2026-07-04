@@ -557,6 +557,45 @@ describe('AppServerMessageSchema', () => {
     });
   });
 
+  describe('schema-version', () => {
+    it('should accept the schema-version frame', () => {
+      const output = expectValid({ type: 'schema-version', version: 'cf7b17ac06edc357' });
+      expect(output.type).toBe('schema-version');
+      if (output.type === 'schema-version') {
+        expect(output.version).toBe('cf7b17ac06edc357');
+      }
+    });
+
+    it('should reject a schema-version frame missing version', () => {
+      expectInvalid({ type: 'schema-version' });
+    });
+  });
+
+  describe('strict-parse contract (unknown-key rejection)', () => {
+    it('should reject an unknown key at the top level of a message', () => {
+      const result = v.safeParse(AppServerMessageSchema, {
+        type: 'review-queue-updated',
+        unexpectedField: 'leaked',
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(JSON.stringify(result.issues)).toContain('unexpectedField');
+      }
+    });
+
+    it('should reject an unknown key nested inside a session in sessions-sync', () => {
+      const result = v.safeParse(AppServerMessageSchema, {
+        type: 'sessions-sync',
+        sessions: [{ ...worktreeSession, unexpectedField: 'leaked' }],
+        activityStates: [],
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(JSON.stringify(result.issues)).toContain('unexpectedField');
+      }
+    });
+  });
+
   describe('session with workers', () => {
     it('should validate session containing all worker types', () => {
       expectValid({

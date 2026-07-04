@@ -12,7 +12,7 @@ const SLACK_WEBHOOK_URL_PATTERN = /^https:\/\/hooks\.slack\.com\//;
  * Schema for creating/updating repository Slack integration.
  * Used by repository-specific Slack settings endpoints.
  */
-export const RepositorySlackIntegrationInputSchema = v.object({
+export const RepositorySlackIntegrationInputSchema = v.strictObject({
   webhookUrl: v.pipe(
     v.string(),
     v.trim(),

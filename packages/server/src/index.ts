@@ -12,6 +12,7 @@ import { serverConfig, shouldWarnInsecureAuthCookie } from './lib/server-config.
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
 import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
+import { schemaVersionHeaderMiddleware } from './middleware/schema-version-header.js';
 import * as path from 'path';
 
 const logger = createLogger('server');
@@ -117,6 +118,10 @@ app.use('*', async (c, next) => {
   c.set('appContext', appContext!);
   await next();
 });
+
+// Advertise the wire-schema version on every HTTP response. Runs before auth
+// so 401 responses also carry the header.
+app.use('*', schemaVersionHeaderMiddleware);
 
 // Health check
 app.get('/health', (c) => {

@@ -490,6 +490,35 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testAgents);
     });
 
+    it('loads a persisted agent that carries an unknown legacy field (lenient storage parse)', async () => {
+      const service = await getPersistenceService();
+
+      // agents.json is internal storage and may carry fields written by older
+      // builds. The wire AgentDefinitionSchema is strict, but the persistence
+      // load path parses leniently so a legacy field does not drop the agent.
+      const agentsFile = path.join(getTestConfigDir(), 'agents.json');
+      const agentWithLegacyField = [
+        {
+          id: 'legacy-agent',
+          name: 'Legacy Agent',
+          commandTemplate: 'test {{prompt}}',
+          isBuiltIn: false,
+          createdAt: '2024-01-01',
+          capabilities: { supportsContinue: false, supportsHeadlessMode: false, supportsActivityDetection: false },
+          // Field no longer part of the schema; must be tolerated on load.
+          legacyOnlyField: 'some-old-value',
+        },
+      ];
+      fs.writeFileSync(agentsFile, JSON.stringify(agentWithLegacyField));
+
+      const loaded = await service.loadAgents();
+
+      expect(loaded.length).toBe(1);
+      expect(loaded[0].id).toBe('legacy-agent');
+      // The unknown key is stripped by the lenient parse (not present on output).
+      expect((loaded[0] as Record<string, unknown>).legacyOnlyField).toBeUndefined();
+    });
+
     it('should skip agents with missing required fields', async () => {
       const service = await getPersistenceService();
 

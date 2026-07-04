@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { WSContext } from 'hono/ws';
 import type { AppServerMessage } from '@agent-console/shared';
-import { WS_CLOSE_CODE } from '@agent-console/shared';
+import { WS_CLOSE_CODE, SCHEMA_VERSION } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -128,6 +128,20 @@ describe('App WebSocket sync-queue handling', () => {
 
     await closeDatabase();
     cleanupMemfs();
+  });
+
+  it('sends the schema-version frame as the very first message on connect', () => {
+    expect(capturedAppHandlerFactory).not.toBeNull();
+
+    const mockWs = createMockWs();
+    const handlers = capturedAppHandlerFactory!({ req: { param: () => '' } });
+    handlers.onOpen({}, mockWs);
+
+    // The synchronous first send happens before any async sync work.
+    expect(mockWs.sentMessages.length).toBeGreaterThan(0);
+    const first = JSON.parse(mockWs.sentMessages[0]);
+    expect(first.type).toBe('schema-version');
+    expect(first.version).toBe(SCHEMA_VERSION);
   });
 
   it('should queue messages during sync and replay them after sync completes', async () => {

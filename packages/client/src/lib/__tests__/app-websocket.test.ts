@@ -14,6 +14,11 @@ import {
   MAX_RETRY_COUNT,
   LAST_RESORT_RETRY_DELAY,
 } from '../app-websocket';
+import { SCHEMA_VERSION } from '@agent-console/shared';
+import {
+  _reset as resetSchemaVersion,
+  _setReloadImpl as setSchemaReloadImpl,
+} from '../schema-version';
 
 describe('app-websocket', () => {
   let restoreWebSocket: () => void;
@@ -566,6 +571,64 @@ describe('app-websocket', () => {
 
       expect(callback1).toHaveBeenCalledTimes(1);
       expect(callback2).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('schema-version frame interception', () => {
+    beforeEach(() => {
+      resetSchemaVersion();
+    });
+
+    afterEach(() => {
+      resetSchemaVersion();
+    });
+
+    it('intercepts a mismatching schema-version frame: triggers the check and does not forward it', () => {
+      const reloadMock = mock(() => {});
+      setSchemaReloadImpl(reloadMock);
+
+      const listener = mock(() => {});
+      subscribe(listener);
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'schema-version', version: `${SCHEMA_VERSION}-stale` }));
+
+      // The frame is handled by the transport layer, not forwarded to listeners.
+      expect(listener).not.toHaveBeenCalled();
+      // A mismatch drives the version check, which forces a reload.
+      expect(reloadMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not forward a matching schema-version frame to listeners', () => {
+      const reloadMock = mock(() => {});
+      setSchemaReloadImpl(reloadMock);
+
+      const listener = mock(() => {});
+      subscribe(listener);
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION }));
+
+      expect(listener).not.toHaveBeenCalled();
+      expect(reloadMock).not.toHaveBeenCalled();
+    });
+
+    it('does not crash on a malformed schema-version frame', () => {
+      const listener = mock(() => {});
+      subscribe(listener);
+
+      connect();
+      const ws = MockWebSocket.getLastInstance();
+      ws?.simulateOpen();
+      // Missing the required `version` field.
+      ws?.simulateMessage(JSON.stringify({ type: 'schema-version' }));
+
+      expect(listener).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).toHaveBeenCalled();
     });
   });
 

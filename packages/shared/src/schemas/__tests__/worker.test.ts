@@ -197,3 +197,27 @@ describe('RestartWorkerRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('strict-parse contract (unknown-key rejection)', () => {
+  it('CreateWorkerRequestSchema rejects an unknown key', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'terminal',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+    }
+  });
+
+  it('RestartWorkerRequestSchema rejects an unknown key', () => {
+    const result = v.safeParse(RestartWorkerRequestSchema, {
+      continueConversation: true,
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+    }
+  });
+});

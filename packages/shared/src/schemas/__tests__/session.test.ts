@@ -427,12 +427,12 @@ describe('UpdateSessionRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should ignore unknown fields', () => {
+  it('should reject unknown fields (strict schema)', () => {
     const result = v.safeParse(UpdateSessionRequestSchema, {
       title: 'Title',
       branch: 'feature/test',
     });
-    // Valibot strips unknown fields by default in v.object
-    expect(result.success).toBe(true);
+    // The schema is a strictObject: unknown keys are rejected, not stripped.
+    expect(result.success).toBe(false);
   });
 });

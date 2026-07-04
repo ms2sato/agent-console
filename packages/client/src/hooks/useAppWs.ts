@@ -215,6 +215,10 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           logger.debug('[WebSocket] review-queue-updated');
           optionsRef.current.onReviewQueueUpdated?.();
           break;
+        case 'schema-version':
+          // First-frame wire-schema version. App state is unaffected by this
+          // frame; server/client mismatch handling lives in the transport layer.
+          break;
         default: {
           const _exhaustive: never = msg;
           logger.warn('Unknown message type received:', _exhaustive);

@@ -4,7 +4,7 @@ import * as v from 'valibot';
  * Schema for manually sending a message from the user to a worker via API.
  * Content is optional when files are attached (validated at route level).
  */
-export const SendWorkerMessageRequestSchema = v.object({
+export const SendWorkerMessageRequestSchema = v.strictObject({
   toWorkerId: v.pipe(
     v.string(),
     v.trim(),

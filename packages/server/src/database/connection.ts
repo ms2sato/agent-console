@@ -6,9 +6,10 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as v from 'valibot';
 import type { AgentDefinition } from '@agent-console/shared';
-import { AgentDefinitionSchema, DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
+import { DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import type { Database } from './schema.js';
 import type { PersistedSession, PersistedRepository } from '../services/persistence-service.js';
+import { PersistedAgentDefinitionSchema } from '../services/persistence-service.js';
 import { getConfigDir, getDbPath, getRepositoryDir } from '../lib/config.js';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -1546,7 +1547,9 @@ async function migrateAgentsFromJson(database: Kysely<Database>): Promise<void> 
       // - registeredAt -> createdAt (renamed in SQLite migration)
       const item = transformLegacyFields(rawItem);
 
-      const result = v.safeParse(AgentDefinitionSchema, item);
+      // Lenient parse for the one-time JSON -> SQLite migration. See
+      // PersistedAgentDefinitionSchema's doc for why a non-strict variant is used.
+      const result = v.safeParse(PersistedAgentDefinitionSchema, item);
       if (result.success) {
         const agent = result.output as AgentDefinition;
         // Skip built-in agents - they should never be persisted

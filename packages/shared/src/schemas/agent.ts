@@ -75,14 +75,14 @@ const askingPatternsValidation = v.pipe(
 /**
  * Agent activity patterns for detection
  */
-export const AgentActivityPatternsSchema = v.object({
+export const AgentActivityPatternsSchema = v.strictObject({
   askingPatterns: v.optional(askingPatternsValidation),
 });
 
 /**
  * Agent capabilities - computed from templates
  */
-export const AgentCapabilitiesSchema = v.object({
+export const AgentCapabilitiesSchema = v.strictObject({
   supportsContinue: v.boolean(),
   supportsHeadlessMode: v.boolean(),
   supportsActivityDetection: v.boolean(),
@@ -177,7 +177,7 @@ const headlessTemplateValidation = v.pipe(
  * Client uses this with string-based askingPatternsInput.
  * Server uses this with array-based activityPatterns.
  */
-export const AgentFieldsBaseSchema = v.object({
+export const AgentFieldsBaseSchema = v.strictObject({
   name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
   commandTemplate: commandTemplateValidation,
   continueTemplate: v.optional(continueTemplateValidation),
@@ -191,18 +191,19 @@ export const AgentFieldsBaseSchema = v.object({
 /**
  * Schema for creating a new agent
  */
-export const CreateAgentRequestSchema = v.intersect([
-  AgentFieldsBaseSchema,
-  v.object({
-    activityPatterns: v.optional(AgentActivityPatternsSchema),
-    baseAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  }),
-]);
+// Composed via `.entries` spread rather than `v.intersect` because two
+// `strictObject`s inside `v.intersect` mutually reject each other's keys.
+// Spreading keeps a single strict object whose known keys are the union.
+export const CreateAgentRequestSchema = v.strictObject({
+  ...AgentFieldsBaseSchema.entries,
+  activityPatterns: v.optional(AgentActivityPatternsSchema),
+  baseAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+});
 
 /**
  * Schema for updating an existing agent
  */
-export const UpdateAgentRequestSchema = v.object({
+export const UpdateAgentRequestSchema = v.strictObject({
   name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Name cannot be empty'))),
   commandTemplate: v.optional(commandTemplateValidation),
   continueTemplate: v.optional(v.nullable(continueTemplateValidation)),
@@ -220,17 +221,18 @@ export const UpdateAgentRequestSchema = v.object({
  * Used to validate agents loaded from storage at startup
  * Uses same template validation as CreateAgentRequestSchema for consistency
  */
-export const AgentDefinitionSchema = v.intersect([
-  AgentFieldsBaseSchema,
-  v.object({
-    id: v.pipe(v.string(), v.minLength(1)),
-    isBuiltIn: v.boolean(),
-    createdAt: v.string(),
-    activityPatterns: v.optional(AgentActivityPatternsSchema),
-    capabilities: AgentCapabilitiesSchema,
-    baseAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  }),
-]);
+// Composed via `.entries` spread (see CreateAgentRequestSchema) so the two
+// field groups live in one strict object instead of a mutually-rejecting
+// `v.intersect` of strict objects.
+export const AgentDefinitionSchema = v.strictObject({
+  ...AgentFieldsBaseSchema.entries,
+  id: v.pipe(v.string(), v.minLength(1)),
+  isBuiltIn: v.boolean(),
+  createdAt: v.string(),
+  activityPatterns: v.optional(AgentActivityPatternsSchema),
+  capabilities: AgentCapabilitiesSchema,
+  baseAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+});
 
 // Inferred types from schemas
 export type CreateAgentRequest = v.InferOutput<typeof CreateAgentRequestSchema>;

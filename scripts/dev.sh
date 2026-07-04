@@ -7,6 +7,10 @@ if [ -f .env ]; then
   set +a
 fi
 
+# Regenerate the wire-schema version constant before starting the dev servers
+# so the server advertises a value that matches the current schema files.
+bun "$(dirname "$0")/generate-schema-version.mjs" > /dev/null
+
 export AGENT_CONSOLE_HOME=${AGENT_CONSOLE_HOME:-$HOME/.agent-console-dev}
 export CLIENT_PORT=${CLIENT_PORT:-5173}
 export PORT=${PORT:-3457}

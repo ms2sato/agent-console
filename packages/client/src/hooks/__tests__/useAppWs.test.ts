@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
+import { SCHEMA_VERSION } from '@agent-console/shared';
 import { useAppWsEvent, useAppWsState } from '../useAppWs';
 import { _reset as resetWebSocket, connect } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
@@ -328,6 +329,26 @@ describe('useAppWsEvent', () => {
 
       expect(onSessionsSync).not.toHaveBeenCalled();
       expect(onWorkerActivity).not.toHaveBeenCalled();
+    });
+
+    it('should treat a schema-version frame as a no-op for app event handlers', () => {
+      // The schema-version frame is a transport-layer concern: it must not
+      // invoke any app event callback and must not surface a parse error.
+      const onSessionsSync = mock(() => {});
+      const onWorkerActivity = mock(() => {});
+      renderHook(() => useAppWsEvent({ onSessionsSync, onWorkerActivity }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'schema-version', version: SCHEMA_VERSION })
+        );
+      });
+
+      expect(onSessionsSync).not.toHaveBeenCalled();
+      expect(onWorkerActivity).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
     });
 
     it('should call onAgentsSync for agents-sync message', () => {

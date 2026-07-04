@@ -191,6 +191,12 @@ Parameter on the `run_process` MCP tool that selects how the script's stdout and
 - **Aliases:** output mode, run_process outputMode
 - **See:** Issue [#664](https://github.com/ms2sato/agent-console/issues/664), router [`packages/server/src/services/process-output-router.ts`](../packages/server/src/services/process-output-router.ts)
 
+### Schema Version
+A build-time content hash over the wire-schema file set (`packages/shared/src/schemas/*.ts`) that identifies the generation of the server/client wire contract. Derived by `scripts/generate-schema-version.mjs` into the committed constant `SCHEMA_VERSION` (`packages/shared/src/schema-version.gen.ts`), which is staleness-guarded by a test invoking the script's `--check` mode — no manual bump exists. The server advertises the version as the first frame on `/ws/app` (`{ type: 'schema-version', version }`) and as an `X-Schema-Version` header on every REST response (middleware mounted before auth). The client compares it against its compiled-in constant and force-reloads on mismatch at most once per server version (sessionStorage guard `agent-console:schema-version-reload-attempted`); a mismatch persisting after reload degrades to a manual-refresh error banner instead of looping.
+- **Aliases:** SCHEMA_VERSION, X-Schema-Version, schema-version (WS message type)
+- **See:** Issue [#927](https://github.com/ms2sato/agent-console/issues/927), [`scripts/generate-schema-version.mjs`](../scripts/generate-schema-version.mjs), [`packages/client/src/lib/schema-version.ts`](../packages/client/src/lib/schema-version.ts), [`packages/server/src/middleware/schema-version-header.ts`](../packages/server/src/middleware/schema-version-header.ts)
+- **Contrast:** [WebSocket Connection](#websocket-connection) (the transport itself; the schema version describes the payload contract generation carried over it)
+
 ### SystemEvent
 The top-level event format representing meaningful occurrences in the system.
 - **Aliases:** System-wide event

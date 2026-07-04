@@ -20,6 +20,7 @@ export * from './types/message-template.js';
 export * from './types/message-contracts.js';
 export * from './schemas/index.js';
 export * from './constants/index.js';
+export * from './schema-version.gen.js';
 
 export interface ApiError {
   error: string;

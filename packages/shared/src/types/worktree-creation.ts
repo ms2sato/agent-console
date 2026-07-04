@@ -1,33 +1,6 @@
 import type { CreateWorktreeRequest } from '../schemas/repository.js';
-import type { Worker } from './worker.js';
+import type { Session } from './session.js';
 import type { Worktree, BranchNameFallback, HookCommandResult } from './repository.js';
-
-/**
- * Session information for worktree creation completion.
- * Inlined to avoid circular import with session.ts.
- */
-interface WorktreeCreationSessionBase {
-  id: string;
-  locationPath: string;
-  status: 'active' | 'inactive';
-  createdAt: string;
-  workers: Worker[];
-  initialPrompt?: string;
-  title?: string;
-}
-
-interface WorktreeCreationWorktreeSession extends WorktreeCreationSessionBase {
-  type: 'worktree';
-  repositoryId: string;
-  repositoryName: string;
-  worktreeId: string;
-}
-
-interface WorktreeCreationQuickSession extends WorktreeCreationSessionBase {
-  type: 'quick';
-}
-
-type WorktreeCreationSession = WorktreeCreationWorktreeSession | WorktreeCreationQuickSession;
 
 /**
  * Status of a worktree creation task (client-side only)
@@ -63,7 +36,12 @@ export interface WorktreeCreationCompletedPayload {
   /** Client-generated task ID for correlation */
   taskId: string;
   worktree: Worktree;
-  session: WorktreeCreationSession | null;
+  /**
+   * The full public Session created for the new worktree (null when session
+   * creation was skipped). Carries the same shape as sessions-sync entries;
+   * clients typically read only `id` / `title` for navigation.
+   */
+  session: Session | null;
   /** Present when AI branch name generation failed and fallback was used */
   branchNameFallback?: BranchNameFallback;
   /** Present when setup command was executed */

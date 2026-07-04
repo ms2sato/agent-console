@@ -224,6 +224,9 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'worktree-pull-failed': 25,
   'memo-updated': 26,
   'review-queue-updated': 27,
+  // Sent as the first frame on /ws/app so the client can detect a
+  // server/client schema mismatch. See docs/design/websocket-protocol.md.
+  'schema-version': 28,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */

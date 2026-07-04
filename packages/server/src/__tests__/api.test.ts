@@ -1652,7 +1652,9 @@ describe('API Routes Integration', () => {
             taskId: generateTaskId(),
             mode: 'existing',
             branch: 'existing-branch',
-            useRemote: true, // This should be accepted (ignored during async processing)
+            // `useRemote` is intentionally omitted: it is not part of the
+            // existing-mode schema, which is now a strictObject and rejects
+            // unknown keys.
           }),
         });
 
