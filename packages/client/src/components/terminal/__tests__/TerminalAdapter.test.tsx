@@ -79,19 +79,25 @@ describe('TerminalAdapter', () => {
     // useSessionRepoFullName queries the session PR-link endpoint. Answer it at
     // the fetch level (no module mock): orgRepo null -> repoFullName null, the
     // same result the removed useSessionRepoFullName module mock produced.
-    globalThis.fetch = mock((input: RequestInfo | URL): Promise<Response> => {
-      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-      if (url.includes('/pr-link')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ prUrl: null, branchName: '', orgRepo: null }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }),
-        );
-      }
-      // Anything unexpected: a benign 404 (the adapter has no other mount fetch).
-      return Promise.resolve(new Response('null', { status: 404 }));
-    }) as unknown as typeof fetch;
+    // Object.assign supplies the `preconnect` static bun-types declares on
+    // fetch, so the stub satisfies `typeof fetch` without a cast.
+    const fetchStub: typeof fetch = Object.assign(
+      mock((input: RequestInfo | URL): Promise<Response> => {
+        const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.includes('/pr-link')) {
+          return Promise.resolve(
+            new Response(JSON.stringify({ prUrl: null, branchName: '', orgRepo: null }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          );
+        }
+        // Anything unexpected: a benign 404 (the adapter has no other mount fetch).
+        return Promise.resolve(new Response('null', { status: 404 }));
+      }),
+      { preconnect: () => {} },
+    );
+    globalThis.fetch = fetchStub;
   });
 
   afterEach(() => {

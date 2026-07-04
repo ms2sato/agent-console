@@ -66,7 +66,10 @@ describe('useMessageTemplates', () => {
   beforeEach(() => {
     fetchCalls.length = 0;
     templatesResponse = { templates: [] };
-    globalThis.fetch = mock(templatesFetch) as unknown as typeof fetch;
+    // Object.assign supplies the `preconnect` static bun-types declares on
+    // fetch, so the stub satisfies `typeof fetch` without a cast.
+    const fetchStub: typeof fetch = Object.assign(mock(templatesFetch), { preconnect: () => {} });
+    globalThis.fetch = fetchStub;
   });
 
   afterEach(() => {

@@ -190,7 +190,10 @@ describe('MessagePanel', () => {
     });
     fetchCalls.length = 0;
     skillsResponse = { skills: TEST_SKILLS };
-    globalThis.fetch = mock(messagePanelFetch) as unknown as typeof fetch;
+    // Object.assign supplies the `preconnect` static bun-types declares on
+    // fetch, so the stub satisfies `typeof fetch` without a cast.
+    const fetchStub: typeof fetch = Object.assign(mock(messagePanelFetch), { preconnect: () => {} });
+    globalThis.fetch = fetchStub;
   });
 
   afterEach(() => {
