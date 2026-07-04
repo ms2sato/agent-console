@@ -44,7 +44,7 @@ import {
   getCurrentBranch as gitGetCurrentBranch,
   renameBranch as gitRenameBranch,
 } from '../lib/git.js';
-import { type WorkerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import { type WorkerOutputFileManager, type HistoryReadResult, type HistoryRangeResult } from '../lib/worker-output-file.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
 
@@ -712,6 +712,28 @@ export class WorkerLifecycleManager {
     }
 
     return this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver, fromOffset, maxLines);
+  }
+
+  /**
+   * Serve a backwards history range (§5.1). Returns the bytes ending strictly
+   * before `beforeOffset`, clamped to one storage unit and the server cap.
+   * Returns null for missing / git-diff workers or when no output scope is
+   * available (treated as no history by the caller).
+   */
+  async getWorkerHistoryRange(
+    sessionId: string,
+    workerId: string,
+    beforeOffset: number,
+    maxBytes?: number,
+  ): Promise<HistoryRangeResult | null> {
+    const session = this.deps.getSession(sessionId);
+    const worker = this.getWorker(sessionId, workerId);
+    if (!worker || worker.type === 'git-diff') return null;
+
+    const resolver = await this.resolveOutputResolver(sessionId, session);
+    if (!resolver) return null;
+
+    return this.deps.workerOutputFileManager.readHistoryRange(sessionId, workerId, resolver, beforeOffset, maxBytes);
   }
 
   /**

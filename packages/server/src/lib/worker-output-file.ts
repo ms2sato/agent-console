@@ -13,7 +13,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { gunzipSync } from 'bun';
-import { gzip as gzipCb } from 'node:zlib';
+import { gzip as gzipCb, gunzip as gunzipCb } from 'node:zlib';
 import { promisify } from 'node:util';
 import { SessionDataPathResolver } from './session-data-path-resolver.js';
 import { serverConfig } from './server-config.js';
@@ -27,12 +27,20 @@ import {
   writeFileDurable,
   manifestPathFor,
   segmentFileRegex,
+  firstAvailableOffset,
 } from './worker-output-manifest.js';
 
 const logger = createLogger('worker-output-file');
 
-/** Async gzip (never gzipSync — the backend async-over-sync rule). */
+/** Async gzip / gunzip (never the sync variants — the backend async-over-sync rule). */
 const gzipAsync = promisify(gzipCb);
+const gunzipAsync = promisify(gunzipCb);
+
+/** TTL for a decompressed segment held in the per-worker range-read cache (§5.2). */
+const SEGMENT_CACHE_TTL_MS = 30_000;
+
+/** Best-effort newline-alignment scan window for a clamped range start (§5.2). */
+const NEWLINE_ALIGN_SCAN_BYTES = 4096;
 
 /**
  * Result of reading history. Offsets are absolute stream positions.
@@ -46,6 +54,35 @@ export interface HistoryReadResult {
   startOffset: number;
   /** Generation identifier of the incarnation that produced this data. */
   epoch: number;
+}
+
+/**
+ * Result of a backwards range read (§5.1). `data` covers the absolute byte
+ * range `[startOffset, endOffset)`; `endOffset <= beforeOffset`.
+ */
+export interface HistoryRangeResult {
+  /** Output bytes covering `[startOffset, endOffset)`. Empty when unavailable. */
+  data: string;
+  /** Absolute start offset of `data`. */
+  startOffset: number;
+  /** Absolute end offset of `data` (exclusive); `<= beforeOffset`. */
+  endOffset: number;
+  /** True when older reachable history exists (`startOffset > firstAvailableOffset`). */
+  hasMore: boolean;
+  /** Generation identifier captured under the per-worker lock. */
+  epoch: number;
+}
+
+/**
+ * A single decompressed segment held per worker (§5.2). The promise is installed
+ * BEFORE inflation begins so concurrent readers of the same `seq` share one
+ * gunzip; a caller captures the entry, checks `seq`, and uses only its own
+ * captured promise result — never re-reading the slot after an `await`.
+ */
+interface DecompressedSegmentEntry {
+  seq: number;
+  promise: Promise<Buffer>;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /**
@@ -73,6 +110,8 @@ export interface WorkerOutputFileConfig {
   fileMaxSize: number;
   /** Max archived segments retained per worker; 0 = unlimited. */
   maxSegments: number;
+  /** Server-side cap on bytes served in one `history-range` response (§5.2). */
+  rangeMaxBytes: number;
 }
 
 /**
@@ -94,6 +133,13 @@ export class WorkerOutputFileManager {
   /** Workers whose lazy crash-recovery + orphan scan has already run this process. */
   private recovered = new Set<string>();
 
+  /**
+   * Per-worker single-entry decompressed-segment cache for range reads (§5.2).
+   * Keyed by `sessionId/workerId`; each slot holds the promise of one inflated
+   * segment, dropped on a 30s TTL and invalidated on prune / reset / delete.
+   */
+  private segmentCache = new Map<string, DecompressedSegmentEntry>();
+
   private readonly config: WorkerOutputFileConfig;
 
   constructor(config?: Partial<WorkerOutputFileConfig>) {
@@ -102,6 +148,7 @@ export class WorkerOutputFileManager {
       flushInterval: config?.flushInterval ?? serverConfig.WORKER_OUTPUT_FLUSH_INTERVAL,
       fileMaxSize: config?.fileMaxSize ?? serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE,
       maxSegments: config?.maxSegments ?? serverConfig.WORKER_OUTPUT_MAX_SEGMENTS,
+      rangeMaxBytes: config?.rangeMaxBytes ?? serverConfig.WORKER_OUTPUT_RANGE_MAX_BYTES,
     };
   }
 
@@ -577,6 +624,11 @@ export class WorkerOutputFileManager {
     manifest.pendingCut = null;
     await writeManifestDurable(manifestPath, manifest);
     await this.deleteSegmentFiles(dir, prunable);
+    if (prunable.length > 0) {
+      // A pruned segment may be the one held in the range-read cache; drop it so
+      // no reader is served bytes for a now-unavailable range.
+      this.invalidateSegmentCache(this.getKey(sessionId, workerId));
+    }
 
     logger.debug(
       { sessionId, workerId, seq, cutBytes, liveBaseOffset: manifest.liveBaseOffset, segments: manifest.segments.length },
@@ -789,6 +841,204 @@ export class WorkerOutputFileManager {
     });
   }
 
+  /**
+   * Serve a backwards history range: the bytes ending at (strictly before)
+   * absolute `beforeOffset`, clamped to ONE storage unit (a single archived
+   * segment or the live window) and to `min(maxBytes, rangeMaxBytes)` (§5.1/§5.2).
+   * Joins the per-worker serialization domain so the manifest lookup, live read,
+   * and epoch capture are all coherent with concurrent appends / cuts / resets.
+   *
+   * Callers (route boundary) validate the numeric inputs; this method assumes a
+   * non-negative `beforeOffset` and treats a missing segment file as an
+   * unavailable range (filesystem-driven availability, §5.1). It throws only on
+   * genuinely unexpected I/O so the caller can map that to `HISTORY_LOAD_FAILED`.
+   */
+  async readHistoryRange(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    beforeOffset: number,
+    maxBytes?: number,
+  ): Promise<HistoryRangeResult> {
+    const key = this.getKey(sessionId, workerId);
+    return this.runExclusive(key, async () => {
+      const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
+      const epoch = manifest.epoch;
+      const firstAvailable = firstAvailableOffset(manifest);
+      const base = manifest.liveBaseOffset;
+
+      // Unavailable-range shape: pruned, invalid, or at/before the earliest byte.
+      const unavailable = (): HistoryRangeResult => ({
+        data: '',
+        startOffset: beforeOffset,
+        endOffset: beforeOffset,
+        hasMore: false,
+        epoch,
+      });
+
+      const pending = this.pendingFlushes.get(key);
+      const pendingBuffer = pending?.buffer || '';
+      const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
+      const liveBuffer = await this.readLiveBuffer(sessionId, workerId, resolver);
+      const fileSize = liveBuffer.length;
+      const total = base + fileSize + pendingByteLength;
+
+      // Clamp the requested end to the end of the stream.
+      const readEnd = Math.min(beforeOffset, total);
+      if (readEnd <= firstAvailable) {
+        return unavailable();
+      }
+
+      // A `maxBytes` of 0 (or negative) cannot make progress and would loop the
+      // client; ignore the hint and use the server cap instead.
+      const cap = this.config.rangeMaxBytes;
+      const wantBytes = maxBytes === undefined || maxBytes <= 0 ? cap : Math.min(maxBytes, cap);
+
+      // Live window unit: [base, total).
+      if (readEnd > base) {
+        const liveWindow = Buffer.concat([liveBuffer, Buffer.from(pendingBuffer, 'utf-8')]);
+        return this.sliceRangeUnit(liveWindow, base, total, readEnd, wantBytes, firstAvailable, epoch);
+      }
+
+      // Otherwise the byte lives in an archived segment.
+      const seg = manifest.segments.find((s) => readEnd > s.startOffset && readEnd <= s.endOffset);
+      if (!seg) {
+        // No segment covers it (a prune raced the read) — filesystem-driven
+        // availability says this range is gone.
+        return unavailable();
+      }
+
+      const segPath = path.join(this.getWorkerDir(sessionId, resolver), seg.file);
+      let segBuffer: Buffer;
+      try {
+        segBuffer = await this.getDecompressedSegment(key, seg, segPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          // Manifest references a segment whose file is absent (crash window
+          // between retention's file-delete and manifest-rewrite, or a prune
+          // racing the read). Availability is filesystem-driven → unavailable.
+          return unavailable();
+        }
+        throw error;
+      }
+
+      return this.sliceRangeUnit(segBuffer, seg.startOffset, seg.endOffset, readEnd, wantBytes, firstAvailable, epoch);
+    });
+  }
+
+  /**
+   * Slice the trailing `wantBytes` of a single storage unit (`unit` covers the
+   * absolute range `[unitStart, unitEnd)`) ending at `readEnd`, applying boundary
+   * hygiene only when the slice was clamped inside the unit (§5.2).
+   */
+  private sliceRangeUnit(
+    unit: Buffer,
+    unitStart: number,
+    unitEnd: number,
+    readEnd: number,
+    wantBytes: number,
+    firstAvailable: number,
+    epoch: number,
+  ): HistoryRangeResult {
+    const endOffset = Math.min(readEnd, unitEnd);
+    let startByte = Math.max(unitStart, endOffset - wantBytes);
+
+    // Boundary hygiene (UTF-8 + best-effort newline) applies only when we clamped
+    // strictly inside the unit: there is then guaranteed-contiguous older content
+    // in the same unit that a follow-up request (beforeOffset = startOffset) will
+    // re-serve, so trimming a partial leading line loses nothing. At the exact
+    // unit start we serve from the true boundary — cut points are UTF-8 aligned,
+    // and the older unit (if any) is contiguous — so trimming there would drop
+    // the earliest bytes and wrongly flip `hasMore`.
+    if (startByte > unitStart) {
+      startByte = this.alignRangeStart(unit, startByte, unitStart, endOffset);
+    }
+
+    const relStart = startByte - unitStart;
+    const relEnd = endOffset - unitStart;
+    const data = unit.subarray(relStart, relEnd).toString('utf-8');
+    return {
+      data,
+      startOffset: startByte,
+      endOffset,
+      hasMore: startByte > firstAvailable,
+      epoch,
+    };
+  }
+
+  /**
+   * Advance an absolute range start to a clean boundary: first past any UTF-8
+   * continuation bytes (0x80-0xBF), then to the byte after the first `\n` within
+   * the scan window, if one exists before `endOffset`. Never advances past
+   * `endOffset` (the scan is bounded by it), so the resulting slice is non-negative.
+   */
+  private alignRangeStart(unit: Buffer, absStart: number, unitStart: number, endOffset: number): number {
+    let rel = absStart - unitStart;
+    const relEnd = endOffset - unitStart;
+    while (rel < relEnd && (unit[rel] & 0xc0) === 0x80) rel++;
+    const scanEnd = Math.min(rel + NEWLINE_ALIGN_SCAN_BYTES, relEnd);
+    for (let i = rel; i < scanEnd; i++) {
+      if (unit[i] === 0x0a) {
+        const candidate = unitStart + i + 1;
+        // Only align if at least one byte remains; a lone trailing newline at
+        // endOffset-1 must not strand the slice empty (that would leave the
+        // client without progress and loop the same beforeOffset).
+        if (candidate < endOffset) return candidate;
+        break;
+      }
+    }
+    return unitStart + rel;
+  }
+
+  /**
+   * Return the decompressed bytes of `seg`, sharing one inflation across readers
+   * via the per-worker single-entry cache (§5.2). The promise is installed in the
+   * slot BEFORE inflation begins; the caller must use the returned promise's
+   * result directly and never re-read the cache slot after awaiting it.
+   */
+  private getDecompressedSegment(key: string, seg: SegmentMeta, segPath: string): Promise<Buffer> {
+    const cached = this.segmentCache.get(key);
+    if (cached && cached.seq === seg.seq) {
+      return cached.promise;
+    }
+
+    // Different seq (or empty slot): evict the old entry and install a new one
+    // before the inflation starts.
+    if (cached) {
+      clearTimeout(cached.timer);
+    }
+    const promise = fs.readFile(segPath).then((gz) => gunzipAsync(gz));
+    const timer = setTimeout(() => {
+      if (this.segmentCache.get(key) === entry) {
+        this.segmentCache.delete(key);
+      }
+    }, SEGMENT_CACHE_TTL_MS);
+    timer.unref?.();
+    const entry: DecompressedSegmentEntry = { seq: seg.seq, promise, timer };
+    this.segmentCache.set(key, entry);
+
+    // Do not cache a failed inflation (missing file / corruption): evict so a
+    // later request re-reads from disk. The awaiting caller still sees the
+    // rejection via its own captured `promise`.
+    promise.catch(() => {
+      if (this.segmentCache.get(key) === entry) {
+        clearTimeout(entry.timer);
+        this.segmentCache.delete(key);
+      }
+    });
+
+    return promise;
+  }
+
+  /** Drop a worker's cached decompressed segment (prune / reset / delete). */
+  private invalidateSegmentCache(key: string): void {
+    const entry = this.segmentCache.get(key);
+    if (entry) {
+      clearTimeout(entry.timer);
+      this.segmentCache.delete(key);
+    }
+  }
+
   // ========== Lifecycle ==========
 
   /**
@@ -800,12 +1050,14 @@ export class WorkerOutputFileManager {
   async resetWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<number> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
-      // Drop any pending flush without writing it.
+      // Drop any pending flush without writing it, and the cached segment (the
+      // reset rewinds the stream to 0; any prior-incarnation segment is gone).
       const pending = this.pendingFlushes.get(key);
       if (pending) {
         if (pending.timer) clearTimeout(pending.timer);
         this.pendingFlushes.delete(key);
       }
+      this.invalidateSegmentCache(key);
 
       const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
       const dir = this.getWorkerDir(sessionId, resolver);
@@ -879,6 +1131,7 @@ export class WorkerOutputFileManager {
         if (pending.timer) clearTimeout(pending.timer);
         this.pendingFlushes.delete(key);
       }
+      this.invalidateSegmentCache(key);
 
       const dir = this.getWorkerDir(sessionId, resolver);
       const manifestPath = this.getManifestPath(sessionId, workerId, resolver);
@@ -953,6 +1206,11 @@ export class WorkerOutputFileManager {
         this.pendingFlushes.delete(key);
         this.recovered.delete(key);
       }
+    }
+
+    // Drop any cached decompressed segments for this session's workers.
+    for (const key of Array.from(this.segmentCache.keys())) {
+      if (key.startsWith(prefix)) this.invalidateSegmentCache(key);
     }
 
     // Drain EVERY in-flight locked operation for this session — not just those

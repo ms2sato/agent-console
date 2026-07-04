@@ -1636,6 +1636,32 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('getWorkerHistoryRange', () => {
+    it('returns null for a non-existent worker', async () => {
+      const manager = await getSessionManager();
+      expect(await manager.getWorkerHistoryRange('non-existent', 'worker-1', 100)).toBeNull();
+    });
+
+    it('delegates and serves the trailing range for a created agent worker', async () => {
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      ptyFactory.instances[0].simulateData('R'.repeat(150));
+
+      const endOffset = await manager.getCurrentOutputOffset(session.id, agentWorker.id);
+      const res = await manager.getWorkerHistoryRange(session.id, agentWorker.id, endOffset, 40);
+
+      expect(res).not.toBeNull();
+      expect(res!.endOffset).toBe(endOffset);
+      expect(res!.data).toBe('R'.repeat(40));
+      expect(res!.epoch).toBe(manager.getWorkerEpoch(session.id, agentWorker.id));
+    });
+  });
+
   describe('edge cases', () => {
     it('should handle empty input string', async () => {
       const manager = await getSessionManager();

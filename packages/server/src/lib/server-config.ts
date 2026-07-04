@@ -46,6 +46,14 @@ export const serverConfig = {
    */
   WORKER_OUTPUT_MAX_SEGMENTS: parseInt(process.env.WORKER_OUTPUT_MAX_SEGMENTS || '100', 10),
   /**
+   * Server-side cap on the bytes served in a single `history-range` response
+   * (backwards paging). The client's `maxBytes` hint is min'd against this; the
+   * server also clamps to a single storage unit (one segment or the live file),
+   * so a response never stitches across a boundary (terminal-history-paging.md §5.2).
+   * Default: 256KB (256 * 1024 bytes)
+   */
+  WORKER_OUTPUT_RANGE_MAX_BYTES: parseInt(process.env.WORKER_OUTPUT_RANGE_MAX_BYTES || String(256 * 1024), 10),
+  /**
    * Interval for flushing buffered output to file (in milliseconds).
    * Default: 100ms
    */

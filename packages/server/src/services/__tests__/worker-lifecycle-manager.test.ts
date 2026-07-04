@@ -1575,6 +1575,61 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  describe('getWorkerHistoryRange', () => {
+    it('serves the trailing range for a PTY worker from the seeded output file', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const terminalWorker: InternalTerminalWorker = {
+        id: 'range-terminal',
+        type: 'terminal',
+        name: 'Range Terminal',
+        createdAt: new Date().toISOString(),
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        epoch: 1_700_000_000_000,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(terminalWorker.id, terminalWorker);
+
+      // Seed the output file directly (the PTY→file flush path is not driven in
+      // this harness; the outputOffset-alignment tests seed the same way).
+      const content = 'Z'.repeat(200);
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${TEST_CONFIG_DIR}/_quick/outputs/${session.id}/${terminalWorker.id}.log`]: content,
+      });
+
+      const res = await lifecycleManager.getWorkerHistoryRange(session.id, terminalWorker.id, 200, 50);
+
+      expect(res).not.toBeNull();
+      expect(res!.endOffset).toBe(200);
+      expect(res!.data).toBe('Z'.repeat(50));
+      expect(res!.startOffset).toBe(150);
+    });
+
+    it('returns null for a missing worker', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      expect(await lifecycleManager.getWorkerHistoryRange(session.id, 'non-existent', 100)).toBeNull();
+    });
+
+    it('returns null for a git-diff worker', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'git-diff-range',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'abc123',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+      expect(await lifecycleManager.getWorkerHistoryRange(session.id, gitDiffWorker.id, 100)).toBeNull();
+    });
+  });
+
   describe('getWorkerActivityState', () => {
     it('should return activity state for agent worker', async () => {
       const session = createTestSession();

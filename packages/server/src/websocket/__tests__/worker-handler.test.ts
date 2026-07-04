@@ -86,6 +86,16 @@ describe('Worker Handler', () => {
       expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
       expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
     });
+
+    it('should handle request-history-range message (intercepted by routes.ts, not processed here)', async () => {
+      const message = JSON.stringify({ type: 'request-history-range', requestId: 1, beforeOffset: 100, maxBytes: 256 });
+      await handleWorkerMessage(mockWs, 'test-session', 'worker-1', message);
+
+      // Recognized by validateWorkerMessage (keeps the union exhaustive) but not
+      // acted on here — the real serving happens at the route boundary.
+      expect(mockSessionManager.writeWorkerInput).not.toHaveBeenCalled();
+      expect(mockSessionManager.resizeWorker).not.toHaveBeenCalled();
+    });
   });
 
   describe('validateWorkerMessage', () => {

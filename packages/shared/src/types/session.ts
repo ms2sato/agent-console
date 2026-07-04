@@ -118,7 +118,13 @@ export interface CreateWorkerResponse {
 export type WorkerClientMessage =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
-  | { type: 'request-history'; fromOffset?: number };
+  | { type: 'request-history'; fromOffset?: number }
+  // Backwards range fetch (§5.1). Request history bytes strictly before the
+  // absolute `beforeOffset`. `maxBytes` is a client hint; the server applies
+  // its own cap. `requestId` is a per-connection client counter echoed back on
+  // both the `history-range` response and its `HISTORY_LOAD_FAILED` error path
+  // for correlation of the single in-flight range request.
+  | { type: 'request-history-range'; requestId: number; beforeOffset: number; maxBytes?: number };
 
 /**
  * Valid message types for WorkerServerMessage.
@@ -134,6 +140,7 @@ export const WORKER_SERVER_MESSAGE_TYPES = {
   // archival never rebases offsets, so the message has no remaining meaning
   // (terminal-history-paging.md §3.2).
   'server-restarted': 7,
+  'history-range': 8,
 } as const;
 
 export type WorkerServerMessageType = keyof typeof WORKER_SERVER_MESSAGE_TYPES;
@@ -158,7 +165,22 @@ export type WorkerServerMessage =
   // `startOffset` is the absolute start of `data`; `offset` its absolute end.
   | { type: 'history'; data: string; offset: number; startOffset: number; epoch: number; timedOut?: boolean }
   | { type: 'activity'; state: AgentActivityState }  // Agent workers only
-  | { type: 'error'; message: string; code?: WorkerErrorCode }
+  | { type: 'error'; message: string; code?: WorkerErrorCode; requestId?: number }
+  // Backwards range response (§5.1). `data` covers absolute [startOffset, endOffset)
+  // with endOffset <= the request's beforeOffset. `hasMore` is
+  // `startOffset > firstAvailableOffset`. An unavailable range (pruned, invalid
+  // request, or beforeOffset <= firstAvailableOffset) returns data: '',
+  // startOffset = endOffset = beforeOffset, hasMore: false. `requestId` echoes
+  // the request; `epoch` is captured under the per-worker lock (§3.4).
+  | {
+      type: 'history-range';
+      requestId: number;
+      data: string;
+      startOffset: number;
+      endOffset: number;
+      hasMore: boolean;
+      epoch: number;
+    }
   | { type: 'server-restarted'; serverPid: number };  // Server was restarted, client should invalidate cache
 
 export interface WorkerActivityInfo {
