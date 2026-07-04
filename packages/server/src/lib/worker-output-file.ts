@@ -43,6 +43,14 @@ const SEGMENT_CACHE_TTL_MS = 30_000;
 const NEWLINE_ALIGN_SCAN_BYTES = 4096;
 
 /**
+ * Max bytes in a single UTF-8 code point. The served slice is widened to at
+ * least this so a legal-but-degenerate client `maxBytes` (1-3) can never leave
+ * only continuation bytes in the window — which would strand an empty slice and
+ * stall an honest client paging with `beforeOffset = startOffset` (§5.2).
+ */
+const MAX_UTF8_CHAR_BYTES = 4;
+
+/**
  * Result of reading history. Offsets are absolute stream positions.
  */
 export interface HistoryReadResult {
@@ -941,7 +949,11 @@ export class WorkerOutputFileManager {
     epoch: number,
   ): HistoryRangeResult {
     const endOffset = Math.min(readEnd, unitEnd);
-    let startByte = Math.max(unitStart, endOffset - wantBytes);
+    // Widen the window to at least one max-width UTF-8 char so the UTF-8
+    // boundary skip below can never consume the whole slice (progress invariant:
+    // a served response never has startOffset === endOffset with hasMore true).
+    const effectiveWant = Math.max(wantBytes, MAX_UTF8_CHAR_BYTES);
+    let startByte = Math.max(unitStart, endOffset - effectiveWant);
 
     // Boundary hygiene (UTF-8 + best-effort newline) applies only when we clamped
     // strictly inside the unit: there is then guaranteed-contiguous older content
@@ -995,6 +1007,11 @@ export class WorkerOutputFileManager {
    * via the per-worker single-entry cache (§5.2). The promise is installed in the
    * slot BEFORE inflation begins; the caller must use the returned promise's
    * result directly and never re-read the cache slot after awaiting it.
+   *
+   * Note: the install-before-inflation sharing is currently redundant because
+   * the per-worker lock fully serializes range reads (no two run concurrently
+   * for one worker). It becomes load-bearing the moment read parallelism is
+   * introduced (e.g. reads leaving the lock domain), so do not simplify it away.
    */
   private getDecompressedSegment(key: string, seg: SegmentMeta, segPath: string): Promise<Buffer> {
     const cached = this.segmentCache.get(key);

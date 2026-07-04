@@ -93,7 +93,8 @@ export async function handleHistoryRangeRequest(
     ]);
 
     if (result === null) {
-      // Missing / git-diff / no-scope worker — treat as an unavailable range.
+      // Worker missing, wrong type (e.g. git-diff), or no output scope
+      // available — treat as an unavailable range.
       send({ type: 'history-range', requestId, data: '', startOffset: beforeOffset, endOffset: beforeOffset, hasMore: false, epoch: fallbackEpoch });
       return;
     }
