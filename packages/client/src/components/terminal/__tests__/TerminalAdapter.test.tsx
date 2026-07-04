@@ -1,11 +1,12 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import type { TerminalInstance, TerminalSnapshot } from '../terminal-store';
 
-// TerminalAdapter resolves its instance from the module store singleton. Mock
-// only the store factory (the seam under test) and the repo-name hook (avoids a
-// network query); the real TerminalView / TerminalKeyboardInput children render
-// so no child-component module mock can leak into their own sibling tests.
-import * as realStore from '../terminal-store';
+// TerminalAdapter resolves its instance via an injected `createInstance` factory
+// (defaulting to the real store). The test passes a stub factory PROP instead of
+// module-mocking the store — bun's `mock.module` is process-global and poisoned
+// sibling test files (testing.md Anti-Pattern #2; caused the CI 'no ws' failure).
+// The repo-name hook's network query is answered by a fetch-level stub below,
+// also avoiding a module mock.
 
 const EXITED_SNAPSHOT: TerminalSnapshot = Object.freeze({
   version: 1,
@@ -47,10 +48,6 @@ const stubInstance: TerminalInstance = {
 const mockGetOrCreateTerminal = mock(
   (_sessionId: string, _workerId: string, _opts?: unknown): TerminalInstance => stubInstance,
 );
-// Spread the real module so any incidental cross-file import still sees the full
-// surface; only the factory is overridden.
-mock.module('../terminal-store', () => ({ ...realStore, getOrCreateTerminal: mockGetOrCreateTerminal }));
-mock.module('../useSessionRepoFullName', () => ({ useSessionRepoFullName: () => null }));
 
 import { act, cleanup, screen } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
@@ -73,21 +70,44 @@ function createMatchMediaList(matches: boolean): MediaQueryList {
 
 describe('TerminalAdapter', () => {
   const originalMatchMedia = window.matchMedia;
+  const originalFetch = globalThis.fetch;
 
   beforeEach(() => {
     mockGetOrCreateTerminal.mockClear();
     window.matchMedia = mock((_query: string) => createMatchMediaList(false));
+    // useSessionRepoFullName queries the session PR-link endpoint. Answer it at
+    // the fetch level (no module mock): orgRepo null -> repoFullName null, the
+    // same result the removed useSessionRepoFullName module mock produced.
+    globalThis.fetch = mock((input: RequestInfo | URL): Promise<Response> => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes('/pr-link')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ prUrl: null, branchName: '', orgRepo: null }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        );
+      }
+      // Anything unexpected: a benign 404 (the adapter has no other mount fetch).
+      return Promise.resolve(new Response('null', { status: 404 }));
+    }) as unknown as typeof fetch;
   });
 
   afterEach(() => {
     cleanup();
     window.matchMedia = originalMatchMedia;
+    globalThis.fetch = originalFetch;
   });
 
   it('resolves the store instance for the session/worker and drives the adapter from its snapshot', async () => {
     await act(async () =>
       renderWithRouter(
-        <TerminalAdapter sessionId="session-1" workerId="worker-1" onFilesReceived={() => {}} />,
+        <TerminalAdapter
+          sessionId="session-1"
+          workerId="worker-1"
+          onFilesReceived={() => {}}
+          createInstance={mockGetOrCreateTerminal}
+        />,
       ),
     );
 
@@ -100,14 +120,23 @@ describe('TerminalAdapter', () => {
   });
 
   it('omits the store option when stripScrollbackClear is undefined', async () => {
-    await act(async () => renderWithRouter(<TerminalAdapter sessionId="s" workerId="w" />));
+    await act(async () =>
+      renderWithRouter(<TerminalAdapter sessionId="s" workerId="w" createInstance={mockGetOrCreateTerminal} />),
+    );
     // Third arg omitted -> store default governs (adapter/labs parity).
     expect(mockGetOrCreateTerminal.mock.calls[0][2]).toBeUndefined();
   });
 
   it('passes the store option through when stripScrollbackClear is set', async () => {
     await act(async () =>
-      renderWithRouter(<TerminalAdapter sessionId="s" workerId="w" stripScrollbackClear={true} />),
+      renderWithRouter(
+        <TerminalAdapter
+          sessionId="s"
+          workerId="w"
+          stripScrollbackClear={true}
+          createInstance={mockGetOrCreateTerminal}
+        />,
+      ),
     );
     expect(mockGetOrCreateTerminal.mock.calls[0][2]).toEqual({ stripScrollbackClear: true });
   });
@@ -115,7 +144,14 @@ describe('TerminalAdapter', () => {
   it('forwards snapshot status to onStatusChange via the status-mapping', async () => {
     const onStatusChange = mock((_status: string, _exitInfo?: unknown) => {});
     await act(async () =>
-      renderWithRouter(<TerminalAdapter sessionId="s" workerId="w" onStatusChange={onStatusChange} />),
+      renderWithRouter(
+        <TerminalAdapter
+          sessionId="s"
+          workerId="w"
+          onStatusChange={onStatusChange}
+          createInstance={mockGetOrCreateTerminal}
+        />,
+      ),
     );
 
     // The exited snapshot maps to ('exited', { code, signal }) (exitInfo present,

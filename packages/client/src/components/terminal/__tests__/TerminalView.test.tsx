@@ -281,6 +281,9 @@ describe('TerminalView #959 eviction self-cannibalization (real store integratio
   let originalRaf: typeof globalThis.requestAnimationFrame;
 
   beforeEach(() => {
+    // Defensive against cross-file registry leakage before installing the mock WS
+    // (module-mock poisoning is fixed at the poisoners; this cannot defend that).
+    _resetTerminals();
     restoreWebSocket = installMockWebSocket();
     originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
     Object.defineProperty(window, 'location', {
@@ -316,7 +319,7 @@ describe('TerminalView #959 eviction self-cannibalization (real store integratio
     // paging here, not resize; keep the terminal at its default 80 cols so the
     // 700 short lines never wrap. The object is still the real controller so
     // _inspect() (prototype getters) keeps working.
-    (instance as unknown as { resize: (c: number, r: number) => void }).resize = () => {};
+    instance.resize = () => {};
 
     const ws = MockWebSocket.getLastInstance();
     if (!ws) throw new Error('no ws');

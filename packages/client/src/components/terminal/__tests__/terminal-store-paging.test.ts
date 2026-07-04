@@ -85,6 +85,10 @@ describe('terminal-store paging', () => {
   let originalLocation: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    // Defensive against cross-file registry leakage: a neighbor file that leaked
+    // live instances must not make getOrCreateTerminal return a stale controller.
+    // (module-mock poisoning is fixed at the poisoners; this cannot defend that.)
+    _resetTerminals();
     restoreWebSocket = installMockWebSocket();
     originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
     Object.defineProperty(window, 'location', {
