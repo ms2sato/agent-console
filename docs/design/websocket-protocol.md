@@ -70,6 +70,7 @@ Per-worker WebSocket for terminal I/O.
 | `resize` | `{ cols: number, rows: number }` | Terminal resize |
 | `image` | `{ data: string, mimeType: string }` | Image data (base64) |
 | `request-history` | `{ fromOffset?: number }` | Request terminal history. If `fromOffset` is provided, returns only data after that byte offset (incremental sync). |
+| `request-history-range` | `{ requestId: number, beforeOffset: number, maxBytes?: number }` | Backwards paging: request history bytes strictly before absolute `beforeOffset`. `maxBytes` is a client hint; the server applies its own cap. `requestId` (a per-connection non-negative counter) is echoed back for correlation of the single in-flight range request. All numeric fields must be non-negative safe integers (`terminal-history-paging.md` §5.1). |
 
 ### Server → Client Messages
 
@@ -78,8 +79,9 @@ Per-worker WebSocket for terminal I/O.
 | `output` | `{ data: string, offset: number, epoch: number }` | PTY output. `offset` is the absolute end position in the cumulative stream; `epoch` is the incarnation generation identifier (see below). |
 | `exit` | `{ exitCode: number, signal: string \| null }` | Process exit |
 | `history` | `{ data: string, offset: number, startOffset: number, epoch: number, timedOut?: boolean }` | Terminal output history. `offset` is the absolute end of the returned window, `startOffset` the absolute start of `data`, `epoch` the generation identifier. `timedOut: true` if history load timed out (client can continue without full history). |
+| `history-range` | `{ requestId: number, data: string, startOffset: number, endOffset: number, hasMore: boolean, epoch: number }` | Response to `request-history-range`. `data` covers absolute `[startOffset, endOffset)` with `endOffset <= beforeOffset`, clamped to one storage unit (a single archived segment or the live window — never stitched across a boundary, §5.2). `hasMore` is `startOffset > firstAvailableOffset`. An unavailable range (pruned, invalid request, or `beforeOffset <= firstAvailableOffset`) returns `data: ''`, `startOffset = endOffset = beforeOffset`, `hasMore: false`. `requestId` echoes the request; `epoch` is captured under the per-worker lock. Wire ordinal 8 in `WORKER_SERVER_MESSAGE_TYPES`. |
 | `activity` | `{ state: AgentActivityState }` | Agent activity state change (agent workers only) |
-| `error` | `{ message: string, code?: WorkerErrorCode }` | Error notification (e.g., worker not found) |
+| `error` | `{ message: string, code?: WorkerErrorCode, requestId?: number }` | Error notification (e.g., worker not found). For a failed range request the `HISTORY_LOAD_FAILED` error carries the originating `requestId` so the client can clear the matching in-flight flag (§5.1). |
 
 > **`output-truncated` was removed** (Issue #959, `terminal-history-paging.md` §3.2). Output overflow now *archives* the oldest bytes into gzip segments instead of destroying them, so offsets are never rebased and the message has no remaining meaning. Its wire ordinal (6) in `WORKER_SERVER_MESSAGE_TYPES` stays reserved and is not reused.
 

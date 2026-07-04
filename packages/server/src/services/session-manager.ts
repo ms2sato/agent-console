@@ -49,7 +49,7 @@ import { MemoService } from './memo-service.js';
 import { PtyMessageInjectionService } from './pty-message-injection-service.js';
 import { SessionMetadataService } from './session-metadata-service.js';
 import { createLogger } from '../lib/logger.js';
-import { WorkerOutputFileManager, type HistoryReadResult } from '../lib/worker-output-file.js';
+import { WorkerOutputFileManager, type HistoryReadResult, type HistoryRangeResult } from '../lib/worker-output-file.js';
 import { JsonSessionRepository, type SessionRepository } from '../repositories/index.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { resolveSpawnUsername } from './resolve-spawn-username.js';
@@ -865,6 +865,16 @@ export class SessionManager {
     maxLines?: number
   ): Promise<HistoryReadResult | null> {
     return this.workerLifecycleManager.getWorkerOutputHistory(sessionId, workerId, fromOffset, maxLines);
+  }
+
+  /** Serve a backwards history range for a worker (§5.1); null if missing/git-diff/no scope. */
+  async getWorkerHistoryRange(
+    sessionId: string,
+    workerId: string,
+    beforeOffset: number,
+    maxBytes?: number
+  ): Promise<HistoryRangeResult | null> {
+    return this.workerLifecycleManager.getWorkerHistoryRange(sessionId, workerId, beforeOffset, maxBytes);
   }
 
   /** Get current output offset for a worker. */

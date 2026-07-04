@@ -220,7 +220,11 @@ The byte position in a worker's cumulative output stream since worker creation (
 
 ### Worker Epoch
 
-A monotonic per-worker generation counter, bumped on every worker restart and persisted in the Segment Manifest. Carried on `output` / `history` / `history-range` messages so clients detect incarnation changes without relying on the separate app-WebSocket broadcast; prevents a stale Absolute Stream Offset from aliasing into a new incarnation's data during backwards paging. Defined in [terminal-history-paging.md](design/terminal-history-paging.md).
+A per-worker incarnation identifier: the creation timestamp (milliseconds) minted when the worker is created or restarted, persisted in the Segment Manifest and carried on `output` / `history` / `history-range` messages. Clients compare epochs for **equality only** (never ordering), so clock regression across restarts is tolerated; a mismatch means the worker was restarted and the client must resync. A timestamp rather than a counter makes reuse impossible even if the manifest is lost. Defined in [terminal-history-paging.md](design/terminal-history-paging.md).
+
+### Backwards Range Fetch
+
+The `request-history-range` / `history-range` worker-WebSocket message pair for paging older history upward. A request names a `beforeOffset` (fetch bytes strictly before this Absolute Stream Offset), an optional `maxBytes` hint, and a `requestId` echoed back for correlation. The server answers with one storage unit's worth of bytes (a single Archive Segment or the live window — never stitched across a boundary), a `hasMore` flag (`startOffset > firstAvailableOffset`), and the Worker Epoch captured under the per-worker lock. Defined in [terminal-history-paging.md](design/terminal-history-paging.md) §5.
 
 ## Maintenance
 

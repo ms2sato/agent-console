@@ -11,6 +11,7 @@ import type { WSContext, WSMessageReceive } from 'hono/ws';
 import type { UpgradeWebSocket } from 'hono/ws';
 import type { AppContext } from '../app-context.js';
 import { createWorkerMessageHandler } from './worker-handler.js';
+import { handleHistoryRangeRequest } from './history-range-handler.js';
 import { handleGitDiffConnection, handleGitDiffMessage, handleGitDiffDisconnection, updateGitDiffBaseCommit, initializeGitDiffHandlers } from './git-diff-handler.js';
 import { getCookie } from 'hono/cookie';
 import type { Context } from 'hono';
@@ -916,6 +917,20 @@ export async function setupWebSocketRoutes(
                     }
                   }
                 });
+              return;
+            }
+
+            // Backwards range fetch (§5.1): served on the same socket, with its
+            // own boundary validation, 5s timeout guard, and HISTORY_LOAD_FAILED
+            // error path — all inside the dedicated handler.
+            if (parsed && typeof parsed === 'object' && parsed.type === 'request-history-range') {
+              void handleHistoryRangeRequest(
+                ws,
+                sessionId,
+                workerId,
+                parsed as Record<string, unknown>,
+                sessionManager,
+              );
               return;
             }
           } catch {

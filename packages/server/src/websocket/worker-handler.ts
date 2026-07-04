@@ -54,6 +54,20 @@ function validateWorkerMessage(parsed: unknown): WorkerClientMessage | null {
     case 'request-history':
       return { type: 'request-history' };
 
+    case 'request-history-range':
+      // Intercepted in routes.ts before this handler; recognized here only to
+      // keep the WorkerClientMessage union exhaustive. Numeric validation and
+      // serving live in the history-range handler at the route boundary.
+      if (typeof msg.requestId !== 'number' || typeof msg.beforeOffset !== 'number') {
+        return null;
+      }
+      return {
+        type: 'request-history-range',
+        requestId: msg.requestId,
+        beforeOffset: msg.beforeOffset,
+        ...(typeof msg.maxBytes === 'number' ? { maxBytes: msg.maxBytes } : {}),
+      };
+
     default:
       return null;
   }
@@ -97,6 +111,12 @@ export function createWorkerMessageHandler(
           // If it reaches here, it means validation allowed it but routing didn't intercept it.
           // This should not happen in normal operation.
           logger.warn({ sessionId, workerId }, 'request-history message reached worker handler (should be handled by routes.ts)');
+          break;
+        case 'request-history-range':
+          // Also intercepted in routes.ts; reaching here means routing did not
+          // pick it up. Not fatal — no response is sent (the client's own 5s
+          // timeout degrades paging for the connection).
+          logger.warn({ sessionId, workerId }, 'request-history-range message reached worker handler (should be handled by routes.ts)');
           break;
 
         default: {
