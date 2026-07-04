@@ -1,4 +1,6 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
+import { installMockWebSocket } from '../../../test/mock-websocket';
+import { getOrCreateTerminal, _resetTerminals } from '../../../components/terminal/terminal-store';
 
 const TEST_SKILLS = [
   { name: '/commit', description: 'Create a git commit' },
@@ -10,44 +12,66 @@ const TEST_SKILLS = [
   { name: '/loop', description: 'Run a command on recurring interval' },
 ];
 
-const mockSendWorkerMessage = mock(() => Promise.resolve({
-  message: {
-    id: 'msg-1',
-    sessionId: 'session-1',
-    fromWorkerId: 'user',
-    fromWorkerName: 'User',
-    toWorkerId: 'agent-1',
-    toWorkerName: 'Agent 1',
-    content: 'hello',
-    timestamp: new Date().toISOString(),
-  },
-}));
-const mockFetchSkills = mock(() => Promise.resolve({ skills: TEST_SKILLS }));
-const mockFetchMessageTemplates = mock(() => Promise.resolve({ templates: [] }));
-const mockCreateMessageTemplate = mock(() => Promise.resolve({ template: {} }));
-const mockUpdateMessageTemplate = mock(() => Promise.resolve({ template: {} }));
-const mockDeleteMessageTemplate = mock(() => Promise.resolve({ success: true }));
-const mockReorderMessageTemplates = mock(() => Promise.resolve({ success: true }));
-mock.module('../../../lib/api', () => ({
-  sendWorkerMessage: mockSendWorkerMessage,
-  fetchSkills: mockFetchSkills,
-  fetchMessageTemplates: mockFetchMessageTemplates,
-  createMessageTemplate: mockCreateMessageTemplate,
-  updateMessageTemplate: mockUpdateMessageTemplate,
-  deleteMessageTemplate: mockDeleteMessageTemplate,
-  reorderMessageTemplates: mockReorderMessageTemplates,
-}));
+const SENT_MESSAGE = {
+  id: 'msg-1',
+  sessionId: 'session-1',
+  fromWorkerId: 'user',
+  fromWorkerName: 'User',
+  toWorkerId: 'agent-1',
+  toWorkerName: 'Agent 1',
+  content: 'hello',
+  timestamp: new Date().toISOString(),
+};
 
-// ESC routes through the next renderer's terminal store (issue #961). Mock the
-// store's factory so the Escape handler resolves to a spyable instance without
-// opening a real WebSocket.
-const mockSendInput = mock((_data: string) => {});
-const mockGetOrCreateTerminal = mock((_sessionId: string, _workerId: string) => ({
-  sendInput: mockSendInput,
-}));
-mock.module('../../../components/terminal/terminal-store', () => ({
-  getOrCreateTerminal: mockGetOrCreateTerminal,
-}));
+// --- Fetch-level API mocking (no mock.module; testing.md Anti-Pattern #2). ---
+// bun's mock.module is process-global and poisoned sibling test files (it was the
+// CI 'no ws' root cause). Mock the communication layer instead, following the
+// useCreateWorktree.test.ts pattern, and assert on the recorded fetch calls.
+let skillsResponse: { skills: Array<{ name: string; description: string }> } = { skills: TEST_SKILLS };
+const fetchCalls: Array<{ url: string; method: string; body: unknown }> = [];
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+function messagePanelFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  const method = (init?.method ?? 'GET').toUpperCase();
+  fetchCalls.push({ url, method, body: init?.body });
+  if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse(skillsResponse));
+  if (url.endsWith('/api/message-templates') && method === 'GET') return Promise.resolve(jsonResponse({ templates: [] }));
+  if (url.endsWith('/api/message-templates') && method === 'POST') return Promise.resolve(jsonResponse({ template: {} }));
+  if (url.endsWith('/api/message-templates/reorder')) return Promise.resolve(jsonResponse({ success: true }));
+  if (/\/api\/message-templates\/[^/]+$/.test(url) && method === 'PUT') return Promise.resolve(jsonResponse({ template: {} }));
+  if (/\/api\/message-templates\/[^/]+$/.test(url) && method === 'DELETE') return Promise.resolve(jsonResponse({ success: true }));
+  if (/\/api\/sessions\/[^/]+\/messages$/.test(url) && method === 'POST') return Promise.resolve(jsonResponse({ message: SENT_MESSAGE }));
+  return Promise.resolve(new Response('null', { status: 404 }));
+}
+
+/** POST /api/sessions/:id/messages calls the panel made (the sendWorkerMessage transport). */
+function sentMessageCalls(): Array<{ url: string; sessionId: string; content: string | null; toWorkerId: string | null; files: FormDataEntryValue[] }> {
+  return fetchCalls
+    .filter((c) => /\/api\/sessions\/[^/]+\/messages$/.test(c.url) && c.method === 'POST')
+    .map((c) => {
+      const fd = c.body as FormData;
+      const sessionId = c.url.match(/\/api\/sessions\/([^/]+)\/messages$/)?.[1] ?? '';
+      return { url: c.url, sessionId, content: fd.get('content') as string | null, toWorkerId: fd.get('toWorkerId') as string | null, files: fd.getAll('files') };
+    });
+}
+
+/**
+ * Pre-create the session/worker terminal instance the ESC handler resolves and
+ * spy its sendInput. getOrCreateTerminal is registry-keyed, so the handler's
+ * later call returns this same instance — no module mock needed. The spy being
+ * called with the ESC byte proves BOTH that the handler resolved this
+ * session/worker AND that it sent the escape.
+ */
+function installEscSpy(): ReturnType<typeof mock> {
+  const instance = getOrCreateTerminal('session-1', 'agent-1');
+  const spy = mock((_data: string) => {});
+  instance.sendInput = spy;
+  return spy;
+}
 
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
 import { QueryClientProvider } from '@tanstack/react-query';
@@ -147,21 +171,37 @@ function withProviders(queryClient: QueryClient, ui: React.ReactNode) {
 }
 
 describe('MessagePanel', () => {
+  const originalFetch = globalThis.fetch;
+  let restoreWebSocket: () => void;
+  let originalLocation: PropertyDescriptor | undefined;
+
   beforeEach(() => {
     _getDraftsMap().clear();
+    // Defensive against cross-file registry leakage before installing the mock WS
+    // (the ESC tests resolve the real store); module-mock poisoning is fixed at
+    // the poisoners, this cannot defend against that.
+    _resetTerminals();
+    restoreWebSocket = installMockWebSocket();
+    originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+      configurable: true,
+    });
+    fetchCalls.length = 0;
+    skillsResponse = { skills: TEST_SKILLS };
+    // Object.assign supplies the `preconnect` static bun-types declares on
+    // fetch, so the stub satisfies `typeof fetch` without a cast.
+    const fetchStub: typeof fetch = Object.assign(mock(messagePanelFetch), { preconnect: () => {} });
+    globalThis.fetch = fetchStub;
   });
 
   afterEach(() => {
     cleanup();
-    mockSendWorkerMessage.mockClear();
-    mockFetchSkills.mockClear();
-    mockSendInput.mockClear();
-    mockGetOrCreateTerminal.mockClear();
-    mockFetchMessageTemplates.mockClear();
-    mockCreateMessageTemplate.mockClear();
-    mockUpdateMessageTemplate.mockClear();
-    mockDeleteMessageTemplate.mockClear();
-    mockReorderMessageTemplates.mockClear();
+    _resetTerminals();
+    restoreWebSocket();
+    globalThis.fetch = originalFetch;
+    if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
   });
 
   it('renders send form with textarea and send button', async () => {
@@ -213,7 +253,10 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
     });
 
-    expect(mockSendWorkerMessage).toHaveBeenCalledWith('session-1', 'agent-1', 'hello', undefined);
+    const sent = sentMessageCalls();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ sessionId: 'session-1', toWorkerId: 'agent-1', content: 'hello' });
+    expect(sent[0].files).toHaveLength(0);
   });
 
   it('Cmd+Enter triggers send via HTTP', async () => {
@@ -228,7 +271,10 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
     });
 
-    expect(mockSendWorkerMessage).toHaveBeenCalledWith('session-1', 'agent-1', 'hello', undefined);
+    const sent = sentMessageCalls();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ sessionId: 'session-1', toWorkerId: 'agent-1', content: 'hello' });
+    expect(sent[0].files).toHaveLength(0);
   });
 
   it('clears content and files when targetWorkerId changes', async () => {
@@ -355,7 +401,7 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Enter' });
     });
 
-    expect(mockSendWorkerMessage).not.toHaveBeenCalled();
+    expect(sentMessageCalls()).toHaveLength(0);
   });
 
   it('restores draft when switching back to a previous worker', async () => {
@@ -387,6 +433,7 @@ describe('MessagePanel', () => {
   });
 
   it('ESC key sends escape through the terminal store for this session/worker', async () => {
+    const sendInputSpy = installEscSpy();
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -395,14 +442,14 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Escape' });
     });
 
-    // Resolves the store instance for THIS session/worker, then sends the ESC
-    // byte through it. Polarity: reverting to worker-websocket.sendInput leaves
-    // both spies untouched (the real transport is a no-op with no connection).
-    expect(mockGetOrCreateTerminal).toHaveBeenCalledWith('session-1', 'agent-1');
-    expect(mockSendInput).toHaveBeenCalledWith('\x1b');
+    // The spy lives on the session-1/agent-1 instance only, so its being called
+    // with the ESC byte proves the handler resolved THIS session/worker's store
+    // instance and sent the escape through it.
+    expect(sendInputSpy).toHaveBeenCalledWith('\x1b');
   });
 
   it('ESC key preserves draft content in textarea', async () => {
+    const sendInputSpy = installEscSpy();
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -415,10 +462,11 @@ describe('MessagePanel', () => {
     });
 
     expect((textarea as HTMLTextAreaElement).value).toBe('my draft');
-    expect(mockSendInput).toHaveBeenCalledWith('\x1b');
+    expect(sendInputSpy).toHaveBeenCalledWith('\x1b');
   });
 
   it('ESC key does not trigger HTTP message send', async () => {
+    installEscSpy();
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -430,7 +478,7 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Escape' });
     });
 
-    expect(mockSendWorkerMessage).not.toHaveBeenCalled();
+    expect(sentMessageCalls()).toHaveLength(0);
   });
 
   it('paste with image files adds them to file list', async () => {
@@ -511,12 +559,13 @@ describe('MessagePanel', () => {
     });
 
     // Message should be sent with exact content including all newlines
-    expect(mockSendWorkerMessage).toHaveBeenCalledWith(
-      'session-1',
-      'agent-1',
-      messageWithBlankLines, // Should NOT be trimmed
-      undefined
-    );
+    const sent = sentMessageCalls();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      sessionId: 'session-1',
+      toWorkerId: 'agent-1',
+      content: messageWithBlankLines, // Should NOT be trimmed
+    });
   });
 
   it('preserves leading and trailing whitespace in messages', async () => {
@@ -534,12 +583,13 @@ describe('MessagePanel', () => {
     });
 
     // Message should be sent with exact content including all whitespace
-    expect(mockSendWorkerMessage).toHaveBeenCalledWith(
-      'session-1',
-      'agent-1',
-      messageWithWhitespace, // Should NOT be trimmed
-      undefined
-    );
+    const sent = sentMessageCalls();
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      sessionId: 'session-1',
+      toWorkerId: 'agent-1',
+      content: messageWithWhitespace, // Should NOT be trimmed
+    });
   });
 
   describe('slash command completion', () => {
@@ -667,6 +717,7 @@ describe('MessagePanel', () => {
     });
 
     it('closes dropdown with Escape', async () => {
+      const sendInputSpy = installEscSpy();
       const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
       const view = within(container);
 
@@ -683,7 +734,7 @@ describe('MessagePanel', () => {
 
       expect(view.queryByRole('listbox')).toBeNull();
       // Escape should NOT send PTY input when dropdown was visible
-      expect(mockSendInput).not.toHaveBeenCalled();
+      expect(sendInputSpy).not.toHaveBeenCalled();
     });
 
     it('selects command on click', async () => {
@@ -717,7 +768,7 @@ describe('MessagePanel', () => {
     });
 
     it('shows no dropdown when skills API returns empty', async () => {
-      mockFetchSkills.mockImplementation(() => Promise.resolve({ skills: [] }));
+      skillsResponse = { skills: [] };
 
       const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
       const view = within(container);

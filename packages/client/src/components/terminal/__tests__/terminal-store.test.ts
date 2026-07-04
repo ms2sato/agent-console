@@ -54,6 +54,9 @@ describe('terminal-store', () => {
   let originalLocation: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    // Defensive against cross-file registry leakage before installing the mock WS
+    // (module-mock poisoning is fixed at the poisoners; this cannot defend that).
+    _resetTerminals();
     restoreWebSocket = installMockWebSocket();
     originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
     Object.defineProperty(window, 'location', {

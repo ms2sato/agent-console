@@ -34,7 +34,13 @@ export function TerminalAdapter({
   onFilesReceived,
   hideStatusBar,
   stripScrollbackClear,
-}: TerminalProps) {
+  // Test seam: bun's `mock.module` is process-global and poisons sibling test
+  // files (testing.md Anti-Pattern #2), so the store factory is injected via an
+  // optional prop instead of being module-mocked. Production and SessionPage use
+  // the default `getOrCreateTerminal`; the `TerminalProps` drop-in contract is
+  // unchanged (this extra prop is optional and internal to the adapter).
+  createInstance = getOrCreateTerminal,
+}: TerminalProps & { createInstance?: typeof getOrCreateTerminal }) {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -50,12 +56,12 @@ export function TerminalAdapter({
   // explicit boolean, so drop-in parity is unaffected.
   const instance = useMemo(
     () =>
-      getOrCreateTerminal(
+      createInstance(
         sessionId,
         workerId,
         stripScrollbackClear === undefined ? undefined : { stripScrollbackClear },
       ),
-    [sessionId, workerId, stripScrollbackClear],
+    [createInstance, sessionId, workerId, stripScrollbackClear],
   );
 
   const focusInput = useCallback(() => inputRef.current?.focus(), []);
