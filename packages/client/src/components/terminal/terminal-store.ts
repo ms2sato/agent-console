@@ -1001,9 +1001,15 @@ class TerminalController implements TerminalInstance {
     reqMaxBytes: number,
   ): Promise<void> {
     const cols = this.terminal.cols;
+    // Replay at the live viewport height so bottom-anchored TUI chrome lands on
+    // the same absolute row it would live (#979). Unlike cols — where a mismatch
+    // breaks wrap parity and forces us to drop chunks (see `resize`) — a rows
+    // mismatch only shifts where transient chrome settles, so a rows-only resize
+    // does NOT invalidate already-paged chunks.
+    const rows = this.terminal.rows;
     let result: Awaited<ReturnType<typeof replayHistoryChunk>>;
     try {
-      result = await replayHistoryChunk(msg.data, cols, (d) => this.processOutput(d));
+      result = await replayHistoryChunk(msg.data, cols, rows, (d) => this.processOutput(d));
     } catch {
       return;
     }

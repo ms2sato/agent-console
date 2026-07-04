@@ -18,7 +18,11 @@ import { detectAndAssignLinks } from './row-pipeline';
 // for a chunk is one row per byte. See the overflow degradation loop in the
 // store — at the 16KB floor even one-byte-per-row fits within this bound.
 const REPLAY_SCROLLBACK = 100_000;
-const REPLAY_ROWS = 24;
+
+// Floor for the throwaway Terminal's rows. A viewport of at least 2 rows is
+// required for any coherent cursor-positioning replay; below that xterm's
+// scroll-region math degenerates.
+const REPLAY_ROWS_MIN = 2;
 
 export interface ReplayResult {
   /** Settled rows of the chunk (keys 0..n-1; the store re-keys to negatives). */
@@ -41,17 +45,25 @@ function isBlankRow(row: TerminalRow): boolean {
  *
  * @param data     Raw chunk bytes (as a string) covering an absolute range.
  * @param cols     The live terminal's current cols (wrap parity with the window).
+ * @param rows     The live terminal's current rows. A TUI that redraws a chrome
+ *                 line relative to the screen bottom (e.g. an alt-cursor status
+ *                 bar via `ESC7 … CUP(rows,1) … ESC8`) lands on a *different*
+ *                 absolute row depending on the viewport height. Replaying at a
+ *                 fixed height mispositions that write and leaks the transient
+ *                 chrome into settled scrollback; replaying at the live height
+ *                 keeps the paged geometry consistent with the live window (#979).
  * @param processOutput The same strip pipeline the live store applies, so paged
  *                 rows match live rows in content policy.
  */
 export async function replayHistoryChunk(
   data: string,
   cols: number,
+  rows: number,
   processOutput: (data: string) => string,
 ): Promise<ReplayResult> {
   const terminal = new Terminal({
     cols: Math.max(1, cols),
-    rows: REPLAY_ROWS,
+    rows: Math.max(REPLAY_ROWS_MIN, rows),
     scrollback: REPLAY_SCROLLBACK,
     allowProposedApi: true,
   });
