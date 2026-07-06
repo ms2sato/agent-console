@@ -147,7 +147,7 @@ xterm.js sends `\x1b` + the character for Alt-modified letters, digits, and shif
 | `Alt+<letter>` (a-z) | `\x1b<letter>` (lower/upper as per shift) | — (browser drops or inserts OS special) | missing | Critical | readline Emacs-mode bindings: Alt+B = `backward-word`, Alt+F = `forward-word`, Alt+D = `kill-word`, Alt+. = `yank-last-arg`, etc. Extremely common in bash / zsh interactive shell. vim insert-mode `<M-x>` bindings. |
 | `Alt+Shift+<letter>` | `\x1b<UpperLetter>` | — | missing | Recommended | Less common but exists in some Emacs / readline configs. |
 | `Alt+<digit>` | `\x1b<digit>` | — | missing | Recommended | readline argument prefix (`Alt+5 Ctrl+D` = kill 5 chars). |
-| `Alt+<shifted-digit or symbol>` | `\x1b<shifted>` per `KEYCODE_KEY_MAPPINGS` | — | missing | Recommended | e.g. `Alt+Shift+.` = `\x1b>` (readline `end-of-history`). Same table for `:`, `+`, `_`, `?`, `~`, `{`, `|`, `}`, `"`, `<`, `>`, `!`, `@`, `#`, `$`, `%`, `^`, `&`, `*`, `(`, `)`. |
+| `Alt+<shifted-digit or symbol>` | `\x1b<shifted>` per `KEYCODE_KEY_MAPPINGS` | — | missing | Recommended | e.g. `Alt+Shift+.` = `\x1b>` (readline `end-of-history`). Same table for `:`, `+`, `_`, `?`, `~`, `{`, `\|`, `}`, `"`, `<`, `>`, `!`, `@`, `#`, `$`, `%`, `^`, `&`, `*`, `(`, `)`. |
 | `Alt+Space` | `\x1b ` (or `\x1b\x00` if Ctrl also held) | — | missing | Optional | Emacs / readline rare bindings. |
 | `Alt+<dead key>` (macOS US layout: N/E/U + Alt produces a dead key) | `\x1b<letter>` synthesised from `ev.code` | — | missing | Recommended | macOS-only, but is the primary way `Alt+n / Alt+e / Alt+u` are meant to work in a terminal. |
 

@@ -126,13 +126,10 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     textarea: HTMLTextAreaElement;
   }
 
-  // Cast through unknown because `getApplicationCursorMode` will be added to
-  // the TerminalInstance interface in Phase B commit 2. The cast lets the test
-  // stub the future getter without needing to modify the interface here.
   function setupHandler(applicationCursorMode = false): HandleKeyDownSetup {
     installMatchMedia(false);
     const sendInput = mock();
-    const instance = {
+    const instance: TerminalInstance = {
       subscribe: () => () => {},
       getSnapshot: () => SNAPSHOT_STUB,
       sendInput,
@@ -147,7 +144,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
       acquire: () => () => {},
       dispose: () => {},
       getApplicationCursorMode: () => applicationCursorMode,
-    } as unknown as TerminalInstance;
+    };
     render(<TerminalKeyboardInput instance={instance} />);
     const textarea = screen.getByLabelText('Terminal input') as HTMLTextAreaElement;
     textarea.focus();
