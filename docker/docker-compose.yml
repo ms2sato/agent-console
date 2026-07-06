@@ -1,27 +1,90 @@
-# Multi-user verification stack for Agent Console.
+# Multi-user DEV stack for Agent Console.
+#
+# Runs the same image as the verification stack (docker/Dockerfile) but with
+# the repository bind-mounted and the dev servers (vite + `bun --watch`)
+# running inside the container. Because launching it only needs `docker`
+# group membership on the host, an AI agent can start / restart / inspect a
+# multi-user dev server autonomously — no privilege elevation, no password
+# prompt. See docker/README.md for the full guide (including how this differs
+# from scripts/dev-multiuser.sh).
 #
 # Usage (from repo root):
-#   scripts/verify-multiuser-docker.sh           # build, start, verify, report
-#   docker compose -f docker/docker-compose.yml up --build -d   # manual start
+#   docker compose -f docker/docker-compose.yml up --build -d
+#   # host ports are env-configurable to coexist with other vite/dev servers:
+#   DEV_CLIENT_PORT=15173 DEV_SERVER_PORT=13457 \
+#     docker compose -f docker/docker-compose.yml up -d
 #
-# The server runs in AUTH_MODE=multi-user as the non-root `agentconsole` user
-# and exposes the API/WS on host port 8080.
+# Both stacks can run side by side: distinct project names, container names,
+# volumes, and host ports (this stack: 5173/3457 by default; verification:
+# 8080).
+name: agent-console-dev
 services:
-  agent-console:
+  agent-console-dev:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    # Intentionally the same image tag as the verification stack: one build
+    # serves both; only the runtime wiring (mounts / command) differs.
     image: agent-console-multiuser-verify
-    container_name: agent-console-multiuser-verify
-    # Bind to loopback only: this stack ships intentionally known test
-    # credentials and must never be reachable from the LAN. ${PORT:-8080} keeps
-    # the host port in sync with scripts/verify-multiuser-docker.sh's PORT env.
+    container_name: agent-console-dev
+    # Root is needed only for the entrypoint's mountpoint-ownership fixup;
+    # dev-entrypoint.sh drops to the `agentconsole` service user (setpriv)
+    # before installing dependencies or starting the dev servers.
+    user: root
+    # The image's WORKDIR is /app/dist (the baked bundle). With the repo
+    # bind-mounted, letting that stand would make Docker create a root-owned
+    # empty dist/ INSIDE the host checkout at container start. Point cwd at
+    # the repo root instead.
+    working_dir: /app
+    entrypoint: ["sh", "/app/docker/dev-entrypoint.sh"]
+    environment:
+      # The image bakes AUTH_MODE=multi-user and AGENT_CONSOLE_HOME; here we
+      # only override the dev-server wiring. PORT/CLIENT_PORT are the
+      # CONTAINER-INTERNAL ports (fixed; host mapping is what varies).
+      PORT: 3457
+      CLIENT_PORT: 5173
+      HOST: 0.0.0.0
+      # Links the server generates must point at the HOST-side vite URL.
+      APP_URL: http://localhost:${DEV_CLIENT_PORT:-5173}
+      # Dev runs over plain HTTP on localhost; never mark the auth cookie
+      # Secure (mirrors scripts/dev-multiuser.sh).
+      AUTH_COOKIE_SECURE: "false"
+    # Loopback only: the image ships intentionally known test credentials
+    # (alice / bob) and must never be reachable from the LAN.
     ports:
-      - "127.0.0.1:${PORT:-8080}:8080"
-    # Health: /api/config is reachable without auth and reports authMode.
+      - "127.0.0.1:${DEV_CLIENT_PORT:-5173}:5173"
+      - "127.0.0.1:${DEV_SERVER_PORT:-3457}:3457"
+    volumes:
+      # The whole repo, live: vite HMR and `bun --watch` react to host-side
+      # edits immediately (this also hides the image's baked /app/dist, which
+      # the dev stack does not use).
+      - ..:/app
+      # node_modules stay container-side: the host's install (macOS or a
+      # different bun/glibc) is not binary-compatible with the container
+      # (bun-pty native module in particular). One volume per workspace
+      # package because bun creates per-package node_modules dirs.
+      - root-node-modules:/app/node_modules
+      - client-node-modules:/app/packages/client/node_modules
+      - server-node-modules:/app/packages/server/node_modules
+      - shared-node-modules:/app/packages/shared/node_modules
+      - integration-node-modules:/app/packages/integration/node_modules
+      # Dev data root (DB, jwt-secret, worktrees) persists across
+      # `docker compose down` / `up` cycles.
+      - dev-data:/var/lib/agent-console
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('http://localhost:8080/api/config').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 3s
+      # Healthy only when BOTH dev servers answer: the API server and the
+      # vite client (either alone can be down while the other runs).
+      test: ["CMD", "bun", "-e", "Promise.all([fetch('http://localhost:3457/api/config'),fetch('http://localhost:5173')]).then(rs=>process.exit(rs.every(r=>r.ok)?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
       timeout: 5s
-      retries: 20
-      start_period: 5s
+      retries: 60
+      # First start runs a full `bun install` inside the container.
+      start_period: 120s
+
+volumes:
+  root-node-modules:
+  client-node-modules:
+  server-node-modules:
+  shared-node-modules:
+  integration-node-modules:
+  dev-data:
