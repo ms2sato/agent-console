@@ -56,6 +56,7 @@ function makeMockInstance(): TerminalInstance {
     forwardScroll: () => {},
     reportMouseButton: () => {},
     paste: () => {},
+    getApplicationCursorMode: () => false,
     retry: () => {},
     dismissNotice: () => {},
     requestOlderHistory: () => {},

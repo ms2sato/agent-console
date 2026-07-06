@@ -12,17 +12,32 @@ interface TerminalKeyboardInputProps {
   onFilesReceived?: (files: File[]) => void;
 }
 
-// Special keys -> escape sequences. Arrow keys use the normal (non-application)
-// cursor sequences, which is correct for the terminal renderer.
-const SPECIAL_KEYS: Record<string, string> = {
-  Enter: '\r',
-  Backspace: '\x7f',
-  Tab: '\t',
-  Escape: '\x1b',
-  ArrowUp: '\x1b[A',
-  ArrowDown: '\x1b[B',
-  ArrowRight: '\x1b[C',
-  ArrowLeft: '\x1b[D',
+// F5-F10 CSI codes per audit §3.7. F5+ use `\x1b[<code>~` at base and
+// `\x1b[<code>;<mod+1>~` when modified.
+const F5_PLUS_CODES: Record<string, number> = {
+  F5: 15,
+  F6: 17,
+  F7: 18,
+  F8: 19,
+  F9: 20,
+  F10: 21,
+};
+
+// F1-F4 use SS3 form (`\x1bOP/Q/R/S`) at base and `\x1b[1;<mod+1>P/Q/R/S`
+// when modified. Audit §3.7.
+const F1_TO_F4_LETTERS: Record<string, string> = {
+  F1: 'P',
+  F2: 'Q',
+  F3: 'R',
+  F4: 'S',
+};
+
+// Arrow key final letters, indexed by e.key. Audit §3.2 / §3.11.
+const ARROW_LETTERS: Record<string, string> = {
+  ArrowUp: 'A',
+  ArrowDown: 'B',
+  ArrowRight: 'C',
+  ArrowLeft: 'D',
 };
 
 /**
@@ -88,29 +103,163 @@ export const TerminalKeyboardInput = forwardRef<HTMLTextAreaElement, TerminalKey
       instance.paste(text);
     };
 
+    // Keyboard-to-PTY conversion. Modeled on xterm.js's evaluateKeyboardEvent
+    // (see `docs/audits/terminal-key-handling-parity.md` §3 for the full per-key
+    // matrix and §4.1 / §4.2 for the fix scope).
+    //
+    // Modifier bitmask (audit §2.1): shift=1, alt=2, ctrl=4, meta=8. The CSI
+    // parameter is `modifiers + 1` — so Shift alone = 2, Alt alone = 3, Ctrl
+    // alone = 5, Ctrl+Shift = 6, etc.
     const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (composingRef.current || e.nativeEvent.isComposing) return;
 
-      if (e.key === 'Enter' && e.shiftKey) {
+      const modifiers =
+        (e.shiftKey ? 1 : 0) |
+        (e.altKey ? 2 : 0) |
+        (e.ctrlKey ? 4 : 0) |
+        (e.metaKey ? 8 : 0);
+      const modParam = modifiers + 1;
+
+      const emit = (seq: string) => {
         e.preventDefault();
-        send('\n');
+        send(seq);
+      };
+
+      // Named-key branches — one per audit §3 subsection. All branches guard
+      // Meta explicitly (xterm.js `break`s on Meta for keys it does not
+      // reserve). Every non-return path either emits or is a deliberate
+      // deferred behavior (Shift+PageUp/PageDown, audit §5).
+      switch (e.key) {
+        case 'Tab':
+          // Alt+Tab / Ctrl+Tab are OS/browser reserved; do nothing.
+          if (e.metaKey || e.altKey || e.ctrlKey) return;
+          return emit(e.shiftKey ? '\x1b[Z' : '\t');
+
+        case 'Enter':
+          if (e.metaKey) return;
+          // Agent-console deliberate divergence (audit §3.4): Claude Code needs
+          // Shift+Enter -> \n to insert a soft newline. xterm.js emits \r here.
+          if (e.shiftKey && !e.ctrlKey && !e.altKey) return emit('\n');
+          if (e.altKey && !e.ctrlKey && !e.shiftKey) return emit('\x1b\r');
+          return emit('\r');
+
+        case 'Escape':
+          if (e.metaKey) return;
+          if (e.altKey && !e.ctrlKey && !e.shiftKey) return emit('\x1b\x1b');
+          return emit('\x1b');
+
+        case 'Backspace':
+          if (e.metaKey) return;
+          if (e.altKey && !e.ctrlKey) return emit('\x1b\x7f');
+          if (e.ctrlKey && !e.altKey) return emit('\b');
+          // Shift+Backspace: xterm ignores Shift here (audit §3.3).
+          return emit('\x7f');
+
+        case 'Delete':
+          if (e.metaKey) return;
+          return emit(modifiers === 0 ? '\x1b[3~' : `\x1b[3;${modParam}~`);
+
+        case 'Insert':
+          // Shift+Insert / Ctrl+Insert = OS copy/paste; audit §3.6 suppresses
+          // PTY output for those, matching xterm.js.
+          if (e.shiftKey || e.ctrlKey || e.altKey || e.metaKey) return;
+          return emit('\x1b[2~');
+
+        case 'Home':
+          if (e.metaKey) return;
+          if (modifiers === 0) {
+            return emit(instance.getApplicationCursorMode() ? '\x1bOH' : '\x1b[H');
+          }
+          return emit(`\x1b[1;${modParam}H`);
+
+        case 'End':
+          if (e.metaKey) return;
+          if (modifiers === 0) {
+            return emit(instance.getApplicationCursorMode() ? '\x1bOF' : '\x1b[F');
+          }
+          return emit(`\x1b[1;${modParam}F`);
+
+        case 'PageUp':
+          // Shift+PageUp is UI scrollback (audit §5 deferred); let default run.
+          if (e.shiftKey) return;
+          if (e.metaKey) return;
+          return emit(modifiers === 0 ? '\x1b[5~' : `\x1b[5;${modParam}~`);
+
+        case 'PageDown':
+          if (e.shiftKey) return;
+          if (e.metaKey) return;
+          return emit(modifiers === 0 ? '\x1b[6~' : `\x1b[6;${modParam}~`);
+
+        case 'ArrowUp':
+        case 'ArrowDown':
+        case 'ArrowRight':
+        case 'ArrowLeft': {
+          // xterm.js explicitly breaks on Meta+Arrow (audit §3.2 last row).
+          if (e.metaKey) return;
+          const letter = ARROW_LETTERS[e.key];
+          if (modifiers === 0) {
+            return emit(
+              instance.getApplicationCursorMode() ? `\x1bO${letter}` : `\x1b[${letter}`,
+            );
+          }
+          return emit(`\x1b[1;${modParam}${letter}`);
+        }
+
+        case 'F1':
+        case 'F2':
+        case 'F3':
+        case 'F4': {
+          if (e.metaKey) return;
+          const letter = F1_TO_F4_LETTERS[e.key];
+          return emit(modifiers === 0 ? `\x1bO${letter}` : `\x1b[1;${modParam}${letter}`);
+        }
+        case 'F5':
+        case 'F6':
+        case 'F7':
+        case 'F8':
+        case 'F9':
+        case 'F10': {
+          if (e.metaKey) return;
+          const code = F5_PLUS_CODES[e.key];
+          return emit(modifiers === 0 ? `\x1b[${code}~` : `\x1b[${code};${modParam}~`);
+        }
+        // F11 / F12 intentionally omitted (audit §4.3): browsers always
+        // intercept (fullscreen / devtools), so emitting has no PTY reach.
+      }
+
+      // Ctrl + non-letter special forms + Ctrl+letter control byte, audit §3.9.
+      if (e.ctrlKey && !e.altKey && !e.metaKey) {
+        if (e.shiftKey) {
+          // Ctrl+Shift+{2,6,-} = US-layout xterm parity (audit §4.2 item 17).
+          // Discriminated by `code` so localized keyboard layouts do not misfire.
+          if (e.code === 'Digit2') return emit('\x00');
+          if (e.code === 'Digit6') return emit('\x1e');
+          if (e.code === 'Minus') return emit('\x1f');
+          // Tightening (audit §4.2 item 20): Ctrl+Shift+letter is NOT a control
+          // byte — xterm reserves Ctrl+Shift for the special forms above.
+          return;
+        }
+        if (e.key === ' ') return emit('\x00'); // Ctrl+Space (audit §4.1 item 8)
+        if (e.key === '3') return emit('\x1b'); // Ctrl+3 = ESC
+        if (e.key === '4') return emit('\x1c'); // Ctrl+4 = FS
+        if (e.key === '5') return emit('\x1d'); // Ctrl+5 = GS
+        if (e.key === '6') return emit('\x1e'); // Ctrl+6 = RS
+        if (e.key === '7') return emit('\x1f'); // Ctrl+7 = US
+        if (e.key === '/') return emit('\x1f'); // Ctrl+/ = US (audit §4.2 item 16)
+        // Ctrl + single letter -> control character (0x01 .. 0x1a).
+        if (e.key.length === 1) {
+          const code = e.key.toUpperCase().charCodeAt(0);
+          if (code >= 64 && code <= 95) return emit(String.fromCharCode(code - 64));
+        }
         return;
       }
 
-      // Ctrl + single letter -> control character.
-      if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.length === 1) {
-        const code = e.key.toUpperCase().charCodeAt(0);
-        if (code >= 64 && code <= 95) {
-          e.preventDefault();
-          send(String.fromCharCode(code - 64));
-          return;
-        }
-      }
-
-      const seq = SPECIAL_KEYS[e.key];
-      if (seq !== undefined) {
-        e.preventDefault();
-        send(seq);
+      // Alt + single character (readline Meta). macOptionIsMeta = true default
+      // per audit §3.13 — treating Option as Meta matches what Claude Code,
+      // vim, and bash users expect from a terminal emulator. Shift is already
+      // reflected in the browser's `e.key` case, so Alt+Shift+B yields 'B'.
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.length === 1) {
+        return emit('\x1b' + e.key);
       }
     };
 
@@ -154,6 +303,10 @@ interface SoftKeyBarProps {
 const SOFT_KEYS: { label: string; data: string }[] = [
   { label: 'Esc', data: '\x1b' },
   { label: 'Tab', data: '\t' },
+  // Shift+Tab (CSI Z, backtab): mobile users cannot easily type the modifier
+  // combo, but Claude Code's mode cycle and vim / bash `<S-Tab>` need it.
+  // Audit §9 (Owner-approved).
+  { label: 'Shift+Tab', data: '\x1b[Z' },
   { label: 'Ctrl+C', data: '\x03' },
   { label: '↑', data: '\x1b[A' },
   { label: '↓', data: '\x1b[B' },
