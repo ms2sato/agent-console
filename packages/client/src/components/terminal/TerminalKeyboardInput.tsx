@@ -104,9 +104,7 @@ export const TerminalKeyboardInput = forwardRef<HTMLTextAreaElement, TerminalKey
     };
 
     // Keyboard-to-PTY conversion. Modeled on xterm.js's evaluateKeyboardEvent
-    // (canonical reference: xterm.js master @ 8aab310, file
-    // `src/common/input/Keyboard.ts`). Issue #985 / PR #986 restored parity
-    // after the xterm.js renderer was removed in PR #962.
+    // (canonical reference: `src/common/input/Keyboard.ts` in xterm.js).
     //
     // Modifier bitmask (xterm convention): shift=1, alt=2, ctrl=4, meta=8. The
     // CSI parameter is `modifiers + 1` — so Shift alone = 2, Alt alone = 3,
