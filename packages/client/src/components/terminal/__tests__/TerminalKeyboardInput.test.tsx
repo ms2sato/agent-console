@@ -97,21 +97,19 @@ describe('TerminalKeyboardInput soft-key bar visibility', () => {
 });
 
 /**
- * handleKeyDown parity coverage — per `docs/audits/terminal-key-handling-parity.md`
- * §3 (per-key matrix) filtered by §4.1 (Critical) + §4.2 (Recommended).
+ * handleKeyDown parity coverage against xterm.js `evaluateKeyboardEvent`
+ * (canonical reference: xterm.js master @ `8aab310`, file
+ * `src/common/input/Keyboard.ts`).
  *
- * Deferred rows from audit §5 are NOT covered here.
+ * Modifier bitmask (xterm convention): shift=1, alt=2, ctrl=4, meta=8. The CSI
+ * parameter is `modifiers + 1` — so Shift alone = 2, Alt alone = 3, Ctrl alone
+ * = 5, Ctrl+Shift = 6, etc.
  *
- * Modifier bitmask (xterm convention, audit §2.1): shift=1, alt=2, ctrl=4, meta=8.
- * The CSI parameter is `modifiers + 1` — so Shift alone = 2, Alt alone = 3,
- * Ctrl alone = 5, Ctrl+Shift = 6, etc.
- *
- * These tests are written BEFORE the production fix (Phase B commit 2). Every
- * assertion that is not already met by the current handler must fail RED here —
- * that is the polarity-flip proof required by `workflow.md` "TDD for bug fixes".
- * The unmodified base cases (Tab, Enter, Escape, Backspace, Arrows in CSI form,
- * Ctrl+letter, Shift+Enter divergence, Meta+Arrow, IME guard) already pass on
- * the current handler and stand as regression guards.
+ * Unmodified base cases (Tab, Enter, Escape, Backspace, Arrows in CSI form,
+ * Ctrl+letter, Shift+Enter divergence, Meta+Arrow, IME guard) stand as
+ * regression guards for existing correct behavior; the remaining assertions
+ * exercise the modifier-encoded and Alt/F-key/Home/End/Delete/PageUp paths
+ * that Issue #985 restored to parity with the retired xterm.js renderer.
  */
 describe('TerminalKeyboardInput handleKeyDown', () => {
   const originalMatchMedia = window.matchMedia;
@@ -151,7 +149,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     return { sendInput, textarea };
   }
 
-  describe('Tab (audit §3.1)', () => {
+  describe('Tab', () => {
     it('Tab -> \\t (regression guard)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'Tab', code: 'Tab', keyCode: 9 });
@@ -165,7 +163,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('Enter (audit §3.4)', () => {
+  describe('Enter', () => {
     it('Enter -> \\r (regression guard)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter', keyCode: 13 });
@@ -193,7 +191,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('Escape (audit §3.5)', () => {
+  describe('Escape', () => {
     it('Escape -> \\x1b (regression guard)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'Escape', code: 'Escape', keyCode: 27 });
@@ -212,7 +210,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('Backspace (audit §3.3)', () => {
+  describe('Backspace', () => {
     it('Backspace -> \\x7f (DEL, regression guard)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'Backspace', code: 'Backspace', keyCode: 8 });
@@ -245,7 +243,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
   // Arrow key matrix, non-application-cursor-mode (CSI form).
   // Base sequences: \x1b[A / B / C / D for Up / Down / Right / Left.
   // Modified: \x1b[1;<mod+1><X> — see audit §3.2.
-  describe('Arrow keys (CSI form, application cursor mode off, audit §3.2)', () => {
+  describe('Arrow keys (CSI form, application cursor mode off)', () => {
     const arrows: Array<[string, number, string]> = [
       ['ArrowUp', 38, 'A'],
       ['ArrowDown', 40, 'B'],
@@ -303,7 +301,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
 
   // Arrow key SS3 form when DECCKM (application cursor mode) is on. Audit §3.11.
   // The regression test here uses `getApplicationCursorMode = () => true`.
-  describe('Arrow keys (SS3 form, application cursor mode on, audit §3.11)', () => {
+  describe('Arrow keys (SS3 form, application cursor mode on)', () => {
     const arrows: Array<[string, number, string]> = [
       ['ArrowUp', 38, 'A'],
       ['ArrowDown', 40, 'B'],
@@ -318,7 +316,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('Home / End (CSI form, audit §3.6)', () => {
+  describe('Home / End (CSI form)', () => {
     it('Home -> \\x1b[H (audit §4.1 item 3)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'Home', code: 'Home', keyCode: 36 });
@@ -360,7 +358,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('Home / End (SS3 form, application cursor mode on, audit §3.11)', () => {
+  describe('Home / End (SS3 form, application cursor mode on)', () => {
     it('Home (SS3) -> \\x1bOH (audit §4.2 item 19)', () => {
       const { sendInput, textarea } = setupHandler(true);
       fireEvent.keyDown(textarea, { key: 'Home', code: 'Home', keyCode: 36 });
@@ -374,7 +372,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('Delete / Insert (audit §3.6)', () => {
+  describe('Delete / Insert', () => {
     it('Delete -> \\x1b[3~ (audit §4.1 item 4)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'Delete', code: 'Delete', keyCode: 46 });
@@ -410,7 +408,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('PageUp / PageDown (audit §3.6)', () => {
+  describe('PageUp / PageDown', () => {
     it('PageUp -> \\x1b[5~ (audit §4.1 item 5)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'PageUp', code: 'PageUp', keyCode: 33 });
@@ -449,7 +447,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
   // F1-F4 use SS3 form (\x1bOP/Q/R/S) at base; F5-F10 use CSI form (\x1b[<n>~).
   // Modified F1-F4: \x1b[1;<mod+1>P/Q/R/S. Modified F5-F10: \x1b[<n>;<mod+1>~.
   // Audit §3.7 / §4.2 items 9-10. F11 / F12 explicitly deferred per audit §4.3.
-  describe('Function keys F1-F10 (audit §3.7)', () => {
+  describe('Function keys F1-F10', () => {
     const fKeys: Array<[string, number, string]> = [
       ['F1', 112, '\x1bOP'],
       ['F2', 113, '\x1bOQ'],
@@ -484,7 +482,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
 
   // Alt + character (readline Meta). xterm.js sends `\x1b` + the character.
   // Audit §3.8 / §4.1 item 6.
-  describe('Alt + character (readline Meta, audit §3.8)', () => {
+  describe('Alt + character (readline Meta)', () => {
     it('Alt+b -> \\x1bb (readline backward-word, audit §4.1 item 6)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, { key: 'b', code: 'KeyB', keyCode: 66, altKey: true });
@@ -530,7 +528,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
 
   // Ctrl + non-letter special forms. xterm.js maps a fixed set to control
   // bytes. Audit §3.9 / §4.1 item 8 / §4.2 items 15-17.
-  describe('Ctrl + non-letter (audit §3.9)', () => {
+  describe('Ctrl + non-letter', () => {
     it('Ctrl+Space -> \\x00 (NUL, audit §4.1 item 8)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, {
@@ -645,7 +643,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('Ctrl + letter (existing branch + tightening, audit §3.9)', () => {
+  describe('Ctrl + letter (existing branch + tightening)', () => {
     it('Ctrl+a -> \\x01 (regression guard)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, {
@@ -675,7 +673,7 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
     });
   });
 
-  describe('IME composition guard (audit §3.10)', () => {
+  describe('IME composition guard', () => {
     it('while composing, Shift+Tab does NOT call sendInput', () => {
       const { sendInput, textarea } = setupHandler();
       // Enter composition state before dispatching the keydown. The handler's

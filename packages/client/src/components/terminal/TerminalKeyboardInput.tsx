@@ -104,12 +104,13 @@ export const TerminalKeyboardInput = forwardRef<HTMLTextAreaElement, TerminalKey
     };
 
     // Keyboard-to-PTY conversion. Modeled on xterm.js's evaluateKeyboardEvent
-    // (see `docs/audits/terminal-key-handling-parity.md` §3 for the full per-key
-    // matrix and §4.1 / §4.2 for the fix scope).
+    // (canonical reference: xterm.js master @ 8aab310, file
+    // `src/common/input/Keyboard.ts`). Issue #985 / PR #986 restored parity
+    // after the xterm.js renderer was removed in PR #962.
     //
-    // Modifier bitmask (audit §2.1): shift=1, alt=2, ctrl=4, meta=8. The CSI
-    // parameter is `modifiers + 1` — so Shift alone = 2, Alt alone = 3, Ctrl
-    // alone = 5, Ctrl+Shift = 6, etc.
+    // Modifier bitmask (xterm convention): shift=1, alt=2, ctrl=4, meta=8. The
+    // CSI parameter is `modifiers + 1` — so Shift alone = 2, Alt alone = 3,
+    // Ctrl alone = 5, Ctrl+Shift = 6, etc.
     const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
       if (composingRef.current || e.nativeEvent.isComposing) return;
 
