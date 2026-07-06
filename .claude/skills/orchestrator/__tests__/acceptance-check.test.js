@@ -18,6 +18,7 @@ import {
   printSummary,
   printPostAcceptanceWorkflow,
   printProposedBehaviorCoverage,
+  printLanguageCheck,
 } from '../acceptance-check.js';
 
 // --- Helper: create a readable stream that emits null-byte terminated data ---
@@ -651,5 +652,116 @@ describe('printProposedBehaviorCoverage', () => {
     const output = logs.join('\n');
     expect(output).toContain('Issue #612');
     expect(output).toContain('Proposed Behavior');
+  });
+});
+
+// --- Q10 defer safety check (Sprint 2026-07-06 retro: #931 -> #951 root cause) ---
+
+describe('getQuestions Q10 defer safety', () => {
+  function findQ10() {
+    const questions = getQuestions(true);
+    return questions.find((q) => q.key === 'q10');
+  }
+
+  it('Q10 exists and is the concerns-surfacing gate', () => {
+    const q10 = findQ10();
+    expect(q10).toBeDefined();
+    expect(q10.text).toContain('Concerns Surfacing');
+  });
+
+  it('Q10 text prompts a code-level check before deferring a concern', () => {
+    const q10 = findQ10();
+    // The pre-fix Q10 walked a 5-step procedure and did not explicitly require
+    // a code-level check when a concern was deferred. After #931 -> #951, defer
+    // safety must call out (a) elevation path and (b) dogfood-only reachability
+    // explicitly, and it must be a step in the mandatory walk.
+    expect(q10.text).toMatch(/DEFER/);
+    expect(q10.text).toMatch(/elevation path/i);
+    expect(q10.text).toMatch(/dogfood/i);
+  });
+
+  it('Q10 focus lists the code-level substeps for defer safety', () => {
+    const q10 = findQ10();
+    expect(q10.focus).toMatch(/shouldElevateForUser|runAsUser|requestUsername/);
+    expect(q10.focus).toMatch(/read.*(function body|code)/i);
+  });
+
+  it('Q10 focus includes the #931 -> #951 lesson', () => {
+    const q10 = findQ10();
+    expect(q10.focus).toMatch(/#931/);
+    expect(q10.focus).toMatch(/#951/);
+  });
+
+  it('Q10 insufficient example flags "elevation-first" without reading the code', () => {
+    const q10 = findQ10();
+    expect(q10.insufficient).toMatch(/elevation/i);
+  });
+});
+
+// --- printLanguageCheck: distinguish real violations from script-side errors ---
+// Sprint 2026-07-01 observed "❌ FAIL — 0 violation(s) found" false alarms in
+// two acceptance checks. Pre-fix logic printed FAIL whenever exitCode != 0,
+// even when the script produced no violation lines (a script-side error).
+
+describe('printLanguageCheck', () => {
+  let logs;
+  let logSpy;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((msg) => logs.push(String(msg ?? '')));
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('prints ✅ when exitCode is 0', () => {
+    printLanguageCheck({ exitCode: 0, stdout: '', stderr: '', spawnFailed: false });
+    const output = logs.join('\n');
+    expect(output).toContain('✅');
+    expect(output).not.toContain('❌');
+  });
+
+  it('prints ❌ FAIL with count when stdout has violation lines', () => {
+    printLanguageCheck({
+      exitCode: 1,
+      stdout: 'docs/glossary.md:82:5 あ U+3042\ndocs/glossary.md:83:5 い U+3044\n',
+      stderr: '',
+      spawnFailed: false,
+    });
+    const output = logs.join('\n');
+    expect(output).toContain('❌ FAIL — 2 violation(s) found');
+    expect(output).toContain('docs/glossary.md:82:5');
+  });
+
+  it('prints ⚠ INCONCLUSIVE (not FAIL) when spawnFailed is true', () => {
+    // Regression guard: pre-fix logic already handled spawnFailed via the
+    // exitCode 1 fallback and printed "❌ FAIL — 0 violation(s) found" because
+    // stdout was empty. The fix must clearly distinguish spawn failure as
+    // inconclusive.
+    printLanguageCheck({
+      exitCode: 1,
+      stdout: '',
+      stderr: "Failed to spawn 'bun': ENOENT",
+      spawnFailed: true,
+    });
+    const output = logs.join('\n');
+    expect(output).not.toContain('❌ FAIL');
+    expect(output).toMatch(/(⚠|inconclusive|manually)/i);
+  });
+
+  it('does NOT print ❌ FAIL when exitCode != 0 but stdout is empty (script-side error)', () => {
+    // Direct regression case for the Sprint 2026-07-01 false alarm.
+    printLanguageCheck({
+      exitCode: 2,
+      stdout: '',
+      stderr: 'TypeError: cannot read property foo of undefined',
+      spawnFailed: false,
+    });
+    const output = logs.join('\n');
+    expect(output).not.toContain('❌ FAIL — 0 violation(s)');
+    expect(output).toMatch(/script-side error|no violation output|investigate/i);
+    expect(output).toContain('exited with code 2');
   });
 });

@@ -188,20 +188,44 @@ function printLanguageCheck(languageCheck) {
     console.log();
     return;
   }
+  if (languageCheck.spawnFailed) {
+    console.log('  ⚠ Could not spawn the language-check script (bun missing from PATH?).');
+    if (languageCheck.stderr) {
+      console.log(`    stderr: ${languageCheck.stderr.split('\n')[0]}`);
+    }
+    console.log('  Treating this as INCONCLUSIVE, not FAIL. Run `bun run check:lang` manually to verify.');
+    console.log();
+    return;
+  }
   if (languageCheck.exitCode === 0) {
     console.log('  ✅ All public artifacts use Latin / Greek / Cyrillic scripts only.');
-  } else {
-    const violationLines = languageCheck.stdout.split('\n').filter((l) => l.trim().length > 0);
-    console.log(`  ❌ FAIL — ${violationLines.length} violation(s) found.`);
-    console.log('  First entries:');
-    for (const line of violationLines.slice(0, 5)) {
-      console.log(`    ${line}`);
-    }
-    if (violationLines.length > 5) {
-      console.log(`    ... (${violationLines.length - 5} more)`);
-    }
-    console.log('  Run `bun run check:lang` to see full details.');
+    console.log();
+    return;
   }
+  const violationLines = languageCheck.stdout.split('\n').filter((l) => l.trim().length > 0);
+  if (violationLines.length === 0) {
+    // exitCode !== 0 but stdout is empty. This is NOT a violation report — it's
+    // a script-side error (missing helper, unexpected exception, etc). Prior
+    // logic mis-printed this as "❌ FAIL — 0 violation(s) found." which caused
+    // Sprint 2026-07-01 false-FAIL noise across two acceptance checks.
+    console.log(`  ⚠ Language-check script exited with code ${languageCheck.exitCode} but produced no violation output. Likely a script-side error, NOT a real violation.`);
+    if (languageCheck.stderr) {
+      const stderrHead = languageCheck.stderr.split('\n').slice(0, 3).join('\n    ');
+      console.log(`    stderr:\n    ${stderrHead}`);
+    }
+    console.log('  Run `bun run check:lang` manually to investigate.');
+    console.log();
+    return;
+  }
+  console.log(`  ❌ FAIL — ${violationLines.length} violation(s) found.`);
+  console.log('  First entries:');
+  for (const line of violationLines.slice(0, 5)) {
+    console.log(`    ${line}`);
+  }
+  if (violationLines.length > 5) {
+    console.log(`    ... (${violationLines.length - 5} more)`);
+  }
+  console.log('  Run `bun run check:lang` to see full details.');
   console.log();
 }
 
@@ -435,7 +459,7 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
     },
     {
       key: 'q10',
-      text: 'Q10: Concerns Surfacing & Owner Communication Gate — Walk this 5-step procedure: (1) List entry points the PR introduces (new MCP tools / params, API endpoints, CLI flags, config keys, file types). (2) For each entry point, identify the bootstrap procedure that activates it (who registers it, when, where documented). (3) Enumerate ALL concerns surfaced during review (bootstrap gaps, runtime prerequisites, contract ambiguity, dead-code risk, integration fragility, etc.) — including ones you tentatively rationalized as "minor". (4) For the concerns from Step 3, did you surface them to the owner with a structured report/consultation BEFORE this verdict? (5) If Step 4 is "no" or "partial", verdict MUST be HOLD; PASS is not allowed.',
+      text: 'Q10: Concerns Surfacing & Owner Communication Gate — Walk this 6-step procedure: (1) List entry points the PR introduces (new MCP tools / params, API endpoints, CLI flags, config keys, file types). (2) For each entry point, identify the bootstrap procedure that activates it (who registers it, when, where documented). (3) Enumerate ALL concerns surfaced during review (bootstrap gaps, runtime prerequisites, contract ambiguity, dead-code risk, integration fragility, etc.) — including ones you tentatively rationalized as "minor". (4) For any concern you plan to DEFER (leave for a follow-up Issue instead of blocking this PR), verify at code-level whether the deferred concern touches (a) an elevation path (multi-user mode / requestUsername / sudo boundary) or (b) a dogfood-only reachable code path — if either applies, the defer is unsafe without owner ack. Read the actual function bodies at the concern site, not just the caller. (5) For the concerns from Step 3, did you surface them to the owner with a structured report/consultation BEFORE this verdict? (6) If Step 5 is "no" or "partial", verdict MUST be HOLD; PASS is not allowed.',
       focus: [
         'See `.claude/skills/orchestrator/core-responsibilities.md` "Concerns Surfacing Discipline".',
         'This question exists because passing Q1-Q9 + Q11 does not equal "feature is shippable". Bootstrap gaps, missing runtime prerequisites, dead-code risk, and contract ambiguity are PR-shape concerns the orchestrator must surface BEFORE the PASS verdict, not after.',
@@ -443,12 +467,18 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
         '  1. Re-scan the diff for new entry points (MCP tool / API / CLI / config / new file type).',
         '  2. For each, ask: "what activates it after merge?" If unclear → concern.',
         '  3. List concerns from the Q1-Q9 + Q11 walk that you classified as "minor" or "out of scope" — write them out anyway.',
-        '  4. Confirm: "Did I send a structured report to the owner naming each concern?" An explicit memo update or message counts; an in-passing mention does not.',
-        '  5. If any concern is not surfaced → verdict is HOLD until the report is sent and owner has acknowledged.',
+        '  4. For each concern you plan to DEFER, do the code-level defer safety check:',
+        '     a. Does the concern touch an elevation path? (grep for shouldElevateForUser, runAsUser, spawnAsUser, requestUsername in the affected file / function)',
+        '     b. Is the concern only reachable via dogfood (production / multi-user / real-repo state) and NOT covered by existing unit/integration tests?',
+        '     c. If YES to either, DO NOT silently defer — you must (i) READ the concern site\'s function body yourself (not just callers), (ii) explicitly name the safety assumption you are making, (iii) get owner ack before defer.',
+        '     Vague reasoning like "this path is elevation-first" without reading the code is exactly the failure mode this step guards against.',
+        '  5. Confirm: "Did I send a structured report to the owner naming each concern?" An explicit memo update or message counts; an in-passing mention does not.',
+        '  6. If any concern is not surfaced → verdict is HOLD until the report is sent and owner has acknowledged.',
         'PASS-with-notes is not a substitute for HOLD. The discipline is mechanical because LLM self-review is structurally weak at "what else should I be worried about that I rationalized away". (Lesson: Sprint 2026-04-28 PR #710 — Bootstrap gap was rationalized away; owner caught it. PR #715 — preflight integration was rationalized away; owner caught it. Both are structurally identical. Sprint 2026-04-29 PR #727 — the mechanical 5-step procedure produced 6 concerns (jq deadlock, conteditor deployment, language-interpreter bypass, hooks tests integration, emergency bypass docs, postinstall + setup docs); all 6 became follow-up Issues #730-#735. Non-trivial concern count is the expected output for non-trivial PRs — if the walk produces zero concerns on a feature-shaped PR, you have likely under-applied Step 3.)',
+        '(Lesson: Sprint 2026-07-01 PR #931 → #951 — the Orchestrator deferred a GitError over-catch Concern with the reasoning "verifyRepoAccessible walks elevation first"; the code actually did NOT run bootstrapSafeDirectoryForUser before the pre-check, so multi-user dogfood exposed the missing bootstrap as a dubious-ownership error. The defer reasoning was based on assumed behavior, not code reading. Step 4a-c above (elevation-path check + read the function body) is designed to catch this exact class of misjudgment.)',
       ].join('\n  '),
-      insufficient: '"Concerns are minor, proceeding with PASS" (silent skip — exactly the failure mode this question prevents)',
-      sufficient: '"Entry points: register_delegation_template MCP tool. Bootstrap: undefined who/when/where. Concerns: (a) dead-code on merge, (b) boilerplate likely duplicated with MemoService, (c) cross-session isolation untested. All three surfaced to owner via memo + dedicated message before this verdict; owner replied to defer to next sprint. Verdict: HOLD pending Bootstrap design."',
+      insufficient: '"Concerns are minor, proceeding with PASS" (silent skip — exactly the failure mode this question prevents) — OR — "Concern X can be deferred, this path uses elevation" (without opening the file and reading the actual code path)',
+      sufficient: '"Entry points: register_delegation_template MCP tool. Bootstrap: undefined who/when/where. Concerns: (a) dead-code on merge, (b) boilerplate likely duplicated with MemoService, (c) cross-session isolation untested. Defer safety check for (a): grepped shouldElevateForUser in target file — not present, no elevation path. Read the function body — no dogfood-only reachable branch. Safe to defer. All three surfaced to owner via memo + dedicated message before this verdict; owner replied to defer to next sprint. Verdict: HOLD pending Bootstrap design."',
     },
     {
       key: 'q11',
@@ -519,7 +549,13 @@ async function runWizard(prNumber, { stdin = process.stdin } = {}) {
   const integrationTestMissing = autoDetection.integrationTestNeeds
     && (autoDetection.integrationTestNeeds.isCrossPackage || autoDetection.integrationTestNeeds.hasSharedChanges)
     && !autoDetection.integrationTestNeeds.hasIntegrationTestInPr;
-  const languageCheckFailed = !!autoDetection.languageCheck && autoDetection.languageCheck.exitCode !== 0;
+  // Only treat exit != 0 as a Q11 trigger when the script also reported concrete
+  // violation lines. exit != 0 with empty stdout is a script-side error (see
+  // printLanguageCheck) — Q11 would prompt the Orchestrator to translate
+  // violations that do not exist. spawnFailed is also excluded for the same
+  // reason: nothing was actually checked.
+  const lc = autoDetection.languageCheck;
+  const languageCheckFailed = !!lc && !lc.spawnFailed && lc.exitCode !== 0 && lc.stdout.trim().length > 0;
   const questions = getQuestions(hasAcceptanceCriteria, { integrationTestMissing, languageCheckFailed });
   const answers = {};
   const readResponse = createStdinReader(stdin);
@@ -545,6 +581,7 @@ export {
   printSummary,
   printPostAcceptanceWorkflow,
   printProposedBehaviorCoverage,
+  printLanguageCheck,
 };
 
 // --- Main ---
