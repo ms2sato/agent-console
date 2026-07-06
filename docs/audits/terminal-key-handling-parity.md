@@ -72,7 +72,7 @@ Modified sequences (xterm.js encodes `\x1b[1;<mod+1><X>` where `<X>` is `A/B/C/D
 | `Ctrl+ArrowLeft/Right` | `\x1b[1;5D / C` | `\x1b[D / C` | modifier lost | Critical | bash readline word-motion (Ctrl+←/→ = `backward-word` / `forward-word`) — one of the most common shell shortcuts. vim `<C-Right>`. tmux copy-mode word-motion. |
 | `Ctrl+ArrowUp/Down` | `\x1b[1;5A / B` | `\x1b[A / B` | modifier lost | Recommended | tmux pane-resize bindings, some editor scroll bindings. |
 | `Ctrl+Shift+Arrow*` | `\x1b[1;6<X>` | base sequence (both modifiers lost) | modifier lost | Recommended | vim `<C-S-Right>` word-select bindings; VS Code-like keymaps in TUI editors. |
-| `Meta+Arrow*` | (xterm: no output; explicit `break`) | — | — | — | OK — xterm and current impl agree. |
+| `Meta+Arrow*` | (xterm: no output; explicit `break`) | base sequence (`\x1b[A/B/D/C`) — falls through to `SPECIAL_KEYS[e.key]`, no `metaKey` check | modifier ignored | Recommended | macOS Cmd+Arrow expected as OS-level word-motion / line-jump; the terminal emitting a raw arrow byte confuses TUIs that treat Meta as a distinct modifier. (Audit revision 2026-07-06: initial pass mistakenly recorded "OK — current impl agrees"; verification during Phase B commit 1 showed the current handler has no Meta guard on the `SPECIAL_KEYS` lookup path. Phase B fixes this by explicitly returning on `metaKey` before the arrow branch.) |
 
 ### 3.3 Backspace (`keyCode 8`)
 
@@ -226,6 +226,7 @@ The following gaps must be closed in Phase B. Non-critical items in the same cod
 18. **Insert** → `\x1b[2~` (base only; Shift/Ctrl+Insert remain no-ops for OS copy/paste).
 19. **Application cursor mode** — switch between CSI and SS3 forms for arrows / Home / End based on `@xterm/headless`'s `terminal.modes.applicationCursorKeysMode`.
 20. **Tighten Ctrl+letter precondition** to `!e.shiftKey` (drop it into the `Ctrl+Shift+2/6/-` branch instead) — bug-fix cleanup, no user-visible change on realistic layouts.
+21. **Meta+Arrow no-op guard** — return early on `metaKey` in the arrow branch so `Cmd+ArrowLeft/Right/Up/Down` (macOS OS-level word-motion / line-jump) does not leak a raw arrow byte to the PTY. Matches xterm.js's explicit `break` on Meta. Added during commit 1 test-writing when polarity flip surfaced the actual current behavior (§3.2 revision 2026-07-06).
 
 ### 4.3 Non-goals for Phase B
 
