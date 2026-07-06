@@ -170,10 +170,11 @@ describe('TerminalKeyboardInput handleKeyDown', () => {
       expect(sendInput).toHaveBeenCalledWith('\r');
     });
 
-    // Deliberate agent-console divergence from xterm.js's `\r`. Claude Code
-    // requires `\n` to insert a soft newline in its prompt buffer. Not a
-    // regression — Phase B preserves this. See audit §3.4.
-    it('Shift+Enter -> \\n (deliberate divergence preserved, audit §3.4)', () => {
+    // Deliberate agent-console divergence from xterm.js's `\r`: gives users a
+    // universal soft-newline shortcut in the terminal for TUIs (Claude Code
+    // prompt etc.) that otherwise need per-tool plugins or non-standard key
+    // combinations. Not a regression — preserved by design.
+    it('Shift+Enter -> \\n (deliberate divergence preserved: universal soft-newline for TUIs)', () => {
       const { sendInput, textarea } = setupHandler();
       fireEvent.keyDown(textarea, {
         key: 'Enter',

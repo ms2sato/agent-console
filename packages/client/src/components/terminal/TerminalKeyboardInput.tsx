@@ -136,8 +136,12 @@ export const TerminalKeyboardInput = forwardRef<HTMLTextAreaElement, TerminalKey
 
         case 'Enter':
           if (e.metaKey) return;
-          // Agent-console deliberate divergence (audit §3.4): Claude Code needs
-          // Shift+Enter -> \n to insert a soft newline. xterm.js emits \r here.
+          // Agent-console deliberate divergence from xterm.js's \r: provides a
+          // universal soft-newline key at the terminal-emulator level for TUIs
+          // (Claude Code prompt etc.) that otherwise need per-tool plugins or
+          // non-standard shortcuts to insert multi-line input. Server-side
+          // soft-newline preservation lives in the message-contracts /
+          // pty-message-injection-service subsystem.
           if (e.shiftKey && !e.ctrlKey && !e.altKey) return emit('\n');
           if (e.altKey && !e.ctrlKey && !e.shiftKey) return emit('\x1b\r');
           return emit('\r');
