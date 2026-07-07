@@ -67,13 +67,21 @@ describe('System API - open-in-vscode', () => {
   });
 
   // Helper to create app with mocked system capabilities
-  async function createApp(vscodeAvailable: boolean, vscodeCommand: 'code' | 'code-insiders' | null = 'code') {
+  async function createApp(
+    vscodeAvailable: boolean,
+    vscodeCommand: 'code' | 'code-insiders' | null = 'code',
+    options: { vscodeOpenMode?: 'local-spawn' | 'remote-url-scheme'; vscodeRemoteHost?: string | null } = {},
+  ) {
     const suffix = `?v=${++importCounter}`;
 
     // Set up mock system capabilities
     const mockCapabilities = new SystemCapabilitiesService();
     // Manually set capabilities to avoid running which command
-    Reflect.set(mockCapabilities, 'capabilities', { vscode: vscodeAvailable });
+    Reflect.set(mockCapabilities, 'capabilities', {
+      vscode: vscodeAvailable,
+      vscodeOpenMode: options.vscodeOpenMode ?? 'local-spawn',
+      vscodeRemoteHost: options.vscodeRemoteHost ?? null,
+    });
     Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? vscodeCommand : null);
     const { system } = await import(`../routes/system.js${suffix}`);
     const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
@@ -210,6 +218,26 @@ describe('System API - open-in-vscode', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('should return 400 in remote-url-scheme mode and not spawn locally', async () => {
+      // Simulate the multi-user / remote-access deployment: the client is
+      // expected to navigate to a `vscode://vscode-remote/...` URL directly,
+      // so hitting this REST endpoint is a stale-client / bug indicator.
+      const app = await createApp(true, 'code', { vscodeOpenMode: 'remote-url-scheme' });
+
+      const res = await app.request('/api/system/open-in-vscode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: '/test/existing-dir' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('remote-url-scheme mode');
+
+      // The guard must fire before any spawn attempt.
+      expect(spawnCalls.length).toBe(0);
     });
   });
 });

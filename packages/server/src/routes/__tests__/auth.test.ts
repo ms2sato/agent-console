@@ -451,8 +451,14 @@ describe('GET /api/config (multi-user mode)', () => {
   function createMockSystemCapabilities(): SystemCapabilitiesService {
     return {
       detect: async () => {},
-      getCapabilities: () => ({ vscode: false }),
+      getCapabilities: () => ({
+        vscode: false,
+        vscodeOpenMode: 'local-spawn' as const,
+        vscodeRemoteHost: null,
+      }),
       getVSCodeCommand: () => null,
+      getVSCodeOpenMode: () => 'local-spawn' as const,
+      getVSCodeRemoteHost: () => null,
     } as unknown as SystemCapabilitiesService;
   }
 

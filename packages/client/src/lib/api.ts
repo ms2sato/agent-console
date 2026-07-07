@@ -38,6 +38,8 @@ import type {
 
 export type { ConfigResponse } from '@agent-console/shared';
 import { api } from './api-client';
+import { getVSCodeOpenMode, getVSCodeRemoteHost } from './capabilities';
+import { buildVSCodeRemoteUrl } from './vscode-url';
 
 // Base URL kept only for the wildcard worktree delete endpoint which Hono RPC doesn't handle well
 const API_BASE = '/api';
@@ -611,6 +613,12 @@ export async function openPath(path: string): Promise<void> {
 }
 
 export async function openInVSCode(path: string): Promise<void> {
+  if (getVSCodeOpenMode() === 'remote-url-scheme') {
+    const host = getVSCodeRemoteHost() ?? window.location.hostname;
+    const url = buildVSCodeRemoteUrl(path, host);
+    window.open(url, '_self');
+    return;
+  }
   const res = await api.system['open-in-vscode'].$post({ json: { path } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to open in VS Code');

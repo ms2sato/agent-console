@@ -5,10 +5,12 @@ import { WorktreeDeletionTasksContext } from '../../routes/__root';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { Worktree, WorktreeSession, WorktreeDeletionTask, Session } from '@agent-console/shared';
 
-// Mock hasVSCode - reads from a module-level cache set during app initialization,
+// Mock capabilities - reads from a module-level cache set during app initialization,
 // so module-level mocking is appropriate here (no business logic or fetch involved).
 mock.module('../../lib/capabilities', () => ({
   hasVSCode: () => false,
+  getVSCodeOpenMode: () => 'local-spawn',
+  getVSCodeRemoteHost: () => null,
 }));
 
 // Import WorktreeRow AFTER mock.module calls to ensure mocks are applied
