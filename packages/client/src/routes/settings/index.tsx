@@ -7,6 +7,7 @@ import { agentKeys } from '../../lib/query-keys';
 import { useAgents } from '../../components/AgentSelector';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { AddAgentForm, CapabilityIndicator } from '../../components/agents';
+import { McpInstallSection } from '../../components/settings/McpInstallSection';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { Spinner } from '../../components/ui/Spinner';
@@ -59,6 +60,8 @@ function SettingsPage() {
         { label: 'Agent Console', to: '/' },
         { label: 'Settings' },
       ]} />
+
+      <McpInstallSection />
 
       {/* Header with Add button */}
       <div className="flex items-center justify-between mb-6">

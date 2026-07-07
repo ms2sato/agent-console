@@ -65,6 +65,14 @@ export interface ConfigResponse {
     vscodeRemoteHost: string | null;
   };
   serverPid: number;
+  /**
+   * Backend HTTP port the server is bound to.
+   *
+   * Exposed so the client can compose absolute URLs to the same server
+   * (e.g. the MCP endpoint shown by the "install MCP" UI) without hard-coding
+   * a port that may differ between environments or worktrees.
+   */
+  serverPort: number;
   authMode: AuthMode;
   sharedAccountsAvailable: boolean;
 }
