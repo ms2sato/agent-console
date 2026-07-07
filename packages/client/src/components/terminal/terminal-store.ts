@@ -71,6 +71,12 @@ export interface TerminalInstance {
   reportMouseButton(kind: 'press' | 'release', cell: { x: number; y: number }): void;
   /** Paste text, honoring the app's bracketed-paste (DECSET 2004) state. */
   paste(text: string): void;
+  /** Whether DECCKM (application cursor keys mode) is on for the VT core. The
+   * keyboard handler switches Arrow / Home / End between CSI and SS3 forms
+   * based on this. Synchronous read of the headless Terminal's mode; not a
+   * snapshot field (no version bump), because it is polled only from keydown
+   * paths. */
+  getApplicationCursorMode(): boolean;
   /** Clear the current worker error and force a fresh WS connection (recovery). */
   retry(): void;
   dismissNotice(): void;
@@ -367,6 +373,8 @@ class TerminalController implements TerminalInstance {
       this.sendInput(normalized);
     }
   };
+
+  getApplicationCursorMode = (): boolean => this.terminal.modes.applicationCursorKeysMode;
 
   retry = (): void => {
     if (this.disposed) return;

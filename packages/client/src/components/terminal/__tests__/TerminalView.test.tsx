@@ -64,6 +64,7 @@ function makeInstance(snapshot: TerminalSnapshot): TerminalInstance {
     forwardScroll: () => {},
     reportMouseButton: () => {},
     paste: () => {},
+    getApplicationCursorMode: () => false,
     retry: () => {},
     dismissNotice: () => {},
     requestOlderHistory: () => {},
