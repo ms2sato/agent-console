@@ -708,7 +708,7 @@ describe('MCP Server Tools', () => {
       expect(stored?.description).toBe('updated description');
     });
 
-    it('should persist envVars (v1 parity with REST)', async () => {
+    it('should persist envVars but not echo it in the response (v1 parity with REST + secret-read gate)', async () => {
       await setupRepoManager([{
         id: 'repo-1',
         name: 'my-repo',
@@ -724,8 +724,11 @@ describe('MCP Server Tools', () => {
       };
 
       expect(response.result?.isError).toBeUndefined();
-      expect(data.repository!.envVars).toBe('FOO=bar');
+      // envVars must not be echoed back — that would create a read channel
+      // for stored plaintext secrets via an arbitrary write call.
+      expect(data.repository).not.toHaveProperty('envVars');
 
+      // Persisted correctly at the storage layer.
       const stored = repositoryManager.getRepository('repo-1');
       expect(stored?.envVars).toBe('FOO=bar');
     });

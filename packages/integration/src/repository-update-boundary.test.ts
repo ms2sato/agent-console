@@ -23,13 +23,15 @@ import { AgentManager } from '@agent-console/server/src/services/agent-manager';
 import { SqliteAgentRepository } from '@agent-console/server/src/repositories/sqlite-agent-repository';
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { SqliteRepositoryRepository } from '@agent-console/server/src/repositories/sqlite-repository-repository';
+import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { InteractiveProcessManager } from '@agent-console/server/src/services/interactive-process-manager';
 import { InterSessionMessageService } from '@agent-console/server/src/services/inter-session-message-service';
 import { TimerManager } from '@agent-console/server/src/services/timer-manager';
+import { ConditionalWakeupManager } from '@agent-console/server/src/services/conditional-wakeup-manager';
 import { WorktreeService } from '@agent-console/server/src/services/worktree-service';
 import { RepositoryManager } from '@agent-console/server/src/services/repository-manager';
-import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
+import { createMcpApp, type McpDependencies } from '@agent-console/server/src/mcp/mcp-server';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
 
@@ -110,6 +112,9 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
   let app: Hono;
   let mcpSessionId: string;
   let testJobQueue: JobQueue;
+  let conditionalWakeupManager: ConditionalWakeupManager;
+  let interactiveProcessManager: InteractiveProcessManager;
+  let timerManager: TimerManager;
   let nextId: number;
 
   beforeEach(async () => {
@@ -163,22 +168,29 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
       repository: sqliteRepoRepo,
     });
 
-    const mcpApp = createMcpApp({
+    timerManager = new TimerManager(() => {});
+    conditionalWakeupManager = new ConditionalWakeupManager(() => {});
+    interactiveProcessManager = new InteractiveProcessManager(() => {}, () => {});
+
+    const deps: McpDependencies = {
       sessionManager,
       repositoryManager,
       agentManager,
-      timerManager: new TimerManager(() => {}),
-      interactiveProcessManager: new InteractiveProcessManager(() => {}, () => {}),
+      timerManager,
+      conditionalWakeupManager,
+      interactiveProcessManager,
       worktreeService: new WorktreeService({ db }),
       annotationService: new AnnotationService(),
       interSessionMessageService: new InterSessionMessageService(),
-      suggestSessionMetadata: mock(async () => ({ branch: 'feat/test', title: 'Test' })) as any,
+      suggestSessionMetadata: mock(async () => ({ branch: 'feat/test', title: 'Test' })),
       createWorktreeWithSession,
       deleteWorktree,
+      userRepository: new SqliteUserRepository(db),
       broadcastToApp: () => {},
-      findOpenPullRequest: mock(async () => null) as any,
-      fetchPullRequestUrl: mock(async () => null) as any,
-    } as any);
+      findOpenPullRequest: mock(async () => null),
+      fetchPullRequestUrl: mock(async () => null),
+    };
+    const mcpApp = createMcpApp(deps);
 
     app = new Hono();
     app.route('', mcpApp);
@@ -187,6 +199,9 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
   });
 
   afterEach(async () => {
+    timerManager.disposeAll();
+    conditionalWakeupManager.disposeAll();
+    interactiveProcessManager.disposeAll();
     await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
@@ -211,7 +226,9 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
     expect(data.repository!.setupCommand).toBe('bun install');
     expect(data.repository!.cleanupCommand).toBe('bun run cleanup');
     expect(data.repository!.description).toBe('updated via MCP');
-    expect(data.repository!.envVars).toBe('FOO=bar');
+    // envVars must not be echoed back — that would create a read channel
+    // for stored plaintext secrets via an arbitrary write call.
+    expect(data.repository).not.toHaveProperty('envVars');
 
     // Instantiate a NEW SqliteRepositoryRepository against the same DB and
     // verify the update actually hit SQLite, not just the in-memory

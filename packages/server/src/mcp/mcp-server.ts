@@ -106,7 +106,6 @@ interface RepositoryUpdateResult {
   description?: string;
   setupCommand?: string | null;
   cleanupCommand?: string | null;
-  envVars?: string | null;
   defaultAgentId?: string | null;
 }
 
@@ -331,7 +330,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
           description: updated.description ?? undefined,
           setupCommand: updated.setupCommand ?? null,
           cleanupCommand: updated.cleanupCommand ?? null,
-          envVars: updated.envVars ?? null,
           defaultAgentId: updated.defaultAgentId ?? null,
         };
         return textResult({ repository: result });
