@@ -25,6 +25,7 @@ import type { DeleteWorktreeFn } from '../services/worktree-deletion-service.js'
 import type { CreateWorktreeWithSessionFn } from '../services/worktree-creation-service.js';
 import type { OpenPrInfo } from '../services/github-pr-service.js';
 import type { UserRepository } from '../repositories/user-repository.js';
+import type { RepositoryUpdates } from '../repositories/repository-repository.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
@@ -96,6 +97,17 @@ interface RepositoryListItem {
   name: string;
   remoteUrl?: string;
   description?: string;
+}
+
+interface RepositoryUpdateResult {
+  id: string;
+  name: string;
+  remoteUrl?: string;
+  description?: string;
+  setupCommand?: string | null;
+  cleanupCommand?: string | null;
+  envVars?: string | null;
+  defaultAgentId?: string | null;
 }
 
 function textResult(data: unknown) {
@@ -279,6 +291,53 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err }, 'list_repositories failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: update_repository ----------
+
+  mcpServer.tool(
+    'update_repository',
+    'Update a registered repository\'s configuration. Fields that can be updated: setupCommand, cleanupCommand, envVars, description, defaultAgentId. Omit a field to leave it unchanged; pass an empty string or null to clear it. NOTE: envVars is stored plaintext in the database until an encryption story ships — do not persist secrets here.',
+    {
+      repositoryId: z.string().min(1).describe('The repository ID to update'),
+      setupCommand: z.string().nullish().describe('Shell command to run after creating worktrees. Empty string or null clears the value.'),
+      cleanupCommand: z.string().nullish().describe('Shell command to run before deleting worktrees. Empty string or null clears the value.'),
+      envVars: z.string().nullish().describe('Environment variables in .env format applied to workers. Stored plaintext; do not persist secrets.'),
+      description: z.string().nullish().describe('Brief description of the repository. Empty string or null clears the value.'),
+      defaultAgentId: z.string().nullish().describe('Default agent ID for worktree creation. Empty string or null clears the value.'),
+    },
+    async ({ repositoryId, setupCommand, cleanupCommand, envVars, description, defaultAgentId }) => {
+      try {
+        const updates: RepositoryUpdates = {};
+        if (setupCommand !== undefined) updates.setupCommand = setupCommand;
+        if (cleanupCommand !== undefined) updates.cleanupCommand = cleanupCommand;
+        if (envVars !== undefined) updates.envVars = envVars;
+        if (description !== undefined) updates.description = description;
+        if (defaultAgentId !== undefined) updates.defaultAgentId = defaultAgentId;
+
+        const updated = await repositoryManager.updateRepository(repositoryId, updates);
+        if (!updated) {
+          return errorResult(`Repository not found: ${repositoryId}`);
+        }
+
+        const remoteUrl = (await getRemoteUrl(updated.path)) ?? undefined;
+        const result: RepositoryUpdateResult = {
+          id: updated.id,
+          name: updated.name,
+          remoteUrl,
+          description: updated.description ?? undefined,
+          setupCommand: updated.setupCommand ?? null,
+          cleanupCommand: updated.cleanupCommand ?? null,
+          envVars: updated.envVars ?? null,
+          defaultAgentId: updated.defaultAgentId ?? null,
+        };
+        return textResult({ repository: result });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, repositoryId }, 'update_repository failed');
         return errorResult(message);
       }
     },

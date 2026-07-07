@@ -565,6 +565,197 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // update_repository
+  // ===========================================================================
+
+  describe('update_repository', () => {
+    async function setupRepoManager(repos: Array<{
+      id: string;
+      name: string;
+      path: string;
+      description?: string | null;
+      setupCommand?: string | null;
+      cleanupCommand?: string | null;
+      envVars?: string | null;
+      defaultAgentId?: string | null;
+    }> = []): Promise<void> {
+      const db = getDatabase();
+      const sqliteRepoRepo = new SqliteRepositoryRepository(db);
+      for (const repo of repos) {
+        await sqliteRepoRepo.save({
+          ...repo,
+          createdAt: new Date().toISOString(),
+          clonedSourceRepoPath: null,
+        });
+      }
+      repositoryManager = await RepositoryManager.create({
+        jobQueue: testJobQueue,
+        repository: sqliteRepoRepo,
+      });
+      await remountMcpApp();
+    }
+
+    beforeEach(() => {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
+      });
+      process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+      mockGit.getRemoteUrl.mockImplementation(async () => 'git@github.com:owner/repo.git');
+    });
+
+    it('should persist a single-field update and expose it via the response', async () => {
+      await setupRepoManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+        description: 'initial description',
+      }]);
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        setupCommand: 'bun install',
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        repository?: Record<string, unknown>;
+        error?: string;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.repository).toBeDefined();
+      expect(data.repository!.id).toBe('repo-1');
+      expect(data.repository!.name).toBe('my-repo');
+      expect(data.repository!.setupCommand).toBe('bun install');
+
+      // Persisted via RepositoryManager
+      const stored = repositoryManager.getRepository('repo-1');
+      expect(stored?.setupCommand).toBe('bun install');
+
+      // list_repositories still shows the repo unchanged in id/name/description
+      const listResponse = await callTool(app, mcpSessionId, 'list_repositories', {}, nextId++);
+      const listData = parseToolResult(listResponse) as {
+        repositories: Array<Record<string, unknown>>;
+      };
+      expect(listData.repositories).toHaveLength(1);
+      expect(listData.repositories[0].id).toBe('repo-1');
+      expect(listData.repositories[0].name).toBe('my-repo');
+      expect(listData.repositories[0].description).toBe('initial description');
+    });
+
+    it('should not clobber other fields when a single field is updated', async () => {
+      await setupRepoManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+        description: 'orig description',
+      }]);
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        setupCommand: 'echo x',
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        repository?: Record<string, unknown>;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.repository!.description).toBe('orig description');
+      expect(data.repository!.setupCommand).toBe('echo x');
+
+      const stored = repositoryManager.getRepository('repo-1');
+      expect(stored?.description).toBe('orig description');
+      expect(stored?.setupCommand).toBe('echo x');
+    });
+
+    it('should return a structured MCP tool error for an unknown repositoryId', async () => {
+      await setupRepoManager();
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'nonexistent-id',
+        setupCommand: 'bun install',
+      }, nextId++);
+      const data = parseToolResult(response) as { error?: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('nonexistent-id');
+    });
+
+    it('should persist all provided fields in a multi-field update', async () => {
+      await setupRepoManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        setupCommand: 'bun install',
+        cleanupCommand: 'bun run cleanup',
+        description: 'updated description',
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        repository?: Record<string, unknown>;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.repository!.setupCommand).toBe('bun install');
+      expect(data.repository!.cleanupCommand).toBe('bun run cleanup');
+      expect(data.repository!.description).toBe('updated description');
+
+      const stored = repositoryManager.getRepository('repo-1');
+      expect(stored?.setupCommand).toBe('bun install');
+      expect(stored?.cleanupCommand).toBe('bun run cleanup');
+      expect(stored?.description).toBe('updated description');
+    });
+
+    it('should persist envVars (v1 parity with REST)', async () => {
+      await setupRepoManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+      }]);
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        envVars: 'FOO=bar',
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        repository?: Record<string, unknown>;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.repository!.envVars).toBe('FOO=bar');
+
+      const stored = repositoryManager.getRepository('repo-1');
+      expect(stored?.envVars).toBe('FOO=bar');
+    });
+
+    it('should treat an empty string as a request to clear the field', async () => {
+      await setupRepoManager([{
+        id: 'repo-1',
+        name: 'my-repo',
+        path: TEST_REPO_PATH,
+        description: 'to be cleared',
+      }]);
+
+      const response = await callTool(app, mcpSessionId, 'update_repository', {
+        repositoryId: 'repo-1',
+        description: '',
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        repository?: Record<string, unknown>;
+      };
+
+      expect(response.result?.isError).toBeUndefined();
+      // Response uses `?? undefined` on description; empty string cleared -> undefined
+      expect(data.repository!.description).toBeUndefined();
+
+      const stored = repositoryManager.getRepository('repo-1');
+      expect(stored?.description).toBeNull();
+    });
+  });
+
+  // ===========================================================================
   // list_sessions
   // ===========================================================================
 
