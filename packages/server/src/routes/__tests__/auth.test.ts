@@ -16,7 +16,7 @@ import type { UserMode, LoginResult } from '../../services/user-mode.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { PtyInstance } from '../../lib/pty-provider.js';
 import type { PtySpawnRequest } from '../../services/user-mode.js';
-import type { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
+import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
 
 // ============================================================================
 // Mock UserMode implementations
@@ -449,17 +449,14 @@ describe('GET /api/config (multi-user mode)', () => {
    * Create a mock SystemCapabilitiesService for testing.
    */
   function createMockSystemCapabilities(): SystemCapabilitiesService {
-    return {
-      detect: async () => {},
-      getCapabilities: () => ({
-        vscode: false,
-        vscodeOpenMode: 'local-spawn' as const,
-        vscodeRemoteHost: null,
-      }),
-      getVSCodeCommand: () => null,
-      getVSCodeOpenMode: () => 'local-spawn' as const,
-      getVSCodeRemoteHost: () => null,
-    } as unknown as SystemCapabilitiesService;
+    const service = new SystemCapabilitiesService();
+    Reflect.set(service, 'capabilities', {
+      vscode: false,
+      vscodeOpenMode: 'local-spawn',
+      vscodeRemoteHost: null,
+    });
+    Reflect.set(service, 'vscodeCommand', null);
+    return service;
   }
 
   /**
