@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
-import type { AppBindings } from '../app-context.js';
-import { asAppContext } from './test-utils.js';
+import type { AppBindings } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 // Mock open package BEFORE importing mock-fs-helper
 // The open package internally uses fs and needs to be mocked first
@@ -11,8 +11,8 @@ mock.module('open', () => ({
 }));
 
 // Import mock-fs-helper to set up memfs mocks
-import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
-import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
+import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
 
 // Track Bun.spawn calls for VS Code
 const spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
@@ -83,8 +83,8 @@ describe('System API - open-in-vscode', () => {
       vscodeRemoteHost: options.vscodeRemoteHost ?? null,
     });
     Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? vscodeCommand : null);
-    const { system } = await import(`../routes/system.js${suffix}`);
-    const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
+    const { system } = await import(`../system.js${suffix}`);
+    const { onApiError } = await import(`../../lib/error-handler.js${suffix}`);
 
     const app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
