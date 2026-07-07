@@ -18,7 +18,11 @@ import { SystemCapabilitiesService } from '../../services/system-capabilities-se
  */
 function createMockSystemCapabilities(): SystemCapabilitiesService {
   const service = new SystemCapabilitiesService();
-  Reflect.set(service, 'capabilities', { vscode: false });
+  Reflect.set(service, 'capabilities', {
+    vscode: false,
+    vscodeOpenMode: 'local-spawn',
+    vscodeRemoteHost: null,
+  });
   Reflect.set(service, 'vscodeCommand', null);
   return service;
 }
@@ -80,6 +84,11 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
     // Boundary contract: only the boolean gate is exposed.
     expect(body).not.toHaveProperty('sharedAccountIds');
     expect(body).not.toHaveProperty('sharedAccounts');
+    // VS Code capability fields are always present in the response so the
+    // client can decide how to render the "Open in VS Code" affordance.
+    expect(body.capabilities.vscode).toBe(false);
+    expect(body.capabilities.vscodeOpenMode).toBe('local-spawn');
+    expect(body.capabilities.vscodeRemoteHost).toBeNull();
   });
 
   it('returns sharedAccountsAvailable: true when the registry is enabled', async () => {

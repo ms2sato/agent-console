@@ -138,6 +138,37 @@ export const serverConfig = {
     }
     return value as 'bun-pty' | 'bun-terminal';
   })(),
+  /**
+   * VS Code "Open" mode selector.
+   * - undefined (default): capability service decides based on AUTH_MODE.
+   *   AUTH_MODE=multi-user -> 'remote-url-scheme' (server likely on remote host);
+   *   otherwise 'local-spawn'.
+   * - 'local-spawn': server spawns `code <path>` locally.
+   * - 'remote-url-scheme': client opens `vscode://vscode-remote/...` URL.
+   *
+   * Empty string is treated as unset (operator-friendly).
+   */
+  VSCODE_OPEN_MODE: (() => {
+    const raw = process.env.VSCODE_OPEN_MODE?.trim();
+    if (!raw) return undefined;
+    if (raw !== 'local-spawn' && raw !== 'remote-url-scheme') {
+      throw new Error(
+        `Invalid VSCODE_OPEN_MODE: '${raw}'. Must be 'local-spawn' or 'remote-url-scheme'.`
+      );
+    }
+    return raw as 'local-spawn' | 'remote-url-scheme';
+  })(),
+  /**
+   * Host to embed in `vscode://vscode-remote/ssh-remote+HOST<path>` URLs when
+   * `VSCODE_OPEN_MODE === 'remote-url-scheme'`. When unset, the client uses
+   * `window.location.hostname`.
+   *
+   * Empty string is treated as unset (operator-friendly).
+   */
+  VSCODE_REMOTE_HOST: (() => {
+    const raw = process.env.VSCODE_REMOTE_HOST?.trim();
+    return raw || undefined;
+  })(),
 } as const;
 
 /**

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
-import type { AppBindings } from '../app-context.js';
-import { asAppContext } from './test-utils.js';
+import type { AppBindings } from '../../app-context.js';
+import { asAppContext } from '../../__tests__/test-utils.js';
 
 // Mock open package BEFORE importing mock-fs-helper
 // The open package internally uses fs and needs to be mocked first
@@ -11,8 +11,8 @@ mock.module('open', () => ({
 }));
 
 // Import mock-fs-helper to set up memfs mocks
-import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
-import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
+import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
 
 // Track Bun.spawn calls for VS Code
 const spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
@@ -67,16 +67,24 @@ describe('System API - open-in-vscode', () => {
   });
 
   // Helper to create app with mocked system capabilities
-  async function createApp(vscodeAvailable: boolean, vscodeCommand: 'code' | 'code-insiders' | null = 'code') {
+  async function createApp(
+    vscodeAvailable: boolean,
+    vscodeCommand: 'code' | 'code-insiders' | null = 'code',
+    options: { vscodeOpenMode?: 'local-spawn' | 'remote-url-scheme'; vscodeRemoteHost?: string | null } = {},
+  ) {
     const suffix = `?v=${++importCounter}`;
 
     // Set up mock system capabilities
     const mockCapabilities = new SystemCapabilitiesService();
     // Manually set capabilities to avoid running which command
-    Reflect.set(mockCapabilities, 'capabilities', { vscode: vscodeAvailable });
+    Reflect.set(mockCapabilities, 'capabilities', {
+      vscode: vscodeAvailable,
+      vscodeOpenMode: options.vscodeOpenMode ?? 'local-spawn',
+      vscodeRemoteHost: options.vscodeRemoteHost ?? null,
+    });
     Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? vscodeCommand : null);
-    const { system } = await import(`../routes/system.js${suffix}`);
-    const { onApiError } = await import(`../lib/error-handler.js${suffix}`);
+    const { system } = await import(`../system.js${suffix}`);
+    const { onApiError } = await import(`../../lib/error-handler.js${suffix}`);
 
     const app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
@@ -210,6 +218,26 @@ describe('System API - open-in-vscode', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('should return 400 in remote-url-scheme mode and not spawn locally', async () => {
+      // Simulate the multi-user / remote-access deployment: the client is
+      // expected to navigate to a `vscode://vscode-remote/...` URL directly,
+      // so hitting this REST endpoint is a stale-client / bug indicator.
+      const app = await createApp(true, 'code', { vscodeOpenMode: 'remote-url-scheme' });
+
+      const res = await app.request('/api/system/open-in-vscode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: '/test/existing-dir' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('remote-url-scheme mode');
+
+      // The guard must fire before any spawn attempt.
+      expect(spawnCalls.length).toBe(0);
     });
   });
 });

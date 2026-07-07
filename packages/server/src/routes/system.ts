@@ -52,6 +52,17 @@ const system = new Hono<AppBindings>()
 
     // Check if VS Code is available
     const { systemCapabilities } = c.get('appContext');
+
+    // Guard against stale clients (or bugs) that hit this endpoint in
+    // remote-url-scheme mode. In that mode the client is expected to navigate
+    // to the `vscode://vscode-remote/...` URL directly; spawning a local
+    // `code` process here would be a silent no-op on remote-access setups.
+    if (systemCapabilities.getVSCodeOpenMode() === 'remote-url-scheme') {
+      throw new ValidationError(
+        'open-in-vscode REST endpoint is disabled in remote-url-scheme mode; use the URL scheme instead'
+      );
+    }
+
     const vscodeCommand = systemCapabilities.getVSCodeCommand();
 
     if (!vscodeCommand) {

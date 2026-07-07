@@ -1,4 +1,4 @@
-import { describe, it, expect as bunExpect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect as bunExpect, mock, beforeEach, afterAll, afterEach, spyOn } from 'bun:test';
 import {
   fetchConfig,
   createSession,
@@ -15,9 +15,11 @@ import {
   fetchBranches,
   generateRepositoryDescription,
   resumeSession,
+  openInVSCode,
   ServerUnavailableError,
   ApiError,
 } from '../api';
+import * as capabilitiesModule from '../capabilities';
 
 // Bun's expect().toEqual() enforces strict generic matching between actual and expected types.
 // Tests use partial mock data intentionally (verifying passthrough, not shape), so we wrap
@@ -906,6 +908,103 @@ describe('API Client', () => {
         expect(thrown.status).toBe(400);
         expect(thrown.code).toBeUndefined();
       }
+    });
+  });
+
+  /**
+   * openInVSCode() dispatches between two modes based on the server-provided
+   * capabilities cache. These tests exercise both branches: the legacy REST
+   * POST path (local-spawn) and the client-side URL-scheme navigation
+   * (remote-url-scheme).
+   *
+   * `getVSCodeOpenMode` and `getVSCodeRemoteHost` are replaced per-test via
+   * `spyOn` (NOT mock.module, which is process-global in bun:test and would
+   * leak into other test files). This mirrors the pattern used in
+   * `routes/__tests__/index.test.tsx` for `hasVSCode`.
+   */
+  describe('openInVSCode', () => {
+    let windowOpenSpy: ReturnType<typeof spyOn>;
+    let modeSpy: ReturnType<typeof spyOn>;
+    let hostSpy: ReturnType<typeof spyOn>;
+    let originalLocation: Location;
+
+    beforeEach(() => {
+      // window.open is spied to capture the URL-scheme invocation. Provide a
+      // no-op impl so no actual popup / navigation is attempted in jsdom.
+      windowOpenSpy = spyOn(window, 'open').mockImplementation(() => null);
+      originalLocation = window.location;
+    });
+
+    afterEach(() => {
+      windowOpenSpy.mockRestore();
+      modeSpy?.mockRestore();
+      hostSpy?.mockRestore();
+      Object.defineProperty(window, 'location', {
+        value: originalLocation,
+        writable: true,
+      });
+    });
+
+    it('mode=local-spawn: POSTs to /api/system/open-in-vscode and does NOT invoke window.open', async () => {
+      modeSpy = spyOn(capabilitiesModule, 'getVSCodeOpenMode').mockImplementation(
+        () => 'local-spawn'
+      );
+      hostSpy = spyOn(capabilitiesModule, 'getVSCodeRemoteHost').mockImplementation(
+        () => null
+      );
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+
+      await openInVSCode('/home/user/foo.ts');
+
+      expect(getLastFetchUrl()).toContain('/api/system/open-in-vscode');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ path: '/home/user/foo.ts' });
+      // Negative: URL-scheme path MUST NOT fire in local-spawn mode.
+      expect(windowOpenSpy).not.toHaveBeenCalled();
+    });
+
+    it('mode=remote-url-scheme + configured host: navigates via window.open and does NOT hit the REST endpoint', async () => {
+      modeSpy = spyOn(capabilitiesModule, 'getVSCodeOpenMode').mockImplementation(
+        () => 'remote-url-scheme'
+      );
+      hostSpy = spyOn(capabilitiesModule, 'getVSCodeRemoteHost').mockImplementation(
+        () => 'srv.example.com'
+      );
+
+      await openInVSCode('/home/user/foo.ts');
+
+      // Positive: window.open invoked once with the expected URL + target.
+      expect(windowOpenSpy).toHaveBeenCalledTimes(1);
+      const call = windowOpenSpy.mock.calls[0] as [string, string];
+      expect(call[0]).toBe(
+        'vscode://vscode-remote/ssh-remote+srv.example.com/home/user/foo.ts'
+      );
+      expect(call[1]).toBe('_self');
+      // Negative: REST fetch MUST NOT fire in remote-url-scheme mode.
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('mode=remote-url-scheme + vscodeRemoteHost=null: falls back to window.location.hostname', async () => {
+      Object.defineProperty(window, 'location', {
+        value: { hostname: 'fallback.local', protocol: 'http:', host: 'fallback.local' },
+        writable: true,
+      });
+      modeSpy = spyOn(capabilitiesModule, 'getVSCodeOpenMode').mockImplementation(
+        () => 'remote-url-scheme'
+      );
+      hostSpy = spyOn(capabilitiesModule, 'getVSCodeRemoteHost').mockImplementation(
+        () => null
+      );
+
+      await openInVSCode('/tmp/x.ts');
+
+      expect(windowOpenSpy).toHaveBeenCalledTimes(1);
+      const call = windowOpenSpy.mock.calls[0] as [string, string];
+      expect(call[0]).toBe(
+        'vscode://vscode-remote/ssh-remote+fallback.local/tmp/x.ts'
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 });

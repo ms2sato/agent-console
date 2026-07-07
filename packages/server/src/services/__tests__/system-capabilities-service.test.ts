@@ -1,7 +1,24 @@
 import { describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import type { ServerConfig } from '../../lib/server-config.js';
 
 // Store original Bun.spawn to restore after tests
 const originalBunSpawn = Bun.spawn;
+
+/**
+ * Minimal ServerConfig-shaped stub for VS Code capability resolution.
+ * Only fields consumed by SystemCapabilitiesService need to be provided.
+ */
+function makeConfig(overrides: {
+  VSCODE_OPEN_MODE?: 'local-spawn' | 'remote-url-scheme';
+  VSCODE_REMOTE_HOST?: string;
+  AUTH_MODE?: 'none' | 'multi-user';
+}): Pick<ServerConfig, 'VSCODE_OPEN_MODE' | 'VSCODE_REMOTE_HOST' | 'AUTH_MODE'> {
+  return {
+    VSCODE_OPEN_MODE: overrides.VSCODE_OPEN_MODE,
+    VSCODE_REMOTE_HOST: overrides.VSCODE_REMOTE_HOST,
+    AUTH_MODE: overrides.AUTH_MODE ?? 'none',
+  };
+}
 
 // Track which commands should be "available"
 let availableCommands: Set<string> = new Set();
@@ -59,9 +76,9 @@ describe('SystemCapabilitiesService', () => {
     (Bun as { spawn: typeof Bun.spawn }).spawn = originalBunSpawn;
   });
 
-  async function getService() {
+  async function getService(configOverrides: Parameters<typeof makeConfig>[0] = {}) {
     const module = await import(`../system-capabilities-service.js?v=${++importCounter}`);
-    return new module.SystemCapabilitiesService();
+    return new module.SystemCapabilitiesService(makeConfig(configOverrides));
   }
 
   describe('detect()', () => {
@@ -192,6 +209,118 @@ describe('SystemCapabilitiesService', () => {
       const service = await getService();
 
       expect(() => service.getCapabilities()).toThrow(
+        'SystemCapabilitiesService not initialized. Call detect() first.'
+      );
+    });
+  });
+
+  // =========================================================================
+  // vscodeOpenMode resolution
+  // =========================================================================
+
+  describe('vscodeOpenMode', () => {
+    it('honors VSCODE_OPEN_MODE=local-spawn regardless of AUTH_MODE', async () => {
+      const service = await getService({
+        VSCODE_OPEN_MODE: 'local-spawn',
+        AUTH_MODE: 'multi-user',
+      });
+      await service.detect();
+
+      expect(service.getVSCodeOpenMode()).toBe('local-spawn');
+      expect(service.getCapabilities().vscodeOpenMode).toBe('local-spawn');
+    });
+
+    it('honors VSCODE_OPEN_MODE=remote-url-scheme regardless of AUTH_MODE', async () => {
+      const service = await getService({
+        VSCODE_OPEN_MODE: 'remote-url-scheme',
+        AUTH_MODE: 'none',
+      });
+      await service.detect();
+
+      expect(service.getVSCodeOpenMode()).toBe('remote-url-scheme');
+    });
+
+    it('defaults to remote-url-scheme when AUTH_MODE=multi-user and VSCODE_OPEN_MODE unset', async () => {
+      const service = await getService({ AUTH_MODE: 'multi-user' });
+      await service.detect();
+
+      expect(service.getVSCodeOpenMode()).toBe('remote-url-scheme');
+    });
+
+    it('defaults to local-spawn when AUTH_MODE=none and VSCODE_OPEN_MODE unset', async () => {
+      const service = await getService({ AUTH_MODE: 'none' });
+      await service.detect();
+
+      expect(service.getVSCodeOpenMode()).toBe('local-spawn');
+    });
+
+    it('reports vscode=true in remote-url-scheme mode even when no local binary exists', async () => {
+      // No commands available on the server host
+      const service = await getService({ VSCODE_OPEN_MODE: 'remote-url-scheme' });
+      await service.detect();
+
+      expect(service.hasVSCode()).toBe(true);
+      expect(service.getCapabilities().vscode).toBe(true);
+      // vscodeCommand still reflects the local detection result (null here);
+      // the REST guard uses vscodeOpenMode, not vscodeCommand, to reject.
+      expect(service.getVSCodeCommand()).toBe(null);
+    });
+
+    it('reports vscode=false in local-spawn mode when no local binary exists', async () => {
+      const service = await getService({ VSCODE_OPEN_MODE: 'local-spawn' });
+      await service.detect();
+
+      expect(service.hasVSCode()).toBe(false);
+      expect(service.getCapabilities().vscode).toBe(false);
+    });
+
+    it('reports vscode=true in local-spawn mode when a local binary exists', async () => {
+      availableCommands.add('code');
+
+      const service = await getService({ VSCODE_OPEN_MODE: 'local-spawn' });
+      await service.detect();
+
+      expect(service.hasVSCode()).toBe(true);
+      expect(service.getVSCodeCommand()).toBe('code');
+    });
+
+    it('getVSCodeOpenMode() throws before detect()', async () => {
+      const service = await getService();
+
+      expect(() => service.getVSCodeOpenMode()).toThrow(
+        'SystemCapabilitiesService not initialized. Call detect() first.'
+      );
+    });
+  });
+
+  // =========================================================================
+  // vscodeRemoteHost resolution
+  // =========================================================================
+
+  describe('vscodeRemoteHost', () => {
+    it('surfaces VSCODE_REMOTE_HOST when set', async () => {
+      const service = await getService({
+        VSCODE_OPEN_MODE: 'remote-url-scheme',
+        VSCODE_REMOTE_HOST: 'dev.example.com',
+      });
+      await service.detect();
+
+      expect(service.getVSCodeRemoteHost()).toBe('dev.example.com');
+      expect(service.getCapabilities().vscodeRemoteHost).toBe('dev.example.com');
+    });
+
+    it('returns null when VSCODE_REMOTE_HOST is unset', async () => {
+      const service = await getService({ VSCODE_OPEN_MODE: 'remote-url-scheme' });
+      await service.detect();
+
+      expect(service.getVSCodeRemoteHost()).toBe(null);
+      expect(service.getCapabilities().vscodeRemoteHost).toBe(null);
+    });
+
+    it('getVSCodeRemoteHost() throws before detect()', async () => {
+      const service = await getService();
+
+      expect(() => service.getVSCodeRemoteHost()).toThrow(
         'SystemCapabilitiesService not initialized. Call detect() first.'
       );
     });

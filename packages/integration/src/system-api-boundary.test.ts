@@ -62,7 +62,11 @@ function setupSpawnMock() {
 function createMockSystemCapabilities(vscodeAvailable: boolean = true): SystemCapabilitiesService {
   const mockCapabilities = new SystemCapabilitiesService();
   // Manually set capabilities to avoid running 'which' command
-  Reflect.set(mockCapabilities, 'capabilities', { vscode: vscodeAvailable });
+  Reflect.set(mockCapabilities, 'capabilities', {
+    vscode: vscodeAvailable,
+    vscodeOpenMode: 'local-spawn',
+    vscodeRemoteHost: null,
+  });
   Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? 'code' : null);
   return mockCapabilities;
 }
