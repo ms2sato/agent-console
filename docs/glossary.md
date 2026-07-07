@@ -171,6 +171,27 @@ The session-side resolution is encapsulated by one of two sibling helpers in `pa
 - **Contrast:** [Service User](#service-user) (the OS account the server process runs as — what elevation is FROM, not TO).
 - **See:** Issue [#837](https://github.com/ms2sato/agent-console/issues/837) (privilege-elevation umbrella), [`packages/server/src/services/privilege-elevation.ts`](../packages/server/src/services/privilege-elevation.ts) — exposes `runAsUser` / `spawnAsUser` / `rmRecursiveAsUser` (the canonical elevated-recursive-removal helper). The strict-thin-wrapper family also includes domain-level runners that compose `runAsUser` plus caller semantics: [`packages/server/src/services/github-cli.ts`](../packages/server/src/services/github-cli.ts)'s `runGh` (gh-CLI-specific; throws on non-zero exit / timeout — lives in `services/` rather than `privilege-elevation.ts` per [Elevation Helpers rule](../.claude/rules/elevation-helpers.md) because it adds semantic layering). Identity-resolution helpers live alongside in [`packages/server/src/services/resolve-spawn-username.ts`](../packages/server/src/services/resolve-spawn-username.ts) (`resolveSpawnUsername` / `resolveRequestUsername` — see the bullet pair above). Issues [#879](https://github.com/ms2sato/agent-console/issues/879) and [#886](https://github.com/ms2sato/agent-console/issues/886). PRs #843 / #856 / #877 / #880 / #881 / #888 / #889 / #892 for individual consumer migrations and resolver / runner extractions
 
+## Client Capabilities
+
+### VSCodeOpenMode
+Union type controlling how the client opens paths in VS Code from the "Open in VS Code" UI. Determined server-side and delivered to the client via `/api/config.capabilities.vscodeOpenMode`.
+
+- `local-spawn` — the server spawns `code <path>` on its own host via `Bun.spawn`. Suitable for single-machine setups (server and browser run on the same OS). Default when `AUTH_MODE=none`.
+- `remote-url-scheme` — the client navigates to `vscode://vscode-remote/ssh-remote+<host><path>`, letting the browser's local VS Code + Remote-SSH extension open the file over SSH. Suitable for remote-access setups (server on a remote host, browser on the user's local machine). Default when `AUTH_MODE=multi-user`.
+
+**Server env overrides:**
+- `VSCODE_OPEN_MODE` — explicit `local-spawn` / `remote-url-scheme`; wins over the `AUTH_MODE`-derived default. Invalid values throw at server startup.
+- `VSCODE_REMOTE_HOST` — string surfaced on `/api/config.capabilities.vscodeRemoteHost` (null when unset). When null, the client falls back to `window.location.hostname` for host derivation.
+
+**Related capability fields:**
+- `capabilities.vscode: boolean` — the button-visibility gate. Unconditionally `true` in `remote-url-scheme` mode (the client's local VS Code handles the URL scheme, so the server's `code` binary presence is irrelevant); in `local-spawn` mode reflects the `which code` / `which code-insiders` detection.
+- `capabilities.vscodeRemoteHost: string | null` — the host embedded in the SSH-remote URL when the client dispatches the URL scheme.
+
+**Guardrails:** `POST /api/system/open-in-vscode` rejects (400) in `remote-url-scheme` mode so stale clients cannot silently spawn on the wrong host.
+
+- **Aliases:** vscodeOpenMode (`ConfigResponse` field name), Open-in-VSCode mode
+- **See:** Issue [#987](https://github.com/ms2sato/agent-console/issues/987) (introduces the URL-scheme dispatch); [`packages/shared/src/types/auth.ts`](../packages/shared/src/types/auth.ts) (`VSCodeOpenMode`, `ConfigResponse.capabilities`); [`packages/server/src/services/system-capabilities-service.ts`](../packages/server/src/services/system-capabilities-service.ts) (`resolveVSCodeOpenMode`); [`packages/client/src/lib/vscode-url.ts`](../packages/client/src/lib/vscode-url.ts) (`buildVSCodeRemoteUrl`).
+
 ## Events & Communication
 
 ### ConditionalWakeup
