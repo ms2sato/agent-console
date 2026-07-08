@@ -1,5 +1,10 @@
 import { describe, it, expect, afterEach } from 'bun:test';
-import { replayHistoryChunk, replayHistoryPair, _setReplayScrollbackForTest } from '../history-replay';
+import {
+  replayHistoryChunk,
+  replayHistoryPair,
+  replayHistoryJoint,
+  _setReplayScrollbackForTest,
+} from '../history-replay';
 
 const identity = (d: string) => d;
 
@@ -207,5 +212,108 @@ describe('replayHistoryPair (seam correction §6.2)', () => {
     const pair = await replayHistoryPair(newer, top, 20, 24, (d) => d);
     const hrefs = [...pair.newChunkRows, ...pair.topChunkRows].flatMap((r) => r.links.map((l) => l.href));
     expect(hrefs.some((h) => h.includes('very/long/path/that/continues'))).toBe(true);
+  });
+});
+
+describe('replayHistoryJoint (triple seam correction §6.2, #994)', () => {
+  afterEach(() => {
+    _setReplayScrollbackForTest(null);
+  });
+
+  it('partitions a pure line-flow triple with no duplication or loss at either boundary', async () => {
+    // Stream order (oldest first): A precedes B precedes C.
+    const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const B = Array.from({ length: 15 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const C = Array.from({ length: 10 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const sa = await replayHistoryChunk(A, 80, 24, (d) => d);
+    const sb = await replayHistoryChunk(B, 80, 24, (d) => d);
+    const sc = await replayHistoryChunk(C, 80, 24, (d) => d);
+    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    expect(joint.overflow).toBe(false);
+    expect(joint.partitions.length).toBe(3);
+    // The joined partition equals the concatenation of the three standalone
+    // extractions (per-partition split boundaries differ — splitBaseY_i counts
+    // only the scrollback settled BEFORE that partition — but the JOINED set
+    // is loss- and duplication-free).
+    expect(
+      joint.partitions.flatMap((rows) => textOf(rows)),
+    ).toEqual([...textOf(sa.rows), ...textOf(sb.rows), ...textOf(sc.rows)]);
+  });
+
+  it('reports overflow (empty partitions) when the joined triple exceeds the scrollback cap', async () => {
+    _setReplayScrollbackForTest(50);
+    // Each chunk alone stays under the cap; all three together exceed it.
+    const A = Array.from({ length: 10 }, (_, i) => `A${i}\r\n`).join('');
+    const B = Array.from({ length: 10 }, (_, i) => `B${i}\r\n`).join('');
+    const C = Array.from({ length: 40 }, (_, i) => `C${i}\r\n`).join('');
+    const result = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    expect(result.overflow).toBe(true);
+    expect(result.partitions).toEqual([]);
+  });
+
+  it('corrects a wrap-boundary seam: the merge row belongs to the next chunk\'s partition, not the middle chunk\'s', async () => {
+    // A (oldest) is line-flow only.
+    const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    // B (middle) ends WITHOUT a trailing newline — a mid-word partial line
+    // that the byte cut splits into (B.tail = 'hello wor', C.head = 'ld world').
+    const B =
+      Array.from({ length: 20 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('') +
+      'segment-B-tail-hello wor';
+    // C (newest) starts with the completion of B's partial line, then more.
+    const C =
+      'ld world\r\n' +
+      Array.from({ length: 15 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    expect(joint.overflow).toBe(false);
+    const [, bPart, cPart] = joint.partitions;
+    const bText = textOf(bPart);
+    const cText = textOf(cPart);
+    // Under the joint partition, B's own on-screen tail ('hello wor') was
+    // still on-screen at splitBaseYs[1] capture — it did NOT settle into
+    // scrollback during B's writes. So B's partition contains NEITHER the
+    // partial fragment NOR the merged row. (Under the current pair-only
+    // design's Step N+1 pair(new_C, B), B's rows WOULD have contained the
+    // 'hello wor' row — that is the #994 duplicate this triple replay avoids.)
+    expect(bText.some((line) => /hello wor$/.test(line))).toBe(false);
+    expect(bText.some((line) => /hello world/.test(line))).toBe(false);
+    // C's partition contains the merged row exactly once — C's leading
+    // 'ld world' completed B's partial line before the next \r\n scrolled it
+    // into scrollback, so the joint extraction captures the merge.
+    expect(cText.filter((line) => /segment-B-tail-hello world/.test(line)).length).toBe(1);
+    // And the partial fragment is NOT visible anywhere — the completion
+    // covered it before extraction.
+    expect(cText.some((line) => /hello wor$/.test(line) && !/hello world/.test(line))).toBe(false);
+  });
+
+  it('corrects a repaint-frame-boundary seam so chrome does not clamp as a leading settled row', async () => {
+    // Mirrors the existing pair-replay test's polarity assertion, extended to
+    // 3 chunks. C alone (standalone) clamps its leading CUU at the empty
+    // screen top, settling 'CHROME-BAR' as a leading scrollback row. The
+    // joint (A, B, C) gives C's leading repaints the state B established, so
+    // the CUU lands on B's on-screen row and does NOT leak chrome into C's
+    // settled scrollback.
+    const A = Array.from({ length: 25 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join(
+      '',
+    );
+    const B =
+      Array.from({ length: 20 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    // C starts mid-repaint: relative CUU + clear + chrome-bar, then a
+    // continuation into fresh committed lines. Started from an EMPTY screen
+    // the CUU clamps at the top -> chrome misplaced (baseline).
+    const C =
+      '\x1b[2A\r\x1b[K' +
+      'CHROME-BAR' +
+      '\r\n\r\n' +
+      Array.from({ length: 15 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('');
+    // Baseline polarity: standalone C has 'CHROME-BAR' as its first row.
+    const standaloneC = await replayHistoryChunk(C, 80, 24, (d) => d);
+    expect(textOf(standaloneC.rows)[0]).toBe('CHROME-BAR');
+    // Joint (A, B, C) — the chrome row is corrected.
+    const joint = await replayHistoryJoint([A, B, C], 80, 24, (d) => d);
+    expect(joint.overflow).toBe(false);
+    const cPart = textOf(joint.partitions[2]);
+    // C's leading row is NOT the chrome bar — it is real content, because
+    // the CUU landed on B's on-screen row (which existed in the joined state).
+    expect(cPart[0]).not.toBe('CHROME-BAR');
   });
 });

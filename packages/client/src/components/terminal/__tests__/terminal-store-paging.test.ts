@@ -807,15 +807,15 @@ describe('terminal-store paging', () => {
     }
   });
 
-  // --- Seam correction: older-neighbor pair re-replay (§6.2, #979) ---
-  describe('seam correction (pair re-replay)', () => {
+  // --- Seam correction: older-neighbor joint re-replay (§6.2, #979, #994) ---
+  describe('seam correction (pair/triple re-replay)', () => {
     const negKeys = (instance: ReturnType<typeof getOrCreateTerminal>) =>
       instance
         .getSnapshot()
         .rows.filter((r) => r.key < 0)
         .map((r) => r.key);
 
-    it('re-replays the top chunk on the next older fetch, retaining raw on the new top only', async () => {
+    it('re-replays the top chunk on the next older fetch, retaining raw on both new [0] and new [1] (#994 invariant)', async () => {
       const { instance, ws } = open('s', 'w');
       await seedHistory(ws, { startOffset: 100 });
 
@@ -834,7 +834,10 @@ describe('terminal-store paging', () => {
       const keysBefore = negKeys(instance);
 
       // Older chunk: pair path (the top chunk has raw). It replaces BOTH chunks'
-      // rows with fresh keys and moves raw retention to the new top.
+      // rows with fresh keys. Under the #994 invariant, raw is retained on BOTH
+      // pagedChunks[0] (the new top, B) AND pagedChunks[1] (the former top, A),
+      // so the NEXT older fetch can do a joint 3-chunk replay across the
+      // interior seam. (Under the pre-#994 rule, A's raw was dropped here.)
       await pageChunk(ws, instance, {
         data: manyLines('B'),
         startOffset: 40,
@@ -846,7 +849,8 @@ describe('terminal-store paging', () => {
       expect(p.pagedChunkCount).toBe(2);
       expect(p.oldestOffset).toBe(40); // advanced to B.startOffset (byte range untouched)
       expect(p.topChunkHasRaw).toBe(true); // B is the new top, retains raw
-      expect(p.pagedRawCount).toBe(1); // only ONE raw held: A's was dropped
+      expect(p.secondChunkHasRaw).toBe(true); // A stays at [1] under the #994 invariant
+      expect(p.pagedRawCount).toBe(2); // TWO raws held: [0] and [1]
 
       // Both replaced chunks got fresh negative keys (§6.3 never reuses keys).
       const keysAfter = negKeys(instance);
@@ -857,7 +861,7 @@ describe('terminal-store paging', () => {
       expect(p.pagedRowCount).toBe(negKeys(instance).length);
     });
 
-    it('eviction after a pair re-replay restores the exact byte offset and leaves the new top raw-less', async () => {
+    it('eviction after a pair re-replay restores the exact byte offset and preserves A raw on the new top (#994 invariant)', async () => {
       const { instance, ws } = open('s', 'w');
       await seedHistory(ws, { startOffset: 100 });
       await pageChunk(ws, instance, {
@@ -882,10 +886,15 @@ describe('terminal-store paging', () => {
       let p = _inspect(instance).paging;
       expect(p.pagedChunkCount).toBe(1);
       expect(p.oldestOffset).toBe(70); // B.endOffset exactly
-      expect(p.topChunkHasRaw).toBe(false); // A's raw was dropped when B took over
-      expect(p.pagedRawCount).toBe(0);
+      // Under the #994 invariant A retained raw at index 1 while B was top; the
+      // evict shift makes A the new [0] and its raw is still valid for the next
+      // fetch's pair replay. (Under the pre-#994 rule A's raw would have been
+      // dropped when B took over, forcing a standalone replay next.)
+      expect(p.topChunkHasRaw).toBe(true);
+      expect(p.pagedRawCount).toBe(1);
 
-      // The next older fetch therefore replays STANDALONE and re-retains raw.
+      // The next older fetch therefore replays PAIR (A holds raw) and after it
+      // both pagedChunks[0]=C and [1]=A hold raw again.
       await pageChunk(ws, instance, {
         data: manyLines('C'),
         startOffset: 50,
@@ -895,7 +904,8 @@ describe('terminal-store paging', () => {
       });
       p = _inspect(instance).paging;
       expect(p.topChunkHasRaw).toBe(true);
-      expect(p.pagedRawCount).toBe(1);
+      expect(p.secondChunkHasRaw).toBe(true);
+      expect(p.pagedRawCount).toBe(2);
     });
 
     it('drops retained raw on a cols resize', async () => {
@@ -991,6 +1001,195 @@ describe('terminal-store paging', () => {
       expect(p.pagedRawCount).toBe(1);
       // The folded content is visible (attributed to the top chunk's rows).
       expect(allText(instance)).toContain('small-older-chunk');
+    });
+
+    // --- Triple re-replay (#994) ---
+
+    it('retains raw on both [0] and [1] after 3 sequential fetches, dropping [2] under the invariant', async () => {
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 100 });
+      // Step 1: standalone A.
+      await pageChunk(ws, instance, {
+        data: manyLines('A'),
+        startOffset: 70,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      // Step 2: pair(B, A). Under the #994 invariant, [0]=B and [1]=A both hold raw.
+      await pageChunk(ws, instance, {
+        data: manyLines('B'),
+        startOffset: 40,
+        endOffset: 70,
+        hasMore: true,
+        epoch: 1000,
+      });
+      let p = _inspect(instance).paging;
+      expect(p.pagedRawCount).toBe(2);
+      // Step 3: triple(C, B, A). After it, [0]=C(raw), [1]=B(raw), [2]=A(no raw).
+      await pageChunk(ws, instance, {
+        data: manyLines('C'),
+        startOffset: 10,
+        endOffset: 40,
+        hasMore: true,
+        epoch: 1000,
+      });
+      p = _inspect(instance).paging;
+      expect(p.pagedChunkCount).toBe(3);
+      expect(p.pagedRawCount).toBe(2); // top + second-from-top only
+      expect(p.topChunkHasRaw).toBe(true);
+      expect(p.secondChunkHasRaw).toBe(true);
+      // Row-independent invariant check: after any apply-*, pagedRowCount ===
+      // count of negative-key rows in snapshot.rows.
+      expect(p.pagedRowCount).toBe(negKeys(instance).length);
+    });
+
+    it('wrap-boundary chunk cut mid-line: 3rd fetch removes the pair-chain re-inclusion artifact', async () => {
+      // Fixture: three chunks whose byte cuts fall in mid-line positions, so
+      // the pair-only chain would leave a mid-word wrap-misalignment between
+      // chunks (the #994 owner symptom). Under the triple re-replay, each
+      // seam row belongs to the newer chunk's partition once, and does NOT
+      // duplicate in the older chunk's rows.
+      //
+      // Stream order (bytes flow oldest -> newest): C -> B -> A -> live.
+      // So C's tail merges with B's head, and B's tail merges with A's head.
+      // Fetch order (paging goes newest -> oldest): A first, then B, then C.
+      //
+      // Each chunk must exceed one throwaway viewport (24 rows at default 80x24)
+      // so its replay produces scrollback, otherwise the middle chunk folds
+      // into the top and the triple case is never reached (see the sub-viewport
+      // fold test above).
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 300 });
+      // Chunk C (oldest, fetched third): 30 line-flow rows + partial mid-line
+      // cut at the byte boundary with B.
+      const C =
+        Array.from({ length: 30 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('') +
+        'segment-C-tail-good mor';
+      // Chunk B (middle, fetched second): completes C's partial line, own
+      // scroll-sized content, then own partial tail cut with A.
+      const B =
+        'ning\r\n' +
+        Array.from({ length: 30 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('') +
+        'segment-B-tail-hello wor';
+      // Chunk A (newest, fetched first): completes B's partial line, then
+      // scroll-sized line-flow content.
+      const A =
+        'ld world\r\n' +
+        Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join('');
+      await pageChunk(ws, instance, {
+        data: A,
+        startOffset: 200,
+        endOffset: 300,
+        hasMore: true,
+        epoch: 1000,
+      });
+      await pageChunk(ws, instance, {
+        data: B,
+        startOffset: 100,
+        endOffset: 200,
+        hasMore: true,
+        epoch: 1000,
+      });
+      await pageChunk(ws, instance, {
+        data: C,
+        startOffset: 50,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      const text = allText(instance);
+      // Both merged words appear once, un-split, in the joined output.
+      expect(text).toContain('segment-C-tail-good morning');
+      expect(text).toContain('segment-B-tail-hello world');
+      // The mid-line cut fragments are NOT visible as standalone rows on the
+      // right edge (the pair-chain re-inclusion artifact). Under the pair-only
+      // chain, Step N+1 would replace B's rows with a partition that included
+      // 'segment-C-tail-good mor' (from B's own on-screen tail at splitBaseY),
+      // and Step N's already-set A.rows would ALSO hold the merged version —
+      // producing the duplicate. The triple eliminates this.
+      const lines = text.split('\n');
+      const badLinesHello = lines.filter(
+        (line) => /hello wor$/.test(line) && !/hello world/.test(line),
+      );
+      expect(badLinesHello).toEqual([]);
+      const badLinesMor = lines.filter(
+        (line) => /good mor$/.test(line) && !/good morning/.test(line),
+      );
+      expect(badLinesMor).toEqual([]);
+    });
+
+    it('repaint-frame-boundary chunk cut: 3rd fetch corrects the chained B-row duplication', async () => {
+      // Fixture: three chunks where C (oldest) ends mid-repaint-frame (a CUU
+      // + clear-line without the follow-through writes). Stream order:
+      //   C (oldest) -> B (middle) -> A (newest, fetched first).
+      // B begins with the repaint's next writes: a 'CHROME-BAR' line then a
+      // continuation into fresh content.
+      //
+      // The #994 duplication signal for this fixture:
+      //   Under the OLD pair-only chain, Step 2's pair(B, A) captured some of
+      //   B's on-screen tail (B07..B30 or similar) into A's partition. Then
+      //   Step 3's pair(C, B) replaced B's rows with a fresh partition that
+      //   included B01..B30 in full. Result: B07..B30 appeared TWICE in the
+      //   paged view (once in B.rows, once in A.rows) — the #994 duplicate.
+      //
+      //   Under the NEW triple(C, B, A) at Step 3, A.rows is re-partitioned
+      //   with the joint context: A.rows gets B's late tail + A01..A30, and
+      //   B.rows gets B's early scrollback. Each B-line appears EXACTLY once.
+      //
+      //   This is a byte-cut-shape signal (not a CUU positioning signal — the
+      //   old pair(C, B) at Step 3 already gave the CUU C's context; the
+      //   remaining bug is the chained partitioning of the older neighbor).
+      const { instance, ws } = open('s', 'w');
+      await seedHistory(ws, { startOffset: 300 });
+      // Each chunk exceeds one throwaway viewport (24 rows at default 80x24)
+      // so its replay produces scrollback and remains a distinct paged chunk.
+      // Chunk C (oldest, fetched third): 30 line-flow rows + trailing CUU/clear.
+      const C =
+        Array.from({ length: 30 }, (_, i) => `C${String(i + 1).padStart(2, '0')}\r\n`).join('') +
+        '\x1b[2A\r\x1b[K';
+      // Chunk B (middle, fetched second): repaint's continuation + scroll-sized content.
+      const B =
+        'CHROME-BAR\r\n\r\n' +
+        Array.from({ length: 30 }, (_, i) => `B${String(i + 1).padStart(2, '0')}\r\n`).join('');
+      // Chunk A (newest, fetched first): scroll-sized line-flow content.
+      const A = Array.from({ length: 30 }, (_, i) => `A${String(i + 1).padStart(2, '0')}\r\n`).join(
+        '',
+      );
+      await pageChunk(ws, instance, {
+        data: A,
+        startOffset: 200,
+        endOffset: 300,
+        hasMore: true,
+        epoch: 1000,
+      });
+      await pageChunk(ws, instance, {
+        data: B,
+        startOffset: 100,
+        endOffset: 200,
+        hasMore: true,
+        epoch: 1000,
+      });
+      await pageChunk(ws, instance, {
+        data: C,
+        startOffset: 50,
+        endOffset: 100,
+        hasMore: true,
+        epoch: 1000,
+      });
+      const text = allText(instance);
+      // Content rows from both extremes are present.
+      expect(text).toContain('C01');
+      expect(text).toContain('A30');
+      // Each B-line label appears EXACTLY once — no duplication across
+      // B.rows and A.rows (which would be the #994 signal).
+      for (let i = 1; i <= 30; i++) {
+        const label = `B${String(i).padStart(2, '0')}`;
+        const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'g');
+        const matches = text.match(regex) ?? [];
+        expect({ label, count: matches.length }).toEqual({ label, count: 1 });
+      }
     });
   });
 });
