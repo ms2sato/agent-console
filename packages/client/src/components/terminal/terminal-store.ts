@@ -14,7 +14,7 @@ import { stripSystemMessages, stripScrollbackClear as applyScrollbackFilter } fr
 import { logger } from '../../lib/logger';
 import { extractRow, extractRowWithCursor, type TerminalRow } from './buffer-to-rows';
 import { detectRowLinks } from './link-detection';
-import { replayHistoryChunk, replayHistoryPair } from './history-replay';
+import { replayHistoryChunk, replayHistoryPair, replayHistoryJoint } from './history-replay';
 import { rowText } from './row-pipeline';
 
 /**
@@ -185,11 +185,15 @@ class TerminalController implements TerminalInstance {
   private oldestOffset = 0;
   // Paged chunks, oldest first (a deque). Each carries its absolute range so
   // contiguity/eviction can reason about boundaries without re-deriving them.
-  // `rawData` is retained ONLY on the current top (oldest) chunk, for the
-  // older-neighbor pair re-replay seam correction (§6.2); bound: one range
-  // request's maxBytes. It is dropped when the chunk stops being the top (a newer
-  // pair takes over), or when the chunk goes away (eviction / cols-drop / resync
-  // / teardown clear the whole array).
+  // `rawData` is retained on `pagedChunks[0]` (current top) AND `pagedChunks[1]`
+  // (second-from-top) for the joint re-replay seam correction (§6.2, #994).
+  // Chunks at index >= 2 never hold rawData. Bounded memory: at most two range
+  // requests' maxBytes (~512KB). The invariant holds after every apply-* step
+  // and is enforced by `enforceRawInvariant()`. It is dropped when:
+  //   - the chunk goes away (eviction / cols-drop / resync / teardown clears
+  //     the whole array), or
+  //   - a triple joint replay pushes it to index >= 2 (its seam is now stably
+  //     rendered against both neighbors, so its raw is no longer needed).
   private pagedChunks: Array<{
     rows: TerminalRow[];
     startOffset: number;
@@ -511,6 +515,7 @@ class TerminalController implements TerminalInstance {
     historyInFlight: boolean;
     topChunkHasRaw: boolean;
     topChunkRawBytes: number;
+    secondChunkHasRaw: boolean;
     pagedRawCount: number;
   } {
     return {
@@ -530,6 +535,7 @@ class TerminalController implements TerminalInstance {
       historyInFlight: this.historyInFlight,
       topChunkHasRaw: this.pagedChunks[0]?.rawData !== undefined,
       topChunkRawBytes: this.pagedChunks[0]?.rawData?.length ?? 0,
+      secondChunkHasRaw: this.pagedChunks[1]?.rawData !== undefined,
       pagedRawCount: this.pagedChunks.filter((c) => c.rawData !== undefined).length,
     };
   }
@@ -1032,16 +1038,42 @@ class TerminalController implements TerminalInstance {
     // does NOT invalidate already-paged chunks.
     const rows = this.terminal.rows;
 
-    // Seam correction (§6.2): if the current top chunk retained its raw bytes,
-    // replay THIS (older) chunk together with the top so the top's leading
-    // repaints see the state its predecessor established. Otherwise standalone.
+    // Seam correction (§6.2, #994):
+    //   - Both pagedChunks[0] AND [1] retain raw -> joint 3-chunk replay,
+    //     partitioning at both boundaries in one context.
+    //   - Only pagedChunks[0] retains raw -> pair replay (Step 2 of a session
+    //     or fallback from a triple overflow that dropped [1]'s raw).
+    //   - Neither -> standalone (Step 1 of a session, or all-blank/broken
+    //     contiguity).
     const topChunk = this.pagedChunks[0];
+    const secondChunk = this.pagedChunks[1];
     const topRaw = topChunk?.rawData;
+    const secondRaw = secondChunk?.rawData;
     if (topRaw === undefined) {
       await this.applyStandaloneChunk(msg, reqMaxBytes, cols, rows);
       return;
     }
+    if (secondRaw === undefined) {
+      await this.applyPairChunk(msg, reqMaxBytes, cols, rows, topChunk, topRaw);
+      return;
+    }
+    await this.applyTripleChunk(msg, reqMaxBytes, cols, rows, topChunk, topRaw, secondChunk, secondRaw);
+  }
 
+  /**
+   * Pair re-replay of the just-fetched chunk with the current top chunk (§6.2).
+   * Runs when only pagedChunks[0] has raw. Both chunks' rows are replaced with
+   * seam-corrected partitions; both pagedChunks[0] AND (post-unshift)
+   * pagedChunks[1] retain rawData so the NEXT older fetch can do a triple.
+   */
+  private async applyPairChunk(
+    msg: { data: string; startOffset: number; endOffset: number; hasMore: boolean },
+    reqMaxBytes: number,
+    cols: number,
+    rows: number,
+    topChunk: (typeof this.pagedChunks)[number],
+    topRaw: string,
+  ): Promise<void> {
     let pair: Awaited<ReturnType<typeof replayHistoryPair>>;
     try {
       pair = await replayHistoryPair(msg.data, topRaw, cols, rows, (d) => this.processOutput(d));
@@ -1063,10 +1095,10 @@ class TerminalController implements TerminalInstance {
       return;
     }
 
-    // Advance the cursor regardless of renderable content (§6.2). BYTE RANGES are
-    // untouched: each chunk keeps its own start/endOffset exactly as fetched —
-    // row attribution may shift across the boundary but eviction bookkeeping is
-    // byte-range-based.
+    // Advance the cursor regardless of renderable content (§6.2). BYTE RANGES
+    // are untouched: each chunk keeps its own start/endOffset exactly as
+    // fetched — row attribution may shift across the boundary but eviction
+    // bookkeeping is byte-range-based.
     this.oldestOffset = msg.startOffset;
     this.hasMoreHistory = msg.hasMore;
 
@@ -1077,10 +1109,12 @@ class TerminalController implements TerminalInstance {
     topChunk.rows = pair.topChunkRows;
 
     if (pair.newChunkRows.length > 0) {
-      // A real new top takes over: it retains the raw for the NEXT older fetch;
-      // the former top no longer needs its raw (its seam is now corrected).
+      // A real new top takes over. Under the #994 invariant, pagedChunks[1]
+      // (== the former top, `topChunk` here) KEEPS its raw so the next older
+      // fetch can run a joint 3-chunk replay across this seam AND the seam
+      // between the former top and its own newer neighbor. Contrast with the
+      // pre-#994 rule which dropped `topChunk.rawData` at this point.
       this.rekeyDownward(pair.newChunkRows);
-      delete topChunk.rawData;
       this.pagedChunks.unshift({
         rows: pair.newChunkRows,
         startOffset: msg.startOffset,
@@ -1091,17 +1125,108 @@ class TerminalController implements TerminalInstance {
       // Edge: the older range was all-blank -> no new chunk is pushed (advance-
       // only, mirroring the standalone empty-chunk case), but the top-chunk row
       // replacement still applies. KEEP the top's rawData: it stays the top, and
-      // the NEXT older fetch pairs against it again (the next boundary sits below
-      // it, between the next fetch and this chunk).
+      // the NEXT older fetch pairs against it again (the next boundary sits
+      // below it, between the next fetch and this chunk).
     }
 
+    this.enforceRawInvariant();
     this.recomputePagedRowCount();
     this.syncPagingMeta();
     this.scheduleNotify();
   }
 
-  /** Standalone throwaway replay + apply of a single older chunk (the pre-seam-
-   * correction path, and the pair-overflow fallback). */
+  /**
+   * Joint 3-chunk re-replay of the just-fetched chunk with the current top AND
+   * second-from-top chunks (§6.2, #994). Runs when both pagedChunks[0] and [1]
+   * have raw. All three chunks' rows are replaced with seam-corrected
+   * partitions in one throwaway-terminal context, so the seam between the
+   * former top and second-from-top is settled here — solving the pair-chain
+   * re-inclusion of the older-boundary's on-screen tail.
+   */
+  private async applyTripleChunk(
+    msg: { data: string; startOffset: number; endOffset: number; hasMore: boolean },
+    reqMaxBytes: number,
+    cols: number,
+    rows: number,
+    topChunk: (typeof this.pagedChunks)[number],
+    topRaw: string,
+    secondChunk: (typeof this.pagedChunks)[number],
+    secondRaw: string,
+  ): Promise<void> {
+    let joint: Awaited<ReturnType<typeof replayHistoryJoint>>;
+    try {
+      joint = await replayHistoryJoint(
+        [msg.data, topRaw, secondRaw],
+        cols,
+        rows,
+        (d) => this.processOutput(d),
+      );
+    } catch {
+      return;
+    }
+    if (this.disposed) return;
+    if (msg.endOffset !== this.oldestOffset) return;
+
+    if (joint.overflow) {
+      // The joined 3-chunk replay overflowed. Fall back to pair(new, top),
+      // leaving the top↔second seam uncorrected for THIS fetch. Drop
+      // secondChunk's raw so the invariant "no raw at index >= 2 after
+      // unshift" holds after the pair fallback (secondChunk is at index 1 now
+      // but will be at index 2 after unshift). One interior seam stays
+      // uncorrected; the fetch loop is not perturbed (§6.2 Fallback).
+      logger.debug(
+        `[terminal] triple replay overflow at endOffset ${msg.endOffset}; falling back to pair`,
+      );
+      delete secondChunk.rawData;
+      await this.applyPairChunk(msg, reqMaxBytes, cols, rows, topChunk, topRaw);
+      return;
+    }
+
+    // Advance the cursor regardless of renderable content. BYTE RANGES are
+    // untouched (see applyPairChunk).
+    this.oldestOffset = msg.startOffset;
+    this.hasMoreHistory = msg.hasMore;
+
+    const [newChunkRows, topChunkRowsNew, secondChunkRowsNew] = joint.partitions;
+    // The seam-corrected rows always replace both existing chunks' rows
+    // (strictly better). Fresh negative keys for all rows of every replaced
+    // chunk (§6.3 never reuses keys).
+    this.rekeyDownward(topChunkRowsNew);
+    topChunk.rows = topChunkRowsNew;
+    this.rekeyDownward(secondChunkRowsNew);
+    secondChunk.rows = secondChunkRowsNew;
+
+    if (newChunkRows.length > 0) {
+      // A real new top takes over. Under the #994 invariant:
+      //   - new chunk (at post-unshift index 0) retains raw.
+      //   - topChunk (post-unshift index 1) KEEPS raw for the next triple.
+      //   - secondChunk (post-unshift index 2) DROPS raw — its seams against
+      //     both neighbors are now stably rendered; it will never re-participate
+      //     in a joint replay.
+      this.rekeyDownward(newChunkRows);
+      delete secondChunk.rawData;
+      this.pagedChunks.unshift({
+        rows: newChunkRows,
+        startOffset: msg.startOffset,
+        endOffset: msg.endOffset,
+        rawData: msg.data,
+      });
+    } else {
+      // Edge: the older range was all-blank -> no new chunk is pushed. The row
+      // replacements for BOTH top and secondChunk still apply. KEEP both raws:
+      // topChunk stays at index 0, secondChunk stays at index 1; the invariant
+      // permits raw at both slots and the next older fetch will pair against
+      // this window again (or triple, if by then it fits).
+    }
+
+    this.enforceRawInvariant();
+    this.recomputePagedRowCount();
+    this.syncPagingMeta();
+    this.scheduleNotify();
+  }
+
+  /** Standalone throwaway replay + apply of a single older chunk. Runs at Step
+   * 1 of a session (no previous chunk) and as the pair-overflow fallback. */
   private async applyStandaloneChunk(
     msg: { data: string; startOffset: number; endOffset: number; hasMore: boolean },
     reqMaxBytes: number,
@@ -1131,9 +1256,11 @@ class TerminalController implements TerminalInstance {
     if (result.rows.length > 0) {
       // Fresh negative keys, allocated downward, never reused (§6.3).
       this.rekeyDownward(result.rows);
-      // Raw is retained on the current top only: the arriving chunk becomes the
-      // new top, so drop the previous top's raw (no-op when it had none).
-      if (this.pagedChunks[0]) delete this.pagedChunks[0].rawData;
+      // Under the #994 invariant: raw is retained on pagedChunks[0] and [1].
+      // The arriving chunk becomes the new [0] via unshift. The former [0]
+      // (if any) becomes [1] and KEEPS its raw. Any chunk that will land at
+      // post-unshift index >= 2 must drop raw — enforced below via
+      // enforceRawInvariant() rather than open-coded here.
       // Each new chunk is older than all prior paged chunks -> front of the deque.
       this.pagedChunks.unshift({
         rows: result.rows,
@@ -1142,16 +1269,34 @@ class TerminalController implements TerminalInstance {
         rawData: msg.data,
       });
     } else {
-      // All-blank chunk: advance-only (no chunk pushed). Drop any retained top
-      // raw — this consumed range now sits between the top and the next fetch, so
-      // a pair replay across it would be non-contiguous. The next fetch replays
-      // standalone (an accepted, rare seam).
-      if (this.pagedChunks[0]) delete this.pagedChunks[0].rawData;
+      // All-blank chunk: advance-only (no chunk pushed). The consumed range
+      // now sits between the top and the next fetch, so ANY joint replay
+      // across it (pair or triple) would be non-contiguous. Drop every
+      // retained raw — the next fetch must be standalone. This is an
+      // accepted, rare seam.
+      for (const chunk of this.pagedChunks) {
+        if (chunk.rawData !== undefined) delete chunk.rawData;
+      }
     }
 
+    this.enforceRawInvariant();
     this.recomputePagedRowCount();
     this.syncPagingMeta();
     this.scheduleNotify();
+  }
+
+  /**
+   * Enforce the #994 raw-retention invariant: `pagedChunks[0]` and
+   * `pagedChunks[1]` may hold `rawData`; every chunk at index >= 2 must not.
+   * Safe idempotent operation — running it after any pagedChunks mutation
+   * keeps the invariant even when a caller forgot the explicit drop.
+   */
+  private enforceRawInvariant(): void {
+    for (let i = 2; i < this.pagedChunks.length; i++) {
+      if (this.pagedChunks[i].rawData !== undefined) {
+        delete this.pagedChunks[i].rawData;
+      }
+    }
   }
 
   /** Assign fresh downward negative keys to a batch of rows (§6.3). */
