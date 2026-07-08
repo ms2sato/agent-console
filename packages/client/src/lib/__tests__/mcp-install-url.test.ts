@@ -44,4 +44,25 @@ describe('buildMcpInstallCommand', () => {
     const cmd = buildMcpInstallCommand(3457, location);
     expect(cmd).toBe('claude mcp add --transport http agent-console http://192.168.1.20:3457/mcp');
   });
+
+  it('wraps bare IPv6 loopback hostname in brackets on the split-port dev path', () => {
+    // location.hostname reports IPv6 literals without brackets (e.g. `::1`),
+    // but URLs require the bracketed form `[::1]:3457`.
+    const location = makeLocation('http:', '::1', '5173');
+    const cmd = buildMcpInstallCommand(3457, location);
+    expect(cmd).toBe('claude mcp add --transport http agent-console http://[::1]:3457/mcp');
+  });
+
+  it('wraps bare IPv6 link-local hostname in brackets on the split-port dev path', () => {
+    const location = makeLocation('http:', 'fe80::1', '5173');
+    const cmd = buildMcpInstallCommand(3457, location);
+    expect(cmd).toBe('claude mcp add --transport http agent-console http://[fe80::1]:3457/mcp');
+  });
+
+  it('does not double-bracket an IPv6 hostname that is already bracketed', () => {
+    // Defensive: some environments may already report the hostname bracketed.
+    const location = makeLocation('http:', '[::1]', '5173');
+    const cmd = buildMcpInstallCommand(3457, location);
+    expect(cmd).toBe('claude mcp add --transport http agent-console http://[::1]:3457/mcp');
+  });
 });

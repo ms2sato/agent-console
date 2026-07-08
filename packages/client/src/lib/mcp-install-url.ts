@@ -35,8 +35,15 @@ export function buildMcpInstallCommand(
   //   - Browser port is empty (reverse proxy on default 80/443), OR
   //   - Browser port matches server port (production single-port serving).
   const sameOrigin = port === '' || Number(port) === serverPort;
+  // IPv6 literals must be bracket-wrapped in URLs (e.g. `[::1]:3457`).
+  // location.origin is already properly bracketed by the browser, so we only
+  // need to wrap when composing the split-port dev path ourselves.
+  const bracketedHost =
+    hostname.includes(':') && !hostname.startsWith('[')
+      ? `[${hostname}]`
+      : hostname;
   const base = sameOrigin
     ? location.origin
-    : `${protocol}//${hostname}:${serverPort}`;
+    : `${protocol}//${bracketedHost}:${serverPort}`;
   return `claude mcp add --transport http agent-console ${base}/mcp`;
 }

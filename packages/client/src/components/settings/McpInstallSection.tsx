@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { getServerPort } from '../../lib/server-info';
 import { buildMcpInstallCommand } from '../../lib/mcp-install-url';
 import { logger } from '../../lib/logger';
@@ -12,6 +12,18 @@ import { logger } from '../../lib/logger';
 export function McpInstallSection() {
   const serverPort = getServerPort();
   const [copied, setCopied] = useState(false);
+  // Timer handle for the "Copied!" -> "Copy" label revert. Held in a ref so
+  // we can clear a still-pending timer on rapid re-clicks or on unmount,
+  // avoiding a "state update on unmounted component" warning.
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) {
+        clearTimeout(timeoutRef.current);
+      }
+    };
+  }, []);
 
   // Defensive: if serverPort was never set (e.g. test setup skipped init),
   // don't render — better than showing a broken command.
@@ -23,7 +35,10 @@ export function McpInstallSection() {
     try {
       await navigator.clipboard.writeText(command);
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      if (timeoutRef.current !== null) {
+        clearTimeout(timeoutRef.current);
+      }
+      timeoutRef.current = setTimeout(() => setCopied(false), 2000);
     } catch (err) {
       logger.error('Failed to copy MCP install command:', err);
     }

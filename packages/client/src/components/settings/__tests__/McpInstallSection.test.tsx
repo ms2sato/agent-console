@@ -25,9 +25,9 @@ function installClipboardMock() {
 
 function restoreClipboard() {
   // Remove the per-instance override so navigator.clipboard falls back to the
-  // prototype-level descriptor happy-dom installed. Deletion is safe because
-  // installClipboardMock defined the property as configurable.
-  delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+  // prototype-level descriptor happy-dom installed. Reflect.deleteProperty is
+  // safe because installClipboardMock defined the property as configurable.
+  Reflect.deleteProperty(navigator, 'clipboard');
   if (originalClipboardDescriptor && !('clipboard' in navigator)) {
     Object.defineProperty(
       Object.getPrototypeOf(navigator),
