@@ -444,6 +444,36 @@ describe('MultiUserMode', () => {
       expect(opts.cwd).toBe('/workspace/project');
     });
 
+    it('should use login shell with sentinel when sentinel is provided (agent)', async () => {
+      const mode = await createMode();
+      const serverUsername = getServerUsername();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: serverUsername,
+        cwd: '/workspace/project',
+        additionalEnvVars: {},
+        cols: 120,
+        rows: 30,
+        command: 'claude --prompt "hello"',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args] = getLastSpawnCall();
+      expect(cmd).toBe('sh');
+      expect(args[0]).toBe('-c');
+      expect(args[1]).toContain('exec $SHELL -l');
+      expect(args[1]).toContain('echo __AGENT_CONSOLE_READY_abc123');
+      expect(args[1]).not.toContain('claude --prompt "hello"');
+    });
+
     it('should spawn directly when username matches server process user (terminal)', async () => {
       const mode = await createMode();
       const serverUsername = getServerUsername();

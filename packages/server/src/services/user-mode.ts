@@ -78,6 +78,7 @@ export interface AgentPtySpawnRequest extends PtySpawnRequestBase {
   type: 'agent';
   command: string;
   agentConsoleContext: AgentConsoleContext;
+  sentinel?: string;
 }
 
 export interface TerminalPtySpawnRequest extends PtySpawnRequestBase {
@@ -134,7 +135,10 @@ function spawnDirectPty(ptyProvider: PtyProvider, request: PtySpawnRequest): Pty
       };
 
       const unsetPrefix = getUnsetEnvPrefix();
-      return ptyProvider.spawn('sh', ['-c', unsetPrefix + request.command], {
+      const shellCommand = request.sentinel
+        ? `${unsetPrefix}exec $SHELL -l -c 'echo ${request.sentinel}; exec $SHELL'`
+        : unsetPrefix + request.command;
+      return ptyProvider.spawn('sh', ['-c', shellCommand], {
         name: 'xterm-256color',
         cols: request.cols,
         rows: request.rows,

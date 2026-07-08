@@ -452,6 +452,48 @@ describe('WorkerManager', () => {
     });
   });
 
+  // ========== Login Shell Sentinel ==========
+
+  describe('login shell sentinel detection', () => {
+    it('should skip pre-sentinel output and write command on sentinel detection', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      expect(mockPty.loginShellSentinel).toBeDefined();
+
+      expect(worker.outputBuffer).toBe('');
+      expect(mockPty.writtenData.length).toBeGreaterThan(0);
+      const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWrite).toBeDefined();
+    });
+
+    it('should process post-sentinel output normally', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      mockPty.simulateData('agent output here');
+
+      expect(worker.outputBuffer).toBe('agent output here');
+    });
+
+    it('should not feed pre-sentinel output to activity detector', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      expect(worker.activityState).toBe('idle');
+    });
+
+    it('should clean up sentinel fields on worker exit', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      expect(worker.loginShellSentinel).toBeUndefined();
+      expect(worker.pendingCommand).toBeUndefined();
+    });
+  });
+
   describe('resize', () => {
     it('should resize the PTY', async () => {
       const worker = createTestTerminalWorker();

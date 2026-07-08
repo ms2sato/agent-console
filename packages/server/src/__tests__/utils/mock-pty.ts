@@ -23,13 +23,20 @@ export class MockPty {
   writtenData: string[] = [];
   currentCols = 120;
   currentRows = 30;
+  loginShellSentinel?: string;
+  private sentinelEmitted = false;
 
-  constructor(pid: number) {
+  constructor(pid: number, loginShellSentinel?: string) {
     this.pid = pid;
+    this.loginShellSentinel = loginShellSentinel;
   }
 
   onData(callback: (data: string) => void): MockDisposable {
     this.dataCallback = callback;
+    if (this.loginShellSentinel && !this.sentinelEmitted) {
+      this.sentinelEmitted = true;
+      callback(this.loginShellSentinel + '\n');
+    }
     return {
       dispose: () => {
         if (this.dataCallback === callback) this.dataCallback = null;
@@ -71,8 +78,20 @@ export class MockPty {
 
   // Test helpers - simulate PTY events
   simulateData(data: string) {
+    if (this.loginShellSentinel && !this.sentinelEmitted) {
+      this.sentinelEmitted = true;
+      if (this.dataCallback) {
+        this.dataCallback(this.loginShellSentinel + '\n');
+      }
+    }
     if (this.dataCallback) {
       this.dataCallback(data);
+    }
+  }
+
+  simulateLoginShellReady() {
+    if (this.loginShellSentinel) {
+      this.simulateData(this.loginShellSentinel + '\n');
     }
   }
 
@@ -93,8 +112,14 @@ export function createMockPtyFactory(startPid = 10000) {
   const instances: MockPty[] = [];
   let nextPid = startPid;
 
-  const spawn = mock(() => {
-    const pty = new MockPty(nextPid++);
+  const spawn = mock((...args: unknown[]) => {
+    const spawnArgs = args[1] as string[] | undefined;
+    const shellCmd = spawnArgs?.[1] ?? '';
+    const sentinelMatch = typeof shellCmd === 'string'
+      ? shellCmd.match(/__AGENT_CONSOLE_READY_[a-f0-9]+/)
+      : null;
+    const sentinel = sentinelMatch?.[0];
+    const pty = new MockPty(nextPid++, sentinel);
     instances.push(pty);
     return pty;
   });
