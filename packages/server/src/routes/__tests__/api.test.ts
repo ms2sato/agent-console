@@ -7,6 +7,7 @@ import type { MessageTemplateRepository } from '../../repositories/message-templ
 import type { UserRepository } from '../../repositories/user-repository.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
+import { serverConfig } from '../../lib/server-config.js';
 
 /**
  * Minimal SystemCapabilitiesService mock that returns no detected capabilities.
@@ -89,6 +90,9 @@ describe('GET /api/config — sharedAccountsAvailable', () => {
     expect(body.capabilities.vscode).toBe(false);
     expect(body.capabilities.vscodeOpenMode).toBe('local-spawn');
     expect(body.capabilities.vscodeRemoteHost).toBeNull();
+    // serverPort is exposed so clients can compose absolute URLs (e.g. MCP endpoint).
+    expect(body.serverPort).toBe(Number(serverConfig.PORT));
+    expect(Number.isFinite(body.serverPort)).toBe(true);
   });
 
   it('returns sharedAccountsAvailable: true when the registry is enabled', async () => {

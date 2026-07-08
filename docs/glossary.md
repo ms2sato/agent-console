@@ -192,6 +192,15 @@ Union type controlling how the client opens paths in VS Code from the "Open in V
 - **Aliases:** vscodeOpenMode (`ConfigResponse` field name), Open-in-VSCode mode
 - **See:** Issue [#987](https://github.com/ms2sato/agent-console/issues/987) (introduces the URL-scheme dispatch); [`packages/shared/src/types/auth.ts`](../packages/shared/src/types/auth.ts) (`VSCodeOpenMode`, `ConfigResponse.capabilities`); [`packages/server/src/services/system-capabilities-service.ts`](../packages/server/src/services/system-capabilities-service.ts) (`resolveVSCodeOpenMode`); [`packages/client/src/lib/vscode-url.ts`](../packages/client/src/lib/vscode-url.ts) (`buildVSCodeRemoteUrl`).
 
+### serverPort
+The backend HTTP port the server is bound to, exposed to the client so it can compose absolute URLs pointing at the same server without hard-coding a port. Positive integer.
+
+- **Source of truth:** `serverConfig.PORT` (env-configured; string in env, coerced to `Number(...)` at the response boundary; default `3457`).
+- **Wire:** `/api/config.serverPort` (`packages/server/src/routes/api.ts`), typed on `ConfigResponse.serverPort` in [`packages/shared/src/types/auth.ts`](../packages/shared/src/types/auth.ts).
+- **Consumer:** the client caches the value in [`packages/client/src/lib/server-info.ts`](../packages/client/src/lib/server-info.ts) (module-level `setServerPort` / `getServerPort` set once at app init, mirroring the `homeDir` pattern). Used by [`buildMcpInstallCommand`](../packages/client/src/lib/mcp-install-url.ts) to decide whether the current browser origin is same-origin with the backend (production single-port serving / reverse proxy on default 80/443) or split-port (dev with Vite on 5173 proxying `/api` to backend on `serverPort`); the split case composes `${protocol}//${hostname}:${serverPort}/mcp` so the copied install command targets the backend directly.
+- **Related:** [`buildMcpInstallCommand`](../packages/client/src/lib/mcp-install-url.ts), the "Install MCP server in Claude Code" Settings section ([`McpInstallSection`](../packages/client/src/components/settings/McpInstallSection.tsx)).
+- **See:** Issue [#991](https://github.com/ms2sato/agent-console/issues/991).
+
 ## Events & Communication
 
 ### ConditionalWakeup

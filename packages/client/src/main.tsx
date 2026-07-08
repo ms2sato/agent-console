@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { routeTree } from './routeTree.gen';
 import { fetchConfig, fetchCurrentUser } from './lib/api';
 import { setHomeDir } from './lib/path';
+import { setServerPort } from './lib/server-info';
 import { setAuthMode, setCurrentUser, setSharedAccountsAvailable } from './lib/auth';
 import { setCapabilities } from './lib/capabilities';
 import { onPolicyViolation, disconnect as disconnectAppWs } from './lib/app-websocket';
@@ -141,6 +142,7 @@ async function initApp() {
     const config = await fetchConfig();
     setAuthMode(config.authMode);
     setSharedAccountsAvailable(config.sharedAccountsAvailable);
+    setServerPort(config.serverPort);
 
     if (config.authMode === 'multi-user') {
       // In multi-user mode, check if user is already authenticated.

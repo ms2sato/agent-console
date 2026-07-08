@@ -345,11 +345,16 @@ describe('API Routes Integration', () => {
       const res = await app.request('/api/config');
       expect(res.status).toBe(200);
 
-      const body = (await res.json()) as { homeDir: string; authMode: string };
+      const body = (await res.json()) as { homeDir: string; authMode: string; serverPort: number };
       // homeDir comes from the authenticated user, not the server process
       expect(body.homeDir).toBe('/home/testuser');
       // authMode reflects the server's AUTH_MODE config (default: 'none')
       expect(body.authMode).toBe('none');
+      // serverPort is exposed so clients can compose absolute URLs
+      // (e.g. MCP endpoint) without hard-coding a port.
+      expect(typeof body.serverPort).toBe('number');
+      expect(Number.isFinite(body.serverPort)).toBe(true);
+      expect(body.serverPort).toBeGreaterThan(0);
     });
   });
 

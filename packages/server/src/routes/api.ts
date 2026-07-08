@@ -31,6 +31,7 @@ const api = new Hono<AppBindings>()
       homeDir: authUser?.homeDir ?? '',
       capabilities: systemCapabilities.getCapabilities(),
       serverPid: process.pid,
+      serverPort: Number(serverConfig.PORT),
       authMode: serverConfig.AUTH_MODE,
       sharedAccountsAvailable: sharedAccountRegistry.isEnabled(),
     });

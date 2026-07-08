@@ -482,6 +482,7 @@ describe('GET /api/config (multi-user mode)', () => {
         homeDir: authUser?.homeDir ?? '',
         capabilities: caps.getCapabilities(),
         serverPid: process.pid,
+        serverPort: Number(serverConfig.PORT),
         authMode: serverConfig.AUTH_MODE,
       });
     });
@@ -498,9 +499,10 @@ describe('GET /api/config (multi-user mode)', () => {
     });
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { authMode: string; homeDir: string };
+    const body = (await res.json()) as { authMode: string; homeDir: string; serverPort: number };
     expect(body.authMode).toBe(serverConfig.AUTH_MODE);
     expect(body.homeDir).toBe(TEST_USER.homeDir);
+    expect(body.serverPort).toBe(Number(serverConfig.PORT));
   });
 
   it('should return empty homeDir when not authenticated', async () => {
@@ -510,8 +512,9 @@ describe('GET /api/config (multi-user mode)', () => {
     const res = await app.request('/api/config');
 
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { authMode: string; homeDir: string };
+    const body = (await res.json()) as { authMode: string; homeDir: string; serverPort: number };
     expect(body.authMode).toBe(serverConfig.AUTH_MODE);
     expect(body.homeDir).toBe('');
+    expect(body.serverPort).toBe(Number(serverConfig.PORT));
   });
 });
