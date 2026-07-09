@@ -72,6 +72,15 @@ A worker that shows the git diff between a base commit and a target ref for its 
 - **Aliases:** DiffWorker, git-diff worker
 - **See:** [GitDiffWorker in worker.ts](../packages/shared/src/types/worker.ts)
 
+### Login-Shell Sentinel
+The spawn → gate → inject protocol used to launch an [AgentWorker](#agentworker) PTY through the user's login shell. Instead of running the agent command directly (which skips `.bashrc` / `.profile` and yields an incomplete PATH), the PTY spawns a login shell whose inner command echoes a per-activation random marker (`__AGENT_CONSOLE_READY_<id>`) and then execs an interactive shell. The worker-manager's onData handler **gates** on the marker: all output before it (login-shell init noise) is dropped and never reaches the output buffer, the persisted output file, clients, or the ActivityDetector; detection is chunk-boundary-safe via a bounded carry of the pre-sentinel tail. On detection, the pending agent command is **injected** with `pty.write(command + '\r')`, avoiding shell-quoting double-escapes.
+
+Both spawn routes honor the same protocol: the direct path (`spawnDirectPty`, single-user mode and the multi-user elevation-skip case) wraps the marker in `$SHELL -l -c`, and the elevated path (`MultiUserMode.spawnSudoPty`) emits it from the inner command of the elevation argv (the elevated login shell provides the login init). A route that spawned without emitting the marker would leave the gate closed forever and silently drop all agent worker output.
+
+- **Key code:** `AgentPtySpawnRequest.sentinel` ([user-mode.ts](../packages/server/src/services/user-mode.ts)); `InternalAgentWorker.loginShellSentinel` / `pendingCommand` ([worker-types.ts](../packages/server/src/services/worker-types.ts)); gate + inject in `WorkerManager.setupWorkerEventHandlers` ([worker-manager.ts](../packages/server/src/services/worker-manager.ts))
+- **Aliases:** sentinel protocol, login-shell sentinel protocol, readiness sentinel
+- **See:** Issue [#999](https://github.com/ms2sato/agent-console/issues/999) (structural enforcement follow-up: sentinel protocol single-writer + spawn-contract conformance suite)
+
 ### Base Spec
 The persisted comparison base of a [GitDiffWorker](#gitdiffworker), stored in `workers.base_commit`. Unlike a frozen commit hash, a base spec records the user's *intent* and is **re-resolved on every diff computation**, so the diff stays aligned with GitHub's merge-base (three-dot) view as the branch absorbs upstream commits. Forms:
 - `merge-base:<ref>` — fork point via `git merge-base <ref> HEAD` (e.g. `merge-base:origin/main`); re-resolves each diff.
