@@ -1246,8 +1246,9 @@ describe('MCP Server Tools', () => {
         fromSessionId: senderSession.id,
       }, nextId++);
 
-      // Reply instructions are the second write (index 1), after the notification (index 0)
-      const replyInstructions = mockPty.writtenData[1];
+      // With login shell sentinel: writtenData[0] = agent command,
+      // [1] = notification, [2] = reply instructions.
+      const replyInstructions = mockPty.writtenData[2];
       expect(replyInstructions).toContain('[Reply Instructions]');
       expect(replyInstructions).toContain(`toSessionId: "${senderSession.id}"`);
       expect(replyInstructions).toContain('AGENT_CONSOLE_SESSION_ID');
@@ -1524,10 +1525,19 @@ describe('MCP Server Tools', () => {
      */
     function findSpawnCallByCommand(commandSubstring: string): unknown[] | undefined {
       const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], unknown]>;
-      return calls.find((call) => {
+      const spawnMatch = calls.find((call) => {
         const cmd = call[1]?.join(' ') ?? '';
         return cmd.includes(commandSubstring);
       });
+      if (spawnMatch) return spawnMatch;
+      const ptyMatch = ptyFactory.instances.find((pty) =>
+        pty.writtenData.some((d) => d.includes(commandSubstring)),
+      );
+      if (ptyMatch) {
+        const idx = ptyFactory.instances.indexOf(ptyMatch);
+        return calls[idx];
+      }
+      return undefined;
     }
 
     it('should return error when repository not found', async () => {
@@ -2030,24 +2040,17 @@ describe('MCP Server Tools', () => {
      * instead of being indirected through env.__AGENT_PROMPT__.
      */
     function getAgentPromptForSession(sessionId: string): string {
-      // `bun:test`'s `mock(() => ...)` (see __tests__/utils/mock-pty.ts)
-      // infers `mock.calls` as `[][]` because the factory has no declared
-      // parameters; a direct tuple cast fails with TS2352 ("Source has 0
-      // element(s) but target requires 3 — convert the expression to 'unknown'
-      // first"). The `as unknown as ...` step is therefore required, and
-      // matches the pre-existing shape used by `findSpawnCallByCommand` and
-      // the activity-detector probe in this file.
       const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
-      const matchingCall = calls.find((call) =>
+      const callIndex = calls.findIndex((call) =>
         call[2]?.env?.AGENT_CONSOLE_SESSION_ID === sessionId,
       );
-      expect(matchingCall).toBeDefined();
-      // PTY spawn shape: ('sh', ['-c', '<unsetPrefix><command>'], options).
-      // The shell-escaped prompt is the trailing single-quoted segment of
-      // the second arg.
-      const shellCommand = matchingCall![1][1];
-      expect(shellCommand).toBeDefined();
-      return extractPromptFromSpawnCommand(shellCommand);
+      expect(callIndex).toBeGreaterThanOrEqual(0);
+      const pty = ptyFactory.instances[callIndex];
+      expect(pty).toBeDefined();
+      const commandWithCR = pty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWithCR).toBeDefined();
+      const command = commandWithCR!.slice(0, -1);
+      return extractPromptFromSpawnCommand(command);
     }
 
     it('should append callback instructions to prompt when parent IDs are provided', async () => {

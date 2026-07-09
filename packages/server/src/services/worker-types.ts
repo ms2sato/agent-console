@@ -69,6 +69,8 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
   agentId: string;
   activityState: AgentActivityState;
   activityDetector: ActivityDetector | null;  // null when pty is null
+  loginShellSentinel?: string;
+  pendingCommand?: string;
 }
 
 /**

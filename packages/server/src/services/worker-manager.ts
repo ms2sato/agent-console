@@ -378,6 +378,8 @@ export class WorkerManager {
       ...templateEnv,
     };
 
+    const sentinel = `__AGENT_CONSOLE_READY_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+
     const ptyProcess = this.userMode.spawnPty({
       type: 'agent',
       username: params.username,
@@ -387,6 +389,7 @@ export class WorkerManager {
       rows: 30,
       command,
       agentConsoleContext,
+      sentinel,
       // Forward the optional SSH_AUTH_SOCK fallback from the session
       // creation context. Populated only by the MCP delegate path;
       // undefined for every other path so existing behavior is preserved.
@@ -408,6 +411,8 @@ export class WorkerManager {
     worker.pty = ptyProcess;
     worker.activityDetector = activityDetector;
     worker.agentId = agent.id;
+    worker.loginShellSentinel = sentinel;
+    worker.pendingCommand = command;
 
     // Set initial activity state to match ActivityDetector's initial state ('idle').
     // The onStateChange callback only fires on state *changes*, not on initialization,
@@ -488,7 +493,35 @@ export class WorkerManager {
 
     const disposables: Disposable[] = [];
 
-    const onDataDisposable = worker.pty.onData((data) => {
+    let sentinelDetected = worker.type !== 'agent' || !worker.loginShellSentinel;
+    // Carries the tail of the pre-sentinel stream across PTY read boundaries so a
+    // sentinel split between two chunks is still detected. Bounded to
+    // sentinel.length - 1 characters (the largest partial match possible).
+    let preSentinelCarry = '';
+
+    const onDataDisposable = worker.pty.onData((rawData) => {
+      let data = rawData;
+
+      if (!sentinelDetected && worker.type === 'agent' && worker.loginShellSentinel) {
+        const sentinel = worker.loginShellSentinel;
+        const haystack = preSentinelCarry + data;
+        const idx = haystack.indexOf(sentinel);
+        if (idx === -1) {
+          preSentinelCarry = haystack.slice(-(sentinel.length - 1));
+          return;
+        }
+        sentinelDetected = true;
+        preSentinelCarry = '';
+        if (worker.pendingCommand && worker.pty) {
+          worker.pty.write(worker.pendingCommand + '\r');
+          worker.pendingCommand = undefined;
+        }
+        const afterSentinel = haystack.slice(idx + sentinel.length).replace(/^[\r\n]+/, '');
+        worker.loginShellSentinel = undefined;
+        if (afterSentinel.length === 0) return;
+        data = afterSentinel;
+      }
+
       worker.outputBuffer += data;
       const maxBufferSize = serverConfig.WORKER_OUTPUT_BUFFER_SIZE;
       if (worker.outputBuffer.length > maxBufferSize) {
@@ -523,6 +556,11 @@ export class WorkerManager {
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.dispose();
         worker.activityDetector = null;
+      }
+
+      if (worker.type === 'agent') {
+        worker.loginShellSentinel = undefined;
+        worker.pendingCommand = undefined;
       }
 
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());

@@ -21,6 +21,7 @@ import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { buildElevationArgs } from './elevation-args.js';
+import { buildDirectSentinelShellCommand, buildElevatedSentinelCommand } from './sentinel-spawn-command.js';
 import { lookupOsUser } from './os-user-lookup.js';
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
@@ -78,6 +79,7 @@ export interface AgentPtySpawnRequest extends PtySpawnRequestBase {
   type: 'agent';
   command: string;
   agentConsoleContext: AgentConsoleContext;
+  sentinel?: string;
 }
 
 export interface TerminalPtySpawnRequest extends PtySpawnRequestBase {
@@ -134,7 +136,10 @@ function spawnDirectPty(ptyProvider: PtyProvider, request: PtySpawnRequest): Pty
       };
 
       const unsetPrefix = getUnsetEnvPrefix();
-      return ptyProvider.spawn('sh', ['-c', unsetPrefix + request.command], {
+      const shellCommand = request.sentinel
+        ? buildDirectSentinelShellCommand(request.sentinel, unsetPrefix)
+        : unsetPrefix + request.command;
+      return ptyProvider.spawn('sh', ['-c', shellCommand], {
         name: 'xterm-256color',
         cols: request.cols,
         rows: request.rows,
@@ -466,6 +471,12 @@ export class MultiUserMode implements UserMode {
    * Creates a full login shell as the target user.
    * Environment variables are embedded in the command since sudo -i
    * does not inherit the parent's process environment.
+   *
+   * When an agent request carries a `sentinel`, the inner command echoes the
+   * sentinel then execs an interactive login shell instead of running the
+   * agent command directly. The worker-manager gates on the sentinel line and
+   * injects the real command afterwards, mirroring the direct (sudo-skip)
+   * spawn path so both routes share identical launch semantics.
    */
   private spawnSudoPty(request: PtySpawnRequest): PtyInstance {
     // Build the sudo argv via the pure helper in `elevation-args.ts`. The
@@ -488,7 +499,9 @@ export class MultiUserMode implements UserMode {
           ...(ctx.parentSessionId && { AGENT_CONSOLE_PARENT_SESSION_ID: ctx.parentSessionId }),
           ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
         };
-        command = request.command;
+        command = request.sentinel
+          ? buildElevatedSentinelCommand(request.sentinel)
+          : request.command;
         break;
       }
       case 'terminal': {

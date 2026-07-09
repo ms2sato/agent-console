@@ -19,7 +19,8 @@ import type { Kysely } from 'kysely';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SingleUserMode, MultiUserMode } from '../user-mode.js';
-import type { TerminalPtySpawnRequest } from '../user-mode.js';
+import type { TerminalPtySpawnRequest, AgentPtySpawnRequest } from '../user-mode.js';
+import { getUnsetEnvPrefix } from '../env-filter.js';
 import type { PtyProvider, PtySpawnOptions, PtyInstance } from '../../lib/pty-provider.js';
 
 const mockPtyProvider: PtyProvider = {
@@ -157,6 +158,63 @@ describe('SingleUserMode', () => {
 
       const [, , opts] = lastCall();
       expect(opts.cwd).toBe('/home/cached/project');
+    });
+  });
+
+  describe('spawnPty() - agent login-shell sentinel branch', () => {
+    // Agent workers can request a login-shell + sentinel launch: instead of
+    // running the agent command directly, the PTY execs the user's login
+    // shell, echoes the sentinel line, then execs an interactive login shell.
+    // This lets the worker-manager detect shell readiness before injecting the
+    // agent command. When request.sentinel is unset the direct command path is used.
+    function makeAgentRequest(sentinel?: string): AgentPtySpawnRequest {
+      return {
+        type: 'agent',
+        username: 'cached',
+        cwd: '/home/cached/project',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude --resume',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 's1',
+          workerId: 'w1',
+        },
+        ...(sentinel !== undefined && { sentinel }),
+      };
+    }
+
+    it('execs a login shell that echoes the sentinel and does NOT run the agent command directly', () => {
+      const { provider, lastCall } = createCapturingPtyProvider();
+      const cachedUser = { id: 'cached-id', username: 'cached', homeDir: '/home/cached' };
+      const userMode = new SingleUserMode(provider, cachedUser);
+
+      userMode.spawnPty(makeAgentRequest('ACX_READY_abc123'));
+
+      const [cmd, args] = lastCall();
+      expect(cmd).toBe('sh');
+      expect(args[0]).toBe('-c');
+      const shellCommand = args[1];
+      expect(shellCommand).toContain("exec $SHELL -l -c 'echo ACX_READY_abc123; exec $SHELL'");
+      // The agent command must not be spawned directly in the sentinel branch;
+      // the worker-manager injects it after detecting the sentinel line.
+      expect(shellCommand).not.toContain('claude --resume');
+      // The unset prefix (if any) is preserved ahead of the exec.
+      expect(shellCommand.startsWith(getUnsetEnvPrefix())).toBe(true);
+    });
+
+    it('runs the agent command directly when no sentinel is provided', () => {
+      const { provider, lastCall } = createCapturingPtyProvider();
+      const cachedUser = { id: 'cached-id', username: 'cached', homeDir: '/home/cached' };
+      const userMode = new SingleUserMode(provider, cachedUser);
+
+      userMode.spawnPty(makeAgentRequest());
+
+      const [, args] = lastCall();
+      const shellCommand = args[1];
+      expect(shellCommand).toContain('claude --resume');
+      expect(shellCommand).not.toContain('exec $SHELL -l -c');
     });
   });
 });

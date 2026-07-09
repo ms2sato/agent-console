@@ -452,6 +452,83 @@ describe('WorkerManager', () => {
     });
   });
 
+  // ========== Login Shell Sentinel ==========
+
+  describe('login shell sentinel detection', () => {
+    it('should skip pre-sentinel output and write command on sentinel detection', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      expect(mockPty.loginShellSentinel).toBeDefined();
+
+      expect(worker.outputBuffer).toBe('');
+      expect(mockPty.writtenData.length).toBeGreaterThan(0);
+      const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWrite).toBeDefined();
+    });
+
+    it('should process post-sentinel output normally', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      mockPty.simulateData('agent output here');
+
+      expect(worker.outputBuffer).toBe('agent output here');
+    });
+
+    it('should detect a sentinel split across two PTY read chunks', async () => {
+      // Suppress the mock's onData auto-emit so we can feed the sentinel
+      // manually straddling a chunk boundary. Without the carry buffer the
+      // per-chunk indexOf never matches and all output is dropped forever.
+      ptyFactory.setAutoEmitSentinel(false);
+
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      const sentinel = mockPty.loginShellSentinel;
+      expect(sentinel).toBeDefined();
+      const mid = Math.floor(sentinel!.length / 2);
+
+      // First chunk carries only the sentinel's first half (plus preamble).
+      mockPty.emitRaw('login banner ' + sentinel!.slice(0, mid));
+      // Not yet detected: pre-sentinel output is dropped, no command written.
+      expect(worker.outputBuffer).toBe('');
+      expect(mockPty.writtenData.some((d) => d.endsWith('\r'))).toBe(false);
+
+      // Second chunk completes the sentinel across the boundary.
+      mockPty.emitRaw(sentinel!.slice(mid) + '\r\npost-sentinel output');
+
+      expect(worker.outputBuffer).toBe('post-sentinel output');
+      expect(mockPty.writtenData.some((d) => d.endsWith('\r'))).toBe(true);
+    });
+
+    it('should not feed pre-sentinel output to activity detector', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      expect(worker.activityState).toBe('idle');
+    });
+
+    it('should clean up sentinel fields on worker exit', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      // Simulate a PTY that dies before its sentinel is ever seen: re-populate
+      // the gating fields, then drive the actual onExit cleanup branch.
+      worker.loginShellSentinel = 'lingering-sentinel';
+      worker.pendingCommand = 'lingering command';
+
+      mockPty.simulateExit(1);
+
+      expect(worker.loginShellSentinel).toBeUndefined();
+      expect(worker.pendingCommand).toBeUndefined();
+    });
+  });
+
   describe('resize', () => {
     it('should resize the PTY', async () => {
       const worker = createTestTerminalWorker();

@@ -669,7 +669,7 @@ export const KNOWN_VIOLATIONS = new Set([
   'packages/server/src/services/worker-manager.ts:123:53:issue-ref',
   'packages/server/src/services/worker-manager.ts:276:15:issue-ref',
   'packages/server/src/services/worker-manager.ts:318:8:issue-ref',
-  'packages/server/src/services/worker-manager.ts:440:8:issue-ref',
+  'packages/server/src/services/worker-manager.ts:445:8:issue-ref',
   'packages/server/src/services/worktree-creation-service.ts:31:25:issue-ref',
   'packages/server/src/services/worktree-creation-service.ts:32:8:bare-ref',
   'packages/server/src/services/worktree-creation-service.ts:32:15:pr-ref',
