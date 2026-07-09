@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, mock } from 'bun:test';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { TerminalView } from '../TerminalView';
+import { createLocalhostRewriteTransform } from '../transforms/localhost-rewrite';
 import type { TerminalInstance, TerminalSnapshot } from '../terminal-store';
 import { getOrCreateTerminal, _resetTerminals, _inspect } from '../terminal-store';
 import type { TerminalRow } from '../buffer-to-rows';
@@ -103,6 +104,48 @@ describe('TerminalView row rendering', () => {
     expect(link.getAttribute('href')).toBe('https://github.com/acme/widgets/issues/123');
     expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+});
+
+// A URL link (row.links) rendered as an anchor. When a link transform rewrites
+// its href, the display text is unchanged and a title reveals the substitution.
+const LOCALHOST_URL = 'http://localhost:3000/path';
+const URL_ROWS: TerminalRow[] = [
+  {
+    key: 0,
+    isWrapped: false,
+    links: [{ start: 0, end: LOCALHOST_URL.length, href: LOCALHOST_URL }],
+    segments: [{ text: LOCALHOST_URL, style: null }],
+  },
+];
+
+describe('TerminalView link transforms', () => {
+  afterEach(cleanup);
+
+  it('renders the original href and no title when no linkTransforms are given', () => {
+    render(<TerminalView instance={makeInstance(makeSnapshot(URL_ROWS))} />);
+    const link = screen.getByText(LOCALHOST_URL);
+    expect(link.tagName).toBe('A');
+    expect(link.getAttribute('href')).toBe(LOCALHOST_URL);
+    expect(link.getAttribute('title')).toBeNull();
+  });
+
+  it('rewrites the href for a remote browser while keeping the display text and adding a title', () => {
+    render(
+      <TerminalView
+        instance={makeInstance(makeSnapshot(URL_ROWS))}
+        linkTransforms={[
+          createLocalhostRewriteTransform({ protocol: 'https:', hostname: 'console.example.com' }),
+        ]}
+      />,
+    );
+    // Display text is still the original localhost URL.
+    const link = screen.getByText(LOCALHOST_URL);
+    expect(link.tagName).toBe('A');
+    // href is rewritten to the user-accessible host.
+    expect(link.getAttribute('href')).toBe('https://console.example.com:3000/path');
+    // title reveals the substitution.
+    expect(link.getAttribute('title')).toContain('https://console.example.com:3000/path');
   });
 });
 

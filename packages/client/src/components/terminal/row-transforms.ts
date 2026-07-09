@@ -1,4 +1,5 @@
 import type { TerminalSegment } from './buffer-to-rows';
+import type { LinkRange } from './link-detection';
 
 /**
  * Row-transform pipeline (issue #958), first stage: segment decorators.
@@ -29,6 +30,32 @@ export function applySegmentDecorators(
   let result = segments;
   for (const decorate of decorators) {
     result = decorate(result, ctx);
+  }
+  return result;
+}
+
+/**
+ * Second, parallel transform lane: link transforms.
+ *
+ * URL links are detected separately from segments (link-detection.ts stores
+ * `LinkRange[]` on each row) and do NOT flow through the SegmentDecorator lane.
+ * A link transform post-processes those detected links — e.g. rewriting a
+ * localhost href to the user-accessible host so a remote browser can click it.
+ * It MUST preserve range offsets (`[start, end)` stay aligned to the row text);
+ * only `href` / `title` may change, so the view's column-offset math is
+ * unaffected.
+ */
+export type LinkTransform = (links: LinkRange[], ctx: TransformContext) => LinkRange[];
+
+/** Run each link transform in order, threading the output of one into the next. */
+export function applyLinkTransforms(
+  links: LinkRange[],
+  transforms: readonly LinkTransform[],
+  ctx: TransformContext,
+): LinkRange[] {
+  let result = links;
+  for (const transform of transforms) {
+    result = transform(result, ctx);
   }
   return result;
 }

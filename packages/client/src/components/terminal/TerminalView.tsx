@@ -5,10 +5,17 @@ import type { TerminalRow, TerminalSegment, TerminalStyle } from './buffer-to-ro
 import type { LinkRange } from './link-detection';
 import { joinSelectedRows, collectSelectedRowPieces } from './copy-text';
 import { reduceDragCounter } from './drag-state';
-import { applySegmentDecorators, type SegmentDecorator, type TransformContext } from './row-transforms';
+import {
+  applySegmentDecorators,
+  applyLinkTransforms,
+  type SegmentDecorator,
+  type LinkTransform,
+  type TransformContext,
+} from './row-transforms';
 import { TerminalScrollIndicator } from './TerminalScrollIndicator';
 
 const EMPTY_DECORATORS: readonly SegmentDecorator[] = [];
+const EMPTY_LINK_TRANSFORMS: readonly LinkTransform[] = [];
 const DEFAULT_TRANSFORM_CONTEXT: TransformContext = { repoFullName: null };
 // A dotted underline distinguishes decorator links (e.g. GitHub refs) without
 // the heavier solid underline; matches the URL-link affordance.
@@ -43,6 +50,10 @@ interface TerminalViewProps {
   // render time, plus their context. Callers memoize both so the memoized Row
   // is not invalidated every render.
   segmentDecorators?: readonly SegmentDecorator[];
+  // Presentation-layer link transforms applied to each row's detected URL links
+  // (parallel to segmentDecorators). Used e.g. to rewrite a localhost href to
+  // the user-accessible host for remote browsers. Callers memoize the list.
+  linkTransforms?: readonly LinkTransform[];
   transformContext?: TransformContext;
 }
 
@@ -108,6 +119,9 @@ function renderSegment(seg: TerminalSegment, segStart: number, key: number, link
       <a
         key={pi++}
         href={link.href}
+        // Set by a link transform (e.g. localhost rewrite) to explain the href
+        // substitution on hover; undefined when the href was not rewritten.
+        title={link.title}
         target="_blank"
         rel="noopener noreferrer"
         // Link click opens the URL; stop propagation so the container's
@@ -138,21 +152,27 @@ function renderSegment(seg: TerminalSegment, segStart: number, key: number, link
 const Row = memo(function Row({
   row,
   decorators,
+  linkTransforms,
   ctx,
 }: {
   row: TerminalRow;
   decorators: readonly SegmentDecorator[];
+  linkTransforms: readonly LinkTransform[];
   ctx: TransformContext;
 }) {
   // Decorators split segments but preserve the row's concatenated text, so the
   // URL `links` column offsets used by renderSegment stay aligned.
   const segments =
     decorators.length > 0 ? applySegmentDecorators(row.segments, decorators, ctx) : row.segments;
+  // Link transforms only change href/title, never the ranges, so the column
+  // offsets used by renderSegment stay aligned with the (unchanged) row text.
+  const links =
+    linkTransforms.length > 0 ? applyLinkTransforms(row.links, linkTransforms, ctx) : row.links;
   let offset = 0;
   return (
     <div style={{ whiteSpace: 'pre', height: LINE_HEIGHT_PX, lineHeight: `${LINE_HEIGHT_PX}px` }}>
       {segments.map((seg: TerminalSegment, i) => {
-        const node = renderSegment(seg, offset, i, row.links);
+        const node = renderSegment(seg, offset, i, links);
         offset += seg.text.length;
         return node;
       })}
@@ -166,6 +186,7 @@ export function TerminalView({
   onFilesReceived,
   inputRef,
   segmentDecorators = EMPTY_DECORATORS,
+  linkTransforms = EMPTY_LINK_TRANSFORMS,
   transformContext = DEFAULT_TRANSFORM_CONTEXT,
 }: TerminalViewProps) {
   const snapshot = useSyncExternalStore(instance.subscribe, instance.getSnapshot);
@@ -692,7 +713,13 @@ export function TerminalView({
         }}
       >
         {snapshot.rows.map((row) => (
-          <Row key={row.key} row={row} decorators={segmentDecorators} ctx={transformContext} />
+          <Row
+            key={row.key}
+            row={row}
+            decorators={segmentDecorators}
+            linkTransforms={linkTransforms}
+            ctx={transformContext}
+          />
         ))}
       </div>
 

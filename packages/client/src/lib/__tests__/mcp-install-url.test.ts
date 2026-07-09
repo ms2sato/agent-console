@@ -65,4 +65,12 @@ describe('buildMcpInstallCommand', () => {
     const cmd = buildMcpInstallCommand(3457, location);
     expect(cmd).toBe('claude mcp add --transport http agent-console http://[::1]:3457/mcp');
   });
+
+  it('wraps a full bare IPv6 address in brackets on the split-port dev path', () => {
+    // Bracket-wrapping is delegated to bracketHostForUrl; a full IPv6 literal
+    // must be wrapped the same way as the loopback / link-local cases above.
+    const location = makeLocation('http:', '2001:db8::1', '5173');
+    const cmd = buildMcpInstallCommand(3457, location);
+    expect(cmd).toBe('claude mcp add --transport http agent-console http://[2001:db8::1]:3457/mcp');
+  });
 });

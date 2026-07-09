@@ -10,6 +10,10 @@ export interface LinkRange {
   start: number; // inclusive column offset into the row's text
   end: number; // exclusive
   href: string; // the full (joined, punctuation-trimmed) URL
+  // Optional hover text set by link transforms (e.g. the localhost -> user-
+  // accessible-host rewrite) to explain an href substitution. Absent when the
+  // href was not rewritten.
+  title?: string;
 }
 
 export interface DetectRow {

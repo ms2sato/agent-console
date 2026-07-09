@@ -166,4 +166,45 @@ describe('TerminalAdapter', () => {
     // so status-mapping passes it through rather than normalizing to undefined).
     expect(onStatusChange).toHaveBeenCalledWith('exited', { code: 0, signal: null });
   });
+
+  it('wires the localhost link transform but does not rewrite when the browser is on loopback', async () => {
+    // The adapter wires the real localhostRewriteTransform, which reads
+    // window.location at call time. Pin the browser to a loopback host so the
+    // rewrite is a no-op — this proves the lane is wired without exploding.
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', hostname: 'localhost', host: 'localhost' },
+      writable: true,
+      configurable: true,
+    });
+    try {
+      const LOCALHOST_URL = 'http://localhost:3000/path';
+      const snapshot: TerminalSnapshot = {
+        ...EXITED_SNAPSHOT,
+        status: 'connected',
+        exitInfo: null,
+        rows: [
+          {
+            key: 0,
+            isWrapped: false,
+            links: [{ start: 0, end: LOCALHOST_URL.length, href: LOCALHOST_URL }],
+            segments: [{ text: LOCALHOST_URL, style: null }],
+          },
+        ],
+      };
+      const instance: TerminalInstance = { ...stubInstance, getSnapshot: () => snapshot };
+      const createInstance = mock((_sessionId: string, _workerId: string, _opts?: unknown) => instance);
+
+      await act(async () =>
+        renderWithRouter(<TerminalAdapter sessionId="s" workerId="w" createInstance={createInstance} />),
+      );
+
+      const link = screen.getByText(LOCALHOST_URL);
+      expect(link.tagName).toBe('A');
+      expect(link.getAttribute('href')).toBe(LOCALHOST_URL);
+      expect(link.getAttribute('title')).toBeNull();
+    } finally {
+      if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
+    }
+  });
 });

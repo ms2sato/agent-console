@@ -7,10 +7,12 @@ import { TerminalView } from '../../components/terminal/TerminalView';
 import { TerminalKeyboardInput } from '../../components/terminal/TerminalKeyboardInput';
 import { useVisualViewportHeight } from '../../components/terminal/useVisualViewportHeight';
 import { githubRefDecorator } from '../../components/terminal/transforms/github-refs';
-import type { SegmentDecorator, TransformContext } from '../../components/terminal/row-transforms';
+import { localhostRewriteTransform } from '../../components/terminal/transforms/localhost-rewrite';
+import type { SegmentDecorator, LinkTransform, TransformContext } from '../../components/terminal/row-transforms';
 import { useSessionRepoFullName } from '../../components/terminal/useSessionRepoFullName';
 
 const SEGMENT_DECORATORS: readonly SegmentDecorator[] = [githubRefDecorator];
+const LINK_TRANSFORMS: readonly LinkTransform[] = [localhostRewriteTransform];
 
 interface TerminalSearch {
   sessionId?: string;
@@ -93,6 +95,7 @@ function TerminalPage({ sessionId, workerId }: { sessionId: string; workerId: st
         onFilesReceived={handleFilesReceived}
         inputRef={inputRef}
         segmentDecorators={SEGMENT_DECORATORS}
+        linkTransforms={LINK_TRANSFORMS}
         transformContext={transformContext}
       />
 
