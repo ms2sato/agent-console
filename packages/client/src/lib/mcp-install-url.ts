@@ -1,3 +1,5 @@
+import { bracketHostForUrl } from './user-accessible-host';
+
 /**
  * Minimal shape of `window.location` used by {@link buildMcpInstallCommand}.
  * Declared as a subset so the function can be unit-tested with fabricated
@@ -38,10 +40,7 @@ export function buildMcpInstallCommand(
   // IPv6 literals must be bracket-wrapped in URLs (e.g. `[::1]:3457`).
   // location.origin is already properly bracketed by the browser, so we only
   // need to wrap when composing the split-port dev path ourselves.
-  const bracketedHost =
-    hostname.includes(':') && !hostname.startsWith('[')
-      ? `[${hostname}]`
-      : hostname;
+  const bracketedHost = bracketHostForUrl(hostname);
   const base = sameOrigin
     ? location.origin
     : `${protocol}//${bracketedHost}:${serverPort}`;

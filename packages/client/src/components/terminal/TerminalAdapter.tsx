@@ -11,11 +11,13 @@ import { TerminalView } from './TerminalView';
 import { TerminalKeyboardInput } from './TerminalKeyboardInput';
 import { toStatusChangeArgs } from './status-mapping';
 import { githubRefDecorator } from './transforms/github-refs';
-import type { SegmentDecorator, TransformContext } from './row-transforms';
+import { localhostRewriteTransform } from './transforms/localhost-rewrite';
+import type { SegmentDecorator, LinkTransform, TransformContext } from './row-transforms';
 import { useSessionRepoFullName } from './useSessionRepoFullName';
 
 // Constant decorator list — memoized identity so the memoized Row is stable.
 const SEGMENT_DECORATORS: readonly SegmentDecorator[] = [githubRefDecorator];
+const LINK_TRANSFORMS: readonly LinkTransform[] = [localhostRewriteTransform];
 
 /**
  * Drop-in replacement for `components/Terminal.tsx` implementing the exact
@@ -105,6 +107,7 @@ export function TerminalAdapter({
           onFilesReceived={onFilesReceived}
           inputRef={inputRef}
           segmentDecorators={SEGMENT_DECORATORS}
+          linkTransforms={LINK_TRANSFORMS}
           transformContext={transformContext}
         />
         <AdapterRecoveryOverlay

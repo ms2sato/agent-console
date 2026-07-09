@@ -201,6 +201,13 @@ The backend HTTP port the server is bound to, exposed to the client so it can co
 - **Related:** [`buildMcpInstallCommand`](../packages/client/src/lib/mcp-install-url.ts), the "Install MCP server in Claude Code" Settings section ([`McpInstallSection`](../packages/client/src/components/settings/McpInstallSection.tsx)).
 - **See:** Issue [#991](https://github.com/ms2sato/agent-console/issues/991).
 
+### user-accessible host
+The hostname the user's browser can actually reach the server (and its sibling ports) at, derived from `window.location.hostname`. When AgentConsole is accessed remotely, `localhost` / `127.0.0.1` on the server side is meaningless to the browser, so the user-accessible host is used instead.
+
+- **Canonical helpers:** [`getUserAccessibleHost()`](../packages/client/src/lib/user-accessible-host.ts) (returns `window.location.hostname` verbatim), [`isRemoteAccess()`](../packages/client/src/lib/user-accessible-host.ts) (true when the browser is not on a loopback host), and `bracketHostForUrl()` (IPv6 bracket-wrapping when composing a URL authority) in [`packages/client/src/lib/user-accessible-host.ts`](../packages/client/src/lib/user-accessible-host.ts).
+- **Consumers:** VSCode remote-URL open ([`openInVSCode`](../packages/client/src/lib/api.ts)), MCP install-command composition ([`buildMcpInstallCommand`](../packages/client/src/lib/mcp-install-url.ts)), and terminal localhost-URL rewrite ([`localhost-rewrite.ts`](../packages/client/src/components/terminal/transforms/localhost-rewrite.ts)), which rewrites a printed `localhost` URL's href to the user-accessible host so a remote browser can click it.
+- **See:** Issues [#987](https://github.com/ms2sato/agent-console/issues/987) (introduces the browser-host derivation), [#988](https://github.com/ms2sato/agent-console/issues/988) (extracts the helpers and adds the terminal URL rewrite).
+
 ## Events & Communication
 
 ### ConditionalWakeup
