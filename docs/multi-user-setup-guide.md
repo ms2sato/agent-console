@@ -869,6 +869,52 @@ user's `PATH` leaked into the elevated session and broke `claude` resolution
 with `sh: 1: claude: Permission denied`. Future smoke checks land as sibling
 scripts under `scripts/smoke/`.
 
+### Login-shell sentinel protocol check
+
+Agent workers launch through a login shell that first echoes a one-shot
+sentinel line, then execs an interactive shell into which the worker-manager
+injects the agent command. This smoke spawns a **real** PTY running a real
+login shell, waits for the sentinel, injects a probe command, and asserts the
+observable end state.
+
+Direct mode (runs as the current user -- no elevation):
+
+```bash
+bun scripts/smoke/check-login-shell-sentinel.ts
+```
+
+Elevated mode (runs the target user's login shell through the elevation chain):
+
+```bash
+sudo -u agentconsole bun scripts/smoke/check-login-shell-sentinel.ts --elevated <target-user>
+```
+
+What it verifies (against the **real** login shell):
+
+- The sentinel line is emitted exactly once, before the interactive shell.
+- Command injection after the sentinel gate runs as the expected user
+  (`whoami` matches the current user in direct mode, `<target-user>` under
+  elevation).
+- `PATH` is populated by login-shell init and (WARN-only) includes the user's
+  own home tree.
+- Negative: no probe output leaks before the gate, and the sentinel string
+  never reappears after the gate.
+
+Exit codes:
+
+- `0` -- all assertions passed
+- `1` -- the protocol ran but an assertion failed (the system is wrong)
+- `2` -- bad usage, or the probe could not run at all. In `--elevated` mode
+  this is how an unmet precondition surfaces (elevation not permitted, a
+  password is required, or the target user cannot log in) -- distinct from `1`
+  so operators can tell apart "found a real problem" vs "could not run".
+
+Like the PTY env check, this script imports the production command builders
+(`buildDirectSentinelShellCommand` / `buildElevatedSentinelCommand` from
+`packages/server/src/services/sentinel-spawn-command.ts`) and the production
+`bunPtyProvider`, so the spawn shape it exercises cannot drift from what
+`SingleUserMode` / `MultiUserMode` actually spawn.
+
 ## Local Multi-User Dev Mode
 
 `scripts/dev-multiuser.sh` (also runnable as `bun run dev:multiuser`) starts

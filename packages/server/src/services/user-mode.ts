@@ -21,6 +21,7 @@ import type { PtyProvider, PtyInstance } from '../lib/pty-provider.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import { getCleanChildProcessEnv, getUnsetEnvPrefix } from './env-filter.js';
 import { buildElevationArgs } from './elevation-args.js';
+import { buildDirectSentinelShellCommand, buildElevatedSentinelCommand } from './sentinel-spawn-command.js';
 import { lookupOsUser } from './os-user-lookup.js';
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
@@ -136,7 +137,7 @@ function spawnDirectPty(ptyProvider: PtyProvider, request: PtySpawnRequest): Pty
 
       const unsetPrefix = getUnsetEnvPrefix();
       const shellCommand = request.sentinel
-        ? `${unsetPrefix}exec $SHELL -l -c 'echo ${request.sentinel}; exec $SHELL'`
+        ? buildDirectSentinelShellCommand(request.sentinel, unsetPrefix)
         : unsetPrefix + request.command;
       return ptyProvider.spawn('sh', ['-c', shellCommand], {
         name: 'xterm-256color',
@@ -499,7 +500,7 @@ export class MultiUserMode implements UserMode {
           ...(ctx.parentWorkerId && { AGENT_CONSOLE_PARENT_WORKER_ID: ctx.parentWorkerId }),
         };
         command = request.sentinel
-          ? `echo ${request.sentinel}; exec $SHELL`
+          ? buildElevatedSentinelCommand(request.sentinel)
           : request.command;
         break;
       }
