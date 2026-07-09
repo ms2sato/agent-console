@@ -622,6 +622,71 @@ describe('MultiUserMode', () => {
       expect(opts.rows).toBe(30);
     });
 
+    it('should echo the sentinel and exec a login shell (not the agent command) when sentinel is set', async () => {
+      // Elevated path parity with the direct (sudo-skip) spawn: when the agent
+      // request carries a sentinel, the inner command must echo the sentinel
+      // then exec an interactive login shell instead of running the agent
+      // command directly. The worker-manager gates on the sentinel line and
+      // injects the real command afterwards. Without this, sudo -i runs the
+      // agent command immediately, no sentinel is ever emitted, and the agent
+      // worker's output is dropped forever by the sentinel gate.
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'other-user',
+        cwd: '/workspace/project',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude --prompt "build feature"',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+        sentinel: '__AGENT_CONSOLE_READY_abc123',
+      };
+
+      mode.spawnPty(request);
+
+      const [cmd, args] = getLastSpawnCall();
+      expect(cmd).toBe('sudo');
+      const innerCommand = args[6];
+      expect(innerCommand).toContain('echo __AGENT_CONSOLE_READY_abc123; exec $SHELL');
+      // The agent command must NOT be spawned directly; the worker-manager
+      // injects it after detecting the sentinel line.
+      expect(innerCommand).not.toContain('claude --prompt "build feature"');
+      // AGENT_CONSOLE_* env is still exported so the injected command inherits it.
+      expect(innerCommand).toContain('AGENT_CONSOLE_BASE_URL');
+    });
+
+    it('should run the agent command directly when no sentinel is set', async () => {
+      const mode = await createMode();
+
+      const request: AgentPtySpawnRequest = {
+        type: 'agent',
+        username: 'other-user',
+        cwd: '/workspace/project',
+        additionalEnvVars: {},
+        cols: 80,
+        rows: 24,
+        command: 'claude --prompt "build feature"',
+        agentConsoleContext: {
+          baseUrl: 'http://localhost:3457',
+          sessionId: 'sess-1',
+          workerId: 'wkr-1',
+        },
+      };
+
+      mode.spawnPty(request);
+
+      const [, args] = getLastSpawnCall();
+      const innerCommand = args[6];
+      expect(innerCommand).toContain('claude --prompt "build feature"');
+      expect(innerCommand).not.toContain('exec $SHELL');
+    });
+
     it('should pass --preserve-env=FORCE_COLOR to sudo so truecolor flag survives sudo -i', async () => {
       // Model B (multi-user) bug: sudo -i resets the env to the sudoers env_keep
       // defaults, which strips FORCE_COLOR. Node-based agents then fall back to
