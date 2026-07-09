@@ -25,15 +25,17 @@ export class MockPty {
   currentRows = 30;
   loginShellSentinel?: string;
   private sentinelEmitted = false;
+  private autoEmitSentinel: boolean;
 
-  constructor(pid: number, loginShellSentinel?: string) {
+  constructor(pid: number, loginShellSentinel?: string, autoEmitSentinel = true) {
     this.pid = pid;
     this.loginShellSentinel = loginShellSentinel;
+    this.autoEmitSentinel = autoEmitSentinel;
   }
 
   onData(callback: (data: string) => void): MockDisposable {
     this.dataCallback = callback;
-    if (this.loginShellSentinel && !this.sentinelEmitted) {
+    if (this.autoEmitSentinel && this.loginShellSentinel && !this.sentinelEmitted) {
       this.sentinelEmitted = true;
       callback(this.loginShellSentinel + '\n');
     }
@@ -78,20 +80,39 @@ export class MockPty {
 
   // Test helpers - simulate PTY events
   simulateData(data: string) {
-    if (this.loginShellSentinel && !this.sentinelEmitted) {
+    // Only mark the sentinel as emitted once a callback actually receives it;
+    // flipping the flag with no listener would suppress the real emit later.
+    if (this.autoEmitSentinel && this.loginShellSentinel && !this.sentinelEmitted && this.dataCallback) {
       this.sentinelEmitted = true;
-      if (this.dataCallback) {
-        this.dataCallback(this.loginShellSentinel + '\n');
-      }
+      this.dataCallback(this.loginShellSentinel + '\n');
     }
     if (this.dataCallback) {
       this.dataCallback(data);
     }
   }
 
+  /**
+   * Emit the login-shell sentinel exactly once, only when a callback is
+   * registered and the sentinel has not already been emitted. Does not route
+   * through simulateData (which would append a spurious duplicate when the
+   * onData auto-emit already fired) and never flips the flag without a
+   * listener present.
+   */
   simulateLoginShellReady() {
-    if (this.loginShellSentinel) {
-      this.simulateData(this.loginShellSentinel + '\n');
+    if (this.loginShellSentinel && !this.sentinelEmitted && this.dataCallback) {
+      this.sentinelEmitted = true;
+      this.dataCallback(this.loginShellSentinel + '\n');
+    }
+  }
+
+  /**
+   * Directly emit raw bytes to the onData callback, bypassing all sentinel
+   * auto-emit. Lets tests feed a login-shell sentinel across arbitrary chunk
+   * boundaries (pair with the factory's autoEmitSentinel=false option).
+   */
+  emitRaw(data: string) {
+    if (this.dataCallback) {
+      this.dataCallback(data);
     }
   }
 
@@ -111,15 +132,17 @@ export class MockPty {
 export function createMockPtyFactory(startPid = 10000) {
   const instances: MockPty[] = [];
   let nextPid = startPid;
+  let autoEmitSentinel = true;
 
   const spawn = mock((...args: unknown[]) => {
     const spawnArgs = args[1] as string[] | undefined;
-    const shellCmd = spawnArgs?.[1] ?? '';
-    const sentinelMatch = typeof shellCmd === 'string'
-      ? shellCmd.match(/__AGENT_CONSOLE_READY_[a-f0-9]+/)
-      : null;
+    // Scan the full argv, not just argv[1]: direct spawns are `sh -c <cmd>`
+    // (sentinel at index 1) but elevated spawns are `sudo -u ... sh -c <cmd>`
+    // (sentinel deep in the array). Joining covers both shapes.
+    const joinedArgs = Array.isArray(spawnArgs) ? spawnArgs.join(' ') : '';
+    const sentinelMatch = joinedArgs.match(/__AGENT_CONSOLE_READY_[a-f0-9]+/);
     const sentinel = sentinelMatch?.[0];
-    const pty = new MockPty(nextPid++, sentinel);
+    const pty = new MockPty(nextPid++, sentinel, autoEmitSentinel);
     instances.push(pty);
     return pty;
   });
@@ -127,7 +150,17 @@ export function createMockPtyFactory(startPid = 10000) {
   const reset = () => {
     instances.length = 0;
     nextPid = startPid;
+    autoEmitSentinel = true;
     spawn.mockClear();
+  };
+
+  /**
+   * Toggle whether ptys spawned afterwards auto-emit their login-shell sentinel
+   * when onData is registered. Disable to drive the sentinel manually via
+   * MockPty.emitRaw (e.g. to feed it across chunk boundaries).
+   */
+  const setAutoEmitSentinel = (enabled: boolean) => {
+    autoEmitSentinel = enabled;
   };
 
   // Create a PtyProvider that uses the mock spawn
@@ -135,5 +168,5 @@ export function createMockPtyFactory(startPid = 10000) {
     spawn: spawn as unknown as PtyProvider['spawn'],
   };
 
-  return { instances, spawn, reset, provider };
+  return { instances, spawn, reset, provider, setAutoEmitSentinel };
 }

@@ -494,22 +494,29 @@ export class WorkerManager {
     const disposables: Disposable[] = [];
 
     let sentinelDetected = worker.type !== 'agent' || !worker.loginShellSentinel;
+    // Carries the tail of the pre-sentinel stream across PTY read boundaries so a
+    // sentinel split between two chunks is still detected. Bounded to
+    // sentinel.length - 1 characters (the largest partial match possible).
+    let preSentinelCarry = '';
 
     const onDataDisposable = worker.pty.onData((rawData) => {
       let data = rawData;
 
       if (!sentinelDetected && worker.type === 'agent' && worker.loginShellSentinel) {
         const sentinel = worker.loginShellSentinel;
-        const idx = data.indexOf(sentinel);
+        const haystack = preSentinelCarry + data;
+        const idx = haystack.indexOf(sentinel);
         if (idx === -1) {
+          preSentinelCarry = haystack.slice(-(sentinel.length - 1));
           return;
         }
         sentinelDetected = true;
+        preSentinelCarry = '';
         if (worker.pendingCommand && worker.pty) {
           worker.pty.write(worker.pendingCommand + '\r');
           worker.pendingCommand = undefined;
         }
-        const afterSentinel = data.slice(idx + sentinel.length).replace(/^[\r\n]+/, '');
+        const afterSentinel = haystack.slice(idx + sentinel.length).replace(/^[\r\n]+/, '');
         worker.loginShellSentinel = undefined;
         if (afterSentinel.length === 0) return;
         data = afterSentinel;
