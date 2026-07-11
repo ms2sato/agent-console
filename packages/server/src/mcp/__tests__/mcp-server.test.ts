@@ -31,6 +31,7 @@ import { AnnotationService } from '../../services/annotation-service.js';
 import { InterSessionMessageService } from '../../services/inter-session-message-service.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import { createMcpApp } from '../mcp-server.js';
+import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
@@ -117,6 +118,7 @@ async function callTool(
   name: string,
   args: Record<string, unknown>,
   id: number = 2,
+  extraHeaders?: Record<string, string>,
 ): Promise<{ result?: { content: Array<{ type: string; text: string }>; isError?: boolean }; error?: unknown }> {
   const res = await app.request('/mcp', {
     method: 'POST',
@@ -124,6 +126,7 @@ async function callTool(
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
       'Mcp-Session-Id': sessionId,
+      ...extraHeaders,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -190,8 +193,10 @@ describe('MCP Server Tools', () => {
    * Call this after replacing the repositoryManager to ensure
    * the MCP tools see the updated dependencies.
    */
-  async function remountMcpApp(): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl });
+  async function remountMcpApp(
+    authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry },
+  ): Promise<void> {
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -3977,6 +3982,252 @@ describe('MCP Server Tools', () => {
       expect(data.restarted).toBe(0);
       expect(data.failed).toBe(0);
       expect(data.results).toHaveLength(0);
+    });
+  });
+
+  // ===========================================================================
+  // MCP caller identity wiring (docs/design/embedded-agent-worker.md phase 1)
+  // ===========================================================================
+
+  describe('MCP caller identity wiring (docs/design/embedded-agent-worker.md phase 1)', () => {
+    const OWNER_ID = 'owner-uuid';
+
+    /** Create a quick session with a known createdBy; returns session + agent worker id. */
+    async function createSessionForOwner(
+      createdBy: string,
+    ): Promise<{ sessionId: string; workerId: string }> {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/dir', agentId: 'claude-code' },
+        { createdBy },
+      );
+      return { sessionId: session.id, workerId: session.workers[0].id };
+    }
+
+    const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+    it('enforce + no token rejects create_conditional_wakeup', async () => {
+      const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+        sessionId,
+        workerId,
+        intervalSeconds: 60,
+        conditionScript: 'true',
+        onTrueMessage: 'x',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('MCP authentication required');
+    });
+
+    it('enforce + valid matching token succeeds', async () => {
+      const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({ sessionId, workerId, userId: OWNER_ID });
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+        sessionId,
+        workerId,
+        intervalSeconds: 60,
+        conditionScript: 'true',
+        onTrueMessage: 'x',
+      }, nextId++, bearer(token));
+      const data = parseToolResult(response) as { wakeupId?: string };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.wakeupId).toBeDefined();
+    });
+
+    it('enforce + unknown token rejects (unverified token is tokenless)', async () => {
+      const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
+      const registry = new McpTokenRegistry();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+        sessionId,
+        workerId,
+        intervalSeconds: 60,
+        conditionScript: 'true',
+        onTrueMessage: 'x',
+      }, nextId++, bearer('unknown-token-not-in-registry'));
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('MCP authentication required');
+    });
+
+    it('off + mismatched token rejects (presented-but-mismatched is always an error)', async () => {
+      const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({ sessionId, workerId, userId: 'someone-else' });
+      await remountMcpApp({ mcpAuthMode: 'off', mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+        sessionId,
+        workerId,
+        intervalSeconds: 60,
+        conditionScript: 'true',
+        onTrueMessage: 'x',
+      }, nextId++, bearer(token));
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('identity mismatch');
+    });
+
+    it('warn + mismatched token rejects', async () => {
+      const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({ sessionId, workerId, userId: 'someone-else' });
+      await remountMcpApp({ mcpAuthMode: 'warn', mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+        sessionId,
+        workerId,
+        intervalSeconds: 60,
+        conditionScript: 'true',
+        onTrueMessage: 'x',
+      }, nextId++, bearer(token));
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('identity mismatch');
+    });
+
+    it('warn + no token succeeds (single-user compatibility guarantee)', async () => {
+      const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
+      await remountMcpApp({ mcpAuthMode: 'warn', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+        sessionId,
+        workerId,
+        intervalSeconds: 60,
+        conditionScript: 'true',
+        onTrueMessage: 'x',
+      }, nextId++);
+      const data = parseToolResult(response) as { wakeupId?: string };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.wakeupId).toBeDefined();
+    });
+
+    it('run_process: enforce + no token rejects', async () => {
+      const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callTool(app, mcpSessionId, 'run_process', {
+        command: 'echo hi',
+        sessionId,
+        workerId,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('MCP authentication required');
+    });
+
+    it('remove_worktree: enforce + no token rejects', async () => {
+      await registerTestRepo();
+      const session = await sessionManager.createSession(
+        {
+          type: 'worktree',
+          locationPath: '/test/repo/worktrees/wt-auth',
+          repositoryId: 'repo-1',
+          worktreeId: 'wt-auth',
+          agentId: 'claude-code',
+        },
+        { createdBy: OWNER_ID },
+      );
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('MCP authentication required');
+    });
+
+    it('send_session_message: enforce + no token rejects', async () => {
+      const target = await createSessionForOwner(OWNER_ID);
+      const sender = await createSessionForOwner(OWNER_ID);
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: target.sessionId,
+        content: 'hello',
+        fromSessionId: sender.sessionId,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('MCP authentication required');
+    });
+
+    it('send_session_message: mismatched token rejects (fromSessionId owned by another user)', async () => {
+      const target = await createSessionForOwner(OWNER_ID);
+      const sender = await createSessionForOwner('owner-a');
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({
+        sessionId: sender.sessionId,
+        workerId: sender.workerId,
+        userId: 'someone-else',
+      });
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: target.sessionId,
+        content: 'hello',
+        fromSessionId: sender.sessionId,
+      }, nextId++, bearer(token));
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('identity mismatch');
+    });
+
+    it('delegate_to_worktree: enforce + no token without parentSessionId rejects', async () => {
+      await registerTestRepo();
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'repo-1',
+        prompt: 'Do something',
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain('MCP authentication required');
+    });
+
+    it('delegate_to_worktree: enforce + matching token + parentSessionId proceeds past auth', async () => {
+      const parent = await createSessionForOwner(OWNER_ID);
+      await registerTestRepo();
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({
+        sessionId: parent.sessionId,
+        workerId: parent.workerId,
+        userId: OWNER_ID,
+      });
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'repo-1',
+        prompt: 'Do something',
+        parentSessionId: parent.sessionId,
+        parentWorkerId: parent.workerId,
+      }, nextId++, bearer(token));
+      const data = parseToolResult(response) as { error?: string };
+
+      // The call may still fail downstream (the full delegate environment is
+      // not set up here), but it must NOT fail at the auth gate.
+      expect(data.error ?? '').not.toContain('MCP authentication required');
+      expect(data.error ?? '').not.toContain('identity mismatch');
     });
   });
 });
