@@ -453,6 +453,98 @@ describe('useAppWsEvent', () => {
       expect(onAgentDeleted).toHaveBeenCalledWith('agent-1');
     });
 
+    // The embedded-agent registry UI is a later phase; the client must accept the
+    // embedded-agent-created/updated/deleted frames as recognized no-ops. "Recognized"
+    // means the frame passes schema validation and reaches the dispatch switch (so it is
+    // NOT logged via console.error as an invalid/unknown message) while firing no handler.
+    const makeEmbeddedAgent = () => ({
+      id: 'embedded-agent-1',
+      name: 'Local GPT',
+      provider: { baseUrl: 'https://api.example.com/v1', model: 'gpt-4o' },
+      createdBy: 'alice',
+      createdAt: '2024-01-01',
+      updatedAt: '2024-01-01',
+    });
+
+    it('should treat embedded-agent-created as a recognized no-op', () => {
+      const onSessionsSync = mock(() => {});
+      const onAgentCreated = mock(() => {});
+      renderHook(() => useAppWsEvent({ onSessionsSync, onAgentCreated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'embedded-agent-created', embeddedAgent: makeEmbeddedAgent() })
+        );
+      });
+
+      // Not routed to any existing handler, and not dropped as invalid/unknown.
+      expect(onAgentCreated).not.toHaveBeenCalled();
+      expect(onSessionsSync).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    });
+
+    it('should treat embedded-agent-updated as a recognized no-op', () => {
+      const onSessionsSync = mock(() => {});
+      const onAgentUpdated = mock(() => {});
+      renderHook(() => useAppWsEvent({ onSessionsSync, onAgentUpdated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'embedded-agent-updated', embeddedAgent: makeEmbeddedAgent() })
+        );
+      });
+
+      expect(onAgentUpdated).not.toHaveBeenCalled();
+      expect(onSessionsSync).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    });
+
+    it('should treat embedded-agent-deleted as a recognized no-op', () => {
+      const onSessionsSync = mock(() => {});
+      const onAgentDeleted = mock(() => {});
+      renderHook(() => useAppWsEvent({ onSessionsSync, onAgentDeleted }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'embedded-agent-deleted', embeddedAgentId: 'embedded-agent-1' })
+        );
+      });
+
+      expect(onAgentDeleted).not.toHaveBeenCalled();
+      expect(onSessionsSync).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not disturb already-synced app state when an embedded-agent frame arrives', () => {
+      renderHook(() => useAppWsEvent());
+      const { result } = renderHook(() => useAppWsState(s => s.sessionsSynced));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] })
+        );
+      });
+      expect(result.current).toBe(true);
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'embedded-agent-created', embeddedAgent: makeEmbeddedAgent() })
+        );
+      });
+
+      // The embedded-agent frame must leave existing sync state untouched.
+      expect(result.current).toBe(true);
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+    });
+
     it('should call onSessionPaused for session-paused message', () => {
       const onSessionPaused = mock(() => {});
       renderHook(() => useAppWsEvent({ onSessionPaused }));
