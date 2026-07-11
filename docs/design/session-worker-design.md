@@ -42,9 +42,9 @@ QuickSession (not tied to repository/worktree)
 |------|-------------|---------|---------------------|
 | AgentWorker | AI Agent (Claude Code, etc.) | Yes | Yes |
 | TerminalWorker | Plain shell | Yes | No |
-| DiffWorker | Git diff viewer | No | No |
-| MarkdownWorker | Markdown preview | No | No |
-| WebWorker* | Embedded website | No | No |
+| GitDiffWorker | Git diff viewer | No | No |
+| MarkdownWorker (future) | Markdown preview | No | No |
+| WebWorker* (future) | Embedded website | No | No |
 
 *Note: `WebWorker` name conflicts with browser API. Consider `EmbeddedWebWorker` or `BrowserWorker`.
 
@@ -110,21 +110,22 @@ interface TerminalWorker extends WorkerBase {
   type: 'terminal';
 }
 
-// Future worker types
-interface DiffWorker extends WorkerBase {
-  type: 'diff';
+interface GitDiffWorker extends WorkerBase {
+  type: 'git-diff';
+  baseCommit: string;  // Comparison base commit hash (calculated at creation)
 }
 
+// Future worker types
 interface MarkdownWorker extends WorkerBase {
   type: 'markdown';
   filePath: string;  // File to preview
 }
 
 // Current implementation
-type Worker = AgentWorker | TerminalWorker;
+type Worker = AgentWorker | TerminalWorker | GitDiffWorker;
 
 // Future (extensible)
-// type Worker = AgentWorker | TerminalWorker | DiffWorker | MarkdownWorker | ...;
+// type Worker = AgentWorker | TerminalWorker | GitDiffWorker | MarkdownWorker | ...;
 ```
 
 Note: `agentId` references an `AgentDefinition` which contains the command to run (e.g., `claude`), activity detection patterns, and continue args (e.g., `['-c']`).
@@ -514,20 +515,23 @@ Note: Migration happens in-memory when loading sessions. The new format is writt
 3. Implement worker-specific logic in SessionManager
 4. Add UI component for the worker type
 
-### Example: DiffWorker
+### Example: GitDiffWorker (implemented)
+
+`GitDiffWorker` was originally sketched here as a hypothetical future worker type; it has since been implemented and is now part of the current `Worker` union (see the table above). The snippet below shows the actual shape, which followed the same extension steps listed above:
 
 ```typescript
-// Type
-interface DiffWorker extends WorkerBase {
-  type: 'diff';
+// Type (packages/shared/src/types/worker.ts)
+interface GitDiffWorker extends WorkerBase {
+  type: 'git-diff';
+  baseCommit: string;  // Comparison base commit hash (calculated at creation)
 }
 
-// Internal (no PTY, uses git commands)
-interface InternalDiffWorker extends InternalWorkerBase {
-  type: 'diff';
-  watchedFiles: string[];
-  currentDiff: string;
+// Internal (no PTY, uses git commands; packages/server/src/services/worker-types.ts)
+interface InternalGitDiffWorker extends InternalWorkerBase {
+  type: 'git-diff';
+  baseCommit: string;
+  // File watcher and callbacks managed by git-diff-handler.ts
 }
 ```
 
-The architecture supports this without major changes - just extend the union types and add the implementation.
+The architecture supported this without major changes - just extending the union types and adding the implementation.
