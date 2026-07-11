@@ -36,9 +36,13 @@ Offer, as an OPTION beside the terminal (PTY) AgentWorker + MCP model, an agent 
 
 No formal ADR mechanism exists in this repo; decisions are recorded as "Design Decisions" / "Alternatives Considered" tables inside design docs (precedent: `self-worktree-delegation.md` Decision 1/2 "why MCP"). Per pre-pr-completeness Q1, do NOT introduce a new ADR file type — reuse the in-doc table format.
 
+## Decisions (owner)
+
+- **Issue #878 (verified caller identity): IN SCOPE.** This tips axis 1 decisively to **candidate (b) per-user subprocess loop** — (b) can reuse MCP for app-operation tools while #878 closes the self-asserted-identity gap that was (a)'s only edge.
+- **Restart-resume (conversation survives server restart): recommendation = DEFER to post-v1 (fast-follow), PENDING owner confirmation.** Rationale: under (b), a restart already kills + re-spawns the process exactly like today's PTY workers, so "no resume in v1" is parity, not a regression (resume is mandatory only under (a)). v1 ships the own-loop + structured-UI UX minimally; transcript persistence (with the hard mid-turn/mid-tool-call restore case) becomes an explicit fast-follow. Cost of deferring: worker-type behavior inconsistency (terminal continues via `-c`, new type resets) — must be stated in v1 doc/UI. Alternative if owner prefers UX consistency: include transcript persistence in v1.
+
 ## Next steps (ordered)
 
-1. Decide the two direction-changers with the owner: (i) is Issue #878 (verified caller identity) in scope? (ii) is restart-resume in scope for v1?
-2. Write the **Design Decisions** section ((a)/(b)/(c) table) into `in-process-agent-system.md` using the verdicts above.
+1. Confirm the restart-resume decision above (defer vs include), then write the **Design Decisions** section ((a)/(b)/(c) table) into `in-process-agent-system.md` using the verdicts above. Record (b) as the chosen candidate with #878-in-scope as the deciding factor.
 3. Revise the note: present (b) alongside (a) (not "in-process" as a given); apply the doc-accuracy fixes; add a "Multi-user identity & privilege" section (cross-ref `.claude/rules/elevation-helpers.md`, `os-environment-coupling.md`).
 4. `bun run check:lang` -> update PR #1001. Delete this notes file when the Design Decisions section lands.
