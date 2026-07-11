@@ -1042,7 +1042,7 @@ describe('MCP Server Tools', () => {
       const data = parseToolResult(response) as { error: string };
 
       expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('does not support inbound messages');
+      expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
     });
 
     it('should return error when session has no agent workers', async () => {
@@ -3385,6 +3385,31 @@ describe('MCP Server Tools', () => {
           expect(response.result?.isError).toBe(true);
         }
       });
+
+      it('should return error when workerId targets a git-diff worker', async () => {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+
+        // Find the git-diff worker created by default (not PTY-backed)
+        const gitDiffWorker = session.workers.find((w) => w.type === 'git-diff');
+        expect(gitDiffWorker).toBeDefined();
+
+        const response = await callTool(app, mcpSessionId, 'create_timer', {
+          sessionId: session.id,
+          workerId: gitDiffWorker!.id,
+          intervalSeconds: 60,
+          action: 'Check CI status',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('does not support PTY notifications');
+        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
+      });
     });
 
     describe('list_timers', () => {
@@ -3476,6 +3501,40 @@ describe('MCP Server Tools', () => {
 
         expect(response.result?.isError).toBe(true);
         expect(data.error).toContain('Timer not found');
+      });
+    });
+  });
+
+  // ===========================================================================
+  // Conditional wakeup tools (create_conditional_wakeup)
+  // ===========================================================================
+
+  describe('conditional wakeup tools', () => {
+    describe('create_conditional_wakeup', () => {
+      it('should return error when workerId targets a git-diff worker', async () => {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+
+        // Find the git-diff worker created by default (not PTY-backed)
+        const gitDiffWorker = session.workers.find((w) => w.type === 'git-diff');
+        expect(gitDiffWorker).toBeDefined();
+
+        const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+          sessionId: session.id,
+          workerId: gitDiffWorker!.id,
+          intervalSeconds: 60,
+          conditionScript: 'true',
+          onTrueMessage: 'Condition met',
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('does not support PTY notifications');
+        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
       });
     });
   });
@@ -3744,6 +3803,30 @@ describe('MCP Server Tools', () => {
 
           runProcessSpy.mockRestore();
         });
+      });
+
+      it('should return error when workerId targets a git-diff worker', async () => {
+        const session = await sessionManager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          agentId: 'claude-code',
+        });
+
+        // Find the git-diff worker created by default (not PTY-backed)
+        const gitDiffWorker = session.workers.find((w) => w.type === 'git-diff');
+        expect(gitDiffWorker).toBeDefined();
+
+        const response = await callTool(app, mcpSessionId, 'run_process', {
+          command: 'echo hello',
+          sessionId: session.id,
+          workerId: gitDiffWorker!.id,
+        }, nextId++);
+
+        const data = parseToolResult(response) as { error: string };
+
+        expect(response.result?.isError).toBe(true);
+        expect(data.error).toContain('does not support PTY notifications');
+        expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
       });
     });
 

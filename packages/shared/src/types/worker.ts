@@ -22,6 +22,16 @@ export interface GitDiffWorker extends WorkerBase {
 
 export type Worker = AgentWorker | TerminalWorker | GitDiffWorker;
 
+/** Workers backed by a PTY: can receive injected input / [internal:*] notifications. */
+export function isPtyBackedWorker(w: Worker): w is AgentWorker | TerminalWorker {
+  return w.type === 'agent' || w.type === 'terminal';
+}
+
+/** Workers that can be the target of send_session_message in the current implementation. */
+export function canReceiveSessionMessages(w: Worker): w is AgentWorker {
+  return w.type === 'agent';
+}
+
 // Agent activity state (detected by parsing output)
 export type AgentActivityState =
   | 'active'    // Working (output continuing)
