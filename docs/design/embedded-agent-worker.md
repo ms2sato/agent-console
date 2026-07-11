@@ -558,6 +558,7 @@ Normalization (v1 scope): parse `argsJson` with `JSON.parse` and validate agains
 | `user-message` while a turn is active | v1: server rejects with an error to the client ("turn in progress"); queueing is post-v1. |
 | Provider unreachable at first turn | Normal `turn-error` path; the worker stays activated (the loop is healthy; the provider is not). |
 | Dangling `embeddedAgentId` (definition deleted while worker exists) | Activation fails with explicit error; worker stays deactivated. Definition deletion warns when live workers reference it. |
+| Dangling `embeddedAgentId` at worker creation | `createWorker` resolves the definition BEFORE initializing/persisting and rejects with 400; the worker name derives from the definition (parallel to agent workers). This complements (does not replace) the activation-time check above — a definition deleted after creation still fails activation. |
 | WS client disconnects | Callbacks detached; subprocess keeps running (parity with PTY workers). |
 | Server restart | Orphan reaping SIGTERMs the loop via the persisted pid (`killOrphanWorkers`, unchanged); next access re-activates with a fresh epoch + conversation. |
 
