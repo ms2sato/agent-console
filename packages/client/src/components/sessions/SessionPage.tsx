@@ -39,7 +39,7 @@ function getRepositoryId(session: Session): string {
 // Error fallback UI for worker tabs
 interface WorkerErrorFallbackProps {
   error: Error;
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: Worker['type'];
   workerName: string;
   onRetry: () => void;
 }
@@ -55,6 +55,9 @@ function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerE
       break;
     case 'terminal':
       typeLabel = 'Terminal';
+      break;
+    case 'embedded-agent':
+      typeLabel = 'Embedded Agent';
       break;
     default: {
       const _exhaustive: never = workerType;

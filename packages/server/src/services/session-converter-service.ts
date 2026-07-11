@@ -230,6 +230,15 @@ export class SessionConverterService {
           createdAt: w.createdAt,
           baseCommit: w.baseCommit,
         };
+      } else if (w.type === 'embedded-agent') {
+        return {
+          id: w.id,
+          type: 'embedded-agent' as const,
+          name: w.name,
+          createdAt: w.createdAt,
+          embeddedAgentId: w.embeddedAgentId,
+          activated: false, // Paused sessions have no active subprocess
+        };
       } else {
         const _exhaustive: never = w;
         throw new Error(`Unknown worker type: ${(_exhaustive as PersistedWorker).type}`);

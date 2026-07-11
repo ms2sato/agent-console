@@ -6,6 +6,7 @@ import * as v from 'valibot';
 import * as agent from '../agent.js';
 import * as appServerMessage from '../app-server-message.js';
 import * as auth from '../auth.js';
+import * as embeddedAgent from '../embedded-agent.js';
 import * as messageTemplate from '../message-template.js';
 import * as message from '../message.js';
 import * as notification from '../notification.js';
@@ -18,6 +19,7 @@ const MODULES: Record<string, Record<string, unknown>> = {
   agent,
   'app-server-message': appServerMessage,
   auth,
+  'embedded-agent': embeddedAgent,
   'message-template': messageTemplate,
   message,
   notification,

@@ -66,8 +66,10 @@ describe('SessionConverterService', () => {
           return { id: w.id, type: 'agent', name: w.name, agentId: w.agentId, createdAt: w.createdAt, activated: w.pty !== null };
         } else if (w.type === 'terminal') {
           return { id: w.id, type: 'terminal', name: w.name, createdAt: w.createdAt, activated: w.pty !== null };
-        } else {
+        } else if (w.type === 'git-diff') {
           return { id: w.id, type: 'git-diff', name: w.name, createdAt: w.createdAt, baseCommit: w.baseCommit };
+        } else {
+          return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, activated: w.subprocess !== null };
         }
       },
       toPersistedWorker: (w: InternalWorker): PersistedWorker => {
@@ -77,8 +79,10 @@ describe('SessionConverterService', () => {
           return { id: w.id, type: 'agent', name: w.name, agentId: w.agentId, createdAt: w.createdAt, pid: w.pty?.pid ?? null };
         } else if (w.type === 'terminal') {
           return { id: w.id, type: 'terminal', name: w.name, createdAt: w.createdAt, pid: w.pty?.pid ?? null };
-        } else {
+        } else if (w.type === 'git-diff') {
           return { id: w.id, type: 'git-diff', name: w.name, createdAt: w.createdAt, baseCommit: w.baseCommit };
+        } else {
+          return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, pid: w.subprocess?.pid ?? null };
         }
       },
       getServerPid: () => 12345,

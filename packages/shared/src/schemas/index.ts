@@ -34,11 +34,26 @@ export {
   type CreateAgentWorkerParams,
   type CreateTerminalWorkerParams,
   type CreateGitDiffWorkerParams,
+  type CreateEmbeddedAgentWorkerParams,
   type CreateWorkerParams,
   // API types
   type CreateWorkerRequest,
   type RestartWorkerRequest,
 } from './worker.js';
+
+// Embedded agent schemas
+export {
+  EmbeddedAgentProviderSchema,
+  EmbeddedAgentDefinitionSchema,
+  CreateEmbeddedAgentRequestSchema,
+  UpdateEmbeddedAgentRequestSchema,
+  EmbeddedAgentCommandSchema,
+  EmbeddedAgentEventSchema,
+  EmbeddedAgentServerEventSchema,
+  EmbeddedAgentStreamEventSchema,
+  type CreateEmbeddedAgentRequest,
+  type UpdateEmbeddedAgentRequest,
+} from './embedded-agent.js';
 
 // Session schemas
 export {

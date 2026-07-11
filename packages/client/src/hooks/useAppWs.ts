@@ -159,6 +159,14 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           logger.debug(`[WebSocket] agent-deleted: ${msg.agentId}`);
           optionsRef.current.onAgentDeleted?.(msg.agentId);
           break;
+        case 'embedded-agent-created':
+        case 'embedded-agent-updated':
+          // Embedded agent registry UI is a later phase; no client handler yet.
+          logger.debug(`[WebSocket] ${msg.type}: ${msg.embeddedAgent.id}`);
+          break;
+        case 'embedded-agent-deleted':
+          logger.debug(`[WebSocket] embedded-agent-deleted: ${msg.embeddedAgentId}`);
+          break;
         case 'repositories-sync':
           logger.debug(`[WebSocket] repositories-sync received: ${msg.repositories.length} repositories`);
           optionsRef.current.onRepositoriesSync?.(msg.repositories);

@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { AgentDefinitionSchema } from './agent.js';
+import { EmbeddedAgentDefinitionSchema } from './embedded-agent.js';
 
 // === Primitive schemas ===
 
@@ -34,7 +35,19 @@ const GitDiffWorkerSchema = v.strictObject({
   baseCommit: v.string(),
 });
 
-const WorkerSchema = v.union([AgentWorkerSchema, TerminalWorkerSchema, GitDiffWorkerSchema]);
+const EmbeddedAgentWorkerSchema = v.strictObject({
+  ...WorkerBaseSchema.entries,
+  type: v.literal('embedded-agent'),
+  embeddedAgentId: v.string(),
+  activated: v.boolean(),
+});
+
+const WorkerSchema = v.union([
+  AgentWorkerSchema,
+  TerminalWorkerSchema,
+  GitDiffWorkerSchema,
+  EmbeddedAgentWorkerSchema,
+]);
 
 // === Session schemas ===
 
@@ -240,6 +253,21 @@ const AgentDeletedSchema = v.strictObject({
   agentId: v.string(),
 });
 
+const EmbeddedAgentCreatedSchema = v.strictObject({
+  type: v.literal('embedded-agent-created'),
+  embeddedAgent: EmbeddedAgentDefinitionSchema,
+});
+
+const EmbeddedAgentUpdatedSchema = v.strictObject({
+  type: v.literal('embedded-agent-updated'),
+  embeddedAgent: EmbeddedAgentDefinitionSchema,
+});
+
+const EmbeddedAgentDeletedSchema = v.strictObject({
+  type: v.literal('embedded-agent-deleted'),
+  embeddedAgentId: v.string(),
+});
+
 const RepositoriesSyncSchema = v.strictObject({
   type: v.literal('repositories-sync'),
   repositories: v.array(RepositorySchema),
@@ -373,6 +401,9 @@ export const AppServerMessageSchema = v.variant('type', [
   AgentCreatedSchema,
   AgentUpdatedSchema,
   AgentDeletedSchema,
+  EmbeddedAgentCreatedSchema,
+  EmbeddedAgentUpdatedSchema,
+  EmbeddedAgentDeletedSchema,
   RepositoriesSyncSchema,
   RepositoryCreatedSchema,
   RepositoryUpdatedSchema,

@@ -23,6 +23,7 @@ import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
+import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
@@ -101,6 +102,14 @@ interface SessionManagerOptions {
   sessionRepository?: SessionRepository;
   jobQueue?: JobQueue | null;
   agentManager: AgentManager;
+  /**
+   * Embedded-agent definition registry (used by createWorker to validate an
+   * embedded-agent worker's referenced definition and derive its name).
+   * Optional: callers that never create embedded-agent workers may omit it and
+   * get a null-object default; production (createAppContext) passes the real
+   * manager so validation is enforced end-to-end.
+   */
+  embeddedAgentManager?: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
   /** User repository for resolving createdBy → username for PTY spawning */
   userRepository?: UserRepository;
   notificationManager?: NotificationManager | null;
@@ -191,6 +200,12 @@ export class SessionManager {
   private constructor(options: SessionManagerOptions) {
     const userMode = options.userMode;
     const agentManager = options.agentManager;
+    // Null-object default (consistent with the other optional lookups wired in
+    // this constructor): callers that never create embedded-agent workers do
+    // not have to thread the registry through. Any embedded-agent worker
+    // creation under this default resolves to undefined and is rejected as a
+    // dangling reference by WorkerLifecycleManager.createWorker.
+    const embeddedAgentManager = options.embeddedAgentManager ?? { getEmbeddedAgent: () => undefined };
     this.notificationManager = options?.notificationManager ?? null;
     this.userRepository = options?.userRepository ?? null;
     this.repositoryLookup = options.repositoryLookup;
@@ -234,6 +249,7 @@ export class SessionManager {
     this.workerLifecycleManager = new WorkerLifecycleManager({
       workerManager: this.workerManager,
       agentManager,
+      embeddedAgentManager,
       notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),

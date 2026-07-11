@@ -44,7 +44,7 @@ import {
   checkCallerOwnsSession,
   resolveCallerFromAuthHeader,
 } from './mcp-auth.js';
-import type { Session, AgentActivityState, AppServerMessage } from '@agent-console/shared';
+import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
 import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
@@ -69,7 +69,7 @@ interface SessionStatusResult {
   parentWorkerId?: string;
   workers: Array<{
     id: string;
-    type: 'agent' | 'terminal' | 'git-diff';
+    type: Worker['type'];
     activityState: AgentActivityState;
   }>;
 }
@@ -86,7 +86,7 @@ interface SessionListItem {
   status: 'active' | 'inactive';
   workers: Array<{
     id: string;
-    type: 'agent' | 'terminal' | 'git-diff';
+    type: Worker['type'];
     activityState: AgentActivityState;
   }>;
 }

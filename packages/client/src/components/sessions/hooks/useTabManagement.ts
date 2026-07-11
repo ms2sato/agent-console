@@ -6,7 +6,7 @@ import { logger } from '../../../lib/logger';
 
 export interface Tab {
   id: string;
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: Worker['type'];
   name: string;
 }
 

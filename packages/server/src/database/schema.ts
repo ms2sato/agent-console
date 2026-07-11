@@ -10,6 +10,7 @@ export interface Database {
   workers: WorkersTable;
   repositories: RepositoriesTable;
   agents: AgentsTable;
+  embedded_agents: EmbeddedAgentsTable;
   jobs: JobsTable;
   repository_slack_integrations: RepositorySlackIntegrationsTable;
   worktrees: WorktreesTable;
@@ -81,20 +82,26 @@ export interface WorkersTable {
   id: string;
   /** Foreign key reference to sessions.id */
   session_id: string;
-  /** Worker type: 'agent', 'terminal', or 'git-diff' */
-  type: 'agent' | 'terminal' | 'git-diff';
+  /** Worker type: 'agent', 'terminal', 'git-diff', or 'embedded-agent' */
+  type: 'agent' | 'terminal' | 'git-diff' | 'embedded-agent';
   /** Display name for the worker */
   name: string;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */
   created_at: Generated<string>;
   /** Last update timestamp as ISO 8601 string (has DEFAULT) */
   updated_at: Generated<string>;
-  /** PTY process ID (null for git-diff workers or inactive PTY workers) */
+  /**
+   * Process ID: the PTY process for agent/terminal workers, or the agent
+   * subprocess for embedded-agent workers. Null for git-diff workers and for
+   * inactive PTY / not-yet-activated embedded-agent workers.
+   */
   pid: number | null;
   /** Agent ID for agent workers (null for other worker types) */
   agent_id: string | null;
   /** Base commit hash for git-diff workers (null for other worker types) */
   base_commit: string | null;
+  /** Embedded agent definition ID for embedded-agent workers (null for other worker types) */
+  embedded_agent_id: string | null;
 }
 
 // Helper types for queries
@@ -182,6 +189,43 @@ export type AgentRow = Selectable<AgentsTable>;
 export type NewAgent = Insertable<AgentsTable>;
 /** Agent data for UPDATE queries */
 export type AgentUpdate = Updateable<AgentsTable>;
+
+/**
+ * Embedded agents table schema.
+ * Stores embedded-agent definitions (OpenAI-compatible provider + model),
+ * a separate registry from `agents` (which describes terminal programs).
+ */
+export interface EmbeddedAgentsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Display name (e.g. "Ollama qwen3:32b") */
+  name: string;
+  /** Human-readable description (optional) */
+  description: string | null;
+  /** OpenAI-compatible provider root URL */
+  provider_base_url: string;
+  /** Model id passed in the chat.completions request */
+  provider_model: string;
+  /** Name of a key in the server-side key store (null = no auth, e.g. local LLMs) */
+  provider_api_key_ref: string | null;
+  /** System prompt prepended to every conversation (optional) */
+  system_prompt: string | null;
+  /** Max tool iterations per user turn (null = use default) */
+  max_tool_iterations: number | null;
+  /** User UUID (from users table) of the creator */
+  created_by: string;
+  /** Creation timestamp as ISO 8601 string (has DEFAULT) */
+  created_at: Generated<string>;
+  /** Last update timestamp as ISO 8601 string (has DEFAULT) */
+  updated_at: Generated<string>;
+}
+
+/** Embedded agent row as returned from SELECT queries */
+export type EmbeddedAgentRow = Selectable<EmbeddedAgentsTable>;
+/** Embedded agent data for INSERT queries */
+export type NewEmbeddedAgent = Insertable<EmbeddedAgentsTable>;
+/** Embedded agent data for UPDATE queries */
+export type EmbeddedAgentUpdate = Updateable<EmbeddedAgentsTable>;
 
 /**
  * Jobs table schema.

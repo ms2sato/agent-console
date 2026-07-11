@@ -35,9 +35,53 @@ describe('CreateWorkerRequestSchema', () => {
       continueConversation: true,
     });
     expect(result.success).toBe(true);
-    if (result.success) {
+    if (result.success && result.output.type === 'terminal') {
       expect(result.output.continueConversation).toBe(true);
     }
+  });
+
+  it('should accept embedded-agent worker', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'embedded-agent') {
+      expect(result.output.embeddedAgentId).toBe('def-1');
+    }
+  });
+
+  it('should accept embedded-agent worker with optional name', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+      name: 'My Embedded Agent',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('should reject embedded-agent worker without embeddedAgentId', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject embedded-agent worker with empty embeddedAgentId', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject embedded-agent worker with an unknown key', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'embedded-agent',
+      embeddedAgentId: 'def-1',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('should reject agent worker (not allowed from client)', () => {
@@ -206,7 +250,9 @@ describe('strict-parse contract (unknown-key rejection)', () => {
     });
     expect(result.success).toBe(false);
     if (!result.success) {
-      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+      // CreateWorkerRequestSchema is a union; the unknown-key issue surfaces on
+      // the matching (terminal) branch, so assert via the serialized issues.
+      expect(JSON.stringify(result.issues)).toContain('unexpectedField');
     }
   });
 

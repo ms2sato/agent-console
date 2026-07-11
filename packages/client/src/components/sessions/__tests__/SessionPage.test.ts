@@ -383,3 +383,29 @@ describe('sessionToPageState', () => {
     expect(result.type).toBe('orphaned');
   });
 });
+
+describe('embedded-agent worker in SessionPage page-state', () => {
+  // SessionPage widened WorkerErrorFallbackProps.workerType to Worker['type'] and
+  // added the 'embedded-agent' case so the tab/error UI accepts the new worker type.
+  // This verifies a session carrying an EmbeddedAgentWorker flows through the exported
+  // page-state logic intact — the Worker union widening (typed below) is what
+  // necessitated the SessionPage prop change. If the shared Worker union ever dropped
+  // 'embedded-agent', the `Worker` annotation here would fail typecheck.
+  it('maps an active session containing an embedded-agent worker to active, preserving the worker', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true,
+      createdAt: new Date().toISOString(),
+    };
+    const session = createMockSession({ status: 'active', workers: [embeddedWorker] });
+
+    const result = sessionToPageState(session);
+
+    expect(result.type).toBe('active');
+    expect(result.session.workers).toContain(embeddedWorker);
+    expect(result.session.workers[0].type).toBe('embedded-agent');
+  });
+});

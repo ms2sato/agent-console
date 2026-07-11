@@ -4,6 +4,7 @@ import type { AppBindings } from '../../app-context.js';
 import { setupTestEnvironment, cleanupTestEnvironment, createTestApp } from '../../__tests__/test-utils.js';
 import type { ConfigResponse, SkillDefinition } from '@agent-console/shared';
 import type { MessageTemplateRepository } from '../../repositories/message-template-repository.js';
+import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
@@ -46,6 +47,17 @@ describe('API route mounting', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { skills: SkillDefinition[] };
     expect(Array.isArray(body.skills)).toBe(true);
+  });
+
+  it('should mount embedded-agents route at /api/embedded-agents', async () => {
+    app = await createTestApp({
+      embeddedAgentManager: { getAllEmbeddedAgents: () => [] } as Pick<EmbeddedAgentManager, 'getAllEmbeddedAgents'> as EmbeddedAgentManager,
+    });
+    const res = await app.request('/api/embedded-agents');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { embeddedAgents: unknown[] };
+    expect(Array.isArray(body.embeddedAgents)).toBe(true);
   });
 
   it('should mount message-templates route at /api/message-templates', async () => {

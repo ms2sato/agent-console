@@ -6,7 +6,8 @@
  * mocking the session-related dependencies (getSession, persistSession, etc.).
  */
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
-import type { CreateWorkerParams, Session } from '@agent-console/shared';
+import type { CreateWorkerParams, EmbeddedAgentDefinition, Session } from '@agent-console/shared';
+import { ValidationError } from '../../lib/errors.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -27,8 +28,26 @@ import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { AnnotationService } from '../annotation-service.js';
 import { InterSessionMessageService } from '../inter-session-message-service.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import * as gitDiffService from '../git-diff-service.js';
+import type { InternalEmbeddedAgentWorker } from '../worker-types.js';
 
 const TEST_CONFIG_DIR = '/test/config';
+
+// Embedded-agent definition the createWorker path resolves against. The stub
+// below returns it only for its own id, so any other id is treated as dangling.
+const EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
+  id: 'def-1',
+  name: 'My Local Model',
+  provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+  createdBy: 'user-1',
+  createdAt: '2024-01-01T00:00:00.000Z',
+  updatedAt: '2024-01-01T00:00:00.000Z',
+};
+
+const embeddedAgentManagerStub = {
+  getEmbeddedAgent: (id: string): EmbeddedAgentDefinition | undefined =>
+    id === EMBEDDED_AGENT_DEF.id ? EMBEDDED_AGENT_DEF : undefined,
+};
 
 // Mock PTY factory
 const ptyFactory = createMockPtyFactory(10000);
@@ -62,6 +81,7 @@ describe('WorkerLifecycleManager', () => {
     return {
       workerManager,
       agentManager,
+      embeddedAgentManager: embeddedAgentManagerStub,
       notificationManager: null,
       pathExists: mockPathExists as unknown as (path: string) => Promise<boolean>,
       getSession: (id: string) => sessions.get(id),
@@ -237,6 +257,69 @@ describe('WorkerLifecycleManager', () => {
       expect(resolveSpawnCalls).toBe(1);
     });
 
+    it('should create a deactivated embedded-agent worker without spawning anything', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'embedded-agent',
+        embeddedAgentId: 'def-1',
+      };
+
+      const worker = await lifecycleManager.createWorker(session.id, request);
+
+      expect(worker).not.toBeNull();
+      expect(worker!.type).toBe('embedded-agent');
+      if (worker!.type === 'embedded-agent') {
+        expect(worker!.embeddedAgentId).toBe('def-1');
+        expect(worker!.activated).toBe(false);
+      }
+      // Name defaults to the resolved definition's name (parallel to agents).
+      expect(worker!.name).toBe('My Local Model');
+      expect(session.workers.size).toBe(1);
+      // Phase 1: no subprocess is spawned and no PTY is created.
+      expect(ptyFactory.instances.length).toBe(0);
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.subprocess).toBeNull();
+      expect(internal.stdin).toBeNull();
+      // Persisted as part of creation.
+      expect(mockPersistSession).toHaveBeenCalled();
+    });
+
+    it('should reject a dangling embeddedAgentId and persist nothing', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'embedded-agent',
+        embeddedAgentId: 'does-not-exist',
+      };
+
+      await expect(lifecycleManager.createWorker(session.id, request)).rejects.toBeInstanceOf(
+        ValidationError,
+      );
+
+      // Nothing was persisted and no worker was added to the session.
+      expect(mockPersistSession).not.toHaveBeenCalled();
+      expect(session.workers.size).toBe(0);
+      expect(ptyFactory.instances.length).toBe(0);
+    });
+
+    it('should honor an explicit worker name over the definition name', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'embedded-agent',
+        name: 'Custom Name',
+        embeddedAgentId: 'def-1',
+      };
+
+      const worker = await lifecycleManager.createWorker(session.id, request);
+
+      expect(worker!.name).toBe('Custom Name');
+    });
+
     it('should return null when session is not found', async () => {
       const request: CreateWorkerParams = {
         type: 'terminal',
@@ -389,6 +472,31 @@ describe('WorkerLifecycleManager', () => {
 
       expect(result).toBe(true);
       expect(session.workers.size).toBe(0);
+    });
+
+    it('should delete an embedded-agent worker without calling stopWatching', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'def-1',
+      });
+
+      const stopWatchingSpy = spyOn(gitDiffService, 'stopWatching');
+      try {
+        const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
+
+        expect(result).toBe(true);
+        expect(session.workers.size).toBe(0);
+        // stopWatching is a git-diff-only cleanup path; it must NOT run for
+        // embedded-agent workers.
+        expect(stopWatchingSpy).not.toHaveBeenCalled();
+        // No PTY was ever spawned, so none should be killed.
+        expect(ptyFactory.instances.length).toBe(0);
+      } finally {
+        stopWatchingSpy.mockRestore();
+      }
     });
 
     it('should return false when session is not found', async () => {

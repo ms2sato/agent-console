@@ -16,6 +16,8 @@ import { SessionManager } from '../../services/session-manager.js';
 import { RepositoryManager } from '../../services/repository-manager.js';
 import { AgentManager } from '../../services/agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
+import { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
+import { SqliteEmbeddedAgentRepository } from '../../repositories/sqlite-embedded-agent-repository.js';
 import { NotificationManager } from '../../services/notifications/notification-manager.js';
 import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
@@ -89,6 +91,7 @@ describe('Worker WebSocket connection error codes', () => {
     registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+    const embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(getDatabase()));
     const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
     sessionManager = await SessionManager.create({
       sessionRepository,
@@ -105,7 +108,7 @@ describe('Worker WebSocket connection error codes', () => {
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
     const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
 
-    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
 
     // Set up routes with a custom upgradeWebSocket that captures the worker handler factory
     const app = new Hono();
@@ -305,6 +308,7 @@ describe('WebSocket authentication rejection (C4)', () => {
     registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
+    const embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(getDatabase()));
     const notificationManager = new NotificationManager(new SlackHandler(new RepositorySlackIntegrationService(getDatabase())));
     const sessionManager = await SessionManager.create({
       sessionRepository,
@@ -323,7 +327,7 @@ describe('WebSocket authentication rejection (C4)', () => {
     // Use a UserMode that always rejects authentication
     const userMode = new RejectingUserMode();
 
-    const appContext = { sessionManager, notificationManager, agentManager, repositoryManager, userMode } as unknown as AppContext;
+    const appContext = { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, userMode } as unknown as AppContext;
 
     // Set up routes with a mock upgradeWebSocket
     app = new Hono();

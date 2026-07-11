@@ -1,7 +1,7 @@
 import type { ConnectionStatus } from '../../components/terminal/terminal-contract';
-import type { AgentActivityState } from '@agent-console/shared';
+import type { AgentActivityState, Worker } from '@agent-console/shared';
 
-type WorkerType = 'agent' | 'terminal' | 'git-diff';
+type WorkerType = Worker['type'];
 
 function getNonAgentStatusColor(status: ConnectionStatus): string {
   switch (status) {

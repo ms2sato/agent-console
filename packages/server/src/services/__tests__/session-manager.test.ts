@@ -10,6 +10,7 @@ import { defaultRepositoryLookup, defaultRepositoryEnvLookup, makeRepositoryEnvL
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
+import { ValidationError } from '../../lib/errors.js';
 import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
@@ -472,6 +473,75 @@ describe('SessionManager', () => {
 
       const worker = await manager.createWorker('non-existent', workerRequest);
       expect(worker).toBeNull();
+    });
+
+    it('rejects an embedded-agent worker when no embeddedAgentManager is wired (null-object default)', async () => {
+      // getSessionManager() omits embeddedAgentManager, so SessionManager uses
+      // the null-object default whose getEmbeddedAgent resolves nothing. Any
+      // embeddedAgentId is therefore treated as dangling and rejected — the
+      // default must reject cleanly, not crash.
+      const manager = await getSessionManager();
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      await expect(
+        manager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: 'anything',
+        }),
+      ).rejects.toBeInstanceOf(ValidationError);
+      await expect(
+        manager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: 'anything',
+        }),
+      ).rejects.toThrow('Embedded agent definition not found');
+    });
+
+    it('creates an embedded-agent worker named from the definition when the manager resolves it', async () => {
+      // A SessionManager wired WITH an embeddedAgentManager stub that resolves
+      // the id to a named definition. createWorker must succeed and name the
+      // worker from the definition.
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) =>
+            id === 'stub-def'
+              ? {
+                  id: 'stub-def',
+                  name: 'Stub Model',
+                  provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+                  createdBy: 'test-user-id',
+                  createdAt: '2024-01-01T00:00:00.000Z',
+                  updatedAt: '2024-01-01T00:00:00.000Z',
+                }
+              : undefined,
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+
+      expect(worker).not.toBeNull();
+      expect(worker?.type).toBe('embedded-agent');
+      expect(worker?.name).toBe('Stub Model');
     });
   });
 

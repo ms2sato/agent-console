@@ -66,6 +66,21 @@ describe('Workers API', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      // Resolve only 'agent-def-1'; any other embeddedAgentId is dangling and
+      // createWorker rejects it (surfaced as 400 by the route error handler).
+      embeddedAgentManager: {
+        getEmbeddedAgent: (id: string) =>
+          id === 'agent-def-1'
+            ? {
+                id: 'agent-def-1',
+                name: 'Test Embedded',
+                provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+                createdBy: 'test-user-id',
+                createdAt: '2024-01-01T00:00:00.000Z',
+                updatedAt: '2024-01-01T00:00:00.000Z',
+              }
+            : undefined,
+      },
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
@@ -637,6 +652,73 @@ describe('Workers API', () => {
       expect(body.worker).toBeDefined();
       expect(body.worker.id).toBeString();
       expect(body.worker.type).toBe('terminal');
+    });
+
+    it('should create an embedded-agent worker (deactivated in Phase 1)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'embedded-agent', embeddedAgentId: 'agent-def-1' }),
+      });
+
+      expect(res.status).toBe(201);
+
+      const body = (await res.json()) as {
+        worker: { id: string; type: string; embeddedAgentId: string; activated: boolean };
+      };
+      expect(body.worker).toBeDefined();
+      expect(body.worker.id).toBeString();
+      expect(body.worker.type).toBe('embedded-agent');
+      expect(body.worker.embeddedAgentId).toBe('agent-def-1');
+      // Phase 1 never spawns the subprocess, so the worker is deactivated.
+      expect(body.worker.activated).toBe(false);
+    });
+
+    it('should reject a dangling embeddedAgentId with 400', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'embedded-agent', embeddedAgentId: 'does-not-exist' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Embedded agent definition not found');
+    });
+
+    it('should reject continueConversation on the embedded-agent variant (strict union, 400)', async () => {
+      // continueConversation is only a field of the terminal variant. The
+      // request union is composed of strictObjects, so an embedded-agent body
+      // carrying continueConversation matches neither branch and is rejected.
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'embedded-agent',
+          embeddedAgentId: 'agent-def-1',
+          continueConversation: true,
+        }),
+      });
+
+      expect(res.status).toBe(400);
     });
   });
 
