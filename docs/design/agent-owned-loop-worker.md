@@ -188,6 +188,18 @@ Choosing (b) introduces one design axis that (a) would not have had: everything 
 
 If the implementation phase introduces further OS-level assumptions beyond `spawnAsUser` (login-shell PATH, sudoers config, file-ownership on the loop's working directory), the real-machine smoke-test discipline in [`os-environment-coupling.md`](../../.claude/rules/os-environment-coupling.md) applies, same as any other OS-coupled code in this codebase.
 
+## Other open design axes for v1
+
+Two more consequences of choosing a non-PTY worker that the v1 design must resolve (named here so they are not rediscovered mid-implementation):
+
+### Activity state without a PTY
+
+Today `AgentActivityState` is derived entirely by *parsing PTY output bytes* -- the `ActivityDetector` matches agent-defined regex patterns against the byte stream -- and `activated` literally means "the worker has a live PTY" (`pty !== null`). Neither definition applies to a worker with no PTY. The relationship inverts: the loop *knows* authoritatively when it is waiting on the LLM, executing a tool, or idle, so instead of the server inferring activity from output, the loop **emits activity state as part of its structured event stream** and the server records it. The v1 design must define: how today's activity states map onto loop-emitted states, which structured event carries state transitions, and what `activated` means for this worker type (e.g. "loop subprocess alive").
+
+### The Agent concept forks
+
+Today an `AgentDefinition` describes *how to launch a terminal program*: a command template, activity-detection patterns, continue args (e.g. `-c`). An agent-owned-loop agent is configured by entirely different data: provider endpoint, model, credential reference, and optionally a system prompt / tool policy. These are disjoint shapes, not variants of one template. The v1 design must decide whether `AgentDefinition` becomes a discriminated union (terminal-agent vs loop-agent), or the loop agents live in a separate registry -- and how session/worker creation UI selects between the two kinds.
+
 ## Rough sequencing (for a later plan)
 
 1. Bring Issue #878 (verified MCP caller identity) to closure -- a prerequisite for (b), not an optional hardening step.
