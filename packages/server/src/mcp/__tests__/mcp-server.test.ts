@@ -1042,7 +1042,7 @@ describe('MCP Server Tools', () => {
       const data = parseToolResult(response) as { error: string };
 
       expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('does not support inbound messages');
+      expect(data.error).toContain('requires a PTY-backed worker (agent/terminal)');
     });
 
     it('should return error when session has no agent workers', async () => {

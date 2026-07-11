@@ -35,6 +35,7 @@ import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
 import type { Session, AgentActivityState, AppServerMessage } from '@agent-console/shared';
+import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
 
@@ -451,14 +452,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           if (!worker) {
             return errorResult(`Worker ${toWorkerId} not found in session ${toSessionId}`);
           }
-          if (worker.type === 'git-diff') {
+          if (!isPtyBackedWorker(worker)) {
             return errorResult(
-              `Worker ${toWorkerId} in session ${toSessionId} does not support inbound messages`,
+              `Worker ${toWorkerId} in session ${toSessionId} cannot receive inbound messages: requires a PTY-backed worker (agent/terminal)`,
             );
           }
           resolvedWorkerId = toWorkerId;
         } else {
-          const agentWorkers = targetSession.workers.filter((w) => w.type === 'agent');
+          const agentWorkers = targetSession.workers.filter(canReceiveSessionMessages);
           if (agentWorkers.length === 0) {
             return errorResult(`Session ${toSessionId} has no agent workers`);
           }
@@ -1038,9 +1039,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (worker.type === 'git-diff') {
+        if (!isPtyBackedWorker(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications`,
+            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
           );
         }
 
@@ -1135,9 +1136,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (worker.type === 'git-diff') {
+        if (!isPtyBackedWorker(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications`,
+            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
           );
         }
 
@@ -1276,9 +1277,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (!worker) {
           return errorResult(`Worker ${workerId} not found in session ${sessionId}`);
         }
-        if (worker.type === 'git-diff') {
+        if (!isPtyBackedWorker(worker)) {
           return errorResult(
-            `Worker ${workerId} in session ${sessionId} does not support PTY notifications`,
+            `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
           );
         }
 
