@@ -74,7 +74,7 @@ Two decisions were made alongside the candidate choice:
 
 ## Proposal: an agent-owned-loop worker (candidate (b))
 
-The [Worker](session-worker-design.md#worker-types-current--future) abstraction already includes a non-PTY worker in production: `GitDiffWorker` (`packages/shared/src/types/worker.ts:18-23`), which has no PTY and instead exposes a diff payload directly. (The `session-worker-design.md` type table previously listed this as a future-only `DiffWorker`; synced to the implemented reality via PR #1003 / Issue #1002.) The agent-owned-loop worker slots in as a **new Worker type** the same way, rather than a product-level rewrite:
+The [Worker](session-worker-design.md#worker-types-current--future) abstraction already includes a non-PTY worker in production: `GitDiffWorker` (`packages/shared/src/types/worker.ts:18-23`), which has no PTY and instead exposes a diff payload directly. The agent-owned-loop worker slots in as a **new Worker type** the same way, rather than a product-level rewrite:
 
 - Session / Worker lifecycle -- including the pid/`serverPid`/orphan-recovery machinery that survives a server restart -- is reused as-is, per [Design Decisions](#design-decisions).
 - The worker WebSocket channel (`/ws/session/:sessionId/worker/:workerId`) is reused as the transport. The byte-offset / epoch / output-file history machinery layered on it turns out to be content-agnostic and is reused too (Part II, [WebSocket & client protocol](#websocket--client-protocol)); only the *terminal semantics* (ANSI rendering, resize, raw keystroke input) do not apply.
@@ -582,7 +582,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 
 ## Cross-references
 
-- [Session & Worker Design](session-worker-design.md) -- Worker type union and the non-PTY worker precedent (type table synced by PR #1003).
+- [Session & Worker Design](session-worker-design.md) -- Worker type union, the non-PTY worker precedent (`GitDiffWorker`), and the "Adding New Worker Types" extension steps this design follows.
 - [Custom Agent Registration Design](custom-agent-design.md) -- the existing **terminal-based** custom-agent path (template + PTY spawn). The agent-owned-loop worker is a distinct execution model, not a variant of that template mechanism.
 - [WebSocket Protocol](websocket-protocol.md) -- the worker channel; loop-agent reuses the byte-offset/epoch framing with NDJSON content (see [WebSocket & client protocol](#websocket--client-protocol)).
 - [`elevation-helpers.md`](../../.claude/rules/elevation-helpers.md) -- the `spawnAsUser` contract and consumer obligations this design depends on.
