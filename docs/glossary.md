@@ -72,6 +72,20 @@ A worker that shows the git diff between a base commit and a target ref for its 
 - **Aliases:** DiffWorker, git-diff worker
 - **See:** [GitDiffWorker in worker.ts](../packages/shared/src/types/worker.ts)
 
+### EmbeddedAgentWorker
+**Designed, not yet implemented** (worker type literal: `embedded-agent`). A worker type whose agent LLM loop is written and owned by Agent Console itself, instead of running a fixed external terminal program — "embedded" in the *embedded database* sense (SQLite vs a DB server): the app runs the capability within itself rather than delegating to an external program. The loop runs as a per-user subprocess (spawned via `spawnAsUser`), streams NDJSON-structured events (text / tool-call / tool-result / activity-state) over stdout rather than terminal bytes, and calls the built-in MCP server for app operations like today's terminal agents. Targets OpenAI-compatible API endpoints and local LLMs; complements (does not replace) the PTY-backed [AgentWorker](#agentworker). Configured by an [EmbeddedAgentDefinition](#embeddedagentdefinition), not an [AgentDefinition](#agentdefinition).
+- **Aliases:** embedded agent worker, agent-owned-loop worker (former working name), loop-agent (former literal), in-process agent (historical framing, superseded — the chosen design is a subprocess, not in-process)
+- **See:** [Embedded Agent Worker design](design/embedded-agent-worker.md)
+
+### EmbeddedAgentDefinition
+**Designed, not yet implemented.** The registration record for an [EmbeddedAgentWorker](#embeddedagentworker)'s model configuration: provider base URL (OpenAI-compatible), model id, optional provider-key reference, optional system prompt, and a per-turn tool-iteration cap. Deliberately a separate registry from [AgentDefinition](#agentdefinition) (which describes how to launch a *terminal program*); the two id namespaces never mix (`EmbeddedAgentWorker.embeddedAgentId` vs `AgentWorker.agentId`).
+- **Aliases:** LoopAgentDefinition (former working name)
+- **See:** [Embedded agent registry in embedded-agent-worker.md](design/embedded-agent-worker.md#embedded-agent-registry-embeddedagentdefinition)
+
+### MCP Caller Token
+**Designed, not yet implemented** (Issue #878 phase 1). A per-worker bearer token minted by the server at worker activation and verified by the `/mcp` endpoint, binding MCP tool calls to a verified `{sessionId, workerId, userId}` identity instead of trusting caller-supplied session ids. A presented-but-mismatched token is always rejected; tokenless calls are rejected in multi-user mode (`enforce` is the multi-user default — fail closed) and logged-and-allowed in single-user mode (`warn` default). Delivered to embedded-agent workers inside the stdin `init` message, and to terminal agents via a user-owned 0600 token file whose path travels in env — never the raw token via argv, env-under-elevation, or PTY injection, all of which leak into world-readable or persisted-and-broadcast channels.
+- **See:** [MCP caller identity in embedded-agent-worker.md](design/embedded-agent-worker.md#mcp-caller-identity-issue-878-phase-1); Issue [#878](https://github.com/ms2sato/agent-console/issues/878)
+
 ### Login-Shell Sentinel
 The spawn → gate → inject protocol used to launch an [AgentWorker](#agentworker) PTY through the user's login shell. Instead of running the agent command directly (which skips `.bashrc` / `.profile` and yields an incomplete PATH), the PTY spawns a login shell whose inner command echoes a per-activation random marker (`__AGENT_CONSOLE_READY_<id>`) and then execs an interactive shell. The worker-manager's onData handler **gates** on the marker: all output before it (login-shell init noise) is dropped and never reaches the output buffer, the persisted output file, clients, or the ActivityDetector; detection is chunk-boundary-safe via a bounded carry of the pre-sentinel tail. On detection, the pending agent command is **injected** with `pty.write(command + '\r')`, avoiding shell-quoting double-escapes.
 
