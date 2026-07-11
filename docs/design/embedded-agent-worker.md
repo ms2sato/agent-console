@@ -216,11 +216,11 @@ Everything below is normative for the v1 implementation. File and line citations
 - New worker type `embedded-agent` (`EmbeddedAgentWorker`) coexisting with `agent` / `terminal` / `git-diff`.
 - A `EmbeddedAgentDefinition` registry (separate from `AgentDefinition`) with REST CRUD and minimal UI.
 - The agent subprocess (`packages/embedded-agent`): OpenAI-format provider adapter, MCP tool execution, NDJSON event protocol over stdio.
-- Issue #878 phase 1: per-worker MCP bearer token, verification middleware, ownership enforcement for embedded-agent-issued calls.
+- Issue #878 phase 1: per-worker MCP bearer token, verification middleware, ownership checks — fail closed (`enforce` default) in multi-user mode, `warn` default in single-user.
 - Chat UI (`EmbeddedAgentWorkerView`) with history replay on reconnect.
-- Single-user mode fully supported; multi-user elevated spawn implemented behind the existing `shouldElevateForUser` gate, with a real-machine smoke test required before multi-user is declared supported.
+- Single-user mode fully supported; multi-user elevated spawn implemented behind the existing `shouldElevateForUser` gate. Multi-user support is declared only at Phase 4, which requires the real-machine smoke test AND terminal-agent token delivery (multi-user runs `enforce`, so every agent path must carry a token there).
 
-**Out of scope for v1** (see [Post-v1 fast-follows](#post-v1-fast-follows)): transcript persistence across server restart, `asking` activity state, non-native tool-calling fallbacks, per-user provider keys / key-management UI, terminal-agent MCP-token *enforcement* (delivery is specified, enforcement default stays `warn`), inbound `send_session_message` to embedded-agent workers, Anthropic adapter.
+**Out of scope for v1** (see [Post-v1 fast-follows](#post-v1-fast-follows)): transcript persistence across server restart, `asking` activity state, non-native tool-calling fallbacks, per-user provider keys / key-management UI, single-user tokenless enforcement (single-user default stays `warn`), inbound `send_session_message` to embedded-agent workers, Anthropic adapter.
 
 ## Naming and shared types
 
@@ -278,14 +278,17 @@ export interface EmbeddedAgentDefinition {
   };
   systemPrompt?: string;      // prepended to every conversation
   maxToolIterations?: number; // per user turn; default 25
+  createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;
 }
 ```
 
+**Ownership.** Definitions select provider endpoints, prompts, and key references, so mutation is not free-for-all: in multi-user mode, `PATCH` / `DELETE` require the authenticated request user (`authMiddleware`'s `authUser.id`) to equal `createdBy`; `GET` / list / worker-creation use are shared (definitions are server-wide resources). In single-user mode the check is trivially satisfied (sole user). `createdBy` is set server-side from the authenticated user at `POST` time, never from the request body.
+
 Plus a valibot schema in `packages/shared/src/schemas/embedded-agent.ts` (strictObject; `baseUrl` validated with `v.pipe(v.string(), v.url())`).
 
-**DB:** new table `embedded_agents` (columns mirroring the type; `provider_*` flattened: `provider_base_url`, `provider_model`, `provider_api_key_ref`). New migration `migrateToV<next>` in `packages/server/src/database/connection.ts` (check the current max `user_version` in `runMigrations`, `connection.ts:226-315`, and take the next number; v21 was the latest at the time of writing).
+**DB:** new table `embedded_agents` (columns mirroring the type incl. `created_by`; `provider_*` flattened: `provider_base_url`, `provider_model`, `provider_api_key_ref`). New migration `migrateToV<next>` in `packages/server/src/database/connection.ts` (check the current max `user_version` in `runMigrations`, `connection.ts:226-315`, and take the next number; v21 was the latest at the time of writing).
 
 **Server:** `packages/server/src/services/embedded-agent-manager.ts`, modeled on `AgentManager` (`agent-manager.ts:25-106`): in-memory `Map` + SQLite repository, CRUD methods, lifecycle callbacks broadcasting `embedded-agent-created/updated/deleted` app messages. No built-in definition (unlike `AgentManager` there is no default; the registry starts empty and the UI prompts the user to create one).
 
@@ -305,7 +308,7 @@ Same migration as above adds the column. Update `VALID_WORKER_TYPES` (`mappers.t
 |---|---|---|
 | `toWorkerRow` | `packages/server/src/database/mappers.ts:129-164` | embedded-agent branch: `pid` from worker, `embedded_agent_id`, `agent_id: null`, `base_commit: null` |
 | `toPersistedWorker` (DB->persisted) | `mappers.ts:179-222` | embedded-agent branch; throw `DataIntegrityError` if `embedded_agent_id` is null |
-| `PersistedWorker` union | `packages/server/src/services/persistence-service.ts:49-71` | add `PersistedEmbeddedAgentWorker { type: 'embedded-agent'; embeddedAgentId: string; pid: number | null }` |
+| `PersistedWorker` union | `packages/server/src/services/persistence-service.ts:49-71` | add `PersistedEmbeddedAgentWorker { type: 'embedded-agent'; embeddedAgentId: string; pid: number \| null }` |
 | `toPublicWorker` | `packages/server/src/services/worker-manager.ts:707-724` | embedded-agent branch: `activated: worker.subprocess !== null` |
 | `toPersistedWorker` (memory->persisted) | `worker-manager.ts:729-746` | embedded-agent branch: `pid: worker.subprocess?.pid ?? null` |
 | `restoreWorkers` | `worker-manager.ts:667-697` | embedded-agent branch: rebuild internal worker with `subprocess: null`, fresh `connectionCallbacks` |
@@ -382,14 +385,18 @@ type EmbeddedAgentEvent =
   | { v: 1; type: 'fatal'; message: string };                        // loop is about to exit(1)
 ```
 
-These types live in `packages/shared/src/types/embedded-agent.ts` with valibot schemas in `packages/shared/src/schemas/embedded-agent.ts`; **both the loop and the server parse with the schemas** (system-boundary validation), and the client reuses the same schemas when parsing replayed history.
-
-Two event kinds are written into the persisted stream by the SERVER, not the loop, so that the on-disk log is the complete transcript:
+Two further event kinds are written into the persisted stream by the SERVER, not the loop, so that the on-disk log is the complete transcript. The **replay/persistence union includes them** — clients that parsed only `EmbeddedAgentEvent` would silently drop every user message and exit row from replayed history:
 
 ```ts
+type EmbeddedAgentServerEvent =
   | { v: 1; type: 'user-message'; id: string; text: string }  // appended when forwarding to stdin
-  | { v: 1; type: 'exited'; code: number | null }        // appended when subprocess.exited resolves
+  | { v: 1; type: 'exited'; code: number | null };            // appended when subprocess.exited resolves
+
+/** What actually lives in the worker output file and is replayed to clients. */
+export type EmbeddedAgentStreamEvent = EmbeddedAgentEvent | EmbeddedAgentServerEvent;
 ```
+
+All three types live in `packages/shared/src/types/embedded-agent.ts` with valibot schemas in `packages/shared/src/schemas/embedded-agent.ts`. The loop parses commands and the server parses loop stdout with the narrower schemas (system-boundary validation); **the client parses persisted/replayed history with the `EmbeddedAgentStreamEvent` schema**, never the loop-only union.
 
 ### The loop's turn cycle
 
@@ -413,7 +420,7 @@ New service `packages/server/src/services/embedded-agent-worker-service.ts`, com
 
 **Session pause/resume**: treat like PTY agent workers — the pause path kills the subprocess; resume + next access re-activates with restart semantics (conversation resets; this is the documented v1 inconsistency).
 
-**User message forwarding** (`sendUserMessage(sessionId, workerId, text)`): mint `id`, append the server-authored `user-message` event to the output stream FIRST (so replay ordering is stable), then write the command to stdin + flush. Reject when `subprocess === null`.
+**User message forwarding** (`sendUserMessage(sessionId, workerId, text)`): admission is a **synchronous check-and-set** on the internal worker — verify `subprocess !== null` and `turnActive === false`, then set `turnActive = true`, all before the first `await`. Only then: mint `id`, append the server-authored `user-message` event to the output stream (so replay ordering is stable), then write the command to stdin + flush. Because admission completes synchronously on the single JS thread, two concurrent WS clients cannot both observe an idle worker and double-admit; the loser gets the "turn in progress" rejection. `turnActive` clears on `state: idle` (turn complete or `turn-error`) and on subprocess exit.
 
 ## Activity state & `activated` semantics
 
@@ -442,7 +449,7 @@ type EmbeddedAgentClientMessage =
 
 Type/schema homes: add the client message types to `packages/shared/src/types/session.ts` beside the existing `WorkerClientMessage` types, with valibot schemas alongside the existing ones (boundary validation on the server).
 
-Client side: `SessionPage.tsx` dispatch gains the `'embedded-agent'` case (`tab.workerType` union at `:42`, render branches at `:459` and `:504-505`, error-fallback label at `:49-56`). The transport layer reuses the existing PTY-worker client machinery for offset-resume / epoch-reset / history accumulation (locate it via the xterm data hook; `worker-websocket.ts` documents that git-diff is currently the only type routed through that particular module — the PTY transport lives with the terminal components). The rendering layer buffers received bytes, splits complete lines, parses each with the shared valibot event schema (skip-and-log on parse failure), and folds events into the chat view model.
+Client side: `SessionPage.tsx` dispatch gains the `'embedded-agent'` case (`tab.workerType` union at `:42`, render branches at `:459` and `:504-505`, error-fallback label at `:49-56`). The transport layer reuses the existing PTY-worker client machinery for offset-resume / epoch-reset / history accumulation (locate it via the xterm data hook; `worker-websocket.ts` documents that git-diff is currently the only type routed through that particular module — the PTY transport lives with the terminal components). The rendering layer buffers received bytes, splits complete lines, parses each with the shared `EmbeddedAgentStreamEvent` valibot schema (skip-and-log on parse failure), and folds events into the chat view model.
 
 ## MCP tool surface: capability predicates, not per-type branches
 
@@ -490,14 +497,17 @@ export class McpTokenRegistry {
 - Enforcement helper used by tool handlers that accept a session-identity argument:
 
 ```ts
-// mode from config: AGENT_CONSOLE_MCP_AUTH = 'off' | 'warn' | 'enforce'   (v1 default: 'warn')
+// mode from config: AGENT_CONSOLE_MCP_AUTH = 'off' | 'warn' | 'enforce'
+// default: 'enforce' when AUTH_MODE === 'multi-user' (fail closed), 'warn' otherwise
 function checkCallerOwnsSession(caller: McpCallerIdentity | null, claimedSessionId: string, mode: Mode): ErrorResult | null
 ```
 
-  Rules: (1) if a token WAS presented and the claimed session's `createdBy` differs from `caller.userId`, reject regardless of mode (a presented-but-mismatched identity is always an error, never a warning); (2) if no token was presented, `warn` logs and proceeds (today's behavior), `enforce` rejects; (3) `off` preserves today's behavior entirely. Apply at the elevation-bearing tools first (`delegate_to_worktree`, `remove_worktree`, `run_process`, `create_conditional_wakeup`) plus `send_session_message`'s `fromSessionId`.
-- **Token delivery, embedded-agent:** inside the stdin `init` message — never argv, never env. This is why the loop path can flip to hard enforcement immediately: activation always delivers a token.
-- **Token delivery, terminal agents (specified here, enforcement stays `warn` in v1):** non-elevated spawns may use a spawn env var (`AGENT_CONSOLE_MCP_TOKEN`) — env is not argv-visible on the direct path. Elevated spawns MUST NOT route the token through `buildElevationArgs` env embedding (it lands in the inner `sh -c` argv, world-readable via `/proc`); instead prepend `export AGENT_CONSOLE_MCP_TOKEN='<token>' && ` to the sentinel-injected agent command (the `pty.write` injection path — visible only inside the user's own terminal stream). How the terminal agent's MCP client attaches the header (`.mcp.json` header env expansion) must be verified during implementation; flipping the default to `enforce` is gated on that delivery landing.
-- Revocation: on worker exit/kill/delete and on embedded-agent deactivation.
+  Rules: (1) if a token WAS presented and the claimed session's `createdBy` differs from `caller.userId`, reject regardless of mode (a presented-but-mismatched identity is always an error, never a warning); (2) if no token was presented, `enforce` rejects, `warn` logs and proceeds (today's behavior); (3) `off` preserves today's behavior entirely. Apply at the elevation-bearing tools first (`delegate_to_worktree`, `remove_worktree`, `run_process`, `create_conditional_wakeup`) plus `send_session_message`'s `fromSessionId`.
+
+  **Fail-closed consequence for multi-user:** because the multi-user default is `enforce`, tokenless calls to the wired tools are rejected there — a worker (embedded or terminal) cannot opt out of identity verification by simply omitting its token. This is what makes the #878 guarantee real rather than advisory; it also means multi-user deployments require every agent path to carry a token, which is exactly what Phase 4 delivers before multi-user support is claimed. Single-user mode defaults to `warn` (the gap is operationally moot there, per Issue #878).
+- **Token delivery, embedded-agent:** inside the stdin `init` message — never argv, never env. Activation always delivers a token, so embedded-agent calls are verifiable from day one.
+- **Token delivery, terminal agents (Phase 4):** non-elevated spawns may use a spawn env var (`AGENT_CONSOLE_MCP_TOKEN`) — env is not argv-visible on the direct path. Elevated spawns MUST NOT route the token through `buildElevationArgs` env embedding (it lands in the inner shell argv, world-readable via `/proc/<pid>/cmdline`), and MUST NOT inject it through the PTY input stream either — `pty.write`-injected bytes are echoed by the shell, persisted into the worker output file, and broadcast to every connected viewer (including shared sessions), so a token routed that way leaks into durable, multi-reader storage. Instead the server writes the token to a **user-owned 0600 token file** via the established elevated user-owned-file write path (the `makeUserOwnedTemplateSink` precedent, `worktree-service.ts:597-602`) and passes only the file *path* via env (`AGENT_CONSOLE_MCP_TOKEN_FILE`) — a path is not a secret. How the terminal agent's MCP client reads the file and attaches the header must be verified during implementation; multi-user support (Phase 4 exit) is gated on this delivery landing because the multi-user default mode is `enforce`.
+- Revocation: on worker exit/kill/delete and on embedded-agent deactivation; token files are deleted on the same events.
 
 ## Provider adapter & tool-call normalization
 
@@ -516,6 +526,8 @@ export interface ProviderAdapter {
 
 v1 ships one implementation, `OpenAIChatAdapter`: `POST {baseUrl}/chat/completions` with `stream: true`, SSE parsing, tool-call deltas accumulated by index until complete, `Authorization: Bearer <apiKey>` only when a key is configured. Anthropic and others are post-v1 adapters behind the same interface.
 
+**Timeouts (mandatory).** The adapter enforces two hard deadlines on every streaming request: an **idle-read timeout** (no bytes received for 60 s) and a **total-request ceiling** (10 min). Both abort the request through the same `AbortController` that serves `cancel` / `shutdown`, and flow into the normal retry-then-`turn-error` path — so a stuck provider can never leave a turn `active` indefinitely (which would also wedge `turnActive` admission). Local models can be slow; both values come from optional `EmbeddedAgentDefinition` overrides later if dogfood demands, but v1 hardcodes the defaults.
+
 Tool definitions come from the MCP client's `listTools()` at init: MCP already publishes JSON-Schema `inputSchema` per tool, mapped 1:1 onto the OpenAI `parameters` field. The system prompt is assembled by the loop as: context preamble (session id, worker id, cwd — so the model passes correct identity arguments) + `EmbeddedAgentDefinition.systemPrompt`.
 
 Normalization (v1 scope): parse `argsJson` with `JSON.parse` and validate against the tool's `inputSchema` (the MCP server's zod validation is the backstop); on malformed arguments, feed a synthetic tool-result error back to the model and let it retry, at most 2 re-asks per call, then `turn-error`. Constrained decoding / grammar enforcement and the text-parse fallback for models without native tool calling are explicitly post-v1 — v1 requires native tool-calling support from the model.
@@ -525,6 +537,7 @@ Normalization (v1 scope): parse `argsJson` with `JSON.parse` and validate agains
 - Key store: `<AGENT_CONSOLE_HOME>/provider-keys.json`, mode 0600, owned by the server user, shape `{ "<ref-name>": "<api-key>" }`. Follows the JWT-secret precedent (`user-mode.ts:243-244`). v1 management is manual editing (documented in the operator guide); a management UI/API is post-v1. Keys are server-wide in v1; per-user keys are post-v1.
 - Delivery: `EmbeddedAgentDefinition.provider.apiKeyRef` → looked up at activation → placed in the `init` stdin message together with the MCP token. **Secrets therefore never appear in argv or env**, satisfying the constraint fixed in Part I (elevated spawns embed env into the inner shell argv — `buildSpawnArgs`, `privilege-elevation.ts:220-226` — which is exactly the channel this design avoids).
 - A dangling `apiKeyRef` fails activation with an explicit error surfaced to the client (not a silent fallback to keyless).
+- **Multi-user trust boundary (explicit).** A server-wide key delivered into a per-user subprocess is readable by that OS user — stdin delivery prevents *incidental* leaks (argv, env, other users), not exfiltration by the process's own user. v1 therefore treats provider keys as **shared with every user permitted to run embedded agents**; the definition-ownership rules above control who can *configure* agents, not who can read a key once a worker runs as them. Deployments that cannot accept this must not enable keyed providers in multi-user mode until per-user keys (post-v1) land — keyless local endpoints are unaffected. This statement goes in the multi-user setup guide verbatim (Phase 4).
 
 ## UI
 
@@ -565,11 +578,11 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 | Phase | Content | Key acceptance criteria |
 |---|---|---|
 | **0a** | Capability-predicate refactor (pure; predicates + replace 5 guard sites) | No behavior change; existing MCP tool tests pass unmodified; new predicate unit tests |
-| **0b** | #878 phase 1: `McpTokenRegistry`, `/mcp` bearer parsing + ALS, `checkCallerOwnsSession` in `warn` default, wired into the 4 elevation-bearing tools + `send_session_message` | Mode matrix unit-tested; presented-mismatch rejects; no token → unchanged behavior in `warn`; existing agents unaffected |
+| **0b** | #878 phase 1: `McpTokenRegistry`, `/mcp` bearer parsing + ALS, `checkCallerOwnsSession` (default `enforce` in multi-user, `warn` in single-user), wired into the 4 elevation-bearing tools + `send_session_message` | Mode matrix unit-tested; presented-mismatch rejects; no token → unchanged behavior in single-user `warn`; existing single-user agents unaffected |
 | **1** | Shared types + valibot schemas (worker union, embedded-agent types/events, client messages), DB migration (`workers.embedded_agent_id`, `embedded_agents` table), mappers, `EmbeddedAgentManager` registry + REST CRUD | Q10 integration wire test green; migration up-tested; `check-mirror-drift` untouched |
 | **2** | `packages/embedded-agent` (adapter, normalization, MCP client, protocol) + `EmbeddedAgentWorkerService` (spawn/init/tail/append/exit/orphan/pause) | Loop unit suite green; service unit suite incl. negative argv/env assertions; E2E with stub provider passes in single-user mode; `COVERAGE_PATTERNS` in `check-utils.js` extended with `packages/embedded-agent/src/**/*.ts` AND its two mirrors updated in the same PR (`test-trigger.md` table + YAML globs; `check-mirror-drift.js` green) |
 | **3** | WS routes branch + client transport reuse + `EmbeddedAgentWorkerView` + creation UI + reset-on-restart indicator | Browser QA with true-path screenshots (feature-visible state, per `workflow.md` §5); reconnect history replay verified |
-| **4** | Multi-user: smoke script + setup-guide docs; flip loop-issued-token handling to hard enforce; `session-worker-design.md` Worker Types table row + glossary sync | Smoke green on the dogfood host; docs updated in the same PR |
+| **4** | Multi-user: smoke script + setup-guide docs (incl. the shared-key trust statement); terminal-agent token-file delivery + agent-side header wiring verified (prerequisite for `enforce`); `session-worker-design.md` Worker Types table row + glossary sync | Smoke green on the dogfood host with `AGENT_CONSOLE_MCP_AUTH=enforce`; terminal agents functional in multi-user; docs updated in the same PR |
 
 ## Post-v1 fast-follows
 
@@ -578,7 +591,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 3. Inbound `send_session_message` → `user-message` routing for embedded-agent workers (extend `canReceiveSessionMessages`).
 4. Non-native tool-calling: text-parse fallback, constrained decoding (llama.cpp / vLLM structured output).
 5. Provider key management UI/API; per-user keys.
-6. Terminal-agent MCP token enforcement default flip (after delivery verification).
+6. Single-user `enforce` default (retiring `warn`) once tokenless callers no longer exist anywhere.
 7. Anthropic (and other) provider adapters.
 8. Turn queueing while active.
 
