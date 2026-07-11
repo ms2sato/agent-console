@@ -37,6 +37,8 @@ import type { JobQueue } from '../jobs/index.js';
 import { JOB_TYPES } from '../jobs/index.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
+import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
+import { ValidationError } from '../lib/errors.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import type { InterSessionMessageService } from './inter-session-message-service.js';
 import type { AnnotationService } from './annotation-service.js';
@@ -61,6 +63,12 @@ const logger = createLogger('worker-lifecycle-manager');
 export interface WorkerLifecycleDeps {
   workerManager: WorkerManager;
   agentManager: AgentManager;
+  /**
+   * Embedded-agent definition registry. Only `getEmbeddedAgent` is needed here
+   * (interface-segregated): createWorker resolves the definition to validate the
+   * referenced id at creation time and to derive the worker's default name.
+   */
+  embeddedAgentManager: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
   notificationManager: NotificationManager | null;
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
@@ -129,8 +137,24 @@ export class WorkerLifecycleManager {
 
     const workerId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
+
+    // Resolve (and validate) the embedded-agent definition up front so a
+    // dangling embeddedAgentId is rejected before anything is persisted, and
+    // the resolved definition can name the worker without a second lookup.
+    const embeddedAgentDefinition =
+      request.type === 'embedded-agent'
+        ? this.deps.embeddedAgentManager.getEmbeddedAgent(request.embeddedAgentId)
+        : undefined;
+    if (request.type === 'embedded-agent' && !embeddedAgentDefinition) {
+      throw new ValidationError(
+        `Embedded agent definition not found: ${request.embeddedAgentId}`,
+      );
+    }
+
     const agentIdForName = request.type === 'agent' ? request.agentId : undefined;
-    const workerName = request.name ?? this.generateWorkerName(session, request.type, agentIdForName);
+    const workerName =
+      request.name ??
+      this.generateWorkerName(session, request.type, agentIdForName, embeddedAgentDefinition?.name);
 
     let worker: InternalWorker;
     const repositoryId = session.type === 'worktree' ? session.repositoryId : undefined;
@@ -184,7 +208,8 @@ export class WorkerLifecycleManager {
       });
       worker = terminalWorker;
     } else if (request.type === 'embedded-agent') {
-      // Embedded-agent worker. In Phase 1 the subprocess is not spawned and no
+      // Embedded-agent worker. The referenced definition was already resolved
+      // and validated above. In Phase 1 the subprocess is not spawned and no
       // output file is initialized; the worker persists as deactivated
       // (activation + output land in Phase 2).
       worker = this.deps.workerManager.initializeEmbeddedAgentWorker({
@@ -818,7 +843,12 @@ export class WorkerLifecycleManager {
     return CLAUDE_CODE_AGENT_ID;
   }
 
-  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff' | 'embedded-agent', agentId?: string): string {
+  private generateWorkerName(
+    session: InternalSession,
+    type: 'agent' | 'terminal' | 'git-diff' | 'embedded-agent',
+    agentId?: string,
+    embeddedAgentName?: string,
+  ): string {
     if (type === 'agent') {
       const agentManager = this.deps.agentManager;
       const agent = agentId ? agentManager.getAgent(agentId) : undefined;
@@ -830,8 +860,9 @@ export class WorkerLifecycleManager {
     }
 
     if (type === 'embedded-agent') {
-      // Definition-name resolution arrives with the registry in Phase 2/3.
-      return 'Embedded Agent';
+      // Default to the resolved definition's name (parallel to agent workers),
+      // falling back only if the definition is somehow unnamed.
+      return embeddedAgentName || 'Embedded Agent';
     }
 
     const terminalCount = Array.from(session.workers.values())
