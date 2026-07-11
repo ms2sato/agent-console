@@ -63,6 +63,30 @@ describe('shared index exports', () => {
     expect(apiError.message).toBe('Test error message');
   });
 
+  it('should re-export the embedded-agent valibot schemas', async () => {
+    const mod = await import('../index.js');
+
+    // Runtime schema exports surfaced through schemas/index.js barrel.
+    expect(mod.EmbeddedAgentDefinitionSchema).toBeDefined();
+    expect(mod.CreateEmbeddedAgentRequestSchema).toBeDefined();
+    expect(mod.UpdateEmbeddedAgentRequestSchema).toBeDefined();
+    expect(mod.EmbeddedAgentCommandSchema).toBeDefined();
+    expect(mod.EmbeddedAgentEventSchema).toBeDefined();
+    expect(mod.EmbeddedAgentServerEventSchema).toBeDefined();
+    expect(mod.EmbeddedAgentStreamEventSchema).toBeDefined();
+
+    // The re-exported schemas must actually parse — verify one boundary schema
+    // rejects an empty create request and accepts a well-formed one.
+    const rejected = v.safeParse(mod.CreateEmbeddedAgentRequestSchema, {});
+    expect(rejected.success).toBe(false);
+
+    const accepted = v.safeParse(mod.CreateEmbeddedAgentRequestSchema, {
+      name: 'My Agent',
+      provider: { baseUrl: 'https://api.example.com', model: 'gpt-4' },
+    });
+    expect(accepted.success).toBe(true);
+  });
+
   it('should export ConditionalWakeupInfo type', async () => {
     const mod = await import('../index.js');
 

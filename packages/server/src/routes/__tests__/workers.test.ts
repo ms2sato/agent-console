@@ -638,6 +638,55 @@ describe('Workers API', () => {
       expect(body.worker.id).toBeString();
       expect(body.worker.type).toBe('terminal');
     });
+
+    it('should create an embedded-agent worker (deactivated in Phase 1)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'embedded-agent', embeddedAgentId: 'agent-def-1' }),
+      });
+
+      expect(res.status).toBe(201);
+
+      const body = (await res.json()) as {
+        worker: { id: string; type: string; embeddedAgentId: string; activated: boolean };
+      };
+      expect(body.worker).toBeDefined();
+      expect(body.worker.id).toBeString();
+      expect(body.worker.type).toBe('embedded-agent');
+      expect(body.worker.embeddedAgentId).toBe('agent-def-1');
+      // Phase 1 never spawns the subprocess, so the worker is deactivated.
+      expect(body.worker.activated).toBe(false);
+    });
+
+    it('should reject continueConversation on the embedded-agent variant (strict union, 400)', async () => {
+      // continueConversation is only a field of the terminal variant. The
+      // request union is composed of strictObjects, so an embedded-agent body
+      // carrying continueConversation matches neither branch and is rejected.
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'embedded-agent',
+          embeddedAgentId: 'agent-def-1',
+          continueConversation: true,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+    });
   });
 
   // ===========================================================================

@@ -145,6 +145,48 @@ describe('PersistenceService', () => {
       expect(loaded).toEqual(testSessions);
     });
 
+    it('round-trips a session containing an embedded-agent worker', async () => {
+      const service = await getPersistenceService();
+
+      // Exercises the PersistedEmbeddedAgentWorker union member: the object is
+      // typed through PersistedSession -> PersistedWorker, so if the union
+      // dropped the embedded-agent member this would fail to type-check. The
+      // save/load path JSON round-trips workers verbatim, so the embeddedAgentId
+      // and the (deactivated) null pid must survive.
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'session-embedded',
+          type: 'quick',
+          locationPath: '/path/to/quick',
+          workers: [
+            {
+              id: 'worker-embedded-1',
+              type: 'embedded-agent',
+              name: 'Embedded Agent',
+              embeddedAgentId: 'agent-def-1',
+              pid: null,
+              createdAt: '2026-01-01T00:00:00.000Z',
+            },
+          ],
+          serverPid: 4242,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ];
+
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
+
+      expect(loaded).toEqual(testSessions);
+      const worker = loaded[0].workers[0];
+      expect(worker.type).toBe('embedded-agent');
+      // Narrow to the embedded-agent member before reading its fields.
+      if (worker.type !== 'embedded-agent') {
+        throw new Error('expected an embedded-agent worker');
+      }
+      expect(worker.embeddedAgentId).toBe('agent-def-1');
+      expect(worker.pid).toBeNull();
+    });
+
     it('should save and load sessions with serverPid', async () => {
       const service = await getPersistenceService();
 
