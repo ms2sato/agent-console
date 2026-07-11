@@ -313,6 +313,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 21) {
     await migrateToV21(database);
   }
+
+  if (currentVersion < 22) {
+    await migrateToV22(database);
+  }
 }
 
 /**
@@ -1307,6 +1311,50 @@ export async function migrateToV21(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 21`.execute(database);
 
   logger.info('Migration to v21 completed');
+}
+
+/**
+ * Migration v22: Add embedded-agent support.
+ *
+ * Adds the nullable `embedded_agent_id` column to the workers table (holds the
+ * EmbeddedAgentDefinition id for embedded-agent workers; null for other types)
+ * and creates the `embedded_agents` registry table. The workers `pid` column is
+ * reused for the agent subprocess pid, so no new pid column is needed.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV22(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v22: Adding embedded-agent support');
+
+  try {
+    await database.schema
+      .alterTable('workers')
+      .addColumn('embedded_agent_id', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column embedded_agent_id already exists, skipping');
+  }
+
+  await database.schema
+    .createTable('embedded_agents')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('name', 'text', (col) => col.notNull())
+    .addColumn('description', 'text')
+    .addColumn('provider_base_url', 'text', (col) => col.notNull())
+    .addColumn('provider_model', 'text', (col) => col.notNull())
+    .addColumn('provider_api_key_ref', 'text')
+    .addColumn('system_prompt', 'text')
+    .addColumn('max_tool_iterations', 'integer')
+    .addColumn('created_by', 'text', (col) => col.notNull())
+    .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(sql`(datetime('now'))`))
+    .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(sql`(datetime('now'))`))
+    .execute();
+
+  await sql`PRAGMA user_version = 22`.execute(database);
+
+  logger.info('Migration to v22 completed');
 }
 
 /**

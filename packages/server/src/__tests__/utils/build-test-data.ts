@@ -16,6 +16,7 @@ import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedEmbeddedAgentWorker,
   PersistedRepository,
 } from '../../services/persistence-service.js';
 import type {
@@ -26,6 +27,7 @@ import type {
   InternalAgentWorker,
   InternalTerminalWorker,
   InternalGitDiffWorker,
+  InternalEmbeddedAgentWorker,
   InternalWorker,
 } from '../../services/worker-types.js';
 
@@ -66,6 +68,20 @@ export function buildPersistedGitDiffWorker(
     type: 'git-diff',
     name: 'Git Diff',
     baseCommit: 'abc123def456',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  };
+}
+
+export function buildPersistedEmbeddedAgentWorker(
+  overrides?: Partial<PersistedEmbeddedAgentWorker>
+): PersistedEmbeddedAgentWorker {
+  return {
+    id: 'test-embedded-agent-worker-id',
+    type: 'embedded-agent',
+    name: 'Embedded Agent',
+    embeddedAgentId: 'test-embedded-agent-def-id',
+    pid: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -166,6 +182,25 @@ export function buildInternalGitDiffWorker(
     name: 'Git Diff',
     createdAt: '2026-01-01T00:00:00.000Z',
     baseCommit: 'abc123',
+    ...overrides,
+  };
+}
+
+export function buildInternalEmbeddedAgentWorker(
+  overrides?: Partial<InternalEmbeddedAgentWorker>
+): InternalEmbeddedAgentWorker {
+  return {
+    id: 'w-embedded-1',
+    type: 'embedded-agent',
+    name: 'Embedded Agent',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    embeddedAgentId: 'test-embedded-agent-def-id',
+    subprocess: null,
+    stdin: null,
+    activityState: 'unknown',
+    outputOffset: 0,
+    epoch: 1_700_000_000_000,
+    connectionCallbacks: new Map(),
     ...overrides,
   };
 }

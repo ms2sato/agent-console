@@ -25,6 +25,16 @@ export class ValidationError extends ApiError {
 }
 
 /**
+ * 403 Forbidden - Authenticated but not permitted to perform this action
+ */
+export class ForbiddenError extends ApiError {
+  constructor(message: string) {
+    super(message, 403);
+    this.name = 'ForbiddenError';
+  }
+}
+
+/**
  * 404 Not Found - Resource not found
  */
 export class NotFoundError extends ApiError {

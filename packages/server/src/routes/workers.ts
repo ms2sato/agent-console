@@ -285,8 +285,8 @@ const workers = new Hono<AppBindings>()
       throw new NotFoundError('Session');
     }
 
-    // Extract continueConversation (terminal workers always support PTY)
-    const continueConversation = body.continueConversation === true;
+    // Extract continueConversation (only terminal workers carry this flag)
+    const continueConversation = body.type === 'terminal' && body.continueConversation === true;
 
     const worker = await sessionManager.createWorker(sessionId, body, continueConversation);
 

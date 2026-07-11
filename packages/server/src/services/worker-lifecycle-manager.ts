@@ -30,6 +30,7 @@ import type {
   InternalPtyWorker,
   WorkerCallbacks,
 } from './worker-types.js';
+import { isInternalPtyWorker } from './worker-types.js';
 import type { InternalSession } from './internal-types.js';
 import type { WorkerManager } from './worker-manager.js';
 import type { JobQueue } from '../jobs/index.js';
@@ -182,6 +183,16 @@ export class WorkerLifecycleManager {
         revived: false,
       });
       worker = terminalWorker;
+    } else if (request.type === 'embedded-agent') {
+      // Embedded-agent worker. In Phase 1 the subprocess is not spawned and no
+      // output file is initialized; the worker persists as deactivated
+      // (activation + output land in Phase 2).
+      worker = this.deps.workerManager.initializeEmbeddedAgentWorker({
+        id: workerId,
+        name: workerName,
+        createdAt,
+        embeddedAgentId: request.embeddedAgentId,
+      });
     } else {
       // git-diff worker (async initialization for base commit calculation).
       // Issue #869: resolve the worktree-owning OS username so the initial
@@ -238,8 +249,8 @@ export class WorkerLifecycleManager {
     const worker = session.workers.get(workerId);
     if (!worker) return null;
 
-    // git-diff workers don't have PTY
-    if (worker.type === 'git-diff') return null;
+    // Non-PTY workers (git-diff, embedded-agent) have no PTY to activate here.
+    if (worker.type === 'git-diff' || worker.type === 'embedded-agent') return null;
 
     // If PTY is already active, return the worker
     if (worker.pty) {
@@ -313,9 +324,14 @@ export class WorkerLifecycleManager {
     if (worker.type === 'agent' || worker.type === 'terminal') {
       await this.deps.workerManager.killWorker(worker, sessionId);
       await this.cleanupWorkerOutput(sessionId, workerId, session);
-    } else {
+    } else if (worker.type === 'git-diff') {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
+    } else {
+      // embedded-agent worker: Phase-1 workers are never activated (no
+      // subprocess), so only the output stream needs cleanup. Subprocess kill
+      // lands in Phase 2.
+      await this.cleanupWorkerOutput(sessionId, workerId, session);
     }
 
     // Clean up notification state (debounce timers, previous state)
@@ -542,12 +558,12 @@ export class WorkerLifecycleManager {
       };
     }
 
-    // Git-diff workers don't need PTY restoration
-    if (existingWorker.type === 'git-diff') {
+    // Non-PTY workers (git-diff, embedded-agent) don't need PTY restoration
+    if (!isInternalPtyWorker(existingWorker)) {
       return {
         success: false,
         errorCode: 'WORKER_NOT_FOUND',
-        message: 'Git-diff workers do not support PTY restoration',
+        message: 'This worker type does not support PTY restoration',
       };
     }
 
@@ -635,7 +651,7 @@ export class WorkerLifecycleManager {
    */
   attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): string | null {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return null;
+    if (!worker || !isInternalPtyWorker(worker)) return null;
 
     return this.deps.workerManager.attachCallbacks(worker, callbacks);
   }
@@ -646,28 +662,28 @@ export class WorkerLifecycleManager {
    */
   detachWorkerCallbacks(sessionId: string, workerId: string, connectionId: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
+    if (!worker || !isInternalPtyWorker(worker)) return false;
 
     return this.deps.workerManager.detachCallbacks(worker, connectionId);
   }
 
   writeWorkerInput(sessionId: string, workerId: string, data: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
+    if (!worker || !isInternalPtyWorker(worker)) return false;
 
     return this.deps.workerManager.writeInput(worker, data);
   }
 
   resizeWorker(sessionId: string, workerId: string, cols: number, rows: number): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return false;
+    if (!worker || !isInternalPtyWorker(worker)) return false;
 
     return this.deps.workerManager.resize(worker, cols, rows);
   }
 
   getWorkerOutputBuffer(sessionId: string, workerId: string): string {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || worker.type === 'git-diff') return '';
+    if (!worker || !isInternalPtyWorker(worker)) return '';
     return this.deps.workerManager.getOutputBuffer(worker);
   }
 
@@ -802,7 +818,7 @@ export class WorkerLifecycleManager {
     return CLAUDE_CODE_AGENT_ID;
   }
 
-  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff', agentId?: string): string {
+  private generateWorkerName(session: InternalSession, type: 'agent' | 'terminal' | 'git-diff' | 'embedded-agent', agentId?: string): string {
     if (type === 'agent') {
       const agentManager = this.deps.agentManager;
       const agent = agentId ? agentManager.getAgent(agentId) : undefined;
@@ -811,6 +827,11 @@ export class WorkerLifecycleManager {
 
     if (type === 'git-diff') {
       return 'Git Diff';
+    }
+
+    if (type === 'embedded-agent') {
+      // Definition-name resolution arrives with the registry in Phase 2/3.
+      return 'Embedded Agent';
     }
 
     const terminalCount = Array.from(session.workers.values())

@@ -596,6 +596,35 @@ describe('AppServerMessageSchema', () => {
     });
   });
 
+  describe('embedded agent messages', () => {
+    const embeddedAgentDefinition = {
+      id: 'def-1',
+      name: 'Ollama qwen3:32b',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'user-uuid',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    };
+
+    it('should accept embedded-agent-created', () => {
+      const output = expectValid({ type: 'embedded-agent-created', embeddedAgent: embeddedAgentDefinition });
+      expect(output.type).toBe('embedded-agent-created');
+    });
+
+    it('should accept embedded-agent-updated', () => {
+      expectValid({ type: 'embedded-agent-updated', embeddedAgent: embeddedAgentDefinition });
+    });
+
+    it('should accept embedded-agent-deleted', () => {
+      const output = expectValid({ type: 'embedded-agent-deleted', embeddedAgentId: 'def-1' });
+      expect(output.type).toBe('embedded-agent-deleted');
+    });
+
+    it('should reject embedded-agent-deleted missing embeddedAgentId', () => {
+      expectInvalid({ type: 'embedded-agent-deleted' });
+    });
+  });
+
   describe('session with workers', () => {
     it('should validate session containing all worker types', () => {
       expectValid({
@@ -606,6 +635,39 @@ describe('AppServerMessageSchema', () => {
             { id: 'w1', type: 'agent', name: 'Agent', agentId: 'claude-code', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w2', type: 'terminal', name: 'Terminal', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w3', type: 'git-diff', name: 'Diff', createdAt: '2026-01-01T00:00:00Z', baseCommit: 'abc123' },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: false },
+          ],
+        },
+      });
+    });
+
+    it('should retain embeddedAgentId and activated on an embedded-agent worker', () => {
+      const output = expectValid({
+        type: 'session-created',
+        session: {
+          ...worktreeSession,
+          workers: [
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true },
+          ],
+        },
+      });
+      if (output.type === 'session-created') {
+        const worker = output.session.workers[0];
+        expect(worker.type).toBe('embedded-agent');
+        if (worker.type === 'embedded-agent') {
+          expect(worker.embeddedAgentId).toBe('def-1');
+          expect(worker.activated).toBe(true);
+        }
+      }
+    });
+
+    it('should reject an embedded-agent worker with an unknown key', () => {
+      expectInvalid({
+        type: 'session-created',
+        session: {
+          ...worktreeSession,
+          workers: [
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, leaked: 'x' },
           ],
         },
       });

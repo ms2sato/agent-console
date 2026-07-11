@@ -68,7 +68,17 @@ export interface PersistedGitDiffWorker extends PersistedWorkerBase {
   baseCommit: string;  // No pid - runs in server process
 }
 
-export type PersistedWorker = PersistedAgentWorker | PersistedTerminalWorker | PersistedGitDiffWorker;
+export interface PersistedEmbeddedAgentWorker extends PersistedWorkerBase {
+  type: 'embedded-agent';
+  embeddedAgentId: string;
+  pid: number | null;  // agent subprocess PID (null when not activated)
+}
+
+export type PersistedWorker =
+  | PersistedAgentWorker
+  | PersistedTerminalWorker
+  | PersistedGitDiffWorker
+  | PersistedEmbeddedAgentWorker;
 
 interface PersistedSessionBase {
   id: string;

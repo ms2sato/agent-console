@@ -19,6 +19,7 @@ import type { SessionManager } from './services/session-manager.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
+import type { EmbeddedAgentManager } from './services/embedded-agent-manager.js';
 import type { TimerManager } from './services/timer-manager.js';
 import type { ConditionalWakeupManager } from './services/conditional-wakeup-manager.js';
 import type { InteractiveProcessManager } from './services/interactive-process-manager.js';
@@ -47,6 +48,8 @@ import { NotificationManager as NotificationManagerClass } from './services/noti
 import { SlackHandler } from './services/notifications/slack-handler.js';
 import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
 import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
+import { EmbeddedAgentManager as EmbeddedAgentManagerClass } from './services/embedded-agent-manager.js';
+import { SqliteEmbeddedAgentRepository } from './repositories/sqlite-embedded-agent-repository.js';
 import { SqliteTimerRepository } from './repositories/sqlite-timer-repository.js';
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
@@ -108,6 +111,9 @@ export interface AppContext {
 
   /** Agent definition management (built-in + custom agents) */
   agentManager: AgentManager;
+
+  /** Embedded-agent definition management (OpenAI-compatible provider registry) */
+  embeddedAgentManager: EmbeddedAgentManager;
 
   /** Worktree management (create, remove, list, hooks) */
   worktreeService: WorktreeService;
@@ -250,6 +256,10 @@ export async function createAppContext(
   // 4. Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
   const agentManager = await AgentManagerClass.create(agentRepository);
+
+  // 4.1. Create embedded-agent manager (separate registry from AgentManager)
+  const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
+  const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
 
   // 5. Create notification services (needed by SessionManager)
   const repositorySlackIntegrationService = new RepositorySlackIntegrationServiceClass(db);
@@ -521,6 +531,7 @@ export async function createAppContext(
     notificationManager,
     systemCapabilities,
     agentManager,
+    embeddedAgentManager,
     worktreeService,
     repositorySlackIntegrationService,
     annotationService,
@@ -599,6 +610,10 @@ export async function createTestContext(
   // Create agent manager (needed by SessionManager)
   const agentRepository = new SqliteAgentRepository(db);
   const agentManager = await AgentManagerClass.create(agentRepository);
+
+  // Create embedded-agent manager (separate registry from AgentManager)
+  const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
+  const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
 
   // Use provided or create new notification manager (needed by SessionManager)
   const repositorySlackIntegrationService = new RepositorySlackIntegrationServiceClass(db);
@@ -719,6 +734,7 @@ export async function createTestContext(
     notificationManager,
     systemCapabilities,
     agentManager,
+    embeddedAgentManager,
     worktreeService,
     repositorySlackIntegrationService,
     annotationService,

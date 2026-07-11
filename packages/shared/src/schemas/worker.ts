@@ -40,9 +40,21 @@ const CreateGitDiffWorkerParamsSchema = v.strictObject({
 });
 
 /**
- * Schema for API: only terminal workers can be created by client
+ * Schema for creating an embedded-agent worker
  */
-export const CreateWorkerRequestSchema = CreateTerminalWorkerParamsSchema;
+const CreateEmbeddedAgentWorkerParamsSchema = v.strictObject({
+  name: v.optional(v.string()),
+  type: v.literal('embedded-agent'),
+  embeddedAgentId: v.pipe(v.string(), v.minLength(1, 'Embedded agent ID is required')),
+});
+
+/**
+ * Schema for API: clients can create terminal and embedded-agent workers
+ */
+export const CreateWorkerRequestSchema = v.union([
+  CreateTerminalWorkerParamsSchema,
+  CreateEmbeddedAgentWorkerParamsSchema,
+]);
 
 /**
  * Schema for restarting a worker
@@ -62,7 +74,12 @@ export const RestartWorkerRequestSchema = v.strictObject({
 export type CreateAgentWorkerParams = v.InferOutput<typeof CreateAgentWorkerParamsSchema>;
 export type CreateTerminalWorkerParams = v.InferOutput<typeof CreateTerminalWorkerParamsSchema>;
 export type CreateGitDiffWorkerParams = v.InferOutput<typeof CreateGitDiffWorkerParamsSchema>;
-export type CreateWorkerParams = CreateAgentWorkerParams | CreateTerminalWorkerParams | CreateGitDiffWorkerParams;
+export type CreateEmbeddedAgentWorkerParams = v.InferOutput<typeof CreateEmbeddedAgentWorkerParamsSchema>;
+export type CreateWorkerParams =
+  | CreateAgentWorkerParams
+  | CreateTerminalWorkerParams
+  | CreateGitDiffWorkerParams
+  | CreateEmbeddedAgentWorkerParams;
 
 // API types (client can only create terminal workers)
 export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema>;

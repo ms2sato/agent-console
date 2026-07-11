@@ -1,12 +1,13 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition } from '@agent-console/shared';
 import { computeCapabilities } from '@agent-console/shared';
-import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow } from './schema.js';
+import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow, NewEmbeddedAgent, EmbeddedAgentRow } from './schema.js';
 import type {
   PersistedSession,
   PersistedWorker,
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedEmbeddedAgentWorker,
   PersistedWorktreeSession,
   PersistedQuickSession,
   PersistedRepository,
@@ -143,6 +144,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       pid: worker.pid ?? null,
       agent_id: worker.agentId,
       base_commit: null,
+      embedded_agent_id: null,
     };
   } else if (worker.type === 'terminal') {
     return {
@@ -150,6 +152,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       pid: worker.pid ?? null,
       agent_id: null,
       base_commit: null,
+      embedded_agent_id: null,
     };
   } else if (worker.type === 'git-diff') {
     return {
@@ -157,6 +160,15 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       pid: null,
       agent_id: null,
       base_commit: worker.baseCommit,
+      embedded_agent_id: null,
+    };
+  } else if (worker.type === 'embedded-agent') {
+    return {
+      ...base,
+      pid: worker.pid ?? null,
+      agent_id: null,
+      base_commit: null,
+      embedded_agent_id: worker.embeddedAgentId,
     };
   } else {
     return assertNever(worker, `Unknown worker type for worker ${base.id}`);
@@ -166,7 +178,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
 /**
  * Valid worker types. Used for runtime validation of database values.
  */
-const VALID_WORKER_TYPES = ['agent', 'terminal', 'git-diff'] as const;
+const VALID_WORKER_TYPES = ['agent', 'terminal', 'git-diff', 'embedded-agent'] as const;
 
 /**
  * Convert a database worker row to a persisted worker.
@@ -214,6 +226,18 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       createdAt: worker.created_at,
       baseCommit: worker.base_commit,
     } as PersistedGitDiffWorker;
+  } else if (worker.type === 'embedded-agent') {
+    if (worker.embedded_agent_id === null || worker.embedded_agent_id === undefined) {
+      throw new DataIntegrityError('worker', worker.id, 'embedded_agent_id (missing required field)');
+    }
+    return {
+      id: worker.id,
+      type: 'embedded-agent',
+      name: worker.name,
+      createdAt: worker.created_at,
+      pid: worker.pid ?? null,
+      embeddedAgentId: worker.embedded_agent_id,
+    } as PersistedEmbeddedAgentWorker;
   } else {
     // This should never be reached due to the validation above,
     // but TypeScript needs this for exhaustive checking
@@ -470,6 +494,56 @@ export function toAgentDefinition(row: AgentRow): AgentDefinition {
   return {
     ...agentBase,
     capabilities: computeCapabilities(agentBase),
+  };
+}
+
+// ========== Embedded Agent Mappers ==========
+
+/**
+ * Convert an EmbeddedAgentDefinition to a database row for insertion.
+ * Flattens the nested `provider` object into `provider_*` columns.
+ *
+ * @param def - The embedded agent definition to convert
+ * @returns Database row ready for insertion
+ */
+export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAgent {
+  return {
+    id: def.id,
+    name: def.name,
+    description: def.description ?? null,
+    provider_base_url: def.provider.baseUrl,
+    provider_model: def.provider.model,
+    provider_api_key_ref: def.provider.apiKeyRef ?? null,
+    system_prompt: def.systemPrompt ?? null,
+    max_tool_iterations: def.maxToolIterations ?? null,
+    created_by: def.createdBy,
+    created_at: def.createdAt,
+    updated_at: def.updatedAt,
+  };
+}
+
+/**
+ * Convert a database embedded agent row to an EmbeddedAgentDefinition.
+ * Unflattens the `provider_*` columns into the nested `provider` object.
+ *
+ * @param row - The database embedded agent row
+ * @returns The EmbeddedAgentDefinition object
+ */
+export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentDefinition {
+  return {
+    id: row.id,
+    name: row.name,
+    description: row.description ?? undefined,
+    provider: {
+      baseUrl: row.provider_base_url,
+      model: row.provider_model,
+      apiKeyRef: row.provider_api_key_ref ?? undefined,
+    },
+    systemPrompt: row.system_prompt ?? undefined,
+    maxToolIterations: row.max_tool_iterations ?? undefined,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 

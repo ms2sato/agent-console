@@ -20,7 +20,15 @@ export interface GitDiffWorker extends WorkerBase {
   baseCommit: string;  // Comparison base commit hash (calculated at creation)
 }
 
-export type Worker = AgentWorker | TerminalWorker | GitDiffWorker;
+export interface EmbeddedAgentWorker extends WorkerBase {
+  type: 'embedded-agent';
+  /** References EmbeddedAgentDefinition.id (NOT AgentDefinition.id). */
+  embeddedAgentId: string;
+  /** Whether the agent subprocess is running (false after server restart until reactivated). */
+  activated: boolean;
+}
+
+export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;
 
 /** Workers backed by a PTY: can receive injected input / [internal:*] notifications. */
 export function isPtyBackedWorker(w: Worker): w is AgentWorker | TerminalWorker {

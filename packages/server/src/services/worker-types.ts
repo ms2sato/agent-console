@@ -5,6 +5,7 @@
  * Public API types (Worker, AgentWorker, etc.) are defined in @agent-console/shared.
  */
 
+import type { Subprocess, FileSink } from 'bun';
 import type { AgentActivityState, ExitReason } from '@agent-console/shared';
 import type { PtyInstance } from '../lib/pty-provider.js';
 import type { ActivityDetector } from './activity-detector.js';
@@ -90,6 +91,29 @@ export interface InternalGitDiffWorker extends InternalWorkerBase {
 }
 
 /**
+ * Internal embedded-agent worker. Owns an LLM-loop subprocess (not a PTY) and
+ * streams NDJSON events. Deliberately does NOT extend InternalPtyWorkerBase (no
+ * PTY, no ActivityDetector), but mirrors the stream fields (outputOffset,
+ * epoch, connectionCallbacks, live-handle-or-null) so the WebSocket plumbing
+ * can treat "PTY worker or embedded-agent worker" uniformly where it only needs
+ * those fields.
+ */
+export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
+  type: 'embedded-agent';
+  embeddedAgentId: string;
+  /** Live subprocess handle; null = not activated (mirrors InternalPtyWorkerBase.pty). */
+  subprocess: Subprocess<'pipe', 'pipe', 'pipe'> | null;
+  /** stdin sink for protocol commands; null when subprocess is null. */
+  stdin: FileSink | null;
+  activityState: AgentActivityState;
+  /** File-absolute byte offset of the NDJSON event log (same semantics as InternalPtyWorkerBase.outputOffset). */
+  outputOffset: number;
+  /** Incarnation id, same semantics as InternalPtyWorkerBase.epoch. */
+  epoch: number;
+  connectionCallbacks: Map<string, WorkerCallbacks>;
+}
+
+/**
  * Union type for PTY-based workers.
  */
 export type InternalPtyWorker = InternalAgentWorker | InternalTerminalWorker;
@@ -97,4 +121,28 @@ export type InternalPtyWorker = InternalAgentWorker | InternalTerminalWorker;
 /**
  * Union type for all internal workers.
  */
-export type InternalWorker = InternalAgentWorker | InternalTerminalWorker | InternalGitDiffWorker;
+export type InternalWorker =
+  | InternalAgentWorker
+  | InternalTerminalWorker
+  | InternalGitDiffWorker
+  | InternalEmbeddedAgentWorker;
+
+/**
+ * PTY-backed internal workers (agent, terminal). Positive predicate so callers
+ * of PTY-only operations narrow structurally instead of enumerating every
+ * non-PTY worker type (git-diff, embedded-agent, ...).
+ */
+export function isInternalPtyWorker(w: InternalWorker): w is InternalPtyWorker {
+  return w.type === 'agent' || w.type === 'terminal';
+}
+
+/**
+ * Workers exposing the shared append-only stream shape (outputOffset, epoch,
+ * connectionCallbacks): PTY workers and embedded-agent workers. Lets the
+ * WebSocket layer serve history / fan out output uniformly.
+ */
+export function isStreamWorker(
+  w: InternalWorker
+): w is InternalPtyWorker | InternalEmbeddedAgentWorker {
+  return w.type === 'agent' || w.type === 'terminal' || w.type === 'embedded-agent';
+}

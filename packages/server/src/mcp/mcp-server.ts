@@ -34,7 +34,7 @@ import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
-import type { Session, AgentActivityState, AppServerMessage } from '@agent-console/shared';
+import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
 import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
@@ -59,7 +59,7 @@ interface SessionStatusResult {
   parentWorkerId?: string;
   workers: Array<{
     id: string;
-    type: 'agent' | 'terminal' | 'git-diff';
+    type: Worker['type'];
     activityState: AgentActivityState;
   }>;
 }
@@ -76,7 +76,7 @@ interface SessionListItem {
   status: 'active' | 'inactive';
   workers: Array<{
     id: string;
-    type: 'agent' | 'terminal' | 'git-diff';
+    type: Worker['type'];
     activityState: AgentActivityState;
   }>;
 }

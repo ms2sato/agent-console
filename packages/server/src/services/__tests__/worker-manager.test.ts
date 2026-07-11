@@ -12,9 +12,11 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import {
   buildInternalGitDiffWorker,
+  buildInternalEmbeddedAgentWorker,
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedEmbeddedAgentWorker,
 } from '../../__tests__/utils/build-test-data.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { AgentManager } from '../agent-manager.js';
@@ -869,6 +871,19 @@ describe('WorkerManager', () => {
         expect(publicWorker.baseCommit).toBe('abc123');
       }
     });
+
+    it('should convert an embedded-agent worker with activated: false when subprocess is null', () => {
+      const worker = buildInternalEmbeddedAgentWorker({ id: 'pub-embedded', embeddedAgentId: 'def-1', subprocess: null });
+
+      const publicWorker = workerManager.toPublicWorker(worker);
+
+      expect(publicWorker.id).toBe('pub-embedded');
+      expect(publicWorker.type).toBe('embedded-agent');
+      if (publicWorker.type === 'embedded-agent') {
+        expect(publicWorker.embeddedAgentId).toBe('def-1');
+        expect(publicWorker.activated).toBe(false);
+      }
+    });
   });
 
   // ========== toPersistedWorker Conversion ==========
@@ -917,6 +932,39 @@ describe('WorkerManager', () => {
       if (persisted.type === 'git-diff') {
         expect(persisted.baseCommit).toBe('def456');
       }
+    });
+
+    it('should persist embedded-agent worker with pid: null when subprocess is null', () => {
+      const worker = buildInternalEmbeddedAgentWorker({ id: 'embedded-1', embeddedAgentId: 'def-1', subprocess: null });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') {
+        expect(persisted.embeddedAgentId).toBe('def-1');
+        expect(persisted.pid).toBeNull();
+      }
+    });
+  });
+
+  // ========== initializeEmbeddedAgentWorker ==========
+
+  describe('initializeEmbeddedAgentWorker', () => {
+    it('creates a deactivated worker (no subprocess, no stdin)', () => {
+      const worker = workerManager.initializeEmbeddedAgentWorker({
+        id: 'init-embedded',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        embeddedAgentId: 'def-1',
+      });
+
+      expect(worker.type).toBe('embedded-agent');
+      expect(worker.embeddedAgentId).toBe('def-1');
+      expect(worker.subprocess).toBeNull();
+      expect(worker.stdin).toBeNull();
+      expect(worker.activityState).toBe('unknown');
+      expect(worker.outputOffset).toBe(0);
+      expect(worker.connectionCallbacks.size).toBe(0);
     });
   });
 
@@ -970,19 +1018,40 @@ describe('WorkerManager', () => {
       }
     });
 
+    it('should restore embedded-agent workers with subprocess: null', () => {
+      const persistedWorkers = [
+        buildPersistedEmbeddedAgentWorker({ id: 'restored-embedded', embeddedAgentId: 'def-1', pid: 4321 }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-embedded')!;
+      expect(worker.type).toBe('embedded-agent');
+      if (worker.type === 'embedded-agent') {
+        expect(worker.subprocess).toBeNull();
+        expect(worker.stdin).toBeNull();
+        expect(worker.embeddedAgentId).toBe('def-1');
+        expect(worker.activityState).toBe('unknown');
+        expect(worker.outputOffset).toBe(0);
+        expect(worker.connectionCallbacks.size).toBe(0);
+      }
+    });
+
     it('should restore multiple workers of different types', () => {
       const persistedWorkers = [
         buildPersistedAgentWorker({ id: 'a1', name: 'A', agentId: 'claude-code', pid: 100 }),
         buildPersistedTerminalWorker({ id: 't1', name: 'T' }),
         buildPersistedGitDiffWorker({ id: 'd1', name: 'D', baseCommit: 'head' }),
+        buildPersistedEmbeddedAgentWorker({ id: 'e1', embeddedAgentId: 'def-1' }),
       ];
 
       const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
 
-      expect(workers.size).toBe(3);
+      expect(workers.size).toBe(4);
       expect(workers.get('a1')!.type).toBe('agent');
       expect(workers.get('t1')!.type).toBe('terminal');
       expect(workers.get('d1')!.type).toBe('git-diff');
+      expect(workers.get('e1')!.type).toBe('embedded-agent');
     });
 
     it('should give each worker its own connectionCallbacks Map', () => {

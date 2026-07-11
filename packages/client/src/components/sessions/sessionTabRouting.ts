@@ -1,6 +1,8 @@
+import type { Worker } from '@agent-console/shared';
+
 export type TabLike = {
   id: string;
-  workerType: 'agent' | 'terminal' | 'git-diff';
+  workerType: Worker['type'];
 };
 
 export function isWorkerIdReady(

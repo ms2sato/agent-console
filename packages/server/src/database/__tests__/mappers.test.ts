@@ -8,14 +8,18 @@ import {
   toRepository,
   toAgentRow,
   toAgentDefinition,
+  toEmbeddedAgentRow,
+  toEmbeddedAgentDefinition,
   DataIntegrityError,
   assertNever,
 } from '../mappers.js';
-import type { Session, Worker, RepositoryRow, AgentRow } from '../schema.js';
+import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow } from '../schema.js';
+import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedEmbeddedAgentWorker,
   PersistedWorktreeSession,
 } from '../../services/persistence-service.js';
 import {
@@ -24,6 +28,7 @@ import {
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedEmbeddedAgentWorker,
   buildPersistedRepository,
   buildAgentDefinition,
 } from '../../__tests__/utils/build-test-data.js';
@@ -163,6 +168,31 @@ describe('mappers', () => {
       expect(row.pid).toBeNull();
       expect(row.agent_id).toBeNull();
       expect(row.base_commit).toBe('abc123');
+      expect(row.embedded_agent_id).toBeNull();
+    });
+
+    it('sets embedded_agent_id null for agent workers', () => {
+      const worker = buildPersistedAgentWorker({ id: 'worker-1' });
+      const row = toWorkerRow(worker, 'session-1');
+      expect(row.embedded_agent_id).toBeNull();
+    });
+
+    it('should convert embedded-agent worker', () => {
+      const worker = buildPersistedEmbeddedAgentWorker({
+        id: 'worker-1',
+        name: 'Embedded Agent',
+        embeddedAgentId: 'def-1',
+        pid: 4321,
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.type).toBe('embedded-agent');
+      expect(row.embedded_agent_id).toBe('def-1');
+      expect(row.pid).toBe(4321);
+      expect(row.agent_id).toBeNull();
+      expect(row.base_commit).toBeNull();
     });
   });
 
@@ -357,6 +387,7 @@ describe('mappers', () => {
         pid: null,
         agent_id: null, // Missing required field
         base_commit: null,
+        embedded_agent_id: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -374,6 +405,7 @@ describe('mappers', () => {
         pid: null,
         agent_id: null,
         base_commit: null, // Missing required field
+        embedded_agent_id: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -391,6 +423,7 @@ describe('mappers', () => {
         pid: 1234,
         agent_id: 'claude-code-builtin',
         base_commit: null,
+        embedded_agent_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -410,6 +443,7 @@ describe('mappers', () => {
         pid: 5678,
         agent_id: null,
         base_commit: null,
+        embedded_agent_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -429,12 +463,52 @@ describe('mappers', () => {
         pid: null,
         agent_id: null,
         base_commit: 'abc123def456',
+        embedded_agent_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
 
       expect(worker.type).toBe('git-diff');
       expect((worker as PersistedGitDiffWorker).baseCommit).toBe('abc123def456');
+    });
+
+    it('should throw DataIntegrityError when embedded_agent_id is missing for embedded-agent worker', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: null,
+        agent_id: null,
+        base_commit: null,
+        embedded_agent_id: null, // Missing required field
+      };
+
+      expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
+      expect(() => toPersistedWorker(dbWorker)).toThrow(/embedded_agent_id/);
+    });
+
+    it('should convert valid embedded-agent worker', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: 4321,
+        agent_id: null,
+        base_commit: null,
+        embedded_agent_id: 'def-1',
+      };
+
+      const worker = toPersistedWorker(dbWorker);
+
+      expect(worker.type).toBe('embedded-agent');
+      expect((worker as PersistedEmbeddedAgentWorker).embeddedAgentId).toBe('def-1');
+      expect((worker as PersistedEmbeddedAgentWorker).pid).toBe(4321);
     });
   });
 
@@ -1087,6 +1161,102 @@ describe('mappers', () => {
       expect(agent.activityPatterns).toBeUndefined();
       // createdAt should have a fallback when null
       expect(agent.createdAt).toBeDefined();
+    });
+  });
+
+  describe('toEmbeddedAgentRow / toEmbeddedAgentDefinition', () => {
+    const fullDefinition: EmbeddedAgentDefinition = {
+      id: 'def-1',
+      name: 'Ollama qwen3:32b',
+      description: 'Local model',
+      provider: {
+        baseUrl: 'http://localhost:11434/v1',
+        model: 'qwen3:32b',
+        apiKeyRef: 'my-key',
+      },
+      systemPrompt: 'You are helpful.',
+      maxToolIterations: 30,
+      createdBy: 'user-uuid',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-02T00:00:00.000Z',
+    };
+
+    it('flattens provider fields into provider_* columns', () => {
+      const row = toEmbeddedAgentRow(fullDefinition);
+
+      expect(row.id).toBe('def-1');
+      expect(row.name).toBe('Ollama qwen3:32b');
+      expect(row.description).toBe('Local model');
+      expect(row.provider_base_url).toBe('http://localhost:11434/v1');
+      expect(row.provider_model).toBe('qwen3:32b');
+      expect(row.provider_api_key_ref).toBe('my-key');
+      expect(row.system_prompt).toBe('You are helpful.');
+      expect(row.max_tool_iterations).toBe(30);
+      expect(row.created_by).toBe('user-uuid');
+    });
+
+    it('maps absent optional fields to null columns', () => {
+      const minimal: EmbeddedAgentDefinition = {
+        id: 'def-2',
+        name: 'Minimal',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+        createdBy: 'user-uuid',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+
+      const row = toEmbeddedAgentRow(minimal);
+
+      expect(row.description).toBeNull();
+      expect(row.provider_api_key_ref).toBeNull();
+      expect(row.system_prompt).toBeNull();
+      expect(row.max_tool_iterations).toBeNull();
+    });
+
+    it('round-trips a full definition through row and back', () => {
+      const row = toEmbeddedAgentRow(fullDefinition);
+      // Simulate a SELECT row: the Generated timestamp columns resolve to the
+      // inserted strings, and nullable columns are concrete null (not undefined).
+      const selectRow: EmbeddedAgentRow = {
+        id: row.id,
+        name: row.name,
+        description: row.description ?? null,
+        provider_base_url: row.provider_base_url,
+        provider_model: row.provider_model,
+        provider_api_key_ref: row.provider_api_key_ref ?? null,
+        system_prompt: row.system_prompt ?? null,
+        max_tool_iterations: row.max_tool_iterations ?? null,
+        created_by: row.created_by,
+        created_at: fullDefinition.createdAt,
+        updated_at: fullDefinition.updatedAt,
+      };
+
+      const restored = toEmbeddedAgentDefinition(selectRow);
+
+      expect(restored).toEqual(fullDefinition);
+    });
+
+    it('unflattens null columns to undefined optional fields', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-3',
+        name: 'Nulls',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      const restored = toEmbeddedAgentDefinition(selectRow);
+
+      expect(restored.description).toBeUndefined();
+      expect(restored.provider.apiKeyRef).toBeUndefined();
+      expect(restored.systemPrompt).toBeUndefined();
+      expect(restored.maxToolIterations).toBeUndefined();
     });
   });
 });

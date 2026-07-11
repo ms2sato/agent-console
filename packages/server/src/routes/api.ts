@@ -5,6 +5,7 @@ import { workers } from './workers.js';
 import { repositories } from './repositories.js';
 import { worktrees } from './worktrees.js';
 import { agents } from './agents.js';
+import { embeddedAgents } from './embedded-agents.js';
 import { jobs } from './jobs.js';
 import { settings } from './settings.js';
 import { system } from './system.js';
@@ -50,6 +51,7 @@ const api = new Hono<AppBindings>()
   .route('/repositories', repositories)
   .route('/repositories', worktrees)
   .route('/agents', agents)
+  .route('/embedded-agents', embeddedAgents)
   .route('/jobs', jobs)
   .route('/settings', settings)
   .route('/system', system)

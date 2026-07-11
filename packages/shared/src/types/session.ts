@@ -227,6 +227,9 @@ export const APP_SERVER_MESSAGE_TYPES = {
   // Sent as the first frame on /ws/app so the client can detect a
   // server/client schema mismatch. See docs/design/websocket-protocol.md.
   'schema-version': 28,
+  'embedded-agent-created': 29,
+  'embedded-agent-updated': 30,
+  'embedded-agent-deleted': 31,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */

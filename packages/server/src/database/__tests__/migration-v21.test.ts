@@ -61,10 +61,12 @@ describe('migration v21 (git-diff base_commit → default fork-point spec)', () 
     cleanupMemfs();
   });
 
-  it('advances the schema version to 21', async () => {
+  it('advances the schema version to the latest (>= 21)', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(21);
+    // initializeDatabase runs every migration; the v21 step is part of that
+    // chain and the final version is the current latest.
+    expect(versionRes.rows[0]?.user_version).toBe(22);
   });
 
   it('resets a git-diff worker with a frozen hash to the sentinel spec', async () => {

@@ -48,6 +48,19 @@ describe('API route mounting', () => {
     expect(Array.isArray(body.skills)).toBe(true);
   });
 
+  it('should mount embedded-agents route at /api/embedded-agents', async () => {
+    app = await createTestApp({
+      embeddedAgentManager: {
+        getAllEmbeddedAgents: () => [],
+      } as unknown as import('../../services/embedded-agent-manager.js').EmbeddedAgentManager,
+    });
+    const res = await app.request('/api/embedded-agents');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { embeddedAgents: unknown[] };
+    expect(Array.isArray(body.embeddedAgents)).toBe(true);
+  });
+
   it('should mount message-templates route at /api/message-templates', async () => {
     app = await createTestApp({
       messageTemplateRepository: { findAll: async () => [] } as Pick<MessageTemplateRepository, 'findAll'> as MessageTemplateRepository,

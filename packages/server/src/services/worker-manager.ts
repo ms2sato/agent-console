@@ -17,6 +17,7 @@ import type {
   AgentWorker,
   TerminalWorker,
   GitDiffWorker,
+  EmbeddedAgentWorker,
   AgentActivityState,
   ExitReason,
 } from '@agent-console/shared';
@@ -25,6 +26,7 @@ import type {
   PersistedAgentWorker,
   PersistedTerminalWorker,
   PersistedGitDiffWorker,
+  PersistedEmbeddedAgentWorker,
 } from './persistence-service.js';
 import type {
   InternalWorker,
@@ -32,6 +34,7 @@ import type {
   InternalAgentWorker,
   InternalTerminalWorker,
   InternalGitDiffWorker,
+  InternalEmbeddedAgentWorker,
   WorkerCallbacks,
   Disposable,
 } from './worker-types.js';
@@ -83,6 +86,16 @@ export interface TerminalWorkerInitParams {
   id: string;
   name: string;
   createdAt: string;
+}
+
+/**
+ * Parameters for initializing an embedded-agent worker.
+ */
+export interface EmbeddedAgentWorkerInitParams {
+  id: string;
+  name: string;
+  createdAt: string;
+  embeddedAgentId: string;
 }
 
 /**
@@ -259,6 +272,31 @@ export class WorkerManager {
       createdAt,
       pty: null,
       outputBuffer: '',
+      outputOffset: 0,
+      epoch: Date.now(),
+      connectionCallbacks: new Map(),
+    };
+
+    return worker;
+  }
+
+  /**
+   * Initialize an embedded-agent worker WITHOUT spawning the subprocess.
+   * The subprocess is activated later (Phase 2); a Phase-1 worker persists as
+   * deactivated (subprocess/stdin null).
+   */
+  initializeEmbeddedAgentWorker(params: EmbeddedAgentWorkerInitParams): InternalEmbeddedAgentWorker {
+    const { id, name, createdAt, embeddedAgentId } = params;
+
+    const worker: InternalEmbeddedAgentWorker = {
+      id,
+      type: 'embedded-agent',
+      name,
+      createdAt,
+      embeddedAgentId,
+      subprocess: null,
+      stdin: null,
+      activityState: 'unknown',
       outputOffset: 0,
       epoch: Date.now(),
       connectionCallbacks: new Map(),
@@ -686,6 +724,21 @@ export class WorkerManager {
         case 'git-diff':
           worker = { ...base, type: 'git-diff', baseCommit: pw.baseCommit };
           break;
+        case 'embedded-agent':
+          worker = {
+            ...base,
+            type: 'embedded-agent',
+            embeddedAgentId: pw.embeddedAgentId,
+            subprocess: null,
+            stdin: null,
+            activityState: 'unknown',
+            outputOffset: 0,
+            // Placeholder epoch; the authoritative epoch is loaded from the
+            // manifest at activation (mirrors the PTY-worker restore path).
+            epoch: Date.now(),
+            connectionCallbacks: new Map(), // Must be unique per worker
+          };
+          break;
         default: {
           // Exhaustive check: compile error if new worker type is added
           const _exhaustive: never = pw;
@@ -720,6 +773,15 @@ export class WorkerManager {
         const gitDiffWorker: GitDiffWorker = { ...base, type: 'git-diff', baseCommit: worker.baseCommit };
         return gitDiffWorker;
       }
+      case 'embedded-agent': {
+        const embeddedAgentWorker: EmbeddedAgentWorker = {
+          ...base,
+          type: 'embedded-agent',
+          embeddedAgentId: worker.embeddedAgentId,
+          activated: worker.subprocess !== null,
+        };
+        return embeddedAgentWorker;
+      }
     }
   }
 
@@ -741,6 +803,15 @@ export class WorkerManager {
       case 'git-diff': {
         const persistedGitDiff: PersistedGitDiffWorker = { ...base, type: 'git-diff', baseCommit: worker.baseCommit };
         return persistedGitDiff;
+      }
+      case 'embedded-agent': {
+        const persistedEmbeddedAgent: PersistedEmbeddedAgentWorker = {
+          ...base,
+          type: 'embedded-agent',
+          embeddedAgentId: worker.embeddedAgentId,
+          pid: worker.subprocess?.pid ?? null,
+        };
+        return persistedEmbeddedAgent;
       }
     }
   }

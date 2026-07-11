@@ -5,6 +5,7 @@ import {
   type AgentWorker,
   type TerminalWorker,
   type GitDiffWorker,
+  type EmbeddedAgentWorker,
 } from '../worker.js';
 
 const agentWorker: AgentWorker = {
@@ -32,6 +33,15 @@ const gitDiffWorker: GitDiffWorker = {
   baseCommit: 'abc123',
 };
 
+const embeddedAgentWorker: EmbeddedAgentWorker = {
+  id: 'w-embedded-agent',
+  name: 'Embedded Agent',
+  createdAt: '2026-01-01T00:00:00Z',
+  type: 'embedded-agent',
+  embeddedAgentId: 'def-1',
+  activated: false,
+};
+
 describe('isPtyBackedWorker', () => {
   it('returns true for an agent worker', () => {
     expect(isPtyBackedWorker(agentWorker)).toBe(true);
@@ -43,6 +53,10 @@ describe('isPtyBackedWorker', () => {
 
   it('returns false for a git-diff worker', () => {
     expect(isPtyBackedWorker(gitDiffWorker)).toBe(false);
+  });
+
+  it('returns false for an embedded-agent worker', () => {
+    expect(isPtyBackedWorker(embeddedAgentWorker)).toBe(false);
   });
 
   it('narrows to a PTY-backed worker with an activated field', () => {
@@ -67,6 +81,10 @@ describe('canReceiveSessionMessages', () => {
 
   it('returns false for a git-diff worker', () => {
     expect(canReceiveSessionMessages(gitDiffWorker)).toBe(false);
+  });
+
+  it('returns false for an embedded-agent worker', () => {
+    expect(canReceiveSessionMessages(embeddedAgentWorker)).toBe(false);
   });
 
   it('narrows to an agent worker with an agentId field', () => {

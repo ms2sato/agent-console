@@ -236,6 +236,7 @@ const REQUIRED_INIT_STEPS = [
   'setWebSocketCallbacks',
   'setupPtyExitCallback',
   'setAgentLifecycleCallbacks',
+  'setEmbeddedAgentLifecycleCallbacks',
   'setRepositoryLifecycleCallbacks',
 ] as const;
 
@@ -273,7 +274,7 @@ export async function setupWebSocketRoutes(
     registry = new WebSocketConnectionRegistry();
   }
 
-  const { sessionManager, notificationManager, agentManager, repositoryManager, annotationService } = appContext;
+  const { sessionManager, notificationManager, agentManager, embeddedAgentManager, repositoryManager, annotationService } = appContext;
 
   // Initialize git-diff handlers with injected dependencies
   const { getDiffData, getFileLines, resolveRef, resolveBaseSpec, startWatching, stopWatching } = await import('../services/git-diff-service.js');
@@ -423,6 +424,23 @@ export async function setupWebSocketRoutes(
     },
   });
   completedSteps.add('setAgentLifecycleCallbacks');
+
+  // Set up embedded-agent lifecycle callbacks to broadcast to all app clients
+  embeddedAgentManager.setLifecycleCallbacks({
+    onEmbeddedAgentCreated: (embeddedAgent) => {
+      logger.debug({ embeddedAgentId: embeddedAgent.id }, 'Broadcasting embedded-agent-created');
+      broadcastToApp({ type: 'embedded-agent-created', embeddedAgent });
+    },
+    onEmbeddedAgentUpdated: (embeddedAgent) => {
+      logger.debug({ embeddedAgentId: embeddedAgent.id }, 'Broadcasting embedded-agent-updated');
+      broadcastToApp({ type: 'embedded-agent-updated', embeddedAgent });
+    },
+    onEmbeddedAgentDeleted: (embeddedAgentId) => {
+      logger.debug({ embeddedAgentId }, 'Broadcasting embedded-agent-deleted');
+      broadcastToApp({ type: 'embedded-agent-deleted', embeddedAgentId });
+    },
+  });
+  completedSteps.add('setEmbeddedAgentLifecycleCallbacks');
 
   // Set up repository lifecycle callbacks to broadcast to all app clients
   // Created/updated callbacks are async to enrich with remoteUrl before broadcasting
