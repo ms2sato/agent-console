@@ -73,9 +73,17 @@ A worker that shows the git diff between a base commit and a target ref for its 
 - **See:** [GitDiffWorker in worker.ts](../packages/shared/src/types/worker.ts)
 
 ### Agent-Owned-Loop Worker
-**Proposed direction, not yet implemented.** A worker type whose agent LLM loop is written and owned by Agent Console itself, instead of running a fixed external terminal program. The loop runs as a per-user subprocess (spawned via `spawnAsUser`), streams structured events (text / tool call / tool result) over stdout rather than terminal bytes, and calls the built-in MCP server for app operations like today's terminal agents. Targets OpenAI-compatible API endpoints and local LLMs; complements (does not replace) the PTY-backed [AgentWorker](#agentworker).
-- **Aliases:** in-process agent (historical framing, superseded — the chosen design is a subprocess, not in-process)
-- **See:** [Agent-Owned-Loop Worker design note](design/agent-owned-loop-worker.md)
+**Designed, not yet implemented** (worker type literal: `loop-agent`). A worker type whose agent LLM loop is written and owned by Agent Console itself, instead of running a fixed external terminal program. The loop runs as a per-user subprocess (spawned via `spawnAsUser`), streams NDJSON structured events (text / tool call / tool result / activity state) over stdout rather than terminal bytes, and calls the built-in MCP server for app operations like today's terminal agents. Targets OpenAI-compatible API endpoints and local LLMs; complements (does not replace) the PTY-backed [AgentWorker](#agentworker). Configured by a [LoopAgentDefinition](#loopagentdefinition), not an [AgentDefinition](#agentdefinition).
+- **Aliases:** loop-agent worker, LoopAgentWorker, in-process agent (historical framing, superseded — the chosen design is a subprocess, not in-process)
+- **See:** [Agent-Owned-Loop Worker design](design/agent-owned-loop-worker.md)
+
+### LoopAgentDefinition
+**Designed, not yet implemented.** The registration record for an [Agent-Owned-Loop Worker](#agent-owned-loop-worker)'s model configuration: provider base URL (OpenAI-compatible), model id, optional provider-key reference, optional system prompt, and a per-turn tool-iteration cap. Deliberately a separate registry from [AgentDefinition](#agentdefinition) (which describes how to launch a *terminal program*); the two id namespaces never mix (`LoopAgentWorker.loopAgentId` vs `AgentWorker.agentId`).
+- **See:** [Loop agent registry in agent-owned-loop-worker.md](design/agent-owned-loop-worker.md#loop-agent-registry-loopagentdefinition)
+
+### MCP Caller Token
+**Designed, not yet implemented** (Issue #878 phase 1). A per-worker bearer token minted by the server at worker activation and verified by the `/mcp` endpoint, binding MCP tool calls to a verified `{sessionId, workerId, userId}` identity instead of trusting caller-supplied session ids. Delivered to loop-agent workers inside the stdin `init` message (never argv/env, which leak across user boundaries under elevated spawns); terminal-agent delivery is specified but enforcement defaults to `warn` until it lands.
+- **See:** [MCP caller identity in agent-owned-loop-worker.md](design/agent-owned-loop-worker.md#mcp-caller-identity-issue-878-phase-1); Issue [#878](https://github.com/ms2sato/agent-console/issues/878)
 
 ### Login-Shell Sentinel
 The spawn → gate → inject protocol used to launch an [AgentWorker](#agentworker) PTY through the user's login shell. Instead of running the agent command directly (which skips `.bashrc` / `.profile` and yields an incomplete PATH), the PTY spawns a login shell whose inner command echoes a per-activation random marker (`__AGENT_CONSOLE_READY_<id>`) and then execs an interactive shell. The worker-manager's onData handler **gates** on the marker: all output before it (login-shell init noise) is dropped and never reaches the output buffer, the persisted output file, clients, or the ActivityDetector; detection is chunk-boundary-safe via a bounded carry of the pre-sentinel tail. On detection, the pending agent command is **injected** with `pty.write(command + '\r')`, avoiding shell-quoting double-escapes.
