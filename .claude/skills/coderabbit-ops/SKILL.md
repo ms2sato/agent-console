@@ -42,6 +42,8 @@ GitHub surfaces CodeRabbit info in three distinct layers that are easy to confus
 
 An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception: under the rate-limit fallback in `troubleshooting.md`, an empty state may persist; in that exception path, follow the fallback's verification steps before merge.)
 
+**Docs-only PR carve-out (by configuration).** `.coderabbit.yaml` sets `reviews.auto_review.ignore_title_keywords: ["docs:"]`, so PRs titled with the conventional `docs:` prefix are skipped by auto-review ON PURPOSE (quota preservation — docs-only PRs were rate-limiting code PRs during PR-dense sprints). For such PRs an empty `reviewDecision` with no bot activity is the EXPECTED state, not a wait condition: verify the diff is genuinely docs-only (no production code), then treat layer 2 as N/A. When a docs PR warrants a bot pass anyway (e.g. a large design doc), trigger one manually with an `@coderabbitai review` comment — the manual path is unaffected by the title skip. Note the file also carries the review profile (`chill`) previously configured in the web UI, because a repo config file takes precedence over UI settings.
+
 "CodeRabbit clean" requires all three. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
 
 ## Case-by-case dispositions
