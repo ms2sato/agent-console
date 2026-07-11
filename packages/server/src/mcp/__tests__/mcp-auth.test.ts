@@ -85,33 +85,26 @@ describe('McpTokenRegistry', () => {
 });
 
 describe('resolveMcpAuthMode', () => {
-  it('passes explicit values through under both auth modes', () => {
+  it('passes explicit values through', () => {
     for (const mode of ['off', 'warn', 'enforce'] as const) {
-      expect(resolveMcpAuthMode(mode, 'none')).toBe(mode);
-      expect(resolveMcpAuthMode(mode, 'multi-user')).toBe(mode);
+      expect(resolveMcpAuthMode(mode)).toBe(mode);
     }
   });
 
-  it('defaults to enforce in multi-user mode when unset', () => {
-    expect(resolveMcpAuthMode(undefined, 'multi-user')).toBe('enforce');
+  it('defaults to warn when unset', () => {
+    expect(resolveMcpAuthMode(undefined)).toBe('warn');
   });
 
-  it('defaults to warn in single-user mode when unset', () => {
-    expect(resolveMcpAuthMode(undefined, 'none')).toBe('warn');
+  it('treats an empty string as unset (warn)', () => {
+    expect(resolveMcpAuthMode('')).toBe('warn');
   });
 
-  it('treats an empty string as unset', () => {
-    expect(resolveMcpAuthMode('', 'multi-user')).toBe('enforce');
-    expect(resolveMcpAuthMode('', 'none')).toBe('warn');
-  });
-
-  it('treats a whitespace-only string as unset', () => {
-    expect(resolveMcpAuthMode('  ', 'multi-user')).toBe('enforce');
-    expect(resolveMcpAuthMode('  ', 'none')).toBe('warn');
+  it('treats a whitespace-only string as unset (warn)', () => {
+    expect(resolveMcpAuthMode('  ')).toBe('warn');
   });
 
   it('throws on an invalid non-empty value', () => {
-    expect(() => resolveMcpAuthMode('yes', 'none')).toThrow(
+    expect(() => resolveMcpAuthMode('yes')).toThrow(
       /Invalid AGENT_CONSOLE_MCP_AUTH/,
     );
   });

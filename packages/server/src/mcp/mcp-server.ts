@@ -33,6 +33,7 @@ import type { InterSessionMessageService } from '../services/inter-session-messa
 import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
 import {
   McpTokenRegistry,
@@ -224,7 +225,7 @@ export interface McpDependencies {
   mcpTokenRegistry?: McpTokenRegistry;
   /**
    * Override for the resolved AGENT_CONSOLE_MCP_AUTH mode (tests).
-   * Defaults to resolveMcpAuthMode() (env + AUTH_MODE resolution).
+   * Defaults to resolveMcpAuthMode() (env resolution; default `warn`).
    */
   mcpAuthMode?: McpAuthMode;
 }
@@ -241,9 +242,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
   // caller identity"). The registry defaults to empty and the mode resolves
-  // from AGENT_CONSOLE_MCP_AUTH + AUTH_MODE; tests override both.
+  // from AGENT_CONSOLE_MCP_AUTH (default warn); tests override both.
   const mcpTokenRegistry = deps.mcpTokenRegistry ?? new McpTokenRegistry();
   const mcpAuthMode = deps.mcpAuthMode ?? resolveMcpAuthMode();
+  if (serverConfig.AUTH_MODE === 'multi-user' && mcpAuthMode === 'warn') {
+    logger.info('MCP caller identity running in warn mode; enforce becomes the multi-user default when token delivery lands (#878 / #1004 Phase 4)');
+  }
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.

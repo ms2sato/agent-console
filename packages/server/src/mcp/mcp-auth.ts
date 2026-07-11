@@ -15,7 +15,6 @@
 import { randomBytes } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createLogger } from '../lib/logger.js';
-import { serverConfig } from '../lib/server-config.js';
 
 const logger = createLogger('mcp-auth');
 
@@ -71,24 +70,28 @@ export class McpTokenRegistry {
 export type McpAuthMode = 'off' | 'warn' | 'enforce';
 
 /**
- * Resolve the effective MCP auth mode from `AGENT_CONSOLE_MCP_AUTH` and the
- * configured auth mode.
+ * Resolve the effective MCP auth mode from `AGENT_CONSOLE_MCP_AUTH`.
  *
  * - An explicit `off` / `warn` / `enforce` passes through.
  * - An empty / whitespace-only value is treated as unset (operator-friendly,
  *   same convention as other server-config vars).
  * - Any other non-empty value throws (fail fast at startup — `createMcpApp`
  *   calls this during boot).
- * - Unset resolves to `enforce` when `AUTH_MODE === 'multi-user'` (fail
- *   closed), otherwise `warn`.
+ * - Unset resolves to `warn` regardless of `AUTH_MODE`. Until token delivery
+ *   to workers exists there is no path for an agent to present a token, so a
+ *   multi-user `enforce` default would halt every agent's MCP calls on deploy.
+ *   Phase 4 flips the multi-user default to `enforce` once token delivery
+ *   lands (docs/design/embedded-agent-worker.md § "MCP caller identity").
+ *
+ * Rule 1 of `checkCallerOwnsSession` (a presented-but-mismatched token is
+ * always rejected) is unaffected by the default and is live from this phase.
  */
 export function resolveMcpAuthMode(
   rawValue: string | undefined = process.env.AGENT_CONSOLE_MCP_AUTH,
-  authMode: 'none' | 'multi-user' = serverConfig.AUTH_MODE,
 ): McpAuthMode {
   const trimmed = rawValue?.trim();
   if (!trimmed) {
-    return authMode === 'multi-user' ? 'enforce' : 'warn';
+    return 'warn';
   }
   if (trimmed !== 'off' && trimmed !== 'warn' && trimmed !== 'enforce') {
     throw new Error(
