@@ -34,6 +34,15 @@ import { writePtyNotification } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
+import {
+  McpTokenRegistry,
+  resolveMcpAuthMode,
+  type McpAuthMode,
+  mcpCallerStorage,
+  getMcpCallerIdentity,
+  checkCallerOwnsSession,
+  resolveCallerFromAuthHeader,
+} from './mcp-auth.js';
 import type { Session, AgentActivityState, AppServerMessage } from '@agent-console/shared';
 import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
 
@@ -206,6 +215,18 @@ export interface McpDependencies {
     cwd: string,
     requestUsername: string | null,
   ) => Promise<OpenPrInfo | null>;
+  /**
+   * Registry of per-worker MCP bearer tokens (spec:
+   * docs/design/embedded-agent-worker.md § "MCP caller identity").
+   * Defaults to an empty registry; token minting/delivery lands in later
+   * phases, so with the default every call is tokenless.
+   */
+  mcpTokenRegistry?: McpTokenRegistry;
+  /**
+   * Override for the resolved AGENT_CONSOLE_MCP_AUTH mode (tests).
+   * Defaults to resolveMcpAuthMode() (env + AUTH_MODE resolution).
+   */
+  mcpAuthMode?: McpAuthMode;
 }
 
 // ---------- Factory ----------
@@ -217,6 +238,12 @@ export interface McpDependencies {
  */
 export function createMcpApp(deps: McpDependencies): Hono {
   const { sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp, findOpenPullRequest } = deps;
+
+  // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
+  // caller identity"). The registry defaults to empty and the mode resolves
+  // from AGENT_CONSOLE_MCP_AUTH + AUTH_MODE; tests override both.
+  const mcpTokenRegistry = deps.mcpTokenRegistry ?? new McpTokenRegistry();
+  const mcpAuthMode = deps.mcpAuthMode ?? resolveMcpAuthMode();
 
   /**
    * Map a public Session to the worker info format used by MCP tool responses.
@@ -490,6 +517,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId: fromSessionId, createdBy: senderSession.createdBy },
+          mcpAuthMode,
+          { toolName: 'send_session_message' },
+        );
+        if (authError) return errorResult(authError.error);
+
         // 4. Resolve the path via SessionManager so we use the canonical
         //    persisted slug — the in-memory `repositoryName` is a display
         //    name that may differ from the on-disk slug.
@@ -690,9 +725,15 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // Inherit createdBy from parent session (if delegated)
-        const parentCreatedBy = parentSessionId
-          ? sessionManager.getSession(parentSessionId)?.createdBy
-          : undefined;
+        const parentSession = parentSessionId ? sessionManager.getSession(parentSessionId) : undefined;
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          parentSessionId ? { sessionId: parentSessionId, createdBy: parentSession?.createdBy } : null,
+          mcpAuthMode,
+          { toolName: 'delegate_to_worktree' },
+        );
+        if (authError) return errorResult(authError.error);
+        const parentCreatedBy = parentSession?.createdBy;
 
         // Resolve parent's createdBy (a users.id UUID) to its OS username
         // so the suggestion call and `git worktree add` both run as the
@@ -942,6 +983,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'remove_worktree' },
+        );
+        if (authError) return errorResult(authError.error);
+
         // 2. Resolve the session's `createdBy` (a users.id UUID) to its OS
         //    username so multiple elevation points run as the worktree-owning
         //    user in multi-user mode: (a) `git worktree remove` + fallback
@@ -953,8 +1002,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
         //    `delegate_to_worktree` / `run_process` / `create_conditional_wakeup`
         //    via `resolveRequestUsername` (PR #889, per
         //    `.claude/rules/elevation-helpers.md`). The MCP caller-auth
-        //    binding (whether the MCP caller owns `sessionId`) is deferred
-        //    to #878.
+        //    binding is enforced above via `checkCallerOwnsSession`
+        //    (docs/design/embedded-agent-worker.md § "MCP caller identity").
         const requestUsername = await resolveRequestUsername(
           session.createdBy,
           userRepository,
@@ -1142,6 +1191,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
         }
 
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'create_conditional_wakeup' },
+        );
+        if (authError) return errorResult(authError.error);
+
         // Resolve the session's createdBy (a users.id UUID) to its OS
         // `username` so the condition-script process runs as the requesting
         // user in multi-user mode (Issue #886). When `createdBy` is unset
@@ -1282,6 +1339,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
             `Worker ${workerId} in session ${sessionId} does not support PTY notifications: requires a PTY-backed worker (agent/terminal)`,
           );
         }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'run_process' },
+        );
+        if (authError) return errorResult(authError.error);
 
         // Resolve the session's createdBy (a users.id UUID) to its OS
         // `username` so the spawned process runs as the requesting user
@@ -1570,11 +1635,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpApp.all('/mcp', async (c) => {
     await connectingPromise;
+    const caller = resolveCallerFromAuthHeader(c.req.header('authorization'), mcpTokenRegistry);
     // Cast required: @hono/mcp depends on its own Hono version (@jsr/hono__hono)
     // which has a slightly different Context type than the project's hono package.
     // The runtime Context objects are fully compatible; only the TypeScript types differ.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await transport.handleRequest(c as any);
+    return await mcpCallerStorage.run(caller, () => transport.handleRequest(c as any));
   });
 
   return mcpApp;
