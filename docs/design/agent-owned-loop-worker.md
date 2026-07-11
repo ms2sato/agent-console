@@ -16,7 +16,7 @@ The two models are complementary, not a replacement: the terminal worker keeps i
 
 The service layer is the common core. Both the MCP tools and the REST/WebSocket routes call into the **same** singleton service instances held in `AppContext` (`packages/server/src/app-context.ts`), and in several cases the exact same service functions:
 
-```
+```text
   MCP tools        (mcp/mcp-server.ts)  --,
   REST routes      (routes/*.ts)        --+--> Service layer (services/*.ts)
   WebSocket        (websocket/)         --'     SessionManager / WorktreeService /
@@ -34,7 +34,7 @@ Not every handler is this thin, though. MCP `delegate_to_worktree` layers roughl
 
 There are two independent process boundaries, and only one of them forces MCP:
 
-```
+```text
   [Boundary A]  Agent  <->  server internal functions
   [Boundary B]  React UI (browser)  <->  server
 ```
@@ -42,7 +42,7 @@ There are two independent process boundaries, and only one of them forces MCP:
 - **Boundary A** -- today the agent is a PTY subprocess, so this boundary is crossed by a separate process. Crossing it requires IPC, and MCP is that IPC. This is the boundary the proposal changes.
 - **Boundary B** -- the browser is always a separate process from the server, so the UI always talks over REST/WebSocket regardless of anything else. This boundary does **not** change.
 
-Therefore MCP is not a free-standing choice; it is the necessary result of running the agent as a terminal program (a separate process). Remove the terminal nature of the agent -- run the agent *inside* the server process -- and Boundary A collapses: an in-process tool handler can call `appContext.sessionManager.xxx()` directly, and MCP is no longer needed for that agent.
+Therefore MCP is not a free-standing choice: running the agent as a terminal program (a separate process) makes *some* IPC mechanism necessary, and MCP is the mechanism this app uses to cross that boundary. Remove the terminal nature of the agent -- run the agent *inside* the server process -- and Boundary A collapses: an in-process tool handler can call `appContext.sessionManager.xxx()` directly, and no IPC (MCP or otherwise) is needed for that agent.
 
 **This is candidate (a)'s value proposition specifically, not a property of "owning the loop" in general.** A custom-built loop can also run as its own OS process (candidate (b)) and still keep Boundary A crossed by MCP -- what it gains over today's terminal model is not IPC removal but *control of the event format* (structured events instead of ANSI terminal bytes) and *freedom of LLM provider* (it is our code, not a fixed terminal program). See [Design Decisions](#design-decisions) for why (b), not (a), was chosen.
 
@@ -91,7 +91,7 @@ Targeting the OpenAI Chat Completions request/response shape first is the highes
 
 Design the boundary as a **provider adapter interface** so OpenAI-format is simply the first implementation:
 
-```
+```ts
   interface ProviderAdapter {
     // send messages + tools, receive a stream of text and tool-call events
     run(messages, tools, opts): AsyncIterable<TextDelta | ToolCall>
@@ -111,7 +111,7 @@ Local models (via an OpenAI-compatible endpoint) have the fewest *cost and acces
 
 Under candidate (b), the agent-owned loop calls the **existing MCP server** for app-operation tools -- the same `mcpServer.tool(name, description, zodSchema, handler)` registrations today's terminal agents (Claude Code) already use. There is no second, direct-call path to build or keep in sync: unlike candidate (a), (b) does not need a provider-neutral tool registry to avoid duplicating schemas, because there is only ever one caller shape (MCP) regardless of which OS process is calling it.
 
-```
+```text
   MCP tool registry (mcp-server.ts, unchanged)
        |
        +-- external terminal agent (Claude Code)   [today]
