@@ -1,0 +1,19 @@
+# CodeRabbit repository configuration.
+#
+# NOTE: this file takes precedence over the CodeRabbit web-UI settings for
+# this repository. Settings previously configured in the UI must be carried
+# over here explicitly (currently: review profile "chill").
+#
+# Why this file exists: docs-only PRs (spec-sync, glossary, rules) were
+# consuming the org's auto-review quota and rate-limiting code PRs during
+# PR-dense sprints. PRs titled with the conventional "docs:" prefix skip
+# auto-review; a manual `@coderabbitai review` comment still triggers a
+# review on demand. Deliberately NOT excluding `**/*.md` via path_filters —
+# spec updates that ride along in code PRs must stay in review context.
+language: en-US
+reviews:
+  profile: chill
+  auto_review:
+    enabled: true
+    ignore_title_keywords:
+      - "docs:"
