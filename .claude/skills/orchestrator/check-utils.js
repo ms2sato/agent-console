@@ -110,6 +110,23 @@ const COVERAGE_EXCLUSIONS = [
   // Testing them is not meaningful — the type system already enforces
   // their shape at consume sites.
   /-types\.tsx?$/,
+  // *.gen.ts / *.gen.tsx convention: build-time generated files
+  // (e.g. schema-version.gen.ts from a codegen step). Their contents
+  // are derived from an authoritative source at build time; a hand-
+  // written sibling test would be tautological — the generator is
+  // what needs testing, not the emitted output.
+  /\.gen\.tsx?$/,
+  // Bare `types.ts` / `types.tsx` (as a full path segment) convention:
+  // module-level type-definitions-only file colocated with its
+  // consumers (natural in React / Node.js codebases where each feature
+  // directory may own a `types.ts` alongside its runtime modules).
+  // Same rationale as `-types.tsx?$` above — the type system enforces
+  // shape at consume sites, so a runtime test would be tautological.
+  // Anchored on the segment boundary so files like `mytypes.ts` or
+  // `custom-types.ts` (which is already covered by the -types pattern)
+  // are not double-matched here, and files like `type.ts` (singular)
+  // are NOT excluded — they may contain runtime enums / factories.
+  /(?:^|\/)types\.tsx?$/,
 ];
 
 export function isTestFile(filePath) {

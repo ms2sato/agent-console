@@ -127,6 +127,59 @@ describe('requiresTestCoverage with re-export exclusion', () => {
   });
 });
 
+describe('requiresTestCoverage with generated-file exclusion (*.gen.ts)', () => {
+  it('excludes *.gen.ts under a coverage-pattern path', () => {
+    // schema-version.gen.ts (surfaced by PR #1042) sits under
+    // packages/shared/src/ (a coverage path), but its contents are
+    // emitted by a codegen step at build time. A hand-written sibling
+    // test would be tautological.
+    expect(requiresTestCoverage('packages/shared/src/schema-version.gen.ts')).toBe(false);
+  });
+
+  it('excludes *.gen.tsx under a coverage-pattern path', () => {
+    // Parity with *.gen.ts: if a future generator emits a .tsx file
+    // (e.g. a code-gen React component tree), the same exclusion applies.
+    expect(requiresTestCoverage('packages/client/src/components/foo.gen.tsx')).toBe(false);
+  });
+
+  it('does NOT exclude files whose basename merely contains "gen" as a substring', () => {
+    // The exclusion is anchored on the `.gen.<ext>$` suffix, not any
+    // occurrence of "gen" in the path — a file like `generator.ts` still
+    // requires coverage.
+    expect(requiresTestCoverage('packages/shared/src/generator.ts')).toBe(true);
+  });
+});
+
+describe('requiresTestCoverage with bare types.ts exclusion', () => {
+  it('excludes a bare `types.ts` at any depth (module-level type-definitions file)', () => {
+    // Surfaced by PR #1050 (FF-1a) which added
+    // packages/embedded-agent/src/tools/types.ts to break a circular
+    // dependency. Bare `types.ts` (no prefix) is a natural
+    // React / Node.js convention for module-level type definitions
+    // colocated with runtime code; a hand-written sibling test would
+    // be tautological.
+    expect(requiresTestCoverage('packages/embedded-agent/src/tools/types.ts')).toBe(false);
+  });
+
+  it('excludes a bare `types.tsx` at any depth (parity for JSX-annotated type files)', () => {
+    expect(requiresTestCoverage('packages/client/src/components/foo/types.tsx')).toBe(false);
+  });
+
+  it('does NOT exclude the singular `type.ts` (may contain runtime enums / factories)', () => {
+    // The exclusion is anchored on the plural `types.<ext>$` at a segment
+    // boundary, not `type.ts` singular. This avoids over-excluding files
+    // that legitimately hold runtime code (enums, factory functions).
+    expect(requiresTestCoverage('packages/shared/src/type.ts')).toBe(true);
+  });
+
+  it('does NOT exclude `mytypes.ts` (segment-boundary anchoring prevents substring match)', () => {
+    // `mytypes.ts` sits at a segment boundary but the segment itself is
+    // `mytypes`, not `types` — the anchor `(?:^|/)types\.` does not match
+    // mid-segment, so this file still requires coverage.
+    expect(requiresTestCoverage('packages/shared/src/mytypes.ts')).toBe(true);
+  });
+});
+
 describe('preflight-check parity fix verification', () => {
   it('should verify getLocalChangedFiles implementation was simplified', () => {
     // Read the source code to verify the implementation
