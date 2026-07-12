@@ -21,6 +21,12 @@ import {
 import { truncateToBytes } from './truncate.js';
 
 const TOOL_RESULT_MAX_BYTES = 16384;
+/**
+ * Cap for the assistant-message text and tool-call args on the wire. Well below
+ * the server's 1 MiB per-line protocol-integrity kill, so a healthy long
+ * assistant output or a large tool-call argument never trips that guard.
+ */
+const WIRE_EVENT_MAX_BYTES = 262144;
 const DEFAULT_RETRY_DELAYS_MS: [number, number] = [500, 2000];
 const MAX_PROVIDER_ATTEMPTS = 3;
 const MAX_MALFORMED_REASKS = 2;
@@ -79,6 +85,18 @@ function parseToolArgs(argsJson: string): ParsedToolArgs {
   return { ok: true, value: parsed as Record<string, unknown> };
 }
 
+/**
+ * Cap the tool-call args emitted on the wire. The tool is always executed with
+ * the full parsed value; only the emitted `args` is bounded. When the raw
+ * argsJson is within the cap the parsed object is emitted as-is; when it exceeds
+ * the cap the UTF-8-safe-truncated JSON string is emitted instead (the wire
+ * schema accepts `unknown`), keeping the event line under the server's line-kill.
+ */
+function capToolCallArgsForWire(argsJson: string, parsedValue: Record<string, unknown>): unknown {
+  const { text, truncated } = truncateToBytes(argsJson, WIRE_EVENT_MAX_BYTES);
+  return truncated ? text : parsedValue;
+}
+
 export class AgentLoop {
   private readonly deps: AgentLoopDeps;
   private readonly retryDelaysMs: [number, number];
@@ -121,7 +139,12 @@ export class AgentLoop {
         }
 
         // Always emit the assistant message, even when the text is empty.
-        this.deps.emit({ v: 1, type: 'assistant-message', turnId, text: outcome.text });
+        this.deps.emit({
+          v: 1,
+          type: 'assistant-message',
+          turnId,
+          text: truncateToBytes(outcome.text, WIRE_EVENT_MAX_BYTES).text,
+        });
         this.conversation.push(this.buildAssistantMessage(outcome.text, outcome.toolCalls));
 
         if (outcome.toolCalls.length === 0) {
@@ -129,10 +152,22 @@ export class AgentLoop {
           return;
         }
 
+        // Track which of this assistant message's tool calls already have a
+        // tool-role response. On any early return the conversation must stay
+        // valid for the next turn: every tool_call needs a matching response,
+        // otherwise a strict OpenAI-compatible provider rejects the next
+        // request.
+        const responded = new Set<string>();
+
         for (const call of outcome.toolCalls) {
           const parsed = parseToolArgs(call.argsJson);
           if (!parsed.ok) {
             if (malformedReAsks >= MAX_MALFORMED_REASKS) {
+              this.fillPendingToolResponses(
+                outcome.toolCalls,
+                responded,
+                'tool call not completed: turn ended after repeated malformed arguments',
+              );
               this.emitTurnError(
                 turnId,
                 `tool arguments could not be parsed after ${MAX_MALFORMED_REASKS} re-asks: ${parsed.message}`,
@@ -145,10 +180,12 @@ export class AgentLoop {
               tool_call_id: call.callId,
               content: `Error: tool arguments were not a valid JSON object (${parsed.message}). Please re-issue the call with corrected arguments.`,
             });
+            responded.add(call.callId);
             continue;
           }
 
           if (abort.signal.aborted) {
+            this.fillPendingToolResponses(outcome.toolCalls, responded, 'tool call canceled');
             this.emitTurnError(turnId, 'turn canceled');
             return;
           }
@@ -158,10 +195,11 @@ export class AgentLoop {
             turnId,
             callId: call.callId,
             name: call.name,
-            args: parsed.value,
+            args: capToolCallArgsForWire(call.argsJson, parsed.value),
           });
           const result = await this.deps.executor.callTool(call.name, parsed.value, abort.signal);
           if (abort.signal.aborted) {
+            this.fillPendingToolResponses(outcome.toolCalls, responded, 'tool call canceled');
             this.emitTurnError(turnId, 'turn canceled');
             return;
           }
@@ -179,12 +217,34 @@ export class AgentLoop {
             tool_call_id: call.callId,
             content: truncated,
           });
+          responded.add(call.callId);
         }
       }
 
       this.emitTurnError(turnId, 'maximum tool iterations reached');
     } finally {
       this.currentAbort = null;
+    }
+  }
+
+  /**
+   * Push a synthetic tool-role response for every tool call that has not yet
+   * been answered, so the conversation remains valid (each tool_call has a
+   * matching response) for the next user turn after an early return.
+   */
+  private fillPendingToolResponses(
+    toolCalls: ProviderToolCall[],
+    responded: Set<string>,
+    reason: string,
+  ): void {
+    for (const call of toolCalls) {
+      if (responded.has(call.callId)) continue;
+      this.conversation.push({
+        role: 'tool',
+        tool_call_id: call.callId,
+        content: `Error: ${reason}`,
+      });
+      responded.add(call.callId);
     }
   }
 

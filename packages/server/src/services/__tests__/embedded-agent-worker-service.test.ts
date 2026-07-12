@@ -82,6 +82,8 @@ interface FakeSpawn {
   simulateExit: (code: number) => void;
   /** Optional hook fired on kill(signal); tests use it to escalate to exit. */
   setOnKill: (fn: (signal: number) => void) => void;
+  /** Hook fired at the moment stdin.write is called (for call-time ordering). */
+  setOnStdinWrite: (fn: (chunk: string) => void) => void;
 }
 
 function makeFakeSpawn(): FakeSpawn {
@@ -90,6 +92,9 @@ function makeFakeSpawn(): FakeSpawn {
   const killSignals: number[] = [];
   let flushes = 0;
   let onKill: ((signal: number) => void) | undefined;
+  // Fired at the exact moment stdin.write is called (Finding 3: lets the
+  // append-before-forward test record ordering at call-time, not after await).
+  let onStdinWrite: ((chunk: string) => void) | undefined;
 
   const stdout = makeControllableStream();
   const stderr = makeControllableStream();
@@ -101,7 +106,9 @@ function makeFakeSpawn(): FakeSpawn {
 
   const stdin: FakeFileSink = {
     write: (chunk) => {
-      stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+      const s = typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk);
+      stdinWrites.push(s);
+      onStdinWrite?.(s);
       return 0;
     },
     end: () => {},
@@ -148,6 +155,9 @@ function makeFakeSpawn(): FakeSpawn {
     setOnKill: (f) => {
       onKill = f;
     },
+    setOnStdinWrite: (f: (chunk: string) => void) => {
+      onStdinWrite = f;
+    },
   };
 }
 
@@ -181,6 +191,8 @@ function setup(opts?: {
   spawnAsUserFnOverride?: SpawnAsUserFn;
   shutdownGraceMs?: number;
   sigtermTimeoutMs?: number;
+  /** Omit the entryPath override so the service resolves its real default. */
+  omitEntryPath?: boolean;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -224,7 +236,7 @@ function setup(opts?: {
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: loadProviderKeyFn as never,
     spawnAsUserFn: opts?.spawnAsUserFnOverride ?? fake.fn,
-    entryPath: ENTRY_PATH,
+    ...(opts?.omitEntryPath ? {} : { entryPath: ENTRY_PATH }),
     getGlobalActivityCallback: () => globalActivity as never,
     getGlobalWorkerExitCallback: () => globalExit as never,
     shutdownGraceMs: opts?.shutdownGraceMs,
@@ -372,6 +384,39 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await h.service.activate(h.sessionId, h.workerId);
     expect(h.revokeByWorker).not.toHaveBeenCalled();
   });
+
+  it('serializes two concurrent activate() calls into a single spawn', async () => {
+    const h = setup();
+    // Two concurrent callers (e.g. two WS clients hitting onOpen) — no await
+    // between the calls, mirroring simultaneous entry.
+    const p1 = h.service.activate(h.sessionId, h.workerId);
+    const p2 = h.service.activate(h.sessionId, h.workerId);
+
+    // The second caller must receive the SAME in-flight promise, not a second
+    // independent activation.
+    expect(p2).toBe(p1);
+
+    await Promise.all([p1, p2]);
+
+    // Exactly one spawn and one mint — not two orphaned subprocesses/tokens.
+    expect(h.fake.captured.length).toBe(1);
+    expect(h.mint).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves the default entry path to an existing packages/embedded-agent/src/main.ts', async () => {
+    // Exercises the REAL default resolution (no entryPath override). The bug was
+    // a resolution-mechanism defect, so this asserts the resolved path exists on
+    // disk via the native Bun.file check (memfs-immune) rather than trusting types.
+    const h = setup({ omitEntryPath: true });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const command = h.fake.captured[0].command;
+    const match = /^bun '(.+)'$/.exec(command);
+    expect(match).not.toBeNull();
+    const resolvedEntry = match![1];
+    expect(resolvedEntry.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);
+    expect(await Bun.file(resolvedEntry).exists()).toBe(true);
+  });
 });
 
 describe('EmbeddedAgentWorkerService stdout stream', () => {
@@ -425,6 +470,36 @@ describe('EmbeddedAgentWorkerService stdout stream', () => {
     expect(h.fake.killSignals).toContain(9);
   });
 
+  it('skips a parseable event with an unrecognized type WITHOUT incrementing the strike counter', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    // 5 forward-compat (unrecognized-type) lines in a row must NOT kill.
+    for (let i = 0; i < 5; i++) {
+      h.fake.pushStdout('{"v":1,"type":"future-event","foo":"bar"}\n');
+    }
+    // A recognized event after them still processes (proves the reader is live
+    // and the unrecognized lines did not corrupt the stream / trip the counter).
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    await waitFor(() => appendedLines(h.bufferOutput).includes('{"v":1,"type":"ready"}'));
+
+    expect(h.fake.killSignals).toEqual([]);
+    // The unrecognized lines are skipped (not appended to the transcript).
+    expect(appendedLines(h.bufferOutput)).not.toContain('{"v":1,"type":"future-event","foo":"bar"}');
+  });
+
+  it('counts a KNOWN type that fails its schema shape toward the strike counter', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // `tool-call` is a recognized type but this line is missing its required
+    // fields (turnId/callId/name/args) → genuine corruption → 5 in a row kills.
+    for (let i = 0; i < 5; i++) h.fake.pushStdout('{"v":1,"type":"tool-call"}\n');
+    await waitFor(() => h.fake.killSignals.length > 0);
+    expect(h.fake.killSignals).toContain(9);
+  });
+
   it('kills the subprocess on an oversized single line (> 1 MiB)', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
@@ -463,6 +538,36 @@ describe('EmbeddedAgentWorkerService exit handling', () => {
     expect(h.recorder.onExit).toHaveBeenCalledWith(0, null, 'managed');
     expect(h.fake.killSignals).toEqual([]);
   });
+
+  it('ignores a stale exit from a superseded subprocess (does not touch the current handle/token)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // Simulate a newer activation having already replaced the live subprocess
+    // handle (distinct object from the original fake's subprocess).
+    const newer = makeFakeSpawn();
+    const replacement = newer.fn({ username: 'x', command: 'c' });
+    h.worker.subprocess = replacement.subprocess;
+    h.worker.stdin = replacement.stdin;
+
+    h.revokeByWorker.mockClear();
+    h.bufferOutput.mockClear();
+    h.globalExit.mockClear();
+
+    // Fire the ORIGINAL (now superseded) subprocess's exit.
+    h.fake.simulateExit(1);
+    // Bounded wait: the stale exit's observer chain (exited -> streamsDone ->
+    // handleExit) completes within microtasks; if the guard were absent it
+    // would null worker.subprocess and revoke the token within this window.
+    await new Promise((r) => setTimeout(r, 40));
+
+    // The CURRENT (replacement) handle and the token must be untouched.
+    expect(h.worker.subprocess).toBe(replacement.subprocess);
+    expect(h.worker.stdin).toBe(replacement.stdin);
+    expect(h.revokeByWorker).not.toHaveBeenCalled();
+    expect(appendedLines(h.bufferOutput)).not.toContain('{"v":1,"type":"exited","code":1}');
+    expect(h.globalExit).not.toHaveBeenCalled();
+  });
 });
 
 describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
@@ -484,21 +589,25 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     const initWrites = h.fake.stdinWrites.length;
     h.bufferOutput.mockClear();
 
-    // Record global ordering between bufferOutput and stdin.write.
+    // Record ordering at CALL-TIME on both sides: 'append' when bufferOutput
+    // fires, 'forward' at the moment stdin.write happens (not after the async
+    // call resolves — that would make the ordering assertion vacuous). Hooks
+    // are installed AFTER activate so the init write is not recorded.
     const order: string[] = [];
     h.bufferOutput.mockImplementation(() => {
       order.push('append');
     });
-    const originalWrites = h.fake.stdinWrites.length;
+    h.fake.setOnStdinWrite(() => {
+      order.push('forward');
+    });
 
     const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
     expect(res.ok).toBe(true);
-    // A stdin write happened after the initial init writes.
-    expect(h.fake.stdinWrites.length).toBe(originalWrites + 1);
-    order.push('forward');
 
-    // The appended event must precede the forward record.
-    expect(order[0]).toBe('append');
+    // Both were recorded at call-time; append must strictly precede forward.
+    // If production forwarded before appending, order would be ['forward','append'].
+    expect(order).toEqual(['append', 'forward']);
+
     // The forwarded command shape matches the user-message.
     const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
     expect(forwarded.type).toBe('user-message');

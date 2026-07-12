@@ -448,24 +448,40 @@ describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
       expect((toolMessage?.content ?? '').length).toBeGreaterThan(0);
       expect(toolMessage?.content ?? '').toContain(sessionId);
 
-      // --- Negative secret assertion (Linux best-effort, while still activated) ---
+      // --- Negative secret assertion (while still activated) ---
+      // On Linux — the only platform where this repo expects /proc to be usable —
+      // this check MUST actually execute. A silently-skipped block (process
+      // already exited, unknown pid, /proc unreadable) would report green while
+      // never comparing the token against the process cmdline/environ, giving
+      // false confidence. `procAssertionRan` converts every such skip into a
+      // loud Linux failure; on non-Linux the whole block is skipped gracefully.
       if (process.platform === 'linux') {
         const internalWorker = ctx.sessionManager.getWorker(sessionId, workerId);
         const pid =
           internalWorker && internalWorker.type === 'embedded-agent'
             ? internalWorker.subprocess?.pid
             : undefined;
+        // The worker is still activated here, so the subprocess is alive and its
+        // pid must be known — a missing pid is a real failure, not a skip.
+        expect(pid).toBeDefined();
+
+        let procAssertionRan = false;
         if (pid !== undefined) {
           for (const procFile of ['cmdline', 'environ']) {
             // Bun.file is native and bypasses the server-side memfs mock, so it
             // reads the REAL /proc entry.
             const file = Bun.file(`/proc/${pid}/${procFile}`);
             if (await file.exists()) {
-              const content = await file.text().catch(() => '');
-              expect(content.includes(capturedToken)).toBe(false);
+              const content = await file.text().catch(() => null);
+              if (content !== null) {
+                expect(content.includes(capturedToken)).toBe(false);
+                procAssertionRan = true;
+              }
             }
           }
         }
+        // Fail loudly if neither /proc entry was actually read + compared.
+        expect(procAssertionRan).toBe(true);
       }
 
       // --- Deactivation: graceful shutdown, exited code 0, token revoked ---

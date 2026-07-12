@@ -48,6 +48,24 @@ const DEFAULT_MAX_TOOL_ITERATIONS = 25;
 const DEFAULT_SHUTDOWN_GRACE_MS = 3000;
 /** Grace after SIGTERM before escalating to SIGKILL. */
 const DEFAULT_SIGTERM_TIMEOUT_MS = 5000;
+/**
+ * The event `type` literals this server build recognizes (the loop-authored
+ * `EmbeddedAgentEvent` union). A parseable line whose `type` is NOT in this set
+ * is treated as a forward-compat version-skew event (skip + log, no strike),
+ * distinct from a recognized type that fails its own schema shape (genuine
+ * corruption → counts toward the strike counter). Kept in sync with
+ * `EmbeddedAgentEvent` in packages/shared.
+ */
+const KNOWN_EVENT_TYPES = new Set<string>([
+  'ready',
+  'state',
+  'assistant-delta',
+  'assistant-message',
+  'tool-call',
+  'tool-result',
+  'turn-error',
+  'fatal',
+]);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
 
@@ -99,6 +117,14 @@ type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
 
 export class EmbeddedAgentWorkerService {
   private readonly runtimes = new Map<string, Runtime>();
+  /**
+   * In-flight activations keyed by workerId. Guards against two concurrent
+   * `activate()` calls for the same worker (e.g. two WS clients hitting
+   * `onOpen` simultaneously) both passing the null-subprocess check and each
+   * spawning a subprocess + minting a token. The second concurrent call awaits
+   * the SAME promise as the first instead of proceeding independently.
+   */
+  private readonly activations = new Map<string, Promise<void>>();
   private readonly spawnAsUserFn: SpawnAsUserFn;
   private readonly loadProviderKeyFn: typeof loadProviderKey;
   private readonly entryPath: string;
@@ -108,19 +134,67 @@ export class EmbeddedAgentWorkerService {
   constructor(private readonly deps: EmbeddedAgentWorkerServiceDeps) {
     this.spawnAsUserFn = deps.spawnAsUserFn ?? spawnAsUser;
     this.loadProviderKeyFn = deps.loadProviderKeyFn ?? loadProviderKey;
-    this.entryPath =
-      deps.entryPath ?? path.resolve(import.meta.dir, '../../../embedded-agent/src/main.ts');
+    this.entryPath = deps.entryPath ?? EmbeddedAgentWorkerService.resolveDefaultEntryPath();
     this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.sigtermTimeoutMs = deps.sigtermTimeoutMs ?? DEFAULT_SIGTERM_TIMEOUT_MS;
   }
 
   /**
-   * Activate the embedded-agent worker: spawn the loop subprocess, deliver the
-   * init handshake over stdin, and start streaming its NDJSON events. Every
-   * failure path throws with a clear message surfaced to the client. Idempotent
-   * when the subprocess is already live.
+   * Resolve the absolute path to the embedded-agent subprocess entry.
+   *
+   * Primary: workspace-package resolution via the package manager's view
+   * (`@agent-console/embedded-agent/package.json`, then join `src/main.ts`).
+   * This is the deployment-correct mechanism: under a bundled production deploy
+   * (`bun dist/index.js`) `import.meta.dir` points into the bundle output, so a
+   * relative source-tree path resolves to a nonexistent file — package
+   * resolution instead follows the installed dependency edge. `package.json` is
+   * the reliable subpath (Bun resolves it even without an `exports` map, unlike
+   * arbitrary `src/*` subpaths).
+   *
+   * Fallback: a source-tree-relative path, used only when the package edge is
+   * not yet installed (dev / test before `bun install` wires
+   * `@agent-console/embedded-agent` into the server package). CI runs
+   * `bun install`, so the primary path is what executes there and in prod.
    */
-  async activate(sessionId: string, workerId: string): Promise<void> {
+  private static resolveDefaultEntryPath(): string {
+    try {
+      const pkgJson = Bun.resolveSync('@agent-console/embedded-agent/package.json', import.meta.dir);
+      return path.join(path.dirname(pkgJson), 'src/main.ts');
+    } catch {
+      return path.resolve(import.meta.dir, '../../../embedded-agent/src/main.ts');
+    }
+  }
+
+  /**
+   * Activate the embedded-agent worker. Serializes concurrent calls for the
+   * same worker through the {@link activations} in-flight map so a second
+   * concurrent caller awaits the first's outcome rather than double-spawning.
+   * Non-async on purpose: it returns the SAME promise object to concurrent
+   * callers (so `activate() === activate()` while in flight).
+   */
+  activate(sessionId: string, workerId: string): Promise<void> {
+    const inFlight = this.activations.get(workerId);
+    if (inFlight) {
+      return inFlight;
+    }
+    const p = this.runActivation(sessionId, workerId).finally(() => {
+      // Only clear the slot if it still holds THIS activation (a later
+      // activation may have replaced it).
+      if (this.activations.get(workerId) === p) {
+        this.activations.delete(workerId);
+      }
+    });
+    this.activations.set(workerId, p);
+    return p;
+  }
+
+  /**
+   * Spawn the loop subprocess, deliver the init handshake over stdin, and start
+   * streaming its NDJSON events. Every failure path throws with a clear message
+   * surfaced to the client. Idempotent when the subprocess is already live.
+   * Callers go through {@link activate} for concurrency serialization.
+   */
+  private async runActivation(sessionId: string, workerId: string): Promise<void> {
     const session = this.deps.getSession(sessionId);
     if (!session) {
       throw new Error(`Cannot activate embedded-agent worker: session ${sessionId} not found`);
@@ -242,9 +316,10 @@ export class EmbeddedAgentWorkerService {
         .then(async (code) => {
           // Exit handling is ordered AFTER stream completion so the final events
           // flush before the server-authored `exited` row (mirrors
-          // interactive-process-manager.ts exit observation).
+          // interactive-process-manager.ts exit observation). The exiting
+          // subprocess is passed so handleExit can detect a superseded incarnation.
           await runtime.streamsDone;
-          await this.handleExit(runtime, code);
+          await this.handleExit(runtime, subprocess, code);
         })
         .catch((err) => {
           logger.error({ sessionId, workerId, err }, 'Embedded-agent exit handler error');
@@ -265,6 +340,8 @@ export class EmbeddedAgentWorkerService {
       }
       worker.subprocess = null;
       worker.stdin = null;
+      // Safe to delete unconditionally: the in-flight activation guard prevents
+      // a concurrent activation from having installed a different runtime here.
       this.runtimes.delete(workerId);
       logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed; revoked token and cleaned up');
       throw err;
@@ -473,11 +550,31 @@ export class EmbeddedAgentWorkerService {
     try {
       parsed = JSON.parse(line);
     } catch {
+      // Unparseable line: genuine protocol corruption → counts toward the strike counter.
       this.handleParseFailure(runtime, subprocess);
       return;
     }
+
+    // Forward-compat: a parseable object whose `type` this build does not
+    // recognize is a version-skew event (newer/older loop). Skip + log WITHOUT
+    // incrementing the strike counter — it is not corruption. A recognized type
+    // that then fails its own schema shape IS corruption (handled below).
+    const parsedType =
+      typeof parsed === 'object' && parsed !== null
+        ? (parsed as { type?: unknown }).type
+        : undefined;
+    if (typeof parsedType !== 'string' || !KNOWN_EVENT_TYPES.has(parsedType)) {
+      logger.debug(
+        { sessionId: ctx.sessionId, workerId: ctx.workerId, type: parsedType },
+        'Skipping embedded-agent event with unrecognized type (forward-compat)',
+      );
+      return;
+    }
+
     const result = v.safeParse(EmbeddedAgentEventSchema, parsed);
     if (!result.success) {
+      // Recognized type but shape-invalid: genuine corruption (same-deployment
+      // version parity) → counts toward the strike counter.
       this.handleParseFailure(runtime, subprocess);
       return;
     }
@@ -516,9 +613,25 @@ export class EmbeddedAgentWorkerService {
     }
   }
 
-  private async handleExit(runtime: Runtime, code: number | null): Promise<void> {
+  private async handleExit(
+    runtime: Runtime,
+    subprocess: PipedSubprocess,
+    code: number | null,
+  ): Promise<void> {
     const { ctx } = runtime;
     const { worker, sessionId, workerId } = ctx;
+
+    // Stale-exit guard: if a newer activation has already replaced the live
+    // subprocess handle, this is a superseded incarnation's exit. Touching the
+    // worker fields / revoking the token here would corrupt the CURRENT live
+    // subprocess's state (null its handle, revoke its token). Skip entirely.
+    if (worker.subprocess !== subprocess) {
+      logger.warn(
+        { sessionId, workerId },
+        'Ignoring stale embedded-agent exit (subprocess superseded by a newer activation)',
+      );
+      return;
+    }
 
     // Append the server-authored exited row so the on-disk log is complete.
     this.appendEvent(ctx, { v: 1, type: 'exited', code: code ?? null });
@@ -544,7 +657,10 @@ export class EmbeddedAgentWorkerService {
     }
     this.deps.getGlobalWorkerExitCallback()?.(sessionId, workerId, code ?? 0, reason);
 
-    this.runtimes.delete(workerId);
+    // Only clear the runtime slot if it still holds THIS activation's runtime.
+    if (this.runtimes.get(workerId) === runtime) {
+      this.runtimes.delete(workerId);
+    }
     logger.info({ sessionId, workerId, code, reason }, 'Embedded-agent worker exited');
   }
 
