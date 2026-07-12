@@ -93,6 +93,10 @@ function createGitDiffWorker(id: string, name = 'Git Diff'): Worker {
   return { id, type: 'git-diff', name, createdAt: new Date().toISOString(), baseCommit: 'abc123' };
 }
 
+function createEmbeddedAgentWorker(id: string, name = 'Local GPT'): Worker {
+  return { id, type: 'embedded-agent', name, createdAt: new Date().toISOString(), embeddedAgentId: 'embedded-def-1', activated: true };
+}
+
 function createDefaultOptions(overrides: Partial<UseTabManagementOptions> = {}): UseTabManagementOptions {
   return {
     sessionId: 'session-1',
@@ -408,6 +412,87 @@ describe('useTabManagement', () => {
       const deleteCalls = findFetchCalls(/\/workers\//);
       expect(deleteCalls).toHaveLength(0);
       expect(result.current.tabs).toHaveLength(2);
+    });
+
+    it('addAgentTab creates an embedded-agent worker and adds tab', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const navigateToWorker = mock(() => {});
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+        navigateToWorker,
+      });
+      createWorkerResponse = () => ({
+        worker: {
+          id: 'new-embedded-1',
+          type: 'embedded-agent',
+          name: 'Local GPT',
+          embeddedAgentId: 'embedded-def-1',
+          createdAt: new Date().toISOString(),
+          activated: false,
+        },
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      expect(result.current.tabs).toHaveLength(1);
+
+      navigateToWorker.mockClear();
+
+      await act(async () => {
+        await result.current.addAgentTab({ type: 'embedded-agent', embeddedAgentId: 'embedded-def-1' });
+      });
+
+      const postCalls = findFetchCalls(/\/sessions\/session-1\/workers$/);
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].body).toEqual({
+        type: 'embedded-agent',
+        embeddedAgentId: 'embedded-def-1',
+      });
+      expect(result.current.tabs).toHaveLength(2);
+      expect(result.current.tabs[1].workerType).toBe('embedded-agent');
+      expect(navigateToWorker).toHaveBeenCalledWith('new-embedded-1');
+    });
+
+    it('addAgentTab surfaces an error via showError on API failure', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const showError = mock(() => {});
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+        showError,
+      });
+      mockFetch.mockImplementationOnce(async () => new Response(JSON.stringify({ error: 'boom' }), { status: 400 }));
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      await act(async () => {
+        await result.current.addAgentTab({ type: 'embedded-agent', embeddedAgentId: 'embedded-def-1' });
+      });
+
+      expect(showError).toHaveBeenCalledWith('Failed to Create Worker', expect.any(String));
+      expect(result.current.tabs).toHaveLength(1);
+    });
+
+    it('closeTab deletes an embedded-agent worker and removes tab', async () => {
+      const workers = [createAgentWorker('agent-1'), createEmbeddedAgentWorker('embedded-1')];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      expect(result.current.tabs).toHaveLength(2);
+
+      await act(async () => {
+        await result.current.closeTab('embedded-1');
+      });
+
+      const deleteCalls = findFetchCalls(/\/sessions\/session-1\/workers\/embedded-1$/);
+      expect(deleteCalls).toHaveLength(1);
+      expect(result.current.tabs).toHaveLength(1);
+      expect(result.current.tabs[0].id).toBe('agent-1');
     });
   });
 

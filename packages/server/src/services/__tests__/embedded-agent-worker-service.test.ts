@@ -580,7 +580,7 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     const [r1, r2] = await Promise.all([p1, p2]);
 
     expect(r1.ok).toBe(true);
-    expect(r2).toEqual({ ok: false, error: 'turn in progress' });
+    expect(r2).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
   });
 
   it('appends the user-message event BEFORE forwarding it to stdin', async () => {
@@ -618,7 +618,22 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
   it('rejects with not activated when the subprocess is null', async () => {
     const h = setup();
     const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hi');
-    expect(res).toEqual({ ok: false, error: 'not activated' });
+    expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
+  });
+
+  it('rejects with code WRITE_FAILED when the stdin write throws', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    expect(h.worker.stdin).not.toBeNull();
+
+    // Lowest-level mock: make the fake FileSink's write throw, mirroring a
+    // real EPIPE/write failure on the underlying stdin stream.
+    h.worker.stdin!.write = () => {
+      throw new Error('EPIPE');
+    };
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    expect(res).toEqual({ ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' });
   });
 
   it('re-admits a message after the loop reports idle', async () => {

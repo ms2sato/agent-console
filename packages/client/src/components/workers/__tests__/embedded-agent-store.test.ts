@@ -1,0 +1,618 @@
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import type { AppServerMessage } from '@agent-console/shared';
+import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
+import {
+  getOrCreateEmbeddedAgentWorker,
+  _resetEmbeddedAgentWorkers,
+  _setAppSubscribe,
+  _inspect,
+  type EmbeddedAgentChatEntry,
+} from '../embedded-agent-store';
+
+function makeAppBus() {
+  const listeners = new Set<(msg: AppServerMessage) => void>();
+  const subscribe = (listener: (msg: AppServerMessage) => void) => {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  };
+  const emit = (msg: AppServerMessage) => {
+    for (const l of Array.from(listeners)) l(msg);
+  };
+  return { subscribe, emit };
+}
+
+function flush(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 10));
+}
+
+function lastSentMessages(ws: MockWebSocket): unknown[] {
+  const calls = ws.send.mock.calls as unknown as string[][];
+  return calls.map((call) => JSON.parse(call[0]));
+}
+
+function historyMessage(data: string, offset: number, startOffset = 0, epoch = 1) {
+  return JSON.stringify({ type: 'history', data, offset, startOffset, epoch });
+}
+
+function outputMessage(data: string, offset: number, epoch = 1) {
+  return JSON.stringify({ type: 'output', data, offset, epoch });
+}
+
+function ndjson(...events: Record<string, unknown>[]): string {
+  return events.map((e) => JSON.stringify(e)).join('\n') + '\n';
+}
+
+describe('embedded-agent-store', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    _resetEmbeddedAgentWorkers();
+    restoreWebSocket = installMockWebSocket();
+    originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    _resetEmbeddedAgentWorkers();
+    restoreWebSocket();
+    if (originalLocation) {
+      Object.defineProperty(window, 'location', originalLocation);
+    }
+  });
+
+  it('requests full history with fromOffset 0 on open', () => {
+    getOrCreateEmbeddedAgentWorker('s1', 'w1');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const sent = lastSentMessages(ws!);
+    expect(sent).toContainEqual({ type: 'request-history', fromOffset: 0 });
+  });
+
+  it('folds a user-message + assistant-message pair from history into entries', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s2', 'w2');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'user-message', id: 'u1', text: 'hello' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'hi there' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ kind: 'user-message', id: 'u1', text: 'hello' });
+    expect(entries[1]).toMatchObject({ kind: 'assistant-message', text: 'hi there', streaming: false });
+  });
+
+  it('accumulates assistant-delta chunks into a single streaming entry, then finalizes on assistant-message', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3', 'w3');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    let offset = 0;
+    const chunk1 = ndjson({ v: 1, type: 'assistant-delta', turnId: 't1', text: 'Hel' });
+    ws!.simulateMessage(outputMessage(chunk1, (offset += chunk1.length)));
+    await flush();
+
+    let entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'assistant-message', text: 'Hel', streaming: true });
+
+    const chunk2 = ndjson({ v: 1, type: 'assistant-delta', turnId: 't1', text: 'lo' });
+    ws!.simulateMessage(outputMessage(chunk2, (offset += chunk2.length)));
+    await flush();
+
+    entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'assistant-message', text: 'Hello', streaming: true });
+
+    const final = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: 'Hello' });
+    ws!.simulateMessage(outputMessage(final, (offset += final.length)));
+    await flush();
+
+    entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'assistant-message', text: 'Hello', streaming: false });
+  });
+
+  it('a second assistant-message round for the same turnId (post-tool-call) creates a NEW entry, not a merge', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3b', 'w3b');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'first round' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: {} },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'second round' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    const assistantEntries = entries.filter((e) => e.kind === 'assistant-message');
+    expect(assistantEntries).toHaveLength(2);
+    expect(assistantEntries[0]).toMatchObject({ text: 'first round' });
+    expect(assistantEntries[1]).toMatchObject({ text: 'second round' });
+  });
+
+  it('pairs a tool-result with its tool-call by callId, including error styling data', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s4', 'w4');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: { cmd: 'ls' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: false, result: 'boom' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'tool-call',
+      name: 'run_process',
+      result: { ok: false, result: 'boom' },
+    });
+  });
+
+  it('folds server-authored exited events from replayed history (full EmbeddedAgentStreamEvent union)', async () => {
+    // Architect pre-directive #3 (Issue #1021): the client MUST parse replayed
+    // history with the full EmbeddedAgentStreamEventSchema union, not the
+    // loop-only EmbeddedAgentEventSchema -- otherwise server-authored rows
+    // like `exited` (and `user-message`) would be silently dropped.
+    const instance = getOrCreateEmbeddedAgentWorker('s5', 'w5');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'exited', code: 1 });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'exited', code: 1 });
+  });
+
+  it('folds a user-message server-authored event from replayed history', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5b', 'w5b');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hi' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user-message', id: 'u1', text: 'hi' });
+  });
+
+  it('ignores state events (recognized but not rendered) without adding an entry', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s6', 'w6');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'state', state: 'active' }, { v: 1, type: 'user-message', id: 'u1', text: 'hi' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe('user-message');
+  });
+
+  it('skips a malformed JSON line without throwing', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s7', 'w7');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = 'not-json\n' + ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hi' });
+    expect(() => ws!.simulateMessage(historyMessage(data, data.length))).not.toThrow();
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe('user-message');
+  });
+
+  it('skips a valid-JSON line with an unrecognized type without throwing', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s8', 'w8');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'some-future-event', foo: 'bar' }, { v: 1, type: 'user-message', id: 'u1', text: 'hi' });
+    expect(() => ws!.simulateMessage(historyMessage(data, data.length))).not.toThrow();
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0].kind).toBe('user-message');
+  });
+
+  it('carries a partial line across two chunks (NDJSON line splitting)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s9', 'w9');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const full = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello world' });
+    const splitAt = Math.floor(full.length / 2);
+    const part1 = full.slice(0, splitAt);
+    const part2 = full.slice(splitAt);
+
+    // history establishes epoch/startOffset; the partial line then arrives via
+    // 'output' across two separate messages.
+    ws!.simulateMessage(historyMessage('', 0, 0));
+    await flush();
+    ws!.simulateMessage(outputMessage(part1, part1.length));
+    await flush();
+
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+
+    ws!.simulateMessage(outputMessage(part2, part1.length + part2.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'hello world' });
+  });
+
+  it('updates activityState from activity messages', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s10', 'w10');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    ws!.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
+    await flush();
+
+    expect(instance.getSnapshot().activityState).toBe('active');
+  });
+
+  it('records a non-fatal ACTIVATION_FAILED error without clearing accumulated entries', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s11', 'w11');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hi' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    ws!.simulateMessage(JSON.stringify({ type: 'error', message: 'dangling definition', code: 'ACTIVATION_FAILED' }));
+    await flush();
+
+    const snapshot = instance.getSnapshot();
+    expect(snapshot.workerError).toEqual({ message: 'dangling definition', code: 'ACTIVATION_FAILED' });
+    expect(snapshot.entries).toHaveLength(1);
+    expect(snapshot.status).toBe('connected'); // socket stays open per architect directive #2
+  });
+
+  it('records a TURN_IN_PROGRESS error non-fatally', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s12', 'w12');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    ws!.simulateMessage(JSON.stringify({ type: 'error', message: 'turn in progress', code: 'TURN_IN_PROGRESS' }));
+    await flush();
+
+    expect(instance.getSnapshot().workerError?.code).toBe('TURN_IN_PROGRESS');
+  });
+
+  it('dismissError clears the worker error without reconnecting', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s13', 'w13');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    ws!.simulateMessage(JSON.stringify({ type: 'error', message: 'turn in progress', code: 'TURN_IN_PROGRESS' }));
+    await flush();
+    expect(instance.getSnapshot().workerError).not.toBeNull();
+
+    instance.dismissError();
+    expect(instance.getSnapshot().workerError).toBeNull();
+  });
+
+  it('sendUserMessage serializes the embedded-user-message client message', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s14', 'w14');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.sendUserMessage('hello agent');
+
+    const sent = lastSentMessages(ws!);
+    expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello agent' });
+  });
+
+  it('cancel serializes the embedded-cancel client message', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s15', 'w15');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.cancel();
+
+    const sent = lastSentMessages(ws!);
+    expect(sent).toContainEqual({ type: 'embedded-cancel' });
+  });
+
+  it('restart forces a fresh WebSocket connection', () => {
+    getOrCreateEmbeddedAgentWorker('s16', 'w16');
+    const firstWs = MockWebSocket.getLastInstance();
+    firstWs!.simulateOpen();
+
+    const instance = getOrCreateEmbeddedAgentWorker('s16', 'w16');
+    instance.restart();
+
+    const secondWs = MockWebSocket.getLastInstance();
+    expect(secondWs).not.toBe(firstWs);
+  });
+
+  it('resets accumulated entries on an epoch bump (worker restarted server-side)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s17', 'w17');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data1 = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'before restart' });
+    ws!.simulateMessage(historyMessage(data1, data1.length, 0, 1));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(1);
+
+    // A larger epoch means the worker restarted server-side (fresh
+    // activation); accumulated chat state must be dropped.
+    const data2 = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'after restart' });
+    ws!.simulateMessage(outputMessage(data2, data2.length, 2));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(0); // epoch mismatch discards the triggering payload
+    // The store re-requests fresh history for the new epoch (single-flight).
+    const sent = lastSentMessages(ws!);
+    expect(sent.filter((m) => (m as { type: string }).type === 'request-history')).toHaveLength(2);
+  });
+
+  it('re-requests history for the new epoch even when an epoch bump arrives WHILE a history request is already in flight', async () => {
+    // Race: unlike the previous test (where the epoch bump arrives only
+    // AFTER the initial history response resolved historyInFlight back to
+    // false), here the epoch-bumping message arrives while the initial
+    // request-history is still outstanding. The old buggy behavior guarded
+    // the re-request on `!historyInFlight`, so it was skipped entirely; the
+    // eventual stale response for the OLD epoch would be dropped by
+    // acceptEpoch (correct) but no fresh request for the NEW epoch was ever
+    // sent, leaving the store stuck at loadingHistory: true forever.
+    const instance = getOrCreateEmbeddedAgentWorker('s17b', 'w17b');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    // The initial connect-time request-history (fromOffset: 0) is now
+    // outstanding: historyInFlight === true, no response yet.
+    expect(lastSentMessages(ws!).filter((m) => (m as { type: string }).type === 'request-history')).toHaveLength(1);
+
+    // Establish the first epoch via a live output chunk (does not itself
+    // trigger a reset -- acceptEpoch only resets on a LATER mismatch).
+    const data1 = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'first epoch' });
+    ws!.simulateMessage(outputMessage(data1, data1.length, 1));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(1);
+
+    // Epoch bump arrives while the ORIGINAL request-history (sent on open,
+    // still epoch-1-targeted) has not resolved yet.
+    const data2 = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second epoch' });
+    ws!.simulateMessage(outputMessage(data2, data2.length, 2));
+    await flush();
+
+    // A fresh request-history for the new epoch must have been sent despite
+    // the still-outstanding original request -- the store must not get
+    // stuck.
+    const sent = lastSentMessages(ws!);
+    expect(sent.filter((m) => (m as { type: string }).type === 'request-history')).toHaveLength(2);
+    expect(instance.getSnapshot().loadingHistory).toBe(true);
+    expect(instance.getSnapshot().entries).toHaveLength(0); // reset by the epoch bump
+
+    // The eventual stale response for the OLD epoch (1) must be dropped
+    // without disturbing the fresh (epoch-2) request's in-flight state...
+    const staleData = ndjson({ v: 1, type: 'user-message', id: 'stale', text: 'stale' });
+    ws!.simulateMessage(historyMessage(staleData, staleData.length, 0, 1));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // stale payload discarded
+
+    // ...and the fresh (epoch-2) response must still be applied correctly,
+    // proving the store is not permanently stuck.
+    const freshData = ndjson({ v: 1, type: 'user-message', id: 'u3', text: 'fresh epoch-2 history' });
+    ws!.simulateMessage(historyMessage(freshData, freshData.length, 0, 2));
+    await flush();
+    expect(instance.getSnapshot().loadingHistory).toBe(false);
+    expect(instance.getSnapshot().entries).toHaveLength(1);
+    expect(instance.getSnapshot().entries[0]).toMatchObject({ kind: 'user-message', text: 'fresh epoch-2 history' });
+  });
+
+  /**
+   * Connects a fresh instance and triggers a genuine epoch bump (1 -> 2) via
+   * a live output frame. The triggering frame itself is dropped by
+   * acceptEpoch (returns false for the message that causes the reset, same
+   * as the pre-existing epoch-mismatch contract) -- it is never queued nor
+   * folded. Returns the instance/ws so the caller can drive the resync
+   * window (queued output, then the epoch-2 history response) that follows.
+   */
+  function connectAndBumpEpoch(sessionId: string, workerId: string) {
+    const instance = getOrCreateEmbeddedAgentWorker(sessionId, workerId);
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    const baseline = ndjson({ v: 1, type: 'user-message', id: 'baseline', text: 'epoch 1 baseline' });
+    ws.simulateMessage(outputMessage(baseline, baseline.length, 1));
+
+    const trigger = ndjson({ v: 1, type: 'user-message', id: 'trigger', text: 'epoch 2 trigger (dropped)' });
+    ws.simulateMessage(outputMessage(trigger, trigger.length, 2));
+
+    return { instance, ws };
+  }
+
+  it('does not duplicate a chat entry when live output for the new epoch arrives BEFORE its covering history response (architect audit MAJOR)', async () => {
+    // The exact race from the architect's finding: beginEpochReset already
+    // bumped `epoch`, so a SUBSEQUENT live `output` frame for that same new
+    // epoch passes acceptEpoch and would previously have been folded
+    // immediately via applyBytes. The eventual history response (requested
+    // fromOffset: 0) then re-covers those same bytes, folding them a SECOND
+    // time -- the Restart button reliably duplicating chat entries.
+    const { instance, ws } = connectAndBumpEpoch('s20a', 'w20a');
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // reset by the bump; trigger frame dropped
+
+    // Live output for the new epoch (e.g. the loop's own 'ready'/'state'
+    // handshake, immediately at activation) arrives before the history
+    // response. It must be QUEUED, not folded yet.
+    const readyData = ndjson({ v: 1, type: 'user-message', id: 'ready', text: 'ready handshake' });
+    ws.simulateMessage(outputMessage(readyData, readyData.length, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // queued, not folded
+
+    // The history response covers exactly the same bytes (the server's
+    // persisted stream already included them by the time it answered
+    // request-history fromOffset: 0).
+    ws.simulateMessage(historyMessage(readyData, readyData.length, 0, 2));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1); // exactly once, not duplicated
+    expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'ready handshake' });
+    expect(instance.getSnapshot().loadingHistory).toBe(false);
+  });
+
+  it('drops queued output already covered by the history response but still applies output strictly beyond it', async () => {
+    const { instance, ws } = connectAndBumpEpoch('s20b', 'w20b');
+    await flush();
+
+    // Two live frames arrive for the new epoch while resyncing, both
+    // queued: one will end up COVERED by the history response (offset 100
+    // <= the history's final offset 300) and one strictly NEWER (offset 500
+    // > 300).
+    const covered = ndjson({ v: 1, type: 'user-message', id: 'covered', text: 'queued-covered' });
+    const newer = ndjson({ v: 1, type: 'user-message', id: 'newer', text: 'queued-newer' });
+    ws.simulateMessage(outputMessage(covered, 100, 2));
+    ws.simulateMessage(outputMessage(newer, 500, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // both queued, nothing folded yet
+
+    const historyData = ndjson({ v: 1, type: 'user-message', id: 'history', text: 'history-payload' });
+    ws.simulateMessage(historyMessage(historyData, 300, 0, 2));
+    await flush();
+
+    const texts = instance
+      .getSnapshot()
+      .entries.map((e) => (e.kind === 'user-message' ? e.text : null));
+    // 'queued-covered' (offset 100 <= 300) must be dropped -- already
+    // covered by the history payload. 'queued-newer' (offset 500 > 300)
+    // must still be applied, in order, after the history payload's own
+    // content.
+    expect(texts).toEqual(['history-payload', 'queued-newer']);
+  });
+
+  it('flushes the resync queue on HISTORY_LOAD_FAILED instead of freezing live output forever (architect re-audit)', async () => {
+    // Terminal-store avoids a stuck resync via its resync timeout (not
+    // ported here -- see the `resyncing` field comment). The equivalent
+    // guard for this store is an error-path flush: if the request-history
+    // that would normally complete the resync fails server-side, nothing
+    // else will ever call flushResyncQueue, so every subsequent live
+    // `output` frame would silently accumulate in `queuedOutput` forever.
+    const { instance, ws } = connectAndBumpEpoch('s20c', 'w20c');
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+
+    // A live frame arrives before the (about to fail) history response.
+    const queuedData = ndjson({ v: 1, type: 'user-message', id: 'queued', text: 'queued before failure' });
+    ws.simulateMessage(outputMessage(queuedData, queuedData.length, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // queued, not yet folded
+
+    // The server reports the request-history itself failed.
+    ws.simulateMessage(
+      JSON.stringify({ type: 'error', message: 'history load failed', code: 'HISTORY_LOAD_FAILED' }),
+    );
+    await flush();
+
+    // The queued frame must not be lost: flushResyncQueue(lastOffset) with
+    // lastOffset still 0 (nothing folded yet in this failure path) applies
+    // the entire queue -- nothing is dropped as "already covered" since no
+    // history payload was ever folded.
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'queued before failure' });
+
+    // The store must not be stuck: resyncing is confirmed false by
+    // observing that a SUBSEQUENT live frame is applied immediately
+    // (normal live-output path), not queued forever.
+    const afterData = ndjson({ v: 1, type: 'user-message', id: 'after', text: 'after failure' });
+    ws.simulateMessage(outputMessage(afterData, queuedData.length + afterData.length, 2));
+    await flush();
+
+    const finalEntries = instance.getSnapshot().entries;
+    expect(finalEntries).toHaveLength(2);
+    expect(finalEntries[1]).toMatchObject({ kind: 'user-message', text: 'after failure' });
+  });
+
+  it('disposes and re-subscribes to app-ws session-deleted', () => {
+    const bus = makeAppBus();
+    _setAppSubscribe(bus.subscribe);
+
+    const instance = getOrCreateEmbeddedAgentWorker('s18', 'w18');
+    expect(_inspect(instance).disposed).toBe(false);
+
+    bus.emit({ type: 'session-deleted', sessionId: 's18' } as AppServerMessage);
+
+    expect(_inspect(instance).disposed).toBe(true);
+  });
+
+  it('does not dispose on session-deleted for a different session', () => {
+    const bus = makeAppBus();
+    _setAppSubscribe(bus.subscribe);
+
+    const instance = getOrCreateEmbeddedAgentWorker('s19', 'w19');
+    bus.emit({ type: 'session-deleted', sessionId: 'other-session' } as AppServerMessage);
+
+    expect(_inspect(instance).disposed).toBe(false);
+  });
+
+  it('a tool-result for an unknown callId is dropped defensively, not fabricated', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s20', 'w20');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'tool-result', turnId: 't1', callId: 'unknown-call', ok: true, result: 'x' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+  });
+
+  it('boundary: an empty history payload folds to zero entries without error', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s21', 'w21');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    ws!.simulateMessage(historyMessage('', 0, 0));
+    await flush();
+
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+    expect(instance.getSnapshot().loadingHistory).toBe(false);
+  });
+
+  it('getOrCreateEmbeddedAgentWorker returns the SAME instance for the same key', () => {
+    const a = getOrCreateEmbeddedAgentWorker('same', 'worker');
+    const b = getOrCreateEmbeddedAgentWorker('same', 'worker');
+    expect(a).toBe(b);
+  });
+});
+
+// Type-level smoke check: entries must be a discriminated union covering all
+// kinds this file exercises (compile-time guard against a future kind being
+// dropped from the store's exported type).
+function _typeCheck(entry: EmbeddedAgentChatEntry): string {
+  return entry.kind;
+}
+void _typeCheck;

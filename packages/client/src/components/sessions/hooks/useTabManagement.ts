@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, startTransition } from 'react';
 import { createWorker, deleteWorker } from '../../../lib/api';
 import { getDefaultTabId, isWorkerIdReady } from '../sessionTabRouting';
+import { isCloseableTabType } from '../tabAppearance';
 import type { Worker, AgentActivityState } from '@agent-console/shared';
 import { logger } from '../../../lib/logger';
 
@@ -37,10 +38,24 @@ interface UseTabManagementOptions {
   setExitInfo: (info: { code: number; signal: string | null } | undefined) => void;
 }
 
+/**
+ * Params accepted when adding an agent-type worker to a running session, via
+ * the unified agent-selection picker (docs/design/embedded-agent-worker.md
+ * "UI"). Only `embedded-agent` today: `POST /api/sessions/:id/workers`
+ * (`CreateWorkerRequestSchema`) has never accepted `type: 'agent'` -- a
+ * terminal AgentDefinition-backed worker can only be created at
+ * session-creation time, not added to an already-running session. Widening
+ * that REST contract is a server change outside this type's scope; the
+ * picker shows terminal agents for completeness but does not wire them to a
+ * call this type cannot express. See `AddAgentWorkerMenu.tsx`.
+ */
+export type AddAgentWorkerParams = { type: 'embedded-agent'; embeddedAgentId: string };
+
 export interface UseTabManagementResult {
   tabs: Tab[];
   activeTabId: string | null;
   addTerminalTab: () => Promise<void>;
+  addAgentTab: (params: AddAgentWorkerParams) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   handleTabClick: (tabId: string) => void;
   updateTabsFromSession: (workers: Worker[]) => void;
@@ -144,14 +159,38 @@ export function useTabManagement({
     }
   }, [activeSession, sessionId, tabs, navigateToWorker, showError]);
 
+  // Add a new agent-type tab (terminal AgentDefinition or EmbeddedAgentDefinition),
+  // selected via the unified agent-selection picker.
+  const addAgentTab = useCallback(async (params: AddAgentWorkerParams) => {
+    if (!activeSession) return;
+
+    try {
+      const { worker } = await createWorker(sessionId, params);
+
+      const newTab: Tab = {
+        id: worker.id,
+        workerType: worker.type,
+        name: worker.name,
+      };
+      pendingWorkerIdRef.current = worker.id;
+      setTabs(prev => [...prev, newTab]);
+      setActiveTabId(worker.id);
+      navigateToWorker(worker.id);
+    } catch (error) {
+      logger.error('Failed to create agent worker:', error);
+      showError('Failed to Create Worker', error instanceof Error ? error.message : 'Unknown error');
+    }
+  }, [activeSession, sessionId, navigateToWorker, showError]);
+
   // Close a tab (delete worker)
   const closeTab = useCallback(async (tabId: string) => {
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
 
-    // Don't allow closing agent or git-diff workers (fixed tabs)
-    // Only terminal workers can be closed
-    if (tab.workerType === 'agent' || tab.workerType === 'git-diff') return;
+    // Fixed tabs (agent, git-diff) cannot be closed -- only opt-in workers a
+    // user added to the running session (terminal, embedded-agent). Mirrors
+    // the tab bar's close-button visibility in `tabAppearance.ts`.
+    if (!isCloseableTabType(tab.workerType)) return;
 
     try {
       await deleteWorker(sessionId, tabId);
@@ -198,6 +237,7 @@ export function useTabManagement({
     tabs,
     activeTabId,
     addTerminalTab,
+    addAgentTab,
     closeTab,
     handleTabClick,
     updateTabsFromSession,

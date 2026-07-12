@@ -1504,6 +1504,35 @@ describe('WorkerLifecycleManager', () => {
 
       expect(connectionId).toBeNull();
     });
+
+    it('should return a connection ID for embedded-agent worker (isStreamWorker widening)', () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const embeddedWorker: InternalEmbeddedAgentWorker = {
+        id: 'embedded-cb',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        createdAt: new Date().toISOString(),
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+        subprocess: null,
+        stdin: null,
+        activityState: 'idle',
+        outputOffset: 0,
+        epoch: 1,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(embeddedWorker.id, embeddedWorker);
+
+      const connectionId = lifecycleManager.attachWorkerCallbacks(
+        session.id, embeddedWorker.id,
+        { onData: mock(() => {}), onExit: mock(() => {}) }
+      );
+
+      expect(connectionId).not.toBeNull();
+      expect(typeof connectionId).toBe('string');
+      expect(embeddedWorker.connectionCallbacks.size).toBe(1);
+    });
   });
 
   describe('detachWorkerCallbacks', () => {
@@ -1536,6 +1565,58 @@ describe('WorkerLifecycleManager', () => {
       );
 
       expect(result).toBe(false);
+    });
+
+    it('should return false for git-diff worker', () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const gitDiffWorker: InternalGitDiffWorker = {
+        id: 'git-diff-detach',
+        type: 'git-diff',
+        name: 'Git Diff',
+        createdAt: new Date().toISOString(),
+        baseCommit: 'abc123',
+      };
+      session.workers.set(gitDiffWorker.id, gitDiffWorker);
+
+      const result = lifecycleManager.detachWorkerCallbacks(
+        session.id, gitDiffWorker.id, 'conn-1'
+      );
+
+      expect(result).toBe(false);
+    });
+
+    it('should return true for embedded-agent worker (isStreamWorker widening)', () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const embeddedWorker: InternalEmbeddedAgentWorker = {
+        id: 'embedded-detach',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        createdAt: new Date().toISOString(),
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+        subprocess: null,
+        stdin: null,
+        activityState: 'idle',
+        outputOffset: 0,
+        epoch: 1,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(embeddedWorker.id, embeddedWorker);
+
+      const connectionId = lifecycleManager.attachWorkerCallbacks(
+        session.id, embeddedWorker.id,
+        { onData: mock(() => {}), onExit: mock(() => {}) }
+      );
+
+      const result = lifecycleManager.detachWorkerCallbacks(
+        session.id, embeddedWorker.id, connectionId!
+      );
+
+      expect(result).toBe(true);
+      expect(embeddedWorker.connectionCallbacks.size).toBe(0);
     });
   });
 

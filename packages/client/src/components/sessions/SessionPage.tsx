@@ -3,6 +3,8 @@ import { Link, useNavigate } from '@tanstack/react-router';
 import { TerminalAdapter } from '../../components/terminal/TerminalAdapter';
 import type { ConnectionStatus } from '../../components/terminal/terminal-contract';
 import { GitDiffWorkerView } from '../workers/GitDiffWorkerView';
+import { EmbeddedAgentWorkerView } from '../workers/EmbeddedAgentWorkerView';
+import { AddAgentWorkerMenu } from './AddAgentWorkerMenu';
 import { SessionSettings } from '../SessionSettings';
 import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
@@ -15,6 +17,7 @@ import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
 import { useSessionPageState, type PageState } from './hooks/useSessionPageState';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
+import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel } from './tabAppearance';
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import type { Session, Worker } from '@agent-console/shared';
@@ -45,25 +48,7 @@ interface WorkerErrorFallbackProps {
 }
 
 function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerErrorFallbackProps) {
-  let typeLabel: string;
-  switch (workerType) {
-    case 'git-diff':
-      typeLabel = 'Diff View';
-      break;
-    case 'agent':
-      typeLabel = 'Agent';
-      break;
-    case 'terminal':
-      typeLabel = 'Terminal';
-      break;
-    case 'embedded-agent':
-      typeLabel = 'Embedded Agent';
-      break;
-    default: {
-      const _exhaustive: never = workerType;
-      typeLabel = _exhaustive;
-    }
-  }
+  const typeLabel = getWorkerTypeLabel(workerType);
 
   return (
     <div className="flex flex-col items-center justify-center h-full p-8 text-center bg-slate-900">
@@ -123,6 +108,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
     tabs,
     activeTabId,
     addTerminalTab,
+    addAgentTab,
     closeTab,
     handleTabClick,
     updateTabsFromSession,
@@ -462,12 +448,10 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {tab.workerType === 'git-diff' ? (
         <DiffIcon className="w-3.5 h-3.5 text-violet-400" />
       ) : (
-        <span className={`inline-block w-2 h-2 rounded-full ${
-          tab.workerType === 'agent' ? 'bg-blue-500' : 'bg-green-500'
-        }`} aria-hidden="true" />
+        <span className={`inline-block w-2 h-2 rounded-full ${getTabDotColor(tab.workerType)}`} aria-hidden="true" />
       )}
       {tab.name}
-      {tab.workerType === 'terminal' && (
+      {isCloseableTabType(tab.workerType) && (
         <button
           type="button"
           aria-label="Close tab"
@@ -504,7 +488,12 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           />
         )}
       >
-        {activeTab.workerType === 'git-diff' ? (
+        {activeTab.workerType === 'embedded-agent' ? (
+          <EmbeddedAgentWorkerView
+            sessionId={sessionId}
+            workerId={activeTab.id}
+          />
+        ) : activeTab.workerType === 'git-diff' ? (
           <GitDiffWorkerView
             sessionId={sessionId}
             workerId={activeTab.id}
@@ -542,6 +531,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         >
           +
         </button>
+        <AddAgentWorkerMenu onSelect={addAgentTab} />
 
         {/* Spacer */}
         <div className="flex-1" />

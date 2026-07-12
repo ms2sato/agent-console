@@ -13,6 +13,7 @@ import { ActiveSessionsSidebar } from '../components/sidebar/ActiveSessionsSideb
 import { useAppWsState } from '../hooks/useAppWs';
 import { useSessionState } from '../hooks/useSessionState';
 import { useSessionSideEffects } from '../hooks/useSessionSideEffects';
+import { useEmbeddedAgentRegistrySync } from '../hooks/useEmbeddedAgentRegistrySync';
 import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks } from '../hooks/useWorktreeCreationTasks';
@@ -103,6 +104,10 @@ function RootLayout() {
     worktreeCreationTasks,
     worktreeDeletionTasks,
   });
+
+  // Keep the embedded-agent registry query cache fresh regardless of route
+  // (the picker that consumes it lives on session pages, not the Dashboard).
+  useEmbeddedAgentRegistrySync();
 
   // Sidebar state
   const { collapsed, toggle, width, setWidth } = useSidebarState();

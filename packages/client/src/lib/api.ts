@@ -11,6 +11,7 @@ import type {
   AgentDefinition,
   CreateAgentRequest,
   UpdateAgentRequest,
+  EmbeddedAgentDefinition,
   SessionsValidationResponse,
   GitHubIssueSummary,
   Job,
@@ -584,6 +585,22 @@ export async function unregisterAgent(agentId: string): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to unregister agent');
   }
+}
+
+// ===========================================================================
+// Embedded Agents API
+// ===========================================================================
+
+export interface EmbeddedAgentsResponse {
+  embeddedAgents: EmbeddedAgentDefinition[];
+}
+
+export async function fetchEmbeddedAgents(): Promise<EmbeddedAgentsResponse> {
+  const res = await api['embedded-agents'].$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch embedded agents');
+  }
+  return res.json();
 }
 
 // ===========================================================================

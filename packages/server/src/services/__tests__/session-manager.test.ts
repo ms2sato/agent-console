@@ -20,6 +20,7 @@ import { PtyMessageInjectionService } from '../pty-message-injection-service.js'
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
+import type { SpawnAsUserFn } from '../privilege-elevation.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -594,7 +595,7 @@ describe('SessionManager', () => {
 
       const res = await manager.sendEmbeddedAgentUserMessage(sessionId, workerId, 'hi');
 
-      expect(res).toEqual({ ok: false, error: 'not activated' });
+      expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
     });
 
     it('cancelEmbeddedAgentTurn returns false for a never-activated worker', async () => {
@@ -620,6 +621,78 @@ describe('SessionManager', () => {
       defs.delete('stub-def');
 
       await expect(manager.activateEmbeddedAgentWorker(sessionId, workerId)).rejects.toThrow('stub-def');
+    });
+
+    it('threads the spawnAsUserFn option through to EmbeddedAgentWorkerService.activate (DI seam)', async () => {
+      // Proves SessionManagerOptions.spawnAsUserFn is actually wired into the
+      // constructed EmbeddedAgentWorkerService rather than silently falling
+      // back to the real spawnAsUser (which would spawn a real `bun` process).
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+
+      // Exitable fake streams/exited-promise (mirrors makeFakeSpawn in
+      // embedded-agent-worker-service.test.ts): lets this test deactivate the
+      // worker afterward instead of leaving background stdout/stderr readers
+      // and the exit-observer's `subprocess.exited` await pending forever.
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+
+      const subprocess = {
+        pid: 4242,
+        exited,
+        stdin,
+        stdout,
+        stderr,
+        kill: () => {},
+      };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      expect(worker).not.toBeNull();
+
+      await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+
+      expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+
+      // Teardown: deactivate rather than leaving the fake subprocess "running"
+      // past the test. deactivate() writes `shutdown` to stdin then races
+      // `subprocess.exited` against a grace timeout -- simulating the exit
+      // immediately after issuing deactivate resolves that race via the real
+      // exit path (not the multi-second timeout), matching the
+      // `EmbeddedAgentWorkerService.deactivate escalation` test pattern.
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
     });
   });
 

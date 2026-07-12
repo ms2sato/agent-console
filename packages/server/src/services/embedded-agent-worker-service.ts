@@ -69,6 +69,16 @@ const KNOWN_EVENT_TYPES = new Set<string>([
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
 
+/**
+ * Result of {@link EmbeddedAgentWorkerService.sendUserMessage}. `code` is the
+ * machine-checkable discriminant callers should switch on; `error` is the
+ * human-readable string for logging only (its exact wording is NOT a
+ * contract -- callers must not string-match it).
+ */
+export type SendUserMessageResult =
+  | { ok: true; id: string }
+  | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
+
 export interface EmbeddedAgentWorkerServiceDeps {
   getSession: (sessionId: string) => InternalSession | undefined;
   persistSession: (session: InternalSession) => Promise<void>;
@@ -351,12 +361,17 @@ export class EmbeddedAgentWorkerService {
   /**
    * Forward a user message to the loop. Admission is a SYNCHRONOUS check-and-set
    * (before any await) so two concurrent WS callers cannot double-admit.
+   *
+   * Returns a machine-checkable `code` alongside the human-readable `error`
+   * string on failure so callers (routes.ts) can switch on `code` instead of
+   * string-matching `error` -- a future wording tweak to one of the messages
+   * below must not silently change which WorkerErrorCode a caller derives.
    */
   async sendUserMessage(
     sessionId: string,
     workerId: string,
     text: string,
-  ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  ): Promise<SendUserMessageResult> {
     const session = this.deps.getSession(sessionId);
     const worker = session?.workers.get(workerId);
     const runtime = this.runtimes.get(workerId);
@@ -370,11 +385,11 @@ export class EmbeddedAgentWorkerService {
       !worker.stdin ||
       !runtime
     ) {
-      return { ok: false, error: 'not activated' };
+      return { ok: false, code: 'NOT_ACTIVATED', error: 'not activated' };
     }
     const stdin = worker.stdin;
     if (runtime.turnActive) {
-      return { ok: false, error: 'turn in progress' };
+      return { ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' };
     }
     runtime.turnActive = true;
     // --- end synchronous admission ---
@@ -389,7 +404,7 @@ export class EmbeddedAgentWorkerService {
     } catch (err) {
       runtime.turnActive = false;
       logger.warn({ sessionId, workerId, err }, 'Failed to forward user message to embedded-agent stdin');
-      return { ok: false, error: 'failed to write to subprocess stdin' };
+      return { ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' };
     }
 
     return { ok: true, id };

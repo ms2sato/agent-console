@@ -1,5 +1,5 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
-import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload, WorktreePullCompletedPayload, WorktreePullFailedPayload, WorkerMessage, InboundEventSummary } from '@agent-console/shared';
+import type { AppServerMessage, AgentActivityState, Session, WorkerActivityInfo, AgentDefinition, EmbeddedAgentDefinition, Repository, WorktreeCreationCompletedPayload, WorktreeCreationFailedPayload, WorktreeDeletionCompletedPayload, WorktreeDeletionFailedPayload, WorktreePullCompletedPayload, WorktreePullFailedPayload, WorkerMessage, InboundEventSummary } from '@agent-console/shared';
 import { connect, subscribe, subscribeState, getState, requestSync, type AppWebSocketState } from '../lib/app-websocket';
 import { usePersistentWebSocket } from './usePersistentWebSocket';
 import { logger } from '../lib/logger';
@@ -45,6 +45,12 @@ interface UseAppWsEventOptions {
   onAgentUpdated?: (agent: AgentDefinition) => void;
   /** Called when an agent is deleted */
   onAgentDeleted?: (agentId: string) => void;
+  /** Called when a new embedded-agent definition is created */
+  onEmbeddedAgentCreated?: (embeddedAgent: EmbeddedAgentDefinition) => void;
+  /** Called when an embedded-agent definition is updated */
+  onEmbeddedAgentUpdated?: (embeddedAgent: EmbeddedAgentDefinition) => void;
+  /** Called when an embedded-agent definition is deleted */
+  onEmbeddedAgentDeleted?: (embeddedAgentId: string) => void;
   /** Called when initial repository sync is received */
   onRepositoriesSync?: (repositories: Repository[]) => void;
   /** Called when a new repository is created */
@@ -160,12 +166,16 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
           optionsRef.current.onAgentDeleted?.(msg.agentId);
           break;
         case 'embedded-agent-created':
+          logger.debug(`[WebSocket] embedded-agent-created: ${msg.embeddedAgent.id}`);
+          optionsRef.current.onEmbeddedAgentCreated?.(msg.embeddedAgent);
+          break;
         case 'embedded-agent-updated':
-          // Embedded agent registry UI is a later phase; no client handler yet.
-          logger.debug(`[WebSocket] ${msg.type}: ${msg.embeddedAgent.id}`);
+          logger.debug(`[WebSocket] embedded-agent-updated: ${msg.embeddedAgent.id}`);
+          optionsRef.current.onEmbeddedAgentUpdated?.(msg.embeddedAgent);
           break;
         case 'embedded-agent-deleted':
           logger.debug(`[WebSocket] embedded-agent-deleted: ${msg.embeddedAgentId}`);
+          optionsRef.current.onEmbeddedAgentDeleted?.(msg.embeddedAgentId);
           break;
         case 'repositories-sync':
           logger.debug(`[WebSocket] repositories-sync received: ${msg.repositories.length} repositories`);
