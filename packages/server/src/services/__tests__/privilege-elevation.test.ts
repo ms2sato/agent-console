@@ -4,6 +4,7 @@ import type { FileSink } from 'bun';
 import {
   runAsUser,
   rmRecursiveAsUser,
+  writeUserOwnedSecretFile,
   spawnAsUser,
   buildSpawnArgs,
   buildInnerCommand,
@@ -1005,6 +1006,165 @@ describe('privilege-elevation', () => {
       );
       expect(result.exitCode).toBe(0);
       expect(result.timedOut).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // writeUserOwnedSecretFile (strict thin wrapper, Issue #1030 workstream 2)
+  // ============================================================
+  //
+  // The helper composes `runAsUser` with a fixed command shape
+  // (`mkdir -p -- '<dir>' && umask 077 && cat > '<file>'`) + cwd (`/`) +
+  // stdin=content. `umask 077` is the load-bearing difference from
+  // `makeUserOwnedTemplateSink` (worktree-service.ts), which relies on the
+  // ambient umask for non-secret template files.
+  describe('writeUserOwnedSecretFile', () => {
+    it('same-as-server-user bypasses elevation (forwards the username straight to runAsUser, unelevated)', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      // The bypass decision is entirely runAsUser's (shouldElevateForUser);
+      // this helper never re-checks it. Using the actual server username here
+      // exercises the same call shape a caller would produce for a bypass
+      // case, without resorting to a null/undefined cast (writeUserOwnedSecretFile's
+      // `username` field is a non-nullable string, unlike rmRecursiveAsUser's).
+      const serverUsername = os.userInfo().username;
+
+      const result = await writeUserOwnedSecretFile({
+        username: serverUsername,
+        filePath: '/home/alice/.agent-console/mcp-tokens/w-1.token',
+        content: 'secret-token-value',
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].username).toBe(serverUsername);
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('elevated path: command shape has rm -f, mkdir -p, umask 077, cat > <shell-escaped path>, cwd is "/"', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      // Path with a single quote forces non-trivial shellEscape behaviour.
+      await writeUserOwnedSecretFile({
+        username: 'alice',
+        filePath: "/home/it's-fine/.agent-console/mcp-tokens/w-1.token",
+        content: 'secret-token-value',
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].username).toBe('alice');
+      expect(captured[0].cwd).toBe('/');
+      expect(captured[0].command).toBe(
+        `rm -f -- '/home/it'\\''s-fine/.agent-console/mcp-tokens/w-1.token' && mkdir -p -- '/home/it'\\''s-fine/.agent-console/mcp-tokens' && umask 077 && cat > '/home/it'\\''s-fine/.agent-console/mcp-tokens/w-1.token'`,
+      );
+    });
+
+    it('always removes a pre-existing file first, so a looser leftover mode cannot survive the write', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await writeUserOwnedSecretFile({
+        username: 'alice',
+        filePath: '/home/alice/.agent-console/mcp-tokens/w-1.token',
+        content: 'secret-token-value',
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].command).toStartWith(
+        `rm -f -- '/home/alice/.agent-console/mcp-tokens/w-1.token' &&`,
+      );
+    });
+
+    it('forwards content as stdin', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await writeUserOwnedSecretFile({
+        username: 'alice',
+        filePath: '/home/alice/.agent-console/mcp-tokens/w-1.token',
+        content: 'the-raw-token-bytes',
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured[0].stdin).toBe('the-raw-token-bytes');
+    });
+
+    it('forwards timeoutMs to runAsUser when provided', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await writeUserOwnedSecretFile({
+        username: 'alice',
+        filePath: '/home/alice/.agent-console/mcp-tokens/w-1.token',
+        content: 'token',
+        timeoutMs: 12345,
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured[0].timeoutMs).toBe(12345);
+    });
+
+    it('returns the underlying RunAsUserResult unchanged (caller branches on exitCode/timedOut)', async () => {
+      const fakeRunAsUser: typeof runAsUser = async () => ({
+        stdout: 'OUT',
+        stderr: 'ERR',
+        exitCode: 137,
+        timedOut: true,
+      });
+
+      const result: RunAsUserResult = await writeUserOwnedSecretFile({
+        username: 'alice',
+        filePath: '/home/alice/.agent-console/mcp-tokens/w-1.token',
+        content: 'token',
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(result).toEqual({
+        stdout: 'OUT',
+        stderr: 'ERR',
+        exitCode: 137,
+        timedOut: true,
+      });
+    });
+
+    it('uses the module runAsUser when no runAsUserImpl is injected (default branch)', async () => {
+      // Smoke-test the default: same-as-server-user bypass writes the file
+      // directly via the real `sh -c 'mkdir -p ... && umask 077 && cat > ...'`
+      // invocation (no elevation since AUTH_MODE is not multi-user in this
+      // process, and/or the username matches the server user).
+      const filePath = `${os.tmpdir()}/agent-console-write-user-owned-secret-file-test-${Date.now()}.token`;
+      try {
+        const result = await writeUserOwnedSecretFile({
+          username: os.userInfo().username,
+          filePath,
+          content: 'default-branch-token',
+        });
+        expect(result.exitCode).toBe(0);
+        expect(result.timedOut).toBe(false);
+        const written = await Bun.file(filePath).text();
+        expect(written).toBe('default-branch-token');
+      } finally {
+        await Bun.file(filePath).delete().catch(() => {});
+      }
     });
   });
 });

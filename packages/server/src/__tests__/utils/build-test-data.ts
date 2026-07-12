@@ -152,6 +152,7 @@ export function buildInternalAgentWorker(
     connectionCallbacks: new Map(),
     activityState: 'unknown',
     activityDetector: null,
+    mcpToken: null,
     ...overrides,
   };
 }

@@ -30,6 +30,7 @@
  * statements inside the inner command.
  */
 import * as os from 'node:os';
+import * as path from 'node:path';
 import type { Subprocess, FileSink } from 'bun';
 import { createLogger } from '../lib/logger.js';
 
@@ -367,6 +368,53 @@ export async function rmRecursiveAsUser(
   return impl({
     username,
     command: `rm -rf -- ${shellEscape(path)}`,
+    cwd: '/',
+    timeoutMs: opts.timeoutMs,
+  });
+}
+
+/**
+ * Write `content` to `filePath` as `username`, creating the containing
+ * directory if necessary, with the file forced to mode 0600 regardless of the
+ * ambient umask.
+ *
+ * Layer-correctness helper: encapsulates the canonical
+ * `mkdir -p && umask 077 && cat > <dst>` elevated-write pattern for SECRET
+ * payloads (bearer tokens, etc). Distinct from `worktree-service.ts`'s
+ * `makeUserOwnedTemplateSink`, which deliberately relies on the ambient umask
+ * for non-secret template files — `umask 077` here is the key difference,
+ * forcing 0600 so the secret is not group/world-readable irrespective of the
+ * target user's default umask.
+ *
+ * Semantics:
+ * - `null` / `undefined` / single-user-mode username bypasses elevation via
+ *   {@link runAsUser}'s own short-circuit (content is still written, just not
+ *   elevated).
+ * - Pins outer cwd to `/` (the destination directory may not exist yet).
+ * - `runAsUserImpl` is an optional injection point mirroring
+ *   {@link rmRecursiveAsUser}'s DI seam for test-correctness.
+ *
+ * Returns the underlying {@link RunAsUserResult} so callers can branch on
+ * `exitCode` / `timedOut` and surface a meaningful error.
+ */
+export async function writeUserOwnedSecretFile(opts: {
+  username: string;
+  filePath: string;
+  content: string;
+  timeoutMs?: number;
+  runAsUserImpl?: typeof runAsUser;
+}): Promise<RunAsUserResult> {
+  const impl = opts.runAsUserImpl ?? runAsUser;
+  const dir = path.dirname(opts.filePath);
+  // `cat >` preserves an existing file's mode, so a pre-existing file at a
+  // looser mode (e.g. leftover 0644) would silently survive the write and
+  // break the 0600 guarantee. Remove any pre-existing file first so a fresh
+  // 0600 file is always created under `umask 077`.
+  const command = `rm -f -- ${shellEscape(opts.filePath)} && mkdir -p -- ${shellEscape(dir)} && umask 077 && cat > ${shellEscape(opts.filePath)}`;
+  return impl({
+    username: opts.username,
+    command,
+    stdin: opts.content,
     cwd: '/',
     timeoutMs: opts.timeoutMs,
   });

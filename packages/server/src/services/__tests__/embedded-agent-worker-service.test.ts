@@ -6,7 +6,10 @@ import {
   buildInternalEmbeddedAgentWorker,
   buildInternalWorktreeSession,
 } from '../../__tests__/utils/build-test-data.js';
-import { EmbeddedAgentWorkerService } from '../embedded-agent-worker-service.js';
+import {
+  EmbeddedAgentWorkerService,
+  resolveEmbeddedAgentEntryPath,
+} from '../embedded-agent-worker-service.js';
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -416,6 +419,21 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     const resolvedEntry = match![1];
     expect(resolvedEntry.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);
     expect(await Bun.file(resolvedEntry).exists()).toBe(true);
+  });
+});
+
+describe('resolveEmbeddedAgentEntryPath', () => {
+  it('resolves via the package-resolution branch on this dev checkout and returns an existing path', async () => {
+    // This dev checkout has `bun install` wiring @agent-console/embedded-agent
+    // into the server package, so the package-resolution branch (not the
+    // source-tree fallback) is what should execute here -- the same
+    // deployment-correct branch a real install exercises. The real-machine
+    // smoke test (scripts/smoke/check-embedded-agent-elevation.ts) asserts the
+    // same `.source === 'package'` invariant against a real deploy layout.
+    const result = resolveEmbeddedAgentEntryPath();
+    expect(result.source).toBe('package');
+    expect(result.path.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);
+    expect(await Bun.file(result.path).exists()).toBe(true);
   });
 });
 

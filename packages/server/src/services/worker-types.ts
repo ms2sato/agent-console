@@ -72,6 +72,12 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
   activityDetector: ActivityDetector | null;  // null when pty is null
   loginShellSentinel?: string;
   pendingCommand?: string;
+  /**
+   * MCP token file delivered to this worker (multi-user mode only); null when
+   * no token was minted (single-user, or session lacked createdBy). Used to
+   * delete the file on exit/kill/delete alongside the in-memory token revoke.
+   */
+  mcpToken: { filePath: string; username: string } | null;
 }
 
 /**

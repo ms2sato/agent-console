@@ -195,6 +195,7 @@ export class WorkerLifecycleManager {
           sshAuthSockFallback: session.sshAuthSockFallback,
         },
         revived: false,
+        createdByUserId: session.createdBy,
       });
       worker = agentWorker;
     } else if (request.type === 'terminal') {
@@ -322,6 +323,7 @@ export class WorkerLifecycleManager {
           sshAuthSockFallback: session.sshAuthSockFallback,
         },
         revived: true,
+        createdByUserId: session.createdBy,
       });
     } else {
       await this.deps.workerManager.activateTerminalWorkerPty(worker, {
@@ -506,6 +508,7 @@ export class WorkerLifecycleManager {
       // File was just truncated by resetWorkerOutput above, so the
       // file-absolute offset is 0 — equivalent to fresh creation.
       revived: false,
+      createdByUserId: session.createdBy,
     });
 
     // Re-check session still exists after async gap
@@ -649,6 +652,7 @@ export class WorkerLifecycleManager {
             sshAuthSockFallback: session.sshAuthSockFallback,
           },
           revived: true,
+          createdByUserId: session.createdBy,
         });
       } else {
         await this.deps.workerManager.activateTerminalWorkerPty(existingWorker, {

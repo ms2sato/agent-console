@@ -38,6 +38,53 @@ import * as path from 'node:path';
 
 const logger = createLogger('embedded-agent-worker-service');
 
+/**
+ * Resolution result of {@link resolveEmbeddedAgentEntryPath}. `source` reveals
+ * which branch was taken so callers (and the real-machine smoke test,
+ * `scripts/smoke/check-embedded-agent-elevation.ts`) can assert the
+ * deployment-correct branch was actually exercised rather than the dev-only
+ * fallback silently "working" because both paths happen to resolve on a dev
+ * checkout.
+ */
+export interface EmbeddedAgentEntryResolution {
+  path: string;
+  source: 'package' | 'fallback';
+}
+
+/**
+ * Resolve the absolute path to the embedded-agent subprocess entry.
+ *
+ * Primary: workspace-package resolution via the package manager's view
+ * (`@agent-console/embedded-agent/package.json`, then join `src/main.ts`).
+ * This is the deployment-correct mechanism: under a bundled production deploy
+ * (`bun dist/index.js`) `import.meta.dir` points into the bundle output, so a
+ * relative source-tree path resolves to a nonexistent file — package
+ * resolution instead follows the installed dependency edge. `package.json` is
+ * the reliable subpath (Bun resolves it even without an `exports` map, unlike
+ * arbitrary `src/*` subpaths).
+ *
+ * Fallback: a source-tree-relative path, used only when the package edge is
+ * not yet installed (dev / test before `bun install` wires
+ * `@agent-console/embedded-agent` into the server package). CI runs
+ * `bun install`, so the primary path is what executes there and in prod.
+ *
+ * Extracted as a standalone exported function (rather than kept as a private
+ * static method on {@link EmbeddedAgentWorkerService}) so the real-machine
+ * smoke test can call it independently of constructing the service, and
+ * compare its result against the entry path the service will use by default.
+ */
+export function resolveEmbeddedAgentEntryPath(): EmbeddedAgentEntryResolution {
+  try {
+    const pkgJson = Bun.resolveSync('@agent-console/embedded-agent/package.json', import.meta.dir);
+    return { path: path.join(path.dirname(pkgJson), 'src/main.ts'), source: 'package' };
+  } catch {
+    return {
+      path: path.resolve(import.meta.dir, '../../../embedded-agent/src/main.ts'),
+      source: 'fallback',
+    };
+  }
+}
+
 /** Protocol-violation guard: a single NDJSON line larger than this is a crash. */
 const MAX_LINE_BYTES = 1024 * 1024;
 /** Consecutive parse failures tolerated before the loop is treated as corrupt. */
@@ -144,35 +191,9 @@ export class EmbeddedAgentWorkerService {
   constructor(private readonly deps: EmbeddedAgentWorkerServiceDeps) {
     this.spawnAsUserFn = deps.spawnAsUserFn ?? spawnAsUser;
     this.loadProviderKeyFn = deps.loadProviderKeyFn ?? loadProviderKey;
-    this.entryPath = deps.entryPath ?? EmbeddedAgentWorkerService.resolveDefaultEntryPath();
+    this.entryPath = deps.entryPath ?? resolveEmbeddedAgentEntryPath().path;
     this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.sigtermTimeoutMs = deps.sigtermTimeoutMs ?? DEFAULT_SIGTERM_TIMEOUT_MS;
-  }
-
-  /**
-   * Resolve the absolute path to the embedded-agent subprocess entry.
-   *
-   * Primary: workspace-package resolution via the package manager's view
-   * (`@agent-console/embedded-agent/package.json`, then join `src/main.ts`).
-   * This is the deployment-correct mechanism: under a bundled production deploy
-   * (`bun dist/index.js`) `import.meta.dir` points into the bundle output, so a
-   * relative source-tree path resolves to a nonexistent file — package
-   * resolution instead follows the installed dependency edge. `package.json` is
-   * the reliable subpath (Bun resolves it even without an `exports` map, unlike
-   * arbitrary `src/*` subpaths).
-   *
-   * Fallback: a source-tree-relative path, used only when the package edge is
-   * not yet installed (dev / test before `bun install` wires
-   * `@agent-console/embedded-agent` into the server package). CI runs
-   * `bun install`, so the primary path is what executes there and in prod.
-   */
-  private static resolveDefaultEntryPath(): string {
-    try {
-      const pkgJson = Bun.resolveSync('@agent-console/embedded-agent/package.json', import.meta.dir);
-      return path.join(path.dirname(pkgJson), 'src/main.ts');
-    } catch {
-      return path.resolve(import.meta.dir, '../../../embedded-agent/src/main.ts');
-    }
   }
 
   /**

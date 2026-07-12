@@ -31,6 +31,8 @@ import type { PersistedAgentWorker, PersistedTerminalWorker, PersistedGitDiffWor
 import { CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import type { LookupOsUserFn } from '../os-user-lookup.js';
+import type { runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -1118,6 +1120,380 @@ describe('WorkerManager', () => {
           sessionId: '',
         })
       ).rejects.toThrow('sessionId is required');
+    });
+  });
+
+  // ========== MCP token lifecycle (Issue #1030 workstream 2) ==========
+  //
+  // For each terminal-agent worker activated in AUTH_MODE=multi-user, the
+  // server mints an MCP bearer token, writes it to a user-owned 0600 file,
+  // and passes ONLY the file path via AGENT_CONSOLE_MCP_TOKEN_FILE. The raw
+  // token must never appear in argv/env (docs/design/embedded-agent-worker.md
+  // § "MCP caller identity"). See privilege-elevation.ts:writeUserOwnedSecretFile.
+  describe('MCP token lifecycle (multi-user mode)', () => {
+    const originalAuthMode = process.env.AUTH_MODE;
+
+    afterEach(() => {
+      if (originalAuthMode === undefined) {
+        delete process.env.AUTH_MODE;
+      } else {
+        process.env.AUTH_MODE = originalAuthMode;
+      }
+    });
+
+    interface FakeMcpTokenRegistry {
+      mint: ReturnType<typeof mock>;
+      revokeByWorker: ReturnType<typeof mock>;
+      mintedIdentities: Array<{ sessionId: string; workerId: string; userId: string }>;
+      revokedWorkerIds: string[];
+    }
+
+    function createFakeMcpTokenRegistry(mintedToken = 'fake-mcp-token-value'): FakeMcpTokenRegistry {
+      const mintedIdentities: Array<{ sessionId: string; workerId: string; userId: string }> = [];
+      const revokedWorkerIds: string[] = [];
+      return {
+        mint: mock((identity: { sessionId: string; workerId: string; userId: string }) => {
+          mintedIdentities.push(identity);
+          return mintedToken;
+        }),
+        revokeByWorker: mock((workerId: string) => {
+          revokedWorkerIds.push(workerId);
+        }),
+        mintedIdentities,
+        revokedWorkerIds,
+      };
+    }
+
+    /**
+     * Command-discriminating fake `runAsUser`. writeUserOwnedSecretFile's
+     * command contains `cat >`; rmRecursiveAsUser's command contains `rm -rf`.
+     * Splitting responders per shape avoids one generic mock breaking either
+     * flow (see memory: wrapper-consumer test responder splitting).
+     */
+    function createCommandDiscriminatingRunAsUser(opts: {
+      writeExitCode?: number;
+      writeTimedOut?: boolean;
+    } = {}) {
+      const writeCalls: RunAsUserOpts[] = [];
+      const rmCalls: RunAsUserOpts[] = [];
+      const fake: typeof runAsUser = async (callOpts) => {
+        if (callOpts.command.includes('cat >')) {
+          writeCalls.push(callOpts);
+          return {
+            stdout: '',
+            stderr: '',
+            exitCode: opts.writeExitCode ?? 0,
+            timedOut: opts.writeTimedOut ?? false,
+          };
+        }
+        rmCalls.push(callOpts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      return { fake, writeCalls, rmCalls };
+    }
+
+    function buildManagerWithSeams(seams: {
+      mcpTokenRegistry?: FakeMcpTokenRegistry;
+      lookupOsUserFn?: LookupOsUserFn;
+      runAsUserImpl?: typeof runAsUser;
+    }): WorkerManager {
+      const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+      return new WorkerManager(
+        userMode,
+        agentManager,
+        new WorkerOutputFileManager(),
+        seams.mcpTokenRegistry,
+        seams.lookupOsUserFn,
+        seams.runAsUserImpl,
+      );
+    }
+
+    function getLastSpawnEnv(): Record<string, string> | undefined {
+      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], { env?: Record<string, string> }]>;
+      const lastCall = calls[calls.length - 1];
+      return lastCall[2]?.env;
+    }
+
+    function getLastSpawnArgv(): string[] | undefined {
+      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], { env?: Record<string, string> }]>;
+      const lastCall = calls[calls.length - 1];
+      return lastCall[1];
+    }
+
+    const defaultLookupOsUserFn: LookupOsUserFn = async (username) => ({
+      uid: 1000,
+      homeDir: `/home/${username}`,
+    });
+
+    it('multi-user + valid createdByUserId + successful write: injects AGENT_CONSOLE_MCP_TOKEN_FILE, mints correct identity, and never leaks the raw token into argv/env', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const registry = createFakeMcpTokenRegistry();
+      const { fake: runAsUserImpl, writeCalls } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({
+        mcpTokenRegistry: registry,
+        lookupOsUserFn: defaultLookupOsUserFn,
+        runAsUserImpl,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'mcp-agent-1',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'alice',
+        createdByUserId: 'user-uuid-1',
+      });
+
+      expect(registry.mintedIdentities).toEqual([
+        { sessionId: 'session-1', workerId: 'mcp-agent-1', userId: 'user-uuid-1' },
+      ]);
+      expect(worker.mcpToken).toEqual({
+        filePath: '/home/alice/.agent-console/mcp-tokens/mcp-agent-1.token',
+        username: 'alice',
+      });
+
+      const env = getLastSpawnEnv();
+      expect(env).toBeDefined();
+      expect(env!.AGENT_CONSOLE_MCP_TOKEN_FILE).toBe(
+        '/home/alice/.agent-console/mcp-tokens/mcp-agent-1.token',
+      );
+
+      // Negative assertions (mandatory per os-environment-coupling.md): the
+      // raw token must not appear in the PTY env, nor in the elevated
+      // write's command string (it travels only via stdin).
+      expect(Object.values(env!)).not.toContain('fake-mcp-token-value');
+      expect(writeCalls.length).toBe(1);
+      expect(writeCalls[0].command).not.toContain('fake-mcp-token-value');
+      expect(writeCalls[0].command).toContain("cat > '/home/alice/.agent-console/mcp-tokens/mcp-agent-1.token'");
+      expect(writeCalls[0].stdin).toBe('fake-mcp-token-value');
+
+      // Negative assertion on the PTY spawn argv itself: only the file-path
+      // env var may carry MCP identity info; the raw token string must never
+      // appear anywhere in the argv passed to the underlying spawn.
+      const argv = getLastSpawnArgv();
+      expect(argv).toBeDefined();
+      expect(argv!.join(' ')).not.toContain('fake-mcp-token-value');
+    });
+
+    it('single-user mode: does not mint a token or inject the env var (polarity: fails if the AUTH_MODE gate is removed)', async () => {
+      delete process.env.AUTH_MODE;
+      const registry = createFakeMcpTokenRegistry();
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({
+        mcpTokenRegistry: registry,
+        lookupOsUserFn: defaultLookupOsUserFn,
+        runAsUserImpl,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'mcp-agent-2',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'alice',
+        createdByUserId: 'user-uuid-1',
+      });
+
+      expect(registry.mint).not.toHaveBeenCalled();
+      expect(worker.mcpToken).toBeNull();
+      const env = getLastSpawnEnv();
+      expect(env!.AGENT_CONSOLE_MCP_TOKEN_FILE).toBeUndefined();
+    });
+
+    it('multi-user + missing createdByUserId: skips minting but activation still succeeds (worker gets a pty)', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const registry = createFakeMcpTokenRegistry();
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({
+        mcpTokenRegistry: registry,
+        lookupOsUserFn: defaultLookupOsUserFn,
+        runAsUserImpl,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'mcp-agent-3',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'alice',
+        // createdByUserId intentionally omitted (legacy / ownerless session)
+      });
+
+      expect(registry.mint).not.toHaveBeenCalled();
+      expect(worker.mcpToken).toBeNull();
+      expect(worker.pty).not.toBeNull();
+      const env = getLastSpawnEnv();
+      expect(env!.AGENT_CONSOLE_MCP_TOKEN_FILE).toBeUndefined();
+    });
+
+    it('multi-user + writeUserOwnedSecretFile failure: activation throws and revokes the just-minted token', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const registry = createFakeMcpTokenRegistry();
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser({ writeExitCode: 1 });
+      const wm = buildManagerWithSeams({
+        mcpTokenRegistry: registry,
+        lookupOsUserFn: defaultLookupOsUserFn,
+        runAsUserImpl,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'mcp-agent-4',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await expect(
+        wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'alice',
+          createdByUserId: 'user-uuid-1',
+        }),
+      ).rejects.toThrow();
+
+      expect(registry.mintedIdentities.length).toBe(1);
+      expect(registry.revokedWorkerIds).toEqual(['mcp-agent-4']);
+      expect(worker.mcpToken).toBeNull();
+    });
+
+    it('multi-user + lookupOsUserFn resolving null: skips minting without throwing', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const registry = createFakeMcpTokenRegistry();
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({
+        mcpTokenRegistry: registry,
+        lookupOsUserFn: async () => null,
+        runAsUserImpl,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'mcp-agent-5',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'alice',
+        createdByUserId: 'user-uuid-1',
+      });
+
+      expect(registry.mint).not.toHaveBeenCalled();
+      expect(worker.mcpToken).toBeNull();
+      expect(worker.pty).not.toBeNull();
+    });
+
+    describe('cleanup on kill / exit', () => {
+      async function activateWithToken(id: string): Promise<{
+        wm: WorkerManager;
+        worker: InternalAgentWorker;
+        registry: FakeMcpTokenRegistry;
+        rmCalls: RunAsUserOpts[];
+      }> {
+        process.env.AUTH_MODE = 'multi-user';
+        const registry = createFakeMcpTokenRegistry();
+        const { fake: runAsUserImpl, rmCalls } = createCommandDiscriminatingRunAsUser();
+        const wm = buildManagerWithSeams({
+          mcpTokenRegistry: registry,
+          lookupOsUserFn: defaultLookupOsUserFn,
+          runAsUserImpl,
+        });
+
+        const worker = wm.initializeAgentWorker({
+          id,
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+
+        await wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'alice',
+          createdByUserId: 'user-uuid-1',
+        });
+
+        expect(worker.mcpToken).not.toBeNull();
+        return { wm, worker, registry, rmCalls };
+      }
+
+      it('killWorker revokes the token and deletes its file', async () => {
+        const { wm, worker, registry, rmCalls } = await activateWithToken('mcp-kill-1');
+        const filePath = worker.mcpToken!.filePath;
+
+        await wm.killWorker(worker, 'session-1');
+
+        expect(registry.revokedWorkerIds).toEqual(['mcp-kill-1']);
+        expect(worker.mcpToken).toBeNull();
+        expect(rmCalls.length).toBe(1);
+        expect(rmCalls[0].command).toContain(`rm -rf -- '${filePath}'`);
+        // The cleanup must run as the token file's OWNING user ('alice',
+        // the worker's elevated identity from activateWithToken), not the
+        // server process user -- otherwise the elevated rm would fail
+        // against a file it doesn't own.
+        expect(rmCalls[0].username).toBe('alice');
+      });
+
+      it('PTY exit (unexpected) revokes the token and deletes its file', async () => {
+        const { worker, registry, rmCalls } = await activateWithToken('mcp-exit-1');
+        const filePath = worker.mcpToken!.filePath;
+
+        const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+        mockPty.simulateExit(1);
+
+        // revokeByWorker fires synchronously (before the first await inside
+        // revokeAndDeleteMcpToken), so no tick is needed for this assertion.
+        expect(registry.revokedWorkerIds).toEqual(['mcp-exit-1']);
+        expect(worker.mcpToken).toBeNull();
+
+        // The file deletion itself is fire-and-forget from the sync PTY exit
+        // callback; flush microtasks so the awaited rmRecursiveAsUser call
+        // inside revokeAndDeleteMcpToken has a chance to run.
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(rmCalls.length).toBe(1);
+        expect(rmCalls[0].command).toContain(`rm -rf -- '${filePath}'`);
+      });
+
+      it('killWorker on a worker with mcpToken: null is a no-op for token cleanup (no crash, no revoke/delete)', async () => {
+        const registry = createFakeMcpTokenRegistry();
+        const { fake: runAsUserImpl, rmCalls } = createCommandDiscriminatingRunAsUser();
+        const wm = buildManagerWithSeams({
+          mcpTokenRegistry: registry,
+          lookupOsUserFn: defaultLookupOsUserFn,
+          runAsUserImpl,
+        });
+        // Single-user activation: no token minted.
+        delete process.env.AUTH_MODE;
+        const worker = wm.initializeAgentWorker({
+          id: 'mcp-none-1',
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+        await wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'alice',
+        });
+        expect(worker.mcpToken).toBeNull();
+
+        await wm.killWorker(worker, 'session-1');
+
+        expect(registry.revokeByWorker).not.toHaveBeenCalled();
+        expect(rmCalls.length).toBe(0);
+      });
     });
   });
 });

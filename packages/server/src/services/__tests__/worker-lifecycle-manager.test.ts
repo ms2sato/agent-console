@@ -373,6 +373,33 @@ describe('WorkerLifecycleManager', () => {
       }
     });
 
+    // Multi-user embedded-agent MCP auth (Issue #1030 Phase 4) needs the
+    // spawned worker's owning user threaded from session.createdBy through
+    // activateAgentWorkerPty's createdByUserId param -- that's what the
+    // MCP token gets minted for. This wiring had zero coverage before this
+    // test: a silent regression (dropped field or wrong value) would leave
+    // every existing test green while multi-user agents got no MCP token.
+    it('should thread session.createdBy into activateAgentWorkerPty as createdByUserId', async () => {
+      const session = createTestSession({ createdBy: 'user-42' });
+      sessions.set(session.id, session);
+
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty');
+
+      try {
+        const worker = await lifecycleManager.createWorker(session.id, {
+          type: 'agent',
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+
+        expect(worker).not.toBeNull();
+        expect(spy).toHaveBeenCalledTimes(1);
+        const params = spy.mock.calls[0][1];
+        expect(params.createdByUserId).toBe('user-42');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('should persist session after creating a worker', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
@@ -1064,6 +1091,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1171,6 +1199,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1208,6 +1237,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1236,6 +1266,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1262,6 +1293,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1290,6 +1322,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2052,6 +2085,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2085,6 +2119,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2165,6 +2200,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2295,6 +2331,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 

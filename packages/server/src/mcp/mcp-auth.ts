@@ -72,26 +72,28 @@ export type McpAuthMode = 'off' | 'warn' | 'enforce';
 /**
  * Resolve the effective MCP auth mode from `AGENT_CONSOLE_MCP_AUTH`.
  *
- * - An explicit `off` / `warn` / `enforce` passes through.
+ * - An explicit `off` / `warn` / `enforce` passes through (an operator-set
+ *   value always wins, regardless of `AUTH_MODE`).
  * - An empty / whitespace-only value is treated as unset (operator-friendly,
  *   same convention as other server-config vars).
  * - Any other non-empty value throws (fail fast at startup — `createMcpApp`
  *   calls this during boot).
- * - Unset resolves to `warn` regardless of `AUTH_MODE`. Until token delivery
- *   to workers exists there is no path for an agent to present a token, so a
- *   multi-user `enforce` default would halt every agent's MCP calls on deploy.
- *   Phase 4 flips the multi-user default to `enforce` once token delivery
- *   lands (docs/design/embedded-agent-worker.md § "MCP caller identity").
+ * - Unset resolves to `enforce` when `AUTH_MODE=multi-user` (Phase 4,
+ *   landed), `warn` otherwise (including single-user mode, where the gap is
+ *   operationally moot)
+ *   (docs/design/embedded-agent-worker.md § "MCP caller identity").
  *
  * Rule 1 of `checkCallerOwnsSession` (a presented-but-mismatched token is
- * always rejected) is unaffected by the default and is live from this phase.
+ * always rejected) is unaffected by the default and has been live since
+ * phase 1.
  */
 export function resolveMcpAuthMode(
   rawValue: string | undefined = process.env.AGENT_CONSOLE_MCP_AUTH,
+  authMode: string | undefined = process.env.AUTH_MODE,
 ): McpAuthMode {
   const trimmed = rawValue?.trim();
   if (!trimmed) {
-    return 'warn';
+    return authMode === 'multi-user' ? 'enforce' : 'warn';
   }
   if (trimmed !== 'off' && trimmed !== 'warn' && trimmed !== 'enforce') {
     throw new Error(

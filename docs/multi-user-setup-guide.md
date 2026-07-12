@@ -492,6 +492,7 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and**, by default, marks the auth cookie `Secure`. The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
 | `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 | `PTY_PROVIDER` | _(unset; server default `bun-terminal`)_ | Override for the PTY backend. Valid values: `bun-terminal` (default; the `Bun.spawn({ terminal: ... })` provider, Bun ≥ 1.3.5) or `bun-pty` (the bun-pty native shared library). Stage 2 (Issue [#827](https://github.com/ms2sato/agent-console/issues/827)) flipped the compiled default to `bun-terminal`; `bun-pty` remains selectable for one release as a rollback escape hatch, with Stage 3 (Issue [#828](https://github.com/ms2sato/agent-console/issues/828)) removing it. The backend migration was evaluated under Issue [#824](https://github.com/ms2sato/agent-console/issues/824). The bootstrap script exposes this as `--pty-provider <name>` (or env `AGENT_CONSOLE_PTY_PROVIDER`); when unset, the rendered systemd unit omits the entry entirely so the server falls back to its compiled default. Invalid values are rejected at bootstrap time before any system state is touched. |
+| `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling: `off`, `warn`, or `enforce`. Unset resolves to `enforce` under `AUTH_MODE=multi-user`, `warn` otherwise. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
 
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
@@ -819,6 +820,109 @@ installs at the time of #838 had a small number of pre-existing worktrees
 costs less than a database-aware migration script. A scripted variant can
 be added later if installs in the wild accumulate many pre-#838 worktrees.
 
+## Embedded-Agent Credentials (provider keys, MCP tokens)
+
+Applies to deployments using [EmbeddedAgentWorker](glossary.md#embeddedagentworker)
+(Agent Console's own in-process LLM-loop worker type, as opposed to a
+terminal `AgentWorker` like Claude Code). Skip this section if you only use
+terminal agents and never configure an `EmbeddedAgentDefinition`.
+
+### `provider-keys.json` (LLM provider API keys)
+
+`EmbeddedAgentDefinition.provider.apiKeyRef` names entries in
+`<AGENT_CONSOLE_HOME>/provider-keys.json` (mode `0600`, owned by the service
+user), shape:
+
+```json
+{
+  "my-openai-key": "sk-...",
+  "my-local-endpoint-key": "..."
+}
+```
+
+v1 management is **manual editing only** — there is no UI or API for writing
+this file. After creating or updating it:
+
+```bash
+sudo -u agentconsole touch /var/lib/agent-console/provider-keys.json
+sudo -u agentconsole chmod 600 /var/lib/agent-console/provider-keys.json
+sudo -u agentconsole $EDITOR /var/lib/agent-console/provider-keys.json
+```
+
+A dangling `apiKeyRef` (missing file, missing entry, or non-string value)
+fails embedded-agent activation with an explicit error — it never silently
+falls back to a keyless request. Keyless local endpoints (e.g. a same-host
+Ollama server) do not need an entry here at all.
+
+**Multi-user trust boundary (read before enabling a keyed provider in
+multi-user mode).** A server-wide key delivered into a per-user subprocess is
+readable by that OS user — stdin delivery prevents *incidental* leaks (argv,
+env, other users), not exfiltration by the process's own user. v1 therefore
+treats provider keys as **shared with every user permitted to run embedded
+agents**; the definition-ownership rules controlling who can *configure*
+agents do not control who can *read a key* once a worker runs as them.
+Deployments that cannot accept this must not enable keyed providers in
+multi-user mode until per-user keys (a post-v1 feature) land — keyless local
+endpoints are unaffected.
+
+### MCP authentication mode (`AGENT_CONSOLE_MCP_AUTH`)
+
+Every agent process (embedded or terminal) that calls the built-in MCP server
+carries a per-worker bearer token binding its calls to a verified session
+identity (see [MCP Caller Token](glossary.md#mcp-caller-token)). The
+`AGENT_CONSOLE_MCP_AUTH` env var controls how a MISSING token is treated:
+
+| Value | Behavior |
+|-------|----------|
+| `off` | Tokenless calls proceed unchecked (pre-#878 behavior). |
+| `warn` | Tokenless calls proceed, with a log line. Default for single-user (`AUTH_MODE=none`). |
+| `enforce` | Tokenless calls are rejected. **Default for multi-user (`AUTH_MODE=multi-user`)** since Phase 4. |
+
+A presented-but-mismatched token (the caller's verified identity does not
+own the claimed session) is **always** rejected, regardless of this setting
+— only the *missing-token* case is mode-dependent.
+
+Multi-user deployments do not need to set this variable — `enforce` is the
+default the moment `AUTH_MODE=multi-user` is set, and every agent path
+(embedded-agent via stdin `init`, terminal-agent via the token file below)
+carries a token by the time a multi-user instance can serve traffic. Set
+`AGENT_CONSOLE_MCP_AUTH=warn` explicitly only as a temporary escape hatch —
+e.g. while diagnosing a token-delivery regression — and unset it again once
+resolved; leaving `warn` enabled long-term reopens the caller-spoofing gap
+the token mechanism closes.
+
+### Terminal-agent MCP token file (multi-user mode)
+
+In multi-user mode, the server mints an MCP token for each terminal-agent
+(`AgentWorker`, e.g. Claude Code) PTY at activation, writes it to a
+user-owned `0600` file at `<target-user-home>/.agent-console/mcp-tokens/<workerId>.token`,
+and passes only the file **path** to the spawned process via the
+`AGENT_CONSOLE_MCP_TOKEN_FILE` env var — never the raw token via argv, an
+elevation-embedded env var, or PTY-injected bytes (all three leak into
+world-readable `/proc/<pid>/cmdline`, or into the persisted-and-broadcast
+worker output stream). The file is deleted on the same events that revoke
+the in-memory token: worker exit, kill, or delete.
+
+**Operator setup: wiring the token into Claude Code's MCP client.** The
+`AGENT_CONSOLE_MCP_TOKEN_FILE` env var only gets the token bytes onto the
+target user's filesystem; Claude Code's own MCP client configuration still
+needs to attach them as an `Authorization: Bearer <token>` header on its
+`/mcp` HTTP requests. Claude Code's HTTP-transport `mcpServers` config
+supports a `headersHelper` mechanism — a script Claude Code invokes to
+produce dynamic header values (re-invoked on demand, e.g. after a rejected
+request) — confirmed present in the installed CLI (verified directly against
+the `claude` binary; consult Claude Code's own MCP documentation for the
+exact `headersHelper` config schema, since it is not exposed via `claude mcp
+add`'s CLI flags and may evolve across CLI releases). Configure it, per
+target user, to read `AGENT_CONSOLE_MCP_TOKEN_FILE` and return
+`{"Authorization": "Bearer <file contents>"}`. Until this is configured for a
+given user, that user's terminal-agent MCP calls are tokenless and are
+rejected outright under the `enforce` default above (fail-closed, by
+design) — a terminal agent still starts normally and runs, but its
+MCP-dependent tools (`delegate_to_worktree`, `run_process`,
+`send_session_message`, etc.) return an authentication error until the
+`headersHelper` is wired up for that account.
+
 ## Post-deploy Verification (smoke tests)
 
 Run after every deploy that touches a privilege-elevation code path
@@ -914,6 +1018,44 @@ Like the PTY env check, this script imports the production command builders
 `packages/server/src/services/sentinel-spawn-command.ts`) and the production
 `bunPtyProvider`, so the spawn shape it exercises cannot drift from what
 `SingleUserMode` / `MultiUserMode` actually spawn.
+
+### Embedded-agent elevation check
+
+Run before claiming multi-user support for
+[EmbeddedAgentWorker](glossary.md#embeddedagentworker). It spawns the real
+embedded-agent loop as a real second OS user via the production `spawnAsUser`,
+with `AUTH_MODE=multi-user` and `AGENT_CONSOLE_MCP_AUTH=enforce` forced on,
+against a real `/mcp` endpoint running in `enforce` mode:
+
+```bash
+sudo -u agentconsole bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
+```
+
+What it verifies:
+
+- The embedded-agent package resolves via the **package-resolution** path
+  (`Bun.resolveSync('@agent-console/embedded-agent/package.json', ...)`), not
+  the dev-only source-tree fallback — this is the one thing only a
+  real-deploy-layout smoke can catch, since a dev checkout would silently
+  exercise the fallback too.
+- The loop completes its `init` handshake and reaches the `ready` state
+  against the real, `enforce`-mode `/mcp` endpoint — proving the multi-user
+  `enforce` default (see [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth)
+  above) does not break the already-working embedded-agent token delivery.
+- Negative: neither the MCP bearer token nor the provider API key appear in
+  `/proc/<pid>/cmdline` or `/proc/<pid>/environ` of the elevated subprocess,
+  with an "actually executed" guard so a silently-skipped check (process
+  already exited, `/proc` unreadable) reports as a failure, not a pass.
+
+Exit codes: `0` all assertions passed, `1` an assertion failed (the system is
+wrong), `2` bad usage or the smoke could not run (missing target-user
+argument, target user unknown, spawn-launch failure).
+
+Passing the current process user as `<target-user>` runs in a degenerate
+same-user mode where `spawnAsUser` bypasses elevation (target equals the
+server user) — this still exercises everything except the actual OS-boundary
+crossing, useful for a quick non-elevated sanity check before running the
+real cross-user version.
 
 ## Local Multi-User Dev Mode
 
