@@ -27,7 +27,7 @@ export const Route = createFileRoute('/agents/')({
   component: AgentsPage,
 });
 
-function AgentsPage() {
+export function AgentsPage() {
   return (
     <div className="p-6 max-w-4xl mx-auto">
       <PageBreadcrumb items={[
