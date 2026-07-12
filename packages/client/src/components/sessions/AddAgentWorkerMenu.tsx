@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import { Link } from '@tanstack/react-router';
 import { useAgents } from '../AgentSelector';
 import { useEmbeddedAgents } from './hooks/useEmbeddedAgents';
 import type { AddAgentWorkerParams } from './hooks/useTabManagement';
@@ -24,12 +25,8 @@ interface AddAgentWorkerMenuProps {
  * with an explanatory tooltip rather than wired to a call that would always
  * 400. Embedded-agent items are fully actionable today.
  *
- * Architect ruling: the empty-embedded-registry footer is plain text, not a
- * link. No `EmbeddedAgentDefinition` CRUD UI exists anywhere yet (a
- * management page is a separate, not-yet-scoped follow-up), so a link to
- * `/agents` would dead-end. The footer names the REST API as the current
- * (manual) way to manage definitions instead of promising a UI affordance
- * that doesn't exist.
+ * The empty-embedded-registry footer links to `/agents`, which now hosts the
+ * `EmbeddedAgentDefinition` management UI (Phase 3.5).
  */
 export function AddAgentWorkerMenu({ onSelect }: AddAgentWorkerMenuProps) {
   const [open, setOpen] = useState(false);
@@ -107,8 +104,15 @@ export function AddAgentWorkerMenu({ onSelect }: AddAgentWorkerMenuProps) {
           ))}
           {!embeddedLoading && embeddedAgents.length === 0 && (
             <div className="border-t border-slate-700 px-3 py-2 text-xs text-gray-500">
-              No embedded agents are registered yet. Definitions can currently be managed via
-              the REST API (`/api/embedded-agents`); a management UI is coming in a follow-up.
+              No embedded agents are registered yet.{' '}
+              <Link
+                to="/agents"
+                onClick={() => setOpen(false)}
+                className="text-blue-400 hover:text-blue-300 underline"
+              >
+                Create one
+              </Link>
+              .
             </div>
           )}
         </div>

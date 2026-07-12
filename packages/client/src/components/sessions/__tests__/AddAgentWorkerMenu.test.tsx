@@ -75,7 +75,7 @@ describe('AddAgentWorkerMenu', () => {
     expect(screen.getByText('Embedded')).toBeTruthy();
   });
 
-  it('empty embedded registry still shows terminal agents plus a plain-text notice (no link)', async () => {
+  it('empty embedded registry still shows terminal agents plus a link to create one', async () => {
     agentsResponse = {
       agents: [{ id: 'claude-code', name: 'Claude Code', isBuiltIn: true }],
     };
@@ -88,15 +88,25 @@ describe('AddAgentWorkerMenu', () => {
     await waitFor(() => {
       expect(screen.getByText('Claude Code')).toBeTruthy();
     });
-    // Architect ruling: no EmbeddedAgentDefinition CRUD UI exists yet, so this
-    // must be plain text (not a link to a page that can't actually create one).
-    const notice = screen.getByText((_content, element) =>
-      element?.textContent ===
-      'No embedded agents are registered yet. Definitions can currently be managed via the REST API (`/api/embedded-agents`); a management UI is coming in a follow-up.'
-    );
-    expect(notice).toBeTruthy();
-    expect(notice.closest('a')).toBeNull();
-    expect(screen.queryByRole('link')).toBeNull();
+    // The management UI now exists at /agents (Phase 3.5), so the empty-state
+    // notice links there instead of pointing to the REST API.
+    expect(screen.getByText(/No embedded agents are registered yet/)).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'Create one' });
+    expect(link).toBeTruthy();
+    expect(link.getAttribute('href')).toBe('/agents');
+  });
+
+  it('clicking the empty-state "Create one" link closes the menu', async () => {
+    embeddedAgentsResponse = { embeddedAgents: [] };
+
+    await renderWithRouter(<AddAgentWorkerMenu onSelect={async () => {}} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+    const link = await screen.findByRole('link', { name: 'Create one' });
+    await user.click(link);
+
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 
   it('hides the empty-embedded-registry notice once at least one embedded agent is registered', async () => {
