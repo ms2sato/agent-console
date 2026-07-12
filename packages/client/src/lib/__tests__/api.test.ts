@@ -685,6 +685,116 @@ describe('API Client', () => {
     });
   });
 
+  describe('createEmbeddedAgent', () => {
+    it('should create embedded agent successfully', async () => {
+      const { createEmbeddedAgent } = await import('../api');
+      const mockEmbeddedAgent = {
+        embeddedAgent: {
+          id: 'new-embedded-agent',
+          name: 'Ollama qwen3',
+          provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+          createdBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      };
+      mockFetch.mockResolvedValue(createMockResponse(mockEmbeddedAgent));
+
+      const result = await createEmbeddedAgent({
+        name: 'Ollama qwen3',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      });
+
+      expect(getLastFetchUrl()).toContain('/api/embedded-agents');
+      expect(getLastFetchMethod()).toBe('POST');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({
+        name: 'Ollama qwen3',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      });
+      expect(result).toEqual(mockEmbeddedAgent);
+    });
+
+    it('should throw error on failure', async () => {
+      const { createEmbeddedAgent } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        statusText: 'Bad Request',
+        json: mock(() => Promise.resolve({ error: 'Invalid provider' })),
+      } as unknown as Response);
+
+      await expect(
+        createEmbeddedAgent({ name: 'Test', provider: { baseUrl: 'not-a-url', model: '' } })
+      ).rejects.toThrow('Invalid provider');
+    });
+  });
+
+  describe('updateEmbeddedAgent', () => {
+    it('should update embedded agent successfully', async () => {
+      const { updateEmbeddedAgent } = await import('../api');
+      const mockEmbeddedAgent = {
+        embeddedAgent: {
+          id: 'embedded-1',
+          name: 'Updated Name',
+          provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+          createdBy: 'user-1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        },
+      };
+      mockFetch.mockResolvedValue(createMockResponse(mockEmbeddedAgent));
+
+      const result = await updateEmbeddedAgent('embedded-1', { name: 'Updated Name' });
+
+      expect(getLastFetchUrl()).toContain('/api/embedded-agents/embedded-1');
+      expect(getLastFetchMethod()).toBe('PATCH');
+      const body = await getLastFetchBody();
+      expect(body).toEqual({ name: 'Updated Name' });
+      expect(result).toEqual(mockEmbeddedAgent);
+    });
+
+    it('should throw error on failure', async () => {
+      const { updateEmbeddedAgent } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        json: mock(() => Promise.resolve({ error: 'Only the creator can update this embedded agent' })),
+      } as unknown as Response);
+
+      await expect(updateEmbeddedAgent('embedded-1', { name: 'X' })).rejects.toThrow(
+        'Only the creator can update this embedded agent'
+      );
+    });
+  });
+
+  describe('deleteEmbeddedAgent', () => {
+    it('should delete embedded agent successfully', async () => {
+      const { deleteEmbeddedAgent } = await import('../api');
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+
+      await deleteEmbeddedAgent('embedded-1');
+
+      expect(getLastFetchUrl()).toContain('/api/embedded-agents/embedded-1');
+      expect(getLastFetchMethod()).toBe('DELETE');
+    });
+
+    it('should throw error on failure', async () => {
+      const { deleteEmbeddedAgent } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        json: mock(() => Promise.resolve({ error: 'Only the creator can delete this embedded agent' })),
+      } as unknown as Response);
+
+      await expect(deleteEmbeddedAgent('embedded-1')).rejects.toThrow(
+        'Only the creator can delete this embedded agent'
+      );
+    });
+  });
+
   describe('generateRepositoryDescription', () => {
     it('should generate repository description', async () => {
       const mockDescription = { description: 'A web application for managing AI agents.' };

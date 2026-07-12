@@ -12,6 +12,8 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
   EmbeddedAgentDefinition,
+  CreateEmbeddedAgentRequest,
+  UpdateEmbeddedAgentRequest,
   SessionsValidationResponse,
   GitHubIssueSummary,
   Job,
@@ -601,6 +603,41 @@ export async function fetchEmbeddedAgents(): Promise<EmbeddedAgentsResponse> {
     await handleApiError(res, 'Failed to fetch embedded agents');
   }
   return res.json();
+}
+
+export interface EmbeddedAgentResponse {
+  embeddedAgent: EmbeddedAgentDefinition;
+}
+
+export async function createEmbeddedAgent(
+  request: CreateEmbeddedAgentRequest
+): Promise<EmbeddedAgentResponse> {
+  const res = await api['embedded-agents'].$post({ json: request });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to create embedded agent');
+  }
+  return res.json() as Promise<EmbeddedAgentResponse>;
+}
+
+export async function updateEmbeddedAgent(
+  embeddedAgentId: string,
+  request: UpdateEmbeddedAgentRequest
+): Promise<EmbeddedAgentResponse> {
+  const res = await api['embedded-agents'][':id'].$patch({
+    param: { id: embeddedAgentId },
+    json: request,
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update embedded agent');
+  }
+  return res.json() as Promise<EmbeddedAgentResponse>;
+}
+
+export async function deleteEmbeddedAgent(embeddedAgentId: string): Promise<void> {
+  const res = await api['embedded-agents'][':id'].$delete({ param: { id: embeddedAgentId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to delete embedded agent');
+  }
 }
 
 // ===========================================================================
