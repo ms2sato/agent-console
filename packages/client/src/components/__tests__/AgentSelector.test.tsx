@@ -1,7 +1,8 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { render, screen, waitFor, cleanup, renderHook } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
+import { AgentSelector, useResolvedAgentId, WorktreeAgentSelector } from '../AgentSelector';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -220,5 +221,105 @@ describe('useResolvedAgentId', () => {
     await waitFor(() => {
       expect(result.current).toBe('another-agent');
     });
+  });
+});
+
+describe('WorktreeAgentSelector', () => {
+  const mockEmbeddedAgentsResponse = {
+    embeddedAgents: [
+      { id: 'embedded-1', name: 'Local GPT' },
+      { id: 'embedded-2', name: 'Ollama Agent' },
+    ],
+  };
+
+  function resolveUrl(input: unknown): string {
+    if (typeof input === 'string') return input;
+    if (input instanceof URL) return input.toString();
+    if (input && typeof input === 'object' && 'url' in input) return (input as Request).url;
+    return '';
+  }
+
+  function mockFetchImplementation() {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.includes('embedded-agents')) {
+        return Promise.resolve(createMockResponse(mockEmbeddedAgentsResponse));
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+  }
+
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetchImplementation();
+  });
+
+  function renderWorktreeAgentSelector(
+    props: Partial<React.ComponentProps<typeof WorktreeAgentSelector>> = {}
+  ) {
+    const defaultProps = {
+      onChange: mock(() => {}),
+    };
+    const mergedProps = { ...defaultProps, ...props };
+    return {
+      ...render(<WorktreeAgentSelector {...mergedProps} />, { wrapper: createTestWrapper() }),
+      props: mergedProps,
+    };
+  }
+
+  it('renders terminal and embedded agent groups', async () => {
+    const { container } = renderWorktreeAgentSelector();
+
+    await waitFor(() => {
+      expect(screen.getByText('Local GPT')).toBeTruthy();
+    });
+
+    const optgroups = container.querySelectorAll('optgroup');
+    const labels = Array.from(optgroups).map((el) => el.getAttribute('label'));
+    expect(labels).toEqual(['Terminal', 'Embedded']);
+    expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+    expect(screen.getByText('Custom Agent')).toBeTruthy();
+    expect(screen.getByText('Another Agent')).toBeTruthy();
+    expect(screen.getByText('Local GPT')).toBeTruthy();
+    expect(screen.getByText('Ollama Agent')).toBeTruthy();
+  });
+
+  it('defaults selection to the priority terminal agent when neither agentId nor embeddedAgentId is given', async () => {
+    renderWorktreeAgentSelector({ priorityAgentId: 'another-agent' });
+
+    await waitFor(() => {
+      expect(screen.getByText('Local GPT')).toBeTruthy();
+    });
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.value).toBe('terminal:another-agent');
+  });
+
+  it('calls onChange with embeddedAgentId when an embedded option is selected', async () => {
+    const user = userEvent.setup();
+    const { props } = renderWorktreeAgentSelector();
+
+    await waitFor(() => {
+      expect(screen.getByText('Local GPT')).toBeTruthy();
+    });
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    await user.selectOptions(select, 'embedded:embedded-2');
+
+    expect(props.onChange).toHaveBeenCalledWith({ embeddedAgentId: 'embedded-2' });
+  });
+
+  it('calls onChange with agentId when a terminal option is selected', async () => {
+    const user = userEvent.setup();
+    const { props } = renderWorktreeAgentSelector({ embeddedAgentId: 'embedded-1' });
+
+    await waitFor(() => {
+      expect(screen.getByText('Local GPT')).toBeTruthy();
+    });
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    await user.selectOptions(select, 'terminal:custom-agent');
+
+    expect(props.onChange).toHaveBeenCalledWith({ agentId: 'custom-agent' });
   });
 });

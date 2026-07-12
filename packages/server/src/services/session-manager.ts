@@ -729,13 +729,20 @@ export class SessionManager {
 
     // Create initial workers in parallel
     // Note: Each createWorker calls persistSession internally
-    const effectiveAgentId = request.agentId ?? CLAUDE_CODE_AGENT_ID;
+    // The initial worker can be an embedded agent instead of a terminal
+    // agent. Mutually exclusive with `agentId` (enforced by the request
+    // schema).
+    const initialWorkerParams: CreateWorkerParams = request.embeddedAgentId
+      ? { type: 'embedded-agent', embeddedAgentId: request.embeddedAgentId }
+      : { type: 'agent', agentId: request.agentId ?? CLAUDE_CODE_AGENT_ID };
     await Promise.all([
-      this.createWorker(id, {
-        type: 'agent',
-        agentId: effectiveAgentId,
-        // name is not specified; generateWorkerName will use the agent's name
-      }, request.continueConversation ?? false, request.initialPrompt, request.templateVars ?? context?.templateVars),
+      this.createWorker(
+        id,
+        initialWorkerParams,
+        request.continueConversation ?? false,
+        request.initialPrompt,
+        request.templateVars ?? context?.templateVars,
+      ),
       this.createWorker(id, {
         type: 'git-diff',
         name: 'Diff',

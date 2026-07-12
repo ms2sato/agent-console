@@ -3,86 +3,108 @@ import * as v from 'valibot';
 /**
  * Schema for creating a worktree session
  */
-export const CreateWorktreeSessionRequestSchema = v.strictObject({
-  type: v.literal('worktree'),
-  repositoryId: v.pipe(
-    v.string(),
-    v.trim(),
-    v.minLength(1, 'Repository ID is required')
+export const CreateWorktreeSessionRequestSchema = v.pipe(
+  v.strictObject({
+    type: v.literal('worktree'),
+    repositoryId: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, 'Repository ID is required')
+    ),
+    worktreeId: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, 'Worktree ID is required')
+    ),
+    locationPath: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, 'Location path is required')
+    ),
+    agentId: v.optional(v.string()),
+    /**
+     * Embedded-agent selection for the initial worker. Mutually exclusive
+     * with `agentId`.
+     */
+    embeddedAgentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
+    continueConversation: v.optional(v.boolean()),
+    initialPrompt: v.optional(v.string()),
+    title: v.optional(v.string()),
+    parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+    parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+    /**
+     * When true, create a shared session (PTY runs as the configured shared
+     * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
+     * See docs/design/shared-orchestrator-session.md.
+     */
+    shared: v.optional(v.boolean()),
+    templateVars: v.optional(
+      v.record(
+        v.pipe(
+          v.string(),
+          v.regex(/^\w+$/, 'Template variable keys must be alphanumeric/underscore only'),
+          v.check(
+            (key) => key !== 'prompt' && key !== 'cwd',
+            'Cannot override reserved template variables: prompt, cwd'
+          )
+        ),
+        v.string()
+      )
+    ),
+  }),
+  v.check(
+    (val) => !(val.agentId && val.embeddedAgentId),
+    'Cannot specify both agentId and embeddedAgentId',
   ),
-  worktreeId: v.pipe(
-    v.string(),
-    v.trim(),
-    v.minLength(1, 'Worktree ID is required')
-  ),
-  locationPath: v.pipe(
-    v.string(),
-    v.trim(),
-    v.minLength(1, 'Location path is required')
-  ),
-  agentId: v.optional(v.string()),
-  continueConversation: v.optional(v.boolean()),
-  initialPrompt: v.optional(v.string()),
-  title: v.optional(v.string()),
-  parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  /**
-   * When true, create a shared session (PTY runs as the configured shared
-   * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
-   * See docs/design/shared-orchestrator-session.md.
-   */
-  shared: v.optional(v.boolean()),
-  templateVars: v.optional(
-    v.record(
-      v.pipe(
-        v.string(),
-        v.regex(/^\w+$/, 'Template variable keys must be alphanumeric/underscore only'),
-        v.check(
-          (key) => key !== 'prompt' && key !== 'cwd',
-          'Cannot override reserved template variables: prompt, cwd'
-        )
-      ),
-      v.string()
-    )
-  ),
-});
+);
 
 /**
  * Schema for creating a quick session
  */
-export const CreateQuickSessionRequestSchema = v.strictObject({
-  type: v.literal('quick'),
-  locationPath: v.pipe(
-    v.string(),
-    v.trim(),
-    v.minLength(1, 'Location path is required')
+export const CreateQuickSessionRequestSchema = v.pipe(
+  v.strictObject({
+    type: v.literal('quick'),
+    locationPath: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, 'Location path is required')
+    ),
+    agentId: v.optional(v.string()),
+    /**
+     * Embedded-agent selection for the initial worker. Mutually exclusive
+     * with `agentId`.
+     */
+    embeddedAgentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
+    continueConversation: v.optional(v.boolean()),
+    initialPrompt: v.optional(v.string()),
+    title: v.optional(v.string()),
+    parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+    parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
+    /**
+     * When true, create a shared session (PTY runs as the configured shared
+     * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
+     * See docs/design/shared-orchestrator-session.md.
+     */
+    shared: v.optional(v.boolean()),
+    templateVars: v.optional(
+      v.record(
+        v.pipe(
+          v.string(),
+          v.regex(/^\w+$/, 'Template variable keys must be alphanumeric/underscore only'),
+          v.check(
+            (key) => key !== 'prompt' && key !== 'cwd',
+            'Cannot override reserved template variables: prompt, cwd'
+          )
+        ),
+        v.string()
+      )
+    ),
+  }),
+  v.check(
+    (val) => !(val.agentId && val.embeddedAgentId),
+    'Cannot specify both agentId and embeddedAgentId',
   ),
-  agentId: v.optional(v.string()),
-  continueConversation: v.optional(v.boolean()),
-  initialPrompt: v.optional(v.string()),
-  title: v.optional(v.string()),
-  parentSessionId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  parentWorkerId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1))),
-  /**
-   * When true, create a shared session (PTY runs as the configured shared
-   * account). Requires AGENT_CONSOLE_SHARED_USERNAME to be set on the server.
-   * See docs/design/shared-orchestrator-session.md.
-   */
-  shared: v.optional(v.boolean()),
-  templateVars: v.optional(
-    v.record(
-      v.pipe(
-        v.string(),
-        v.regex(/^\w+$/, 'Template variable keys must be alphanumeric/underscore only'),
-        v.check(
-          (key) => key !== 'prompt' && key !== 'cwd',
-          'Cannot override reserved template variables: prompt, cwd'
-        )
-      ),
-      v.string()
-    )
-  ),
-});
+);
 
 /**
  * Schema for creating any session (union)

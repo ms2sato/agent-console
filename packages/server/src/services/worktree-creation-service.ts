@@ -49,7 +49,13 @@ export interface CreateWorktreeParams {
   branch: string;
   baseBranch?: string;
   useRemote: boolean;
-  agentId: string;
+  agentId?: string;
+  /**
+   * Embedded-agent selection for the initial worker. Mutually exclusive
+   * with `agentId`; the caller (route handler) has already validated this
+   * before invoking worktree creation.
+   */
+  embeddedAgentId?: string;
   initialPrompt?: string;
   title?: string;
   autoStartSession?: boolean;  // Defaults to true. When false, skip session creation.
@@ -89,7 +95,7 @@ export async function createWorktreeWithSession(
 ): Promise<CreateWorktreeResult> {
   const {
     repoPath, repoId, repoName, setupCommand, branch, baseBranch,
-    useRemote, agentId, initialPrompt, title,
+    useRemote, agentId, embeddedAgentId, initialPrompt, title,
     autoStartSession = true,
     context,
     requestUsername,
@@ -233,6 +239,7 @@ export async function createWorktreeWithSession(
         worktreeId: worktree.branch,
         locationPath: worktree.path,
         agentId,
+        embeddedAgentId,
         initialPrompt,
         title,
         parentSessionId: context?.parentSessionId,

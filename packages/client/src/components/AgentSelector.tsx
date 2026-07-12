@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
 import { fetchAgents } from '../lib/api';
 import { agentKeys } from '../lib/query-keys';
+import { useEmbeddedAgents } from '../hooks/useEmbeddedAgents';
 
 function useSortedAgents(priorityAgentId?: string) {
   const { data, isLoading } = useQuery({
@@ -110,4 +111,90 @@ export function getAgentName(agents: AgentDefinition[], agentId?: string): strin
   if (!agentId) return 'Unknown';
   const agent = agents.find((a) => a.id === agentId);
   return agent?.name ?? 'Unknown';
+}
+
+export interface AgentSelection {
+  agentId?: string;
+  embeddedAgentId?: string;
+}
+
+export interface WorktreeAgentSelectorProps {
+  agentId?: string;
+  embeddedAgentId?: string;
+  onChange: (selection: AgentSelection) => void;
+  priorityAgentId?: string;
+  className?: string;
+  disabled?: boolean;
+}
+
+/**
+ * Unified terminal + embedded agent picker for worktree creation.
+ * Values are prefixed by kind ('terminal:<id>' / 'embedded:<id>') internally
+ * so a single <select> can represent both registries; onChange always
+ * reports exactly one of agentId/embeddedAgentId.
+ */
+export function WorktreeAgentSelector({
+  agentId,
+  embeddedAgentId,
+  onChange,
+  className = '',
+  disabled = false,
+  priorityAgentId,
+}: WorktreeAgentSelectorProps) {
+  const { sortedAgents, isLoading: agentsLoading } = useSortedAgents(priorityAgentId);
+  const { embeddedAgents, isLoading: embeddedLoading } = useEmbeddedAgents();
+  const isLoading = agentsLoading || embeddedLoading;
+
+  const terminalValueExists = agentId != null && sortedAgents.some((a) => a.id === agentId);
+  const selectedValue = embeddedAgentId
+    ? `embedded:${embeddedAgentId}`
+    : terminalValueExists
+      ? `terminal:${agentId}`
+      : sortedAgents[0]
+        ? `terminal:${sortedAgents[0].id}`
+        : '';
+
+  const handleChange = (raw: string) => {
+    if (raw.startsWith('embedded:')) {
+      onChange({ embeddedAgentId: raw.slice('embedded:'.length) });
+    } else if (raw.startsWith('terminal:')) {
+      onChange({ agentId: raw.slice('terminal:'.length) });
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <select className={`input ${className}`} disabled>
+        <option>Loading...</option>
+      </select>
+    );
+  }
+
+  return (
+    <select
+      value={selectedValue}
+      onChange={(e) => handleChange(e.target.value)}
+      className={`input ${className}`}
+      disabled={disabled}
+    >
+      <optgroup label="Terminal">
+        {sortedAgents.map((agent) => (
+          <option key={agent.id} value={`terminal:${agent.id}`}>
+            {agent.name}
+            {agent.isBuiltIn ? ' (built-in)' : ''}
+            {agent.baseAgentId ? ' (preset)' : ''}
+          </option>
+        ))}
+      </optgroup>
+      {embeddedAgents.length > 0 && (
+        <optgroup label="Embedded">
+          {embeddedAgents.map((embeddedAgent) => (
+            <option key={embeddedAgent.id} value={`embedded:${embeddedAgent.id}`}>
+              {embeddedAgent.name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+    </select>
+  );
 }

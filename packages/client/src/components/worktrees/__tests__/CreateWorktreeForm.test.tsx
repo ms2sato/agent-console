@@ -358,6 +358,79 @@ describe('CreateWorktreeForm', () => {
     });
   });
 
+  describe('embedded agent selection (Issue #1038)', () => {
+    const mockEmbeddedAgentsResponse = {
+      embeddedAgents: [{ id: 'embedded-1', name: 'Local GPT' }],
+    };
+
+    beforeEach(() => {
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('embedded-agents')) {
+          return Promise.resolve(createMockResponse(mockEmbeddedAgentsResponse));
+        }
+        if (url.includes('/remote-status')) {
+          return Promise.resolve(createMockResponse({ behind: 0, ahead: 0 }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+    });
+
+    it('should submit with the resolved terminal agentId and no embeddedAgentId when no embedded agent is selected (regression)', async () => {
+      const user = userEvent.setup();
+      const { props } = renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const branchInput = screen.getByPlaceholderText('New branch name');
+      await user.type(branchInput, 'feature/no-embedded');
+
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        agentId: 'claude-code',
+        embeddedAgentId: undefined,
+      });
+    });
+
+    it('should submit with embeddedAgentId and no agentId when an embedded agent is selected', async () => {
+      const user = userEvent.setup();
+      const { props } = renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const select = screen.getByRole('combobox') as HTMLSelectElement;
+      await user.selectOptions(select, 'embedded:embedded-1');
+
+      const branchInput = screen.getByPlaceholderText('New branch name');
+      await user.type(branchInput, 'feature/with-embedded');
+
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        mode: 'custom',
+        agentId: undefined,
+        embeddedAgentId: 'embedded-1',
+      });
+    });
+  });
+
   describe('default agent sorting', () => {
     it('should render the default agent first even when it is not first in the API response', async () => {
       // Override agents response so custom-agent is first in the API response

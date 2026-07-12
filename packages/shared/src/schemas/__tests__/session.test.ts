@@ -110,6 +110,55 @@ describe('CreateWorktreeSessionRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  describe('embeddedAgentId (Issue #1038)', () => {
+    it('should accept embeddedAgentId alone', () => {
+      const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+        type: 'worktree',
+        repositoryId: 'repo-123',
+        worktreeId: 'wt-456',
+        locationPath: '/path/to/worktree',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.embeddedAgentId).toBe('embedded-agent-123');
+      }
+    });
+
+    it('should accept neither agentId nor embeddedAgentId (backward compat)', () => {
+      const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+        type: 'worktree',
+        repositoryId: 'repo-123',
+        worktreeId: 'wt-456',
+        locationPath: '/path/to/worktree',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject both agentId and embeddedAgentId set', () => {
+      const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+        type: 'worktree',
+        repositoryId: 'repo-123',
+        worktreeId: 'wt-456',
+        locationPath: '/path/to/worktree',
+        agentId: 'agent-123',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject empty embeddedAgentId', () => {
+      const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+        type: 'worktree',
+        repositoryId: 'repo-123',
+        worktreeId: 'wt-456',
+        locationPath: '/path/to/worktree',
+        embeddedAgentId: '',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('CreateQuickSessionRequestSchema', () => {
@@ -183,6 +232,47 @@ describe('CreateQuickSessionRequestSchema', () => {
       locationPath: '/path/to/directory',
     });
     expect(result.success).toBe(false);
+  });
+
+  describe('embeddedAgentId (Issue #1038)', () => {
+    it('should accept embeddedAgentId alone', () => {
+      const result = v.safeParse(CreateQuickSessionRequestSchema, {
+        type: 'quick',
+        locationPath: '/path/to/directory',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.embeddedAgentId).toBe('embedded-agent-123');
+      }
+    });
+
+    it('should accept neither agentId nor embeddedAgentId (backward compat)', () => {
+      const result = v.safeParse(CreateQuickSessionRequestSchema, {
+        type: 'quick',
+        locationPath: '/path/to/directory',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject both agentId and embeddedAgentId set', () => {
+      const result = v.safeParse(CreateQuickSessionRequestSchema, {
+        type: 'quick',
+        locationPath: '/path/to/directory',
+        agentId: 'agent-123',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject empty embeddedAgentId', () => {
+      const result = v.safeParse(CreateQuickSessionRequestSchema, {
+        type: 'quick',
+        locationPath: '/path/to/directory',
+        embeddedAgentId: '',
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 

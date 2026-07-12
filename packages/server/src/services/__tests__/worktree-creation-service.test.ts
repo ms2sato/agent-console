@@ -180,6 +180,26 @@ describe('createWorktreeWithSession', () => {
     expect(sm.createSession).toHaveBeenCalledTimes(1);
   });
 
+  it('forwards embeddedAgentId (no agentId) to sessionManager.createSession (Issue #1038)', async () => {
+    const sm = createMockSessionManager();
+    const { agentId: _agentId, ...paramsWithoutAgentId } = DEFAULT_PARAMS;
+    const result = await createWorktreeWithSession(
+      { ...paramsWithoutAgentId, embeddedAgentId: 'embedded-agent-1' },
+      sm,
+      mockWorktreeService,
+    );
+
+    expect(result.success).toBe(true);
+    expect(sm.createSession).toHaveBeenCalledTimes(1);
+    expect(sm.createSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: undefined,
+        embeddedAgentId: 'embedded-agent-1',
+      }),
+      undefined,
+    );
+  });
+
   it('skips fetch when useRemote is false', async () => {
     const sm = createMockSessionManager();
     const result = await createWorktreeWithSession(
