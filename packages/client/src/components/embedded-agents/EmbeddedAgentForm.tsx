@@ -123,6 +123,9 @@ export function EmbeddedAgentForm({
     <div className={`relative ${mode === 'create' ? 'card mb-6' : 'card'}`}>
       <FormOverlay isVisible={isPending} message={pendingMessage} />
       {mode === 'create' && <h3 className="text-lg font-medium mb-4">{title}</h3>}
+      <div className="text-xs text-gray-500 mb-4">
+        Embedded Agent is an experimental feature. API and behavior may change.
+      </div>
       <form onSubmit={handleSubmit(onSubmit)}>
         <fieldset disabled={isPending} className="flex flex-col gap-4">
           <FormField label="Name" error={errors.name}>
