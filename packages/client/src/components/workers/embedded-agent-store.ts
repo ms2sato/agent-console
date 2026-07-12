@@ -111,7 +111,6 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private historyRequested = false; // per WS connection
-  private historyInFlight = false; // single-flight guard (mirrors terminal-store)
   private noReconnect = false; // set on SESSION_DELETED / SESSION_PAUSED
 
   // Offset/epoch tracking (§3.1/§3.4 of terminal-history-paging.md; the same
@@ -248,7 +247,6 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     if (this.disposed) return;
     const url = getWorkerWsUrl(this.sessionId, this.workerId);
     this.historyRequested = false;
-    this.historyInFlight = false;
     const ws = new WebSocket(url);
     this.ws = ws;
 
@@ -274,7 +272,6 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     ws.onclose = (event) => {
       if (this.disposed) return;
       this.ws = null;
-      this.historyInFlight = false;
       this.updateStatus('disconnected');
       if (this.noReconnect) return;
       if (!shouldReconnect(event.code)) return;
@@ -327,7 +324,6 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   private requestHistory(): void {
     this.requestedFromOffset = this.lastOffset;
-    this.historyInFlight = true;
     this.patch({ loadingHistory: true });
     this.send({ type: 'request-history', fromOffset: this.lastOffset });
   }
@@ -346,7 +342,6 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
     switch (message.type) {
       case 'history':
-        this.historyInFlight = false;
         if (!this.acceptEpoch(message.epoch)) break;
         this.applyBytes(message.data, message.offset, message.startOffset);
         break;
@@ -395,9 +390,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.resetChatState();
     this.epoch = newEpoch;
     this.lastOffset = 0;
-    if (!this.historyInFlight) {
-      this.requestHistory();
-    }
+    // Always issue a fresh request for the NEW epoch, even if a request was
+    // already outstanding when the epoch bumped. That prior request targets
+    // the OLD epoch; its eventual (stale) response is dropped by acceptEpoch
+    // (wrong epoch) and can never satisfy the new epoch's history. A guard
+    // that skipped this call whenever a request was already in flight left
+    // the store stuck at loadingHistory: true forever, since no fresh
+    // request for the new epoch would ever be sent.
+    this.requestHistory();
   }
 
   private resetChatState(): void {

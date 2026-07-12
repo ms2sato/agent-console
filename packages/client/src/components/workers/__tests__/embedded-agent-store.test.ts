@@ -376,6 +376,61 @@ describe('embedded-agent-store', () => {
     expect(sent.filter((m) => (m as { type: string }).type === 'request-history')).toHaveLength(2);
   });
 
+  it('re-requests history for the new epoch even when an epoch bump arrives WHILE a history request is already in flight', async () => {
+    // Race: unlike the previous test (where the epoch bump arrives only
+    // AFTER the initial history response resolved historyInFlight back to
+    // false), here the epoch-bumping message arrives while the initial
+    // request-history is still outstanding. The old buggy behavior guarded
+    // the re-request on `!historyInFlight`, so it was skipped entirely; the
+    // eventual stale response for the OLD epoch would be dropped by
+    // acceptEpoch (correct) but no fresh request for the NEW epoch was ever
+    // sent, leaving the store stuck at loadingHistory: true forever.
+    const instance = getOrCreateEmbeddedAgentWorker('s17b', 'w17b');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    // The initial connect-time request-history (fromOffset: 0) is now
+    // outstanding: historyInFlight === true, no response yet.
+    expect(lastSentMessages(ws!).filter((m) => (m as { type: string }).type === 'request-history')).toHaveLength(1);
+
+    // Establish the first epoch via a live output chunk (does not itself
+    // trigger a reset -- acceptEpoch only resets on a LATER mismatch).
+    const data1 = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'first epoch' });
+    ws!.simulateMessage(outputMessage(data1, data1.length, 1));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(1);
+
+    // Epoch bump arrives while the ORIGINAL request-history (sent on open,
+    // still epoch-1-targeted) has not resolved yet.
+    const data2 = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second epoch' });
+    ws!.simulateMessage(outputMessage(data2, data2.length, 2));
+    await flush();
+
+    // A fresh request-history for the new epoch must have been sent despite
+    // the still-outstanding original request -- the store must not get
+    // stuck.
+    const sent = lastSentMessages(ws!);
+    expect(sent.filter((m) => (m as { type: string }).type === 'request-history')).toHaveLength(2);
+    expect(instance.getSnapshot().loadingHistory).toBe(true);
+    expect(instance.getSnapshot().entries).toHaveLength(0); // reset by the epoch bump
+
+    // The eventual stale response for the OLD epoch (1) must be dropped
+    // without disturbing the fresh (epoch-2) request's in-flight state...
+    const staleData = ndjson({ v: 1, type: 'user-message', id: 'stale', text: 'stale' });
+    ws!.simulateMessage(historyMessage(staleData, staleData.length, 0, 1));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // stale payload discarded
+
+    // ...and the fresh (epoch-2) response must still be applied correctly,
+    // proving the store is not permanently stuck.
+    const freshData = ndjson({ v: 1, type: 'user-message', id: 'u3', text: 'fresh epoch-2 history' });
+    ws!.simulateMessage(historyMessage(freshData, freshData.length, 0, 2));
+    await flush();
+    expect(instance.getSnapshot().loadingHistory).toBe(false);
+    expect(instance.getSnapshot().entries).toHaveLength(1);
+    expect(instance.getSnapshot().entries[0]).toMatchObject({ kind: 'user-message', text: 'fresh epoch-2 history' });
+  });
+
   it('disposes and re-subscribes to app-ws session-deleted', () => {
     const bus = makeAppBus();
     _setAppSubscribe(bus.subscribe);
