@@ -20,6 +20,7 @@ import { PtyMessageInjectionService } from '../pty-message-injection-service.js'
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
+import type { SpawnAsUserFn } from '../privilege-elevation.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -620,6 +621,48 @@ describe('SessionManager', () => {
       defs.delete('stub-def');
 
       await expect(manager.activateEmbeddedAgentWorker(sessionId, workerId)).rejects.toThrow('stub-def');
+    });
+
+    it('threads the spawnAsUserFn option through to EmbeddedAgentWorkerService.activate (DI seam)', async () => {
+      // Proves SessionManagerOptions.spawnAsUserFn is actually wired into the
+      // constructed EmbeddedAgentWorkerService rather than silently falling
+      // back to the real spawnAsUser (which would spawn a real `bun` process).
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      const subprocess = {
+        pid: 4242,
+        exited: new Promise<number>(() => {}), // never resolves; this test never deactivates
+        stdin,
+        stdout: new ReadableStream<Uint8Array>({ start() {} }),
+        stderr: new ReadableStream<Uint8Array>({ start() {} }),
+        kill: () => {},
+      };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      expect(worker).not.toBeNull();
+
+      await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+
+      expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
     });
   });
 
