@@ -158,6 +158,17 @@ describe('CreateWorktreeSessionRequestSchema', () => {
       });
       expect(result.success).toBe(false);
     });
+
+    it('should reject whitespace-only embeddedAgentId', () => {
+      const result = v.safeParse(CreateWorktreeSessionRequestSchema, {
+        type: 'worktree',
+        repositoryId: 'repo-123',
+        worktreeId: 'wt-456',
+        locationPath: '/path/to/worktree',
+        embeddedAgentId: '   ',
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 
@@ -270,6 +281,15 @@ describe('CreateQuickSessionRequestSchema', () => {
         type: 'quick',
         locationPath: '/path/to/directory',
         embeddedAgentId: '',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject whitespace-only embeddedAgentId', () => {
+      const result = v.safeParse(CreateQuickSessionRequestSchema, {
+        type: 'quick',
+        locationPath: '/path/to/directory',
+        embeddedAgentId: '   ',
       });
       expect(result.success).toBe(false);
     });

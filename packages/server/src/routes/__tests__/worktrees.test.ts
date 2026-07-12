@@ -325,6 +325,24 @@ describe('Worktrees API', () => {
       } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'];
     }
 
+    /**
+     * The route kicks off worktree creation in a fire-and-forget IIFE that
+     * eventually calls `sessionManager.createSession`. Mirror
+     * `createCapturingWorktreeMock` above: the mock resolves a promise the
+     * test awaits before asserting, instead of polling with `Bun.sleep(0)`.
+     */
+    function createCapturingSessionMock() {
+      let resolveCall!: (args: unknown[]) => void;
+      const captured = new Promise<unknown[]>((resolve) => {
+        resolveCall = resolve;
+      });
+      const mockFn = mock((...args: unknown[]) => {
+        resolveCall(args);
+        return Promise.resolve(undefined);
+      });
+      return { mockFn, captured };
+    }
+
     it('returns 400 when embeddedAgentId references an unknown embedded agent', async () => {
       app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
@@ -365,7 +383,7 @@ describe('Worktrees API', () => {
     });
 
     it('forwards embeddedAgentId to createWorktreeWithSession with agentId undefined (happy path)', async () => {
-      const createSessionMock = mock((_request: unknown) => Promise.resolve(undefined));
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
       (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
         mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
@@ -403,11 +421,7 @@ describe('Worktrees API', () => {
 
       expect(res.status).toBe(202);
 
-      // The route kicks off worktree creation in a fire-and-forget IIFE;
-      // poll until sessionManager.createSession has been invoked.
-      await Bun.sleep(0);
-      await Bun.sleep(0);
-      await Bun.sleep(0);
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
 
       expect(createSessionMock).toHaveBeenCalledTimes(1);
       const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
@@ -419,7 +433,7 @@ describe('Worktrees API', () => {
     });
 
     it('regression: agentId-only request still forwards agentId with embeddedAgentId undefined', async () => {
-      const createSessionMock = mock((_request: unknown) => Promise.resolve(undefined));
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
       (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
         mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
@@ -457,9 +471,7 @@ describe('Worktrees API', () => {
 
       expect(res.status).toBe(202);
 
-      await Bun.sleep(0);
-      await Bun.sleep(0);
-      await Bun.sleep(0);
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
 
       expect(createSessionMock).toHaveBeenCalledTimes(1);
       const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
@@ -471,7 +483,7 @@ describe('Worktrees API', () => {
     });
 
     it('regression: no-agent-specified request still defaults agentId with embeddedAgentId undefined', async () => {
-      const createSessionMock = mock((_request: unknown) => Promise.resolve(undefined));
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
       (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
         mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
 
@@ -508,9 +520,7 @@ describe('Worktrees API', () => {
 
       expect(res.status).toBe(202);
 
-      await Bun.sleep(0);
-      await Bun.sleep(0);
-      await Bun.sleep(0);
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
 
       expect(createSessionMock).toHaveBeenCalledTimes(1);
       const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {

@@ -214,7 +214,7 @@ const CreateWorktreeBaseSchema = v.strictObject({
    * with `agentId` -- widens the PER-WORKTREE initial-worker choice only;
    * `Repository.defaultAgentId` remains terminal-agent-only.
    */
-  embeddedAgentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
+  embeddedAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
 });

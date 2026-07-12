@@ -8,7 +8,7 @@ import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-proces
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup, makeRepositoryEnvLookup } from '../../__tests__/utils/repository-lookup-mock.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
-import { AgentManager } from '../agent-manager.js';
+import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { ValidationError } from '../../lib/errors.js';
 import type { PersistedWorker } from '../persistence-service.js';
@@ -499,21 +499,36 @@ describe('SessionManager', () => {
       expect(session.workers.some((w: Worker) => w.type === 'embedded-agent')).toBe(false);
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent');
       expect(agentWorker).toBeDefined();
+      expect((agentWorker as Worker & { agentId: string }).agentId).toBe(CLAUDE_CODE_AGENT_ID);
       expect(session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
     });
 
     it('still creates a terminal agent worker when only agentId is set (regression)', async () => {
+      // Register a real, non-default agent so this test can distinguish
+      // "explicit agentId forwards correctly" from "everything falls back
+      // to default no matter what agentId is passed" -- a literal like
+      // 'claude-code' is NOT a registered agent ID (the builtin is
+      // registered as CLAUDE_CODE_AGENT_ID = 'claude-code-builtin') and
+      // would silently pass via fallback-to-default, not via explicit
+      // agentId forwarding.
+      const customAgent = await agentManager.registerAgent({
+        name: 'Custom Test Agent',
+        commandTemplate: 'echo {{prompt}}',
+      });
+
       const manager = await getSessionManagerWithEmbedded();
 
       const session = await manager.createSession({
         type: 'quick',
         locationPath: '/test/path',
-        agentId: 'claude-code',
+        agentId: customAgent.id,
       });
 
       expect(session.workers.length).toBe(2);
       expect(session.workers.some((w: Worker) => w.type === 'embedded-agent')).toBe(false);
-      expect(session.workers.some((w: Worker) => w.type === 'agent')).toBe(true);
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent');
+      expect(agentWorker).toBeDefined();
+      expect((agentWorker as Worker & { agentId: string }).agentId).toBe(customAgent.id);
       expect(session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
     });
   });

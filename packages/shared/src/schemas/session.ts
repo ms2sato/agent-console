@@ -26,7 +26,7 @@ export const CreateWorktreeSessionRequestSchema = v.pipe(
      * Embedded-agent selection for the initial worker. Mutually exclusive
      * with `agentId`.
      */
-    embeddedAgentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
+    embeddedAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
     continueConversation: v.optional(v.boolean()),
     initialPrompt: v.optional(v.string()),
     title: v.optional(v.string()),
@@ -74,7 +74,7 @@ export const CreateQuickSessionRequestSchema = v.pipe(
      * Embedded-agent selection for the initial worker. Mutually exclusive
      * with `agentId`.
      */
-    embeddedAgentId: v.optional(v.pipe(v.string(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
+    embeddedAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
     continueConversation: v.optional(v.boolean()),
     initialPrompt: v.optional(v.string()),
     title: v.optional(v.string()),

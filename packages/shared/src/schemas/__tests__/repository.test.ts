@@ -376,6 +376,16 @@ describe('CreateWorktreePromptRequestSchema', () => {
       });
       expect(result.success).toBe(false);
     });
+
+    it('should reject whitespace-only embeddedAgentId', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+        embeddedAgentId: '   ',
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 
