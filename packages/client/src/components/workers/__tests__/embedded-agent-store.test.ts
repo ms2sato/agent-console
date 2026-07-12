@@ -513,6 +513,49 @@ describe('embedded-agent-store', () => {
     expect(texts).toEqual(['history-payload', 'queued-newer']);
   });
 
+  it('flushes the resync queue on HISTORY_LOAD_FAILED instead of freezing live output forever (architect re-audit)', async () => {
+    // Terminal-store avoids a stuck resync via its resync timeout (not
+    // ported here -- see the `resyncing` field comment). The equivalent
+    // guard for this store is an error-path flush: if the request-history
+    // that would normally complete the resync fails server-side, nothing
+    // else will ever call flushResyncQueue, so every subsequent live
+    // `output` frame would silently accumulate in `queuedOutput` forever.
+    const { instance, ws } = connectAndBumpEpoch('s20c', 'w20c');
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+
+    // A live frame arrives before the (about to fail) history response.
+    const queuedData = ndjson({ v: 1, type: 'user-message', id: 'queued', text: 'queued before failure' });
+    ws.simulateMessage(outputMessage(queuedData, queuedData.length, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // queued, not yet folded
+
+    // The server reports the request-history itself failed.
+    ws.simulateMessage(
+      JSON.stringify({ type: 'error', message: 'history load failed', code: 'HISTORY_LOAD_FAILED' }),
+    );
+    await flush();
+
+    // The queued frame must not be lost: flushResyncQueue(lastOffset) with
+    // lastOffset still 0 (nothing folded yet in this failure path) applies
+    // the entire queue -- nothing is dropped as "already covered" since no
+    // history payload was ever folded.
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'queued before failure' });
+
+    // The store must not be stuck: resyncing is confirmed false by
+    // observing that a SUBSEQUENT live frame is applied immediately
+    // (normal live-output path), not queued forever.
+    const afterData = ndjson({ v: 1, type: 'user-message', id: 'after', text: 'after failure' });
+    ws.simulateMessage(outputMessage(afterData, queuedData.length + afterData.length, 2));
+    await flush();
+
+    const finalEntries = instance.getSnapshot().entries;
+    expect(finalEntries).toHaveLength(2);
+    expect(finalEntries[1]).toMatchObject({ kind: 'user-message', text: 'after failure' });
+  });
+
   it('disposes and re-subscribes to app-ws session-deleted', () => {
     const bus = makeAppBus();
     _setAppSubscribe(bus.subscribe);

@@ -653,6 +653,22 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         this.reconnectTimer = null;
       }
     }
+    // A failed request-history during an epoch resync means the fresh
+    // history reply that flushResyncQueue normally waits for will never
+    // arrive -- without this, every subsequent live `output` frame would
+    // keep queuing forever (resyncing never flips back to false), freezing
+    // the chat view until a full reconnect. `lastOffset` is still 0 here
+    // (beginEpochReset reset it before anything could be queued, and queued
+    // frames never advance it), so flushResyncQueue(0) applies the ENTIRE
+    // queue -- nothing is dropped as "already covered", because no history
+    // was ever folded in this failure path, so there is no duplication
+    // risk. This trades "wait forever for a history reply that will never
+    // come" for "degraded-but-live": skip the failed load, apply whatever
+    // live output already arrived, and let normal live-output handling
+    // resume from there.
+    if (code === 'HISTORY_LOAD_FAILED' && this.resyncing) {
+      this.flushResyncQueue(this.lastOffset);
+    }
   }
 
   // --- Snapshot helpers ---
