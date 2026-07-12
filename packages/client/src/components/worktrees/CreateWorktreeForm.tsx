@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
-import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
+import { WorktreeAgentSelector, useResolvedAgentId } from '../AgentSelector';
 import { Spinner } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
@@ -82,6 +82,7 @@ export function CreateWorktreeForm({
       baseBranch: '',
       sessionTitle: prefillValues?.sessionTitle ?? '',
       agentId: defaultAgentId ?? undefined,
+      embeddedAgentId: undefined,
     },
     mode: 'onBlur',
     shouldUnregister: true,
@@ -166,6 +167,7 @@ export function CreateWorktreeForm({
   }, [draftKey]);
 
   const agentId = watch('agentId');
+  const embeddedAgentId = watch('embeddedAgentId');
   const resolvedAgentId = useResolvedAgentId(agentId, defaultAgentId ?? undefined);
 
   const branchNameMode = watch('branchNameMode');
@@ -227,7 +229,8 @@ export function CreateWorktreeForm({
           initialPrompt: data.initialPrompt!.trim(),
           baseBranch: data.baseBranch?.trim() || undefined,
           autoStartSession: true,
-          agentId: resolvedAgentId,
+          agentId: embeddedAgentId ? undefined : resolvedAgentId,
+          embeddedAgentId: embeddedAgentId || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
         };
@@ -237,7 +240,8 @@ export function CreateWorktreeForm({
           branch: data.customBranch!.trim(),
           baseBranch: data.baseBranch?.trim() || undefined,
           autoStartSession: true,
-          agentId: resolvedAgentId,
+          agentId: embeddedAgentId ? undefined : resolvedAgentId,
+          embeddedAgentId: embeddedAgentId || undefined,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
@@ -247,7 +251,8 @@ export function CreateWorktreeForm({
           mode: 'existing',
           branch: data.customBranch!.trim(),
           autoStartSession: true,
-          agentId: resolvedAgentId,
+          agentId: embeddedAgentId ? undefined : resolvedAgentId,
+          embeddedAgentId: embeddedAgentId || undefined,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
         };
@@ -288,9 +293,18 @@ export function CreateWorktreeForm({
             {headerSlot}
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-sm text-gray-400">Agent:</span>
-              <AgentSelector
-                value={resolvedAgentId}
-                onChange={(value) => setValue('agentId', value, { shouldDirty: true })}
+              <WorktreeAgentSelector
+                agentId={resolvedAgentId}
+                embeddedAgentId={embeddedAgentId}
+                onChange={(selection) => {
+                  if (selection.embeddedAgentId) {
+                    setValue('embeddedAgentId', selection.embeddedAgentId, { shouldDirty: true });
+                    setValue('agentId', undefined, { shouldDirty: true });
+                  } else {
+                    setValue('agentId', selection.agentId, { shouldDirty: true });
+                    setValue('embeddedAgentId', undefined, { shouldDirty: true });
+                  }
+                }}
                 priorityAgentId={defaultAgentId ?? undefined}
               />
             </div>
@@ -309,6 +323,11 @@ export function CreateWorktreeForm({
                   rows={3}
                   error={errors.initialPrompt}
                 />
+                {embeddedAgentId && (
+                  <p className="text-xs text-yellow-400 mt-1">
+                    The initial prompt is used for branch naming only; it will not be delivered to the embedded agent (v1 limitation).
+                  </p>
+                )}
               </FormField>
 
               {/* Session title input */}

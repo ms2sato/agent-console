@@ -204,6 +204,21 @@ describe('AddAgentWorkerMenu', () => {
     });
   });
 
+  it('fetches embedded agents from the /embedded-agents endpoint', async () => {
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+    await waitFor(() => {
+      const calledUrls = mockFetch.mock.calls.map(([input]) =>
+        input instanceof Request ? input.url : String(input),
+      );
+      expect(calledUrls.some((url) => url.includes('/embedded-agents'))).toBe(true);
+    });
+  });
+
   it('shows a "Shell" item as the first item, with a distinct "Shell" badge, regardless of loading/empty state', async () => {
     await renderWithRouter(
       <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,

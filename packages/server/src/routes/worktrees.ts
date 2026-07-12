@@ -48,7 +48,7 @@ const worktrees = new Hono<AppBindings>()
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, agentManager, worktreeService, broadcastToApp, suggestSessionMetadata } = c.get('appContext');
+    const { repositoryManager, sessionManager, agentManager, embeddedAgentManager, worktreeService, broadcastToApp, suggestSessionMetadata } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -57,13 +57,25 @@ const worktrees = new Hono<AppBindings>()
 
     const body = c.req.valid('json');
     const authUser = c.get('authUser');
-    const { taskId, mode, autoStartSession, agentId, initialPrompt, title } = body;
+    const { taskId, mode, autoStartSession, agentId, embeddedAgentId, initialPrompt, title } = body;
 
-    // Validate agent exists before returning accepted (fail fast for invalid config)
+    // Validate agent exists before returning accepted (fail fast for invalid config).
+    // This terminal agent is always resolved -- it drives `suggestSessionMetadata`'s
+    // headless branch/title generation in 'prompt' mode regardless of whether the
+    // user selected an embedded agent for the actual initial worker (embedded agents
+    // have no headless CLI template and can never drive branch-name suggestion).
     const selectedAgentId = agentId || CLAUDE_CODE_AGENT_ID;
     const agent = agentManager.getAgent(selectedAgentId);
     if (!agent) {
       throw new ValidationError(`Agent not found: ${selectedAgentId}`);
+    }
+
+    // Validate the embedded agent exists before returning accepted.
+    if (embeddedAgentId) {
+      const embeddedAgent = embeddedAgentManager.getEmbeddedAgent(embeddedAgentId);
+      if (!embeddedAgent) {
+        throw new ValidationError(`Embedded agent not found: ${embeddedAgentId}`);
+      }
     }
 
     // Execute worktree creation in background (fire-and-forget)
@@ -130,7 +142,8 @@ const worktrees = new Hono<AppBindings>()
           branch,
           baseBranch,
           useRemote,
-          agentId: selectedAgentId,
+          agentId: embeddedAgentId ? undefined : selectedAgentId,
+          embeddedAgentId,
           initialPrompt,
           title: effectiveTitle,
           autoStartSession,

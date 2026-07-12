@@ -19,7 +19,7 @@ import {
   findReferencingWorkers,
   type EmbeddedAgentWorkerReference,
 } from '../../components/embedded-agents';
-import { useEmbeddedAgents } from '../../components/sessions/hooks/useEmbeddedAgents';
+import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { Spinner } from '../../components/ui/Spinner';

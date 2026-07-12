@@ -308,6 +308,233 @@ describe('Worktrees API', () => {
   });
 
   // =========================================================================
+  // POST /api/repositories/:id/worktrees (Issue #1038: embedded-agent
+  // selection as the initial worker)
+  // =========================================================================
+
+  describe('POST /api/repositories/:id/worktrees (Issue #1038 embedded-agent selection)', () => {
+    const mockAgentManager = {
+      getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
+    } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+
+    function createMockEmbeddedAgentManager(knownId: string) {
+      return {
+        getEmbeddedAgent: mock((id: string) =>
+          id === knownId ? { id: knownId, name: 'My Embedded Agent' } : undefined,
+        ),
+      } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'];
+    }
+
+    /**
+     * The route kicks off worktree creation in a fire-and-forget IIFE that
+     * eventually calls `sessionManager.createSession`. Mirror
+     * `createCapturingWorktreeMock` above: the mock resolves a promise the
+     * test awaits before asserting, instead of polling with `Bun.sleep(0)`.
+     */
+    function createCapturingSessionMock() {
+      let resolveCall!: (args: unknown[]) => void;
+      const captured = new Promise<unknown[]>((resolve) => {
+        resolveCall = resolve;
+      });
+      const mockFn = mock((...args: unknown[]) => {
+        resolveCall(args);
+        return Promise.resolve(undefined);
+      });
+      return { mockFn, captured };
+    }
+
+    it('returns 400 when embeddedAgentId references an unknown embedded agent', async () => {
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-1038-unknown',
+            mode: 'custom',
+            branch: 'issue-1038-feature',
+            baseBranch: 'main',
+            useRemote: false,
+            autoStartSession: false,
+            embeddedAgentId: 'unknown-embedded-agent',
+          }),
+        },
+      );
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Embedded agent not found: unknown-embedded-agent');
+    });
+
+    it('forwards embeddedAgentId to createWorktreeWithSession with agentId undefined (happy path)', async () => {
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
+      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
+        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-1038-happy',
+            mode: 'custom',
+            branch: 'issue-1038-feature',
+            baseBranch: 'main',
+            useRemote: false,
+            embeddedAgentId: 'known-embedded-agent',
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
+
+      expect(createSessionMock).toHaveBeenCalledTimes(1);
+      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
+        agentId?: string;
+        embeddedAgentId?: string;
+      };
+      expect(sessionRequest.embeddedAgentId).toBe('known-embedded-agent');
+      expect(sessionRequest.agentId).toBeUndefined();
+    });
+
+    it('regression: agentId-only request still forwards agentId with embeddedAgentId undefined', async () => {
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
+      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
+        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-1038-regression',
+            mode: 'custom',
+            branch: 'issue-1038-regression-feature',
+            baseBranch: 'main',
+            useRemote: false,
+            agentId: 'claude-code-builtin',
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
+
+      expect(createSessionMock).toHaveBeenCalledTimes(1);
+      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
+        agentId?: string;
+        embeddedAgentId?: string;
+      };
+      expect(sessionRequest.agentId).toBe('claude-code-builtin');
+      expect(sessionRequest.embeddedAgentId).toBeUndefined();
+    });
+
+    it('regression: no-agent-specified request still defaults agentId with embeddedAgentId undefined', async () => {
+      const { mockFn: createSessionMock, captured } = createCapturingSessionMock();
+      (mockWorktreeService as unknown as { createWorktree: ReturnType<typeof mock> }).createWorktree =
+        mock(() => Promise.resolve({ worktreePath: WORKTREE_PATH, index: 1 }));
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(
+        `/api/repositories/${TEST_REPO.id}/worktrees`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            taskId: 'task-issue-1038-default',
+            mode: 'custom',
+            branch: 'issue-1038-default-feature',
+            baseBranch: 'main',
+            useRemote: false,
+          }),
+        },
+      );
+
+      expect(res.status).toBe(202);
+
+      await captured; // resolves as soon as createSession is invoked -- no sleep needed
+
+      expect(createSessionMock).toHaveBeenCalledTimes(1);
+      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
+        agentId?: string;
+        embeddedAgentId?: string;
+      };
+      // No agentId in request body -> selectedAgentId falls back to
+      // CLAUDE_CODE_AGENT_ID (route default), forwarded unchanged.
+      expect(sessionRequest.agentId).toBe('claude-code-builtin');
+      expect(sessionRequest.embeddedAgentId).toBeUndefined();
+    });
+  });
+
+  // =========================================================================
   // POST /api/repositories/:id/worktrees/pull
   // =========================================================================
 

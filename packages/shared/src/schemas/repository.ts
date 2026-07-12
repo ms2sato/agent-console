@@ -209,6 +209,12 @@ const CreateWorktreeBaseSchema = v.strictObject({
   ),
   autoStartSession: v.optional(v.boolean()),
   agentId: v.optional(v.string()),
+  /**
+   * Embedded-agent selection for the initial worker. Mutually exclusive
+   * with `agentId` -- widens the PER-WORKTREE initial-worker choice only;
+   * `Repository.defaultAgentId` remains terminal-agent-only.
+   */
+  embeddedAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
 });
@@ -216,37 +222,55 @@ const CreateWorktreeBaseSchema = v.strictObject({
 /**
  * Schema for creating worktree with prompt-based branch name
  */
-export const CreateWorktreePromptRequestSchema = v.strictObject({
-  ...CreateWorktreeBaseSchema.entries,
-  mode: v.literal('prompt'),
-  initialPrompt: v.pipe(
-    v.string(),
-    v.trim(),
-    v.minLength(1, 'Initial prompt is required for prompt mode')
+export const CreateWorktreePromptRequestSchema = v.pipe(
+  v.strictObject({
+    ...CreateWorktreeBaseSchema.entries,
+    mode: v.literal('prompt'),
+    initialPrompt: v.pipe(
+      v.string(),
+      v.trim(),
+      v.minLength(1, 'Initial prompt is required for prompt mode')
+    ),
+    baseBranch: OptionalBranchSchema,
+    useRemote: v.optional(v.boolean()), // Branch from origin/<base> instead of local <base>. Defaults to true.
+  }),
+  v.check(
+    (val) => !(val.agentId && val.embeddedAgentId),
+    'Cannot specify both agentId and embeddedAgentId',
   ),
-  baseBranch: OptionalBranchSchema,
-  useRemote: v.optional(v.boolean()), // Branch from origin/<base> instead of local <base>. Defaults to true.
-});
+);
 
 /**
  * Schema for creating worktree with custom branch name
  */
-export const CreateWorktreeCustomRequestSchema = v.strictObject({
-  ...CreateWorktreeBaseSchema.entries,
-  mode: v.literal('custom'),
-  branch: RequiredBranchSchema,
-  baseBranch: OptionalBranchSchema,
-  useRemote: v.optional(v.boolean()), // Branch from origin/<base> instead of local <base>. Defaults to true.
-});
+export const CreateWorktreeCustomRequestSchema = v.pipe(
+  v.strictObject({
+    ...CreateWorktreeBaseSchema.entries,
+    mode: v.literal('custom'),
+    branch: RequiredBranchSchema,
+    baseBranch: OptionalBranchSchema,
+    useRemote: v.optional(v.boolean()), // Branch from origin/<base> instead of local <base>. Defaults to true.
+  }),
+  v.check(
+    (val) => !(val.agentId && val.embeddedAgentId),
+    'Cannot specify both agentId and embeddedAgentId',
+  ),
+);
 
 /**
  * Schema for creating worktree from existing branch
  */
-export const CreateWorktreeExistingRequestSchema = v.strictObject({
-  ...CreateWorktreeBaseSchema.entries,
-  mode: v.literal('existing'),
-  branch: RequiredBranchSchema,
-});
+export const CreateWorktreeExistingRequestSchema = v.pipe(
+  v.strictObject({
+    ...CreateWorktreeBaseSchema.entries,
+    mode: v.literal('existing'),
+    branch: RequiredBranchSchema,
+  }),
+  v.check(
+    (val) => !(val.agentId && val.embeddedAgentId),
+    'Cannot specify both agentId and embeddedAgentId',
+  ),
+);
 
 /**
  * Schema for creating any worktree (union)

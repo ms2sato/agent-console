@@ -332,6 +332,61 @@ describe('CreateWorktreePromptRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  describe('embeddedAgentId (Issue #1038)', () => {
+    it('should accept embeddedAgentId alone', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.embeddedAgentId).toBe('embedded-agent-123');
+      }
+    });
+
+    it('should accept neither agentId nor embeddedAgentId (backward compat)', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject both agentId and embeddedAgentId set', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+        agentId: 'agent-123',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject empty embeddedAgentId', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+        embeddedAgentId: '',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject whitespace-only embeddedAgentId', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+        embeddedAgentId: '   ',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('CreateWorktreeCustomRequestSchema', () => {
@@ -467,6 +522,51 @@ describe('CreateWorktreeCustomRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  describe('embeddedAgentId (Issue #1038)', () => {
+    it('should accept embeddedAgentId alone', () => {
+      const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+        taskId: validTaskId,
+        mode: 'custom',
+        branch: 'feature/custom-branch',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.embeddedAgentId).toBe('embedded-agent-123');
+      }
+    });
+
+    it('should accept neither agentId nor embeddedAgentId (backward compat)', () => {
+      const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+        taskId: validTaskId,
+        mode: 'custom',
+        branch: 'feature/custom-branch',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject both agentId and embeddedAgentId set', () => {
+      const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+        taskId: validTaskId,
+        mode: 'custom',
+        branch: 'feature/custom-branch',
+        agentId: 'agent-123',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject empty embeddedAgentId', () => {
+      const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+        taskId: validTaskId,
+        mode: 'custom',
+        branch: 'feature/custom-branch',
+        embeddedAgentId: '',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('CreateWorktreeExistingRequestSchema', () => {
@@ -576,6 +676,51 @@ describe('CreateWorktreeExistingRequestSchema', () => {
       branch: '日本語ブランチ',
     });
     expect(result.success).toBe(false);
+  });
+
+  describe('embeddedAgentId (Issue #1038)', () => {
+    it('should accept embeddedAgentId alone', () => {
+      const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+        taskId: validTaskId,
+        mode: 'existing',
+        branch: 'existing-branch',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.embeddedAgentId).toBe('embedded-agent-123');
+      }
+    });
+
+    it('should accept neither agentId nor embeddedAgentId (backward compat)', () => {
+      const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+        taskId: validTaskId,
+        mode: 'existing',
+        branch: 'existing-branch',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject both agentId and embeddedAgentId set', () => {
+      const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+        taskId: validTaskId,
+        mode: 'existing',
+        branch: 'existing-branch',
+        agentId: 'agent-123',
+        embeddedAgentId: 'embedded-agent-123',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject empty embeddedAgentId', () => {
+      const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+        taskId: validTaskId,
+        mode: 'existing',
+        branch: 'existing-branch',
+        embeddedAgentId: '',
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 
