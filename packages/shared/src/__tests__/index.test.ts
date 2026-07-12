@@ -87,6 +87,16 @@ describe('shared index exports', () => {
     expect(accepted.success).toBe(true);
   });
 
+  it('should re-export NdjsonLineSplitter and split a chunk into lines', async () => {
+    const mod = await import('../index.js');
+
+    expect(mod.NdjsonLineSplitter).toBeDefined();
+    const splitter = new mod.NdjsonLineSplitter();
+    const result = splitter.push('{"a":1}\n{"b":2}');
+    expect(result.lines).toEqual(['{"a":1}']);
+    expect(splitter.carry).toBe('{"b":2}');
+  });
+
   it('should export ConditionalWakeupInfo type', async () => {
     const mod = await import('../index.js');
 
