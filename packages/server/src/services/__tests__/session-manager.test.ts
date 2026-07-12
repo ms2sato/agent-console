@@ -21,6 +21,7 @@ import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { SpawnAsUserFn } from '../privilege-elevation.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -691,6 +692,139 @@ describe('SessionManager', () => {
       // exit path (not the multi-second timeout), matching the
       // `EmbeddedAgentWorkerService.deactivate escalation` test pattern.
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
+    });
+  });
+
+  describe('MCP token registry sharing (Phase 4)', () => {
+    // WorkerManager (terminal-agent PTY path) and EmbeddedAgentWorkerService
+    // (embedded-agent path) are both constructed with the SAME
+    // `options.mcpTokenRegistry` instance (session-manager.ts constructor).
+    // A future refactor that accidentally constructs two separate
+    // `new McpTokenRegistry()` instances -- one per consumer -- would make
+    // each consumer reject the other's tokens with no error until it hit
+    // production. This test proves the injected registry is the one live
+    // instance both consumers observe, by (a) minting directly on it to
+    // simulate the WorkerManager/terminal-agent path, (b) driving a real
+    // EmbeddedAgentWorkerService.activate() and confirming its minted token
+    // lands in the SAME instance, and (c) confirming revokeByWorker scopes
+    // to a single worker rather than clearing the shared registry.
+    const STUB_DEF = {
+      id: 'stub-def',
+      name: 'Stub Model',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    it('mints embedded-agent tokens into the same injected registry a terminal-agent-path token was minted into, and scopes revocation per worker', async () => {
+      const sharedRegistry = new McpTokenRegistry();
+
+      // Simulate a token minted by the terminal-agent (WorkerManager) PTY
+      // activation path, which mints directly on `options.mcpTokenRegistry`
+      // (see worker-manager.ts's `this.mcpTokenRegistry.mint(...)` call in
+      // AUTH_MODE=multi-user). We mint directly here rather than driving a
+      // real multi-user PTY activation because WorkerManager's multi-user
+      // mint path additionally depends on `lookupOsUserFn` /
+      // `runAsUserImpl` seams that SessionManagerOptions does not expose
+      // (those are covered by dedicated tests in worker-manager.test.ts);
+      // this test's concern is purely the shared-instance wiring.
+      const terminalWorkerToken = sharedRegistry.mint({
+        sessionId: 'terminal-session',
+        workerId: 'terminal-worker-fake',
+        userId: 'test-user-id',
+      });
+      expect(sharedRegistry.verify(terminalWorkerToken)).not.toBeNull();
+
+      // Capture stdin writes so we can recover the actual token
+      // EmbeddedAgentWorkerService.activate() mints and delivers in its
+      // init command, without duplicating its mint/JSON logic.
+      const written: string[] = [];
+      const stdin = {
+        write: (data: string) => { written.push(data); return 0; },
+        end: () => {},
+        flush: () => 0,
+      };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const subprocess = { pid: 4343, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        mcpTokenRegistry: sharedRegistry,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      expect(worker).not.toBeNull();
+      const embeddedWorkerId = worker!.id;
+
+      await manager.activateEmbeddedAgentWorker(session.id, embeddedWorkerId);
+
+      // Recover the token EmbeddedAgentWorkerService minted from the init
+      // command it wrote to stdin.
+      expect(written.length).toBe(1);
+      const initCommand = JSON.parse(written[0]) as { mcp: { token: string } };
+      const embeddedWorkerToken = initCommand.mcp.token;
+      expect(embeddedWorkerToken).not.toBe(terminalWorkerToken);
+
+      // The embedded-agent token verifies against `sharedRegistry` -- the
+      // exact instance this test constructed and injected via
+      // `options.mcpTokenRegistry`. Since this test holds no other
+      // reference to whatever registry EmbeddedAgentWorkerService actually
+      // used internally, a successful verify here proves it minted into
+      // `sharedRegistry` and not a separate internally-constructed instance.
+      const embeddedIdentity = sharedRegistry.verify(embeddedWorkerToken);
+      expect(embeddedIdentity).toEqual({
+        sessionId: session.id,
+        workerId: embeddedWorkerId,
+        userId: 'test-user-id',
+      });
+
+      // The terminal-agent-path token minted earlier is untouched by the
+      // embedded-agent activation -- both tokens coexist in one registry.
+      expect(sharedRegistry.verify(terminalWorkerToken)).not.toBeNull();
+
+      // Revocation is scoped per worker: revoking the embedded worker's
+      // token must not clear the terminal-agent-path token that shares the
+      // same registry instance.
+      sharedRegistry.revokeByWorker(embeddedWorkerId);
+      expect(sharedRegistry.verify(embeddedWorkerToken)).toBeNull();
+      expect(sharedRegistry.verify(terminalWorkerToken)).not.toBeNull();
+
+      // Teardown: deactivate to avoid leaving the fake subprocess's
+      // exit-observer awaiting forever past the test (mirrors the
+      // `threads the spawnAsUserFn option...` test's teardown pattern).
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, embeddedWorkerId);
       simulateExit(0);
       await deactivatePromise;
     });
