@@ -590,13 +590,19 @@ export async function setupWebSocketRoutes(
       // Flag to prevent setupPtyWorkerHandlers from running after WebSocket is already closed
       let connectionClosed = false;
 
-      // Helper function to set up PTY worker handlers after async restore
+      // Helper function to set up stream-worker (PTY or embedded-agent) handlers
+      // after async activation/restore. Shared by both worker shapes because
+      // the byte-offset/epoch/connectionCallbacks framing is content-agnostic
+      // (isStreamWorker, worker-types.ts).
       // The order is critical to prevent duplicates and lost data:
       // 1. Get current offset BEFORE registering callbacks (marks the boundary)
       // 2. Register callbacks for NEW output (after the offset)
       // 3. Send history UP TO the offset we recorded
-      // @param wasRestored - true if PTY was restored (was hibernated), false if already active
-      async function setupPtyWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number, wasRestored: boolean) {
+      // @param wasRestored - true if PTY was restored (was hibernated), false if already active.
+      //   Always false for embedded-agent workers (no restore path — every
+      //   activation is restart-semantics; a fresh epoch, not an explicit
+      //   server-restarted push, is what tells the client to invalidate cache).
+      async function setupStreamWorkerHandlers(ws: WSContext, workerType: string, connectionStartTime: number, wasRestored: boolean) {
         if (connectionClosed) {
           return;
         }
@@ -642,8 +648,13 @@ export async function setupWebSocketRoutes(
         // History is now sent on-demand via request-history message (Pull model)
         // Client should send request-history when the tab becomes visible and needs history
 
-        // Send current activity state on connection (for agent workers)
-        if (workerType === 'agent') {
+        // Send current activity state on connection (for agent / embedded-agent
+        // workers). Embedded-agent activity is loop-emitted and broadcast at
+        // the END of activate() (see EmbeddedAgentWorkerService), which
+        // happens BEFORE this connection's callbacks are attached above — a
+        // freshly-connecting client would otherwise miss that broadcast, so
+        // the current state is pushed explicitly here.
+        if (workerType === 'agent' || workerType === 'embedded-agent') {
           const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
           if (activityState) {
             sender?.send({ type: 'activity', state: activityState });
@@ -679,6 +690,22 @@ export async function setupWebSocketRoutes(
           ws.close(closeCode, message);
         } catch {
           // Ignore send/close errors (connection may already be closed)
+        }
+      }
+
+      /**
+       * Send a non-fatal error message to the client WITHOUT closing the
+       * socket. Used for embedded-agent activation failures and message
+       * rejections (turn-in-progress, unsupported PTY messages) — per the
+       * architect pre-directive (#1021), every spec error-table row must be
+       * user-readable and must NOT silently close the connection.
+       */
+      function sendWorkerError(ws: WSContext, message: string, code: WorkerErrorCode): void {
+        try {
+          const errorMsg: WorkerServerMessage = { type: 'error', message, code };
+          ws.send(JSON.stringify(errorMsg));
+        } catch {
+          // Ignore send errors (connection may already be closed)
         }
       }
 
@@ -774,6 +801,42 @@ export async function setupWebSocketRoutes(
             return;
           }
 
+          // Handle embedded-agent workers differently: activate the loop
+          // subprocess (idempotent no-op if already activated -- Phase 2's
+          // in-flight guard already makes concurrent opens await the same
+          // promise, so no extra guard is needed here) instead of restoring a
+          // PTY. Every spec error-table row for activation failure (dangling
+          // definition, dangling apiKeyRef, missing session.createdBy, ...)
+          // must be user-readable in the UI and must NOT close the socket
+          // silently (architect pre-directive #2, Issue #1021).
+          if (worker.type === 'embedded-agent') {
+            (async () => {
+              try {
+                await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed');
+                if (!connectionClosed) {
+                  sendWorkerError(ws, message, 'ACTIVATION_FAILED');
+                }
+                return;
+              }
+
+              if (connectionClosed) {
+                return;
+              }
+
+              // wasRestored is always false here: embedded-agent has no revive
+              // path (every activation is restart-semantics), so the client
+              // learns about a reset conversation via the fresh epoch minted
+              // in activate(), not an explicit server-restarted push.
+              await setupStreamWorkerHandlers(ws, worker.type, connectionStartTime, false);
+            })().catch((err) => {
+              logger.error({ sessionId, workerId, err }, 'Error activating embedded-agent worker');
+            });
+            return;
+          }
+
           // PTY-based worker handling (agent/terminal)
           // Restore worker if it doesn't exist internally (e.g., after server restart)
           // Note: restoreWorker is async, so we handle it with .then()/.catch()
@@ -788,7 +851,7 @@ export async function setupWebSocketRoutes(
               return;
             }
 
-            await setupPtyWorkerHandlers(ws, result.worker.type, connectionStartTime, result.wasRestored);
+            await setupStreamWorkerHandlers(ws, result.worker.type, connectionStartTime, result.wasRestored);
           }).catch((err) => {
             logger.error({ sessionId, workerId, err }, 'Error restoring PTY worker');
             sendErrorAndClose(ws, 'Worker activation error', 'ACTIVATION_FAILED', WS_CLOSE_CODE.INTERNAL_ERROR);
@@ -961,6 +1024,63 @@ export async function setupWebSocketRoutes(
                 sessionManager,
               );
               return;
+            }
+
+            // embedded-agent workers accept a distinct client message set
+            // (EmbeddedAgentClientMessage) and explicitly reject PTY-only
+            // messages instead of silently no-op'ing them. request-history /
+            // request-history-range are shared (handled above, before this
+            // branch) since the byte-offset/epoch history machinery is
+            // content-agnostic (isStreamWorker).
+            //
+            // Deviation from the literal spec text: the spec's WS section says
+            // to add "valibot schemas alongside the existing ones" for these
+            // message types, but there is no WorkerClientMessageSchema (or any
+            // valibot schema) for the existing input/resize/request-history
+            // message shapes anywhere in packages/shared/src/schemas/ -- those
+            // are hand-validated in worker-handler.ts's validateWorkerMessage.
+            // Per this repo's Q1.5 rule (code is reality, cite it over the
+            // doc), embedded-agent client messages are validated the same
+            // hand-written way here, for consistency with their siblings.
+            if (worker.type === 'embedded-agent' && parsed && typeof parsed === 'object') {
+              const embeddedParsed = parsed as Record<string, unknown>;
+
+              if (embeddedParsed.type === 'embedded-user-message') {
+                if (typeof embeddedParsed.text !== 'string') {
+                  logger.warn({ sessionId, workerId }, 'Invalid embedded-user-message: text must be a string');
+                  return;
+                }
+                const text = embeddedParsed.text;
+                void sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, text).then((result) => {
+                  if (!result.ok) {
+                    const code: WorkerErrorCode = result.error === 'turn in progress'
+                      ? 'TURN_IN_PROGRESS'
+                      : 'ACTIVATION_FAILED';
+                    sendWorkerError(ws, result.error, code);
+                  }
+                }).catch((err) => {
+                  logger.error({ sessionId, workerId, err }, 'Error forwarding embedded-user-message');
+                  sendWorkerError(ws, 'Failed to send message', 'ACTIVATION_FAILED');
+                });
+                return;
+              }
+
+              if (embeddedParsed.type === 'embedded-cancel') {
+                const forwarded = sessionManager.cancelEmbeddedAgentTurn(sessionId, workerId);
+                if (!forwarded) {
+                  logger.debug({ sessionId, workerId }, 'embedded-cancel had no effect (worker not activated)');
+                }
+                return;
+              }
+
+              if (embeddedParsed.type === 'input' || embeddedParsed.type === 'resize') {
+                sendWorkerError(ws, 'embedded-agent workers do not support PTY input/resize', 'UNSUPPORTED_OPERATION');
+                return;
+              }
+
+              // Unknown/other type for an embedded-agent worker: fall through
+              // to the default handling below (log + ignore), consistent with
+              // how the PTY-side handleWorkerMessage treats unknown types.
             }
           } catch {
             // Not JSON or invalid - fall through to regular handler

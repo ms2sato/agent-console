@@ -734,6 +734,11 @@ export class WorkerLifecycleManager {
     if (worker?.type === 'agent') {
       return this.deps.workerManager.getActivityState(worker);
     }
+    // Embedded-agent workers carry activityState directly (loop-emitted, not
+    // ActivityDetector-derived) — see worker-types.ts InternalEmbeddedAgentWorker.
+    if (worker?.type === 'embedded-agent') {
+      return worker.activityState;
+    }
     return undefined;
   }
 

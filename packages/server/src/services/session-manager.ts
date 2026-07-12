@@ -22,6 +22,7 @@ import type { InternalSession, SessionCreationContext } from './internal-types.j
 import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
 import { EmbeddedAgentWorkerService } from './embedded-agent-worker-service.js';
+import type { SpawnAsUserFn } from './privilege-elevation.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
@@ -125,6 +126,15 @@ interface SessionManagerOptions {
    * init message. Defaults to the local server's `/mcp` endpoint.
    */
   getMcpBaseUrl?: () => string;
+  /**
+   * Test seam for the embedded-agent subprocess spawn helper. Defaults to the
+   * real `spawnAsUser` (production). Threaded straight through to
+   * `EmbeddedAgentWorkerService` so tests exercising the WS routing layer
+   * (routes.ts's `embedded-agent` branch) can drive a full activate() success
+   * path without spawning a real subprocess, mirroring the existing
+   * `EmbeddedAgentWorkerService` test seam.
+   */
+  spawnAsUserFn?: SpawnAsUserFn;
   /** User repository for resolving createdBy → username for PTY spawning */
   userRepository?: UserRepository;
   notificationManager?: NotificationManager | null;
@@ -261,6 +271,7 @@ export class SessionManager {
       mcpTokenRegistry: this.mcpTokenRegistry,
       workerOutputFileManager,
       getMcpBaseUrl,
+      spawnAsUserFn: options.spawnAsUserFn,
       getGlobalActivityCallback: () => this.globalActivityCallback,
       getGlobalWorkerExitCallback: () => this.globalWorkerExitCallback,
     });

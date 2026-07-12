@@ -127,6 +127,22 @@ export type WorkerClientMessage =
   | { type: 'request-history-range'; requestId: number; beforeOffset: number; maxBytes?: number };
 
 /**
+ * Client -> server messages valid only on an `embedded-agent` worker's
+ * WebSocket channel. `request-history` / `request-history-range` are shared
+ * with `WorkerClientMessage` (the byte-offset/epoch history machinery is
+ * content-agnostic); `input` / `resize` are explicitly rejected for this
+ * worker type (PTY-only semantics).
+ *
+ * Deliberately NOT folded into `WorkerClientMessage`: routes.ts branches on
+ * `worker.type` before parsing, so keeping this union separate mirrors that
+ * branch and avoids widening the PTY-side exhaustive switch in
+ * worker-handler.ts for message types it will never receive.
+ */
+export type EmbeddedAgentClientMessage =
+  | { type: 'embedded-user-message'; text: string }
+  | { type: 'embedded-cancel' };
+
+/**
  * Valid message types for WorkerServerMessage.
  * Single source of truth for both type definitions and runtime validation.
  */
@@ -151,11 +167,13 @@ export type WorkerServerMessageType = keyof typeof WORKER_SERVER_MESSAGE_TYPES;
 export type WorkerErrorCode =
   | 'PATH_NOT_FOUND'        // Session path no longer exists
   | 'AGENT_NOT_FOUND'       // Agent definition deleted
-  | 'ACTIVATION_FAILED'     // PTY spawn failed
+  | 'ACTIVATION_FAILED'     // PTY spawn failed, or embedded-agent activation/dispatch failed
   | 'WORKER_NOT_FOUND'      // Worker doesn't exist in session
   | 'HISTORY_LOAD_FAILED'   // History retrieval failed (timeout or error)
   | 'SESSION_DELETED'       // Session was deleted while WebSocket was connected
-  | 'SESSION_PAUSED';       // Session was paused while WebSocket was connected
+  | 'SESSION_PAUSED'        // Session was paused while WebSocket was connected
+  | 'TURN_IN_PROGRESS'      // embedded-user-message rejected: a turn is already active
+  | 'UNSUPPORTED_OPERATION'; // Client message not valid for this worker type (e.g. input/resize on an embedded-agent worker)
 
 export type WorkerServerMessage =
   // `offset` is the absolute end position in the worker's cumulative output
