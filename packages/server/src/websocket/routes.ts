@@ -743,7 +743,9 @@ export async function setupWebSocketRoutes(
         // Remove from connection tracking (both session-level, worker-level, and metadata)
         registry.removeWorkerConnection(sid, wid, ws);
 
-        // Detach worker-specific resources (git-diff file watcher or PTY callbacks)
+        // Detach worker-specific resources (git-diff file watcher, or the
+        // shared stream-worker callbacks -- PTY or embedded-agent, per the
+        // isStreamWorker widening)
         const session = sessionManager.getSession(sid);
         const worker = session?.workers.find(w => w.id === wid);
 
@@ -752,8 +754,10 @@ export async function setupWebSocketRoutes(
             logger.error({ sessionId: sid, workerId: wid, err }, 'Error cleaning up git-diff on WebSocket close/error');
           });
         } else if (effectiveConnectionId) {
-          // Detach this connection's callbacks but keep worker alive (only for PTY workers)
-          // Other connections (browser tabs) will continue receiving output
+          // Detach this connection's callbacks but keep the worker alive (any
+          // stream worker -- PTY or embedded-agent). Other connections
+          // (browser tabs) will continue receiving output, and the underlying
+          // process/subprocess is not killed by a client disconnecting.
           sessionManager.detachWorkerCallbacks(sid, wid, effectiveConnectionId);
         }
 

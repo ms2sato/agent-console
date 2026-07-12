@@ -505,11 +505,27 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     expect(fake.stdinWrites.length).toBe(2); // init + first user-message
   });
 
-  it('detaches callbacks on close without throwing (isStreamWorker widening)', async () => {
+  it('detaches callbacks on close WITHOUT killing the subprocess (isStreamWorker widening; parity with PTY workers)', async () => {
+    // Spec error-table row: "WS client disconnects -> callbacks detached;
+    // subprocess keeps running" (parity with PTY workers, where closing a
+    // browser tab doesn't kill the PTY). A bare not.toThrow() cannot catch a
+    // regression that also deactivates/kills the worker on disconnect --
+    // assert the worker is still activated and no shutdown/cancel command
+    // reached the loop's stdin.
     const { sessionId, workerId } = await createEmbeddedAgentSession();
     const { handlers, mockWs } = openConnection(sessionId, workerId);
     await waitFor(() => fake.captured.length === 1);
 
     expect(() => handlers.onClose({}, mockWs)).not.toThrow();
+
+    const session = sessionManager.getAllSessions().find((s) => s.id === sessionId);
+    const worker = session?.workers.find((w) => w.id === workerId);
+    expect(worker?.type === 'embedded-agent' && worker.activated).toBe(true);
+
+    // Only the init command from activation was ever written -- no shutdown
+    // or cancel was sent as a side effect of the connection closing.
+    expect(fake.stdinWrites.length).toBe(1);
+    // No re-spawn happened.
+    expect(fake.captured.length).toBe(1);
   });
 });
