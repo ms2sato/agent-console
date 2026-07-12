@@ -896,167 +896,190 @@ export async function setupWebSocketRoutes(
             return;
           }
 
-          // PTY-based worker: Check for request-history message first
+          // Parse once, up front. A parse failure is handled explicitly below,
+          // per worker type: embedded-agent workers reject it (their branch is
+          // terminal, see below); other stream workers fall through to
+          // handleWorkerMessage, which re-parses and silently ignores non-JSON
+          // input (unchanged legacy behavior for PTY workers).
+          let parsed: unknown;
           try {
-            const parsed = JSON.parse(data);
-            if (parsed && typeof parsed === 'object' && parsed.type === 'request-history') {
-              // Handle request-history: send history to client with timeout and line limit
-              const HISTORY_REQUEST_TIMEOUT_MS = 5000;
-              // Extract fromOffset from the request (optional, defaults to 0)
-              const fromOffset = typeof parsed.fromOffset === 'number' ? parsed.fromOffset : 0;
+            parsed = JSON.parse(data);
+          } catch {
+            parsed = undefined;
+          }
+          const parsedObj = parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
 
-              // Epoch for the fallback / timeout paths that do not read the
-              // manifest. Successful reads carry the manifest epoch instead.
-              const fallbackEpoch = sessionManager.getWorkerEpoch(sessionId, workerId) ?? 0;
+          // Shared history-request handling for stream workers (PTY +
+          // embedded-agent): the byte-offset/epoch/history machinery is
+          // content-agnostic (isStreamWorker), so both worker shapes are
+          // served identically here, before any worker-type branch below.
+          if (parsedObj && parsedObj.type === 'request-history') {
+            // Handle request-history: send history to client with timeout and line limit
+            const HISTORY_REQUEST_TIMEOUT_MS = 5000;
+            // Extract fromOffset from the request (optional, defaults to 0)
+            const fromOffset = typeof parsedObj.fromOffset === 'number' ? parsedObj.fromOffset : 0;
 
-              const timeoutPromise = new Promise<null>((_, reject) => {
-                setTimeout(() => reject(new Error('History request timeout')), HISTORY_REQUEST_TIMEOUT_MS);
-              });
+            // Epoch for the fallback / timeout paths that do not read the
+            // manifest. Successful reads carry the manifest epoch instead.
+            const fallbackEpoch = sessionManager.getWorkerEpoch(sessionId, workerId) ?? 0;
 
-              // Line cap: the initial-load limit for fromOffset 0, and the
-              // recent-window fallback cap for the archived-out / stale branches
-              // of an incremental read (§3.1).
-              const maxLines = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES;
+            const timeoutPromise = new Promise<null>((_, reject) => {
+              setTimeout(() => reject(new Error('History request timeout')), HISTORY_REQUEST_TIMEOUT_MS);
+            });
 
-              Promise.race([
-                sessionManager.getWorkerOutputHistory(
-                  sessionId,
-                  workerId,
-                  fromOffset,
-                  maxLines
-                ),
-                timeoutPromise
-              ])
-                .then((historyResult) => {
-                  if (historyResult) {
-                    const historyMsg: WorkerServerMessage = {
-                      type: 'history',
-                      data: historyResult.data,
-                      offset: historyResult.offset,
-                      startOffset: historyResult.startOffset,
-                      epoch: historyResult.epoch,
-                    };
-                    ws.send(JSON.stringify(historyMsg));
-                    logger.debug({ sessionId, workerId, dataLength: historyResult.data.length, offset: historyResult.offset, startOffset: historyResult.startOffset, fromOffset }, 'Sent history on request');
-                  } else {
-                    // Fallback to in-memory buffer (only for initial load)
-                    if (fromOffset === 0) {
-                      const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
-                      if (history) {
-                        const byteLength = Buffer.byteLength(history, 'utf-8');
-                        const historyMsg: WorkerServerMessage = {
-                          type: 'history',
-                          data: history,
-                          offset: byteLength,
-                          startOffset: 0,
-                          epoch: fallbackEpoch,
-                        };
-                        ws.send(JSON.stringify(historyMsg));
-                        logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
-                      } else {
-                        // No history available - send empty history with offset 0
-                        const historyMsg: WorkerServerMessage = {
-                          type: 'history',
-                          data: '',
-                          offset: 0,
-                          startOffset: 0,
-                          epoch: fallbackEpoch,
-                        };
-                        ws.send(JSON.stringify(historyMsg));
-                        logger.debug({ sessionId, workerId }, 'Sent empty history on request');
-                      }
-                    } else {
-                      // Incremental sync with no new data - send empty with current offset
-                      const historyMsg: WorkerServerMessage = {
-                        type: 'history',
-                        data: '',
-                        offset: fromOffset,
-                        startOffset: fromOffset,
-                        epoch: fallbackEpoch,
-                      };
-                      ws.send(JSON.stringify(historyMsg));
-                      logger.debug({ sessionId, workerId, fromOffset }, 'Sent empty incremental history on request');
-                    }
-                  }
-                })
-                .catch((err) => {
-                  const isTimeout = err.message === 'History request timeout';
+            // Line cap: the initial-load limit for fromOffset 0, and the
+            // recent-window fallback cap for the archived-out / stale branches
+            // of an incremental read (§3.1).
+            const maxLines = serverConfig.WORKER_OUTPUT_INITIAL_HISTORY_LINES;
 
-                  if (isTimeout) {
-                    // Timeout is not a fatal error - worker is still operational.
-                    // Send empty history with timedOut flag so client can decide how to proceed.
-                    // Client can show a warning toast but continue using the terminal.
-                    logger.warn({ sessionId, workerId }, 'History request timed out, sending empty history with timeout flag');
-                    try {
-                      const historyMsg: WorkerServerMessage = {
-                        type: 'history',
-                        data: '',
-                        offset: fromOffset,
-                        startOffset: fromOffset,
-                        epoch: fallbackEpoch,
-                        timedOut: true,
-                      };
-                      ws.send(JSON.stringify(historyMsg));
-                    } catch {
-                      // Connection may be closed
-                    }
-                  } else {
-                    // Non-timeout errors are actual failures
-                    logger.error({ sessionId, workerId, err }, 'Error sending history on request');
-                    try {
-                      const errorMsg: WorkerServerMessage = {
-                        type: 'error',
-                        message: 'Failed to load terminal history. Try switching workers or refreshing.',
-                        code: 'HISTORY_LOAD_FAILED'
-                      };
-                      ws.send(JSON.stringify(errorMsg));
-                    } catch {
-                      // Connection may be closed
-                    }
-                  }
-                });
-              return;
-            }
-
-            // Backwards range fetch (§5.1): served on the same socket, with its
-            // own boundary validation, 5s timeout guard, and HISTORY_LOAD_FAILED
-            // error path — all inside the dedicated handler.
-            if (parsed && typeof parsed === 'object' && parsed.type === 'request-history-range') {
-              void handleHistoryRangeRequest(
-                ws,
+            Promise.race([
+              sessionManager.getWorkerOutputHistory(
                 sessionId,
                 workerId,
-                parsed as Record<string, unknown>,
-                sessionManager,
-              );
+                fromOffset,
+                maxLines
+              ),
+              timeoutPromise
+            ])
+              .then((historyResult) => {
+                if (historyResult) {
+                  const historyMsg: WorkerServerMessage = {
+                    type: 'history',
+                    data: historyResult.data,
+                    offset: historyResult.offset,
+                    startOffset: historyResult.startOffset,
+                    epoch: historyResult.epoch,
+                  };
+                  ws.send(JSON.stringify(historyMsg));
+                  logger.debug({ sessionId, workerId, dataLength: historyResult.data.length, offset: historyResult.offset, startOffset: historyResult.startOffset, fromOffset }, 'Sent history on request');
+                } else {
+                  // Fallback to in-memory buffer (only for initial load)
+                  if (fromOffset === 0) {
+                    const history = sessionManager.getWorkerOutputBuffer(sessionId, workerId);
+                    if (history) {
+                      const byteLength = Buffer.byteLength(history, 'utf-8');
+                      const historyMsg: WorkerServerMessage = {
+                        type: 'history',
+                        data: history,
+                        offset: byteLength,
+                        startOffset: 0,
+                        epoch: fallbackEpoch,
+                      };
+                      ws.send(JSON.stringify(historyMsg));
+                      logger.debug({ sessionId, workerId, dataLength: history.length }, 'Sent buffer history on request');
+                    } else {
+                      // No history available - send empty history with offset 0
+                      const historyMsg: WorkerServerMessage = {
+                        type: 'history',
+                        data: '',
+                        offset: 0,
+                        startOffset: 0,
+                        epoch: fallbackEpoch,
+                      };
+                      ws.send(JSON.stringify(historyMsg));
+                      logger.debug({ sessionId, workerId }, 'Sent empty history on request');
+                    }
+                  } else {
+                    // Incremental sync with no new data - send empty with current offset
+                    const historyMsg: WorkerServerMessage = {
+                      type: 'history',
+                      data: '',
+                      offset: fromOffset,
+                      startOffset: fromOffset,
+                      epoch: fallbackEpoch,
+                    };
+                    ws.send(JSON.stringify(historyMsg));
+                    logger.debug({ sessionId, workerId, fromOffset }, 'Sent empty incremental history on request');
+                  }
+                }
+              })
+              .catch((err) => {
+                const isTimeout = err.message === 'History request timeout';
+
+                if (isTimeout) {
+                  // Timeout is not a fatal error - worker is still operational.
+                  // Send empty history with timedOut flag so client can decide how to proceed.
+                  // Client can show a warning toast but continue using the terminal.
+                  logger.warn({ sessionId, workerId }, 'History request timed out, sending empty history with timeout flag');
+                  try {
+                    const historyMsg: WorkerServerMessage = {
+                      type: 'history',
+                      data: '',
+                      offset: fromOffset,
+                      startOffset: fromOffset,
+                      epoch: fallbackEpoch,
+                      timedOut: true,
+                    };
+                    ws.send(JSON.stringify(historyMsg));
+                  } catch {
+                    // Connection may be closed
+                  }
+                } else {
+                  // Non-timeout errors are actual failures
+                  logger.error({ sessionId, workerId, err }, 'Error sending history on request');
+                  try {
+                    const errorMsg: WorkerServerMessage = {
+                      type: 'error',
+                      message: 'Failed to load terminal history. Try switching workers or refreshing.',
+                      code: 'HISTORY_LOAD_FAILED'
+                    };
+                    ws.send(JSON.stringify(errorMsg));
+                  } catch {
+                    // Connection may be closed
+                  }
+                }
+              });
+            return;
+          }
+
+          // Backwards range fetch (§5.1): served on the same socket, with its
+          // own boundary validation, 5s timeout guard, and HISTORY_LOAD_FAILED
+          // error path — all inside the dedicated handler.
+          if (parsedObj && parsedObj.type === 'request-history-range') {
+            void handleHistoryRangeRequest(
+              ws,
+              sessionId,
+              workerId,
+              parsedObj,
+              sessionManager,
+            );
+            return;
+          }
+
+          // embedded-agent workers accept a distinct client message set
+          // (EmbeddedAgentClientMessage). This branch is TERMINAL: every
+          // message reaching here for an embedded-agent worker is either
+          // handled or explicitly rejected via sendWorkerError -- it must
+          // never fall through to the PTY-only handleWorkerMessage call
+          // below (which would silently no-op unsupported types, and could
+          // otherwise be reached by e.g. an `image` message). request-history
+          // / request-history-range are shared (handled above, before this
+          // branch) since the byte-offset/epoch history machinery is
+          // content-agnostic (isStreamWorker).
+          //
+          // Deviation from the literal spec text: the spec's WS section says
+          // to add "valibot schemas alongside the existing ones" for these
+          // message types, but there is no WorkerClientMessageSchema (or any
+          // valibot schema) for the existing input/resize/request-history
+          // message shapes anywhere in packages/shared/src/schemas/ -- those
+          // are hand-validated in worker-handler.ts's validateWorkerMessage.
+          // Per this repo's Q1.5 rule (code is reality, cite it over the
+          // doc), embedded-agent client messages are validated the same
+          // hand-written way here, for consistency with their siblings.
+          if (worker.type === 'embedded-agent') {
+            if (!parsedObj) {
+              sendWorkerError(ws, 'Invalid message: expected a JSON object', 'UNSUPPORTED_OPERATION');
               return;
             }
 
-            // embedded-agent workers accept a distinct client message set
-            // (EmbeddedAgentClientMessage) and explicitly reject PTY-only
-            // messages instead of silently no-op'ing them. request-history /
-            // request-history-range are shared (handled above, before this
-            // branch) since the byte-offset/epoch history machinery is
-            // content-agnostic (isStreamWorker).
-            //
-            // Deviation from the literal spec text: the spec's WS section says
-            // to add "valibot schemas alongside the existing ones" for these
-            // message types, but there is no WorkerClientMessageSchema (or any
-            // valibot schema) for the existing input/resize/request-history
-            // message shapes anywhere in packages/shared/src/schemas/ -- those
-            // are hand-validated in worker-handler.ts's validateWorkerMessage.
-            // Per this repo's Q1.5 rule (code is reality, cite it over the
-            // doc), embedded-agent client messages are validated the same
-            // hand-written way here, for consistency with their siblings.
-            if (worker.type === 'embedded-agent' && parsed && typeof parsed === 'object') {
-              const embeddedParsed = parsed as Record<string, unknown>;
-
-              if (embeddedParsed.type === 'embedded-user-message') {
-                if (typeof embeddedParsed.text !== 'string') {
+            switch (parsedObj.type) {
+              case 'embedded-user-message': {
+                if (typeof parsedObj.text !== 'string') {
                   logger.warn({ sessionId, workerId }, 'Invalid embedded-user-message: text must be a string');
+                  sendWorkerError(ws, 'Invalid embedded-user-message: text must be a string', 'UNSUPPORTED_OPERATION');
                   return;
                 }
-                const text = embeddedParsed.text;
+                const text = parsedObj.text;
                 void sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, text).then((result) => {
                   if (!result.ok) {
                     const code: WorkerErrorCode = result.error === 'turn in progress'
@@ -1071,7 +1094,7 @@ export async function setupWebSocketRoutes(
                 return;
               }
 
-              if (embeddedParsed.type === 'embedded-cancel') {
+              case 'embedded-cancel': {
                 const forwarded = sessionManager.cancelEmbeddedAgentTurn(sessionId, workerId);
                 if (!forwarded) {
                   logger.debug({ sessionId, workerId }, 'embedded-cancel had no effect (worker not activated)');
@@ -1079,17 +1102,19 @@ export async function setupWebSocketRoutes(
                 return;
               }
 
-              if (embeddedParsed.type === 'input' || embeddedParsed.type === 'resize') {
-                sendWorkerError(ws, 'embedded-agent workers do not support PTY input/resize', 'UNSUPPORTED_OPERATION');
+              default:
+                // Includes input/resize/image and any other unrecognized
+                // type: every non-supported message is explicitly rejected
+                // here rather than falling through to PTY handling below
+                // (CodeRabbit MAJOR: `image` was reachable that way before
+                // this branch was made terminal).
+                sendWorkerError(
+                  ws,
+                  `embedded-agent workers do not support "${String(parsedObj.type)}" messages`,
+                  'UNSUPPORTED_OPERATION',
+                );
                 return;
-              }
-
-              // Unknown/other type for an embedded-agent worker: fall through
-              // to the default handling below (log + ignore), consistent with
-              // how the PTY-side handleWorkerMessage treats unknown types.
             }
-          } catch {
-            // Not JSON or invalid - fall through to regular handler
           }
 
           // PTY-based worker message handling (input, resize, image)

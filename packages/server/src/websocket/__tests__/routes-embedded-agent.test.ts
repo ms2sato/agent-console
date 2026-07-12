@@ -329,6 +329,24 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     expect(mockWs.closeCalls.length).toBe(0);
   });
 
+  it('rejects a malformed embedded-user-message (non-string text) with an error instead of silently dropping it', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-user-message', text: 42 }) }, mockWs);
+
+    expect(mockWs.sentMessages.length).toBe(1);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('UNSUPPORTED_OPERATION');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Never reached the loop's stdin.
+    expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
   it('forwards embedded-cancel to the loop stdin', async () => {
     const { sessionId, workerId } = await createEmbeddedAgentSession();
     const { handlers, mockWs } = openConnection(sessionId, workerId);
@@ -366,6 +384,28 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     expect(mockWs.closeCalls.length).toBe(0);
 
     // Neither should have reached the loop's stdin as a command.
+    expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('rejects any other unmatched message type (e.g. "image") instead of falling through to PTY handling', async () => {
+    // Regression guard: CodeRabbit MAJOR — an unmatched type used to fall
+    // through past the embedded-agent branch to the generic PTY
+    // handleWorkerMessage call. The branch must now be terminal for every
+    // message type, matched or not.
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'image', data: 'base64...' }) }, mockWs);
+
+    expect(mockWs.sentMessages.length).toBe(1);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('UNSUPPORTED_OPERATION');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Never reached the loop's stdin as a command.
     expect(fake.stdinWrites.length).toBe(1); // only the init command
   });
 
