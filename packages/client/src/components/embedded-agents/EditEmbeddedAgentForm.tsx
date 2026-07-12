@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UpdateEmbeddedAgentRequest } from '@agent-console/shared';
 import { updateEmbeddedAgent } from '../../lib/api';
+import { embeddedAgentKeys } from '../../lib/query-keys';
 import { EmbeddedAgentForm, parseMaxToolIterations, type EmbeddedAgentFormData } from './EmbeddedAgentForm';
 
 export interface EditEmbeddedAgentFormProps {
@@ -13,8 +14,10 @@ export interface EditEmbeddedAgentFormProps {
 
 /**
  * Wraps `EmbeddedAgentForm` in edit mode. No manual cache splice on success
- * -- see `AddEmbeddedAgentForm`'s doc comment for why (WS-driven invalidate,
- * not optimistic splice).
+ * -- see `AddEmbeddedAgentForm`'s doc comment for why (invalidate-and-refetch,
+ * not optimistic splice, for this small registry). `onSuccess` invalidates
+ * directly rather than relying solely on the WS `embedded-agent-updated`
+ * broadcast, in case the WS connection is down at the time of the edit.
  */
 export function EditEmbeddedAgentForm({
   embeddedAgentId,
@@ -22,11 +25,13 @@ export function EditEmbeddedAgentForm({
   onSuccess,
   onCancel,
 }: EditEmbeddedAgentFormProps) {
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
   const updateMutation = useMutation({
     mutationFn: (data: UpdateEmbeddedAgentRequest) => updateEmbeddedAgent(embeddedAgentId, data),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: embeddedAgentKeys.all() });
       onSuccess();
     },
     onError: (err) => {

@@ -2,15 +2,17 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { embeddedAgentKeys } from '../../../lib/query-keys';
 import { AddEmbeddedAgentForm } from '../AddEmbeddedAgentForm';
 
 function renderAddEmbeddedAgentForm(props: React.ComponentProps<typeof AddEmbeddedAgentForm>) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const result = render(
     <QueryClientProvider client={queryClient}>
       <AddEmbeddedAgentForm {...props} />
     </QueryClientProvider>
   );
+  return { ...result, queryClient };
 }
 
 const originalFetch = globalThis.fetch;
@@ -107,6 +109,22 @@ describe('AddEmbeddedAgentForm', () => {
       name: 'Ollama qwen3',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
     });
+  });
+
+  it('invalidates the embedded-agents query on success (does not rely solely on the WS broadcast)', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    const { queryClient } = renderAddEmbeddedAgentForm({ onSuccess, onCancel: () => {} });
+    const invalidateSpy = mock(queryClient.invalidateQueries.bind(queryClient));
+    queryClient.invalidateQueries = invalidateSpy;
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByText('Add Embedded Agent'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: embeddedAgentKeys.all() });
   });
 
   it('shows an error message and does not call onSuccess when the request fails', async () => {

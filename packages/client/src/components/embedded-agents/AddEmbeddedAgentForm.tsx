@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createEmbeddedAgent } from '../../lib/api';
+import { embeddedAgentKeys } from '../../lib/query-keys';
 import { EmbeddedAgentForm, parseMaxToolIterations, type EmbeddedAgentFormData } from './EmbeddedAgentForm';
 
 export interface AddEmbeddedAgentFormProps {
@@ -9,18 +10,22 @@ export interface AddEmbeddedAgentFormProps {
 }
 
 /**
- * Wraps `EmbeddedAgentForm` in create mode. No manual cache splice on
- * success -- `useEmbeddedAgentRegistrySync` invalidates the embedded-agent
- * list query on the WS `embedded-agent-created` broadcast (the registry is
- * small and not perf-sensitive, per that hook's own doc comment), so a plain
- * `onSuccess()` callback is sufficient.
+ * Wraps `EmbeddedAgentForm` in create mode. `useEmbeddedAgentRegistrySync`
+ * invalidates the embedded-agent list query on the WS
+ * `embedded-agent-created` broadcast (the registry is small and not
+ * perf-sensitive, per that hook's own doc comment), but `onSuccess` also
+ * invalidates directly -- don't rely solely on the WS broadcast in case of
+ * disconnection (mirrors the delete-mutation fix in
+ * `routes/agents/index.tsx`'s `EmbeddedAgentsSection`).
  */
 export function AddEmbeddedAgentForm({ onSuccess, onCancel }: AddEmbeddedAgentFormProps) {
+  const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useMutation({
     mutationFn: createEmbeddedAgent,
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: embeddedAgentKeys.all() });
       onSuccess();
     },
     onError: (err) => {
