@@ -30,7 +30,7 @@ import type {
   InternalPtyWorker,
   WorkerCallbacks,
 } from './worker-types.js';
-import { isInternalPtyWorker } from './worker-types.js';
+import { isInternalPtyWorker, isStreamWorker } from './worker-types.js';
 import type { InternalSession } from './internal-types.js';
 import type { WorkerManager } from './worker-manager.js';
 import type { JobQueue } from '../jobs/index.js';
@@ -687,11 +687,13 @@ export class WorkerLifecycleManager {
   /**
    * Attach callbacks for a WebSocket connection to a worker.
    * Supports multiple concurrent connections (e.g., multiple browser tabs).
+   * Accepts any stream worker (PTY or embedded-agent); git-diff workers are
+   * excluded since they don't expose the shared stream shape.
    * @returns Connection ID for later detachment, or null if worker not found
    */
   attachWorkerCallbacks(sessionId: string, workerId: string, callbacks: WorkerCallbacks): string | null {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || !isInternalPtyWorker(worker)) return null;
+    if (!worker || !isStreamWorker(worker)) return null;
 
     return this.deps.workerManager.attachCallbacks(worker, callbacks);
   }
@@ -702,7 +704,7 @@ export class WorkerLifecycleManager {
    */
   detachWorkerCallbacks(sessionId: string, workerId: string, connectionId: string): boolean {
     const worker = this.getWorker(sessionId, workerId);
-    if (!worker || !isInternalPtyWorker(worker)) return false;
+    if (!worker || !isStreamWorker(worker)) return false;
 
     return this.deps.workerManager.detachCallbacks(worker, connectionId);
   }

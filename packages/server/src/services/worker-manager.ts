@@ -622,9 +622,11 @@ export class WorkerManager {
 
   /**
    * Attach callbacks for a WebSocket connection to a worker.
+   * Accepts any stream worker (PTY or embedded-agent) since both expose the
+   * same `connectionCallbacks` map shape.
    * @returns Connection ID for later detachment, or null if worker is invalid
    */
-  attachCallbacks(worker: InternalPtyWorker, callbacks: WorkerCallbacks): string {
+  attachCallbacks(worker: InternalPtyWorker | InternalEmbeddedAgentWorker, callbacks: WorkerCallbacks): string {
     const connectionId = crypto.randomUUID();
     worker.connectionCallbacks.set(connectionId, {
       onData: callbacks.onData,
@@ -637,7 +639,7 @@ export class WorkerManager {
   /**
    * Detach callbacks for a specific WebSocket connection.
    */
-  detachCallbacks(worker: InternalPtyWorker, connectionId: string): boolean {
+  detachCallbacks(worker: InternalPtyWorker | InternalEmbeddedAgentWorker, connectionId: string): boolean {
     return worker.connectionCallbacks.delete(connectionId);
   }
 

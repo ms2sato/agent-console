@@ -610,6 +610,23 @@ describe('WorkerManager', () => {
 
       expect(onData).not.toHaveBeenCalled();
     });
+
+    it('should attach and detach callbacks on an embedded-agent worker (isStreamWorker widening)', () => {
+      const worker = buildInternalEmbeddedAgentWorker();
+
+      const connectionId = workerManager.attachCallbacks(worker, {
+        onData: () => {},
+        onExit: () => {},
+      });
+
+      expect(connectionId).toBeTruthy();
+      expect(worker.connectionCallbacks.size).toBe(1);
+
+      const result = workerManager.detachCallbacks(worker, connectionId);
+
+      expect(result).toBe(true);
+      expect(worker.connectionCallbacks.size).toBe(0);
+    });
   });
 
   // ========== killWorker Cleanup ==========
