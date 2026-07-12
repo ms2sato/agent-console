@@ -48,9 +48,16 @@ import { expandTemplate } from '../lib/template.js';
 import { computeDefaultBaseSpec } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
+import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
+import { writeUserOwnedSecretFile, rmRecursiveAsUser, type runAsUser } from './privilege-elevation.js';
+import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
 import { createLogger } from '../lib/logger.js';
+import * as path from 'node:path';
 
 const logger = createLogger('worker-manager');
+
+/** Name of the env var carrying the MCP token FILE PATH (never the raw token). */
+const MCP_TOKEN_FILE_ENV_VAR = 'AGENT_CONSOLE_MCP_TOKEN_FILE';
 
 /** Maximum time to wait for a PTY process to exit after kill signal. */
 const PTY_EXIT_TIMEOUT_MS = 5000;
@@ -138,6 +145,14 @@ export interface AgentActivationParams extends WorkerContext {
    * truncates the file to zero before activation).
    */
   revived: boolean;
+  /**
+   * The session owner's `users.id` UUID (`InternalSession.createdBy`). Used
+   * (multi-user mode only) to mint an MCP bearer token identity comparable to
+   * session ownership, mirroring `EmbeddedAgentWorkerServiceDeps`'s use of
+   * `session.createdBy`. When absent (legacy / ownerless session), token
+   * minting is skipped -- see the non-fatal skip in `activateAgentWorkerPty`.
+   */
+  createdByUserId?: string;
 }
 
 /**
@@ -200,7 +215,22 @@ export class WorkerManager {
   private globalPtyExitCallback?: PtyExitCallback;
   private globalWorkerExitCallback?: GlobalWorkerExitCallback;
 
-  constructor(userMode: UserMode, agentManager: AgentManager, private workerOutputFileManager: WorkerOutputFileManager) {
+  constructor(
+    userMode: UserMode,
+    agentManager: AgentManager,
+    private workerOutputFileManager: WorkerOutputFileManager,
+    private mcpTokenRegistry?: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>,
+    /** Test seam for OS user lookup (MCP token file destination). Defaults to the real implementation. */
+    private lookupOsUserFn: LookupOsUserFn = lookupOsUser,
+    /**
+     * Test seam threaded into `writeUserOwnedSecretFile` / `rmRecursiveAsUser`
+     * for the MCP token file write/delete calls, mirroring the
+     * `runAsUserImpl` DI pattern documented in elevation-helpers.md. Defaults
+     * to `undefined` so production leaves both helpers on their own default
+     * (`runAsUser`).
+     */
+    private runAsUserImpl?: typeof runAsUser,
+  ) {
     this.userMode = userMode;
     this.agentManager = agentManager;
   }
@@ -253,6 +283,7 @@ export class WorkerManager {
       activityState: 'unknown',
       activityDetector: null,
       connectionCallbacks: new Map(),
+      mcpToken: null,
     };
 
     return worker;
@@ -411,10 +442,77 @@ export class WorkerManager {
     // additionalEnvVars: repository + template env vars
     // Base env (getCleanChildProcessEnv) and AGENT_CONSOLE_* conversion
     // are handled internally by UserMode.spawnPty()
-    const additionalEnvVars = {
+    const additionalEnvVars: Record<string, string> = {
       ...repositoryEnvVars,
       ...templateEnv,
     };
+
+    // Multi-user mode: mint an MCP bearer token for this worker, write it to
+    // a user-owned 0600 file, and inject only the FILE PATH via env. The raw
+    // token must NEVER travel through argv or an env var embedded into the
+    // elevation's inner shell command string (visible via
+    // /proc/<pid>/cmdline of the inner `sh -c` process, see
+    // privilege-elevation.ts:buildInnerCommand) -- a file path is not a
+    // secret and is safe to pass this way.
+    // (docs/design/embedded-agent-worker.md § "MCP caller identity")
+    if (process.env.AUTH_MODE === 'multi-user') {
+      if (!params.createdByUserId) {
+        // Non-fatal skip (unlike EmbeddedAgentWorkerService's hard-fail):
+        // terminal-agent PTY activation is a long-established
+        // availability-critical path (create / revive / restart / restore).
+        // Under AGENT_CONSOLE_MCP_AUTH=enforce this worker's MCP calls are
+        // rejected (fail-closed); the worker itself still starts.
+        logger.warn(
+          { workerId: worker.id, sessionId },
+          'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected under AGENT_CONSOLE_MCP_AUTH=enforce)',
+        );
+      } else if (this.mcpTokenRegistry) {
+        const osUser = await this.lookupOsUserFn(params.username);
+        if (!osUser) {
+          logger.warn(
+            { workerId: worker.id, username: params.username },
+            'Could not resolve OS user home directory for MCP token file; skipping MCP token mint',
+          );
+        } else {
+          const token = this.mcpTokenRegistry.mint({
+            sessionId,
+            workerId: worker.id,
+            userId: params.createdByUserId,
+          });
+          const tokenFilePath = path.join(
+            osUser.homeDir,
+            '.agent-console',
+            'mcp-tokens',
+            `${worker.id}.token`,
+          );
+          const writeResult = await writeUserOwnedSecretFile({
+            username: params.username,
+            filePath: tokenFilePath,
+            content: token,
+            runAsUserImpl: this.runAsUserImpl,
+          });
+          if (writeResult.exitCode !== 0 || writeResult.timedOut) {
+            // Unlike the missing-createdBy case above (a deliberate skip),
+            // a write FAILURE after a successful mint is an unexpected error
+            // state -- fail loud, mirroring EmbeddedAgentWorkerService's "no
+            // orphaned token from a failed activation" invariant.
+            this.mcpTokenRegistry.revokeByWorker(worker.id);
+            logger.error(
+              {
+                workerId: worker.id,
+                exitCode: writeResult.exitCode,
+                timedOut: writeResult.timedOut,
+                stderr: writeResult.stderr,
+              },
+              'Failed to write MCP token file; aborting agent worker PTY activation',
+            );
+            throw new Error(`Failed to write MCP token file for worker ${worker.id}`);
+          }
+          worker.mcpToken = { filePath: tokenFilePath, username: params.username };
+          additionalEnvVars[MCP_TOKEN_FILE_ENV_VAR] = tokenFilePath;
+        }
+      }
+    }
 
     const sentinel = `__AGENT_CONSOLE_READY_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
 
@@ -599,6 +697,10 @@ export class WorkerManager {
       if (worker.type === 'agent') {
         worker.loginShellSentinel = undefined;
         worker.pendingCommand = undefined;
+        // Fire-and-forget: this callback is a synchronous PTY event listener
+        // and cannot be awaited by its caller. Failures are logged inside
+        // revokeAndDeleteMcpToken itself.
+        void this.revokeAndDeleteMcpToken(worker);
       }
 
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
@@ -718,6 +820,7 @@ export class WorkerManager {
             agentId: pw.agentId,
             activityState: 'unknown',
             activityDetector: null,
+            mcpToken: null,
           };
           break;
         case 'terminal':
@@ -841,6 +944,34 @@ export class WorkerManager {
   }
 
   /**
+   * Revoke the in-memory MCP token and delete its backing file for an agent
+   * worker. Called on every path a terminal-agent PTY can stop existing
+   * through: unexpected exit (pty.onExit) and managed kill (killWorker).
+   * No-op when the worker never had a token (single-user mode, or the
+   * session lacked createdBy at activation). Never throws -- deletion
+   * failures are logged as warnings so cleanup never blocks the exit/kill
+   * flow (see backend.md "Resource Cleanup").
+   */
+  private async revokeAndDeleteMcpToken(worker: InternalAgentWorker): Promise<void> {
+    const token = worker.mcpToken;
+    if (token === null) {
+      return;
+    }
+    worker.mcpToken = null;
+    this.mcpTokenRegistry?.revokeByWorker(worker.id);
+    try {
+      await rmRecursiveAsUser(token.filePath, token.username, {
+        runAsUserImpl: this.runAsUserImpl,
+      });
+    } catch (err) {
+      logger.warn(
+        { workerId: worker.id, filePath: token.filePath, err },
+        'Failed to delete MCP token file',
+      );
+    }
+  }
+
+  /**
    * Kill a worker's PTY process and clean up resources.
    * Awaits PTY process exit to ensure directory handles are released
    * before callers proceed (e.g., git worktree remove).
@@ -917,6 +1048,17 @@ export class WorkerManager {
       // Dispose activity detector for agent workers
       if (worker.type === 'agent' && worker.activityDetector) {
         worker.activityDetector.dispose();
+      }
+
+      // MCP token cleanup runs LAST (and only for agent workers). Deliberately
+      // placed after the PTY-kill race above rather than at the top of this
+      // method: an early `await` here would defer the `setTimeout(...,
+      // PTY_EXIT_TIMEOUT_MS)` registration above past the point where a
+      // fake-timers test calls `jest.advanceTimersByTime(...)`, since that
+      // call is made synchronously right after invoking `killWorker()` and
+      // expects the timer to already be registered.
+      if (worker.type === 'agent') {
+        await this.revokeAndDeleteMcpToken(worker);
       }
     }
     // git-diff workers have no PTY to kill

@@ -1064,6 +1064,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1171,6 +1172,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1208,6 +1210,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1236,6 +1239,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1262,6 +1266,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1290,6 +1295,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2052,6 +2058,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2085,6 +2092,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2165,6 +2173,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2295,6 +2304,7 @@ describe('WorkerLifecycleManager', () => {
         activityState: 'unknown',
         activityDetector: null,
         connectionCallbacks: new Map(),
+        mcpToken: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 

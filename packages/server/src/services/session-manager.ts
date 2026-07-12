@@ -248,7 +248,13 @@ export class SessionManager {
     this.workerOutputFileManager = workerOutputFileManager;
     this.interSessionMessageService = options.interSessionMessageService ?? new InterSessionMessageService();
     this.memoService = options.memoService ?? new MemoService();
-    this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager);
+    // MCP token registry: constructed BEFORE WorkerManager so both the PTY
+    // path (terminal-agent workers, multi-user MCP identity) and the
+    // embedded-agent path share the SAME registry instance the `/mcp` route
+    // verifies against. Defaults to a fresh instance (unit tests need no
+    // threading); production passes the same registry via options.
+    this.mcpTokenRegistry = options.mcpTokenRegistry ?? new McpTokenRegistry();
+    this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager, this.mcpTokenRegistry);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
@@ -256,10 +262,7 @@ export class SessionManager {
 
     // Embedded-agent subprocess lifecycle. Constructed before the
     // WorkerLifecycleManager / deletion / pause services so their
-    // `deactivateEmbeddedAgentWorker` dep can route here. The MCP token
-    // registry defaults to a fresh instance (unit tests need no threading);
-    // production passes the same registry `/mcp` verifies against.
-    this.mcpTokenRegistry = options.mcpTokenRegistry ?? new McpTokenRegistry();
+    // `deactivateEmbeddedAgentWorker` dep can route here.
     const getMcpBaseUrl =
       options.getMcpBaseUrl ?? (() => `http://localhost:${serverConfig.PORT}/mcp`);
     this.embeddedAgentWorkerService = new EmbeddedAgentWorkerService({
