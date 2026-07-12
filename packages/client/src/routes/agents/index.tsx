@@ -3,7 +3,7 @@ import { createFileRoute, Link } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AgentDefinition, EmbeddedAgentDefinition } from '@agent-console/shared';
 import { unregisterAgent, deleteEmbeddedAgent } from '../../lib/api';
-import { agentKeys } from '../../lib/query-keys';
+import { agentKeys, embeddedAgentKeys } from '../../lib/query-keys';
 import { useAgents } from '../../components/AgentSelector';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { AddAgentForm, CapabilityIndicator } from '../../components/agents';
@@ -254,6 +254,7 @@ function AgentCard({ agent, onDelete, isDeleting }: AgentCardProps) {
 // ===========================================================================
 
 function EmbeddedAgentsSection() {
+  const queryClient = useQueryClient();
   const { embeddedAgents, isLoading, error, refetch } = useEmbeddedAgents();
   const { currentUser, isMultiUser } = useAuth();
   const { sessions } = useSessionDataContext();
@@ -269,6 +270,12 @@ function EmbeddedAgentsSection() {
   const deleteMutation = useMutation({
     mutationFn: deleteEmbeddedAgent,
     onSuccess: () => {
+      // Don't rely solely on the WS `embedded-agent-deleted` broadcast in
+      // case of disconnection (mirrors TerminalAgentsSection's
+      // unregisterMutation.onSuccess). Plain invalidate-and-refetch is
+      // sufficient here (matches AddEmbeddedAgentForm/EditEmbeddedAgentForm,
+      // which also don't use an optimistic splice for this small registry).
+      queryClient.invalidateQueries({ queryKey: embeddedAgentKeys.all() });
       setAgentToDelete(null);
     },
     onError: (err) => {

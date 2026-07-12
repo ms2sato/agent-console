@@ -41,7 +41,7 @@ export function EmbeddedAgentDeleteDialog({
       {referencingWorkers.length > 0 && (
         <div className="text-sm text-amber-400 bg-amber-950/30 border border-amber-900 rounded p-3">
           <p className="font-medium mb-1">
-            {referencingWorkers.length} worker{referencingWorkers.length === 1 ? '' : 's'} still reference this definition:
+            {referencingWorkers.length} worker{referencingWorkers.length === 1 ? '' : 's'} still reference{referencingWorkers.length === 1 ? 's' : ''} this definition:
           </p>
           <ul className="list-disc list-inside">
             {referencingWorkers.map(({ session, worker }) => (

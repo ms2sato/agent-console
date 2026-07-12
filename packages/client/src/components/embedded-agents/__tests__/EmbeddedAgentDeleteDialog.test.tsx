@@ -74,7 +74,7 @@ describe('EmbeddedAgentDeleteDialog', () => {
       />
     );
 
-    expect(screen.getByText(/1 worker still reference this definition/)).toBeTruthy();
+    expect(screen.getByText(/1 worker still references this definition/)).toBeTruthy();
     expect(screen.getByText(/"My Worker" in session "My Session"/)).toBeTruthy();
     expect(screen.getByText(/This worker will fail to activate/)).toBeTruthy();
     expect(screen.queryByText(/These workers will fail to activate/)).toBeNull();
