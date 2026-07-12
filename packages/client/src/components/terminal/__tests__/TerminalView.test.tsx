@@ -1,3 +1,4 @@
+import { useRef } from 'react';
 import { describe, it, expect, afterEach, beforeEach, mock } from 'bun:test';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { TerminalView } from '../TerminalView';
@@ -146,6 +147,79 @@ describe('TerminalView link transforms', () => {
     expect(link.getAttribute('href')).toBe('https://console.example.com:3000/path');
     // title reveals the substitution.
     expect(link.getAttribute('title')).toContain('https://console.example.com:3000/path');
+  });
+});
+
+// Renders TerminalView alongside a real, mountable hidden textarea wired via
+// inputRef — mirrors how TerminalAdapter wires TerminalKeyboardInput's
+// textarea into TerminalView's select-all guard (`inputRef?.current ===
+// document.activeElement`). A plain <textarea> is enough here: the guard only
+// checks identity/focus, not TerminalKeyboardInput's own keydown handling.
+function TerminalViewWithHiddenInput({ instance }: { instance: TerminalInstance }) {
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  return (
+    <>
+      <textarea ref={inputRef} aria-label="hidden terminal input" />
+      <TerminalView instance={instance} inputRef={inputRef} />
+    </>
+  );
+}
+
+// Regression coverage for #1041: a native window keydown listener
+// (onKeyDownSelectAll) used to also react to Ctrl+A, racing React's keydown
+// handler on the hidden textarea (which already sends the readline \x01
+// control byte for Ctrl+A). Creating a DOM Selection over the terminal rows
+// does not blur the focused textarea, but the browser silently withholds
+// subsequent input events on it — keydown keeps firing, but the textarea's
+// value never updates, so typed characters stopped reaching the PTY. The fix
+// scopes the window listener to metaKey (Cmd+A) only.
+describe('TerminalView select-all keyboard shortcut', () => {
+  afterEach(cleanup);
+
+  beforeEach(() => {
+    window.getSelection()?.removeAllRanges();
+  });
+
+  it('does not select terminal content on Ctrl+A (regression guard, #1041)', () => {
+    render(<TerminalViewWithHiddenInput instance={makeInstance(makeSnapshot(ROWS))} />);
+    const textarea = screen.getByLabelText('hidden terminal input') as HTMLTextAreaElement;
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+
+    fireEvent.keyDown(window, { key: 'a', ctrlKey: true });
+
+    expect(window.getSelection()?.rangeCount ?? 0).toBe(0);
+    expect(window.getSelection()?.toString()).toBe('');
+  });
+
+  it('still selects terminal content on Cmd+A (existing feature guard)', () => {
+    render(<TerminalViewWithHiddenInput instance={makeInstance(makeSnapshot(ROWS))} />);
+    const textarea = screen.getByLabelText('hidden terminal input') as HTMLTextAreaElement;
+    textarea.focus();
+
+    fireEvent.keyDown(window, { key: 'a', metaKey: true });
+
+    expect(window.getSelection()?.rangeCount).toBe(1);
+  });
+
+  it('does not select on Ctrl+Shift+A', () => {
+    render(<TerminalViewWithHiddenInput instance={makeInstance(makeSnapshot(ROWS))} />);
+    const textarea = screen.getByLabelText('hidden terminal input') as HTMLTextAreaElement;
+    textarea.focus();
+
+    fireEvent.keyDown(window, { key: 'a', ctrlKey: true, shiftKey: true });
+
+    expect(window.getSelection()?.rangeCount ?? 0).toBe(0);
+  });
+
+  it('does not select on Cmd+Shift+A', () => {
+    render(<TerminalViewWithHiddenInput instance={makeInstance(makeSnapshot(ROWS))} />);
+    const textarea = screen.getByLabelText('hidden terminal input') as HTMLTextAreaElement;
+    textarea.focus();
+
+    fireEvent.keyDown(window, { key: 'a', metaKey: true, shiftKey: true });
+
+    expect(window.getSelection()?.rangeCount ?? 0).toBe(0);
   });
 });
 
