@@ -22,18 +22,22 @@ export interface ToolExecutor {
 }
 
 /**
- * The narrow subset of the connected MCP SDK client this wrapper drives. The
- * real `Client` satisfies it structurally; a test can supply a stub.
+ * The narrow subset of the connected MCP SDK client this wrapper drives. Method
+ * returns are `unknown` (narrowed inside `McpToolClient`) so the real SDK
+ * `Client` — whose `callTool` return is a wide union — stays structurally
+ * assignable while a test can still supply a simple stub.
  */
 export interface McpClientHandle {
-  listTools(): Promise<{
-    tools: Array<{ name: string; description?: string; inputSchema: unknown }>;
-  }>;
+  listTools(): Promise<unknown>;
   callTool(
     params: { name: string; arguments?: Record<string, unknown> },
     resultSchema?: unknown,
     options?: { signal?: AbortSignal },
-  ): Promise<{ content?: unknown; isError?: boolean }>;
+  ): Promise<unknown>;
+}
+
+interface ListToolsResult {
+  tools: Array<{ name: string; description?: string; inputSchema: unknown }>;
 }
 
 /** Establishes a connected client for a bearer-authenticated Streamable HTTP endpoint. */
@@ -84,7 +88,7 @@ export class McpToolClient implements ToolExecutor {
   }
 
   async listTools(): Promise<ToolDefinition[]> {
-    const { tools } = await this.requireClient().listTools();
+    const { tools } = (await this.requireClient().listTools()) as ListToolsResult;
     return tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
@@ -99,7 +103,8 @@ export class McpToolClient implements ToolExecutor {
         undefined,
         { signal },
       );
-      return { ok: res.isError !== true, result: extractResultText(res) };
+      const isError = (res as { isError?: boolean }).isError === true;
+      return { ok: !isError, result: extractResultText(res) };
     } catch (err) {
       return { ok: false, result: err instanceof Error ? err.message : String(err) };
     }
