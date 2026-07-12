@@ -75,6 +75,14 @@ describe('EmbeddedAgentWorkerView', () => {
     ).toBeTruthy();
   });
 
+  it('always renders the experimental-agent notice', () => {
+    renderView({ sessionId: 's1c', workerId: 'w1c' });
+
+    expect(
+      screen.getByText('This is an experimental Embedded Agent. Restart resets the conversation.'),
+    ).toBeTruthy();
+  });
+
   it('mounts MessagePanel with an accessible name for the message input', () => {
     renderView({ sessionId: 's1b', workerId: 'w1b' });
 

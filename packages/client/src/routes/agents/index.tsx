@@ -296,6 +296,7 @@ function EmbeddedAgentsSection() {
           <span className="text-xs px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300">
             Embedded
           </span>
+          <span className="text-xs text-gray-500 font-normal">(Experimental)</span>
         </h2>
         <button
           onClick={() => setShowAddForm(true)}

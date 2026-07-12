@@ -118,7 +118,7 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
             >
               <span className="truncate">{embeddedAgent.name}</span>
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300 shrink-0 ml-2">
-                Embedded
+                Embedded · Experimental
               </span>
             </button>
           ))}
