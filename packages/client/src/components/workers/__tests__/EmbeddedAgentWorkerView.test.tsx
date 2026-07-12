@@ -45,6 +45,12 @@ describe('EmbeddedAgentWorkerView', () => {
     ).toBeTruthy();
   });
 
+  it('exposes an accessible name for the message input (not placeholder-only)', () => {
+    render(<EmbeddedAgentWorkerView sessionId="s1b" workerId="w1b" />);
+
+    expect(screen.getByRole('textbox', { name: 'Message the agent' })).toBeTruthy();
+  });
+
   it('disables the input and shows the Cancel button while a turn is active', async () => {
     render(<EmbeddedAgentWorkerView sessionId="s2" workerId="w2" />);
     const ws = MockWebSocket.getLastInstance();

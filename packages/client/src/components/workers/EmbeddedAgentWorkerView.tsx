@@ -112,6 +112,7 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWo
             onKeyDown={handleKeyDown}
             disabled={isTurnActive}
             placeholder={isTurnActive ? 'Waiting for the current turn to finish...' : 'Message the agent...'}
+            aria-label="Message the agent"
             rows={2}
             className="input flex-1 resize-none"
           />

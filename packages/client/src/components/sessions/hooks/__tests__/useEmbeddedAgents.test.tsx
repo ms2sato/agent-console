@@ -15,10 +15,15 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 let embeddedAgentsResponse: unknown = { embeddedAgents: [] };
 
-const mockFetch = mock(async (): Promise<Response> => jsonResponse(embeddedAgentsResponse));
+// bun-types declares `preconnect` as a static on `typeof fetch`; attach it
+// directly instead of bypassing the type system with `as unknown as`.
+const mockFetch = Object.assign(
+  mock(async (): Promise<Response> => jsonResponse(embeddedAgentsResponse)),
+  { preconnect: originalFetch.preconnect },
+);
 
 beforeEach(() => {
-  globalThis.fetch = mockFetch as unknown as typeof fetch;
+  globalThis.fetch = mockFetch;
   embeddedAgentsResponse = { embeddedAgents: [] };
   mockFetch.mockClear();
 });
