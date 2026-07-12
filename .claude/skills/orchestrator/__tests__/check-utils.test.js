@@ -127,6 +127,29 @@ describe('requiresTestCoverage with re-export exclusion', () => {
   });
 });
 
+describe('requiresTestCoverage with generated-file exclusion (*.gen.ts)', () => {
+  it('excludes *.gen.ts under a coverage-pattern path', () => {
+    // schema-version.gen.ts (surfaced by PR #1042) sits under
+    // packages/shared/src/ (a coverage path), but its contents are
+    // emitted by a codegen step at build time. A hand-written sibling
+    // test would be tautological.
+    expect(requiresTestCoverage('packages/shared/src/schema-version.gen.ts')).toBe(false);
+  });
+
+  it('excludes *.gen.tsx under a coverage-pattern path', () => {
+    // Parity with *.gen.ts: if a future generator emits a .tsx file
+    // (e.g. a code-gen React component tree), the same exclusion applies.
+    expect(requiresTestCoverage('packages/client/src/components/foo.gen.tsx')).toBe(false);
+  });
+
+  it('does NOT exclude files whose basename merely contains "gen" as a substring', () => {
+    // The exclusion is anchored on the `.gen.<ext>$` suffix, not any
+    // occurrence of "gen" in the path — a file like `generator.ts` still
+    // requires coverage.
+    expect(requiresTestCoverage('packages/shared/src/generator.ts')).toBe(true);
+  });
+});
+
 describe('preflight-check parity fix verification', () => {
   it('should verify getLocalChangedFiles implementation was simplified', () => {
     // Read the source code to verify the implementation

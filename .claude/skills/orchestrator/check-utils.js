@@ -110,6 +110,12 @@ const COVERAGE_EXCLUSIONS = [
   // Testing them is not meaningful — the type system already enforces
   // their shape at consume sites.
   /-types\.tsx?$/,
+  // *.gen.ts / *.gen.tsx convention: build-time generated files
+  // (e.g. schema-version.gen.ts from a codegen step). Their contents
+  // are derived from an authoritative source at build time; a hand-
+  // written sibling test would be tautological — the generator is
+  // what needs testing, not the emitted output.
+  /\.gen\.tsx?$/,
 ];
 
 export function isTestFile(filePath) {
