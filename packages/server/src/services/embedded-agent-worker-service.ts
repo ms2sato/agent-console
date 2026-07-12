@@ -1,0 +1,574 @@
+/**
+ * EmbeddedAgentWorkerService — server-side lifecycle for embedded-agent workers.
+ *
+ * Combines InteractiveProcessManager's subprocess mechanics (spawnAsUser, a
+ * long-lived stdin the caller feeds, concurrent stdout/stderr reads, exit
+ * observation ordered AFTER stream completion) with the AgentWorker
+ * persistence/output model (epoch/offset append-only stream reused for NDJSON
+ * event lines).
+ *
+ * Spec: docs/design/embedded-agent-worker.md Part II §"Server-side management".
+ *
+ * This service is a FEEDING spawnAsUser consumer: stdin stays open for the
+ * process lifetime (init / user-message / cancel / shutdown commands are fed
+ * over time), so the fire-and-forget `stdin.end()` obligation does NOT apply.
+ * The drain obligation is satisfied by the stdout / stderr readers, whose
+ * completion is tracked via `streamsDone` (never fire-and-forget).
+ */
+import type { Subprocess, FileSink } from 'bun';
+import * as v from 'valibot';
+import {
+  NdjsonLineSplitter,
+  EmbeddedAgentEventSchema,
+  type EmbeddedAgentDefinition,
+  type EmbeddedAgentCommand,
+  type EmbeddedAgentServerEvent,
+  type AgentActivityState,
+  type ExitReason,
+} from '@agent-console/shared';
+import type { InternalSession } from './internal-types.js';
+import type { InternalEmbeddedAgentWorker } from './worker-types.js';
+import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
+import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
+import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
+import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
+import { loadProviderKey } from './provider-key-store.js';
+import { createLogger } from '../lib/logger.js';
+import * as path from 'node:path';
+
+const logger = createLogger('embedded-agent-worker-service');
+
+/** Protocol-violation guard: a single NDJSON line larger than this is a crash. */
+const MAX_LINE_BYTES = 1024 * 1024;
+/** Consecutive parse failures tolerated before the loop is treated as corrupt. */
+const MAX_CONSECUTIVE_PARSE_FAILURES = 5;
+/** Default per-user-turn tool iteration cap when the definition omits it. */
+const DEFAULT_MAX_TOOL_ITERATIONS = 25;
+/** Grace after `shutdown` before escalating to SIGTERM. */
+const DEFAULT_SHUTDOWN_GRACE_MS = 3000;
+/** Grace after SIGTERM before escalating to SIGKILL. */
+const DEFAULT_SIGTERM_TIMEOUT_MS = 5000;
+/** Cap on the per-chunk stderr text forwarded to the debug logger. */
+const STDERR_LOG_CAP = 2048;
+
+export interface EmbeddedAgentWorkerServiceDeps {
+  getSession: (sessionId: string) => InternalSession | undefined;
+  persistSession: (session: InternalSession) => Promise<void>;
+  getPathResolver: (session: InternalSession) => SessionDataPathResolver;
+  getEmbeddedAgent: (id: string) => EmbeddedAgentDefinition | undefined;
+  resolveSpawnUsername: (createdBy?: string) => Promise<string>;
+  mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
+  workerOutputFileManager: Pick<WorkerOutputFileManager, 'resetWorkerOutput' | 'bufferOutput'>;
+  /** MCP Streamable-HTTP base URL delivered to the loop in the init message. */
+  getMcpBaseUrl: () => string;
+  /** Test seam for the provider-key loader. */
+  loadProviderKeyFn?: typeof loadProviderKey;
+  /** Test seam for the elevated spawn helper. */
+  spawnAsUserFn?: SpawnAsUserFn;
+  /** Absolute path to the embedded-agent subprocess entry (resolved from the server install root). */
+  entryPath?: string;
+  getGlobalActivityCallback: () => ((sessionId: string, workerId: string, state: AgentActivityState) => void) | undefined;
+  getGlobalWorkerExitCallback: () => ((sessionId: string, workerId: string, exitCode: number, reason: ExitReason) => void) | undefined;
+  shutdownGraceMs?: number;
+  sigtermTimeoutMs?: number;
+}
+
+/** Immutable references shared by the readers, the exit observer, and the command writers. */
+interface StreamContext {
+  sessionId: string;
+  workerId: string;
+  worker: InternalEmbeddedAgentWorker;
+  resolver: SessionDataPathResolver;
+}
+
+/** Per-worker runtime state kept OFF the worker object (subprocess-lifecycle-scoped). */
+interface Runtime {
+  ctx: StreamContext;
+  /** True from user-message admission until the loop reports `state: idle` (or exit). */
+  turnActive: boolean;
+  /** Set by deactivate() so the exit observer can classify a managed shutdown. */
+  shutdownRequested: boolean;
+  consecutiveParseFailures: number;
+  /** Resolves when both stdout and stderr readers have fully drained. */
+  streamsDone: Promise<void>;
+  /** Resolves after the exit observer finished all cleanup (append/revoke/persist/fire). */
+  exitSettled: Promise<void>;
+}
+
+type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
+
+export class EmbeddedAgentWorkerService {
+  private readonly runtimes = new Map<string, Runtime>();
+  private readonly spawnAsUserFn: SpawnAsUserFn;
+  private readonly loadProviderKeyFn: typeof loadProviderKey;
+  private readonly entryPath: string;
+  private readonly shutdownGraceMs: number;
+  private readonly sigtermTimeoutMs: number;
+
+  constructor(private readonly deps: EmbeddedAgentWorkerServiceDeps) {
+    this.spawnAsUserFn = deps.spawnAsUserFn ?? spawnAsUser;
+    this.loadProviderKeyFn = deps.loadProviderKeyFn ?? loadProviderKey;
+    this.entryPath =
+      deps.entryPath ?? path.resolve(import.meta.dir, '../../../embedded-agent/src/main.ts');
+    this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
+    this.sigtermTimeoutMs = deps.sigtermTimeoutMs ?? DEFAULT_SIGTERM_TIMEOUT_MS;
+  }
+
+  /**
+   * Activate the embedded-agent worker: spawn the loop subprocess, deliver the
+   * init handshake over stdin, and start streaming its NDJSON events. Every
+   * failure path throws with a clear message surfaced to the client. Idempotent
+   * when the subprocess is already live.
+   */
+  async activate(sessionId: string, workerId: string): Promise<void> {
+    const session = this.deps.getSession(sessionId);
+    if (!session) {
+      throw new Error(`Cannot activate embedded-agent worker: session ${sessionId} not found`);
+    }
+    const worker = session.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent') {
+      throw new Error(
+        `Cannot activate embedded-agent worker: worker ${workerId} is not an embedded-agent worker`,
+      );
+    }
+
+    // Step 0: idempotent no-op when already activated.
+    if (worker.subprocess !== null) {
+      logger.debug({ sessionId, workerId }, 'Embedded-agent worker already activated; no-op');
+      return;
+    }
+
+    // Step 1: resolve the definition. No built-in fallback (unlike terminal agents).
+    const definition = this.deps.getEmbeddedAgent(worker.embeddedAgentId);
+    if (!definition) {
+      throw new Error(
+        `Embedded agent definition not found (deleted): ${worker.embeddedAgentId}. The worker stays deactivated.`,
+      );
+    }
+
+    // Step 2: resolve the provider key if referenced (dangling ref fails activation).
+    let apiKey: string | undefined;
+    if (definition.provider.apiKeyRef) {
+      apiKey = await this.loadProviderKeyFn(definition.provider.apiKeyRef);
+    }
+
+    // Step 3: mint the MCP token. Requires a session owner so the minted identity
+    // is comparable to session ownership (checkCallerOwnsSession strictly rejects
+    // ownerless sessions, so a token minted from one would false-reject every call).
+    if (!session.createdBy) {
+      throw new Error(
+        `Cannot activate embedded-agent worker: session ${sessionId} has no createdBy, so an MCP caller identity cannot be minted`,
+      );
+    }
+    const token = this.deps.mcpTokenRegistry.mint({
+      sessionId,
+      workerId,
+      userId: session.createdBy,
+    });
+
+    // Everything after the mint is wrapped so a failure (output reset, spawn,
+    // stdin write, persist) revokes the just-minted token and tears down any
+    // spawned subprocess before rethrowing. Without this the token would linger
+    // in the registry forever — the exit observer (its only other revoker)
+    // never runs when the subprocess failed to spawn or was never observed.
+    let spawned: PipedSubprocess | null = null;
+    try {
+      // Step 4: reset the output stream (every activation is restart-semantics in v1).
+      const resolver = this.deps.getPathResolver(session);
+      const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(
+        sessionId,
+        workerId,
+        resolver,
+      );
+      worker.epoch = newEpoch;
+      worker.outputOffset = 0;
+
+      // Step 5: spawn as the requesting OS user. The command carries NO secrets
+      // (token / provider key travel only in the stdin init line) and NO env.
+      const username = await this.deps.resolveSpawnUsername(session.createdBy);
+      const { subprocess, stdin } = this.spawnAsUserFn({
+        username,
+        command: `bun ${shellEscape(this.entryPath)}`,
+        cwd: session.locationPath,
+      });
+      spawned = subprocess;
+      worker.subprocess = subprocess;
+      worker.stdin = stdin;
+
+      const ctx: StreamContext = { sessionId, workerId, worker, resolver };
+
+      // Step 6: write the init command as the FIRST stdin line.
+      const initCommand: EmbeddedAgentCommand = {
+        v: 1,
+        type: 'init',
+        mcp: { baseUrl: this.deps.getMcpBaseUrl(), token },
+        provider: {
+          baseUrl: definition.provider.baseUrl,
+          model: definition.provider.model,
+          ...(apiKey !== undefined ? { apiKey } : {}),
+        },
+        context: {
+          sessionId,
+          workerId,
+          ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
+          cwd: session.locationPath,
+        },
+        ...(definition.systemPrompt !== undefined ? { systemPrompt: definition.systemPrompt } : {}),
+        maxToolIterations: definition.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS,
+      };
+      this.writeCommand(stdin, initCommand);
+
+      // Step 7: start readers, register the exit observer, and mark idle.
+      const runtime: Runtime = {
+        ctx,
+        turnActive: false,
+        shutdownRequested: false,
+        consecutiveParseFailures: 0,
+        streamsDone: Promise.resolve(),
+        exitSettled: Promise.resolve(),
+      };
+      this.runtimes.set(workerId, runtime);
+
+      runtime.streamsDone = Promise.all([
+        this.readStdout(runtime, subprocess).catch((err) => {
+          logger.warn({ sessionId, workerId, err }, 'Embedded-agent stdout reader error');
+        }),
+        this.readStderr(ctx, subprocess).catch((err) => {
+          logger.warn({ sessionId, workerId, err }, 'Embedded-agent stderr reader error');
+        }),
+      ]).then(() => {});
+
+      runtime.exitSettled = subprocess.exited
+        .then(async (code) => {
+          // Exit handling is ordered AFTER stream completion so the final events
+          // flush before the server-authored `exited` row (mirrors
+          // interactive-process-manager.ts exit observation).
+          await runtime.streamsDone;
+          await this.handleExit(runtime, code);
+        })
+        .catch((err) => {
+          logger.error({ sessionId, workerId, err }, 'Embedded-agent exit handler error');
+        });
+
+      worker.activityState = 'idle';
+      this.broadcastActivity(ctx, 'idle');
+
+      await this.deps.persistSession(session);
+
+      logger.info({ sessionId, workerId, pid: subprocess.pid }, 'Embedded-agent worker activated');
+    } catch (err) {
+      // Revoke the minted token and tear down any spawned subprocess so the
+      // failed activation leaves no orphaned token or process.
+      this.deps.mcpTokenRegistry.revokeByWorker(workerId);
+      if (spawned) {
+        this.safeKill(spawned, 9);
+      }
+      worker.subprocess = null;
+      worker.stdin = null;
+      this.runtimes.delete(workerId);
+      logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed; revoked token and cleaned up');
+      throw err;
+    }
+  }
+
+  /**
+   * Forward a user message to the loop. Admission is a SYNCHRONOUS check-and-set
+   * (before any await) so two concurrent WS callers cannot double-admit.
+   */
+  async sendUserMessage(
+    sessionId: string,
+    workerId: string,
+    text: string,
+  ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    const runtime = this.runtimes.get(workerId);
+
+    // --- synchronous admission (no await before turnActive is set) ---
+    if (
+      !session ||
+      !worker ||
+      worker.type !== 'embedded-agent' ||
+      worker.subprocess === null ||
+      !worker.stdin ||
+      !runtime
+    ) {
+      return { ok: false, error: 'not activated' };
+    }
+    const stdin = worker.stdin;
+    if (runtime.turnActive) {
+      return { ok: false, error: 'turn in progress' };
+    }
+    runtime.turnActive = true;
+    // --- end synchronous admission ---
+
+    const id = crypto.randomUUID();
+    const event: EmbeddedAgentServerEvent = { v: 1, type: 'user-message', id, text };
+    // Append BEFORE forwarding so replay ordering is stable.
+    this.appendEvent(runtime.ctx, event);
+
+    try {
+      this.writeCommand(stdin, event);
+    } catch (err) {
+      runtime.turnActive = false;
+      logger.warn({ sessionId, workerId, err }, 'Failed to forward user message to embedded-agent stdin');
+      return { ok: false, error: 'failed to write to subprocess stdin' };
+    }
+
+    return { ok: true, id };
+  }
+
+  /**
+   * Forward a cancel command (the loop no-ops it while idle). Returns whether it
+   * was forwarded.
+   */
+  cancel(sessionId: string, workerId: string): boolean {
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent' || worker.subprocess === null || !worker.stdin) {
+      return false;
+    }
+    try {
+      this.writeCommand(worker.stdin, { v: 1, type: 'cancel' });
+      return true;
+    } catch (err) {
+      logger.warn({ sessionId, workerId, err }, 'Failed to forward cancel to embedded-agent stdin');
+      return false;
+    }
+  }
+
+  /**
+   * Gracefully deactivate: request shutdown, then escalate SIGTERM -> SIGKILL on
+   * the configured timeouts. Resolves only after the exit observer's cleanup
+   * (exited event append, token revocation) has run.
+   */
+  async deactivate(sessionId: string, workerId: string): Promise<void> {
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent' || worker.subprocess === null) {
+      return; // not activated — no-op
+    }
+    const runtime = this.runtimes.get(workerId);
+    const subprocess = worker.subprocess;
+
+    if (runtime) {
+      runtime.shutdownRequested = true;
+    }
+
+    if (worker.stdin) {
+      try {
+        this.writeCommand(worker.stdin, { v: 1, type: 'shutdown' });
+      } catch (err) {
+        logger.debug({ sessionId, workerId, err }, 'Shutdown command write failed (subprocess may be exiting)');
+      }
+    }
+
+    let alive = !(await this.raceExit(subprocess, this.shutdownGraceMs));
+    if (alive) {
+      logger.info({ sessionId, workerId }, 'Embedded-agent did not exit on shutdown; sending SIGTERM');
+      this.safeKill(subprocess, 15);
+      alive = !(await this.raceExit(subprocess, this.sigtermTimeoutMs));
+      if (alive) {
+        logger.warn({ sessionId, workerId }, 'Embedded-agent did not exit on SIGTERM; sending SIGKILL');
+        this.safeKill(subprocess, 9);
+      }
+    }
+
+    if (runtime) {
+      // Ensure the exit observer's cleanup (exited event, token revoke, persist)
+      // completed before returning so downstream output cleanup runs after.
+      await runtime.exitSettled;
+    }
+  }
+
+  // ========== Internals ==========
+
+  /** Serialize a command as a single NDJSON line and flush it to stdin. */
+  private writeCommand(stdin: FileSink, command: EmbeddedAgentCommand): void {
+    stdin.write(`${JSON.stringify(command)}\n`);
+    stdin.flush();
+  }
+
+  /**
+   * Append an already-serialized NDJSON line to the worker output stream and fan
+   * it out to every attached connection ((a)+(b) in the spec).
+   */
+  private appendLine(ctx: StreamContext, line: string): void {
+    const { worker, sessionId, workerId, resolver } = ctx;
+    const data = `${line}\n`;
+    worker.outputOffset += Buffer.byteLength(data, 'utf-8');
+    this.deps.workerOutputFileManager.bufferOutput(sessionId, workerId, data, resolver, worker.epoch);
+    const snapshot = Array.from(worker.connectionCallbacks.values());
+    for (const cb of snapshot) {
+      cb.onData(data, worker.outputOffset, worker.epoch);
+    }
+  }
+
+  /** Append a server-authored event object to the persisted stream. */
+  private appendEvent(ctx: StreamContext, event: EmbeddedAgentServerEvent): void {
+    this.appendLine(ctx, JSON.stringify(event));
+  }
+
+  /** Fire activity-change side channels (per-connection + global). */
+  private broadcastActivity(ctx: StreamContext, state: AgentActivityState): void {
+    const snapshot = Array.from(ctx.worker.connectionCallbacks.values());
+    for (const cb of snapshot) {
+      cb.onActivityChange?.(state);
+    }
+    this.deps.getGlobalActivityCallback()?.(ctx.sessionId, ctx.workerId, state);
+  }
+
+  private async readStdout(runtime: Runtime, subprocess: PipedSubprocess): Promise<void> {
+    const { ctx } = runtime;
+    const splitter = new NdjsonLineSplitter({ maxLineBytes: MAX_LINE_BYTES });
+    const decoder = new TextDecoder();
+    const reader = subprocess.stdout.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (!text) continue;
+        const result = splitter.push(text);
+        if (result.oversized) {
+          logger.warn(
+            { sessionId: ctx.sessionId, workerId: ctx.workerId },
+            'Oversized NDJSON line from embedded-agent loop; killing subprocess (protocol violation)',
+          );
+          this.safeKill(subprocess, 9);
+          return;
+        }
+        for (const line of result.lines) {
+          if (line.length === 0) continue;
+          this.handleLoopLine(runtime, subprocess, line);
+        }
+      }
+    } catch (err) {
+      logger.debug({ sessionId: ctx.sessionId, workerId: ctx.workerId, err }, 'Embedded-agent stdout stream ended');
+    }
+  }
+
+  private async readStderr(ctx: StreamContext, subprocess: PipedSubprocess): Promise<void> {
+    const decoder = new TextDecoder();
+    const reader = subprocess.stderr.getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const text = decoder.decode(value, { stream: true });
+        if (!text) continue;
+        logger.debug(
+          { sessionId: ctx.sessionId, workerId: ctx.workerId, stderr: text.slice(0, STDERR_LOG_CAP) },
+          'Embedded-agent stderr',
+        );
+      }
+    } catch (err) {
+      logger.debug({ sessionId: ctx.sessionId, workerId: ctx.workerId, err }, 'Embedded-agent stderr stream ended');
+    }
+  }
+
+  private handleLoopLine(runtime: Runtime, subprocess: PipedSubprocess, line: string): void {
+    const { ctx } = runtime;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      this.handleParseFailure(runtime, subprocess);
+      return;
+    }
+    const result = v.safeParse(EmbeddedAgentEventSchema, parsed);
+    if (!result.success) {
+      this.handleParseFailure(runtime, subprocess);
+      return;
+    }
+    runtime.consecutiveParseFailures = 0;
+    const event = result.output;
+
+    // (a)+(b): append the raw line and fan out.
+    this.appendLine(ctx, line);
+
+    // (c): side-channel activity state.
+    if (event.type === 'state') {
+      ctx.worker.activityState = event.state;
+      this.broadcastActivity(ctx, event.state);
+      if (event.state === 'idle') {
+        runtime.turnActive = false;
+      }
+    }
+  }
+
+  private handleParseFailure(runtime: Runtime, subprocess: PipedSubprocess): void {
+    runtime.consecutiveParseFailures += 1;
+    logger.warn(
+      {
+        sessionId: runtime.ctx.sessionId,
+        workerId: runtime.ctx.workerId,
+        consecutive: runtime.consecutiveParseFailures,
+      },
+      'Malformed NDJSON line from embedded-agent loop; skipping',
+    );
+    if (runtime.consecutiveParseFailures >= MAX_CONSECUTIVE_PARSE_FAILURES) {
+      logger.error(
+        { sessionId: runtime.ctx.sessionId, workerId: runtime.ctx.workerId },
+        'Too many consecutive parse failures; killing subprocess (protocol integrity lost)',
+      );
+      this.safeKill(subprocess, 9);
+    }
+  }
+
+  private async handleExit(runtime: Runtime, code: number | null): Promise<void> {
+    const { ctx } = runtime;
+    const { worker, sessionId, workerId } = ctx;
+
+    // Append the server-authored exited row so the on-disk log is complete.
+    this.appendEvent(ctx, { v: 1, type: 'exited', code: code ?? null });
+
+    worker.subprocess = null;
+    worker.stdin = null;
+    this.deps.mcpTokenRegistry.revokeByWorker(workerId);
+    runtime.turnActive = false;
+    worker.activityState = 'idle';
+    this.broadcastActivity(ctx, 'idle');
+
+    // Persist so the (now-null) pid is durable. Re-resolve the session: it may
+    // have been deleted during the async gap — skip persistence if so.
+    const session = this.deps.getSession(sessionId);
+    if (session) {
+      await this.deps.persistSession(session);
+    }
+
+    const reason: ExitReason = runtime.shutdownRequested ? 'managed' : 'unexpected';
+    const snapshot = Array.from(worker.connectionCallbacks.values());
+    for (const cb of snapshot) {
+      cb.onExit(code ?? 0, null, reason);
+    }
+    this.deps.getGlobalWorkerExitCallback()?.(sessionId, workerId, code ?? 0, reason);
+
+    this.runtimes.delete(workerId);
+    logger.info({ sessionId, workerId, code, reason }, 'Embedded-agent worker exited');
+  }
+
+  private safeKill(subprocess: PipedSubprocess, signal: number): void {
+    try {
+      subprocess.kill(signal);
+    } catch {
+      // Process may have already exited.
+    }
+  }
+
+  /** Resolve true if the subprocess exited within `timeoutMs`, false on timeout. */
+  private async raceExit(subprocess: PipedSubprocess, timeoutMs: number): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), timeoutMs);
+    });
+    const outcome = await Promise.race([
+      subprocess.exited.then(() => 'exited' as const),
+      timeout,
+    ]);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+    }
+    return outcome === 'exited';
+  }
+}

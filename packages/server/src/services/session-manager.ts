@@ -21,9 +21,12 @@ import type {
 import type { InternalSession, SessionCreationContext } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
+import { EmbeddedAgentWorkerService } from './embedded-agent-worker-service.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
+import { McpTokenRegistry } from '../mcp/mcp-auth.js';
+import { serverConfig } from '../lib/server-config.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import { filterRepositoryEnvVars } from './env-filter.js';
 import { parseEnvVars } from '../lib/env-parser.js';
@@ -110,6 +113,18 @@ interface SessionManagerOptions {
    * manager so validation is enforced end-to-end.
    */
   embeddedAgentManager?: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
+  /**
+   * Per-worker MCP bearer token registry. Minted at embedded-agent activation
+   * and delivered to the loop over stdin; revoked on exit / deactivation.
+   * Defaults to a fresh registry so unit tests need no threading; production
+   * (createAppContext) passes the SAME registry `/mcp` verifies against.
+   */
+  mcpTokenRegistry?: McpTokenRegistry;
+  /**
+   * MCP Streamable-HTTP base URL delivered to the embedded-agent loop in its
+   * init message. Defaults to the local server's `/mcp` endpoint.
+   */
+  getMcpBaseUrl?: () => string;
   /** User repository for resolving createdBy → username for PTY spawning */
   userRepository?: UserRepository;
   notificationManager?: NotificationManager | null;
@@ -158,6 +173,15 @@ export class SessionManager {
   private webSocketCallbacks: WebSocketCallbacks | null = null;
   private workerManager: WorkerManager;
   private workerLifecycleManager: WorkerLifecycleManager;
+  private embeddedAgentWorkerService: EmbeddedAgentWorkerService;
+  private mcpTokenRegistry: McpTokenRegistry;
+  /**
+   * Global activity / worker-exit callbacks. Stored here (not only forwarded to
+   * WorkerManager) so the EmbeddedAgentWorkerService — which is not routed
+   * through WorkerManager — observes the same callbacks the PTY path uses.
+   */
+  private globalActivityCallback?: (sessionId: string, workerId: string, state: AgentActivityState) => void;
+  private globalWorkerExitCallback?: (sessionId: string, workerId: string, exitCode: number, reason: ExitReason) => void;
   private messageService = new MessageService();
   private pathExists: (path: string) => Promise<boolean>;
   private sessionRepository: SessionRepository;
@@ -220,6 +244,27 @@ export class SessionManager {
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
     this.jobQueue = options?.jobQueue ?? null;
 
+    // Embedded-agent subprocess lifecycle. Constructed before the
+    // WorkerLifecycleManager / deletion / pause services so their
+    // `deactivateEmbeddedAgentWorker` dep can route here. The MCP token
+    // registry defaults to a fresh instance (unit tests need no threading);
+    // production passes the same registry `/mcp` verifies against.
+    this.mcpTokenRegistry = options.mcpTokenRegistry ?? new McpTokenRegistry();
+    const getMcpBaseUrl =
+      options.getMcpBaseUrl ?? (() => `http://localhost:${serverConfig.PORT}/mcp`);
+    this.embeddedAgentWorkerService = new EmbeddedAgentWorkerService({
+      getSession: (id) => this.sessions.get(id),
+      persistSession: (session) => this.persistSession(session),
+      getPathResolver: (session) => this.getPathResolverForSession(session),
+      getEmbeddedAgent: (id) => embeddedAgentManager.getEmbeddedAgent(id),
+      resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
+      mcpTokenRegistry: this.mcpTokenRegistry,
+      workerOutputFileManager,
+      getMcpBaseUrl,
+      getGlobalActivityCallback: () => this.globalActivityCallback,
+      getGlobalWorkerExitCallback: () => this.globalWorkerExitCallback,
+    });
+
     // Default to a never-resolves username lookup for the same reason as
     // sharedAccountLookup below: unit tests that construct SessionManager
     // directly do not need to thread a UserRepository through just to
@@ -250,6 +295,8 @@ export class SessionManager {
       workerManager: this.workerManager,
       agentManager,
       embeddedAgentManager,
+      deactivateEmbeddedAgentWorker: (sessionId, workerId) =>
+        this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
       notificationManager: this.notificationManager,
       pathExists: this.pathExists,
       getSession: (id) => this.sessions.get(id),
@@ -317,6 +364,8 @@ export class SessionManager {
       messageService: this.messageService,
       interSessionMessageService: this.interSessionMessageService,
       memoService: this.memoService,
+      deactivateEmbeddedAgentWorker: (sessionId, workerId) =>
+        this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
       getPathResolverForSession: (session) => this.getPathResolverForSession(session),
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
       getSessionScope: (session) => this.getSessionScopeForCleanup(session),
@@ -336,6 +385,8 @@ export class SessionManager {
       deleteSession: (id) => { this.sessions.delete(id); },
       sessionRepository: this.sessionRepository,
       workerManager: this.workerManager,
+      deactivateEmbeddedAgentWorker: (sessionId, workerId) =>
+        this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
       pathExists: this.pathExists,
       getRepositoryEnvVars: (id) => this.getRepositoryEnvVars(id),
       getPathResolverForSession: (session) => this.getPathResolverForSession(session),
@@ -426,6 +477,9 @@ export class SessionManager {
    * Set a global callback for all activity state changes (for dashboard broadcast)
    */
   setGlobalActivityCallback(callback: (sessionId: string, workerId: string, state: AgentActivityState) => void): void {
+    // Store then forward: PTY workers observe it via WorkerManager; embedded-agent
+    // workers observe it via EmbeddedAgentWorkerService's getGlobalActivityCallback.
+    this.globalActivityCallback = callback;
     this.workerManager.setGlobalActivityCallback(callback);
   }
 
@@ -492,7 +546,42 @@ export class SessionManager {
    * Set a global callback for all worker exit events (for notifications)
    */
   setGlobalWorkerExitCallback(callback: (sessionId: string, workerId: string, exitCode: number, reason: ExitReason) => void): void {
+    // Store then forward (see setGlobalActivityCallback rationale).
+    this.globalWorkerExitCallback = callback;
     this.workerManager.setGlobalWorkerExitCallback(callback);
+  }
+
+  // ========== Embedded-agent worker operations ==========
+
+  /**
+   * Activate an embedded-agent worker: spawn the loop subprocess and deliver the
+   * init handshake. Every activation is restart-semantics (fresh conversation).
+   * Throws with a clear message on any failure path.
+   */
+  async activateEmbeddedAgentWorker(sessionId: string, workerId: string): Promise<void> {
+    return this.embeddedAgentWorkerService.activate(sessionId, workerId);
+  }
+
+  /**
+   * Forward a user message to an embedded-agent worker's loop. Rejects with
+   * `turn in progress` when a turn is already active (v1 does not queue).
+   */
+  async sendEmbeddedAgentUserMessage(
+    sessionId: string,
+    workerId: string,
+    text: string,
+  ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+    return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text);
+  }
+
+  /** Forward a cancel command to an embedded-agent worker's loop. */
+  cancelEmbeddedAgentTurn(sessionId: string, workerId: string): boolean {
+    return this.embeddedAgentWorkerService.cancel(sessionId, workerId);
+  }
+
+  /** Gracefully deactivate an embedded-agent worker's loop subprocess. */
+  async deactivateEmbeddedAgentWorker(sessionId: string, workerId: string): Promise<void> {
+    return this.embeddedAgentWorkerService.deactivate(sessionId, workerId);
   }
 
   /**

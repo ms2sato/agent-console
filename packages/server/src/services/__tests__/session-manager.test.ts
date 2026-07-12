@@ -545,6 +545,84 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('embedded-agent worker facade', () => {
+    // Exercises the SessionManager facade methods that delegate to
+    // EmbeddedAgentWorkerService (activate / sendUserMessage / cancel /
+    // deactivate). These assertions fail if the facade delegation is removed
+    // or mis-wired.
+    const STUB_DEF = {
+      id: 'stub-def',
+      name: 'Stub Model',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    async function createManagerWithEmbedded(defs: Map<string, typeof STUB_DEF>) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => defs.get(id) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+    }
+
+    async function createEmbeddedWorker(
+      manager: Awaited<ReturnType<typeof createManagerWithEmbedded>>,
+    ): Promise<{ sessionId: string; workerId: string }> {
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      expect(worker).not.toBeNull();
+      return { sessionId: session.id, workerId: worker!.id };
+    }
+
+    it('sendEmbeddedAgentUserMessage returns not-activated for a never-activated worker', async () => {
+      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const res = await manager.sendEmbeddedAgentUserMessage(sessionId, workerId, 'hi');
+
+      expect(res).toEqual({ ok: false, error: 'not activated' });
+    });
+
+    it('cancelEmbeddedAgentTurn returns false for a never-activated worker', async () => {
+      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      expect(manager.cancelEmbeddedAgentTurn(sessionId, workerId)).toBe(false);
+    });
+
+    it('deactivateEmbeddedAgentWorker resolves as a no-op for a never-activated worker', async () => {
+      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      await expect(manager.deactivateEmbeddedAgentWorker(sessionId, workerId)).resolves.toBeUndefined();
+    });
+
+    it('activateEmbeddedAgentWorker rejects when the definition was deleted after creation', async () => {
+      const defs = new Map([['stub-def', STUB_DEF]]);
+      const manager = await createManagerWithEmbedded(defs);
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      // Simulate the definition being deleted between creation and activation.
+      defs.delete('stub-def');
+
+      await expect(manager.activateEmbeddedAgentWorker(sessionId, workerId)).rejects.toThrow('stub-def');
+    });
+  });
+
   describe('deleteWorker', () => {
     it('should delete a worker from session', async () => {
       const manager = await getSessionManager();

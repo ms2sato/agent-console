@@ -1,0 +1,22 @@
+{
+  "name": "@agent-console/embedded-agent",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": { "bun": ">=1.3.5" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src/",
+    "test:coverage": "bun test --coverage src/"
+  },
+  "dependencies": {
+    "@agent-console/shared": "*",
+    "@modelcontextprotocol/sdk": "^1.26.0",
+    "valibot": "^1.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "@types/node": "^22.10.1",
+    "typescript": "^5.7.2"
+  }
+}

@@ -82,6 +82,7 @@ export const COVERAGE_PATTERNS = [
   /^packages\/client\/src\/hooks\/.+\.ts$/,
   /^packages\/client\/src\/components\/.+\.tsx$/,
   /^packages\/shared\/src\/.+\.ts$/,
+  /^packages\/embedded-agent\/src\/.+\.ts$/,
   /^\.claude\/hooks\/.+\.sh$/,
 ];
 

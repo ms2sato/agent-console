@@ -60,6 +60,20 @@
         "vite": "^6.0.3",
       },
     },
+    "packages/embedded-agent": {
+      "name": "@agent-console/embedded-agent",
+      "version": "0.2.0",
+      "dependencies": {
+        "@agent-console/shared": "*",
+        "@modelcontextprotocol/sdk": "^1.26.0",
+        "valibot": "^1.2.0",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.1.14",
+        "@types/node": "^22.10.1",
+        "typescript": "^5.7.2",
+      },
+    },
     "packages/integration": {
       "name": "@agent-console/integration",
       "version": "0.2.0",
@@ -120,6 +134,8 @@
   },
   "packages": {
     "@agent-console/client": ["@agent-console/client@workspace:packages/client"],
+
+    "@agent-console/embedded-agent": ["@agent-console/embedded-agent@workspace:packages/embedded-agent"],
 
     "@agent-console/integration": ["@agent-console/integration@workspace:packages/integration"],
 

@@ -49,6 +49,10 @@ const embeddedAgentManagerStub = {
     id === EMBEDDED_AGENT_DEF.id ? EMBEDDED_AGENT_DEF : undefined,
 };
 
+// Records embedded-agent deactivation calls so the deleteWorker embedded branch
+// can be asserted (polarity guard for the deactivate-before-cleanup wiring).
+const mockDeactivateEmbeddedAgentWorker = mock(async (_sessionId: string, _workerId: string) => {});
+
 // Mock PTY factory
 const ptyFactory = createMockPtyFactory(10000);
 
@@ -82,6 +86,7 @@ describe('WorkerLifecycleManager', () => {
       workerManager,
       agentManager,
       embeddedAgentManager: embeddedAgentManagerStub,
+      deactivateEmbeddedAgentWorker: mockDeactivateEmbeddedAgentWorker,
       notificationManager: null,
       pathExists: mockPathExists as unknown as (path: string) => Promise<boolean>,
       getSession: (id: string) => sessions.get(id),
@@ -497,6 +502,24 @@ describe('WorkerLifecycleManager', () => {
       } finally {
         stopWatchingSpy.mockRestore();
       }
+    });
+
+    it('should deactivate the embedded-agent subprocess when deleting (polarity guard)', async () => {
+      mockDeactivateEmbeddedAgentWorker.mockClear();
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'def-1',
+      });
+
+      const result = await lifecycleManager.deleteWorker(session.id, worker!.id);
+
+      expect(result).toBe(true);
+      // If the embedded branch's deactivate call is removed, the subprocess and
+      // its MCP token leak; this assertion fails.
+      expect(mockDeactivateEmbeddedAgentWorker).toHaveBeenCalledWith(session.id, worker!.id);
     });
 
     it('should return false when session is not found', async () => {

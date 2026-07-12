@@ -50,6 +50,7 @@ import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
 import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
 import { EmbeddedAgentManager as EmbeddedAgentManagerClass } from './services/embedded-agent-manager.js';
 import { SqliteEmbeddedAgentRepository } from './repositories/sqlite-embedded-agent-repository.js';
+import { McpTokenRegistry } from './mcp/mcp-auth.js';
 import { SqliteTimerRepository } from './repositories/sqlite-timer-repository.js';
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
 import { SystemCapabilitiesService as SystemCapabilitiesServiceClass } from './services/system-capabilities-service.js';
@@ -114,6 +115,13 @@ export interface AppContext {
 
   /** Embedded-agent definition management (OpenAI-compatible provider registry) */
   embeddedAgentManager: EmbeddedAgentManager;
+
+  /**
+   * Per-worker MCP bearer token registry (MCP caller identity). SessionManager mints
+   * into it at embedded-agent activation; `/mcp` verifies against it. Shared
+   * singleton so both sides use the same in-memory token map.
+   */
+  mcpTokenRegistry: McpTokenRegistry;
 
   /** Worktree management (create, remove, list, hooks) */
   worktreeService: WorktreeService;
@@ -261,6 +269,10 @@ export async function createAppContext(
   const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
   const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
 
+  // 4.2. Create the MCP token registry. Shared by SessionManager (mints at
+  // embedded-agent activation) and the /mcp route (verifies bearer tokens).
+  const mcpTokenRegistry = new McpTokenRegistry();
+
   // 5. Create notification services (needed by SessionManager)
   const repositorySlackIntegrationService = new RepositorySlackIntegrationServiceClass(db);
   const slackHandler = new SlackHandler(repositorySlackIntegrationService);
@@ -312,6 +324,7 @@ export async function createAppContext(
     jobQueue,
     agentManager,
     embeddedAgentManager,
+    mcpTokenRegistry,
     notificationManager,
     annotationService,
     workerOutputFileManager,
@@ -533,6 +546,7 @@ export async function createAppContext(
     systemCapabilities,
     agentManager,
     embeddedAgentManager,
+    mcpTokenRegistry,
     worktreeService,
     repositorySlackIntegrationService,
     annotationService,
@@ -572,6 +586,14 @@ export interface CreateTestContextOptions {
   sharedAccountRegistry?: SharedAccountRegistry;
   /** Skip job queue start (useful for isolated unit tests) */
   skipJobQueueStart?: boolean;
+  /**
+   * MCP Streamable-HTTP base URL delivered to the embedded-agent loop's init
+   * message. Threaded into SessionManager only when provided. A late-bound
+   * closure works (SessionManager stores the function and calls it at
+   * activation time), which lets an E2E test point the loop at an ephemeral
+   * port known only after `Bun.serve` starts.
+   */
+  getMcpBaseUrl?: () => string;
 }
 
 /**
@@ -616,6 +638,9 @@ export async function createTestContext(
   const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
   const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
 
+  // MCP token registry shared by SessionManager and (in production) the /mcp route.
+  const mcpTokenRegistry = new McpTokenRegistry();
+
   // Use provided or create new notification manager (needed by SessionManager)
   const repositorySlackIntegrationService = new RepositorySlackIntegrationServiceClass(db);
   const notificationManager =
@@ -654,6 +679,10 @@ export async function createTestContext(
     jobQueue,
     agentManager,
     embeddedAgentManager,
+    mcpTokenRegistry,
+    // Thread only when provided so default behavior (local /mcp URL) is
+    // unchanged for tests that do not override it.
+    ...(overrides?.getMcpBaseUrl ? { getMcpBaseUrl: overrides.getMcpBaseUrl } : {}),
     notificationManager,
     annotationService,
     workerOutputFileManager,
@@ -737,6 +766,7 @@ export async function createTestContext(
     systemCapabilities,
     agentManager,
     embeddedAgentManager,
+    mcpTokenRegistry,
     worktreeService,
     repositorySlackIntegrationService,
     annotationService,

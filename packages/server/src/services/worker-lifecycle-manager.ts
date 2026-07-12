@@ -69,6 +69,13 @@ export interface WorkerLifecycleDeps {
    * referenced id at creation time and to derive the worker's default name.
    */
   embeddedAgentManager: Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>;
+  /**
+   * Deactivate an embedded-agent worker's subprocess (graceful shutdown ->
+   * SIGTERM -> SIGKILL, token revocation). Called from deleteWorker before
+   * output cleanup so the subprocess is torn down and its MCP token revoked.
+   * A no-op for a worker that was never activated.
+   */
+  deactivateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
   notificationManager: NotificationManager | null;
   pathExists: (path: string) => Promise<boolean>;
   getSession: (sessionId: string) => InternalSession | undefined;
@@ -353,9 +360,17 @@ export class WorkerLifecycleManager {
       // git-diff worker: stop file watcher (synchronous operation)
       stopWatching(session.locationPath);
     } else {
-      // embedded-agent worker: Phase-1 workers are never activated (no
-      // subprocess), so only the output stream needs cleanup. Subprocess kill
-      // lands in Phase 2.
+      // embedded-agent worker: gracefully tear down the loop subprocess (and
+      // revoke its MCP token) BEFORE cleaning the output stream. Cleanup must
+      // not throw — a deactivation failure is logged and does not abort delete.
+      try {
+        await this.deps.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      } catch (err) {
+        logger.warn(
+          { sessionId, workerId, err },
+          'Failed to deactivate embedded-agent worker during delete',
+        );
+      }
       await this.cleanupWorkerOutput(sessionId, workerId, session);
     }
 

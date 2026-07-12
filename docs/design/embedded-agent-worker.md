@@ -561,6 +561,7 @@ Normalization (v1 scope): parse `argsJson` with `JSON.parse` and validate agains
 | `AGENTS.md` unreadable / oversized | Unreadable: skip + stderr log, never fatal. Oversized: truncate at 32 KiB and append a truncation-notice line inside the delimited block. |
 | Dangling `embeddedAgentId` (definition deleted while worker exists) | Activation fails with explicit error; worker stays deactivated. Definition deletion warns when live workers reference it. |
 | Dangling `embeddedAgentId` at worker creation | `createWorker` resolves the definition BEFORE initializing/persisting and rejects with 400; the worker name derives from the definition (parallel to agent workers). This complements (does not replace) the activation-time check above — a definition deleted after creation still fails activation. |
+| Session without `createdBy` at token mint | Activation fails with an explicit error (mint would produce an identity that `checkCallerOwnsSession` false-rejects). Surfaced to the client, not a silent fallback to tokenless. |
 | WS client disconnects | Callbacks detached; subprocess keeps running (parity with PTY workers). |
 | Server restart | Orphan reaping SIGTERMs the loop via the persisted pid (`killOrphanWorkers`, unchanged); next access re-activates with a fresh epoch + conversation. |
 

@@ -6,6 +6,7 @@ import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
   buildInternalGitDiffWorker,
+  buildInternalEmbeddedAgentWorker,
   buildInternalWorktreeSession,
   buildPersistedWorktreeSession,
 } from '../../__tests__/utils/build-test-data.js';
@@ -57,6 +58,7 @@ function createMockDeps(overrides?: Partial<SessionDeletionDeps>): SessionDeleti
     getProcessCleanupCallback: () => undefined,
     stopWatching: mockStopWatching,
     stopBranchWatching: () => {},
+    deactivateEmbeddedAgentWorker: mock(async () => {}),
     ...overrides,
   };
 }
@@ -94,6 +96,25 @@ describe('SessionDeletionService', () => {
 
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(2);
       expect(mockStopWatching).toHaveBeenCalledWith('/test/worktree');
+    });
+
+    it('should deactivate embedded-agent workers instead of killWorker (polarity guard)', async () => {
+      const embeddedWorker = buildInternalEmbeddedAgentWorker({ id: 'w-emb' });
+      const session = buildInternalWorktreeSession([embeddedWorker]);
+
+      const deactivateEmbeddedAgentWorker = mock(async () => {});
+      const deps = createMockDeps({
+        getSession: () => session,
+        deactivateEmbeddedAgentWorker,
+      });
+      const service = new SessionDeletionService(deps);
+
+      await service.killSessionWorkers(session.id);
+
+      // killWorker no-ops on embedded-agent workers (not PTY-backed), so the
+      // subprocess would leak without this branch.
+      expect(deactivateEmbeddedAgentWorker).toHaveBeenCalledWith(session.id, 'w-emb');
+      expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
     });
   });
 

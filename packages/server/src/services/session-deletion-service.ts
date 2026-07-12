@@ -25,6 +25,12 @@ export interface SessionDeletionDeps {
   messageService: MessageService;
   interSessionMessageService: InterSessionMessageService;
   memoService: MemoService;
+  /**
+   * Deactivate an embedded-agent worker's subprocess. Embedded-agent workers
+   * are not PTY-backed, so `workerManager.killWorker` silently no-ops on them
+   * (subprocess leak). Both worker-kill loops route them here instead.
+   */
+  deactivateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
   getPathResolverForSession: (session: InternalSession) => SessionDataPathResolver;
   getPathResolverForPersistedSession: (persisted: PersistedSession) => SessionDataPathResolver;
   /** Return the (scope, slug) pair for an in-memory session, or null if orphaned. */
@@ -60,6 +66,8 @@ export class SessionDeletionService {
     for (const worker of session.workers.values()) {
       if (worker.type === 'git-diff') {
         this.deps.stopWatching(session.locationPath);
+      } else if (worker.type === 'embedded-agent') {
+        killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
       } else {
         killPromises.push(this.deps.workerManager.killWorker(worker, id));
       }
@@ -89,6 +97,9 @@ export class SessionDeletionService {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
         this.deps.stopWatching(session.locationPath);
+      } else if (worker.type === 'embedded-agent') {
+        // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
+        killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
       } else {
         // Kill PTY for agent/terminal workers
         killPromises.push(this.deps.workerManager.killWorker(worker, id));

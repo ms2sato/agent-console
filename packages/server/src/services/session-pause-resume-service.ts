@@ -51,6 +51,12 @@ export interface SessionPauseResumeDeps {
     | 'activateAgentWorkerPty'
     | 'activateTerminalWorkerPty'
   >;
+  /**
+   * Deactivate an embedded-agent worker's subprocess. Embedded-agent workers
+   * are not PTY-backed, so `workerManager.killWorker` silently no-ops on them
+   * (subprocess leak). The pause path routes them here instead.
+   */
+  deactivateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
   pathExists: (path: string) => Promise<boolean>;
   getRepositoryEnvVars: (sessionId: string) => Promise<Record<string, string>>;
   getPathResolverForSession: (session: InternalSession) => SessionDataPathResolver;
@@ -109,6 +115,9 @@ export class SessionPauseResumeService {
       if (worker.type === 'git-diff') {
         // Stop file watcher for git-diff workers
         this.deps.stopWatching(session.locationPath);
+      } else if (worker.type === 'embedded-agent') {
+        // Tear down the loop subprocess (killWorker no-ops on non-PTY workers).
+        killPromises.push(this.deps.deactivateEmbeddedAgentWorker(id, worker.id));
       } else {
         // Kill PTY for agent/terminal workers (don't delete output files)
         killPromises.push(this.deps.workerManager.killWorker(worker, id));

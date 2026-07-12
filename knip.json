@@ -35,6 +35,13 @@
       "entry": ["src/index.ts"],
       "project": ["src/**/*.ts"]
     },
+    "packages/embedded-agent": {
+      "entry": [
+        "src/main.ts",
+        "src/**/__tests__/**/*.test.ts"
+      ],
+      "project": ["src/**/*.ts"]
+    },
     "packages/server": {
       "entry": [
         "src/index.ts!",
