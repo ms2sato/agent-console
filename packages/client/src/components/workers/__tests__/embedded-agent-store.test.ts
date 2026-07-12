@@ -431,6 +431,88 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().entries[0]).toMatchObject({ kind: 'user-message', text: 'fresh epoch-2 history' });
   });
 
+  /**
+   * Connects a fresh instance and triggers a genuine epoch bump (1 -> 2) via
+   * a live output frame. The triggering frame itself is dropped by
+   * acceptEpoch (returns false for the message that causes the reset, same
+   * as the pre-existing epoch-mismatch contract) -- it is never queued nor
+   * folded. Returns the instance/ws so the caller can drive the resync
+   * window (queued output, then the epoch-2 history response) that follows.
+   */
+  function connectAndBumpEpoch(sessionId: string, workerId: string) {
+    const instance = getOrCreateEmbeddedAgentWorker(sessionId, workerId);
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    const baseline = ndjson({ v: 1, type: 'user-message', id: 'baseline', text: 'epoch 1 baseline' });
+    ws.simulateMessage(outputMessage(baseline, baseline.length, 1));
+
+    const trigger = ndjson({ v: 1, type: 'user-message', id: 'trigger', text: 'epoch 2 trigger (dropped)' });
+    ws.simulateMessage(outputMessage(trigger, trigger.length, 2));
+
+    return { instance, ws };
+  }
+
+  it('does not duplicate a chat entry when live output for the new epoch arrives BEFORE its covering history response (architect audit MAJOR)', async () => {
+    // The exact race from the architect's finding: beginEpochReset already
+    // bumped `epoch`, so a SUBSEQUENT live `output` frame for that same new
+    // epoch passes acceptEpoch and would previously have been folded
+    // immediately via applyBytes. The eventual history response (requested
+    // fromOffset: 0) then re-covers those same bytes, folding them a SECOND
+    // time -- the Restart button reliably duplicating chat entries.
+    const { instance, ws } = connectAndBumpEpoch('s20a', 'w20a');
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // reset by the bump; trigger frame dropped
+
+    // Live output for the new epoch (e.g. the loop's own 'ready'/'state'
+    // handshake, immediately at activation) arrives before the history
+    // response. It must be QUEUED, not folded yet.
+    const readyData = ndjson({ v: 1, type: 'user-message', id: 'ready', text: 'ready handshake' });
+    ws.simulateMessage(outputMessage(readyData, readyData.length, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // queued, not folded
+
+    // The history response covers exactly the same bytes (the server's
+    // persisted stream already included them by the time it answered
+    // request-history fromOffset: 0).
+    ws.simulateMessage(historyMessage(readyData, readyData.length, 0, 2));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1); // exactly once, not duplicated
+    expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'ready handshake' });
+    expect(instance.getSnapshot().loadingHistory).toBe(false);
+  });
+
+  it('drops queued output already covered by the history response but still applies output strictly beyond it', async () => {
+    const { instance, ws } = connectAndBumpEpoch('s20b', 'w20b');
+    await flush();
+
+    // Two live frames arrive for the new epoch while resyncing, both
+    // queued: one will end up COVERED by the history response (offset 100
+    // <= the history's final offset 300) and one strictly NEWER (offset 500
+    // > 300).
+    const covered = ndjson({ v: 1, type: 'user-message', id: 'covered', text: 'queued-covered' });
+    const newer = ndjson({ v: 1, type: 'user-message', id: 'newer', text: 'queued-newer' });
+    ws.simulateMessage(outputMessage(covered, 100, 2));
+    ws.simulateMessage(outputMessage(newer, 500, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // both queued, nothing folded yet
+
+    const historyData = ndjson({ v: 1, type: 'user-message', id: 'history', text: 'history-payload' });
+    ws.simulateMessage(historyMessage(historyData, 300, 0, 2));
+    await flush();
+
+    const texts = instance
+      .getSnapshot()
+      .entries.map((e) => (e.kind === 'user-message' ? e.text : null));
+    // 'queued-covered' (offset 100 <= 300) must be dropped -- already
+    // covered by the history payload. 'queued-newer' (offset 500 > 300)
+    // must still be applied, in order, after the history payload's own
+    // content.
+    expect(texts).toEqual(['history-payload', 'queued-newer']);
+  });
+
   it('disposes and re-subscribes to app-ws session-deleted', () => {
     const bus = makeAppBus();
     _setAppSubscribe(bus.subscribe);

@@ -119,6 +119,33 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private requestedFromOffset = 0;
   private epoch: number | null = null;
 
+  // Epoch-resync bookkeeping (mirrors terminal-store.ts's resyncing /
+  // queuedOutput, §3.4). While a fresh history response for a bumped epoch
+  // is outstanding, live `output` frames for the SAME (already-bumped)
+  // epoch must not be folded immediately -- acceptEpoch has already
+  // recorded the new epoch by the time beginEpochReset runs, so those
+  // frames would pass the epoch gate and fold into `entries` right away.
+  // The eventual history response (requested from offset 0, covering
+  // everything the server has appended since activation, INCLUDING those
+  // same bytes) would then fold them a second time. Queuing defers folding
+  // until the history response lands, so the queue can drop whatever the
+  // history payload already covers and only apply the genuinely-newer tail.
+  //
+  // Deliberately NOT ported: terminal-store's queue byte/entry cap
+  // (RESYNC_QUEUE_MAX_ENTRIES/BYTES) and resync timeout (RESYNC_TIMEOUT_MS).
+  // Those exist there because raw terminal output can be high-volume and
+  // continuous. NDJSON chat events are comparatively tiny (server caps any
+  // single line at 1 MiB and kills the subprocess on a breach) and the
+  // resync window is only the gap between an epoch bump and one
+  // request-history round trip -- at most a handful of small lines (ready,
+  // state, maybe an early delta). An unbounded stall is already covered by
+  // the store's existing behavior: `loadingHistory` stays true and is
+  // visible to the UI, exactly as an ordinary never-answered request-history
+  // would behave today (there is no timeout anywhere else in this store
+  // either). Revisit if dogfood ever shows a resync that doesn't complete.
+  private resyncing = false;
+  private queuedOutput: Array<{ data: string; offset: number }> = [];
+
   private splitter = new NdjsonLineSplitter();
 
   // Index maps for folding streamed events into the entries array. Cleared
@@ -347,6 +374,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         break;
       case 'output':
         if (!this.acceptEpoch(message.epoch)) break;
+        // During an epoch resync, live output for the (already-bumped)
+        // current epoch is queued instead of folded immediately -- the
+        // outstanding history response will cover it; see the `resyncing`
+        // field comment.
+        if (this.resyncing) {
+          this.queuedOutput.push({ data: message.data, offset: message.offset });
+          break;
+        }
         this.applyBytes(message.data, message.offset, undefined);
         break;
       case 'activity':
@@ -390,6 +425,13 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.resetChatState();
     this.epoch = newEpoch;
     this.lastOffset = 0;
+    // Start (or restart, on a second epoch bump before the first resync
+    // completed) queuing live output for the new epoch until its history
+    // response arrives -- see the `resyncing` field comment. Any items
+    // queued for a now-superseded epoch are dropped along with the rest of
+    // the chat state above.
+    this.resyncing = true;
+    this.queuedOutput = [];
     // Always issue a fresh request for the NEW epoch, even if a request was
     // already outstanding when the epoch bumped. That prior request targets
     // the OLD epoch; its eventual (stale) response is dropped by acceptEpoch
@@ -434,6 +476,33 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       this.patch({ loadingHistory: false, entries: [...this.snapshot.entries] });
     } else {
       this.patch({ loadingHistory: false });
+    }
+    // A `history` response (startOffset is only ever set for those, never
+    // for live `output`) that lands while an epoch resync is outstanding
+    // completes that resync: replay whatever output arrived and was queued
+    // in the meantime, now that we know exactly what this history payload
+    // already covers.
+    if (typeof startOffset === 'number' && this.resyncing) {
+      this.flushResyncQueue(offset);
+    }
+  }
+
+  /**
+   * Replay output queued during an epoch resync (see the `resyncing` field
+   * comment), now that the resync's history response has landed at
+   * `historyOffset`. Queued entries whose absolute end offset is already
+   * covered by that history payload are dropped (they were already folded
+   * as part of it); anything strictly newer is folded via the normal
+   * live-output path, in arrival order, through the same (already-fresh)
+   * splitter the history response itself was just parsed with.
+   */
+  private flushResyncQueue(historyOffset: number): void {
+    this.resyncing = false;
+    const queued = this.queuedOutput;
+    this.queuedOutput = [];
+    for (const item of queued) {
+      if (item.offset <= historyOffset) continue;
+      this.applyBytes(item.data, item.offset, undefined);
     }
   }
 
