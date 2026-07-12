@@ -5,6 +5,7 @@ globs:
   - "packages/client/src/hooks/**/*.ts"
   - "packages/client/src/components/**/*.tsx"
   - "packages/shared/src/**/*.ts"
+  - "packages/embedded-agent/src/**/*.ts"
   - ".claude/hooks/**/*.sh"
   - "!**/*.test.ts"
   - "!**/*.test.tsx"
@@ -25,6 +26,7 @@ When modifying production files matching these patterns, corresponding test file
 | `packages/client/src/hooks/**/*.ts` | `.../__tests__/*.test.ts(x)` or sibling `*.test.ts(x)` |
 | `packages/client/src/components/**/*.tsx` | `.../__tests__/*.test.tsx` or sibling `*.test.tsx` |
 | `packages/shared/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
+| `packages/embedded-agent/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `.claude/hooks/**/*.sh` | `.claude/hooks/__tests__/*.test.mjs` or sibling `*.test.mjs` |
 
 ## Exceptions

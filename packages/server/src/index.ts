@@ -152,6 +152,7 @@ const mcpApp = createMcpApp({
   broadcastToApp: appContext.broadcastToApp,
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,
+  mcpTokenRegistry: appContext.mcpTokenRegistry,
 });
 app.route('', mcpApp);
 

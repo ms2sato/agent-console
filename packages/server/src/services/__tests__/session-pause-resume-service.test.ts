@@ -9,6 +9,7 @@ import {
   buildInternalAgentWorker,
   buildInternalTerminalWorker,
   buildInternalGitDiffWorker,
+  buildInternalEmbeddedAgentWorker,
   buildInternalWorktreeSession,
   buildInternalQuickSession,
   buildPersistedWorktreeSession,
@@ -40,6 +41,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
       activateAgentWorkerPty: mock(async () => {}),
       activateTerminalWorkerPty: mock(async () => {}),
     } satisfies SessionPauseResumeDeps['workerManager'],
+    deactivateEmbeddedAgentWorker: mock(async () => {}),
     pathExists: mock(async () => true),
     getRepositoryEnvVars: mock(async () => ({})),
     getPathResolverForSession: mock((_session: InternalSession) => new SessionDataPathResolver('/dummy')),
@@ -171,6 +173,24 @@ describe('SessionPauseResumeService', () => {
       await service.pauseSession('session-1');
 
       expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(2);
+    });
+
+    it('should deactivate embedded-agent workers on pause (polarity guard)', async () => {
+      const embeddedWorker = buildInternalEmbeddedAgentWorker({ id: 'w-emb' });
+      const session = buildInternalWorktreeSession([embeddedWorker]);
+
+      const deactivateEmbeddedAgentWorker = mock(async () => {});
+      const deps = createMockDeps({
+        getSession: () => session,
+        deactivateEmbeddedAgentWorker,
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.pauseSession('session-1');
+
+      // Without this branch the subprocess leaks (killWorker no-ops on it).
+      expect(deactivateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb');
+      expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
     });
   });
 

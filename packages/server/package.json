@@ -21,6 +21,7 @@
     "test:watch": "bun test --watch src/"
   },
   "dependencies": {
+    "@agent-console/embedded-agent": "*",
     "@agent-console/shared": "*",
     "@hono/mcp": "npm:@jsr/hono__mcp",
     "@modelcontextprotocol/sdk": "^1.26.0",
