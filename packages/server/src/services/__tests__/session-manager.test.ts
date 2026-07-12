@@ -628,12 +628,32 @@ describe('SessionManager', () => {
       // constructed EmbeddedAgentWorkerService rather than silently falling
       // back to the real spawnAsUser (which would spawn a real `bun` process).
       const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+
+      // Exitable fake streams/exited-promise (mirrors makeFakeSpawn in
+      // embedded-agent-worker-service.test.ts): lets this test deactivate the
+      // worker afterward instead of leaving background stdout/stderr readers
+      // and the exit-observer's `subprocess.exited` await pending forever.
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+
       const subprocess = {
         pid: 4242,
-        exited: new Promise<number>(() => {}), // never resolves; this test never deactivates
+        exited,
         stdin,
-        stdout: new ReadableStream<Uint8Array>({ start() {} }),
-        stderr: new ReadableStream<Uint8Array>({ start() {} }),
+        stdout,
+        stderr,
         kill: () => {},
       };
       const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
@@ -663,6 +683,16 @@ describe('SessionManager', () => {
       await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
 
       expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+
+      // Teardown: deactivate rather than leaving the fake subprocess "running"
+      // past the test. deactivate() writes `shutdown` to stdin then races
+      // `subprocess.exited` against a grace timeout -- simulating the exit
+      // immediately after issuing deactivate resolves that race via the real
+      // exit path (not the multi-second timeout), matching the
+      // `EmbeddedAgentWorkerService.deactivate escalation` test pattern.
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
     });
   });
 

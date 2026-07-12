@@ -100,9 +100,9 @@ function makeFakeSpawn(): {
   return { fn, captured, pushStdout: stdout.push };
 }
 
-async function waitFor(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+async function waitFor(cond: () => boolean | Promise<boolean>, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
-  while (!cond()) {
+  while (!(await cond())) {
     if (Date.now() - start > timeoutMs) throw new Error('waitFor timed out');
     await new Promise((r) => setTimeout(r, 2));
   }

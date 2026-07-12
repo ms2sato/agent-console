@@ -67,24 +67,40 @@ interface FakeFileSink {
 }
 
 /**
- * Fake spawnAsUser: never emits stdout/stderr and never exits (the tests
- * below only exercise the WS routing layer's dispatch to
+ * Fake spawnAsUser: never emits stdout/stderr on its own (the tests below
+ * only exercise the WS routing layer's dispatch to
  * EmbeddedAgentWorkerService, not the loop's own event stream — that is the
  * service's own test suite's job per testing.md's unit/integration split).
+ *
+ * Exitable on demand via `simulateExit`, so afterEach can deactivate any
+ * activated embedded-agent worker before resetting the environment, instead
+ * of leaving the exit-observer's `subprocess.exited` await and the stdout /
+ * stderr readers pending past the test's lifetime.
  */
 function makeFakeSpawn(): {
   fn: SpawnAsUserFn;
   captured: SpawnAsUserOpts[];
   stdinWrites: string[];
+  simulateExit: (code: number) => void;
 } {
   const captured: SpawnAsUserOpts[] = [];
   const stdinWrites: string[] = [];
 
-  const exited = new Promise<number>(() => {
-    // Never resolves in these tests — no activate()->deactivate() round trip.
-  });
-  const stdout = new ReadableStream<Uint8Array>({ start() {} });
-  const stderr = new ReadableStream<Uint8Array>({ start() {} });
+  let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+  const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+
+  let resolveExited!: (code: number) => void;
+  const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+  let exitSimulated = false;
+  const simulateExit = (code: number) => {
+    if (exitSimulated) return;
+    exitSimulated = true;
+    resolveExited(code);
+    stdoutCtrl.close();
+    stderrCtrl.close();
+  };
 
   const stdin: FakeFileSink = {
     write: (chunk) => {
@@ -109,7 +125,7 @@ function makeFakeSpawn(): {
     return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
   };
 
-  return { fn, captured, stdinWrites };
+  return { fn, captured, stdinWrites, simulateExit };
 }
 
 async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
@@ -186,6 +202,24 @@ describe('Worker WebSocket: embedded-agent branch', () => {
   });
 
   afterEach(async () => {
+    // Tear down any activated embedded-agent worker before resetting the
+    // environment (mirrors embedded-agent-e2e.test.ts's afterEach): deactivate
+    // writes `shutdown` then races the fake subprocess's `exited` against a
+    // grace timeout, so simulating the exit right after issuing deactivate
+    // resolves that race via the real exit path (not the multi-second
+    // timeout) and lets the background stdout/stderr readers complete.
+    if (sessionManager) {
+      for (const session of sessionManager.getAllSessions()) {
+        for (const worker of session.workers) {
+          if (worker.type === 'embedded-agent' && worker.activated) {
+            const deactivatePromise = sessionManager.deactivateEmbeddedAgentWorker(session.id, worker.id);
+            fake.simulateExit(0);
+            await deactivatePromise;
+          }
+        }
+      }
+    }
+
     if (testJobQueue) {
       await testJobQueue.stop();
       testJobQueue = null;
