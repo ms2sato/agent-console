@@ -45,6 +45,7 @@ export function AddEmbeddedAgentForm({ onSuccess, onCancel }: AddEmbeddedAgentFo
       },
       systemPrompt: data.systemPrompt || undefined,
       maxToolIterations: parseMaxToolIterations(data.maxToolIterationsInput),
+      enabledTools: data.enabledTools,
     });
   };
 

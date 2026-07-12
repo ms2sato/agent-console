@@ -319,6 +319,7 @@ export class EmbeddedAgentWorkerService {
           cwd: session.locationPath,
         },
         ...(definition.systemPrompt !== undefined ? { systemPrompt: definition.systemPrompt } : {}),
+        ...(definition.enabledTools !== undefined ? { enabledTools: definition.enabledTools } : {}),
         maxToolIterations: definition.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS,
       };
       this.writeCommand(stdin, initCommand);

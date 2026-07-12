@@ -14,8 +14,10 @@ import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
-import type { ProviderAdapter } from './providers/types.js';
+import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
 import { assembleSystemPrompt, readAgentsMd } from './system-prompt.js';
+import { resolveEnabledBuiltinTools } from './tools/index.js';
+import { CompositeToolExecutor } from './tools/composite-executor.js';
 
 const EXIT_OK = 0;
 const EXIT_FATAL = 1;
@@ -145,10 +147,20 @@ async function initializeLoop(
   });
 
   const mcp = factories.createMcpClient();
-  let tools;
+  let tools: ToolDefinition[];
+  let executor: ToolExecutor;
   try {
     await mcp.connect(init.mcp.baseUrl, init.mcp.token);
-    tools = await mcp.listTools();
+    const builtins = resolveEnabledBuiltinTools(init.enabledTools);
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins,
+      ctx: { locationPath: init.context.cwd },
+      onNameCollision: (name) =>
+        io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
+    });
+    tools = await composite.listTools();
+    executor = composite;
   } catch (err) {
     const message = `MCP connection failed: ${err instanceof Error ? err.message : String(err)}`;
     io.writeEvent({ v: 1, type: 'fatal', message });
@@ -165,7 +177,7 @@ async function initializeLoop(
     adapter,
     model: init.provider.model,
     tools,
-    executor: mcp,
+    executor,
     emit: (event) => io.writeEvent(event),
     systemPrompt,
     maxToolIterations: init.maxToolIterations,

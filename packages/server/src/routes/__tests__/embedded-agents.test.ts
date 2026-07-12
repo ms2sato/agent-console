@@ -132,6 +132,21 @@ describe('Embedded Agents API', () => {
 
       expect(res.status).toBe(400);
     });
+
+    it('rejects a body with a duplicate tool name in enabledTools (400)', async () => {
+      const res = await app.request('/api/embedded-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'X',
+          provider: VALID_PROVIDER,
+          enabledTools: ['Read', 'Read'],
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(embeddedAgentManager.createEmbeddedAgent).not.toHaveBeenCalled();
+    });
   });
 
   // =========================================================================
@@ -191,6 +206,82 @@ describe('Embedded Agents API', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('accepts enabledTools: null (clear to default)', async () => {
+      embeddedAgentManager.getEmbeddedAgent.mockReturnValue(ownedDefinition({ enabledTools: ['Read'] }));
+      embeddedAgentManager.updateEmbeddedAgent.mockReturnValue(
+        Promise.resolve(ownedDefinition({ enabledTools: undefined }))
+      );
+
+      const res = await app.request('/api/embedded-agents/def-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabledTools: null }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(embeddedAgentManager.updateEmbeddedAgent).toHaveBeenCalledWith('def-1', {
+        enabledTools: null,
+      });
+    });
+
+    it('rejects a body with a duplicate tool name in enabledTools (400)', async () => {
+      embeddedAgentManager.getEmbeddedAgent.mockReturnValue(ownedDefinition());
+
+      const res = await app.request('/api/embedded-agents/def-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabledTools: ['Grep', 'Grep'] }),
+      });
+
+      expect(res.status).toBe(400);
+      expect(embeddedAgentManager.updateEmbeddedAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  // =========================================================================
+  // enabledTools — POST then PATCH wire-level round trip (Q10)
+  // =========================================================================
+
+  describe('enabledTools POST -> PATCH wire round trip', () => {
+    it('a value set via POST survives serialization through the schema, and PATCH can then replace it', async () => {
+      // POST: the request body's enabledTools must pass CreateEmbeddedAgentRequestSchema
+      // and be forwarded to the manager unchanged.
+      const created = ownedDefinition({ enabledTools: ['Read', 'Glob'] });
+      embeddedAgentManager.createEmbeddedAgent.mockReturnValue(Promise.resolve(created));
+
+      const postRes = await app.request('/api/embedded-agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] }),
+      });
+
+      expect(postRes.status).toBe(201);
+      const postBody = (await postRes.json()) as { embeddedAgent: { enabledTools?: string[] } };
+      expect(postBody.embeddedAgent.enabledTools).toEqual(['Read', 'Glob']);
+      expect(embeddedAgentManager.createEmbeddedAgent).toHaveBeenCalledWith(
+        { name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] },
+        TEST_AUTH_USER.id
+      );
+
+      // PATCH: replace the value; the response reflects the new value end-to-end.
+      embeddedAgentManager.getEmbeddedAgent.mockReturnValue(created);
+      const patched = ownedDefinition({ enabledTools: ['Grep'] });
+      embeddedAgentManager.updateEmbeddedAgent.mockReturnValue(Promise.resolve(patched));
+
+      const patchRes = await app.request('/api/embedded-agents/def-1', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabledTools: ['Grep'] }),
+      });
+
+      expect(patchRes.status).toBe(200);
+      const patchBody = (await patchRes.json()) as { embeddedAgent: { enabledTools?: string[] } };
+      expect(patchBody.embeddedAgent.enabledTools).toEqual(['Grep']);
+      expect(embeddedAgentManager.updateEmbeddedAgent).toHaveBeenCalledWith('def-1', {
+        enabledTools: ['Grep'],
+      });
     });
   });
 

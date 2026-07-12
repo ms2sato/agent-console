@@ -11,6 +11,25 @@
  * See docs/design/embedded-agent-worker.md Part II for the normative spec.
  */
 
+/**
+ * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
+ * tool-name literals in the repo — every other usage must reference this
+ * constant or the derived `EmbeddedAgentToolName` type, not a hardcoded list.
+ *
+ * `Bash` is enumerated here (needed for schema/migration/UI to land
+ * atomically) but has NO implementation yet — its implementation ships in a
+ * follow-up (FF-1b).
+ */
+export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash'] as const;
+export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
+
+/** Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF. */
+export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolName[] = [
+  'Read',
+  'Glob',
+  'Grep',
+];
+
 export interface EmbeddedAgentDefinition {
   id: string;                 // uuid
   name: string;               // display name, e.g. "Ollama qwen3:32b"
@@ -22,6 +41,8 @@ export interface EmbeddedAgentDefinition {
   };
   systemPrompt?: string;      // prepended to every conversation
   maxToolIterations?: number; // per user turn; default 25
+  // undefined = default read-only set (Read/Glob/Grep), [] = all builtin tools off, explicit array = exact set
+  enabledTools?: EmbeddedAgentToolName[];
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;
@@ -40,6 +61,8 @@ export type EmbeddedAgentCommand =
       provider: { baseUrl: string; model: string; apiKey?: string };
       context: { sessionId: string; workerId: string; repositoryId?: string; cwd: string };
       systemPrompt?: string;
+      // undefined = apply the loop's own default tool set, [] = no builtin tools, explicit array = exact set
+      enabledTools?: EmbeddedAgentToolName[];
       maxToolIterations: number;
     }
   | { v: 1; type: 'user-message'; id: string; text: string }

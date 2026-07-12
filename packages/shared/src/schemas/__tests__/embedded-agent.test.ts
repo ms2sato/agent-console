@@ -83,6 +83,46 @@ describe('EmbeddedAgentDefinitionSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts a valid enabledTools array', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      enabledTools: ['Read', 'Glob'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an enabledTools array with a duplicate tool name', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      enabledTools: ['Read', 'Read'],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts an explicit empty enabledTools array (all builtin tools off)', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      enabledTools: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a definition with enabledTools absent (default applies downstream)', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, validDefinition);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.enabledTools).toBeUndefined();
+    }
+  });
+
+  it('rejects an unknown tool name in enabledTools', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      enabledTools: ['NotARealTool'],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('CreateEmbeddedAgentRequestSchema', () => {
@@ -116,6 +156,24 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       createdBy: 'attacker-uuid',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a valid enabledTools array', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      enabledTools: ['Read', 'Glob', 'Grep'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an enabledTools array with a duplicate tool name', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      enabledTools: ['Read', 'Read'],
     });
     expect(result.success).toBe(false);
   });
@@ -154,6 +212,30 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts enabledTools: null (clear to default)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      enabledTools: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.enabledTools).toBeNull();
+    }
+  });
+
+  it('accepts a valid enabledTools replacement array', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      enabledTools: ['Grep'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an enabledTools replacement array with a duplicate tool name', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      enabledTools: ['Grep', 'Grep'],
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('EmbeddedAgentCommandSchema', () => {
@@ -176,6 +258,37 @@ describe('EmbeddedAgentCommandSchema', () => {
 
   it('rejects a version other than 1', () => {
     const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 2, type: 'cancel' });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses an init command carrying enabledTools', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      enabledTools: ['Read'],
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.enabledTools).toEqual(['Read']);
+    }
+  });
+
+  it('rejects an init command with a duplicate tool name in enabledTools', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      enabledTools: ['Read', 'Read'],
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
     expect(result.success).toBe(false);
   });
 });

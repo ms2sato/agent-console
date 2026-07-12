@@ -20,6 +20,7 @@ import { getConnectionStatusColor, getConnectionStatusText } from './sessionStat
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel } from './tabAppearance';
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
+import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
 import type { Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { MemoPanel } from './MemoPanel';
@@ -580,6 +581,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           targetWorkerId={activeTabId}
           newMessage={lastMessage}
           onError={showError}
+          onSend={(content, files) => sendPtyWorkerMessage(sessionId, activeTabId, content, files)}
+          onEscape={() => escapePtyWorker(sessionId, activeTabId)}
         />
       )}
 
