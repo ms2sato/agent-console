@@ -130,13 +130,19 @@ export type WorkerClientMessage =
  * Client -> server messages valid only on an `embedded-agent` worker's
  * WebSocket channel. `request-history` / `request-history-range` are shared
  * with `WorkerClientMessage` (the byte-offset/epoch history machinery is
- * content-agnostic); `input` / `resize` are explicitly rejected for this
- * worker type (PTY-only semantics).
+ * content-agnostic) — routes.ts's `onMessage` parses the incoming message
+ * once and dispatches those shared types BEFORE branching on `worker.type`,
+ * so they never reach this union. `input` / `resize` (and any other
+ * unrecognized type) are explicitly rejected for this worker type once that
+ * worker-type branch runs (PTY-only semantics; the branch is terminal — every
+ * message for an embedded-agent worker is either handled or rejected there,
+ * never passed through to PTY handling).
  *
- * Deliberately NOT folded into `WorkerClientMessage`: routes.ts branches on
- * `worker.type` before parsing, so keeping this union separate mirrors that
- * branch and avoids widening the PTY-side exhaustive switch in
- * worker-handler.ts for message types it will never receive.
+ * Deliberately NOT folded into `WorkerClientMessage`: after the shared parse,
+ * routes.ts branches on `worker.type` to dispatch the embedded-agent-specific
+ * types, so keeping this union separate mirrors that branch and avoids
+ * widening the PTY-side exhaustive switch in worker-handler.ts for message
+ * types it will never receive.
  */
 export type EmbeddedAgentClientMessage =
   | { type: 'embedded-user-message'; text: string }

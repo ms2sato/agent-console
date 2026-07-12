@@ -587,17 +587,22 @@ export async function setupWebSocketRoutes(
       // Buffered sender for this connection, stored in outer scope so onClose/onError can dispose it
       let sender: BufferedWebSocketSender | null = null;
 
-      // Flag to prevent setupPtyWorkerHandlers from running after WebSocket is already closed
+      // Flag to prevent setupStreamWorkerHandlers from running after WebSocket is already closed
       let connectionClosed = false;
 
       // Helper function to set up stream-worker (PTY or embedded-agent) handlers
       // after async activation/restore. Shared by both worker shapes because
       // the byte-offset/epoch/connectionCallbacks framing is content-agnostic
       // (isStreamWorker, worker-types.ts).
-      // The order is critical to prevent duplicates and lost data:
-      // 1. Get current offset BEFORE registering callbacks (marks the boundary)
-      // 2. Register callbacks for NEW output (after the offset)
-      // 3. Send history UP TO the offset we recorded
+      //
+      // Responsibilities: create the buffered sender, register connection
+      // callbacks so NEW output starting from this point is delivered live,
+      // send a server-restarted notification when applicable (PTY revive
+      // only), and push the current activity state for agent / embedded-agent
+      // workers. History is pull-based and NOT sent here: the client requests
+      // it separately via a `request-history` message (handled in onMessage,
+      // shared across all stream worker types) once it needs it -- e.g. when
+      // the tab becomes visible.
       // @param wasRestored - true if PTY was restored (was hibernated), false if already active.
       //   Always false for embedded-agent workers (no restore path — every
       //   activation is restart-semantics; a fresh epoch, not an explicit
