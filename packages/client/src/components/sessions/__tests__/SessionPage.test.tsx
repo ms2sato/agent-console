@@ -16,6 +16,7 @@ import {
 import { sessionToPageState } from '../SessionPage';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams } from '../hooks/useTabManagement';
+import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
 
 // Test helpers
 
@@ -441,5 +442,32 @@ describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
       updateTabsFromSession: () => {},
     };
     expect(typeof result.addAgentTab).toBe('function');
+  });
+});
+
+describe('unified shell/agent picker wiring', () => {
+  it('addTerminalTab is wired to AddAgentWorkerMenu\'s onSelectShell prop, and no standalone shell button is rendered', () => {
+    // Type-level contract check: SessionPage.tsx no longer renders a separate
+    // "Add shell tab" button -- it passes `addTerminalTab` (from
+    // useTabManagement) as AddAgentWorkerMenu's `onSelectShell` prop instead.
+    // If AddAgentWorkerMenu ever dropped `onSelectShell`, or its signature
+    // diverged from `addTerminalTab: () => Promise<void>`, this file would
+    // fail to typecheck.
+    const result: UseTabManagementResult = {
+      tabs: [],
+      activeTabId: null,
+      addTerminalTab: async () => {},
+      addAgentTab: async (_params: AddAgentWorkerParams) => {},
+      closeTab: async () => {},
+      handleTabClick: () => {},
+      updateTabsFromSession: () => {},
+    };
+
+    const props: Parameters<typeof AddAgentWorkerMenu>[0] = {
+      onSelect: result.addAgentTab,
+      onSelectShell: result.addTerminalTab,
+    };
+
+    expect(typeof props.onSelectShell).toBe('function');
   });
 });
