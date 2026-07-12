@@ -74,7 +74,7 @@ describe('AddAgentWorkerMenu', () => {
       expect(screen.getByText('Ollama qwen3')).toBeTruthy();
     });
     expect(screen.getByText('Terminal')).toBeTruthy();
-    expect(screen.getByText('Embedded')).toBeTruthy();
+    expect(screen.getByText('Embedded · Experimental')).toBeTruthy();
   });
 
   it('empty embedded registry still shows terminal agents plus a link to create one', async () => {

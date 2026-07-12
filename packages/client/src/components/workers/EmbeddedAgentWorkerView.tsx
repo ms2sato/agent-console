@@ -36,6 +36,10 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWo
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
+      <div className="px-4 py-2 bg-slate-800/60 border-b border-slate-700 text-gray-400 text-xs shrink-0">
+        This is an experimental Embedded Agent. Restart resets the conversation.
+      </div>
+
       {/* Persistent, non-dismissable reset-on-restart notice. This is a
           permanent fixture of the view (v1 worker-type inconsistency called
           out in docs/design/embedded-agent-worker.md "Design Decisions"),
