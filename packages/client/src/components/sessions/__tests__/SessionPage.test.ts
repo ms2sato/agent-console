@@ -14,6 +14,8 @@ import {
   type WorkerRestartResult,
 } from '../workerRestart';
 import { sessionToPageState } from '../SessionPage';
+import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel } from '../tabAppearance';
+import type { UseTabManagementResult, AddAgentWorkerParams } from '../hooks/useTabManagement';
 
 // Test helpers
 
@@ -407,5 +409,37 @@ describe('embedded-agent worker in SessionPage page-state', () => {
     expect(result.type).toBe('active');
     expect(result.session.workers).toContain(embeddedWorker);
     expect(result.session.workers[0].type).toBe('embedded-agent');
+  });
+});
+
+describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
+  // SessionPage.tsx's tab bar delegates dot color / closeability / error-fallback
+  // labeling to `tabAppearance.ts` (extracted for testability without a full
+  // component render). These assertions pin the specific contract SessionPage's
+  // JSX relies on: an embedded-agent tab renders a purple dot (not the git-diff
+  // icon, not the blue agent dot), is closeable like a terminal tab (opt-in
+  // worker added via AddAgentWorkerMenu, not a fixed session-creation tab), and
+  // gets a distinct error-fallback label from the git-diff/agent/terminal cases.
+  it('embedded-agent gets a distinct dot color, is closeable, and has its own error label', () => {
+    expect(getTabDotColor('embedded-agent')).toBe('bg-purple-500');
+    expect(getTabDotColor('embedded-agent')).not.toBe(getTabDotColor('agent'));
+    expect(isCloseableTabType('embedded-agent')).toBe(true);
+    expect(getWorkerTypeLabel('embedded-agent')).toBe('Embedded Agent');
+  });
+
+  it('addAgentTab is exposed by useTabManagement\'s result shape SessionPage destructures', () => {
+    // Type-level contract check: if useTabManagement ever dropped `addAgentTab`,
+    // this file would fail to typecheck (SessionPage.tsx destructures it and
+    // passes it to AddAgentWorkerMenu's onSelect prop).
+    const result: UseTabManagementResult = {
+      tabs: [],
+      activeTabId: null,
+      addTerminalTab: async () => {},
+      addAgentTab: async (_params: AddAgentWorkerParams) => {},
+      closeTab: async () => {},
+      handleTabClick: () => {},
+      updateTabsFromSession: () => {},
+    };
+    expect(typeof result.addAgentTab).toBe('function');
   });
 });

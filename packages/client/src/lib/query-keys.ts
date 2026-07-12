@@ -35,6 +35,11 @@ export const agentKeys = {
   detail: (agentId: string) => ['agent', agentId] as const,
 } as const;
 
+export const embeddedAgentKeys = {
+  /** All embedded-agent definitions list */
+  all: () => ['embedded-agents'] as const,
+} as const;
+
 export const jobKeys = {
   /** Root key for invalidating all job queries */
   root: () => ['jobs'] as const,
