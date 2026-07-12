@@ -429,6 +429,36 @@ describe('CreateWorktreeForm', () => {
         embeddedAgentId: 'embedded-1',
       });
     });
+
+    it('should not show the initial-prompt-not-delivered note by default (terminal agent)', async () => {
+      renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      expect(
+        screen.queryByText(/will not be delivered to the embedded agent/)
+      ).toBeNull();
+    });
+
+    it('should show the initial-prompt-not-delivered note when an embedded agent is selected', async () => {
+      const user = userEvent.setup();
+      renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const select = screen.getByRole('combobox') as HTMLSelectElement;
+      await user.selectOptions(select, 'embedded:embedded-1');
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/will not be delivered to the embedded agent/)
+        ).toBeTruthy();
+      });
+    });
   });
 
   describe('default agent sorting', () => {

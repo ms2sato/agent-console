@@ -187,7 +187,7 @@ export function WorktreeAgentSelector({
         ))}
       </optgroup>
       {embeddedAgents.length > 0 && (
-        <optgroup label="Embedded">
+        <optgroup label="Embedded (Experimental)">
           {embeddedAgents.map((embeddedAgent) => (
             <option key={embeddedAgent.id} value={`embedded:${embeddedAgent.id}`}>
               {embeddedAgent.name}

@@ -276,7 +276,7 @@ describe('WorktreeAgentSelector', () => {
 
     const optgroups = container.querySelectorAll('optgroup');
     const labels = Array.from(optgroups).map((el) => el.getAttribute('label'));
-    expect(labels).toEqual(['Terminal', 'Embedded']);
+    expect(labels).toEqual(['Terminal', 'Embedded (Experimental)']);
     expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
     expect(screen.getByText('Custom Agent')).toBeTruthy();
     expect(screen.getByText('Another Agent')).toBeTruthy();
