@@ -1214,6 +1214,12 @@ describe('WorkerManager', () => {
       return lastCall[2]?.env;
     }
 
+    function getLastSpawnArgv(): string[] | undefined {
+      const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], { env?: Record<string, string> }]>;
+      const lastCall = calls[calls.length - 1];
+      return lastCall[1];
+    }
+
     const defaultLookupOsUserFn: LookupOsUserFn = async (username) => ({
       uid: 1000,
       homeDir: `/home/${username}`,
@@ -1264,6 +1270,13 @@ describe('WorkerManager', () => {
       expect(writeCalls[0].command).not.toContain('fake-mcp-token-value');
       expect(writeCalls[0].command).toContain("cat > '/home/alice/.agent-console/mcp-tokens/mcp-agent-1.token'");
       expect(writeCalls[0].stdin).toBe('fake-mcp-token-value');
+
+      // Negative assertion on the PTY spawn argv itself: only the file-path
+      // env var may carry MCP identity info; the raw token string must never
+      // appear anywhere in the argv passed to the underlying spawn.
+      const argv = getLastSpawnArgv();
+      expect(argv).toBeDefined();
+      expect(argv!.join(' ')).not.toContain('fake-mcp-token-value');
     });
 
     it('single-user mode: does not mint a token or inject the env var (polarity: fails if the AUTH_MODE gate is removed)', async () => {
@@ -1426,6 +1439,11 @@ describe('WorkerManager', () => {
         expect(worker.mcpToken).toBeNull();
         expect(rmCalls.length).toBe(1);
         expect(rmCalls[0].command).toContain(`rm -rf -- '${filePath}'`);
+        // The cleanup must run as the token file's OWNING user ('alice',
+        // the worker's elevated identity from activateWithToken), not the
+        // server process user -- otherwise the elevated rm would fail
+        // against a file it doesn't own.
+        expect(rmCalls[0].username).toBe('alice');
       });
 
       it('PTY exit (unexpected) revokes the token and deletes its file', async () => {

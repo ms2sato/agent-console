@@ -406,7 +406,11 @@ export async function writeUserOwnedSecretFile(opts: {
 }): Promise<RunAsUserResult> {
   const impl = opts.runAsUserImpl ?? runAsUser;
   const dir = path.dirname(opts.filePath);
-  const command = `mkdir -p -- ${shellEscape(dir)} && umask 077 && cat > ${shellEscape(opts.filePath)}`;
+  // `cat >` preserves an existing file's mode, so a pre-existing file at a
+  // looser mode (e.g. leftover 0644) would silently survive the write and
+  // break the 0600 guarantee. Remove any pre-existing file first so a fresh
+  // 0600 file is always created under `umask 077`.
+  const command = `rm -f -- ${shellEscape(opts.filePath)} && mkdir -p -- ${shellEscape(dir)} && umask 077 && cat > ${shellEscape(opts.filePath)}`;
   return impl({
     username: opts.username,
     command,

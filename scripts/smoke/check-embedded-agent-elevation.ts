@@ -5,8 +5,9 @@
  * Drives the REAL shipping path -- `SessionManager.activateEmbeddedAgentWorker`
  * spawning the REAL embedded-agent loop subprocess via the REAL production
  * `spawnAsUser` -- against a REAL second OS user, with `AUTH_MODE=multi-user`
- * and `AGENT_CONSOLE_MCP_AUTH=enforce` both forced on. This is the smoke bullet
- * referenced by docs/design/embedded-agent-worker.md Part II Testing plan.
+ * forced on and `AGENT_CONSOLE_MCP_AUTH` left UNSET so the real Phase 4
+ * default-flip resolves it to `enforce`. This is the smoke bullet referenced
+ * by docs/design/embedded-agent-worker.md Part II Testing plan.
  *
  * What this smoke exercises:
  *   - `resolveEmbeddedAgentEntryPath()` actually resolves via the
@@ -18,9 +19,11 @@
  *   - The REAL `sudo -u <target-user> ... -i sh -c 'bun <entry>'` elevation
  *     argv, spawned by the REAL `spawnAsUser`, against a REAL second OS user.
  *   - The loop's init handshake completing end-to-end against a REAL `/mcp`
- *     Streamable-HTTP endpoint running in `AGENT_CONSOLE_MCP_AUTH=enforce`
- *     mode -- proving Phase 4's enforce-by-default flip does not break the
- *     already-working embedded-agent token delivery (Phase 2).
+ *     Streamable-HTTP endpoint, with `AGENT_CONSOLE_MCP_AUTH` left UNSET so
+ *     `resolveMcpAuthMode` resolves it to `enforce` via the real Phase 4
+ *     default-flip (`AUTH_MODE=multi-user` + unset -> `enforce`) -- proving
+ *     that flip does not break the already-working embedded-agent token
+ *     delivery (Phase 2).
  *   - Negative secret assertions against the REAL `/proc/<pid>/cmdline` and
  *     `/proc/<pid>/environ` of the elevated subprocess: neither the MCP
  *     bearer token nor the provider API key must appear in either file.
@@ -35,11 +38,14 @@
  *     everything); the smoke never sends a user-message, so the provider is
  *     never dialed. The `provider.baseUrl` field is only present because the
  *     embedded-agent definition schema requires it.
- *   - AGENT_CONSOLE_MCP_AUTH's "unset defaults to enforce in multi-user mode"
- *     resolution logic. That default is unit-tested directly
- *     (`packages/server/src/mcp/__tests__/mcp-auth.test.ts`); this smoke sets
- *     `AGENT_CONSOLE_MCP_AUTH=enforce` explicitly to exercise the enforce path
- *     without depending on that default.
+ *
+ * Note on AGENT_CONSOLE_MCP_AUTH: this smoke deliberately leaves it UNSET
+ * (only `AUTH_MODE=multi-user` is forced) so it exercises the real
+ * `resolveMcpAuthMode` default-flip resolution end-to-end, in a live process,
+ * rather than an explicit override. The unit-level resolution table is
+ * covered by `packages/server/src/mcp/__tests__/mcp-auth.test.ts`; this
+ * smoke is what proves that same resolution actually reaches `enforce` when
+ * wired through a real app server and a real elevated subprocess.
  *
  * Usage:
  *   bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>
@@ -106,8 +112,17 @@ if (!targetUsername) {
 // Verified empirically during smoke development: a temporary
 // `console.log(serverConfig.AUTH_MODE)` placed as the first line inside
 // `main()` printed 'multi-user' (not 'none'), confirming this ordering holds.
+//
+// `AGENT_CONSOLE_MCP_AUTH` is NOT set here (and deliberately not set at all
+// -- see the "Note on AGENT_CONSOLE_MCP_AUTH" header comment above). Unlike
+// `AUTH_MODE`, it carries no analogous module-load-time ordering hazard:
+// `resolveMcpAuthMode`'s `rawValue` parameter defaults to
+// `process.env.AGENT_CONSOLE_MCP_AUTH` evaluated at CALL time (a JS default
+// parameter, not a module-load-time IIFE), and it is only called later, from
+// inside `main()`, once `createMcpApp` builds the `/mcp` route. Leaving it
+// unset here means that call sees `AUTH_MODE=multi-user` and no explicit
+// override, which is exactly the real Phase 4 default-flip path.
 process.env.AUTH_MODE = 'multi-user';
-process.env.AGENT_CONSOLE_MCP_AUTH = 'enforce';
 
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -310,7 +325,7 @@ async function main(): Promise<void> {
 
     appServer = Bun.serve({ fetch: app.fetch, port: 0 });
     mcpBaseUrl = `http://localhost:${appServer.port}/mcp`;
-    console.log(`==> real app server on :${appServer.port}, /mcp in AGENT_CONSOLE_MCP_AUTH=enforce mode`);
+    console.log(`==> real app server on :${appServer.port}, /mcp resolving AGENT_CONSOLE_MCP_AUTH via the multi-user default flip (unset -> enforce)`);
 
     // Subprocess cwd must exist on the REAL filesystem.
     realCwd = path.join(os.tmpdir(), `ac-embedded-smoke-cwd-${crypto.randomUUID()}`);

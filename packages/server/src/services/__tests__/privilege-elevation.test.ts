@@ -1045,7 +1045,7 @@ describe('privilege-elevation', () => {
       expect(result.exitCode).toBe(0);
     });
 
-    it('elevated path: command shape has mkdir -p, umask 077, cat > <shell-escaped path>, cwd is "/"', async () => {
+    it('elevated path: command shape has rm -f, mkdir -p, umask 077, cat > <shell-escaped path>, cwd is "/"', async () => {
       const captured: RunAsUserOpts[] = [];
       const fakeRunAsUser: typeof runAsUser = async (opts) => {
         captured.push(opts);
@@ -1064,7 +1064,27 @@ describe('privilege-elevation', () => {
       expect(captured[0].username).toBe('alice');
       expect(captured[0].cwd).toBe('/');
       expect(captured[0].command).toBe(
-        `mkdir -p -- '/home/it'\\''s-fine/.agent-console/mcp-tokens' && umask 077 && cat > '/home/it'\\''s-fine/.agent-console/mcp-tokens/w-1.token'`,
+        `rm -f -- '/home/it'\\''s-fine/.agent-console/mcp-tokens/w-1.token' && mkdir -p -- '/home/it'\\''s-fine/.agent-console/mcp-tokens' && umask 077 && cat > '/home/it'\\''s-fine/.agent-console/mcp-tokens/w-1.token'`,
+      );
+    });
+
+    it('always removes a pre-existing file first, so a looser leftover mode cannot survive the write', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await writeUserOwnedSecretFile({
+        username: 'alice',
+        filePath: '/home/alice/.agent-console/mcp-tokens/w-1.token',
+        content: 'secret-token-value',
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].command).toStartWith(
+        `rm -f -- '/home/alice/.agent-console/mcp-tokens/w-1.token' &&`,
       );
     });
 
