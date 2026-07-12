@@ -3,7 +3,7 @@
  * locationPath, and returns `cat -n`-style line-numbered output.
  */
 
-import type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './index.js';
+import type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 import { resolveConfinedPath } from './path-confinement.js';
 
 const DEFAULT_LIMIT = 2000;

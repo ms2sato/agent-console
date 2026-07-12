@@ -5,30 +5,16 @@
 
 import type { EmbeddedAgentToolName } from '@agent-console/shared';
 import { DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS } from '@agent-console/shared';
-import type { ToolDefinition } from '../providers/types.js';
+import type { BuiltinTool } from './types.js';
 import { readTool } from './read.js';
 import { globTool } from './glob.js';
 import { grepTool } from './grep.js';
 
-export interface BuiltinToolContext {
-  /**
-   * Confinement root — the session's locationPath. Deliberately narrow: no
-   * apiKey, no MCP token, no env — a builtin tool's execution scope cannot
-   * observe provider credentials or the MCP bearer token by construction.
-   */
-  locationPath: string;
-}
-
-export interface BuiltinToolResult {
-  ok: boolean;
-  result: string;
-}
-
-export interface BuiltinTool {
-  name: EmbeddedAgentToolName;
-  definition: ToolDefinition;
-  execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinToolResult>;
-}
+// Re-exported so existing consumers (composite-executor.ts, main.ts, test
+// files) keep importing these types from './index.js' / '../index.js'
+// unchanged. The types themselves live in ./types.js — see that file's
+// header comment for why (avoiding a circular dependency with read/glob/grep).
+export type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 
 /**
  * Registry of IMPLEMENTED builtin tools. `Bash` is a valid

@@ -6,7 +6,7 @@
 import { Glob } from 'bun';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
-import type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './index.js';
+import type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 import { resolveConfinedPath } from './path-confinement.js';
 
 interface GlobArgs {
