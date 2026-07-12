@@ -1176,6 +1176,7 @@ describe('mappers', () => {
       },
       systemPrompt: 'You are helpful.',
       maxToolIterations: 30,
+      enabledTools: ['Read', 'Glob'],
       createdBy: 'user-uuid',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-02T00:00:00.000Z',
@@ -1192,6 +1193,7 @@ describe('mappers', () => {
       expect(row.provider_api_key_ref).toBe('my-key');
       expect(row.system_prompt).toBe('You are helpful.');
       expect(row.max_tool_iterations).toBe(30);
+      expect(row.enabled_tools).toBe('["Read","Glob"]');
       expect(row.created_by).toBe('user-uuid');
     });
 
@@ -1211,6 +1213,23 @@ describe('mappers', () => {
       expect(row.provider_api_key_ref).toBeNull();
       expect(row.system_prompt).toBeNull();
       expect(row.max_tool_iterations).toBeNull();
+      expect(row.enabled_tools).toBeNull();
+    });
+
+    it('maps an explicit empty enabledTools array to a serialized empty-array column', () => {
+      const emptyTools: EmbeddedAgentDefinition = {
+        id: 'def-4',
+        name: 'AllToolsOff',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+        enabledTools: [],
+        createdBy: 'user-uuid',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+
+      const row = toEmbeddedAgentRow(emptyTools);
+
+      expect(row.enabled_tools).toBe('[]');
     });
 
     it('round-trips a full definition through row and back', () => {
@@ -1226,6 +1245,7 @@ describe('mappers', () => {
         provider_api_key_ref: row.provider_api_key_ref ?? null,
         system_prompt: row.system_prompt ?? null,
         max_tool_iterations: row.max_tool_iterations ?? null,
+        enabled_tools: row.enabled_tools ?? null,
         created_by: row.created_by,
         created_at: fullDefinition.createdAt,
         updated_at: fullDefinition.updatedAt,
@@ -1246,6 +1266,7 @@ describe('mappers', () => {
         provider_api_key_ref: null,
         system_prompt: null,
         max_tool_iterations: null,
+        enabled_tools: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1257,6 +1278,28 @@ describe('mappers', () => {
       expect(restored.provider.apiKeyRef).toBeUndefined();
       expect(restored.systemPrompt).toBeUndefined();
       expect(restored.maxToolIterations).toBeUndefined();
+      expect(restored.enabledTools).toBeUndefined();
+    });
+
+    it('unflattens a serialized empty-array column to an explicit empty array', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-5',
+        name: 'EmptyTools',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: '[]',
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      const restored = toEmbeddedAgentDefinition(selectRow);
+
+      expect(restored.enabledTools).toEqual([]);
     });
   });
 });

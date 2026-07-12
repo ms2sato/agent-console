@@ -212,6 +212,8 @@ export interface EmbeddedAgentsTable {
   system_prompt: string | null;
   /** Max tool iterations per user turn (null = use default) */
   max_tool_iterations: number | null;
+  /** JSON-serialized array of enabled builtin tool names (null = default read-only set applies downstream) */
+  enabled_tools: string | null;
   /** User UUID (from users table) of the creator */
   created_by: string;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */

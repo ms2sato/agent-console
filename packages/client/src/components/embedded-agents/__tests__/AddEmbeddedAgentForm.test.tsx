@@ -108,6 +108,7 @@ describe('AddEmbeddedAgentForm', () => {
     expect(body).toEqual({
       name: 'Ollama qwen3',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      enabledTools: ['Read', 'Glob', 'Grep'],
     });
   });
 

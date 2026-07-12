@@ -48,6 +48,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('provider_api_key_ref', 'text')
       .addColumn('system_prompt', 'text')
       .addColumn('max_tool_iterations', 'integer')
+      .addColumn('enabled_tools', 'text')
       .addColumn('created_by', 'text', (col) => col.notNull())
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
@@ -110,6 +111,33 @@ describe('SqliteEmbeddedAgentRepository', () => {
     it('returns null for an unknown id', async () => {
       expect(await repository.findById('nope')).toBeNull();
     });
+
+    it('round-trips enabledTools: undefined as a NULL column and back to undefined', async () => {
+      const def = buildDefinition({ id: 'no-enabled-tools' });
+
+      await repository.save(def);
+      const found = await repository.findById('no-enabled-tools');
+
+      expect(found?.enabledTools).toBeUndefined();
+    });
+
+    it('round-trips enabledTools: [] as an explicit empty array', async () => {
+      const def = buildDefinition({ id: 'empty-enabled-tools', enabledTools: [] });
+
+      await repository.save(def);
+      const found = await repository.findById('empty-enabled-tools');
+
+      expect(found?.enabledTools).toEqual([]);
+    });
+
+    it('round-trips a non-empty enabledTools array exactly', async () => {
+      const def = buildDefinition({ id: 'some-enabled-tools', enabledTools: ['Read', 'Glob'] });
+
+      await repository.save(def);
+      const found = await repository.findById('some-enabled-tools');
+
+      expect(found?.enabledTools).toEqual(['Read', 'Glob']);
+    });
   });
 
   describe('upsert', () => {
@@ -155,6 +183,20 @@ describe('SqliteEmbeddedAgentRepository', () => {
       expect(row?.created_at).toBe('2024-01-01T00:00:00.000Z');
       expect(row?.updated_at).toBe('2024-06-01T00:00:00.000Z');
       expect(row?.name).toBe('Renamed');
+    });
+
+    it('updates enabled_tools on conflict (regression guard: onConflict lists columns explicitly)', async () => {
+      await repository.save(buildDefinition({ id: 'x', enabledTools: ['Read'] }));
+      await repository.save(
+        buildDefinition({
+          id: 'x',
+          enabledTools: ['Read', 'Glob', 'Grep'],
+          updatedAt: '2024-06-01T00:00:00.000Z',
+        })
+      );
+
+      const found = await repository.findById('x');
+      expect(found?.enabledTools).toEqual(['Read', 'Glob', 'Grep']);
     });
   });
 

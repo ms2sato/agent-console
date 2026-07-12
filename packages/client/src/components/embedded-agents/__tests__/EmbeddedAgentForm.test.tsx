@@ -1,7 +1,13 @@
 import { describe, it, expect, mock, afterEach } from 'bun:test';
 import { render, screen, waitFor, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { EmbeddedAgentForm, type EmbeddedAgentFormData } from '../EmbeddedAgentForm';
+import { EMBEDDED_AGENT_TOOL_NAMES } from '@agent-console/shared';
+import {
+  EmbeddedAgentForm,
+  READ_ONLY_TOOL_NAMES,
+  COMMAND_EXECUTION_TOOL_NAMES,
+  type EmbeddedAgentFormData,
+} from '../EmbeddedAgentForm';
 
 afterEach(() => {
   cleanup();
@@ -131,6 +137,82 @@ describe('EmbeddedAgentForm', () => {
 
       expect(props.onCancel).toHaveBeenCalledTimes(1);
     });
+
+    it('should check Read/Glob/Grep and leave Bash unchecked by default', () => {
+      renderEmbeddedAgentForm();
+
+      for (const name of READ_ONLY_TOOL_NAMES) {
+        expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
+      }
+      for (const name of COMMAND_EXECUTION_TOOL_NAMES) {
+        expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(false);
+      }
+    });
+
+    it('should include a toggled Bash checkbox in the submitted enabledTools array', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.click(screen.getByRole('checkbox', { name: 'Bash' }));
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect([...formData.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read']);
+    });
+
+    it('should submit enabledTools: [] when all read-only checkboxes are unchecked', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      for (const name of READ_ONLY_TOOL_NAMES) {
+        await user.click(screen.getByRole('checkbox', { name }));
+      }
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect(formData.enabledTools).toEqual([]);
+    });
+
+    it('should show an amber warning associated with the Bash checkbox group', () => {
+      renderEmbeddedAgentForm();
+
+      const warning = screen.getByText('Runs arbitrary shell commands as the session user.');
+      expect(warning).toBeTruthy();
+      expect(warning.className).toContain('amber');
+
+      const bashCheckbox = screen.getByRole('checkbox', { name: 'Bash' });
+      const readCheckbox = screen.getByRole('checkbox', { name: 'Read' });
+      // The warning's enclosing "Command execution" group contains the Bash
+      // checkbox but not a "Read-only" group checkbox.
+      expect(warning.parentElement?.contains(bashCheckbox)).toBe(true);
+      expect(warning.parentElement?.contains(readCheckbox)).toBe(false);
+    });
+  });
+
+  describe('tool group partitioning', () => {
+    it('READ_ONLY_TOOL_NAMES and COMMAND_EXECUTION_TOOL_NAMES partition EMBEDDED_AGENT_TOOL_NAMES exactly', () => {
+      const union = [...READ_ONLY_TOOL_NAMES, ...COMMAND_EXECUTION_TOOL_NAMES].sort();
+      const all = [...EMBEDDED_AGENT_TOOL_NAMES].sort();
+      expect(union).toEqual(all);
+      // No duplicates across the two groups.
+      expect(new Set(union).size).toBe(union.length);
+    });
   });
 
   describe('edit mode', () => {
@@ -142,6 +224,7 @@ describe('EmbeddedAgentForm', () => {
       apiKeyRef: 'my-key',
       systemPrompt: 'Be helpful',
       maxToolIterationsInput: '25',
+      enabledTools: ['Read', 'Glob', 'Grep'],
     };
 
     it('should render form with pre-filled data', () => {

@@ -1,4 +1,4 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName } from '@agent-console/shared';
 import { computeCapabilities } from '@agent-console/shared';
 import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow, NewEmbeddedAgent, EmbeddedAgentRow } from './schema.js';
 import type {
@@ -516,6 +516,7 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     provider_api_key_ref: def.provider.apiKeyRef ?? null,
     system_prompt: def.systemPrompt ?? null,
     max_tool_iterations: def.maxToolIterations ?? null,
+    enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
     created_by: def.createdBy,
     created_at: def.createdAt,
     updated_at: def.updatedAt,
@@ -541,6 +542,8 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
     },
     systemPrompt: row.system_prompt ?? undefined,
     maxToolIterations: row.max_tool_iterations ?? undefined,
+    enabledTools:
+      row.enabled_tools !== null ? (JSON.parse(row.enabled_tools) as EmbeddedAgentToolName[]) : undefined,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

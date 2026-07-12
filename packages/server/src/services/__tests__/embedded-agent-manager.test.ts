@@ -125,6 +125,28 @@ describe('EmbeddedAgentManager', () => {
       expect(def.createdBy).toBe('real-user');
     });
 
+    it('sets enabledTools from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        { name: 'Ollama', provider: VALID_PROVIDER, enabledTools: ['Read', 'Glob'] },
+        'creator-user-id'
+      );
+
+      expect(def.enabledTools).toEqual(['Read', 'Glob']);
+    });
+
+    it('leaves enabledTools undefined when absent from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        { name: 'Ollama', provider: VALID_PROVIDER },
+        'creator-user-id'
+      );
+
+      expect(def.enabledTools).toBeUndefined();
+    });
+
     it('fires onEmbeddedAgentCreated after a successful save', async () => {
       const { created, callbacks } = createCallbackRecorder();
       const manager = await getManager();
@@ -163,6 +185,7 @@ describe('EmbeddedAgentManager', () => {
           provider: VALID_PROVIDER,
           systemPrompt: 'orig prompt',
           maxToolIterations: 10,
+          enabledTools: ['Read'],
         },
         'owner-id'
       );
@@ -179,12 +202,13 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.description).toBe('orig desc');
       expect(updated?.systemPrompt).toBe('orig prompt');
       expect(updated?.maxToolIterations).toBe(10);
+      expect(updated?.enabledTools).toEqual(['Read']);
       expect(updated?.provider).toEqual(VALID_PROVIDER);
       expect(updated?.createdBy).toBe('owner-id');
       expect(updated?.createdAt).toBe(created.createdAt);
     });
 
-    it('clears description/systemPrompt/maxToolIterations on null', async () => {
+    it('clears description/systemPrompt/maxToolIterations/enabledTools on null', async () => {
       const manager = await getManager();
       const created = await seed(manager);
 
@@ -192,11 +216,22 @@ describe('EmbeddedAgentManager', () => {
         description: null,
         systemPrompt: null,
         maxToolIterations: null,
+        enabledTools: null,
       });
 
       expect(updated?.description).toBeUndefined();
       expect(updated?.systemPrompt).toBeUndefined();
       expect(updated?.maxToolIterations).toBeUndefined();
+      expect(updated?.enabledTools).toBeUndefined();
+    });
+
+    it('replaces enabledTools with the request value when present, including an explicit empty array', async () => {
+      const manager = await getManager();
+      const created = await seed(manager);
+
+      const updated = await manager.updateEmbeddedAgent(created.id, { enabledTools: [] });
+
+      expect(updated?.enabledTools).toEqual([]);
     });
 
     it('replaces the whole provider object when provider is present', async () => {

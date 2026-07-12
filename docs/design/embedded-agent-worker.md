@@ -162,7 +162,7 @@ So there is no need to force Claude to be first-class on the embedded-agent path
 ## Trade-offs
 
 - **Gain:** structured events enabling a richer UI, broad model freedom (API + local) through one adapter, and -- because candidate (b) reuses the existing worker pid/orphan-recovery machinery and `spawnAsUser` elevation -- no new restart-durability or multi-user-elevation plumbing.
-- **Cost:** the loop reimplements the agent cycle and does not inherit Claude Code's built-in capabilities (its own file editing, shell, context management, hooks, skills). The terminal model's strength -- running *any* terminal-based agent unmodified -- is exactly what the embedded-agent model gives up in exchange for a structured, provider-flexible UI. Offering both as options is what preserves both strengths. Unlike an earlier framing of this proposal, the chosen candidate does **not** remove the MCP/IPC hop on Boundary A -- see [Design Decisions](#design-decisions) for why that trade was made deliberately in favor of restart durability and elevation reuse.
+- **Cost:** the loop reimplements the agent cycle and does not inherit Claude Code's built-in capabilities (its own file editing, shell, context management, hooks, skills) wholesale. This gap is being closed progressively, not left permanent: fast-follow issues FF-1a/1b/1c ([Built-in tools](#built-in-tools-fast-follow)) add subprocess-local `Read`/`Glob`/`Grep`/`Bash`/`Write`/`Edit` tools matching Claude Code's own shapes, and FF-2 adds OS-level sandboxing on top. What remains a genuine, not-currently-scheduled gap is context management, hooks, and skills. The terminal model's strength -- running *any* terminal-based agent unmodified -- is exactly what the embedded-agent model gives up in exchange for a structured, provider-flexible UI. Offering both as options is what preserves both strengths. Unlike an earlier framing of this proposal, the chosen candidate does **not** remove the MCP/IPC hop on Boundary A -- see [Design Decisions](#design-decisions) for why that trade was made deliberately in favor of restart durability and elevation reuse.
 
 ## Non-goals
 
@@ -170,6 +170,7 @@ So there is no need to force Claude to be first-class on the embedded-agent path
 - Conversation continuity across a server restart (transcript persistence / resume) in v1. Explicitly deferred to a post-v1 fast-follow -- see [Design Decisions](#design-decisions) and [Post-v1 fast-follows](#post-v1-fast-follows).
 - Supporting models without native tool-calling in v1 (text-parse fallback / constrained decoding are post-v1; see [Provider adapter](#provider-adapter--tool-call-normalization)).
 - Making Claude first-class on this path (see Positioning above).
+- OS-level sandboxing and MCP-surface per-caller tool filtering in FF-1a — [Built-in tools](#built-in-tools-fast-follow)'s path confinement is a process-boundary floor, not a sandbox; that hardening is FF-2's explicit scope, tracked separately.
 
 ## Multi-user identity & privilege
 
@@ -278,6 +279,7 @@ export interface EmbeddedAgentDefinition {
   };
   systemPrompt?: string;      // prepended to every conversation
   maxToolIterations?: number; // per user turn; default 25
+  enabledTools?: EmbeddedAgentToolName[]; // FF-1a; undefined = default read-only set, [] = all builtin tools off — see Built-in tools
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;
@@ -371,7 +373,8 @@ type EmbeddedAgentCommand =
       provider: { baseUrl: string; model: string; apiKey?: string };
       context: { sessionId: string; workerId: string; repositoryId?: string; cwd: string };
       systemPrompt?: string;
-      maxToolIterations: number }
+      maxToolIterations: number;
+      enabledTools?: EmbeddedAgentToolName[] } // FF-1a; server forwards the definition's raw value unchanged, incl. undefined — the loop applies the undefined -> default rule itself (see Built-in tools)
   | { v: 1; type: 'user-message'; id: string; text: string } // id minted by server, echoed in events
   | { v: 1; type: 'cancel' }                                 // abort the in-flight turn (AbortController)
   | { v: 1; type: 'shutdown' };
@@ -409,6 +412,57 @@ All three types live in `packages/shared/src/types/embedded-agent.ts` with valib
 On `user-message`: emit `state: active`; append the message to the in-memory conversation; then repeat up to `maxToolIterations` times: call the provider (streaming); emit `assistant-delta`s and a final `assistant-message` (text truncated at 256 KiB, UTF-8-safe, using the same truncation helper as `tool-result` — this guards against colliding with the server's 1 MiB oversized-line kill on a healthy long response); if the response contains tool calls, for each call emit `tool-call` (`args`' serialized form truncated at 256 KiB with the same guard), execute it via the MCP client, emit `tool-result`, append results to the conversation, and continue; otherwise the turn is complete. Emit `state: idle`. On provider error after 2 retries (exponential backoff, honoring 429 `retry-after`), or on hitting the iteration cap, emit `turn-error` then `state: idle` — the conversation stays usable for the next user message.
 
 **Mid-turn abort repair (mandatory).** Both abort paths — `cancel` and hitting the re-ask cap — can fire while one or more tool calls from the current assistant turn have not yet received a matching tool-role response. Before emitting `turn-error` in either case, the loop pushes a synthetic tool-role message (e.g. `Error: canceled`) for every tool call in the current turn that has not yet been responded to. Without this, the `assistant` message's `tool_calls` array would carry unresponded `tool_call_id` entries into the next turn's request, which a strict OpenAI-compatible provider rejects with 400 — permanently wedging the worker. This is what makes the "conversation stays usable for the next user message" guarantee above actually hold across an aborted turn, not just a cleanly-completed one.
+
+## Built-in tools (fast-follow)
+
+**Status:** landing progressively across three fast-follow issues off the umbrella (#1004): FF-1a (#1042 — `Read`/`Glob`/`Grep`, the `enabledTools` policy, path confinement), FF-1b (#1043 — `Bash`), FF-1c (#1044 — `Write`/`Edit`). FF-2 (#1045, separate scope) adds OS-level sandboxing and MCP-surface per-caller tool filtering on top. This section documents the shape as of FF-1a; earlier parts of this document describing v1 tool execution as MCP-only are superseded by this section for the specifics below.
+
+**Design direction (owner, 2026-07-12):** tools are not put on the MCP surface. They are implemented as subprocess-internal tools, the same way Claude Code / opencode implement their own `Read`/`Bash`/`Edit` — not proxied through the MCP server. Start from a subset of a reference CLI's tool shapes; do not reinvent argument schemas.
+
+**Subprocess-local execution.** Tool definition and dispatch live inside `packages/embedded-agent`, the same process that already runs as the requesting OS user via `spawnAsUser` with `cwd = session.locationPath` ([The agent subprocess](#the-agent-subprocess-packagesembedded-agent)). Filesystem permissions and multi-user elevation are therefore automatically correct for these tools — no new elevation surface, no new MCP-auth surface. The same property that makes AGENTS.md-loading permission-correct applies here: the process boundary is already the trust boundary.
+
+**Provider tools = builtin tools ∪ MCP tools.** At `init`, after the MCP connection succeeds, the loop merges the builtin tool set (`packages/embedded-agent/src/tools/index.ts`, resolved from `enabledTools` below) with the MCP-listed tools. On a name collision the builtin wins; the collision is logged to stderr, not exposed to the model as an error. `CompositeToolExecutor` (`packages/embedded-agent/src/tools/composite-executor.ts`) implements the merge and dispatch as a drop-in `ToolExecutor` (`packages/embedded-agent/src/mcp.ts`) wrapping the existing `McpToolClient` — the turn cycle above is unchanged; the executor swap happens entirely inside `main.ts`'s `initializeLoop`. Tool-call results ride the existing `tool-result` event and its existing 16 KiB truncation, so no wire-protocol / UI / server change was needed for tool execution itself — only the `init` command gains one optional field (`enabledTools`, already reflected in [Stdio protocol](#stdio-protocol-v1) above).
+
+**Tool names and argument shapes match Claude Code's** (`Read`, `Glob`, `Grep`, and later `Bash`, `Write`, `Edit`): pretrained models already know these shapes, so no shape-adaptation prompt engineering is needed.
+
+### `enabledTools` policy
+
+`EmbeddedAgentDefinition.enabledTools?: EmbeddedAgentToolName[]`, where `EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number]` and `EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash'] as const` (`packages/shared/src/types/embedded-agent.ts`). This constant is the single writer of tool-name literals in the codebase — the valibot schema, the builtin registry, and the UI's checkbox list all derive from it; none hardcode a parallel list.
+
+Semantics:
+
+- **`undefined`** (field absent on the definition) — the loop applies its own default, `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS = ['Read', 'Glob', 'Grep']` (read-only tools ON, `Bash` OFF).
+- **`[]`** — all builtin tools OFF.
+- **An explicit array** — exactly that set. A name not in the array is **not represented in the provider's tools list at all** (unrepresentable, not merely rejected if called). This is what makes "opt-in for mutating tools" an actual guarantee rather than a convention: a model cannot call a tool it was never told exists, whether by hallucination or prompt injection, because `listTools()` never emitted it.
+
+The undefined→default resolution happens **in the subprocess** (`resolveEnabledBuiltinTools`, `packages/embedded-agent/src/tools/index.ts`), not on the server, because the merge with MCP tools already happens there. The server forwards the definition's raw `enabledTools` unchanged (including `undefined`) in the `init` command.
+
+`Bash` is enumerated in `EMBEDDED_AGENT_TOOL_NAMES` starting in FF-1a — so the schema, migration, and UI land atomically instead of needing a second migration round — but has **no registry entry** until FF-1b ships. Selecting it in `enabledTools` is a currently-inert no-op (`resolveEnabledBuiltinTools(['Bash'])` returns `[]`).
+
+**Persistence.** New nullable `embedded_agents.enabled_tools TEXT` column (JSON array string; `NULL` ↔ `undefined`, `'[]'` ↔ `[]`, `'["Read","Glob"]'` ↔ `['Read','Glob']`). PATCH semantics on `UpdateEmbeddedAgentRequestSchema` follow the same convention as the sibling optional fields: `enabledTools: null` resets to `undefined` (default), `undefined` (key absent) means no change, an explicit array replaces.
+
+### Path confinement (the FF-1a "minimum floor")
+
+All three FF-1a tools resolve their target path through `resolveConfinedPath` (`packages/embedded-agent/src/tools/path-confinement.ts`) before touching the filesystem:
+
+1. Resolve the candidate path to absolute (relative to `locationPath` when not already absolute).
+2. Follow symlinks via `realpath`, walking up to the nearest existing ancestor when the leaf does not yet exist, so a not-yet-created `Read` target or a `Glob`/`Grep` search root still gets a confinement verdict instead of an ENOENT throw.
+3. Confined iff the resolved path equals `realpath(locationPath)` or is prefixed by it (`+ path.sep`).
+4. On rejection, return `{ ok: false, result: 'Access outside session location is not permitted.' }` as an ordinary `tool-result` — never a turn-level error. The model sees a rejected tool call the same way it sees any other tool failure and can adjust; the turn does not abort.
+
+This is a **process-boundary floor**, not OS-level sandboxing — a determined tool-implementation bug could still escape it, since the process itself has the OS user's full filesystem permissions. FF-2 adds OS-level sandboxing (e.g. bubblewrap) as defense-in-depth and extends the same confinement discipline to the MCP surface (per-caller filtering); FF-1a's confinement is the floor FF-2 builds on, not the final guarantee.
+
+### `Read` / `Glob` / `Grep` (FF-1a)
+
+| Tool | Args | Behavior |
+|---|---|---|
+| `Read` | `{ path: string; limit?: number; offset?: number }` | Line-numbered output (`<lineNumber>\t<line>`), 1-based numbering, default `limit` 2000 lines from `offset` 0 (0-based). Matches Claude Code's Read shape. |
+| `Glob` | `{ pattern: string; path?: string }` | Glob search rooted at `path` (default `locationPath`) via Bun's native `Glob`. Results sorted by modification time, descending. Matches outside `locationPath` (e.g. via a matched symlink) are filtered out, not surfaced. |
+| `Grep` | `{ pattern: string; path?: string; glob?: string; caseInsensitive?: boolean; outputMode?: 'content' \| 'files_with_matches' \| 'count' }` | Pure-TS content search — no `rg` binary dependency, since one is not guaranteed present in the deploy environment. `outputMode` defaults to `'files_with_matches'`. A deliberate subset of Claude Code's Grep, not a ripgrep reimplementation: binary files and files over ~1 MiB are skipped heuristically. |
+
+All three: an empty match set is a successful, non-error result (`{ ok: true, result: '' }`) — "no matches" is not a tool failure.
+
+`Bash` / `Write` / `Edit` implementations are FF-1b / FF-1c scope; this section grows as they land.
 
 ## Server-side management (`EmbeddedAgentWorkerService`)
 
@@ -624,6 +678,8 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 - [`elevation-helpers.md`](../../.claude/rules/elevation-helpers.md) -- the `spawnAsUser` contract and consumer obligations this design depends on.
 - [`os-environment-coupling.md`](../../.claude/rules/os-environment-coupling.md) -- real-machine smoke-test discipline; the v1 smoke script is specified in [Testing plan](#testing-plan).
 - Issue [#878](https://github.com/ms2sato/agent-console/issues/878) -- MCP caller identity; phase 1 designed in [MCP caller identity](#mcp-caller-identity-issue-878-phase-1).
+- Issue [#1004](https://github.com/ms2sato/agent-console/issues/1004) -- umbrella tracking Phases 0a-4 plus the post-v1 fast-follows below.
+- Issues [#1042](https://github.com/ms2sato/agent-console/issues/1042) (FF-1a), [#1043](https://github.com/ms2sato/agent-console/issues/1043) (FF-1b), [#1044](https://github.com/ms2sato/agent-console/issues/1044) (FF-1c), [#1045](https://github.com/ms2sato/agent-console/issues/1045) (FF-2) -- [Built-in tools](#built-in-tools-fast-follow) fast-follow series.
 - MCP server implementation: `packages/server/src/mcp/mcp-server.ts`.
 - Elevation primitives: `packages/server/src/services/privilege-elevation.ts`.
 - Subprocess-management precedent: `packages/server/src/services/interactive-process-manager.ts` (volatile by design; this design combines its mechanics with worker persistence).

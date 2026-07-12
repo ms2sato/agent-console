@@ -1,4 +1,5 @@
 import * as v from 'valibot';
+import { EMBEDDED_AGENT_TOOL_NAMES } from '../types/embedded-agent.js';
 
 /**
  * Valibot schemas for embedded agent definitions and the stdio protocol.
@@ -8,6 +9,16 @@ import * as v from 'valibot';
  */
 
 // === Definition schemas ===
+
+/**
+ * List of enabled builtin tool names. No nullable variant here — nullability
+ * (PATCH clear-to-default semantics) is layered on only where needed
+ * (`UpdateEmbeddedAgentRequestSchema`).
+ */
+const EnabledToolsSchema = v.pipe(
+  v.array(v.picklist(EMBEDDED_AGENT_TOOL_NAMES)),
+  v.check((arr) => new Set(arr).size === arr.length, 'duplicate tool name')
+);
 
 export const EmbeddedAgentProviderSchema = v.strictObject({
   baseUrl: v.pipe(v.string(), v.url()),
@@ -22,6 +33,7 @@ export const EmbeddedAgentDefinitionSchema = v.strictObject({
   provider: EmbeddedAgentProviderSchema,
   systemPrompt: v.optional(v.string()),
   maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  enabledTools: v.optional(EnabledToolsSchema),
   createdBy: v.string(),
   createdAt: v.string(),
   updatedAt: v.string(),
@@ -37,6 +49,7 @@ export const CreateEmbeddedAgentRequestSchema = v.strictObject({
   provider: EmbeddedAgentProviderSchema,
   systemPrompt: v.optional(v.string()),
   maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  enabledTools: v.optional(EnabledToolsSchema),
 });
 
 /**
@@ -50,6 +63,7 @@ export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   provider: v.optional(EmbeddedAgentProviderSchema),
   systemPrompt: v.optional(v.nullable(v.string())),
   maxToolIterations: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
+  enabledTools: v.optional(v.nullable(EnabledToolsSchema)),
 });
 
 // === Protocol schemas ===
@@ -74,6 +88,7 @@ export const EmbeddedAgentCommandSchema = v.union([
       cwd: v.string(),
     }),
     systemPrompt: v.optional(v.string()),
+    enabledTools: v.optional(EnabledToolsSchema),
     maxToolIterations: v.number(),
   }),
   v.strictObject({

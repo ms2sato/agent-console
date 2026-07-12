@@ -325,6 +325,21 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     expect(first.maxToolIterations).toBe(7);
   });
 
+  it('includes enabledTools in the init command when the definition sets it', async () => {
+    const h = setup({ definition: buildDefinition({ enabledTools: ['Read'] }) });
+    await h.service.activate(h.sessionId, h.workerId);
+    const first = h.fake.stdinWrites[0];
+    expect(first).toContain('"enabledTools":["Read"]');
+    expect(JSON.parse(first).enabledTools).toEqual(['Read']);
+  });
+
+  it('omits enabledTools entirely from the init command when the definition has no enabledTools', async () => {
+    const h = setup({ definition: buildDefinition() });
+    await h.service.activate(h.sessionId, h.workerId);
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('enabledTools' in first).toBe(false);
+  });
+
   it('rejects a dangling definition without spawning or minting', async () => {
     const h = setup({ definition: undefined });
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('not found');

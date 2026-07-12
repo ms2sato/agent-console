@@ -1,9 +1,35 @@
-import { useForm } from 'react-hook-form';
+import { useForm, type FieldError } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import * as v from 'valibot';
-import { CreateEmbeddedAgentRequestSchema, EmbeddedAgentProviderSchema } from '@agent-console/shared';
+import {
+  CreateEmbeddedAgentRequestSchema,
+  EmbeddedAgentProviderSchema,
+  EMBEDDED_AGENT_TOOL_NAMES,
+  DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
+  type EmbeddedAgentToolName,
+} from '@agent-console/shared';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
+
+/**
+ * UI grouping of `EMBEDDED_AGENT_TOOL_NAMES` into "read-only" and "command
+ * execution" checkbox sections. These arrays must partition the shared
+ * constant exactly -- the guard below throws at module load if a future tool
+ * addition (e.g. FF-1c's `Write`/`Edit`) is not also added to one of these
+ * groups, so it fails loudly instead of silently vanishing from the form.
+ */
+export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Read', 'Glob', 'Grep'];
+export const COMMAND_EXECUTION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Bash'];
+
+if (
+  new Set([...READ_ONLY_TOOL_NAMES, ...COMMAND_EXECUTION_TOOL_NAMES]).size !==
+    EMBEDDED_AGENT_TOOL_NAMES.length ||
+  !EMBEDDED_AGENT_TOOL_NAMES.every(
+    (name) => READ_ONLY_TOOL_NAMES.includes(name) || COMMAND_EXECUTION_TOOL_NAMES.includes(name)
+  )
+) {
+  throw new Error('EmbeddedAgentForm tool groups do not partition EMBEDDED_AGENT_TOOL_NAMES');
+}
 
 /**
  * Client-side form schema for embedded-agent creation/editing.
@@ -45,6 +71,10 @@ const EmbeddedAgentFormSchema = v.object({
       )
     )
   ),
+
+  // Checkboxes structurally cannot produce a duplicate, so no need to
+  // re-check duplicates client-side (unlike the server-side schema).
+  enabledTools: v.array(v.picklist(EMBEDDED_AGENT_TOOL_NAMES)),
 });
 
 export type EmbeddedAgentFormData = v.InferOutput<typeof EmbeddedAgentFormSchema>;
@@ -80,6 +110,7 @@ export function EmbeddedAgentForm({
       apiKeyRef: '',
       systemPrompt: '',
       maxToolIterationsInput: '',
+      enabledTools: [...DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS],
     },
     mode: 'onBlur',
   });
@@ -159,6 +190,36 @@ export function EmbeddedAgentForm({
             <p className="text-xs text-gray-500 mt-1">
               Maximum tool-call iterations per user turn. Defaults to 25 if left empty.
             </p>
+          </FormField>
+
+          <FormField label="Tools" error={errors.enabledTools as FieldError | undefined}>
+            <div className="flex flex-col gap-3">
+              <div>
+                <p className="text-xs font-medium text-gray-400 mb-1">Read-only</p>
+                <div className="flex flex-col gap-1">
+                  {READ_ONLY_TOOL_NAMES.map((name) => (
+                    <label key={name} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" value={name} {...register('enabledTools')} />
+                      {name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-400 mb-1">Command execution</p>
+                <div className="flex flex-col gap-1">
+                  {COMMAND_EXECUTION_TOOL_NAMES.map((name) => (
+                    <label key={name} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" value={name} {...register('enabledTools')} />
+                      {name}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-amber-500 mt-1">
+                  Runs arbitrary shell commands as the session user.
+                </p>
+              </div>
+            </div>
           </FormField>
 
           {error && <p className="text-sm text-red-400">{error}</p>}

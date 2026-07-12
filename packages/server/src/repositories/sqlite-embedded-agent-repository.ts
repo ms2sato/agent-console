@@ -40,6 +40,7 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
           provider_api_key_ref: row.provider_api_key_ref,
           system_prompt: row.system_prompt,
           max_tool_iterations: row.max_tool_iterations,
+          enabled_tools: row.enabled_tools,
           // Note: created_at and created_by are intentionally NOT updated
           // (they must never change after the initial insert).
           updated_at: row.updated_at,
