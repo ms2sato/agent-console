@@ -179,7 +179,8 @@ export type WorkerErrorCode =
   | 'SESSION_DELETED'       // Session was deleted while WebSocket was connected
   | 'SESSION_PAUSED'        // Session was paused while WebSocket was connected
   | 'TURN_IN_PROGRESS'      // embedded-user-message rejected: a turn is already active
-  | 'UNSUPPORTED_OPERATION'; // Client message not valid for this worker type (e.g. input/resize on an embedded-agent worker)
+  | 'UNSUPPORTED_OPERATION' // Client message not valid for this worker type (e.g. input/resize on an embedded-agent worker)
+  | 'MESSAGE_TOO_LARGE';    // embedded-user-message.text exceeds the wire byte cap
 
 export type WorkerServerMessage =
   // `offset` is the absolute end position in the worker's cumulative output

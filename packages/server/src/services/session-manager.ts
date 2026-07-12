@@ -21,7 +21,7 @@ import type {
 import type { InternalSession, SessionCreationContext } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
-import { EmbeddedAgentWorkerService } from './embedded-agent-worker-service.js';
+import { EmbeddedAgentWorkerService, type SendUserMessageResult } from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn } from './privilege-elevation.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
@@ -581,7 +581,7 @@ export class SessionManager {
     sessionId: string,
     workerId: string,
     text: string,
-  ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
+  ): Promise<SendUserMessageResult> {
     return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text);
   }
 

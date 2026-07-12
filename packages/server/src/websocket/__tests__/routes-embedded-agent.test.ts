@@ -24,7 +24,7 @@ import { SlackHandler } from '../../services/notifications/slack-handler.js';
 import { RepositorySlackIntegrationService } from '../../services/notifications/repository-slack-integration-service.js';
 import { SingleUserMode } from '../../services/user-mode.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
-import { setupWebSocketRoutes } from '../routes.js';
+import { setupWebSocketRoutes, EMBEDDED_USER_MESSAGE_MAX_BYTES } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -345,6 +345,79 @@ describe('Worker WebSocket: embedded-agent branch', () => {
 
     // Never reached the loop's stdin.
     expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('rejects an oversized embedded-user-message with MESSAGE_TOO_LARGE instead of forwarding it', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    // Wait for the connection's initial 'activity' push to land before
+    // resetting, so it can't race in after the reset and pollute the count.
+    await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).type === 'activity'));
+    mockWs.sentMessages.length = 0;
+
+    const oversizedText = 'a'.repeat(EMBEDDED_USER_MESSAGE_MAX_BYTES + 1);
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-user-message', text: oversizedText }) }, mockWs);
+
+    expect(mockWs.sentMessages.length).toBe(1);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('MESSAGE_TOO_LARGE');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Never reached the loop's stdin.
+    expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('forwards an embedded-user-message at exactly the byte cap', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+
+    const boundaryText = 'a'.repeat(EMBEDDED_USER_MESSAGE_MAX_BYTES);
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-user-message', text: boundaryText }) }, mockWs);
+
+    await waitFor(() => fake.stdinWrites.length >= 2);
+    const userMessageCommand = JSON.parse(fake.stdinWrites[1]);
+    expect(userMessageCommand.type).toBe('user-message');
+    expect(userMessageCommand.text.length).toBe(EMBEDDED_USER_MESSAGE_MAX_BYTES);
+
+    // No error was sent for this at-the-cap message (other messages, e.g.
+    // the connection's initial 'activity' push, may legitimately race in).
+    const errorMessages = mockWs.sentMessages.map((m) => JSON.parse(m)).filter((m) => m.type === 'error');
+    expect(errorMessages).toEqual([]);
+    expect(mockWs.closeCalls.length).toBe(0);
+  });
+
+  it('rejects embedded-user-message with ACTIVATION_FAILED when the worker never activated (NOT_ACTIVATED code mapping)', async () => {
+    // Same dangling-definition setup as the activation-failure test: the
+    // worker never gets a subprocess, so sendUserMessage's synchronous
+    // admission check returns { code: 'NOT_ACTIVATED' }, which routes.ts must
+    // map to the wire-level ACTIVATION_FAILED code (not string-match 'error').
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      sessionOwnerUserId,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: sessionOwnerUserId },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    await embeddedAgentManager.deleteEmbeddedAgent(definition.id);
+
+    const { handlers, mockWs } = openConnection(session.id, worker!.id);
+    await waitFor(() => mockWs.sentMessages.length > 0);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-user-message', text: 'hello' }) }, mockWs);
+
+    await waitFor(() => mockWs.sentMessages.length > 0);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('ACTIVATION_FAILED');
+    expect(mockWs.closeCalls.length).toBe(0);
   });
 
   it('forwards embedded-cancel to the loop stdin', async () => {

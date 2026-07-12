@@ -54,6 +54,16 @@ let registry = new WebSocketConnectionRegistry();
 const currentServerPid = getServerPid();
 
 /**
+ * Byte cap for an embedded-agent `embedded-user-message.text` payload.
+ * Aligned with `WIRE_EVENT_MAX_BYTES` in `packages/embedded-agent/src/agent-loop.ts`
+ * (the loop's own wire cap for `assistant-message.text` / tool-call `args`,
+ * per docs/design/embedded-agent-worker.md's 256 KiB figure) -- there is no
+ * more specific precedent for user-authored chat text, so the same figure is
+ * reused for consistency across both directions of the channel.
+ */
+export const EMBEDDED_USER_MESSAGE_MAX_BYTES = 262144; // 256 KiB
+
+/**
  * Safely get the WebSocket ready state from a WSContext.
  * Returns undefined if readyState is not accessible.
  */
@@ -1080,12 +1090,40 @@ export async function setupWebSocketRoutes(
                   return;
                 }
                 const text = parsedObj.text;
+
+                const textByteLength = Buffer.byteLength(text, 'utf-8');
+                if (textByteLength > EMBEDDED_USER_MESSAGE_MAX_BYTES) {
+                  logger.warn(
+                    { sessionId, workerId, textByteLength, maxBytes: EMBEDDED_USER_MESSAGE_MAX_BYTES },
+                    'Rejected embedded-user-message: text exceeds the wire byte cap',
+                  );
+                  sendWorkerError(
+                    ws,
+                    `Message too large: ${textByteLength} bytes exceeds the ${EMBEDDED_USER_MESSAGE_MAX_BYTES}-byte limit`,
+                    'MESSAGE_TOO_LARGE',
+                  );
+                  return;
+                }
+
                 void sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, text).then((result) => {
-                  if (!result.ok) {
-                    const code: WorkerErrorCode = result.error === 'turn in progress'
-                      ? 'TURN_IN_PROGRESS'
-                      : 'ACTIVATION_FAILED';
-                    sendWorkerError(ws, result.error, code);
+                  if (result.ok) return;
+                  // Switch on the machine-checkable `code`, not the
+                  // human-readable `error` string -- a future wording tweak
+                  // in EmbeddedAgentWorkerService.sendUserMessage must not
+                  // silently change which WorkerErrorCode is derived here.
+                  switch (result.code) {
+                    case 'TURN_IN_PROGRESS':
+                      sendWorkerError(ws, result.error, 'TURN_IN_PROGRESS');
+                      return;
+                    case 'NOT_ACTIVATED':
+                    case 'WRITE_FAILED':
+                      sendWorkerError(ws, result.error, 'ACTIVATION_FAILED');
+                      return;
+                    default: {
+                      const _exhaustive: never = result.code;
+                      logger.warn({ sessionId, workerId, code: _exhaustive }, 'Unknown sendUserMessage error code');
+                      sendWorkerError(ws, result.error, 'ACTIVATION_FAILED');
+                    }
                   }
                 }).catch((err) => {
                   logger.error({ sessionId, workerId, err }, 'Error forwarding embedded-user-message');

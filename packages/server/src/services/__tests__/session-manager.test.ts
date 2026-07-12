@@ -595,7 +595,7 @@ describe('SessionManager', () => {
 
       const res = await manager.sendEmbeddedAgentUserMessage(sessionId, workerId, 'hi');
 
-      expect(res).toEqual({ ok: false, error: 'not activated' });
+      expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
     });
 
     it('cancelEmbeddedAgentTurn returns false for a never-activated worker', async () => {
