@@ -1,0 +1,657 @@
+import * as v from 'valibot';
+import {
+  NdjsonLineSplitter,
+  EmbeddedAgentStreamEventSchema,
+  WORKER_SERVER_MESSAGE_TYPES,
+  type EmbeddedAgentStreamEvent,
+  type EmbeddedAgentClientMessage,
+  type WorkerServerMessage,
+  type WorkerClientMessage,
+  type WorkerErrorCode,
+  type AgentActivityState,
+  type AppServerMessage,
+} from '@agent-console/shared';
+import { getWorkerWsUrl } from '../../lib/websocket-url.js';
+import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
+import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
+import { logger } from '../../lib/logger.js';
+
+/**
+ * Module-level store for embedded-agent workers, mirroring
+ * `../terminal/terminal-store.ts`'s architecture: a live WebSocket per
+ * `${sessionId}:${workerId}` lives OUTSIDE React and is exposed via
+ * useSyncExternalStore. Unlike the terminal store, there is no headless
+ * xterm buffer here -- the worker WS channel's byte-offset/epoch framing is
+ * content-agnostic (see docs/design/embedded-agent-worker.md "WebSocket &
+ * client protocol"); the payload is NDJSON events folded into a chat
+ * view-model instead of ANSI bytes fed to a terminal emulator.
+ */
+
+export type EmbeddedAgentConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+
+export interface EmbeddedAgentToolResult {
+  ok: boolean;
+  result: string;
+}
+
+/**
+ * One row in the chat view-model. `key` is stable across re-renders and
+ * across a delta -> final transition (same entry object, same key) so React
+ * lists don't remount mid-stream.
+ */
+export type EmbeddedAgentChatEntry =
+  | { key: string; kind: 'user-message'; id: string; text: string }
+  | { key: string; kind: 'assistant-message'; turnId: string; text: string; streaming: boolean }
+  | {
+      key: string;
+      kind: 'tool-call';
+      turnId: string;
+      callId: string;
+      name: string;
+      args: unknown;
+      result: EmbeddedAgentToolResult | null;
+    }
+  | { key: string; kind: 'turn-error'; turnId: string; message: string }
+  | { key: string; kind: 'fatal'; message: string }
+  | { key: string; kind: 'exited'; code: number | null };
+
+export interface EmbeddedAgentSnapshot {
+  version: number; // bumped on every change
+  status: EmbeddedAgentConnectionStatus;
+  entries: EmbeddedAgentChatEntry[];
+  activityState: AgentActivityState;
+  workerError: { message: string; code?: WorkerErrorCode } | null;
+  loadingHistory: boolean;
+}
+
+export interface EmbeddedAgentInstance {
+  subscribe(listener: () => void): () => void;
+  getSnapshot(): EmbeddedAgentSnapshot;
+  /** Send a user message (`embedded-user-message`). */
+  sendUserMessage(text: string): void;
+  /** Abort the in-flight turn (`embedded-cancel`). */
+  cancel(): void;
+  /**
+   * Force a fresh WebSocket connection. The server's onOpen handler
+   * re-activates the loop when `subprocess === null` (the exited-worker
+   * case), so this is what a "Restart" action drives.
+   */
+  restart(): void;
+  /** Clear a latched worker error and reconnect (recovery). */
+  retry(): void;
+  /** Dismiss the current non-fatal worker error without reconnecting. */
+  dismissError(): void;
+  /** Mount reference; returns an idempotent release (Strict-Mode safe). */
+  acquire(): () => void;
+  dispose(): void;
+}
+
+const DEFAULT_TIMINGS = {
+  idleTtlMs: 15 * 60 * 1000, // refCount 0 -> evict after 15 min (parity with terminal-store)
+  maxReconnectAttempts: 100,
+  reconnectDelayMs: null as number | null, // null -> getReconnectDelay (test override only)
+};
+type Timings = typeof DEFAULT_TIMINGS;
+let timings: Timings = { ...DEFAULT_TIMINGS };
+
+// App-WS subscribe seam: production uses the real module-level subscribe;
+// tests inject a capturable fake to drive session-deleted.
+let appSubscribeImpl: typeof subscribeApp = subscribeApp;
+
+type EmbeddedAgentSendMessage =
+  | EmbeddedAgentClientMessage
+  | Extract<WorkerClientMessage, { type: 'request-history' | 'request-history-range' }>;
+
+class EmbeddedAgentController implements EmbeddedAgentInstance {
+  private ws: WebSocket | null = null;
+  private listeners = new Set<() => void>();
+  private snapshot: EmbeddedAgentSnapshot;
+  private disposed = false;
+
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private historyRequested = false; // per WS connection
+  private historyInFlight = false; // single-flight guard (mirrors terminal-store)
+  private noReconnect = false; // set on SESSION_DELETED / SESSION_PAUSED
+
+  // Offset/epoch tracking (§3.1/§3.4 of terminal-history-paging.md; the same
+  // byte-offset/epoch framing is reused content-agnostically here).
+  private lastOffset = 0;
+  private requestedFromOffset = 0;
+  private epoch: number | null = null;
+
+  private splitter = new NdjsonLineSplitter();
+
+  // Index maps for folding streamed events into the entries array. Cleared
+  // on every fresh (non-continuation) history load / epoch reset.
+  private openAssistantIndexByTurnId = new Map<string, number>();
+  private toolCallIndexByCallId = new Map<string, number>();
+  private entryKeyCounter = 0;
+
+  // Memory management (parity with terminal-store, minus the LRU cap -- the
+  // number of concurrently mounted embedded-agent tabs is expected to be
+  // small; add a cap if that assumption stops holding).
+  private refCount = 0;
+  private idleTimer: ReturnType<typeof setTimeout> | null = null;
+  private appUnsub: () => void = () => {};
+
+  constructor(
+    private sessionId: string,
+    private workerId: string,
+  ) {
+    this.snapshot = {
+      version: 0,
+      status: 'connecting',
+      entries: [],
+      activityState: 'unknown',
+      workerError: null,
+      loadingHistory: false,
+    };
+    this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
+    this.connect();
+  }
+
+  subscribe = (listener: () => void): (() => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+
+  getSnapshot = (): EmbeddedAgentSnapshot => this.snapshot;
+
+  sendUserMessage = (text: string): void => {
+    this.send({ type: 'embedded-user-message', text });
+  };
+
+  cancel = (): void => {
+    this.send({ type: 'embedded-cancel' });
+  };
+
+  restart = (): void => {
+    this.reconnect();
+  };
+
+  retry = (): void => {
+    if (this.disposed) return;
+    this.patch({ workerError: null });
+    this.noReconnect = false;
+    this.reconnectAttempts = 0;
+    this.reconnect();
+  };
+
+  dismissError = (): void => {
+    if (this.snapshot.workerError === null) return;
+    this.patch({ workerError: null });
+  };
+
+  acquire = (): (() => void) => {
+    this.refCount += 1;
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer);
+      this.idleTimer = null;
+    }
+    let released = false;
+    return () => {
+      if (released) return; // idempotent under Strict-Mode double-invoke
+      released = true;
+      this.refCount = Math.max(0, this.refCount - 1);
+      if (this.refCount === 0) this.startIdleTimer();
+    };
+  };
+
+  dispose = (): void => {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = null;
+    this.appUnsub();
+    this.closeWs();
+    this.listeners.clear();
+    removeInstance(this.sessionId, this.workerId);
+  };
+
+  // --- Test-only accessors ---
+
+  get refCountForTest(): number {
+    return this.refCount;
+  }
+
+  get disposedForTest(): boolean {
+    return this.disposed;
+  }
+
+  // --- Memory management ---
+
+  private startIdleTimer(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null;
+      if (this.refCount === 0) this.dispose();
+    }, timings.idleTtlMs);
+  }
+
+  // --- App-WS driven events ---
+
+  private handleAppMessage(msg: AppServerMessage): void {
+    if (this.disposed) return;
+    if (msg.type === 'session-deleted' && msg.sessionId === this.sessionId) {
+      this.dispose();
+    }
+  }
+
+  // --- WebSocket lifecycle ---
+
+  private connect(): void {
+    if (this.disposed) return;
+    const url = getWorkerWsUrl(this.sessionId, this.workerId);
+    this.historyRequested = false;
+    this.historyInFlight = false;
+    const ws = new WebSocket(url);
+    this.ws = ws;
+
+    ws.onopen = () => {
+      if (this.disposed) return;
+      this.reconnectAttempts = 0;
+      this.updateStatus('connected');
+      if (!this.historyRequested) {
+        this.historyRequested = true;
+        this.requestHistory();
+      }
+    };
+
+    ws.onmessage = (event) => {
+      if (typeof event.data !== 'string') return;
+      this.handleMessage(event.data);
+    };
+
+    ws.onerror = () => {
+      logger.warn(`[embedded-agent] ws error ${this.sessionId}:${this.workerId}`);
+    };
+
+    ws.onclose = (event) => {
+      if (this.disposed) return;
+      this.ws = null;
+      this.historyInFlight = false;
+      this.updateStatus('disconnected');
+      if (this.noReconnect) return;
+      if (!shouldReconnect(event.code)) return;
+      this.scheduleReconnect();
+    };
+  }
+
+  /** Force a fresh WS connection (used by restart() and retry()). */
+  private reconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.closeWs();
+    this.updateStatus('connecting');
+    this.connect();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.disposed) return;
+    if (this.noReconnect) return;
+    if (this.reconnectAttempts >= timings.maxReconnectAttempts) return;
+    const delay = timings.reconnectDelayMs ?? getReconnectDelay(this.reconnectAttempts);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.updateStatus('connecting');
+      this.connect();
+    }, delay);
+  }
+
+  private closeWs(): void {
+    if (!this.ws) return;
+    this.ws.onopen = null;
+    this.ws.onmessage = null;
+    this.ws.onerror = null;
+    this.ws.onclose = null;
+    try {
+      this.ws.close();
+    } catch {
+      // ignore
+    }
+    this.ws = null;
+  }
+
+  private send(message: EmbeddedAgentSendMessage): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    this.ws.send(JSON.stringify(message));
+  }
+
+  private requestHistory(): void {
+    this.requestedFromOffset = this.lastOffset;
+    this.historyInFlight = true;
+    this.patch({ loadingHistory: true });
+    this.send({ type: 'request-history', fromOffset: this.lastOffset });
+  }
+
+  // --- Server -> client message handling ---
+
+  private handleMessage(raw: string): void {
+    let message: WorkerServerMessage;
+    try {
+      message = JSON.parse(raw) as WorkerServerMessage;
+    } catch {
+      return;
+    }
+    if (!message || typeof message.type !== 'string') return;
+    if (!(message.type in WORKER_SERVER_MESSAGE_TYPES)) return;
+
+    switch (message.type) {
+      case 'history':
+        this.historyInFlight = false;
+        if (!this.acceptEpoch(message.epoch)) break;
+        this.applyBytes(message.data, message.offset, message.startOffset);
+        break;
+      case 'output':
+        if (!this.acceptEpoch(message.epoch)) break;
+        this.applyBytes(message.data, message.offset, undefined);
+        break;
+      case 'activity':
+        this.patch({ activityState: message.state });
+        break;
+      case 'error':
+        this.handleError(message.message, message.code);
+        break;
+      // 'history-range': no UI trigger requests older ranges for embedded-agent
+      // in v1 (no scroll-up paging over chat history); silently ignored if a
+      // stray response ever arrives.
+      // 'exit': PTY-only in practice -- the server represents subprocess exit
+      // via a server-authored `exited` NDJSON row instead (the socket itself
+      // stays open). Ignored defensively if it ever arrives.
+      // 'server-restarted': embedded-agent workers rely on the epoch-mismatch
+      // mechanism instead (see acceptEpoch); no explicit push is sent.
+    }
+  }
+
+  /**
+   * Epoch gate, same semantics as terminal-store's `acceptEpoch`: every
+   * activation mints a fresh epoch and truncates the output stream (v1 has
+   * no revive path), so a LARGER epoch than recorded means the worker
+   * restarted server-side and the accumulated chat state must be dropped and
+   * re-fetched from scratch. A SMALLER epoch is a straggler from a
+   * superseded incarnation and is dropped without resetting anything.
+   */
+  private acceptEpoch(epoch: number | undefined): boolean {
+    if (typeof epoch !== 'number') return true;
+    if (this.epoch === null) {
+      this.epoch = epoch;
+      return true;
+    }
+    if (epoch === this.epoch) return true;
+    if (epoch < this.epoch) return false;
+    this.beginEpochReset(epoch);
+    return false;
+  }
+
+  private beginEpochReset(newEpoch: number): void {
+    this.resetChatState();
+    this.epoch = newEpoch;
+    this.lastOffset = 0;
+    if (!this.historyInFlight) {
+      this.requestHistory();
+    }
+  }
+
+  private resetChatState(): void {
+    this.splitter = new NdjsonLineSplitter();
+    this.openAssistantIndexByTurnId.clear();
+    this.toolCallIndexByCallId.clear();
+    this.patch({ entries: [] });
+  }
+
+  /**
+   * Apply a chunk of history/output bytes: split into complete NDJSON lines
+   * (carrying a partial trailing line across chunks via the shared
+   * splitter), parse + fold each into the chat view-model.
+   *
+   * `startOffset` is present on `history` responses and absent on `output`.
+   * A history response whose window does not start exactly where we asked
+   * (server evicted/pruned, or this is a resync's fresh load) is a FRESH
+   * load: the accumulated entries are dropped before folding.
+   */
+  private applyBytes(data: string, offset: number, startOffset: number | undefined): void {
+    const isFresh =
+      typeof startOffset === 'number' ? startOffset !== this.requestedFromOffset : false;
+    if (isFresh) {
+      this.resetChatState();
+    }
+    this.lastOffset = offset;
+    const { lines } = this.splitter.push(data);
+    let changed = false;
+    for (const line of lines) {
+      if (line.length === 0) continue;
+      if (this.foldLine(line)) changed = true;
+    }
+    if (changed || isFresh) {
+      this.patch({ loadingHistory: false, entries: [...this.snapshot.entries] });
+    } else {
+      this.patch({ loadingHistory: false });
+    }
+  }
+
+  /** Parse one NDJSON line and fold it into `this.snapshot.entries`. Returns
+   * whether the entries array was mutated. */
+  private foldLine(line: string): boolean {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      logger.warn(`[embedded-agent] malformed NDJSON line, skipping: ${line.slice(0, 200)}`);
+      return false;
+    }
+    // Client replay parser MUST use the full EmbeddedAgentStreamEventSchema
+    // union (loop events + server-authored user-message/exited), never the
+    // loop-only EmbeddedAgentEventSchema -- parsing with the narrower schema
+    // would silently drop every server-authored row from replayed history.
+    // See docs/design/embedded-agent-worker.md "WebSocket & client protocol".
+    const result = v.safeParse(EmbeddedAgentStreamEventSchema, parsed);
+    if (!result.success) {
+      logger.warn('[embedded-agent] unrecognized/invalid NDJSON event, skipping', { line: line.slice(0, 200) });
+      return false;
+    }
+    return this.foldEvent(result.output);
+  }
+
+  private foldEvent(event: EmbeddedAgentStreamEvent): boolean {
+    switch (event.type) {
+      case 'ready':
+        // No rendering; init handshake completed.
+        return false;
+      case 'state':
+        // Activity is driven by the separate WorkerServerMessage {type:
+        // 'activity'} envelope, not this NDJSON row -- see the WS routing
+        // layer's broadcastActivity. Recognized-but-not-rendered, not an
+        // unknown type: no warning.
+        return false;
+      case 'assistant-delta':
+        this.appendAssistant(event.turnId, event.text, null);
+        return true;
+      case 'assistant-message':
+        this.appendAssistant(event.turnId, null, event.text);
+        return true;
+      case 'tool-call':
+        this.pushToolCall(event.turnId, event.callId, event.name, event.args);
+        return true;
+      case 'tool-result':
+        return this.applyToolResult(event.callId, { ok: event.ok, result: event.result });
+      case 'turn-error':
+        this.pushEntry({
+          key: `turn-error-${event.turnId}-${this.entryKeyCounter++}`,
+          kind: 'turn-error',
+          turnId: event.turnId,
+          message: event.message,
+        });
+        return true;
+      case 'fatal':
+        this.pushEntry({ key: `fatal-${this.entryKeyCounter++}`, kind: 'fatal', message: event.message });
+        return true;
+      case 'user-message':
+        this.pushEntry({ key: `user-${event.id}`, kind: 'user-message', id: event.id, text: event.text });
+        return true;
+      case 'exited':
+        this.pushEntry({ key: `exited-${this.entryKeyCounter++}`, kind: 'exited', code: event.code });
+        return true;
+      default: {
+        const _exhaustive: never = event;
+        return _exhaustive;
+      }
+    }
+  }
+
+  private pushEntry(entry: EmbeddedAgentChatEntry): void {
+    this.snapshot.entries.push(entry);
+  }
+
+  /**
+   * Accumulate delta text and/or finalize the current OPEN assistant-message
+   * entry for `turnId`. A turn can produce multiple assistant messages
+   * across successive tool-use iterations sharing the same `turnId`; once an
+   * entry is finalized (streaming: false) its slot is cleared from the open
+   * index so the next delta for the same turnId starts a fresh entry rather
+   * than reopening the finalized one.
+   *
+   * Entries are replaced (never mutated in place) so consumers that memoize
+   * per-entry by object reference (e.g. `React.memo`) re-render correctly on
+   * every delta/finalize.
+   */
+  private appendAssistant(turnId: string, delta: string | null, final: string | null): void {
+    const idx = this.openAssistantIndexByTurnId.get(turnId);
+    if (idx === undefined) {
+      const entry: EmbeddedAgentChatEntry = {
+        key: `assistant-${turnId}-${this.entryKeyCounter++}`,
+        kind: 'assistant-message',
+        turnId,
+        text: final ?? delta ?? '',
+        streaming: final === null,
+      };
+      this.snapshot.entries.push(entry);
+      if (final === null) {
+        this.openAssistantIndexByTurnId.set(turnId, this.snapshot.entries.length - 1);
+      }
+      return;
+    }
+    const existing = this.snapshot.entries[idx];
+    if (existing.kind !== 'assistant-message') return;
+    const text = final !== null ? final : existing.text + (delta ?? '');
+    const streaming = final === null;
+    this.snapshot.entries[idx] = { ...existing, text, streaming };
+    if (final !== null) this.openAssistantIndexByTurnId.delete(turnId);
+  }
+
+  private pushToolCall(turnId: string, callId: string, name: string, args: unknown): void {
+    const entry: EmbeddedAgentChatEntry = {
+      key: `tool-${callId}`,
+      kind: 'tool-call',
+      turnId,
+      callId,
+      name,
+      args,
+      result: null,
+    };
+    this.snapshot.entries.push(entry);
+    this.toolCallIndexByCallId.set(callId, this.snapshot.entries.length - 1);
+  }
+
+  private applyToolResult(callId: string, result: EmbeddedAgentToolResult): boolean {
+    const idx = this.toolCallIndexByCallId.get(callId);
+    if (idx === undefined) {
+      // Defensive: a tool-result without a matching tool-call violates the
+      // documented protocol invariant. Log and drop rather than fabricate a
+      // placeholder card.
+      logger.warn(`[embedded-agent] tool-result for unknown callId, skipping: ${callId}`);
+      return false;
+    }
+    const existing = this.snapshot.entries[idx];
+    if (existing.kind !== 'tool-call') return false;
+    this.snapshot.entries[idx] = { ...existing, result };
+    return true;
+  }
+
+  private handleError(message: string, code?: WorkerErrorCode): void {
+    this.patch({ workerError: { message, code } });
+    if (code === 'SESSION_DELETED' || code === 'SESSION_PAUSED') {
+      this.noReconnect = true;
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+    }
+  }
+
+  // --- Snapshot helpers ---
+
+  private updateStatus(status: EmbeddedAgentConnectionStatus): void {
+    this.patch({ status });
+  }
+
+  private patch(partial: Partial<EmbeddedAgentSnapshot>): void {
+    this.snapshot = { ...this.snapshot, ...partial, version: this.snapshot.version + 1 };
+    this.notify();
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) listener();
+  }
+}
+
+// --- Module-level registry ---
+
+const instances = new Map<string, EmbeddedAgentController>();
+
+function keyOf(sessionId: string, workerId: string): string {
+  return JSON.stringify([sessionId, workerId]);
+}
+
+function removeInstance(sessionId: string, workerId: string): void {
+  instances.delete(keyOf(sessionId, workerId));
+}
+
+export function getOrCreateEmbeddedAgentWorker(
+  sessionId: string,
+  workerId: string,
+): EmbeddedAgentInstance {
+  const key = keyOf(sessionId, workerId);
+  let instance = instances.get(key);
+  if (!instance) {
+    instance = new EmbeddedAgentController(sessionId, workerId);
+    instances.set(key, instance);
+  }
+  return instance;
+}
+
+/** @internal Test helper: dispose and clear all live instances + reset config. */
+export function _resetEmbeddedAgentWorkers(): void {
+  for (const instance of Array.from(instances.values())) {
+    instance.dispose();
+  }
+  instances.clear();
+  timings = { ...DEFAULT_TIMINGS };
+  appSubscribeImpl = subscribeApp;
+}
+
+/** @internal Test helper: override memory-management / reconnect timings. */
+export function _setTimings(partial: Partial<Timings>): void {
+  timings = { ...timings, ...partial };
+}
+
+/** @internal Test helper: inject a capturable app-WS subscribe seam. */
+export function _setAppSubscribe(impl: typeof subscribeApp): void {
+  appSubscribeImpl = impl;
+}
+
+/** @internal Test helper: read internal state for assertions. */
+export function _inspect(instance: EmbeddedAgentInstance): {
+  refCount: number;
+  disposed: boolean;
+} {
+  const c = instance as EmbeddedAgentController;
+  return { refCount: c.refCountForTest, disposed: c.disposedForTest };
+}
