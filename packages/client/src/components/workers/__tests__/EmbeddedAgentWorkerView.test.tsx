@@ -149,7 +149,7 @@ describe('EmbeddedAgentWorkerView', () => {
       fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
     });
 
-    const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+    const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0]));
     expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello agent' });
     expect((textarea as HTMLTextAreaElement).value).toBe('');
   });
