@@ -87,6 +87,33 @@ describe('bashTool', () => {
     expect(result.stdout.length).toBe(16384);
   });
 
+  it('bounds accumulation across many small chunks arriving over time, not just one large burst', async () => {
+    // `head -c 20000` above can arrive as a single 'data' event (well under the
+    // OS pipe buffer size), so it never exercises the per-chunk
+    // `stdoutBytes < OUTPUT_MAX_BYTES` guard flipping from true to false on a
+    // later chunk. This command emits 20 separate 2000-byte writes with a
+    // sleep between each, forcing 20 distinct 'data' events (~40 KiB total,
+    // well over the 16 KiB cap) spread across roughly a second. Note:
+    // `truncateToBytes` at settle() always produces the correct final 16 KiB
+    // result regardless of how much `stdout` grew internally, so this
+    // assertion alone cannot distinguish "bounded per-chunk accumulation"
+    // from "unbounded accumulation then truncated" purely from the outside --
+    // it exercises the guard's skip branch across multiple events, while the
+    // actual memory-growth bound is a property of the implementation.
+    const result = await runBash(
+      "for i in $(seq 1 20); do head -c 2000 /dev/zero | tr '\\0' 'x'; sleep 0.05; done",
+      { cwd: locationPath, env: buildBashEnv(), timeoutMs: 5000 },
+    );
+
+    expect(result.stdout.length).toBe(16384);
+  });
+
+  it('does not append "[Exit code: null]" when the process is killed by a signal instead of timing out', async () => {
+    const result = await bashTool.execute({ command: 'kill -9 $$' }, { locationPath });
+
+    expect(result.result).not.toContain('Exit code: null');
+  });
+
   it('does not leak AGENT_CONSOLE_*-prefixed env vars (or their values) into the spawned command', async () => {
     const previous = process.env.AGENT_CONSOLE_MCP_TOKEN;
     process.env.AGENT_CONSOLE_MCP_TOKEN = 'secret-token-xyz';

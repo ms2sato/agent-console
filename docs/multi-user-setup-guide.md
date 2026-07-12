@@ -1060,7 +1060,7 @@ real cross-user version.
 ### Embedded-agent Bash env non-leakage check
 
 Run before claiming multi-user support for the `Bash` builtin tool
-([Built-in tools](embedded-agent-worker.md#built-in-tools-fast-follow),
+([Built-in tools](design/embedded-agent-worker.md#built-in-tools-fast-follow),
 FF-1b). Unlike the elevation check above, this smoke drives a full scripted
 turn — a stub provider requests a `Bash` tool call (`env`), the loop executes
 it as the real target OS user, and the result is fed back for a final

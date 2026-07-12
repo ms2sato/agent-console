@@ -78,16 +78,24 @@ export function runBash(command: string, opts: RunBashOptions): Promise<RunBashR
     });
 
     let stdout = '';
+    let stdoutBytes = 0;
     let stderr = '';
+    let stderrBytes = 0;
     let timedOut = false;
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString('utf-8');
+      if (stdoutBytes < OUTPUT_MAX_BYTES) {
+        stdout += chunk.toString('utf-8');
+        stdoutBytes += chunk.length;
+      }
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString('utf-8');
+      if (stderrBytes < OUTPUT_MAX_BYTES) {
+        stderr += chunk.toString('utf-8');
+        stderrBytes += chunk.length;
+      }
     });
 
     const timeoutTimer = setTimeout(() => {
@@ -154,7 +162,7 @@ export function formatBashResult(result: RunBashResult, timeoutMs: number): stri
   }
   if (result.timedOut) {
     output += `\n\n[Command timed out after ${timeoutMs}ms and was killed (process group terminated).]`;
-  } else if (result.exitCode !== 0) {
+  } else if (result.exitCode !== null && result.exitCode !== 0) {
     output += `\n\n[Exit code: ${result.exitCode}]`;
   }
   return output.length > 0 ? output : '(no output)';

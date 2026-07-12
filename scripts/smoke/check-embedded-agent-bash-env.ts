@@ -114,6 +114,16 @@ function parseStreamEventLine(line: string): ({ type: string } & Record<string, 
   return undefined;
 }
 
+/**
+ * Marks a setup/launch failure (e.g. fixture creation, definition creation,
+ * worker creation) distinct from an unexpected exception during the actual
+ * probe run. Caught separately in `main()`'s catch block so a setup failure
+ * exits `2` (per this script's documented exit-code contract) instead of
+ * being folded into `failures` and exiting `1` like a genuine assertion
+ * failure.
+ */
+class SmokeSetupError extends Error {}
+
 const failures: string[] = [];
 let passes = 0;
 const expect = (cond: boolean, label: string, detail?: string): void => {
@@ -325,7 +335,7 @@ async function main(): Promise<void> {
     if (createRes.status !== 201) {
       console.error(`PROBE FAILED: definition create returned ${createRes.status}`);
       console.error(await createRes.text());
-      throw new Error(`embedded-agent definition create returned ${createRes.status}`);
+      throw new SmokeSetupError(`embedded-agent definition create returned ${createRes.status}`);
     }
     const createBody = (await createRes.json()) as { embeddedAgent: { id: string } };
     const embeddedAgentId = createBody.embeddedAgent.id;
@@ -342,7 +352,7 @@ async function main(): Promise<void> {
       embeddedAgentId,
     });
     if (!worker) {
-      throw new Error('createWorker returned null');
+      throw new SmokeSetupError('createWorker returned null');
     }
     workerId = worker.id;
 
@@ -496,8 +506,14 @@ async function main(): Promise<void> {
       await new Promise((r) => setTimeout(r, 200));
     }
   } catch (err) {
-    console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
-    failures.push('unexpected exception during smoke run');
+    if (err instanceof SmokeSetupError) {
+      console.error('PROBE FAILED: smoke could not run to completion (setup/launch failure)');
+      console.error(err.stack ?? err.message);
+      process.exitCode = 2;
+    } else {
+      console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
+      failures.push('unexpected exception during smoke run');
+    }
   } finally {
     console.log('==> cleanup');
     if (ctx && sessionId && workerId) {
@@ -533,6 +549,12 @@ async function main(): Promise<void> {
   }
 
   console.log();
+  if (process.exitCode === 2) {
+    // Setup/launch failure was already logged above; finally-block cleanup
+    // has already run (normal try/catch/finally ordering) by the time we
+    // reach this point.
+    process.exit(2);
+  }
   if (failures.length > 0) {
     console.error(`FAILED: ${failures.length} assertion(s) failed`);
     process.exit(1);
