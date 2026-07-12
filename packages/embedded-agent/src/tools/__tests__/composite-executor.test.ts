@@ -122,4 +122,36 @@ describe('CompositeToolExecutor', () => {
     const receivedCtx = fakeTool.executeMock.mock.calls[0][1];
     expect(receivedCtx).toEqual({ locationPath: '/some/path' });
   });
+
+  it('converts a builtin tool execute() rejection into a resolved {ok:false} outcome instead of throwing', async () => {
+    // Regression guard for the never-throws ToolExecutor contract (see mcp.ts
+    // McpToolClient.callTool's own try/catch). AgentLoop.runTurn calls
+    // executor.callTool() with no surrounding try/catch of its own, trusting
+    // that contract; a builtin path that throws (e.g. resolveConfinedPath's
+    // fsPromises.realpath rejecting on ENOENT/EACCES) must not propagate.
+    const throwingTool = makeBuiltinTool('Read');
+    throwingTool.execute = mock(async () => {
+      throw new Error('locationPath vanished (ENOENT)');
+    });
+    const mcpCallTool = mock(async (): Promise<ToolCallOutcome> => ({ ok: true, result: 'mcp' }));
+    const mcp = makeMcpStub([], mcpCallTool);
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [throwingTool],
+      ctx: { locationPath: '/work' },
+    });
+
+    const signal = new AbortController().signal;
+    let result: ToolCallOutcome;
+    try {
+      result = await composite.callTool('Read', {}, signal);
+    } catch {
+      throw new Error(
+        'composite.callTool() must not throw for a builtin execute() rejection; it must resolve with {ok:false}',
+      );
+    }
+
+    expect(result).toEqual({ ok: false, result: 'locationPath vanished (ENOENT)' });
+    expect(mcpCallTool).not.toHaveBeenCalled();
+  });
 });

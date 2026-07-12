@@ -40,7 +40,11 @@ export class CompositeToolExecutor implements ToolExecutor {
   async callTool(name: string, args: unknown, signal: AbortSignal): Promise<ToolCallOutcome> {
     const builtin = this.deps.builtins.find((t) => t.name === name);
     if (builtin) {
-      return builtin.execute(args, this.deps.ctx);
+      try {
+        return await builtin.execute(args, this.deps.ctx);
+      } catch (err) {
+        return { ok: false, result: err instanceof Error ? err.message : String(err) };
+      }
     }
     return this.deps.mcp.callTool(name, args, signal);
   }
