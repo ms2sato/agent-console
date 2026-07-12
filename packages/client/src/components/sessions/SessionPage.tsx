@@ -524,15 +524,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         <div role="tablist" aria-label="Worker tabs" className="flex items-center overflow-x-auto scrollbar-hide" onKeyDown={handleTabKeyDown}>
           {tabButtons}
         </div>
-        <button
-          onClick={addTerminalTab}
-          className="px-3 py-2 text-gray-400 hover:text-white hover:bg-slate-700"
-          title="Add shell tab"
-          aria-label="Add shell tab"
-        >
-          +
-        </button>
-        <AddAgentWorkerMenu onSelect={addAgentTab} />
+        <AddAgentWorkerMenu onSelect={addAgentTab} onSelectShell={addTerminalTab} />
 
         {/* Spacer */}
         <div className="flex-1" />

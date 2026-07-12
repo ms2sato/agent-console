@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, cleanup, waitFor } from '@testing-library/react';
+import { screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
@@ -63,7 +63,9 @@ describe('AddAgentWorkerMenu', () => {
     };
     const onSelect = mock(async () => {});
 
-    await renderWithRouter(<AddAgentWorkerMenu onSelect={onSelect} />);
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
 
@@ -81,7 +83,9 @@ describe('AddAgentWorkerMenu', () => {
     };
     embeddedAgentsResponse = { embeddedAgents: [] };
 
-    await renderWithRouter(<AddAgentWorkerMenu onSelect={async () => {}} />);
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
 
@@ -99,7 +103,9 @@ describe('AddAgentWorkerMenu', () => {
   it('clicking the empty-state "Create one" link closes the menu', async () => {
     embeddedAgentsResponse = { embeddedAgents: [] };
 
-    await renderWithRouter(<AddAgentWorkerMenu onSelect={async () => {}} />);
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
 
@@ -123,7 +129,9 @@ describe('AddAgentWorkerMenu', () => {
       ],
     };
 
-    await renderWithRouter(<AddAgentWorkerMenu onSelect={async () => {}} />);
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
 
@@ -148,7 +156,9 @@ describe('AddAgentWorkerMenu', () => {
     };
     const onSelect = mock(async () => {});
 
-    await renderWithRouter(<AddAgentWorkerMenu onSelect={onSelect} />);
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
 
@@ -166,7 +176,9 @@ describe('AddAgentWorkerMenu', () => {
     };
     const onSelect = mock(async () => {});
 
-    await renderWithRouter(<AddAgentWorkerMenu onSelect={onSelect} />);
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={onSelect} onSelectShell={async () => {}} />,
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
 
@@ -181,12 +193,63 @@ describe('AddAgentWorkerMenu', () => {
   });
 
   it('shows "No agents configured" when both registries are empty', async () => {
-    await renderWithRouter(<AddAgentWorkerMenu onSelect={async () => {}} />);
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
 
     await waitFor(() => {
       expect(screen.getByText('No agents configured.')).toBeTruthy();
     });
+  });
+
+  it('shows a "Shell" item as the first item, with a distinct "Shell" badge, regardless of loading/empty state', async () => {
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+    const menu = screen.getByRole('menu');
+    const menuItems = within(menu).getAllByRole('menuitem');
+    expect(menuItems[0].textContent).toContain('Shell');
+
+    const badges = within(menu).getAllByText('Shell');
+    expect(badges.length).toBeGreaterThan(0);
+  });
+
+  it('shows the "Shell" item first even while agents/embedded-agents queries are loading', async () => {
+    // Never-resolving fetch keeps the queries in the loading state indefinitely.
+    globalThis.fetch = Object.assign(
+      mock(() => new Promise<Response>(() => {})),
+      { preconnect: originalFetch.preconnect },
+    );
+
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+    const menu = screen.getByRole('menu');
+    expect(within(menu).getByRole('menuitem', { name: /Shell/ })).toBeTruthy();
+    expect(within(menu).getByText('Loading...')).toBeTruthy();
+  });
+
+  it('clicking the "Shell" item closes the menu and calls onSelectShell', async () => {
+    const onSelectShell = mock(async () => {});
+
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={onSelectShell} />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+    const menu = screen.getByRole('menu');
+    await user.click(within(menu).getByRole('menuitem', { name: /Shell/ }));
+
+    expect(onSelectShell).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });
