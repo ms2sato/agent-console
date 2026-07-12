@@ -317,6 +317,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
             }}
             onKeyDown={handleKeyDown}
             onPaste={handlePaste}
+            aria-label="Message input"
             placeholder="Send message to worker... (Ctrl+Enter to send)"
             rows={1}
             className="w-full bg-slate-700 text-white text-sm rounded px-2 py-1 border border-slate-600 placeholder-gray-500 resize-none overflow-y-auto"

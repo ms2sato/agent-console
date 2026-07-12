@@ -75,10 +75,11 @@ describe('EmbeddedAgentWorkerView', () => {
     ).toBeTruthy();
   });
 
-  it('mounts MessagePanel with the shared placeholder', () => {
+  it('mounts MessagePanel with an accessible name for the message input', () => {
     renderView({ sessionId: 's1b', workerId: 'w1b' });
 
     expect(screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Message input' })).toBeTruthy();
   });
 
   it('gates sending (not the textarea) while a turn is active, and still shows Cancel', async () => {
