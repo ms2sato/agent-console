@@ -3,9 +3,10 @@ import { BUILTIN_TOOLS, resolveEnabledBuiltinTools } from '../index.js';
 import { readTool } from '../read.js';
 import { globTool } from '../glob.js';
 import { grepTool } from '../grep.js';
+import { bashTool } from '../bash.js';
 
 describe('resolveEnabledBuiltinTools', () => {
-  it('resolves the default read-only set when enabledTools is undefined', () => {
+  it('resolves the default read-only set when enabledTools is undefined (Bash stays off by default)', () => {
     const result = resolveEnabledBuiltinTools(undefined);
     expect(result).toEqual([readTool, globTool, grepTool]);
   });
@@ -20,15 +21,17 @@ describe('resolveEnabledBuiltinTools', () => {
     expect(result).toEqual([grepTool]);
   });
 
-  it('resolves Bash to zero tools — no registry entry yet (FF-1b will add one)', () => {
-    // This test intentionally asserts the CURRENT "inert" behavior: selecting
-    // Bash today is a no-op. A future FF-1b PR that registers a bashTool
-    // must update this assertion, not leave it silently passing either way.
+  it('resolves Bash to the bashTool now that FF-1b registered it', () => {
     const result = resolveEnabledBuiltinTools(['Bash']);
-    expect(result).toEqual([]);
+    expect(result).toEqual([bashTool]);
+  });
+
+  it('resolves all four tools when explicitly enabled in order', () => {
+    const result = resolveEnabledBuiltinTools(['Read', 'Glob', 'Grep', 'Bash']);
+    expect(result).toEqual([readTool, globTool, grepTool, bashTool]);
   });
 
   it('BUILTIN_TOOLS contains exactly the implemented tools in registry order', () => {
-    expect(BUILTIN_TOOLS).toEqual([readTool, globTool, grepTool]);
+    expect(BUILTIN_TOOLS).toEqual([readTool, globTool, grepTool, bashTool]);
   });
 });

@@ -219,8 +219,7 @@ export function EmbeddedAgentForm({
                   ))}
                 </div>
                 <p className="text-xs text-amber-500 mt-1">
-                  Not yet available -- ships in a follow-up (FF-1b). Checking this box has no
-                  effect until then.
+                  Runs arbitrary shell commands as the session user.
                 </p>
               </div>
             </div>

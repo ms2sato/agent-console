@@ -1,6 +1,6 @@
 /**
- * Registry of builtin subprocess-local tools (Read/Glob/Grep in FF-1a; Bash is
- * a valid tool name but has no implementation until FF-1b).
+ * Registry of builtin subprocess-local tools (Read/Glob/Grep in FF-1a; Bash in
+ * FF-1b).
  */
 
 import type { EmbeddedAgentToolName } from '@agent-console/shared';
@@ -9,6 +9,7 @@ import type { BuiltinTool } from './types.js';
 import { readTool } from './read.js';
 import { globTool } from './glob.js';
 import { grepTool } from './grep.js';
+import { bashTool } from './bash.js';
 
 // Re-exported so existing consumers (composite-executor.ts, main.ts, test
 // files) keep importing these types from './index.js' / '../index.js'
@@ -17,12 +18,11 @@ import { grepTool } from './grep.js';
 export type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 
 /**
- * Registry of IMPLEMENTED builtin tools. `Bash` is a valid
- * `EmbeddedAgentToolName` (enum lands in FF-1a for schema/migration/UI
- * atomicity) but has no entry here yet — its implementation ships in FF-1b.
- * Selecting it in `enabledTools` is a currently-inert no-op until then.
+ * Registry of IMPLEMENTED builtin tools. `Bash` stays OFF by default (see
+ * `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` in @agent-console/shared) — a
+ * definition must opt in explicitly via `enabledTools`.
  */
-export const BUILTIN_TOOLS: readonly BuiltinTool[] = [readTool, globTool, grepTool];
+export const BUILTIN_TOOLS: readonly BuiltinTool[] = [readTool, globTool, grepTool, bashTool];
 
 const BUILTIN_TOOLS_BY_NAME = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
 

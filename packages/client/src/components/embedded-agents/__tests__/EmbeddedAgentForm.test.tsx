@@ -197,12 +197,12 @@ describe('EmbeddedAgentForm', () => {
       ).toBeTruthy();
     });
 
-    it('should show an amber "not yet available" warning associated with the Bash checkbox group', () => {
+    it('should show an amber danger warning associated with the Bash checkbox group', () => {
       renderEmbeddedAgentForm();
 
-      const warning = screen.getByText(/Not yet available/);
+      const warning = screen.getByText(/Runs arbitrary shell commands/);
       expect(warning).toBeTruthy();
-      expect(warning.textContent).toContain('FF-1b');
+      expect(warning.textContent).toContain('as the session user');
       expect(warning.className).toContain('amber');
 
       const bashCheckbox = screen.getByRole('checkbox', { name: 'Bash' });

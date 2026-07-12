@@ -437,7 +437,7 @@ Semantics:
 
 The undefined→default resolution happens **in the subprocess** (`resolveEnabledBuiltinTools`, `packages/embedded-agent/src/tools/index.ts`), not on the server, because the merge with MCP tools already happens there. The server forwards the definition's raw `enabledTools` unchanged (including `undefined`) in the `init` command.
 
-`Bash` is enumerated in `EMBEDDED_AGENT_TOOL_NAMES` starting in FF-1a — so the schema, migration, and UI land atomically instead of needing a second migration round — but has **no registry entry** until FF-1b ships. Selecting it in `enabledTools` is a currently-inert no-op (`resolveEnabledBuiltinTools(['Bash'])` returns `[]`).
+`Bash` is enumerated in `EMBEDDED_AGENT_TOOL_NAMES` starting in FF-1a — so the schema, migration, and UI land atomically instead of needing a second migration round. Its registry entry lands in FF-1b: `resolveEnabledBuiltinTools(['Bash'])` now returns the real `bashTool`. `Bash` still stays OFF by default (`DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` is unchanged) — a definition must opt in explicitly.
 
 **Persistence.** New nullable `embedded_agents.enabled_tools TEXT` column (JSON array string; `NULL` ↔ `undefined`, `'[]'` ↔ `[]`, `'["Read","Glob"]'` ↔ `['Read','Glob']`). PATCH semantics on `UpdateEmbeddedAgentRequestSchema` follow the same convention as the sibling optional fields: `enabledTools: null` resets to `undefined` (default), `undefined` (key absent) means no change, an explicit array replaces.
 
@@ -462,7 +462,23 @@ This is a **process-boundary floor**, not OS-level sandboxing — a determined t
 
 All three: an empty match set is a successful, non-error result (`{ ok: true, result: '' }`) — "no matches" is not a tool failure.
 
-`Bash` / `Write` / `Edit` implementations are FF-1b / FF-1c scope; this section grows as they land.
+### `Bash` (FF-1b)
+
+| Tool | Args | Behavior |
+|---|---|---|
+| `Bash` | `{ command: string; timeout?: number; description?: string }` | Runs `sh -c <command>` (`packages/embedded-agent/src/tools/bash.ts`). `timeout` is optional milliseconds, clamped to `[1, 600000]`, default `120000`. `description` is accepted (matches Claude Code's shape, used for UI/logging elsewhere) but not otherwise consumed by the tool itself. |
+
+**Execution model.** `runBash` spawns via `node:child_process`'s `spawn('sh', ['-c', command], { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })`, with `cwd = locationPath` (the same process-boundary confinement the FF-1a tools get for free — see [Subprocess-local execution](#built-in-tools-fast-follow) above) and `env` built by `buildBashEnv()` (`packages/embedded-agent/src/tools/env-cleaner.ts`): a copy of the loop subprocess's own `process.env` with every `AGENT_CONSOLE_*`-prefixed key stripped. This strip matters because the loop's own env may carry server-context variables — when the server spawns the loop in single-user / non-elevated mode, `spawnAsUser`'s non-elevated branch inherits the full parent `process.env` unchanged, so nothing upstream of the Bash tool has already filtered them out.
+
+**Process-group kill on timeout.** `detached: true` makes the spawned `sh` its own process-group leader. On timeout, the ENTIRE process group is signaled — `process.kill(-pid, 'SIGTERM')` (note the negative pid), then, after a 2 s grace period, `process.kill(-pid, 'SIGKILL')` for anything still alive. This is what kills backgrounded/detached grandchildren (e.g. `nohup foo &` inside a non-interactive `sh -c` script, where job control is off and `&` does not fork a new pgid) along with the shell itself, rather than leaving them orphaned after the tool call returns.
+
+**Output truncation (two layers).** `runBash` independently truncates `stdout` and `stderr` to 16 KiB each via the shared `truncateToBytes` helper before they are formatted into the single result string. This is separate from — and in addition to — the agent loop's own central 256 KiB truncation of the full formatted `tool-result` payload (see [The loop's turn cycle](#the-loops-turn-cycle)): the Bash-specific 16 KiB-per-stream cap keeps a single noisy command from dominating the turn's context budget, while the loop's central cap is the wire-protocol-level backstop shared by every tool.
+
+**`ok` semantics are deliberate.** `result.ok` reflects timeout or spawn-error only — NOT the shell command's exit code. A command that runs to completion with a non-zero exit code is still `{ ok: true, ... }`, with `[Exit code: N]` appended to the formatted output for the model to see. This differs from what a reader might assume ("failed command = tool failure"): a failing shell command is normal, useful information for the model to reason about (e.g. `grep` returning 1 for "no match", a build script failing on a genuinely broken build), not an infrastructure failure of the tool call itself. Only `timedOut` or a spawn error (`ENOENT`, permission failure) sets `ok: false`.
+
+`Bash` stays OFF by default (`DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` unchanged) — opt-in only, via `enabledTools`, per [`enabledTools` policy](#enabledtools-policy) above.
+
+`Write` / `Edit` implementations are FF-1c scope; this section grows further as they land.
 
 ## Server-side management (`EmbeddedAgentWorkerService`)
 
@@ -643,6 +659,7 @@ Per `test-trigger.md` placements (sibling `__tests__/`), TDD polarity discipline
 - **Integration** (`packages/integration/src/`): the Q10 wire test — a session containing a `EmbeddedAgentWorker` serializes over the app WS and parses through `WorkerSchema` with `embeddedAgentId`/`activated` intact; plus a worker-WS test: connect, receive history bytes, parse NDJSON, reconnect with offset and receive only the tail.
 - **E2E (shipping path, mandatory before "done")**: with a local stub OpenAI-compatible HTTP fixture (scripted responses incl. one tool call), drive the real flow — create a `EmbeddedAgentDefinition` via REST, add a embedded-agent worker, send a message from the UI/WS client, observe the tool call hit the real MCP server with the bearer token and the result render. A PTY-byte-probe-style shortcut does not count (`workflow.md` mechanism-probe rule).
 - **Smoke (multi-user, before claiming multi-user support)**: `scripts/smoke/check-embedded-agent-elevation.ts`, importing the production spawn helper (never replicating argv), spawning as a real second user, asserting: loop starts (bun resolvable on the target user's login PATH), `init` handshake completes, and — negative assertions — the MCP token / provider key appear in neither `/proc/<pid>/cmdline` nor `/proc/<pid>/environ`. Exit codes 0/1/2 per `os-environment-coupling.md`; documented in the multi-user setup guide.
+- **Smoke (multi-user Bash env non-leakage, FF-1b, before claiming `Bash` support)**: `scripts/smoke/check-embedded-agent-bash-env.ts`, driving a real scripted turn (stub provider returns a `Bash` tool call for `env`, then a final answer) through a definition with `enabledTools: ['Bash']`, spawning as a real second user. Asserts the Bash tool's `env` output shows `USER=`/`LOGNAME=` equal to the target user (proves the tool ran as the target OS user under real elevation), and — negative assertions — no `AGENT_CONSOLE_*`-prefixed env var nor the provider API key appears in that output. Exit codes 0/1/2 per `os-environment-coupling.md`; documented in the multi-user setup guide.
 
 ## Implementation plan (phases)
 

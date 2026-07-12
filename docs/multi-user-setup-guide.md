@@ -1057,6 +1057,46 @@ server user) — this still exercises everything except the actual OS-boundary
 crossing, useful for a quick non-elevated sanity check before running the
 real cross-user version.
 
+### Embedded-agent Bash env non-leakage check
+
+Run before claiming multi-user support for the `Bash` builtin tool
+([Built-in tools](embedded-agent-worker.md#built-in-tools-fast-follow),
+FF-1b). Unlike the elevation check above, this smoke drives a full scripted
+turn — a stub provider requests a `Bash` tool call (`env`), the loop executes
+it as the real target OS user, and the result is fed back for a final
+answer:
+
+```bash
+sudo -u agentconsole bun scripts/smoke/check-embedded-agent-bash-env.ts <target-user>
+```
+
+What it verifies:
+
+- The `Bash` tool actually runs as the real target OS user — the captured
+  `env` output's `USER=`/`LOGNAME=` line matches `<target-user>`, not the
+  server-process user.
+- Negative: no `AGENT_CONSOLE_*`-prefixed environment variable appears in the
+  captured output — proof that `buildBashEnv`'s strip
+  (`packages/embedded-agent/src/tools/env-cleaner.ts`) survives the real
+  `spawnAsUser` -> login-shell-init -> loop-subprocess -> Bash-child chain,
+  not just a direct in-process unit test call. The check is line-anchored
+  (`AGENT_CONSOLE_<KEY>=`), not a bare substring match, so it does not
+  false-positive on an ambient `SUDO_COMMAND` env var that may legitimately
+  contain the literal text "AGENT_CONSOLE_" from the elevation invocation's
+  own command line.
+- Negative: the provider's fake API key does not appear in the captured
+  output either.
+- A silently-skipped assertion (the Bash tool-result event never observed) is
+  treated as a failure, not a pass.
+
+Exit codes: `0` all assertions passed, `1` an assertion failed (the system is
+wrong), `2` bad usage or the smoke could not run (missing target-user
+argument, target user unknown, spawn-launch failure).
+
+Passing the current process user as `<target-user>` runs in a degenerate
+same-user mode where `spawnAsUser` bypasses elevation — this still exercises
+the full Bash tool-call round trip except the actual OS-boundary crossing.
+
 ## Local Multi-User Dev Mode
 
 `scripts/dev-multiuser.sh` (also runnable as `bun run dev:multiuser`) starts

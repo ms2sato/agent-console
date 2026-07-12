@@ -16,9 +16,8 @@
  * tool-name literals in the repo — every other usage must reference this
  * constant or the derived `EmbeddedAgentToolName` type, not a hardcoded list.
  *
- * `Bash` is enumerated here (needed for schema/migration/UI to land
- * atomically) but has NO implementation yet — its implementation ships in a
- * follow-up (FF-1b).
+ * `Bash`'s implementation ships in FF-1b (packages/embedded-agent/src/tools/bash.ts);
+ * it stays OFF by default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS below.
  */
 export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash'] as const;
 export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
