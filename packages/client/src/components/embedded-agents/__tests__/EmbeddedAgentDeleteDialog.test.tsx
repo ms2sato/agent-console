@@ -18,9 +18,13 @@ const embeddedAgent: EmbeddedAgentDefinition = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
-function makeReference(sessionTitle: string | undefined, workerName: string): EmbeddedAgentWorkerReference {
+function makeReference(
+  sessionTitle: string | undefined,
+  workerName: string,
+  workerId = 'worker-1'
+): EmbeddedAgentWorkerReference {
   const worker: EmbeddedAgentWorker = {
-    id: 'worker-1',
+    id: workerId,
     name: workerName,
     createdAt: '2026-01-01T00:00:00.000Z',
     type: 'embedded-agent',
@@ -72,6 +76,28 @@ describe('EmbeddedAgentDeleteDialog', () => {
 
     expect(screen.getByText(/1 worker still reference this definition/)).toBeTruthy();
     expect(screen.getByText(/"My Worker" in session "My Session"/)).toBeTruthy();
+    expect(screen.getByText(/This worker will fail to activate/)).toBeTruthy();
+    expect(screen.queryByText(/These workers will fail to activate/)).toBeNull();
+  });
+
+  it('pluralizes the reference count and the follow-up sentence when multiple workers reference the definition', () => {
+    const references = [
+      makeReference('My Session', 'Worker One', 'worker-1'),
+      makeReference('My Session', 'Worker Two', 'worker-2'),
+    ];
+
+    render(
+      <EmbeddedAgentDeleteDialog
+        embeddedAgent={embeddedAgent}
+        referencingWorkers={references}
+        onOpenChange={() => {}}
+        onConfirm={() => {}}
+      />
+    );
+
+    expect(screen.getByText(/2 workers still reference this definition/)).toBeTruthy();
+    expect(screen.getByText(/These workers will fail to activate/)).toBeTruthy();
+    expect(screen.queryByText(/This worker will fail to activate/)).toBeNull();
   });
 
   it('falls back to locationPath when the session has no title', () => {

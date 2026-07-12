@@ -51,8 +51,8 @@ export function EmbeddedAgentDeleteDialog({
             ))}
           </ul>
           <p className="mt-1">
-            These worker{referencingWorkers.length === 1 ? '' : 's'} will fail to activate after this
-            definition is deleted. The delete will still proceed if you confirm.
+            {referencingWorkers.length === 1 ? 'This worker' : 'These workers'} will fail to activate
+            after this definition is deleted. The delete will still proceed if you confirm.
           </p>
         </div>
       )}
