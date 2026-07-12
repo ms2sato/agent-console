@@ -561,13 +561,25 @@ export function TerminalView({
       releaseDangling();
     };
 
-    // Cmd/Ctrl+A while THIS view's hidden input is focused selects the TERMINAL
+    // Cmd+A while THIS view's hidden input is focused selects the TERMINAL
     // content only (scrollback + viewport = the whole rows container), not the
     // page. Gated on our OWN input element (not any textarea) so on a page with
     // multiple terminals, select-all in one never selects another's rows. No
     // input ref -> select-all disabled (safer than a wrong-instance selection).
+    //
+    // Deliberately metaKey-only, NOT ctrlKey: Ctrl+A is reserved everywhere in
+    // terminal emulator convention for the shell's readline "move to beginning
+    // of line" binding, which TerminalKeyboardInput's onKeyDown already sends
+    // as the control byte \x01. Reacting to Ctrl+A here as well caused a real
+    // regression: this handler still runs after the React keydown handler
+    // (preventDefault does not stop propagation to a separately-registered
+    // window listener). Creating a DOM Selection outside the focused hidden
+    // textarea does not blur it, but the browser silently withholds
+    // subsequent input events on it — keydown keeps firing, but
+    // textarea.value never updates, so typed characters stopped reaching
+    // the PTY after a Ctrl+A.
     const onKeyDownSelectAll = (e: KeyboardEvent) => {
-      if (e.key !== 'a' || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (e.key !== 'a' || !e.metaKey || e.shiftKey || e.altKey) return;
       if (inputRef?.current == null || document.activeElement !== inputRef.current) return;
       const sel = window.getSelection();
       if (!sel) return;
