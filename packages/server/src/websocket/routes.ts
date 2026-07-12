@@ -808,7 +808,8 @@ export async function setupWebSocketRoutes(
           // PTY. Every spec error-table row for activation failure (dangling
           // definition, dangling apiKeyRef, missing session.createdBy, ...)
           // must be user-readable in the UI and must NOT close the socket
-          // silently (architect pre-directive #2, Issue #1021).
+          // silently (see docs/design/embedded-agent-worker.md
+          // "WebSocket & client protocol").
           if (worker.type === 'embedded-agent') {
             (async () => {
               try {
