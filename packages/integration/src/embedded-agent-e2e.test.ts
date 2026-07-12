@@ -56,6 +56,8 @@ import {
 const USER_TEXT = 'list the sessions please';
 const CALL1_TEXT = 'Let me check the sessions.';
 const FINAL_ANSWER = 'Sessions listed.';
+/** Content of the real file the scripted first turn asks the builtin Read tool to read. */
+const NOTE_CONTENT = 'hello from e2e';
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -72,10 +74,14 @@ function sseEvent(obj: unknown): string {
 }
 
 /**
- * First provider turn (no role:'tool' message present): a text delta, then a
- * tool-call whose id/name land in the first delta and whose `{}` arguments are
- * split across two `data:` events for the same index (exercises accumulation),
- * then finish_reason 'tool_calls', then [DONE].
+ * First provider turn (no role:'tool' message present): a text delta, then
+ * TWO tool calls -- `list_sessions` (MCP-sourced, index 0, whose `{}`
+ * arguments are split across two `data:` events to exercise accumulation) and
+ * `Read` (builtin-sourced, index 1, delivered in a single delta) -- then
+ * finish_reason 'tool_calls', then [DONE]. Requesting both in the same turn is
+ * the proof that `CompositeToolExecutor` actually merges builtin and MCP tools
+ * over the real init -> MCP-connect -> listTools path, not just at the unit
+ * level (Issue #1042 AC).
  */
 function toolCallSse(): string {
   return (
@@ -95,6 +101,22 @@ function toolCallSse(): string {
     sseEvent({
       choices: [
         { delta: { tool_calls: [{ index: 0, function: { arguments: '}' } }] }, finish_reason: null },
+      ],
+    }) +
+    sseEvent({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              {
+                index: 1,
+                id: 'call_2',
+                function: { name: 'Read', arguments: JSON.stringify({ path: 'note.txt' }) },
+              },
+            ],
+          },
+          finish_reason: null,
+        },
       ],
     }) +
     sseEvent({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) +
@@ -296,6 +318,12 @@ describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
       realCwd = path.join(os.tmpdir(), `ac-embedded-e2e-${crypto.randomUUID()}`);
       Bun.spawnSync(['mkdir', '-p', realCwd]);
 
+      // A real file for the builtin Read tool call to read. `Bun.write` is
+      // native (like `Bun.file` used below for the /proc negative assertion)
+      // and bypasses this test process's memfs mock, so it lands on the REAL
+      // filesystem the loop subprocess reads from.
+      await Bun.write(path.join(realCwd, 'note.txt'), NOTE_CONTENT);
+
       // --- Step 2: create the embedded-agent definition through the REAL REST route ---
       // Drive it in-process via `app.fetch` (identical middleware + handler
       // chain to the served port) rather than the global `fetch`: the
@@ -407,19 +435,47 @@ describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
         },
         { label: 'tool-result ok', match: (e) => e.type === 'tool-result' && e.ok === true },
         {
+          label: 'tool-call Read (builtin)',
+          match: (e) => e.type === 'tool-call' && e.name === 'Read',
+        },
+        {
+          label: 'tool-result Read ok with note.txt content',
+          match: (e) => e.type === 'tool-result' && e.ok === true && e.result.includes(NOTE_CONTENT),
+        },
+        {
           label: 'final assistant-message',
           match: (e) => e.type === 'assistant-message' && e.text.includes(FINAL_ANSWER),
         },
         { label: 'state idle', match: (e) => e.type === 'state' && e.state === 'idle' },
       ]);
 
-      // --- Assertion: tool-result carries a non-empty result mentioning the session ---
-      const toolResult = events.find((e) => e.type === 'tool-result');
+      // --- Assertion: the MCP tool-result carries a non-empty result mentioning the session ---
+      const mcpToolCall = events.find((e) => e.type === 'tool-call' && e.name === 'list_sessions');
+      expect(mcpToolCall).toBeDefined();
+      const toolResult =
+        mcpToolCall && mcpToolCall.type === 'tool-call'
+          ? events.find((e) => e.type === 'tool-result' && e.callId === mcpToolCall.callId)
+          : undefined;
       expect(toolResult).toBeDefined();
       if (toolResult && toolResult.type === 'tool-result') {
         expect(toolResult.ok).toBe(true);
         expect(toolResult.result.length).toBeGreaterThan(0);
         expect(toolResult.result).toContain(sessionId);
+      }
+
+      // --- Assertion: the builtin Read tool-call/result round-tripped through the
+      // real subprocess -> CompositeToolExecutor -> real filesystem, not the MCP
+      // server at all (Issue #1042 AC: builtin + MCP tool in the same turn) ---
+      const readToolCall = events.find((e) => e.type === 'tool-call' && e.name === 'Read');
+      expect(readToolCall).toBeDefined();
+      const readToolResult =
+        readToolCall && readToolCall.type === 'tool-call'
+          ? events.find((e) => e.type === 'tool-result' && e.callId === readToolCall.callId)
+          : undefined;
+      expect(readToolResult).toBeDefined();
+      if (readToolResult && readToolResult.type === 'tool-result') {
+        expect(readToolResult.ok).toBe(true);
+        expect(readToolResult.result).toContain(NOTE_CONTENT);
       }
 
       // --- Assertion: the REAL bearer token from the init handshake hit /mcp ---
@@ -441,6 +497,12 @@ describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
       expect(
         (providerRequests[0].tools ?? []).some((t) => t.function?.name === 'list_sessions'),
       ).toBe(true);
+      // Both an MCP-sourced tool (list_sessions) AND a builtin-sourced tool (Read)
+      // are present in the SAME tools list sent to the provider -- proof that
+      // CompositeToolExecutor.listTools() merged both sources over the real
+      // init -> MCP-connect -> listTools path (Issue #1042 AC), not just at the
+      // CompositeToolExecutor unit-test level.
+      expect((providerRequests[0].tools ?? []).some((t) => t.function?.name === 'Read')).toBe(true);
       const secondMessages = providerRequests[1].messages ?? [];
       const toolMessage = secondMessages.find((m) => m.role === 'tool');
       expect(toolMessage).toBeDefined();

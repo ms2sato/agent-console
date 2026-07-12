@@ -317,6 +317,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 22) {
     await migrateToV22(database);
   }
+
+  if (currentVersion < 23) {
+    await migrateToV23(database);
+  }
 }
 
 /**
@@ -1355,6 +1359,32 @@ export async function migrateToV22(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 22`.execute(database);
 
   logger.info('Migration to v22 completed');
+}
+
+/**
+ * Migration v23: Add `enabled_tools` column to `embedded_agents` (FF-1a
+ * builtin-tools policy). Nullable TEXT column holding a JSON-serialized array
+ * of enabled builtin tool names; null = the default read-only set applies
+ * downstream (subprocess-side), not a specific stored default.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV23(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v23: Adding enabled_tools column to embedded_agents');
+
+  try {
+    await database.schema
+      .alterTable('embedded_agents')
+      .addColumn('enabled_tools', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column enabled_tools already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 23`.execute(database);
+
+  logger.info('Migration to v23 completed');
 }
 
 /**

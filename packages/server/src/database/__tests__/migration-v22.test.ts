@@ -63,10 +63,12 @@ describe('migration v22 (embedded-agent support)', () => {
     cleanupMemfs();
   });
 
-  it('advances the schema version to 22', async () => {
+  it('advances the schema version past v22 to the latest', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(22);
+    // initializeDatabase runs every migration; the v22 step is part of that
+    // chain and the final version is the current latest.
+    expect(versionRes.rows[0]?.user_version).toBe(23);
   });
 
   it('adds the embedded_agent_id column to workers, null for existing rows', async () => {
@@ -123,6 +125,10 @@ describe('migration v22 (embedded-agent support)', () => {
   it('is idempotent when re-applied against a v22 database', async () => {
     const db = await initializeDatabase(':memory:');
     // Re-running the migration must not throw (duplicate column / table guards).
+    // migrateToV22 unconditionally sets PRAGMA user_version = 22 at the end,
+    // so directly re-invoking it here (rather than through runMigrations)
+    // regresses the version to 22 even though initializeDatabase had already
+    // advanced it to the current latest (23).
     await expect(migrateToV22(db)).resolves.toBeUndefined();
 
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);

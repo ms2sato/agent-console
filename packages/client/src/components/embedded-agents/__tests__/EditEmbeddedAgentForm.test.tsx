@@ -92,6 +92,7 @@ const initialData: EmbeddedAgentFormData = {
   apiKeyRef: 'existing-key',
   systemPrompt: '',
   maxToolIterationsInput: '',
+  enabledTools: ['Read', 'Glob', 'Grep'],
 };
 
 describe('EditEmbeddedAgentForm', () => {
@@ -124,7 +125,31 @@ describe('EditEmbeddedAgentForm', () => {
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'existing-key' },
       systemPrompt: null,
       maxToolIterations: null,
+      enabledTools: ['Read', 'Glob', 'Grep'],
     });
+  });
+
+  it('sends the current checkbox state as an explicit enabledTools array, not a hardcoded default', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderEditEmbeddedAgentForm({
+      embeddedAgentId: 'embedded-1',
+      initialData,
+      onSuccess,
+      onCancel: () => {},
+    });
+
+    await user.click(screen.getByRole('checkbox', { name: 'Bash' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Grep' }));
+
+    await user.click(screen.getByText('Save Changes'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = (await getLastFetchBody()) as { enabledTools: string[] };
+    expect([...body.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Read']);
   });
 
   it('invalidates the embedded-agents query on success (does not rely solely on the WS broadcast)', async () => {

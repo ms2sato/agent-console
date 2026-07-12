@@ -54,6 +54,10 @@ export function EditEmbeddedAgentForm({
       },
       systemPrompt: data.systemPrompt || null,
       maxToolIterations: parseMaxToolIterations(data.maxToolIterationsInput) ?? null,
+      // Always send the explicit array the checkboxes currently represent --
+      // this form exists precisely to remove the "default vs explicit" PATCH
+      // ambiguity that null/undefined would otherwise carry.
+      enabledTools: data.enabledTools,
     });
   };
 

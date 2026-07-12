@@ -7,7 +7,12 @@ import {
   type LoopIO,
   type McpClientLike,
 } from '../main.js';
-import type { ProviderAdapter, ProviderEvent, ProviderRunRequest } from '../providers/types.js';
+import type {
+  ProviderAdapter,
+  ProviderEvent,
+  ProviderRunRequest,
+  ToolDefinition,
+} from '../providers/types.js';
 import type { ToolCallOutcome } from '../mcp.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
@@ -30,12 +35,25 @@ class StubAdapter implements ProviderAdapter {
   }
 }
 
+/** Captures every ProviderRunRequest.tools it was invoked with, for asserting
+ * what CompositeToolExecutor merged into the tools list at the process
+ * boundary (distinct from the narrower resolveEnabledBuiltinTools unit test
+ * in tools/__tests__/index.test.ts). */
+class CapturingAdapter implements ProviderAdapter {
+  readonly capturedToolsCalls: ProviderRunRequest['tools'][] = [];
+  async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+    this.capturedToolsCalls.push(req.tools);
+    yield { type: 'text-delta', text: 'hi' };
+    yield { type: 'done', finishReason: 'stop' };
+  }
+}
+
 class StubMcpClient implements McpClientLike {
   constructor(private readonly onConnect?: () => Promise<void>) {}
   async connect(): Promise<void> {
     if (this.onConnect) await this.onConnect();
   }
-  async listTools() {
+  async listTools(): Promise<ToolDefinition[]> {
     return [];
   }
   async callTool(): Promise<ToolCallOutcome> {
@@ -140,6 +158,47 @@ describe('runLoop — lifecycle', () => {
     });
     expect(await runLoop(io, factories)).toBe(1);
     expect(events.some((e) => e.type === 'fatal')).toBe(true);
+  });
+});
+
+describe('runLoop — builtin tool merging (enabledTools)', () => {
+  it('merges the default builtin tools (Read/Glob/Grep) with MCP tools when enabledTools is absent', async () => {
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedToolsCalls).toHaveLength(1);
+    const toolNames = adapter.capturedToolsCalls[0].map((t) => t.name).sort();
+    expect(toolNames).toEqual(['Glob', 'Grep', 'Read']);
+  });
+
+  it('passes ONLY the MCP tools (zero builtins) when enabledTools is an explicit empty array', async () => {
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand({ enabledTools: [] }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    class McpWithOneTool extends StubMcpClient {
+      async listTools() {
+        return [{ name: 'close_session', description: 'closes', parameters: {} }];
+      }
+    }
+    const factories = makeFactories({
+      createAdapter: () => adapter,
+      createMcpClient: () => new McpWithOneTool(),
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedToolsCalls).toHaveLength(1);
+    expect(adapter.capturedToolsCalls[0]).toEqual([
+      { name: 'close_session', description: 'closes', parameters: {} },
+    ]);
   });
 });
 

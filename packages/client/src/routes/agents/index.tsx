@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import { createFileRoute, Link } from '@tanstack/react-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import type { AgentDefinition, EmbeddedAgentDefinition } from '@agent-console/shared';
+import {
+  DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
+  type AgentDefinition,
+  type EmbeddedAgentDefinition,
+} from '@agent-console/shared';
 import { unregisterAgent, deleteEmbeddedAgent } from '../../lib/api';
 import { agentKeys, embeddedAgentKeys } from '../../lib/query-keys';
 import { useAgents } from '../../components/AgentSelector';
@@ -339,6 +343,7 @@ function EmbeddedAgentsSection() {
                   apiKeyRef: embeddedAgent.provider.apiKeyRef ?? '',
                   systemPrompt: embeddedAgent.systemPrompt ?? '',
                   maxToolIterationsInput: embeddedAgent.maxToolIterations?.toString() ?? '',
+                  enabledTools: embeddedAgent.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS.slice(),
                 }}
                 onSuccess={() => setEditingAgentId(null)}
                 onCancel={() => setEditingAgentId(null)}
