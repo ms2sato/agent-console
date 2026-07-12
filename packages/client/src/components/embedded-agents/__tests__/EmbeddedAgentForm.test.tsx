@@ -189,6 +189,14 @@ describe('EmbeddedAgentForm', () => {
       expect(formData.enabledTools).toEqual([]);
     });
 
+    it('shows the experimental-feature banner', () => {
+      renderEmbeddedAgentForm();
+
+      expect(
+        screen.getByText('Embedded Agent is an experimental feature. API and behavior may change.'),
+      ).toBeTruthy();
+    });
+
     it('should show an amber "not yet available" warning associated with the Bash checkbox group', () => {
       renderEmbeddedAgentForm();
 
@@ -240,6 +248,14 @@ describe('EmbeddedAgentForm', () => {
       expect(screen.getByDisplayValue('Be helpful')).toBeTruthy();
       expect(screen.getByDisplayValue('25')).toBeTruthy();
       expect(screen.getByText('Save Changes')).toBeTruthy();
+    });
+
+    it('shows the experimental-feature banner in edit mode too', () => {
+      renderEmbeddedAgentForm({ mode: 'edit', initialData });
+
+      expect(
+        screen.getByText('Embedded Agent is an experimental feature. API and behavior may change.'),
+      ).toBeTruthy();
     });
 
     it('should submit updated data, allowing an optional field to be cleared', async () => {
