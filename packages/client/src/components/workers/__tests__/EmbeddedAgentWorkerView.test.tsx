@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { render, screen, cleanup, act } from '@testing-library/react';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { render, screen, cleanup, act, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EmbeddedAgentWorkerView } from '../EmbeddedAgentWorkerView';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers } from '../embedded-agent-store';
@@ -13,7 +14,33 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 10));
 }
 
+// MessagePanel (now embedded via EmbeddedAgentWorkerView) always fetches
+// message templates (a feature that works identically in embedded and PTY
+// per the architect's design), so this suite needs a minimal fetch mock even
+// though slash-completion/attachments are disabled for the embedded variant.
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+}
+
+function embeddedViewFetch(input: RequestInfo | URL): Promise<Response> {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
+  if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
+  return Promise.resolve(new Response('null', { status: 404 }));
+}
+
+/** Render EmbeddedAgentWorkerView with the QueryClientProvider MessagePanel needs. */
+function renderView(props: { sessionId: string; workerId: string }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <EmbeddedAgentWorkerView {...props} />
+    </QueryClientProvider>,
+  );
+}
+
 describe('EmbeddedAgentWorkerView', () => {
+  const originalFetch = globalThis.fetch;
   let restoreWebSocket: () => void;
   let originalLocation: PropertyDescriptor | undefined;
 
@@ -26,40 +53,45 @@ describe('EmbeddedAgentWorkerView', () => {
       writable: true,
       configurable: true,
     });
+    const fetchStub: typeof fetch = Object.assign(mock(embeddedViewFetch), { preconnect: () => {} });
+    globalThis.fetch = fetchStub;
   });
 
   afterEach(() => {
     cleanup();
     _resetEmbeddedAgentWorkers();
     restoreWebSocket();
+    globalThis.fetch = originalFetch;
     if (originalLocation) {
       Object.defineProperty(window, 'location', originalLocation);
     }
   });
 
   it('always renders the persistent reset-on-restart note', () => {
-    render(<EmbeddedAgentWorkerView sessionId="s1" workerId="w1" />);
+    renderView({ sessionId: 's1', workerId: 'w1' });
 
     expect(
       screen.getByText(/Conversation resets when this worker or the server restarts/i),
     ).toBeTruthy();
   });
 
-  it('exposes an accessible name for the message input (not placeholder-only)', () => {
-    render(<EmbeddedAgentWorkerView sessionId="s1b" workerId="w1b" />);
+  it('mounts MessagePanel with an accessible name for the message input', () => {
+    renderView({ sessionId: 's1b', workerId: 'w1b' });
 
-    expect(screen.getByRole('textbox', { name: 'Message the agent' })).toBeTruthy();
+    expect(screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)')).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Message input' })).toBeTruthy();
   });
 
-  it('disables the input and shows the Cancel button while a turn is active', async () => {
-    render(<EmbeddedAgentWorkerView sessionId="s2" workerId="w2" />);
+  it('gates sending (not the textarea) while a turn is active, and still shows Cancel', async () => {
+    const user = userEvent.setup();
+    renderView({ sessionId: 's2', workerId: 'w2' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
     });
 
     expect(screen.queryByText('Cancel')).toBeNull();
-    const textarea = screen.getByPlaceholderText(/Message the agent/i) as HTMLTextAreaElement;
+    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
     expect(textarea.disabled).toBe(false);
 
     act(() => {
@@ -67,12 +99,19 @@ describe('EmbeddedAgentWorkerView', () => {
     });
     await flush();
 
-    expect((screen.getByPlaceholderText(/Waiting for the current turn to finish/i) as HTMLTextAreaElement).disabled).toBe(true);
+    // The textarea itself stays fully editable while a turn is active.
+    expect(textarea.disabled).toBe(false);
+    await user.type(textarea, 'still typing');
+    expect(textarea.value).toBe('still typing');
+
+    // Only the Send action is gated.
+    const sendButton = screen.getByText('Send') as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(true);
     expect(screen.getByText('Cancel')).toBeTruthy();
   });
 
-  it('re-enables the input and hides Cancel once activity returns to idle', async () => {
-    render(<EmbeddedAgentWorkerView sessionId="s3" workerId="w3" />);
+  it('re-enables sending and hides Cancel once activity returns to idle', async () => {
+    renderView({ sessionId: 's3', workerId: 'w3' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -87,27 +126,37 @@ describe('EmbeddedAgentWorkerView', () => {
     await flush();
 
     expect(screen.queryByText('Cancel')).toBeNull();
-    expect((screen.getByPlaceholderText(/Message the agent/i) as HTMLTextAreaElement).disabled).toBe(false);
+    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+    expect(textarea.disabled).toBe(false);
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hello' } });
+    });
+    const sendButton = screen.getByText('Send') as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(false);
   });
 
-  it('sends a message on Enter and clears the draft', async () => {
-    const user = userEvent.setup();
-    render(<EmbeddedAgentWorkerView sessionId="s4" workerId="w4" />);
+  it('sends a message on Ctrl+Enter and clears the draft', async () => {
+    renderView({ sessionId: 's4', workerId: 'w4' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
     });
 
-    const textarea = screen.getByPlaceholderText(/Message the agent/i);
-    await user.type(textarea, 'hello agent{Enter}');
+    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hello agent' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    });
 
-    const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+    const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0]));
     expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello agent' });
     expect((textarea as HTMLTextAreaElement).value).toBe('');
   });
 
   it('renders a turn-in-progress error non-fatally, with a Dismiss action, keeping entries', async () => {
-    render(<EmbeddedAgentWorkerView sessionId="s5" workerId="w5" />);
+    renderView({ sessionId: 's5', workerId: 'w5' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -137,7 +186,7 @@ describe('EmbeddedAgentWorkerView', () => {
   });
 
   it('renders an ACTIVATION_FAILED error with a Retry action instead of Dismiss', async () => {
-    render(<EmbeddedAgentWorkerView sessionId="s6" workerId="w6" />);
+    renderView({ sessionId: 's6', workerId: 'w6' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -151,7 +200,7 @@ describe('EmbeddedAgentWorkerView', () => {
   });
 
   it('renders an exited row with a Restart action that reconnects', async () => {
-    render(<EmbeddedAgentWorkerView sessionId="s7" workerId="w7" />);
+    renderView({ sessionId: 's7', workerId: 'w7' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -175,7 +224,7 @@ describe('EmbeddedAgentWorkerView', () => {
   });
 
   it('renders a tool-call card paired with its tool-result, including error styling data', async () => {
-    render(<EmbeddedAgentWorkerView sessionId="s8" workerId="w8" />);
+    renderView({ sessionId: 's8', workerId: 'w8' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -195,7 +244,7 @@ describe('EmbeddedAgentWorkerView', () => {
   });
 
   it('appends streaming assistant-delta text live', async () => {
-    render(<EmbeddedAgentWorkerView sessionId="s9" workerId="w9" />);
+    renderView({ sessionId: 's9', workerId: 'w9' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();

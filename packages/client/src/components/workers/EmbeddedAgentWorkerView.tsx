@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect } from 'react';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
 import { RefreshIcon, StopIcon, AlertCircleIcon } from '../Icons';
+import { MessagePanel } from '../sessions/MessagePanel';
 
 interface EmbeddedAgentWorkerViewProps {
   sessionId: string;
@@ -21,7 +22,6 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWo
     dismissError,
   } = useEmbeddedAgentWorker({ sessionId, workerId });
 
-  const [draft, setDraft] = useState('');
   const listRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to the newest entry. Component-scoped DOM interaction is an
@@ -33,23 +33,6 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWo
   }, [entries.length]);
 
   const isTurnActive = activityState === 'active';
-
-  const handleSend = useCallback(() => {
-    const text = draft.trim();
-    if (!text || isTurnActive) return;
-    sendUserMessage(text);
-    setDraft('');
-  }, [draft, isTurnActive, sendUserMessage]);
-
-  const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        handleSend();
-      }
-    },
-    [handleSend],
-  );
 
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
@@ -105,25 +88,17 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWo
             </button>
           )}
         </div>
-        <div className="flex items-end gap-2">
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isTurnActive}
-            placeholder={isTurnActive ? 'Waiting for the current turn to finish...' : 'Message the agent...'}
-            aria-label="Message the agent"
-            rows={2}
-            className="input flex-1 resize-none"
-          />
-          <button
-            onClick={handleSend}
-            disabled={isTurnActive || draft.trim().length === 0}
-            className="btn btn-primary text-sm"
-          >
-            Send
-          </button>
-        </div>
+        <MessagePanel
+          sessionId={sessionId}
+          targetWorkerId={workerId}
+          newMessage={null}
+          onSend={async (content) => {
+            sendUserMessage(content);
+          }}
+          slashCompletionEnabled={false}
+          attachmentsEnabled={false}
+          sendDisabled={isTurnActive}
+        />
       </div>
     </div>
   );
