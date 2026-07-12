@@ -2,7 +2,7 @@
 name: frontend-specialist
 description: Implement frontend features and fixes. Use for React components, hooks, routes, styling, and client-side logic in packages/client.
 tools: Read, Grep, Glob, Edit, Write, Bash
-model: opus
+model: sonnet
 skills: code-quality-standards, frontend-standards, test-standards
 ---
 
