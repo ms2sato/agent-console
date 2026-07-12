@@ -1,6 +1,5 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { installMockWebSocket } from '../../../test/mock-websocket';
-import { getOrCreateTerminal, _resetTerminals } from '../../../components/terminal/terminal-store';
 
 const TEST_SKILLS = [
   { name: '/commit', description: 'Create a git commit' },
@@ -11,17 +10,6 @@ const TEST_SKILLS = [
   { name: '/schedule', description: 'Manage scheduled agents' },
   { name: '/loop', description: 'Run a command on recurring interval' },
 ];
-
-const SENT_MESSAGE = {
-  id: 'msg-1',
-  sessionId: 'session-1',
-  fromWorkerId: 'user',
-  fromWorkerName: 'User',
-  toWorkerId: 'agent-1',
-  toWorkerName: 'Agent 1',
-  content: 'hello',
-  timestamp: new Date().toISOString(),
-};
 
 // --- Fetch-level API mocking (no mock.module; testing.md Anti-Pattern #2). ---
 // bun's mock.module is process-global and poisoned sibling test files (it was the
@@ -44,33 +32,7 @@ function messagePanelFetch(input: RequestInfo | URL, init?: RequestInit): Promis
   if (url.endsWith('/api/message-templates/reorder')) return Promise.resolve(jsonResponse({ success: true }));
   if (/\/api\/message-templates\/[^/]+$/.test(url) && method === 'PUT') return Promise.resolve(jsonResponse({ template: {} }));
   if (/\/api\/message-templates\/[^/]+$/.test(url) && method === 'DELETE') return Promise.resolve(jsonResponse({ success: true }));
-  if (/\/api\/sessions\/[^/]+\/messages$/.test(url) && method === 'POST') return Promise.resolve(jsonResponse({ message: SENT_MESSAGE }));
   return Promise.resolve(new Response('null', { status: 404 }));
-}
-
-/** POST /api/sessions/:id/messages calls the panel made (the sendWorkerMessage transport). */
-function sentMessageCalls(): Array<{ url: string; sessionId: string; content: string | null; toWorkerId: string | null; files: FormDataEntryValue[] }> {
-  return fetchCalls
-    .filter((c) => /\/api\/sessions\/[^/]+\/messages$/.test(c.url) && c.method === 'POST')
-    .map((c) => {
-      const fd = c.body as FormData;
-      const sessionId = c.url.match(/\/api\/sessions\/([^/]+)\/messages$/)?.[1] ?? '';
-      return { url: c.url, sessionId, content: fd.get('content') as string | null, toWorkerId: fd.get('toWorkerId') as string | null, files: fd.getAll('files') };
-    });
-}
-
-/**
- * Pre-create the session/worker terminal instance the ESC handler resolves and
- * spy its sendInput. getOrCreateTerminal is registry-keyed, so the handler's
- * later call returns this same instance — no module mock needed. The spy being
- * called with the ESC byte proves BOTH that the handler resolved this
- * session/worker AND that it sent the escape.
- */
-function installEscSpy(): ReturnType<typeof mock> {
-  const instance = getOrCreateTerminal('session-1', 'agent-1');
-  const spy = mock((_data: string) => {});
-  instance.sendInput = spy;
-  return spy;
 }
 
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
@@ -125,6 +87,18 @@ describe('MessagePanel logic', () => {
     it('should return false when files are attached but sending is true', () => {
       expect(canSend('worker1', '', true, 2)).toBe(false);
     });
+
+    it('should return true when sendDisabled is omitted (defaults to false)', () => {
+      expect(canSend('worker1', 'Hello', false, 0)).toBe(true);
+    });
+
+    it('should return false when sendDisabled is true, even with valid content', () => {
+      expect(canSend('worker1', 'Hello', false, 0, true)).toBe(false);
+    });
+
+    it('should return true when sendDisabled is explicitly false', () => {
+      expect(canSend('worker1', 'Hello', false, 0, false)).toBe(true);
+    });
   });
 
   describe('validateFiles', () => {
@@ -159,11 +133,20 @@ describe('MessagePanel logic', () => {
   });
 });
 
-const defaultProps = {
-  sessionId: 'session-1',
-  targetWorkerId: 'agent-1',
-  newMessage: null,
-};
+function makeOnSendMock() {
+  return mock(async (_content: string, _files?: File[]) => {});
+}
+
+let onSendMock: ReturnType<typeof makeOnSendMock>;
+
+function getDefaultProps() {
+  return {
+    sessionId: 'session-1',
+    targetWorkerId: 'agent-1',
+    newMessage: null,
+    onSend: onSendMock,
+  };
+}
 
 /** Wrap component with QueryClientProvider for rerender calls (RTL's rerender loses the provider tree). */
 function withProviders(queryClient: QueryClient, ui: React.ReactNode) {
@@ -174,13 +157,12 @@ describe('MessagePanel', () => {
   const originalFetch = globalThis.fetch;
   let restoreWebSocket: () => void;
   let originalLocation: PropertyDescriptor | undefined;
+  let defaultProps: ReturnType<typeof getDefaultProps>;
 
   beforeEach(() => {
     _getDraftsMap().clear();
-    // Defensive against cross-file registry leakage before installing the mock WS
-    // (the ESC tests resolve the real store); module-mock poisoning is fixed at
-    // the poisoners, this cannot defend against that.
-    _resetTerminals();
+    onSendMock = makeOnSendMock();
+    defaultProps = getDefaultProps();
     restoreWebSocket = installMockWebSocket();
     originalLocation = Object.getOwnPropertyDescriptor(window, 'location');
     Object.defineProperty(window, 'location', {
@@ -198,7 +180,6 @@ describe('MessagePanel', () => {
 
   afterEach(() => {
     cleanup();
-    _resetTerminals();
     restoreWebSocket();
     globalThis.fetch = originalFetch;
     if (originalLocation) Object.defineProperty(window, 'location', originalLocation);
@@ -241,7 +222,7 @@ describe('MessagePanel', () => {
     expect(button.disabled).toBe(true);
   });
 
-  it('Ctrl+Enter triggers send via HTTP', async () => {
+  it('Ctrl+Enter triggers send via onSend', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -253,13 +234,11 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
     });
 
-    const sent = sentMessageCalls();
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ sessionId: 'session-1', toWorkerId: 'agent-1', content: 'hello' });
-    expect(sent[0].files).toHaveLength(0);
+    expect(onSendMock).toHaveBeenCalledTimes(1);
+    expect(onSendMock.mock.calls[0]).toEqual(['hello', undefined]);
   });
 
-  it('Cmd+Enter triggers send via HTTP', async () => {
+  it('Cmd+Enter triggers send via onSend', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
 
@@ -271,10 +250,8 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true });
     });
 
-    const sent = sentMessageCalls();
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({ sessionId: 'session-1', toWorkerId: 'agent-1', content: 'hello' });
-    expect(sent[0].files).toHaveLength(0);
+    expect(onSendMock).toHaveBeenCalledTimes(1);
+    expect(onSendMock.mock.calls[0]).toEqual(['hello', undefined]);
   });
 
   it('clears content and files when targetWorkerId changes', async () => {
@@ -401,7 +378,7 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Enter' });
     });
 
-    expect(sentMessageCalls()).toHaveLength(0);
+    expect(onSendMock).not.toHaveBeenCalled();
   });
 
   it('restores draft when switching back to a previous worker', async () => {
@@ -432,9 +409,9 @@ describe('MessagePanel', () => {
     expect((textarea3 as HTMLTextAreaElement).value).toBe('draft for agent-1');
   });
 
-  it('ESC key sends escape through the terminal store for this session/worker', async () => {
-    const sendInputSpy = installEscSpy();
-    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+  it('ESC key calls the onEscape callback', async () => {
+    const onEscape = mock(() => {});
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} onEscape={onEscape} />));
     const view = within(container);
 
     const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
@@ -442,15 +419,12 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Escape' });
     });
 
-    // The spy lives on the session-1/agent-1 instance only, so its being called
-    // with the ESC byte proves the handler resolved THIS session/worker's store
-    // instance and sent the escape through it.
-    expect(sendInputSpy).toHaveBeenCalledWith('\x1b');
+    expect(onEscape).toHaveBeenCalledTimes(1);
   });
 
   it('ESC key preserves draft content in textarea', async () => {
-    const sendInputSpy = installEscSpy();
-    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const onEscape = mock(() => {});
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} onEscape={onEscape} />));
     const view = within(container);
 
     const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
@@ -462,12 +436,12 @@ describe('MessagePanel', () => {
     });
 
     expect((textarea as HTMLTextAreaElement).value).toBe('my draft');
-    expect(sendInputSpy).toHaveBeenCalledWith('\x1b');
+    expect(onEscape).toHaveBeenCalledTimes(1);
   });
 
-  it('ESC key does not trigger HTTP message send', async () => {
-    installEscSpy();
-    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+  it('ESC key does not trigger a send via onSend', async () => {
+    const onEscape = mock(() => {});
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} onEscape={onEscape} />));
     const view = within(container);
 
     const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
@@ -478,7 +452,19 @@ describe('MessagePanel', () => {
       fireEvent.keyDown(textarea, { key: 'Escape' });
     });
 
-    expect(sentMessageCalls()).toHaveLength(0);
+    expect(onSendMock).not.toHaveBeenCalled();
+  });
+
+  it('ESC key does not throw and does not send when onEscape is omitted', async () => {
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    });
+
+    expect(onSendMock).not.toHaveBeenCalled();
   });
 
   it('paste with image files adds them to file list', async () => {
@@ -559,13 +545,8 @@ describe('MessagePanel', () => {
     });
 
     // Message should be sent with exact content including all newlines
-    const sent = sentMessageCalls();
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
-      sessionId: 'session-1',
-      toWorkerId: 'agent-1',
-      content: messageWithBlankLines, // Should NOT be trimmed
-    });
+    expect(onSendMock).toHaveBeenCalledTimes(1);
+    expect(onSendMock.mock.calls[0][0]).toBe(messageWithBlankLines); // Should NOT be trimmed
   });
 
   it('preserves leading and trailing whitespace in messages', async () => {
@@ -583,13 +564,8 @@ describe('MessagePanel', () => {
     });
 
     // Message should be sent with exact content including all whitespace
-    const sent = sentMessageCalls();
-    expect(sent).toHaveLength(1);
-    expect(sent[0]).toMatchObject({
-      sessionId: 'session-1',
-      toWorkerId: 'agent-1',
-      content: messageWithWhitespace, // Should NOT be trimmed
-    });
+    expect(onSendMock).toHaveBeenCalledTimes(1);
+    expect(onSendMock.mock.calls[0][0]).toBe(messageWithWhitespace); // Should NOT be trimmed
   });
 
   describe('slash command completion', () => {
@@ -717,8 +693,8 @@ describe('MessagePanel', () => {
     });
 
     it('closes dropdown with Escape', async () => {
-      const sendInputSpy = installEscSpy();
-      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const onEscape = mock(() => {});
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} onEscape={onEscape} />));
       const view = within(container);
 
       const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
@@ -733,8 +709,9 @@ describe('MessagePanel', () => {
       });
 
       expect(view.queryByRole('listbox')).toBeNull();
-      // Escape should NOT send PTY input when dropdown was visible
-      expect(sendInputSpy).not.toHaveBeenCalled();
+      // Escape should NOT call onEscape when the dropdown was visible (it only
+      // dismisses the dropdown itself; that branch returns before onEscape).
+      expect(onEscape).not.toHaveBeenCalled();
     });
 
     it('selects command on click', async () => {
@@ -849,6 +826,218 @@ describe('MessagePanel', () => {
       const view = within(container);
 
       expect(view.queryByLabelText('Save as template')).toBeNull();
+    });
+  });
+
+  describe('onSend prop', () => {
+    it('is called with content and files when files are attached', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      const mockFile = new File(['image-data'], 'test.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: { items: [{ type: 'image/png', getAsFile: () => mockFile }] },
+        });
+      });
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      const [content, files] = onSendMock.mock.calls[0];
+      expect(content).toBe('hello');
+      expect(files).toHaveLength(1);
+      expect(files?.[0].name).toBe('test.png');
+    });
+
+    it('is called with undefined files when no files are attached', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
+      expect(onSendMock.mock.calls[0]).toEqual(['hello', undefined]);
+    });
+  });
+
+  describe('slashCompletionEnabled prop', () => {
+    it('suppresses the dropdown and skips the skills fetch when false', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} slashCompletionEnabled={false} />),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      expect(view.queryByRole('listbox')).toBeNull();
+      expect(fetchCalls.some((c) => c.url.endsWith('/api/skills'))).toBe(false);
+    });
+
+    it('shows the dropdown when omitted (defaults to true)', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: '/' } });
+      });
+
+      expect(view.getByRole('listbox')).toBeTruthy();
+    });
+  });
+
+  describe('attachmentsEnabled prop', () => {
+    it('disables the Attach button with the expected tooltip when false', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} attachmentsEnabled={false} />),
+      );
+      const view = within(container);
+
+      const attachButton = view.getByLabelText('Attach files') as HTMLButtonElement;
+      expect(attachButton.disabled).toBe(true);
+      expect(attachButton.title).toBe('Enable after Read tool ships — see #1004 FF-1a');
+    });
+
+    it('does not add a file chip on drop when false', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} attachmentsEnabled={false} />),
+      );
+
+      const mockFile = new File(['image-data'], 'dropped.png', { type: 'image/png' });
+      const dropZone = container.querySelector('.bg-slate-800') as HTMLElement;
+      await act(async () => {
+        fireEvent.drop(dropZone, { dataTransfer: { files: [mockFile] } });
+      });
+
+      expect(container.querySelector('[aria-label="Remove dropped.png"]')).toBeNull();
+    });
+
+    it('does not add a file chip on paste when false', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} attachmentsEnabled={false} />),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      const mockFile = new File(['image-data'], 'pasted.png', { type: 'image/png' });
+      await act(async () => {
+        fireEvent.paste(textarea, {
+          clipboardData: { items: [{ type: 'image/png', getAsFile: () => mockFile }] },
+        });
+      });
+
+      expect(container.querySelector('[aria-label="Remove pasted.png"]')).toBeNull();
+    });
+
+    it('leaves the Attach button enabled when omitted (defaults to true)', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const attachButton = view.getByLabelText('Attach files') as HTMLButtonElement;
+      expect(attachButton.disabled).toBe(false);
+    });
+  });
+
+  describe('sendDisabled prop', () => {
+    it('keeps the textarea editable while gating the Send button', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} sendDisabled={true} />),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+      expect(textarea.disabled).toBe(false);
+
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'still typing' } });
+      });
+      expect(textarea.value).toBe('still typing');
+
+      const sendButton = view.getByText('Send') as HTMLButtonElement;
+      expect(sendButton.disabled).toBe(true);
+    });
+
+    it('does not send on Ctrl+Enter while true', async () => {
+      const { container } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} sendDisabled={true} />),
+      );
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      await act(async () => {
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+      });
+
+      expect(onSendMock).not.toHaveBeenCalled();
+    });
+
+    it('allows sending when omitted (defaults to false)', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+
+      const sendButton = view.getByText('Send') as HTMLButtonElement;
+      expect(sendButton.disabled).toBe(false);
+    });
+  });
+
+  describe('IME composition guard', () => {
+    it('does not send when Ctrl+Enter fires during IME composition', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      await act(async () => {
+        fireEvent(
+          textarea,
+          new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: true, bubbles: true, cancelable: true }),
+        );
+      });
+
+      expect(onSendMock).not.toHaveBeenCalled();
+    });
+
+    it('sends when Ctrl+Enter fires after composition has ended', async () => {
+      const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const view = within(container);
+      const textarea = view.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'hello' } });
+      });
+      await act(async () => {
+        fireEvent(
+          textarea,
+          new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, isComposing: false, bubbles: true, cancelable: true }),
+        );
+      });
+
+      expect(onSendMock).toHaveBeenCalledTimes(1);
     });
   });
 

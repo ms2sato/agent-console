@@ -10,7 +10,8 @@ import { QuickSessionSettings } from '../QuickSessionSettings';
 import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { ErrorBoundary } from '../ui/ErrorBoundary';
 import { DiffIcon, AlertCircleIcon } from '../Icons';
-import { getSession, restartAgentWorker, resumeSession, deleteSession, openPath } from '../../lib/api';
+import { getSession, restartAgentWorker, resumeSession, deleteSession, openPath, sendWorkerMessage } from '../../lib/api';
+import { getOrCreateTerminal } from '../../components/terminal/terminal-store';
 import { isSessionOrphanedError } from './resumeErrors';
 import { formatPath } from '../../lib/path';
 import { useWorkerRouting } from './hooks/useWorkerRouting';
@@ -580,6 +581,12 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           targetWorkerId={activeTabId}
           newMessage={lastMessage}
           onError={showError}
+          onSend={async (content, files) => {
+            await sendWorkerMessage(sessionId, activeTabId, content, files);
+          }}
+          onEscape={() => {
+            getOrCreateTerminal(sessionId, activeTabId).sendInput('\x1b');
+          }}
         />
       )}
 

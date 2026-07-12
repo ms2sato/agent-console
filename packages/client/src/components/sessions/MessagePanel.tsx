@@ -2,8 +2,7 @@ import { useState, useEffect, useCallback, useRef, forwardRef, useImperativeHand
 import { useQuery } from '@tanstack/react-query';
 import type { WorkerMessage, SkillDefinition } from '@agent-console/shared';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
-import { sendWorkerMessage, fetchSkills } from '../../lib/api';
-import { getOrCreateTerminal } from '../../components/terminal/terminal-store';
+import { fetchSkills } from '../../lib/api';
 import { useDraftMessage } from '../../hooks/useDraftMessage';
 import { useMessageTemplates } from '../../hooks/useMessageTemplates';
 import { skillKeys } from '../../lib/query-keys';
@@ -15,11 +14,22 @@ interface MessagePanelProps {
   targetWorkerId: string;
   newMessage: WorkerMessage | null;
   onError?: (title: string, message: string) => void;
+  onSend: (content: string, files?: File[]) => Promise<void>;
+  onEscape?: () => void;
+  slashCompletionEnabled?: boolean;
+  attachmentsEnabled?: boolean;
+  sendDisabled?: boolean;
 }
 
 /** Determine if the send action should be enabled. */
-export function canSend(targetWorkerId: string, content: string, sending: boolean, fileCount: number): boolean {
-  return !sending && (content.trim().length > 0 || fileCount > 0) && targetWorkerId.length > 0;
+export function canSend(
+  targetWorkerId: string,
+  content: string,
+  sending: boolean,
+  fileCount: number,
+  sendDisabled = false,
+): boolean {
+  return !sending && !sendDisabled && (content.trim().length > 0 || fileCount > 0) && targetWorkerId.length > 0;
 }
 
 /** Validate file constraints before sending. Returns error [title, message] or null if valid. */
@@ -38,7 +48,17 @@ export interface MessagePanelHandle {
 }
 
 export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
-  function MessagePanel({ sessionId, targetWorkerId, newMessage, onError }, ref) {
+  function MessagePanel({
+    sessionId,
+    targetWorkerId,
+    newMessage,
+    onError,
+    onSend,
+    onEscape,
+    slashCompletionEnabled = true,
+    attachmentsEnabled = true,
+    sendDisabled = false,
+  }, ref) {
   const { content, setContent, clearDraft } = useDraftMessage(sessionId, targetWorkerId);
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
@@ -57,6 +77,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     queryKey: skillKeys.all(),
     queryFn: fetchSkills,
     staleTime: 5 * 60 * 1000, // Skills rarely change
+    enabled: slashCompletionEnabled,
   });
   const slashCommands = skillsData?.skills ?? [];
 
@@ -65,7 +86,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
   const filteredCommands = isSlashPrefix
     ? slashCommands.filter(cmd => cmd.name.toLowerCase().startsWith(content.toLowerCase()))
     : [];
-  const showCompletion = isSlashPrefix && filteredCommands.length > 0 && !completionDismissed;
+  const showCompletion = slashCompletionEnabled && isSlashPrefix && filteredCommands.length > 0 && !completionDismissed;
   // Clamp selectedIndex to valid range
   const clampedIndex = filteredCommands.length > 0
     ? Math.min(selectedIndex, filteredCommands.length - 1)
@@ -121,7 +142,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
 
     setSending(true);
     try {
-      await sendWorkerMessage(sessionId, targetWorkerId, content, files.length > 0 ? files : undefined);
+      await onSend(content, files.length > 0 ? files : undefined);
       clearDraft();
       setFiles([]);
       setHasUnread(false);
@@ -134,7 +155,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     } finally {
       setSending(false);
     }
-  }, [sessionId, targetWorkerId, content, files, onError, clearDraft]);
+  }, [targetWorkerId, content, files, onError, onSend, clearDraft]);
 
   const selectCommand = useCallback((command: SkillDefinition) => {
     setContent(command.name + ' ');
@@ -143,10 +164,14 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
   }, [setContent]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
+
     // Ctrl/Cmd+Enter always sends, even with dropdown visible
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      handleSend();
+      if (!sendDisabled) {
+        handleSend();
+      }
       return;
     }
 
@@ -189,13 +214,9 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
 
     if (e.key === 'Escape') {
       e.preventDefault();
-      // Route ESC through the next renderer's terminal store (issue #961). The
-      // legacy worker-websocket transport was orphaned by #941, so its sendInput
-      // was a silent no-op. MessagePanel only renders inside an open session
-      // page where the instance already exists; getOrCreateTerminal returns it.
-      getOrCreateTerminal(sessionId, targetWorkerId).sendInput('\x1b');
+      onEscape?.();
     }
-  }, [handleSend, sessionId, targetWorkerId, showCompletion, templateSelectorOpen, filteredCommands, clampedIndex, selectCommand]);
+  }, [handleSend, sendDisabled, showCompletion, templateSelectorOpen, filteredCommands, clampedIndex, selectCommand, onEscape]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -203,12 +224,14 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    if (!attachmentsEnabled) return;
     if (e.dataTransfer.files.length > 0) {
       addFiles(e.dataTransfer.files);
     }
-  }, [addFiles]);
+  }, [addFiles, attachmentsEnabled]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    if (!attachmentsEnabled) return;
     const items = e.clipboardData?.items;
     if (!items) return;
 
@@ -224,7 +247,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
       addFiles(imageFiles);
     }
     // If no images, let textarea handle normal text paste
-  }, [addFiles]);
+  }, [addFiles, attachmentsEnabled]);
 
   return (
     <div
@@ -332,9 +355,10 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="text-gray-400 hover:text-white text-sm px-1 py-1 shrink-0"
+          disabled={!attachmentsEnabled}
+          className="text-gray-400 hover:text-white text-sm px-1 py-1 shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
           aria-label="Attach files"
-          title="Attach files"
+          title={attachmentsEnabled ? 'Attach files' : 'Enable after Read tool ships — see #1004 FF-1a'}
         >
           📎
         </button>
@@ -354,7 +378,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
         {/* Send button */}
         <button
           onClick={handleSend}
-          disabled={!canSend(targetWorkerId, content, sending, files.length)}
+          disabled={!canSend(targetWorkerId, content, sending, files.length, sendDisabled)}
           className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded shrink-0"
         >
           Send
