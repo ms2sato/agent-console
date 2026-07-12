@@ -43,6 +43,7 @@ QuickSession (not tied to repository/worktree)
 | AgentWorker | AI Agent (Claude Code, etc.) | Yes | Yes |
 | TerminalWorker | Plain shell | Yes | No |
 | GitDiffWorker | Git diff viewer | No | No |
+| [EmbeddedAgentWorker](../glossary.md#embeddedagentworker) | Agent Console's own in-process LLM-loop agent (OpenAI-compatible providers, incl. local LLMs) | No (streams NDJSON events over stdout instead) | No (own `activityState`, driven by loop-reported state, not PTY output-pattern detection) |
 | MarkdownWorker (future) | Markdown preview | No | No |
 | WebWorker* (future) | Embedded website | No | No |
 
