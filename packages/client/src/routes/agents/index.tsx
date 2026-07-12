@@ -11,6 +11,7 @@ import {
   AddEmbeddedAgentForm,
   EditEmbeddedAgentForm,
   EmbeddedAgentDeleteDialog,
+  canManageEmbeddedAgent,
   findReferencingWorkers,
   type EmbeddedAgentWorkerReference,
 } from '../../components/embedded-agents';
@@ -254,7 +255,7 @@ function AgentCard({ agent, onDelete, isDeleting }: AgentCardProps) {
 
 function EmbeddedAgentsSection() {
   const { embeddedAgents, isLoading, error, refetch } = useEmbeddedAgents();
-  const { currentUser } = useAuth();
+  const { currentUser, isMultiUser } = useAuth();
   const { sessions } = useSessionDataContext();
   const [showAddForm, setShowAddForm] = useState(false);
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
@@ -339,7 +340,7 @@ function EmbeddedAgentsSection() {
               <EmbeddedAgentCard
                 key={embeddedAgent.id}
                 embeddedAgent={embeddedAgent}
-                canManage={embeddedAgent.createdBy === currentUser?.id}
+                canManage={canManageEmbeddedAgent(embeddedAgent.createdBy, currentUser?.id, isMultiUser)}
                 onEdit={() => setEditingAgentId(embeddedAgent.id)}
                 onDelete={() => setAgentToDelete(embeddedAgent)}
                 isDeleting={deleteMutation.isPending && agentToDelete?.id === embeddedAgent.id}

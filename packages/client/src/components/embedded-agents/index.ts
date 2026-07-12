@@ -10,4 +10,5 @@ export {
   findReferencingWorkers,
   type EmbeddedAgentWorkerReference,
 } from './findReferencingWorkers';
+export { canManageEmbeddedAgent } from './canManageEmbeddedAgent';
 export { EmbeddedAgentDeleteDialog, type EmbeddedAgentDeleteDialogProps } from './EmbeddedAgentDeleteDialog';
