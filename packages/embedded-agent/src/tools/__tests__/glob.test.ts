@@ -72,4 +72,16 @@ describe('globTool', () => {
     expect(result.ok).toBe(false);
     expect(result.result).toBe('pattern is required and must be a string');
   });
+
+  it('returns {ok:false, result:"aborted"} without completing the scan when the signal is already aborted', async () => {
+    for (let i = 0; i < 20; i++) {
+      await touch(path.join(locationPath, `f${i}.ts`));
+    }
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await globTool.execute({ pattern: '*.ts' }, { locationPath }, controller.signal);
+
+    expect(result).toEqual({ ok: false, result: 'aborted' });
+  });
 });

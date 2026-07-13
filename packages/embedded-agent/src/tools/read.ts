@@ -36,7 +36,7 @@ function parseArgs(args: unknown): { ok: true; value: ReadArgs } | { ok: false; 
   };
 }
 
-async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinToolResult> {
+async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSignal): Promise<BuiltinToolResult> {
   const parsed = parseArgs(args);
   if (!parsed.ok) {
     return { ok: false, result: parsed.message };
@@ -46,6 +46,13 @@ async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinT
   const confinement = await resolveConfinedPath(rawPath, ctx.locationPath);
   if (!confinement.ok) {
     return { ok: false, result: confinement.message };
+  }
+
+  // Small win, not a real interruption: a single `.text()` call below cannot
+  // be cancelled mid-flight, but checking right before starting it avoids
+  // racing an already-aborted turn's result into the conversation.
+  if (signal?.aborted) {
+    return { ok: false, result: 'aborted' };
   }
 
   try {

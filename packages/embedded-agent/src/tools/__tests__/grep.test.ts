@@ -117,4 +117,16 @@ describe('grepTool', () => {
     expect(result.ok).toBe(false);
     expect(result.result).toMatch(/^outputMode must be one of/);
   });
+
+  it('returns {ok:false, result:"aborted"} without completing the search when the signal is already aborted', async () => {
+    for (let i = 0; i < 20; i++) {
+      await fsPromises.writeFile(path.join(locationPath, `f${i}.txt`), 'needle');
+    }
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await grepTool.execute({ pattern: 'needle' }, { locationPath }, controller.signal);
+
+    expect(result).toEqual({ ok: false, result: 'aborted' });
+  });
 });

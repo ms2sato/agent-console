@@ -61,4 +61,14 @@ describe('readTool', () => {
     expect(result.ok).toBe(false);
     expect(result.result).toBe('limit must be a number');
   });
+
+  it('returns {ok:false, result:"aborted"} without reading the file when the signal is already aborted', async () => {
+    await fsPromises.writeFile(path.join(locationPath, 'a.txt'), 'first\nsecond');
+    const controller = new AbortController();
+    controller.abort();
+
+    const result = await readTool.execute({ path: 'a.txt' }, { locationPath }, controller.signal);
+
+    expect(result).toEqual({ ok: false, result: 'aborted' });
+  });
 });
