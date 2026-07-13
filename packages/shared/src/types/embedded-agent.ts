@@ -79,6 +79,7 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'ready' }
   | { v: 1; type: 'state'; state: 'active' | 'idle' }
   | { v: 1; type: 'assistant-delta'; turnId: string; text: string }
+  | { v: 1; type: 'assistant-thinking-delta'; turnId: string; text: string }  // streamed reasoning/thinking chunk, no terminal counterpart — see turn-cycle doc
   | { v: 1; type: 'assistant-message'; turnId: string; text: string }
   | { v: 1; type: 'tool-call'; turnId: string; callId: string; name: string; args: unknown }
   | { v: 1; type: 'tool-result'; turnId: string; callId: string; ok: boolean; result: string }

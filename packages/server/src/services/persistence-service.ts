@@ -93,6 +93,8 @@ interface PersistedSessionBase {
   createdAt: string;
   workers: PersistedWorker[];
   initialPrompt?: string;
+  /** See `InternalSessionBase.initialPromptDelivered`. */
+  initialPromptDelivered?: boolean;
   title?: string;
   /** ISO 8601 timestamp when session was paused (undefined = not paused) */
   pausedAt?: string;

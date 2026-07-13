@@ -300,6 +300,7 @@ describe('EmbeddedAgentEventSchema', () => {
       { v: 1, type: 'state', state: 'active' },
       { v: 1, type: 'state', state: 'idle' },
       { v: 1, type: 'assistant-delta', turnId: 't1', text: 'partial' },
+      { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking...' },
       { v: 1, type: 'assistant-message', turnId: 't1', text: 'full' },
       { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: { a: 1 } },
       { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' },
@@ -309,6 +310,25 @@ describe('EmbeddedAgentEventSchema', () => {
     for (const event of events) {
       expect(v.safeParse(EmbeddedAgentEventSchema, event).success).toBe(true);
     }
+  });
+
+  it('accepts a standalone assistant-thinking-delta event', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'assistant-thinking-delta',
+      turnId: 't1',
+      text: 'reasoning...',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects an assistant-thinking-delta event missing text', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'assistant-thinking-delta',
+      turnId: 't1',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('rejects an invalid state value', () => {

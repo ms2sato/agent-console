@@ -144,6 +144,76 @@ describe('embedded-agent-store', () => {
     expect(assistantEntries[1]).toMatchObject({ text: 'second round' });
   });
 
+  it('accumulates assistant-thinking-delta chunks into a separate streaming entry, then finalizes on assistant-message (without merging)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3c', 'w3c');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    let offset = 0;
+    const chunk1 = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'Let me ' });
+    ws!.simulateMessage(outputMessage(chunk1, (offset += chunk1.length)));
+    await flush();
+
+    let entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'assistant-thinking', text: 'Let me ', streaming: true });
+
+    const chunk2 = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'think' });
+    ws!.simulateMessage(outputMessage(chunk2, (offset += chunk2.length)));
+    await flush();
+
+    entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'assistant-thinking', text: 'Let me think', streaming: true });
+
+    // The finalize signal is the arrival of assistant-message for the same
+    // turnId (there is no terminal assistant-thinking-delta event).
+    const final = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: 'Here is my answer' });
+    ws!.simulateMessage(outputMessage(final, (offset += final.length)));
+    await flush();
+
+    entries = instance.getSnapshot().entries;
+    // Two SEPARATE entries: the finalized thinking entry and the new
+    // assistant-message entry -- never merged into one.
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ kind: 'assistant-thinking', text: 'Let me think', streaming: false });
+    expect(entries[1]).toMatchObject({ kind: 'assistant-message', text: 'Here is my answer', streaming: false });
+  });
+
+  it('finalizes an open assistant-thinking entry on turn-error for the same turnId', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3d', 'w3d');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking...' },
+      { v: 1, type: 'turn-error', turnId: 't1', message: 'boom' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    const thinkingEntry = entries.find((e) => e.kind === 'assistant-thinking');
+    expect(thinkingEntry).toMatchObject({ text: 'thinking...', streaming: false });
+  });
+
+  it('finalizes an open assistant-thinking entry on fatal', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3e', 'w3e');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking...' },
+      { v: 1, type: 'fatal', message: 'boom' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    const thinkingEntry = entries.find((e) => e.kind === 'assistant-thinking');
+    expect(thinkingEntry).toMatchObject({ text: 'thinking...', streaming: false });
+  });
+
   it('pairs a tool-result with its tool-call by callId, including error styling data', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s4', 'w4');
     const ws = MockWebSocket.getLastInstance();

@@ -59,6 +59,7 @@ const SessionBaseSchema = v.strictObject({
   createdAt: v.string(),
   workers: v.array(WorkerSchema),
   initialPrompt: v.optional(v.string()),
+  initialPromptDelivered: v.optional(v.boolean()),
   title: v.optional(v.string()),
   pausedAt: v.optional(v.string()),
   parentSessionId: v.optional(v.string()),

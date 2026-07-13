@@ -117,6 +117,36 @@ describe('mappers', () => {
 
       expect(row.paused_at).toBeNull();
     });
+
+    it('should map initialPromptDelivered true/false to 1/0', () => {
+      const delivered = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/path/to/project',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        initialPromptDelivered: true,
+      });
+      const notDelivered = buildPersistedQuickSession({
+        id: 'session-2',
+        locationPath: '/path/to/project',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        initialPromptDelivered: false,
+      });
+
+      expect(toSessionRow(delivered).initial_prompt_delivered).toBe(1);
+      expect(toSessionRow(notDelivered).initial_prompt_delivered).toBe(0);
+    });
+
+    it('should map undefined initialPromptDelivered to null', () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/path/to/project',
+        createdAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      const row = toSessionRow(session);
+
+      expect(row.initial_prompt_delivered).toBeNull();
+    });
   });
 
   describe('toWorkerRow', () => {
@@ -275,6 +305,7 @@ describe('mappers', () => {
         created_at: '2024-01-01T00:00:00.000Z',
         updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: null,
+        initial_prompt_delivered: null,
         title: null,
         repository_id: null,
         worktree_id: null,
@@ -522,6 +553,7 @@ describe('mappers', () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         initial_prompt: null,
+        initial_prompt_delivered: null,
         title: null,
         repository_id: null, // Missing required field
         worktree_id: 'branch',
@@ -550,6 +582,7 @@ describe('mappers', () => {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
         initial_prompt: null,
+        initial_prompt_delivered: null,
         title: null,
         repository_id: 'repo-1',
         worktree_id: null, // Missing required field
@@ -578,6 +611,7 @@ describe('mappers', () => {
         created_at: '2024-01-01T00:00:00.000Z',
         updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: 'test',
+        initial_prompt_delivered: null,
         title: 'Test',
         repository_id: null,
         worktree_id: null,
@@ -599,6 +633,35 @@ describe('mappers', () => {
       expect(session.initialPrompt).toBe('test');
     });
 
+    it('should map initial_prompt_delivered 1/0/null to true/false/undefined', () => {
+      const base: Omit<Session, 'initial_prompt_delivered'> = {
+        id: 'session-1',
+        type: 'quick',
+        location_path: '/path',
+        server_pid: 1234,
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        initial_prompt: 'test',
+        title: 'Test',
+        repository_id: null,
+        worktree_id: null,
+        paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
+        created_by: null,
+        initiated_by: null,
+        data_scope: null,
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
+      };
+
+      expect(toPersistedSession({ ...base, initial_prompt_delivered: 1 }, []).initialPromptDelivered).toBe(true);
+      expect(toPersistedSession({ ...base, initial_prompt_delivered: 0 }, []).initialPromptDelivered).toBe(false);
+      expect(toPersistedSession({ ...base, initial_prompt_delivered: null }, []).initialPromptDelivered).toBeUndefined();
+    });
+
     it('should convert valid worktree session', () => {
       const dbSession: Session = {
         id: 'session-1',
@@ -608,6 +671,7 @@ describe('mappers', () => {
         created_at: '2024-01-01T00:00:00.000Z',
         updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: 'test prompt',
+        initial_prompt_delivered: null,
         title: 'Test Session',
         repository_id: 'repo-1',
         worktree_id: 'feature-branch',
@@ -639,6 +703,7 @@ describe('mappers', () => {
         created_at: '2024-01-01T00:00:00.000Z',
         updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: null,
+        initial_prompt_delivered: null,
         title: null,
         repository_id: null,
         worktree_id: null,
@@ -679,6 +744,7 @@ describe('mappers', () => {
         created_at: '2024-01-01T00:00:00.000Z',
         updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: null,
+        initial_prompt_delivered: null,
         title: null,
         repository_id: null,
         worktree_id: null,
@@ -711,6 +777,7 @@ describe('mappers', () => {
         created_at: '2024-01-01T00:00:00.000Z',
         updated_at: '2024-01-01T00:00:00.000Z',
         initial_prompt: null,
+        initial_prompt_delivered: null,
         title: null,
         repository_id: null,
         worktree_id: null,
@@ -785,6 +852,7 @@ describe('mappers', () => {
         server_pid: 1234,
         created_at: new Date().toISOString(),
         initial_prompt: null,
+        initial_prompt_delivered: null,
         title: null,
         repository_id: null,
         worktree_id: null,

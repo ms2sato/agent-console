@@ -103,6 +103,15 @@ export interface EmbeddedAgentWorkerInitParams {
   name: string;
   createdAt: string;
   embeddedAgentId: string;
+  /**
+   * Whether this worker is the session's initial embedded-agent worker,
+   * created with a non-empty `initialPrompt`. Gates whether
+   * `EmbeddedAgentWorkerService` delivers the session's `initialPrompt` as
+   * this worker's first user message once the loop reports `ready`.
+   * `false`/omitted for workers added later via the generic add-worker route.
+   * See `docs/design/embedded-agent-worker.md` "Initial prompt delivery".
+   */
+  deliverInitialPromptOnActivation?: boolean;
 }
 
 /**
@@ -331,6 +340,7 @@ export class WorkerManager {
       outputOffset: 0,
       epoch: Date.now(),
       connectionCallbacks: new Map(),
+      deliverInitialPromptOnActivation: params.deliverInitialPromptOnActivation ?? false,
     };
 
     return worker;
@@ -842,6 +852,13 @@ export class WorkerManager {
             // manifest at activation (mirrors the PTY-worker restore path).
             epoch: Date.now(),
             connectionCallbacks: new Map(), // Must be unique per worker
+            // In-memory-only eligibility marker, never
+            // persisted, so it cannot be recovered on restore. Accepted
+            // narrow edge case: a session whose initial embedded-agent
+            // worker was created but never activated before a server
+            // restart will not receive the initial-prompt delivery after
+            // restart (same category as other v1 "restart" limitations).
+            deliverInitialPromptOnActivation: false,
           };
           break;
         default: {

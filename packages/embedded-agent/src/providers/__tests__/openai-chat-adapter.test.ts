@@ -136,6 +136,69 @@ describe('OpenAIChatAdapter — SSE text streaming', () => {
   });
 });
 
+describe('OpenAIChatAdapter — reasoning/thinking content', () => {
+  it('yields reasoning-delta and text-delta independently, in stream order', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"reasoning_content":"Let "}}]}\n\n' +
+      'data: {"choices":[{"delta":{"reasoning_content":"me think"}}]}\n\n' +
+      'data: {"choices":[{"delta":{"content":"The "}}]}\n\n' +
+      'data: {"choices":[{"delta":{"content":"answer"}}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+
+    expect(events.slice(0, 4)).toEqual([
+      { type: 'reasoning-delta', text: 'Let ' },
+      { type: 'reasoning-delta', text: 'me think' },
+      { type: 'text-delta', text: 'The ' },
+      { type: 'text-delta', text: 'answer' },
+    ]);
+  });
+
+  it('yields both reasoning-delta and text-delta when a single chunk carries both fields', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"answer","reasoning_content":"reason"}}]}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+
+    expect(events.slice(0, 2)).toEqual([
+      { type: 'text-delta', text: 'answer' },
+      { type: 'reasoning-delta', text: 'reason' },
+    ]);
+  });
+
+  it('yields neither event for a chunk with neither content nor reasoning_content', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' + 'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+
+    expect(events.filter((e) => e.type === 'text-delta' || e.type === 'reasoning-delta')).toHaveLength(
+      0,
+    );
+  });
+});
+
 describe('OpenAIChatAdapter — tool-call accumulation', () => {
   it('accumulates tool-call deltas across chunks by index', async () => {
     const sse =

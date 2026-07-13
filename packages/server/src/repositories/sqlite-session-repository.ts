@@ -74,6 +74,7 @@ export class SqliteSessionRepository implements SessionRepository {
             // Note: created_at is intentionally NOT updated (should never change after insert)
             updated_at: sessionRow.updated_at,
             initial_prompt: sessionRow.initial_prompt,
+            initial_prompt_delivered: sessionRow.initial_prompt_delivered,
             title: sessionRow.title,
             repository_id: sessionRow.repository_id,
             worktree_id: sessionRow.worktree_id,

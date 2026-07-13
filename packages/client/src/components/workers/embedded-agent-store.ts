@@ -42,6 +42,7 @@ export interface EmbeddedAgentToolResult {
 export type EmbeddedAgentChatEntry =
   | { key: string; kind: 'user-message'; id: string; text: string }
   | { key: string; kind: 'assistant-message'; turnId: string; text: string; streaming: boolean }
+  | { key: string; kind: 'assistant-thinking'; turnId: string; text: string; streaming: boolean }
   | {
       key: string;
       kind: 'tool-call';
@@ -151,6 +152,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   // Index maps for folding streamed events into the entries array. Cleared
   // on every fresh (non-continuation) history load / epoch reset.
   private openAssistantIndexByTurnId = new Map<string, number>();
+  private openThinkingIndexByTurnId = new Map<string, number>();
   private toolCallIndexByCallId = new Map<string, number>();
   private entryKeyCounter = 0;
 
@@ -445,6 +447,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private resetChatState(): void {
     this.splitter = new NdjsonLineSplitter();
     this.openAssistantIndexByTurnId.clear();
+    this.openThinkingIndexByTurnId.clear();
     this.toolCallIndexByCallId.clear();
     this.patch({ entries: [] });
   }
@@ -543,8 +546,19 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       case 'assistant-delta':
         this.appendAssistant(event.turnId, event.text, null);
         return true;
+      case 'assistant-thinking-delta':
+        this.appendThinking(event.turnId, event.text);
+        return true;
       case 'assistant-message':
         this.appendAssistant(event.turnId, null, event.text);
+        // `assistant-message` is emitted unconditionally exactly once per
+        // loop iteration and is the only end-of-thinking-segment signal on
+        // the wire (there is no terminal/"final" assistant-thinking-delta
+        // event) -- see docs/design/embedded-agent-worker.md turn-cycle
+        // notes and packages/embedded-agent/src/agent-loop.ts's
+        // runProviderAttempt. Finalize any still-open thinking entry for
+        // the same turn here.
+        this.closeOpenThinking(event.turnId);
         return true;
       case 'tool-call':
         this.pushToolCall(event.turnId, event.callId, event.name, event.args);
@@ -558,15 +572,27 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           turnId: event.turnId,
           message: event.message,
         });
+        // Defensive finalize: a turn that errors out mid-reasoning must not
+        // leave its thinking entry permanently streaming (no other event
+        // will ever finalize it for this turnId).
+        this.closeOpenThinking(event.turnId);
         return true;
       case 'fatal':
         this.pushEntry({ key: `fatal-${this.entryKeyCounter++}`, kind: 'fatal', message: event.message });
+        // Defensive finalize: a fatal error mid-reasoning must not leave any
+        // turn's thinking entry permanently streaming (no other event will
+        // ever finalize it), mirroring the 'exited' handler above.
+        this.closeAllOpenThinking();
         return true;
       case 'user-message':
         this.pushEntry({ key: `user-${event.id}`, kind: 'user-message', id: event.id, text: event.text });
         return true;
       case 'exited':
         this.pushEntry({ key: `exited-${this.entryKeyCounter++}`, kind: 'exited', code: event.code });
+        // Defensive finalize: the process exited while some turn's thinking
+        // entry was still open (e.g. a crash mid-turn); no per-turnId signal
+        // will ever arrive at this point, so close all open thinking entries.
+        this.closeAllOpenThinking();
         return true;
       default: {
         const _exhaustive: never = event;
@@ -613,6 +639,54 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     const streaming = final === null;
     this.snapshot.entries[idx] = { ...existing, text, streaming };
     if (final !== null) this.openAssistantIndexByTurnId.delete(turnId);
+  }
+
+  /**
+   * Accumulate a thinking-delta chunk into the OPEN assistant-thinking entry
+   * for `turnId`, opening a new entry on the first chunk. Mirrors
+   * `appendAssistant`'s accumulate logic, but simpler: there is no terminal
+   * "final" thinking event on the wire, so `streaming` stays `true` until
+   * `closeOpenThinking`/`closeAllOpenThinking` finalizes it (see the
+   * `assistant-message`/`turn-error`/`exited` cases in `foldEvent`).
+   *
+   * Entries are replaced (never mutated in place) -- same React.memo
+   * reference-equality rationale as `appendAssistant`.
+   */
+  private appendThinking(turnId: string, delta: string): void {
+    const idx = this.openThinkingIndexByTurnId.get(turnId);
+    if (idx === undefined) {
+      const entry: EmbeddedAgentChatEntry = {
+        key: `thinking-${turnId}-${this.entryKeyCounter++}`,
+        kind: 'assistant-thinking',
+        turnId,
+        text: delta,
+        streaming: true,
+      };
+      this.snapshot.entries.push(entry);
+      this.openThinkingIndexByTurnId.set(turnId, this.snapshot.entries.length - 1);
+      return;
+    }
+    const existing = this.snapshot.entries[idx];
+    if (existing.kind !== 'assistant-thinking') return;
+    this.snapshot.entries[idx] = { ...existing, text: existing.text + delta };
+  }
+
+  /** Finalize (streaming: false) the open thinking entry for `turnId`, if any. */
+  private closeOpenThinking(turnId: string): void {
+    const idx = this.openThinkingIndexByTurnId.get(turnId);
+    if (idx === undefined) return;
+    const existing = this.snapshot.entries[idx];
+    if (existing.kind === 'assistant-thinking') {
+      this.snapshot.entries[idx] = { ...existing, streaming: false };
+    }
+    this.openThinkingIndexByTurnId.delete(turnId);
+  }
+
+  /** Finalize every still-open thinking entry, regardless of turnId. */
+  private closeAllOpenThinking(): void {
+    for (const turnId of Array.from(this.openThinkingIndexByTurnId.keys())) {
+      this.closeOpenThinking(turnId);
+    }
   }
 
   private pushToolCall(turnId: string, callId: string, name: string, args: unknown): void {

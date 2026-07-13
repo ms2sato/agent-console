@@ -37,10 +37,12 @@ describe('migration v23 (embedded_agents.enabled_tools)', () => {
     cleanupMemfs();
   });
 
-  it('advances the schema version to 23', async () => {
+  it('advances the schema version past v23 to the latest', async () => {
+    // initializeDatabase runs every migration; the v23 step is part of that
+    // chain and the final version is the current latest.
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(23);
+    expect(versionRes.rows[0]?.user_version).toBe(24);
   });
 
   it('adds the enabled_tools column to embedded_agents, nullable with no default', async () => {

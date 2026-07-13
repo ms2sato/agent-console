@@ -71,9 +71,17 @@
   }
 }
 
-/* Markdown styling for memo panel */
+/* Markdown styling for memo panel (and embedded-agent chat bubbles, which
+   reuse this class -- see EmbeddedAgentWorkerView.tsx). `anywhere` (not
+   `break-word`) is required here because these containers are flex items in
+   both consumers (MemoPanel is scoped via `min-w-0` on the same element, but
+   the plain `break-word` value does not reduce a flex item's automatic
+   min-content-based minimum size per the CSS Flexbox/Sizing spec, so a long
+   unbroken token like a hex hash or URL can still force the item wider than
+   its `max-width` cap and overflow horizontally; `anywhere` does reduce it).
+   See Issue #1071. */
 .memo-content {
-  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 
 .memo-content h1, .memo-content h2, .memo-content h3, .memo-content h4, .memo-content h5, .memo-content h6 {

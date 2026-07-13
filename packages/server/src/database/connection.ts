@@ -321,6 +321,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 23) {
     await migrateToV23(database);
   }
+
+  if (currentVersion < 24) {
+    await migrateToV24(database);
+  }
 }
 
 /**
@@ -1385,6 +1389,33 @@ export async function migrateToV23(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 23`.execute(database);
 
   logger.info('Migration to v23 completed');
+}
+
+/**
+ * Migration v24: Add `initial_prompt_delivered` column to `sessions`.
+ * Nullable INTEGER (0/1) column tracking whether `initial_prompt` has
+ * already been delivered as the session's initial embedded-agent worker's
+ * first user message; null for legacy rows predating v24 (treated as "not
+ * delivered" by application code).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV24(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v24: Adding initial_prompt_delivered column to sessions');
+
+  try {
+    await database.schema
+      .alterTable('sessions')
+      .addColumn('initial_prompt_delivered', 'integer')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column initial_prompt_delivered already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 24`.execute(database);
+
+  logger.info('Migration to v24 completed');
 }
 
 /**

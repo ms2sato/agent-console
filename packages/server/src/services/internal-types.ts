@@ -45,6 +45,14 @@ export interface InternalSessionBase {
   createdAt: string;
   workers: Map<string, InternalWorker>;
   initialPrompt?: string;
+  /**
+   * Whether `initialPrompt` has already been delivered as the session's
+   * initial embedded-agent worker's first user message. See
+   * `packages/shared/src/types/session.ts` `Session.initialPromptDelivered`
+   * for the full contract (never re-fires once true, including across
+   * restart).
+   */
+  initialPromptDelivered?: boolean;
   title?: string;
   /** Parent session ID that delegated this session */
   parentSessionId?: string;

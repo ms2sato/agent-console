@@ -309,6 +309,15 @@ export class AgentLoop {
           text += event.text;
           this.deps.emit({ v: 1, type: 'assistant-delta', turnId, text: event.text });
           break;
+        case 'reasoning-delta':
+          // Thinking/reasoning content is a separate stream from the final
+          // answer text: it is NOT accumulated into `text` (would otherwise
+          // leak into the assistant-message and the next turn's conversation
+          // history). There is no terminal/final counterpart event -- the
+          // iteration's unconditional `assistant-message` emit is the
+          // implicit end-of-thinking boundary the client uses instead.
+          this.deps.emit({ v: 1, type: 'assistant-thinking-delta', turnId, text: event.text });
+          break;
         case 'tool-call':
           toolCalls.push({ callId: event.callId, name: event.name, argsJson: event.argsJson });
           break;

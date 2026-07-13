@@ -116,6 +116,12 @@ export const EmbeddedAgentEventSchema = v.union([
   }),
   v.strictObject({
     v: v.literal(1),
+    type: v.literal('assistant-thinking-delta'),
+    turnId: v.string(),
+    text: v.string(),
+  }),
+  v.strictObject({
+    v: v.literal(1),
     type: v.literal('assistant-message'),
     turnId: v.string(),
     text: v.string(),

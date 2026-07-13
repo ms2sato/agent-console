@@ -199,6 +199,27 @@ describe('SessionConverterService', () => {
       expect(result.workers[1].id).toBe('w-later');
     });
 
+    it('preserves initialPromptDelivered when set true on the internal session', () => {
+      const session = buildInternalQuickSession([], {
+        initialPrompt: 'do something',
+        initialPromptDelivered: true,
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.initialPromptDelivered).toBe(true);
+    });
+
+    it('leaves initialPromptDelivered undefined when the internal session omits it', () => {
+      const session = buildInternalQuickSession([], {
+        initialPrompt: 'do something',
+      });
+
+      const result = service.toPublicSession(session);
+
+      expect(result.initialPromptDelivered).toBeUndefined();
+    });
+
     it('preserves initiatedBy when set on the internal session', () => {
       const session = buildInternalQuickSession([], {
         createdBy: 'shared-account-uuid',
@@ -449,6 +470,21 @@ describe('SessionConverterService', () => {
       expect(result.createdBy).toBe('shared-account-uuid');
     });
 
+    it('preserves initialPromptDelivered from persisted data', () => {
+      const persisted = buildPersistedQuickSession({
+        id: 'ps-delivered',
+        locationPath: '/tmp/quick',
+        serverPid: null,
+        createdAt: '2026-01-01T00:00:00Z',
+        initialPrompt: 'do something',
+        initialPromptDelivered: true,
+      });
+
+      const result = service.persistedToPublicSession(persisted);
+
+      expect(result.initialPromptDelivered).toBe(true);
+    });
+
     it('leaves initiatedBy undefined when persisted data omits it', () => {
       const persisted = buildPersistedQuickSession({
         id: 'ps-personal',
@@ -604,6 +640,17 @@ describe('SessionConverterService', () => {
 
       expect(result.initiatedBy).toBe('caller-uuid');
       expect(result.createdBy).toBe('shared-account-uuid');
+    });
+
+    it('round-trips initialPromptDelivered from internal to persisted', () => {
+      const session = buildInternalQuickSession([], {
+        initialPrompt: 'do something',
+        initialPromptDelivered: true,
+      });
+
+      const result = service.toPersistedSession(session);
+
+      expect(result.initialPromptDelivered).toBe(true);
     });
   });
 

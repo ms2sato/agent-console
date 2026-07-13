@@ -167,6 +167,44 @@ describe('AgentLoop — event ordering', () => {
     const final = h.events.find((e) => e.type === 'assistant-message');
     expect(final).toMatchObject({ text: 'Hello' });
   });
+
+  it('emits assistant-thinking-delta events before assistant-delta/assistant-message, without leaking reasoning text into the final message', async () => {
+    const h = makeLoop([
+      {
+        kind: 'events',
+        events: [
+          { type: 'reasoning-delta', text: 'Let me ' },
+          { type: 'reasoning-delta', text: 'think.' },
+          { type: 'text-delta', text: 'Hel' },
+          { type: 'text-delta', text: 'lo' },
+          { type: 'done', finishReason: 'stop' },
+        ],
+      },
+    ]);
+    await h.loop.runTurn('t1', 'hi');
+
+    expect(types(h.events)).toEqual([
+      'state',
+      'assistant-thinking-delta',
+      'assistant-thinking-delta',
+      'assistant-delta',
+      'assistant-delta',
+      'assistant-message',
+      'state',
+    ]);
+    const thinking = h.events.filter((e) => e.type === 'assistant-thinking-delta');
+    expect(thinking.map((e) => (e as { text: string }).text)).toEqual(['Let me ', 'think.']);
+    const final = h.events.find((e) => e.type === 'assistant-message');
+    // Reasoning text is not accumulated into the final assistant-message text.
+    expect(final).toMatchObject({ text: 'Hello' });
+  });
+
+  it('behaves exactly as before when the provider stream has no reasoning-delta events', async () => {
+    const h = makeLoop([textResponse('plain answer')]);
+    await h.loop.runTurn('t1', 'hi');
+    expect(h.events.filter((e) => e.type === 'assistant-thinking-delta')).toHaveLength(0);
+    expect(types(h.events)).toEqual(['state', 'assistant-delta', 'assistant-message', 'state']);
+  });
 });
 
 describe('AgentLoop — boundary values', () => {
