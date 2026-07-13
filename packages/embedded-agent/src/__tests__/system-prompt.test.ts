@@ -235,19 +235,35 @@ describe('loadInstructions — global layer via xdgConfigHome/homeDir overrides 
   });
 
   it('reads <homeDir>/.config/agent-console/AGENTS.md when only homeDir is given', async () => {
-    const homeDir = await makeTempDir();
-    const globalDir = join(homeDir, '.config', 'agent-console');
-    await mkdir(globalDir, { recursive: true });
-    await writeFile(join(globalDir, 'AGENTS.md'), 'HOME_GLOBAL_MARKER');
-    const cwd = await makeTempDir();
+    // xdgConfigHome (param) and XDG_CONFIG_HOME (env) both take precedence
+    // over homeDir by design (A2: "honor XDG_CONFIG_HOME when set"). This
+    // test exercises the homeDir-only fallback path specifically, so the
+    // ambient process env must be neutralized for its duration -- otherwise
+    // a CI runner or developer machine with XDG_CONFIG_HOME set would leak
+    // into loadInstructions and this test would flake.
+    const originalXdgConfigHome = process.env.XDG_CONFIG_HOME;
+    delete process.env.XDG_CONFIG_HOME;
+    try {
+      const homeDir = await makeTempDir();
+      const globalDir = join(homeDir, '.config', 'agent-console');
+      await mkdir(globalDir, { recursive: true });
+      await writeFile(join(globalDir, 'AGENTS.md'), 'HOME_GLOBAL_MARKER');
+      const cwd = await makeTempDir();
 
-    const result = await loadInstructions({ cwd, homeDir });
+      const result = await loadInstructions({ cwd, homeDir });
 
-    expect(result.segments).toHaveLength(1);
-    expect(result.segments[0]).toEqual({
-      origin: join(globalDir, 'AGENTS.md'),
-      content: 'HOME_GLOBAL_MARKER',
-    });
+      expect(result.segments).toHaveLength(1);
+      expect(result.segments[0]).toEqual({
+        origin: join(globalDir, 'AGENTS.md'),
+        content: 'HOME_GLOBAL_MARKER',
+      });
+    } finally {
+      if (originalXdgConfigHome === undefined) {
+        delete process.env.XDG_CONFIG_HOME;
+      } else {
+        process.env.XDG_CONFIG_HOME = originalXdgConfigHome;
+      }
+    }
   });
 });
 
