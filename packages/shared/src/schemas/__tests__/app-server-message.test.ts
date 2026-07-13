@@ -249,6 +249,35 @@ describe('AppServerMessageSchema', () => {
       });
     });
 
+    it('should accept session with initialPromptDelivered set to true', () => {
+      const output = expectValid({
+        type: 'session-created',
+        session: { ...worktreeSession, initialPrompt: 'Do something', initialPromptDelivered: true },
+      });
+      if (output.type === 'session-created' && 'initialPromptDelivered' in output.session) {
+        expect(output.session.initialPromptDelivered).toBe(true);
+      } else {
+        throw new Error('initialPromptDelivered was stripped by the schema');
+      }
+    });
+
+    it('should accept session without initialPromptDelivered (optional)', () => {
+      const output = expectValid({
+        type: 'session-updated',
+        session: { ...quickSession },
+      });
+      if (output.type === 'session-updated' && 'initialPromptDelivered' in output.session) {
+        expect(output.session.initialPromptDelivered).toBeUndefined();
+      }
+    });
+
+    it('should reject session with non-boolean initialPromptDelivered', () => {
+      expectInvalid({
+        type: 'session-created',
+        session: { ...worktreeSession, initialPromptDelivered: 'yes' },
+      });
+    });
+
     it('should reject missing session', () => {
       expectInvalid({ type: 'session-created' });
     });

@@ -47,7 +47,7 @@ export interface InternalSessionBase {
   initialPrompt?: string;
   /**
    * Whether `initialPrompt` has already been delivered as the session's
-   * initial embedded-agent worker's first user message (Issue #1068). See
+   * initial embedded-agent worker's first user message. See
    * `packages/shared/src/types/session.ts` `Session.initialPromptDelivered`
    * for the full contract (never re-fires once true, including across
    * restart).

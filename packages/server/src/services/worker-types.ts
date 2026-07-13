@@ -119,7 +119,7 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
   connectionCallbacks: Map<string, WorkerCallbacks>;
   /**
    * Whether this worker is eligible to receive the session's `initialPrompt`
-   * as its first user message once the loop reports `ready` (Issue #1068).
+   * as its first user message once the loop reports `ready`.
    * In-memory-only, mirroring how `subprocess`/`stdin` are also null-on-
    * restore -- NOT part of {@link PersistedWorker}. Set true only for the
    * session's initial embedded-agent worker (created with a non-empty

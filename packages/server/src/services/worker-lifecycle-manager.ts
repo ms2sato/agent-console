@@ -226,7 +226,7 @@ export class WorkerLifecycleManager {
         createdAt,
         embeddedAgentId: request.embeddedAgentId,
         // Only the session's initial embedded-agent worker (created with a
-        // non-empty initialPrompt) is eligible for delivery (Issue #1068).
+        // non-empty initialPrompt) is eligible for delivery.
         deliverInitialPromptOnActivation: !!initialPrompt?.trim(),
       });
     } else {

@@ -44,7 +44,7 @@ export interface SessionBase {
   initialPrompt?: string;    // The prompt used to start the session
   /**
    * Whether `initialPrompt` has already been delivered as the session's
-   * initial embedded-agent worker's first user message (Issue #1068). Once
+   * initial embedded-agent worker's first user message. Once
    * true, delivery never re-fires, including across worker/server restart --
    * this is intentional (a one-time creation-time prompt, distinct from the
    * ephemeral chat history that DOES reset on restart). Undefined for

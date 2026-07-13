@@ -1392,8 +1392,8 @@ export async function migrateToV23(database: Kysely<Database>): Promise<void> {
 }
 
 /**
- * Migration v24: Add `initial_prompt_delivered` column to `sessions` (Issue
- * #1068). Nullable INTEGER (0/1) column tracking whether `initial_prompt` has
+ * Migration v24: Add `initial_prompt_delivered` column to `sessions`.
+ * Nullable INTEGER (0/1) column tracking whether `initial_prompt` has
  * already been delivered as the session's initial embedded-agent worker's
  * first user message; null for legacy rows predating v24 (treated as "not
  * delivered" by application code).

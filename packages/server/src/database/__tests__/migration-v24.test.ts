@@ -3,8 +3,8 @@
  *
  * v24 adds a nullable `initial_prompt_delivered INTEGER` (0/1) column to
  * `sessions`, tracking whether `initial_prompt` has already been delivered as
- * the session's initial embedded-agent worker's first user message (Issue
- * #1068). Null = legacy row predating v24 (application code treats it as
+ * the session's initial embedded-agent worker's first user message.
+ * Null = legacy row predating v24 (application code treats it as
  * "not delivered").
  */
 

@@ -361,6 +361,52 @@ describe('PersistenceService', () => {
     });
   });
 
+  describe('PersistedSession — initialPromptDelivered field', () => {
+    it('round-trips initialPromptDelivered when true', async () => {
+      const service = await getPersistenceService();
+
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'session-delivered',
+          type: 'worktree',
+          locationPath: '/path/to/worktree',
+          repositoryId: 'repo-1',
+          worktreeId: 'main',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          initialPrompt: 'do the thing',
+          initialPromptDelivered: true,
+        },
+      ];
+
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
+
+      expect(loaded[0].initialPromptDelivered).toBe(true);
+    });
+
+    it('keeps initialPromptDelivered undefined when omitted', async () => {
+      const service = await getPersistenceService();
+
+      const testSessions: PersistedSession[] = [
+        {
+          id: 'session-no-prompt',
+          type: 'quick',
+          locationPath: '/path/to/quick',
+          workers: [],
+          serverPid: 100,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ];
+
+      await service.saveSessions(testSessions);
+      const loaded = await service.loadSessions();
+
+      expect(loaded[0].initialPromptDelivered).toBeUndefined();
+    });
+  });
+
   describe('PersistedSession — scope-based persistence fields', () => {
     it('round-trips dataScope / dataScopeSlug / recoveryState for a worktree session', async () => {
       const service = await getPersistenceService();

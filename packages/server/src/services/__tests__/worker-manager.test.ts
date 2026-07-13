@@ -985,6 +985,29 @@ describe('WorkerManager', () => {
       expect(worker.outputOffset).toBe(0);
       expect(worker.connectionCallbacks.size).toBe(0);
     });
+
+    it('defaults deliverInitialPromptOnActivation to false when omitted', () => {
+      const worker = workerManager.initializeEmbeddedAgentWorker({
+        id: 'init-embedded-no-flag',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        embeddedAgentId: 'def-1',
+      });
+
+      expect(worker.deliverInitialPromptOnActivation).toBe(false);
+    });
+
+    it('threads deliverInitialPromptOnActivation: true through to the worker', () => {
+      const worker = workerManager.initializeEmbeddedAgentWorker({
+        id: 'init-embedded-with-flag',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        embeddedAgentId: 'def-1',
+        deliverInitialPromptOnActivation: true,
+      });
+
+      expect(worker.deliverInitialPromptOnActivation).toBe(true);
+    });
   });
 
   // ========== restoreWorkersFromPersistence ==========
@@ -1053,6 +1076,10 @@ describe('WorkerManager', () => {
         expect(worker.activityState).toBe('unknown');
         expect(worker.outputOffset).toBe(0);
         expect(worker.connectionCallbacks.size).toBe(0);
+        // deliverInitialPromptOnActivation is in-memory-only and never
+        // persisted, so it always restores as false regardless of whether
+        // the original worker was eligible for initial-prompt delivery.
+        expect(worker.deliverInitialPromptOnActivation).toBe(false);
       }
     });
 
