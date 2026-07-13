@@ -266,9 +266,10 @@ describe('AppServerMessageSchema', () => {
         type: 'session-updated',
         session: { ...quickSession },
       });
-      if (output.type === 'session-updated' && 'initialPromptDelivered' in output.session) {
-        expect(output.session.initialPromptDelivered).toBeUndefined();
+      if (output.type !== 'session-updated') {
+        throw new Error('Expected session-updated message');
       }
+      expect(output.session.initialPromptDelivered).toBeUndefined();
     });
 
     it('should reject session with non-boolean initialPromptDelivered', () => {
