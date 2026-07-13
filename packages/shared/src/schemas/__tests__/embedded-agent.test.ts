@@ -123,6 +123,46 @@ describe('EmbeddedAgentDefinitionSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts a valid instructions array', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      instructions: ['docs/local-note.md', 'CONTRIBUTING.md'],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an explicit empty instructions array', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      instructions: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a definition with instructions absent', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, validDefinition);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.instructions).toBeUndefined();
+    }
+  });
+
+  it('rejects an empty-string entry in instructions', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      instructions: [''],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts duplicate paths in instructions (no dedup check, unlike enabledTools)', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      instructions: ['docs/note.md', 'docs/note.md'],
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('CreateEmbeddedAgentRequestSchema', () => {
@@ -176,6 +216,15 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
       enabledTools: ['Read', 'Read'],
     });
     expect(result.success).toBe(false);
+  });
+
+  it('accepts a valid instructions array', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      instructions: ['docs/local-note.md'],
+    });
+    expect(result.success).toBe(true);
   });
 });
 
@@ -236,6 +285,23 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts instructions: null (clear)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      instructions: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.instructions).toBeNull();
+    }
+  });
+
+  it('accepts a valid instructions replacement array', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      instructions: ['CONTRIBUTING.md'],
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('EmbeddedAgentCommandSchema', () => {
@@ -290,6 +356,39 @@ describe('EmbeddedAgentCommandSchema', () => {
     };
     const result = v.safeParse(EmbeddedAgentCommandSchema, init);
     expect(result.success).toBe(false);
+  });
+
+  it('parses an init command carrying instructions', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      instructions: ['docs/local-note.md'],
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.instructions).toEqual(['docs/local-note.md']);
+    }
+  });
+
+  it('parses an init command without instructions (absent, not required)', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init') {
+      expect(result.output.instructions).toBeUndefined();
+    }
   });
 });
 
