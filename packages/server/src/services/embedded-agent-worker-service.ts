@@ -107,6 +107,7 @@ const KNOWN_EVENT_TYPES = new Set<string>([
   'ready',
   'state',
   'assistant-delta',
+  'assistant-thinking-delta',
   'assistant-message',
   'tool-call',
   'tool-result',

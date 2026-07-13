@@ -519,6 +519,19 @@ describe('EmbeddedAgentWorkerService stdout stream', () => {
     expect(h.fake.killSignals).toContain(9);
   });
 
+  it('appends and forwards a recognized assistant-thinking-delta event like assistant-delta', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const line = '{"v":1,"type":"assistant-thinking-delta","turnId":"t1","text":"hmm"}';
+    h.fake.pushStdout(`${line}\n`);
+    await waitFor(() => appendedLines(h.bufferOutput).includes(line));
+
+    expect(h.fake.killSignals).toEqual([]);
+    expect(appendedLines(h.bufferOutput)).toContain(line);
+  });
+
   it('skips a parseable event with an unrecognized type WITHOUT incrementing the strike counter', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);

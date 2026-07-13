@@ -49,7 +49,17 @@ interface OpenAIToolCallDelta {
 
 interface OpenAIStreamChunk {
   choices?: Array<{
-    delta?: { content?: string | null; tool_calls?: OpenAIToolCallDelta[] };
+    delta?: {
+      content?: string | null;
+      // `reasoning_content` is the de-facto field name used by
+      // OpenAI-Chat-Completions-compatible providers that stream
+      // reasoning/thinking content (DeepSeek-R1, many vLLM reasoning-parser
+      // configs, OpenRouter passthrough, some Ollama models). It streams the
+      // same way `content` does -- just another delta field, not a separate
+      // message shape.
+      reasoning_content?: string | null;
+      tool_calls?: OpenAIToolCallDelta[];
+    };
     finish_reason?: string | null;
   }>;
 }
@@ -184,6 +194,11 @@ export class OpenAIChatAdapter implements ProviderAdapter {
           const content = choice.delta?.content;
           if (typeof content === 'string' && content.length > 0) {
             yield { type: 'text-delta', text: content };
+          }
+
+          const reasoning = choice.delta?.reasoning_content;
+          if (typeof reasoning === 'string' && reasoning.length > 0) {
+            yield { type: 'reasoning-delta', text: reasoning };
           }
 
           const deltas = choice.delta?.tool_calls;
