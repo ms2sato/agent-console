@@ -323,11 +323,6 @@ export function CreateWorktreeForm({
                   rows={3}
                   error={errors.initialPrompt}
                 />
-                {embeddedAgentId && (
-                  <p className="text-xs text-yellow-400 mt-1">
-                    The initial prompt is used for branch naming only; it will not be delivered to the embedded agent (v1 limitation).
-                  </p>
-                )}
               </FormField>
 
               {/* Session title input */}

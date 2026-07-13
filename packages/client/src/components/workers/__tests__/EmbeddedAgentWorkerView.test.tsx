@@ -266,4 +266,231 @@ describe('EmbeddedAgentWorkerView', () => {
 
     expect(screen.getByText('Hello')).toBeTruthy();
   });
+
+  describe('Markdown rendering (#1069)', () => {
+    it('renders an assistant message with heading/list/bold/code/link Markdown as formatted HTML', async () => {
+      const { container } = renderView({ sessionId: 's10', workerId: 'w10' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const markdown = [
+        '# Heading',
+        '',
+        '- item one',
+        '- item two',
+        '',
+        '**bold text** and `inline code`',
+        '',
+        '[a link](https://example.com)',
+      ].join('\n');
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: markdown });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByRole('heading', { level: 1, name: 'Heading' })).toBeTruthy();
+      expect(screen.getAllByRole('listitem')).toHaveLength(2);
+      const bold = container.querySelector('strong');
+      expect(bold?.textContent).toBe('bold text');
+      const code = container.querySelector('code');
+      expect(code?.textContent).toBe('inline code');
+      const link = screen.getByRole('link', { name: 'a link' }) as HTMLAnchorElement;
+      expect(link.getAttribute('href')).toBe('https://example.com');
+    });
+
+    it('renders a fenced code block as a <pre><code> element', async () => {
+      const { container } = renderView({ sessionId: 's10b', workerId: 'w10b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const markdown = ['```', "console.log('hi')", '```'].join('\n');
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: markdown });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const pre = container.querySelector('pre');
+      expect(pre).toBeTruthy();
+      expect(pre?.querySelector('code')?.textContent).toContain("console.log('hi')");
+    });
+
+    it('renders a user message with Markdown syntax as formatted HTML too', async () => {
+      const { container } = renderView({ sessionId: 's10c', workerId: 'w10c' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: '**important** request' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const bold = container.querySelector('strong');
+      expect(bold?.textContent).toBe('important');
+    });
+
+    it('does not execute or render a <script> tag from an assistant message (XSS defense-in-depth)', async () => {
+      const { container } = renderView({ sessionId: 's11', workerId: 'w11' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'assistant-message',
+        turnId: 't1',
+        text: 'before <script>alert(1)</script> after',
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(container.querySelector('script')).toBeNull();
+      expect(screen.getByText(/before/)).toBeTruthy();
+    });
+
+    it('does not execute or render a <script> tag from a user message (XSS defense-in-depth)', async () => {
+      const { container } = renderView({ sessionId: 's11b', workerId: 'w11b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text: 'hi <script>alert(1)</script> there',
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(container.querySelector('script')).toBeNull();
+    });
+
+    it('applies the wrap-safe .memo-content class to assistant/user message bubbles (#1071)', async () => {
+      const { container } = renderView({ sessionId: 's12', workerId: 'w12' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'hi' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const bubbles = container.querySelectorAll('.memo-content');
+      expect(bubbles.length).toBe(2);
+      for (const bubble of Array.from(bubbles)) {
+        expect(bubble.className).toContain('min-w-0');
+      }
+    });
+  });
+
+  describe('Thinking accordion (#1070)', () => {
+    it('renders a thinking entry collapsed by default (body not in the accessible/queryable tree)', async () => {
+      renderView({ sessionId: 's13', workerId: 'w13' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering deeply' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Thinking')).toBeTruthy();
+      // Native <details> hides non-<summary> children via the UA stylesheet
+      // (`details:not([open]) > *:not(summary) { display: none }`) rather
+      // than removing them from the DOM, so a happy-dom text query still
+      // finds the body node structurally present -- the `open` attribute is
+      // the authoritative collapsed/expanded signal.
+      const details = document.querySelector('details');
+      expect(details?.hasAttribute('open')).toBe(false);
+    });
+
+    it('expands the thinking accordion body on clicking the summary (true-path)', async () => {
+      renderView({ sessionId: 's14', workerId: 'w14' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering deeply' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      // happy-dom's native <details> toggle only fires when the click
+      // target is the <summary> element itself, not a nested descendant
+      // (unlike real browsers, where the click bubbles up); click the
+      // <summary> directly to drive the true-path expand.
+      const user = userEvent.setup();
+      const summary = document.querySelector('summary')!;
+      await user.click(summary);
+
+      expect(screen.getByText('pondering deeply')).toBeTruthy();
+      const details = document.querySelector('details');
+      expect(details?.hasAttribute('open')).toBe(true);
+    });
+
+    it('applies overflow-wrap:anywhere to the thinking accordion body', async () => {
+      renderView({ sessionId: 's14b', workerId: 'w14b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      const user = userEvent.setup();
+      const summary = document.querySelector('summary')!;
+      await user.click(summary);
+
+      const body = screen.getByText('pondering');
+      expect(body.className).toContain('[overflow-wrap:anywhere]');
+    });
+
+    it('renders assistant messages WITHOUT thinking content exactly as before (no accordion present)', async () => {
+      renderView({ sessionId: 's15', workerId: 'w15' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: 'plain answer, no thinking' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('plain answer, no thinking')).toBeTruthy();
+      expect(screen.queryByText('Thinking')).toBeNull();
+      expect(document.querySelectorAll('details').length).toBe(0);
+    });
+  });
 });
