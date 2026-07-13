@@ -197,6 +197,23 @@ describe('embedded-agent-store', () => {
     expect(thinkingEntry).toMatchObject({ text: 'thinking...', streaming: false });
   });
 
+  it('finalizes an open assistant-thinking entry on fatal', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3e', 'w3e');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson(
+      { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking...' },
+      { v: 1, type: 'fatal', message: 'boom' },
+    );
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    const thinkingEntry = entries.find((e) => e.kind === 'assistant-thinking');
+    expect(thinkingEntry).toMatchObject({ text: 'thinking...', streaming: false });
+  });
+
   it('pairs a tool-result with its tool-call by callId, including error styling data', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s4', 'w4');
     const ws = MockWebSocket.getLastInstance();

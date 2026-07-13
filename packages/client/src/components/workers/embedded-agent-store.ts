@@ -579,6 +579,10 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         return true;
       case 'fatal':
         this.pushEntry({ key: `fatal-${this.entryKeyCounter++}`, kind: 'fatal', message: event.message });
+        // Defensive finalize: a fatal error mid-reasoning must not leave any
+        // turn's thinking entry permanently streaming (no other event will
+        // ever finalize it), mirroring the 'exited' handler above.
+        this.closeAllOpenThinking();
         return true;
       case 'user-message':
         this.pushEntry({ key: `user-${event.id}`, kind: 'user-message', id: event.id, text: event.text });
