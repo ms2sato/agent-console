@@ -93,6 +93,19 @@ export function useResolvedAgentId(
   return valueExists ? value : sortedAgents[0]?.id;
 }
 
+/**
+ * Hook that resolves the effective embedded agent ID with fallback logic.
+ * Unlike useResolvedAgentId, embedded agent selection is optional: an unknown/stale
+ * value falls back to undefined (unset) rather than the first embedded agent.
+ */
+export function useResolvedEmbeddedAgentId(value: string | undefined): string | undefined {
+  const { embeddedAgents, isLoading } = useEmbeddedAgents();
+
+  if (isLoading) return value;
+  const valueExists = value != null && embeddedAgents.some((a) => a.id === value);
+  return valueExists ? value : undefined;
+}
+
 export function useAgents() {
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: agentKeys.all(),
@@ -146,7 +159,9 @@ export function WorktreeAgentSelector({
   const isLoading = agentsLoading || embeddedLoading;
 
   const terminalValueExists = agentId != null && sortedAgents.some((a) => a.id === agentId);
-  const selectedValue = embeddedAgentId
+  const embeddedValueExists =
+    embeddedAgentId != null && embeddedAgents.some((a) => a.id === embeddedAgentId);
+  const selectedValue = embeddedValueExists
     ? `embedded:${embeddedAgentId}`
     : terminalValueExists
       ? `terminal:${agentId}`

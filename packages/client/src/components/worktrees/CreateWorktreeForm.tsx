@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
-import { WorktreeAgentSelector, useResolvedAgentId } from '../AgentSelector';
+import { WorktreeAgentSelector, useResolvedAgentId, useResolvedEmbeddedAgentId } from '../AgentSelector';
 import { Spinner } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
@@ -121,12 +121,20 @@ export function CreateWorktreeForm({
         // getValues() returns initial defaults (form just mounted).
         // The draft overwrites them with previously saved user input.
         reset({ ...getValues(), ...draft }, { keepDefaultValues: true });
+        // agentId/embeddedAgentId are never register()-bound (custom select, driven by
+        // watch/setValue), so reset()'s keepDefaultValues silently discards them; restore explicitly.
+        if ('agentId' in draft) {
+          setValue('agentId', draft.agentId, { shouldDirty: true });
+        }
+        if ('embeddedAgentId' in draft) {
+          setValue('embeddedAgentId', draft.embeddedAgentId, { shouldDirty: true });
+        }
       }
     } catch {
       // Ignore corrupted drafts
     }
-    // reset and getValues are stable refs from react-hook-form
-  }, [draftKey, reset, getValues, prefillValues]);
+    // reset, getValues and setValue are stable refs from react-hook-form
+  }, [draftKey, reset, getValues, setValue, prefillValues]);
 
 
 
@@ -169,6 +177,7 @@ export function CreateWorktreeForm({
   const agentId = watch('agentId');
   const embeddedAgentId = watch('embeddedAgentId');
   const resolvedAgentId = useResolvedAgentId(agentId, defaultAgentId ?? undefined);
+  const resolvedEmbeddedAgentId = useResolvedEmbeddedAgentId(embeddedAgentId);
 
   const branchNameMode = watch('branchNameMode');
   const initialPrompt = watch('initialPrompt');
@@ -229,8 +238,8 @@ export function CreateWorktreeForm({
           initialPrompt: data.initialPrompt!.trim(),
           baseBranch: data.baseBranch?.trim() || undefined,
           autoStartSession: true,
-          agentId: embeddedAgentId ? undefined : resolvedAgentId,
-          embeddedAgentId: embeddedAgentId || undefined,
+          agentId: resolvedEmbeddedAgentId ? undefined : resolvedAgentId,
+          embeddedAgentId: resolvedEmbeddedAgentId || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
         };
@@ -240,8 +249,8 @@ export function CreateWorktreeForm({
           branch: data.customBranch!.trim(),
           baseBranch: data.baseBranch?.trim() || undefined,
           autoStartSession: true,
-          agentId: embeddedAgentId ? undefined : resolvedAgentId,
-          embeddedAgentId: embeddedAgentId || undefined,
+          agentId: resolvedEmbeddedAgentId ? undefined : resolvedAgentId,
+          embeddedAgentId: resolvedEmbeddedAgentId || undefined,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
@@ -251,8 +260,8 @@ export function CreateWorktreeForm({
           mode: 'existing',
           branch: data.customBranch!.trim(),
           autoStartSession: true,
-          agentId: embeddedAgentId ? undefined : resolvedAgentId,
-          embeddedAgentId: embeddedAgentId || undefined,
+          agentId: resolvedEmbeddedAgentId ? undefined : resolvedAgentId,
+          embeddedAgentId: resolvedEmbeddedAgentId || undefined,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
         };
@@ -295,7 +304,7 @@ export function CreateWorktreeForm({
               <span className="text-sm text-gray-400">Agent:</span>
               <WorktreeAgentSelector
                 agentId={resolvedAgentId}
-                embeddedAgentId={embeddedAgentId}
+                embeddedAgentId={resolvedEmbeddedAgentId}
                 onChange={(selection) => {
                   if (selection.embeddedAgentId) {
                     setValue('embeddedAgentId', selection.embeddedAgentId, { shouldDirty: true });

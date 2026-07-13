@@ -2,7 +2,13 @@ import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun
 import { render, screen, waitFor, cleanup, renderHook } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { AgentSelector, useResolvedAgentId, WorktreeAgentSelector } from '../AgentSelector';
+import {
+  AgentSelector,
+  useResolvedAgentId,
+  useResolvedEmbeddedAgentId,
+  WorktreeAgentSelector,
+} from '../AgentSelector';
+import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -224,31 +230,97 @@ describe('useResolvedAgentId', () => {
   });
 });
 
-describe('WorktreeAgentSelector', () => {
-  const mockEmbeddedAgentsResponse = {
-    embeddedAgents: [
-      { id: 'embedded-1', name: 'Local GPT' },
-      { id: 'embedded-2', name: 'Ollama Agent' },
-    ],
-  };
+const mockEmbeddedAgentsResponse = {
+  embeddedAgents: [
+    { id: 'embedded-1', name: 'Local GPT' },
+    { id: 'embedded-2', name: 'Ollama Agent' },
+  ],
+};
 
-  function resolveUrl(input: unknown): string {
-    if (typeof input === 'string') return input;
-    if (input instanceof URL) return input.toString();
-    if (input && typeof input === 'object' && 'url' in input) return (input as Request).url;
-    return '';
-  }
+function resolveUrl(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  if (input && typeof input === 'object' && 'url' in input) return (input as Request).url;
+  return '';
+}
 
-  function mockFetchImplementation() {
-    mockFetch.mockImplementation((input) => {
-      const url = resolveUrl(input);
-      if (url.includes('embedded-agents')) {
-        return Promise.resolve(createMockResponse(mockEmbeddedAgentsResponse));
-      }
-      return Promise.resolve(createMockResponse(mockAgentsResponse));
+function mockFetchImplementation() {
+  mockFetch.mockImplementation((input) => {
+    const url = resolveUrl(input);
+    if (url.includes('embedded-agents')) {
+      return Promise.resolve(createMockResponse(mockEmbeddedAgentsResponse));
+    }
+    return Promise.resolve(createMockResponse(mockAgentsResponse));
+  });
+}
+
+describe('useResolvedEmbeddedAgentId', () => {
+  beforeEach(() => {
+    mockFetch.mockReset();
+    mockFetchImplementation();
+  });
+
+  it('should return the original value while loading', () => {
+    mockFetch.mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(
+      () => useResolvedEmbeddedAgentId('embedded-1'),
+      { wrapper: createTestWrapper() }
+    );
+
+    expect(result.current).toBe('embedded-1');
+  });
+
+  it('should return undefined while loading when value is undefined', () => {
+    mockFetch.mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(
+      () => useResolvedEmbeddedAgentId(undefined),
+      { wrapper: createTestWrapper() }
+    );
+
+    expect(result.current).toBeUndefined();
+  });
+
+  it('should return undefined (not the first embedded agent) when value is undefined and embedded agents have loaded', async () => {
+    const { result } = renderHook(
+      () => {
+        const { isLoading } = useEmbeddedAgents();
+        return { isLoading, resolved: useResolvedEmbeddedAgentId(undefined) };
+      },
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current.isLoading).toBe(false);
     });
-  }
+    expect(result.current.resolved).toBeUndefined();
+  });
 
+  it('should return the existing value unchanged when it matches a known embedded agent id', async () => {
+    const { result } = renderHook(
+      () => useResolvedEmbeddedAgentId('embedded-2'),
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current).toBe('embedded-2');
+    });
+  });
+
+  it('should return undefined when the value does not match any embedded agent', async () => {
+    const { result } = renderHook(
+      () => useResolvedEmbeddedAgentId('nonexistent-embedded'),
+      { wrapper: createTestWrapper() }
+    );
+
+    await waitFor(() => {
+      expect(result.current).toBeUndefined();
+    });
+  });
+});
+
+describe('WorktreeAgentSelector', () => {
   beforeEach(() => {
     mockFetch.mockReset();
     mockFetchImplementation();
@@ -286,6 +358,17 @@ describe('WorktreeAgentSelector', () => {
 
   it('defaults selection to the priority terminal agent when neither agentId nor embeddedAgentId is given', async () => {
     renderWorktreeAgentSelector({ priorityAgentId: 'another-agent' });
+
+    await waitFor(() => {
+      expect(screen.getByText('Local GPT')).toBeTruthy();
+    });
+
+    const select = screen.getByRole('combobox') as HTMLSelectElement;
+    expect(select.value).toBe('terminal:another-agent');
+  });
+
+  it('falls back to the terminal default when embeddedAgentId does not match any embedded agent', async () => {
+    renderWorktreeAgentSelector({ embeddedAgentId: 'nonexistent-embedded', priorityAgentId: 'another-agent' });
 
     await waitFor(() => {
       expect(screen.getByText('Local GPT')).toBeTruthy();
