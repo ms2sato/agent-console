@@ -6,6 +6,7 @@ import {
   EmbeddedAgentForm,
   READ_ONLY_TOOL_NAMES,
   COMMAND_EXECUTION_TOOL_NAMES,
+  FILE_MODIFICATION_TOOL_NAMES,
   type EmbeddedAgentFormData,
 } from '../EmbeddedAgentForm';
 
@@ -138,13 +139,16 @@ describe('EmbeddedAgentForm', () => {
       expect(props.onCancel).toHaveBeenCalledTimes(1);
     });
 
-    it('should check Read/Glob/Grep and leave Bash unchecked by default', () => {
+    it('should check Read/Glob/Grep and leave Bash/Write/Edit unchecked by default', () => {
       renderEmbeddedAgentForm();
 
       for (const name of READ_ONLY_TOOL_NAMES) {
         expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(true);
       }
       for (const name of COMMAND_EXECUTION_TOOL_NAMES) {
+        expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(false);
+      }
+      for (const name of FILE_MODIFICATION_TOOL_NAMES) {
         expect((screen.getByRole('checkbox', { name }) as HTMLInputElement).checked).toBe(false);
       }
     });
@@ -166,6 +170,45 @@ describe('EmbeddedAgentForm', () => {
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
       expect([...formData.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Grep', 'Read']);
+    });
+
+    it('should include toggled Write/Edit checkboxes in the submitted enabledTools array', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      for (const name of FILE_MODIFICATION_TOOL_NAMES) {
+        await user.click(screen.getByRole('checkbox', { name }));
+      }
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect([...formData.enabledTools].sort()).toEqual(['Edit', 'Glob', 'Grep', 'Read', 'Write']);
+    });
+
+    it('should show an amber danger warning associated with the File modification checkbox group', () => {
+      renderEmbeddedAgentForm();
+
+      const warning = screen.getByText(/Creates and modifies files/);
+      expect(warning).toBeTruthy();
+      expect(warning.textContent).toContain('as the session user');
+      expect(warning.className).toContain('amber');
+
+      const writeCheckbox = screen.getByRole('checkbox', { name: 'Write' });
+      const editCheckbox = screen.getByRole('checkbox', { name: 'Edit' });
+      const readCheckbox = screen.getByRole('checkbox', { name: 'Read' });
+      // The warning's enclosing "File modification" group contains the
+      // Write/Edit checkboxes but not a "Read-only" group checkbox.
+      expect(warning.parentElement?.contains(writeCheckbox)).toBe(true);
+      expect(warning.parentElement?.contains(editCheckbox)).toBe(true);
+      expect(warning.parentElement?.contains(readCheckbox)).toBe(false);
     });
 
     it('should submit enabledTools: [] when all read-only checkboxes are unchecked', async () => {
@@ -215,11 +258,15 @@ describe('EmbeddedAgentForm', () => {
   });
 
   describe('tool group partitioning', () => {
-    it('READ_ONLY_TOOL_NAMES and COMMAND_EXECUTION_TOOL_NAMES partition EMBEDDED_AGENT_TOOL_NAMES exactly', () => {
-      const union = [...READ_ONLY_TOOL_NAMES, ...COMMAND_EXECUTION_TOOL_NAMES].sort();
+    it('READ_ONLY_TOOL_NAMES, COMMAND_EXECUTION_TOOL_NAMES, and FILE_MODIFICATION_TOOL_NAMES partition EMBEDDED_AGENT_TOOL_NAMES exactly', () => {
+      const union = [
+        ...READ_ONLY_TOOL_NAMES,
+        ...COMMAND_EXECUTION_TOOL_NAMES,
+        ...FILE_MODIFICATION_TOOL_NAMES,
+      ].sort();
       const all = [...EMBEDDED_AGENT_TOOL_NAMES].sort();
       expect(union).toEqual(all);
-      // No duplicates across the two groups.
+      // No duplicates across the three groups.
       expect(new Set(union).size).toBe(union.length);
     });
   });

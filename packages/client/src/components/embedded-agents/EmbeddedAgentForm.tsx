@@ -12,21 +12,31 @@ import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
 
 /**
- * UI grouping of `EMBEDDED_AGENT_TOOL_NAMES` into "read-only" and "command
- * execution" checkbox sections. These arrays must partition the shared
- * constant exactly -- the guard below throws at module load if a future tool
- * addition (e.g. FF-1c's `Write`/`Edit`) is not also added to one of these
- * groups, so it fails loudly instead of silently vanishing from the form.
+ * UI grouping of `EMBEDDED_AGENT_TOOL_NAMES` into "read-only", "command
+ * execution", and "file modification" checkbox sections. These arrays must
+ * partition the shared constant exactly -- the guard below throws at module
+ * load if a future tool addition is not also added to one of these groups,
+ * so it fails loudly instead of silently vanishing from the form. FF-1c
+ * added `Write`/`Edit` as their own "file modification" group (see below)
+ * rather than folding them into `COMMAND_EXECUTION_TOOL_NAMES`, since their
+ * risk profile (creating/modifying files) is distinct from Bash's (running
+ * arbitrary shell commands) and warrants its own warning copy.
  */
 export const READ_ONLY_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Read', 'Glob', 'Grep'];
 export const COMMAND_EXECUTION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Bash'];
+export const FILE_MODIFICATION_TOOL_NAMES: readonly EmbeddedAgentToolName[] = ['Write', 'Edit'];
 
+const TOOL_GROUPS = [
+  READ_ONLY_TOOL_NAMES,
+  COMMAND_EXECUTION_TOOL_NAMES,
+  FILE_MODIFICATION_TOOL_NAMES,
+];
+
+const flatToolNames = TOOL_GROUPS.flat();
 if (
-  new Set([...READ_ONLY_TOOL_NAMES, ...COMMAND_EXECUTION_TOOL_NAMES]).size !==
-    EMBEDDED_AGENT_TOOL_NAMES.length ||
-  !EMBEDDED_AGENT_TOOL_NAMES.every(
-    (name) => READ_ONLY_TOOL_NAMES.includes(name) || COMMAND_EXECUTION_TOOL_NAMES.includes(name)
-  )
+  flatToolNames.length !== new Set(flatToolNames).size ||
+  flatToolNames.length !== EMBEDDED_AGENT_TOOL_NAMES.length ||
+  !EMBEDDED_AGENT_TOOL_NAMES.every((name) => TOOL_GROUPS.some((group) => group.includes(name)))
 ) {
   throw new Error('EmbeddedAgentForm tool groups do not partition EMBEDDED_AGENT_TOOL_NAMES');
 }
@@ -220,6 +230,20 @@ export function EmbeddedAgentForm({
                 </div>
                 <p className="text-xs text-amber-500 mt-1">
                   Runs arbitrary shell commands as the session user.
+                </p>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-400 mb-1">File modification</p>
+                <div className="flex flex-col gap-1">
+                  {FILE_MODIFICATION_TOOL_NAMES.map((name) => (
+                    <label key={name} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" value={name} {...register('enabledTools')} />
+                      {name}
+                    </label>
+                  ))}
+                </div>
+                <p className="text-xs text-amber-500 mt-1">
+                  Creates and modifies files as the session user.
                 </p>
               </div>
             </div>

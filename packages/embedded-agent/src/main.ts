@@ -23,7 +23,10 @@ const EXIT_OK = 0;
 const EXIT_FATAL = 1;
 const EXIT_PROTOCOL = 2;
 const KNOWN_COMMAND_TYPES = new Set(['init', 'user-message', 'cancel', 'shutdown']);
-const TURN_DRAIN_TIMEOUT_MS = 2000;
+// 500ms buffer over Bash's process-group KILL_GRACE_MS so the SIGTERM ->
+// SIGKILL escalation on a stuck Bash child has time to complete before the
+// shutdown drain gives up.
+const TURN_DRAIN_TIMEOUT_MS = 2500;
 
 /** IO seam so the loop can be driven by a test harness or the real process. */
 export interface LoopIO {
