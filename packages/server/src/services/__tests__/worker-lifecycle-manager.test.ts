@@ -291,6 +291,55 @@ describe('WorkerLifecycleManager', () => {
       expect(mockPersistSession).toHaveBeenCalled();
     });
 
+    it('should mark an embedded-agent worker eligible for initial-prompt delivery when created with a non-empty initialPrompt', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'embedded-agent',
+        embeddedAgentId: 'def-1',
+      };
+
+      // Mirrors SessionManager.createSession's initial-worker call shape:
+      // createWorker(id, request, continueConversation, initialPrompt, templateVars).
+      const worker = await lifecycleManager.createWorker(session.id, request, false, 'Do the thing');
+
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.deliverInitialPromptOnActivation).toBe(true);
+    });
+
+    it('should NOT mark an embedded-agent worker eligible when created without an initialPrompt (generic add-worker route shape)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'embedded-agent',
+        embeddedAgentId: 'def-1',
+      };
+
+      // Mirrors routes/workers.ts's generic add-worker call shape: no
+      // initialPrompt argument is passed at all.
+      const worker = await lifecycleManager.createWorker(session.id, request, false);
+
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.deliverInitialPromptOnActivation).toBe(false);
+    });
+
+    it('should NOT mark an embedded-agent worker eligible when initialPrompt is whitespace-only', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'embedded-agent',
+        embeddedAgentId: 'def-1',
+      };
+
+      const worker = await lifecycleManager.createWorker(session.id, request, false, '   ');
+
+      const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
+      expect(internal.deliverInitialPromptOnActivation).toBe(false);
+    });
+
     it('should reject a dangling embeddedAgentId and persist nothing', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
@@ -1554,6 +1603,7 @@ describe('WorkerLifecycleManager', () => {
         outputOffset: 0,
         epoch: 1,
         connectionCallbacks: new Map(),
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 
@@ -1636,6 +1686,7 @@ describe('WorkerLifecycleManager', () => {
         outputOffset: 0,
         epoch: 1,
         connectionCallbacks: new Map(),
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 

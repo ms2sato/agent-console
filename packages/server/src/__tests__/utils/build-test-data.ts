@@ -202,6 +202,7 @@ export function buildInternalEmbeddedAgentWorker(
     outputOffset: 0,
     epoch: 1_700_000_000_000,
     connectionCallbacks: new Map(),
+    deliverInitialPromptOnActivation: false,
     ...overrides,
   };
 }

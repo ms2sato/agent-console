@@ -433,6 +433,33 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
+   * Deliver the session's initialPrompt as this embedded worker's first user
+   * message, exactly once, right after the loop reports readiness. Reuses
+   * the normal sendUserMessage path (turn admission, transcript append, WS
+   * broadcast) so the client renders it as an ordinary user message with no
+   * client-side changes. See docs/design/embedded-agent-worker.md "Initial
+   * prompt delivery".
+   */
+  private async maybeDeliverInitialPrompt(ctx: StreamContext): Promise<void> {
+    if (!ctx.worker.deliverInitialPromptOnActivation) return;
+    const session = this.deps.getSession(ctx.sessionId);
+    if (!session) return;
+    const prompt = session.initialPrompt?.trim();
+    if (!prompt) return;
+    if (session.initialPromptDelivered) return;
+    const result = await this.sendUserMessage(ctx.sessionId, ctx.workerId, prompt);
+    if (!result.ok) {
+      logger.warn(
+        { sessionId: ctx.sessionId, workerId: ctx.workerId, code: result.code },
+        'Failed to deliver initial prompt to embedded-agent worker; will retry on next activation',
+      );
+      return;
+    }
+    session.initialPromptDelivered = true;
+    await this.deps.persistSession(session);
+  }
+
+  /**
    * Forward a cancel command (the loop no-ops it while idle). Returns whether it
    * was forwarded.
    */
@@ -554,7 +581,7 @@ export class EmbeddedAgentWorkerService {
         }
         for (const line of result.lines) {
           if (line.length === 0) continue;
-          this.handleLoopLine(runtime, subprocess, line);
+          await this.handleLoopLine(runtime, subprocess, line);
         }
       }
     } catch (err) {
@@ -581,7 +608,7 @@ export class EmbeddedAgentWorkerService {
     }
   }
 
-  private handleLoopLine(runtime: Runtime, subprocess: PipedSubprocess, line: string): void {
+  private async handleLoopLine(runtime: Runtime, subprocess: PipedSubprocess, line: string): Promise<void> {
     const { ctx } = runtime;
     let parsed: unknown;
     try {
@@ -628,6 +655,12 @@ export class EmbeddedAgentWorkerService {
       if (event.state === 'idle') {
         runtime.turnActive = false;
       }
+    }
+
+    // (d): deliver the session's initialPrompt as this worker's first user
+    // message, exactly once, right after the loop reports readiness.
+    if (event.type === 'ready') {
+      await this.maybeDeliverInitialPrompt(ctx);
     }
   }
 

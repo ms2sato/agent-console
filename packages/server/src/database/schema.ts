@@ -39,6 +39,12 @@ export interface SessionsTable {
   updated_at: Generated<string>;
   /** Initial prompt used to start the session */
   initial_prompt: string | null;
+  /**
+   * Whether `initial_prompt` has already been delivered as the session's
+   * initial embedded-agent worker's first user message (Issue #1068). SQLite
+   * stores booleans as INTEGER 0/1; null for legacy rows predating v24.
+   */
+  initial_prompt_delivered: number | null;
   /** Human-readable title for the session */
   title: string | null;
   /** Repository ID for worktree sessions (null for quick sessions) */

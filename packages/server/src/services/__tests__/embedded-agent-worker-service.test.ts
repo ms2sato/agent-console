@@ -175,6 +175,7 @@ interface Harness {
   sessionId: string;
   workerId: string;
   worker: ReturnType<typeof buildInternalEmbeddedAgentWorker>;
+  session: ReturnType<typeof buildInternalWorktreeSession>;
   fake: FakeSpawn;
   mint: ReturnType<typeof mock>;
   revokeByWorker: ReturnType<typeof mock>;
@@ -196,12 +197,26 @@ function setup(opts?: {
   sigtermTimeoutMs?: number;
   /** Omit the entryPath override so the service resolves its real default. */
   omitEntryPath?: boolean;
+  /** Issue #1068: session.initialPrompt, undefined by default (no delivery). */
+  initialPrompt?: string;
+  /** Issue #1068: session.initialPromptDelivered, undefined by default. */
+  initialPromptDelivered?: boolean;
+  /** Issue #1068: worker.deliverInitialPromptOnActivation, false by default. */
+  deliverInitialPromptOnActivation?: boolean;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
 
-  const worker = buildInternalEmbeddedAgentWorker({ id: 'w-emb', embeddedAgentId: 'def-1' });
-  const session = buildInternalWorktreeSession([worker], { createdBy });
+  const worker = buildInternalEmbeddedAgentWorker({
+    id: 'w-emb',
+    embeddedAgentId: 'def-1',
+    deliverInitialPromptOnActivation: opts?.deliverInitialPromptOnActivation ?? false,
+  });
+  const session = buildInternalWorktreeSession([worker], {
+    createdBy,
+    initialPrompt: opts?.initialPrompt,
+    initialPromptDelivered: opts?.initialPromptDelivered,
+  });
   const fake = makeFakeSpawn();
 
   const mint = mock(() => TOKEN);
@@ -251,6 +266,7 @@ function setup(opts?: {
     sessionId: session.id,
     workerId: worker.id,
     worker,
+    session,
     fake,
     mint,
     revokeByWorker,
@@ -539,6 +555,96 @@ describe('EmbeddedAgentWorkerService stdout stream', () => {
     h.fake.pushStdout('x'.repeat(1024 * 1024 + 10));
     await waitFor(() => h.fake.killSignals.length > 0);
     expect(h.fake.killSignals).toContain(9);
+  });
+});
+
+describe('EmbeddedAgentWorkerService initial-prompt delivery (Issue #1068)', () => {
+  it('delivers session.initialPrompt as the first user message once, and persists the delivered flag', async () => {
+    const h = setup({
+      deliverInitialPromptOnActivation: true,
+      initialPrompt: 'Please summarize the repo',
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    const writesBeforeReady = h.fake.stdinWrites.length;
+    h.persistSession.mockClear();
+
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    await waitFor(() => h.fake.stdinWrites.length > writesBeforeReady);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[writesBeforeReady]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toBe('Please summarize the repo');
+
+    await waitFor(() => h.session.initialPromptDelivered === true);
+    expect(h.persistSession).toHaveBeenCalledWith(h.session);
+  });
+
+  it('does NOT deliver a second time once initialPromptDelivered is already true', async () => {
+    const h = setup({
+      deliverInitialPromptOnActivation: true,
+      initialPrompt: 'Please summarize the repo',
+      initialPromptDelivered: true,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    const writesBeforeReady = h.fake.stdinWrites.length;
+    h.persistSession.mockClear();
+
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    // Give the async handler a chance to run; no user-message write should follow.
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(h.fake.stdinWrites.length).toBe(writesBeforeReady);
+    expect(h.persistSession).not.toHaveBeenCalled();
+  });
+
+  it('does NOT deliver when the worker is not eligible (added later via the generic add-worker route)', async () => {
+    const h = setup({
+      deliverInitialPromptOnActivation: false,
+      initialPrompt: 'Please summarize the repo',
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    const writesBeforeReady = h.fake.stdinWrites.length;
+    h.persistSession.mockClear();
+
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(h.fake.stdinWrites.length).toBe(writesBeforeReady);
+    expect(h.persistSession).not.toHaveBeenCalled();
+  });
+
+  it('does NOT deliver when session.initialPrompt is empty/undefined', async () => {
+    const h = setup({ deliverInitialPromptOnActivation: true });
+    await h.service.activate(h.sessionId, h.workerId);
+    const writesBeforeReady = h.fake.stdinWrites.length;
+    h.persistSession.mockClear();
+
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(h.fake.stdinWrites.length).toBe(writesBeforeReady);
+    expect(h.persistSession).not.toHaveBeenCalled();
+  });
+
+  it('leaves initialPromptDelivered unset on send failure, so a later activation can retry', async () => {
+    const h = setup({
+      deliverInitialPromptOnActivation: true,
+      initialPrompt: 'Please summarize the repo',
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
+
+    // Force the stdin write to throw (mirrors sendUserMessage's WRITE_FAILED path).
+    h.worker.stdin!.write = () => {
+      throw new Error('EPIPE');
+    };
+
+    h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+    // Bounded wait for the async delivery attempt to settle.
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(h.session.initialPromptDelivered).toBeUndefined();
+    expect(h.persistSession).not.toHaveBeenCalled();
   });
 });
 

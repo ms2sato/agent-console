@@ -38,6 +38,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('initial_prompt', 'text')
+      .addColumn('initial_prompt_delivered', 'integer')
       .addColumn('title', 'text')
       .addColumn('repository_id', 'text')
       .addColumn('worktree_id', 'text')

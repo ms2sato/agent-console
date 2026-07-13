@@ -117,6 +117,17 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
   /** Incarnation id, same semantics as InternalPtyWorkerBase.epoch. */
   epoch: number;
   connectionCallbacks: Map<string, WorkerCallbacks>;
+  /**
+   * Whether this worker is eligible to receive the session's `initialPrompt`
+   * as its first user message once the loop reports `ready` (Issue #1068).
+   * In-memory-only, mirroring how `subprocess`/`stdin` are also null-on-
+   * restore -- NOT part of {@link PersistedWorker}. Set true only for the
+   * session's initial embedded-agent worker (created with a non-empty
+   * `initialPrompt`); workers added later via the generic add-worker route
+   * are never eligible. See `docs/design/embedded-agent-worker.md` "Initial
+   * prompt delivery".
+   */
+  deliverInitialPromptOnActivation: boolean;
 }
 
 /**
