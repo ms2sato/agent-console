@@ -905,9 +905,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpServer.tool(
     'close_session',
-    'Close a session and clean up its workers. ' +
-      'For worktree sessions, this only closes the session — the worktree directory remains on disk. ' +
-      'Use remove_worktree to also remove the worktree.',
+    'WARNING: For worktree sessions, prefer mcp__agent-console__remove_worktree instead. ' +
+      'Using close_session alone leaves the agent-console worktree entity orphaned ' +
+      '(visible in the top-level UI but no longer removable via MCP tools once the ' +
+      'sessionId is invalidated). close_session should be used ONLY when you explicitly ' +
+      'want to preserve the git worktree directory and branch. ' +
+      'This tool closes a session and cleans up its workers; for worktree sessions, ' +
+      'the worktree directory on disk is not removed.',
     {
       sessionId: z.string().describe('The session ID to close'),
     },
