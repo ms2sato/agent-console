@@ -41,7 +41,7 @@ export class CompositeToolExecutor implements ToolExecutor {
     const builtin = this.deps.builtins.find((t) => t.name === name);
     if (builtin) {
       try {
-        return await builtin.execute(args, this.deps.ctx);
+        return await builtin.execute(args, this.deps.ctx, signal);
       } catch (err) {
         return { ok: false, result: err instanceof Error ? err.message : String(err) };
       }

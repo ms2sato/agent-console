@@ -13,6 +13,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 import { truncateToBytes } from '../truncate.js';
 import { buildBashEnv } from './env-cleaner.js';
@@ -32,6 +33,14 @@ export interface RunBashOptions {
   cwd: string;
   env: Record<string, string>;
   timeoutMs: number;
+  /**
+   * Optional turn-level abort signal (sourced from `AgentLoop`'s per-turn
+   * `AbortController`, threaded via `BuiltinTool.execute`'s third parameter).
+   * Firing it kills the process group via the same SIGTERM -> grace ->
+   * SIGKILL sequence used on timeout; final settlement still happens from
+   * `child.on('close', ...)` once the kill actually takes effect.
+   */
+  signal?: AbortSignal;
 }
 
 export interface RunBashResult {
@@ -40,6 +49,7 @@ export interface RunBashResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  aborted: boolean;
 }
 
 function parseArgs(args: unknown): { ok: true; value: BashArgs } | { ok: false; message: string } {
@@ -63,10 +73,11 @@ function parseArgs(args: unknown): { ok: true; value: BashArgs } | { ok: false; 
 /**
  * Spawns `sh -c command` as a detached process-group leader and resolves once
  * the child's stdio streams have closed. Never rejects/throws: infra failures
- * (spawn error, timeout) are reported via the resolved `{ ok: false, ... }`
- * shape so callers don't need a try/catch around this call.
+ * (spawn error, timeout, abort) are reported via the resolved
+ * `{ ok: false, ... }` shape so callers don't need a try/catch around this
+ * call.
  *
- * @internal Exported for testing (timeout / process-group-kill polarity).
+ * @internal Exported for testing (timeout / abort / process-group-kill polarity).
  */
 export function runBash(command: string, opts: RunBashOptions): Promise<RunBashResult> {
   return new Promise((resolve) => {
@@ -79,27 +90,32 @@ export function runBash(command: string, opts: RunBashOptions): Promise<RunBashR
 
     let stdout = '';
     let stdoutBytes = 0;
+    const stdoutDecoder = new StringDecoder('utf-8');
     let stderr = '';
     let stderrBytes = 0;
+    const stderrDecoder = new StringDecoder('utf-8');
     let timedOut = false;
+    let aborted = false;
     let settled = false;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
 
     child.stdout?.on('data', (chunk: Buffer) => {
       if (stdoutBytes < OUTPUT_MAX_BYTES) {
-        stdout += chunk.toString('utf-8');
+        stdout += stdoutDecoder.write(chunk);
         stdoutBytes += chunk.length;
       }
     });
     child.stderr?.on('data', (chunk: Buffer) => {
       if (stderrBytes < OUTPUT_MAX_BYTES) {
-        stderr += chunk.toString('utf-8');
+        stderr += stderrDecoder.write(chunk);
         stderrBytes += chunk.length;
       }
     });
 
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
+    // SIGTERM the entire process group, then escalate to SIGKILL after
+    // KILL_GRACE_MS if it's still alive. Shared by the timeout path and the
+    // abort path below so both signal sources drive the exact same sequence.
+    function killProcessGroup(): void {
       if (child.pid !== undefined) {
         try {
           process.kill(-child.pid, 'SIGTERM');
@@ -115,33 +131,61 @@ export function runBash(command: string, opts: RunBashOptions): Promise<RunBashR
           // ESRCH: process group already gone.
         }
       }, KILL_GRACE_MS);
+    }
+
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      killProcessGroup();
     }, opts.timeoutMs);
 
-    function settle(result: RunBashResult): void {
+    function onAbort(): void {
+      if (settled || aborted) return;
+      aborted = true;
+      killProcessGroup();
+    }
+
+    opts.signal?.addEventListener('abort', onAbort);
+    if (opts.signal?.aborted) {
+      // The signal fired before runBash was even called (or synchronously
+      // during spawn, before the listener above could observe the event) —
+      // the 'abort' event will not fire again, so trigger the same kill path
+      // directly.
+      onAbort();
+    }
+
+    function settle(result: Omit<RunBashResult, 'stdout' | 'stderr'>): void {
       if (settled) return;
       settled = true;
       clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
-      resolve(result);
+      opts.signal?.removeEventListener('abort', onAbort);
+      // Flush each decoder exactly once to catch any trailing incomplete
+      // multi-byte sequence still buffered inside it, BEFORE truncation.
+      stdout += stdoutDecoder.end();
+      stderr += stderrDecoder.end();
+      resolve({
+        ...result,
+        stdout: truncateToBytes(stdout, OUTPUT_MAX_BYTES).text,
+        stderr: truncateToBytes(stderr, OUTPUT_MAX_BYTES).text,
+      });
     }
 
     child.on('error', (err) => {
+      stderr += `\n[Failed to spawn command: ${err.message}]`;
       settle({
         ok: false,
         exitCode: null,
-        stdout: truncateToBytes(stdout, OUTPUT_MAX_BYTES).text,
-        stderr: truncateToBytes(`${stderr}\n[Failed to spawn command: ${err.message}]`, OUTPUT_MAX_BYTES).text,
         timedOut: false,
+        aborted,
       });
     });
 
     child.on('close', (code) => {
       settle({
-        ok: !timedOut,
+        ok: !timedOut && !aborted,
         exitCode: code,
-        stdout: truncateToBytes(stdout, OUTPUT_MAX_BYTES).text,
-        stderr: truncateToBytes(stderr, OUTPUT_MAX_BYTES).text,
         timedOut,
+        aborted,
       });
     });
   });
@@ -160,15 +204,19 @@ export function formatBashResult(result: RunBashResult, timeoutMs: number): stri
   if (result.stderr.length > 0) {
     output += `\n\n[stderr]\n${result.stderr}`;
   }
-  if (result.timedOut) {
+  if (result.aborted) {
+    output += `\n\n[Command aborted and its process group was terminated.]`;
+  } else if (result.timedOut) {
     output += `\n\n[Command timed out after ${timeoutMs}ms and was killed (process group terminated).]`;
-  } else if (result.exitCode !== null && result.exitCode !== 0) {
+  } else if (result.exitCode === null) {
+    output += `\n\n[Killed by signal]`;
+  } else if (result.exitCode !== 0) {
     output += `\n\n[Exit code: ${result.exitCode}]`;
   }
   return output.length > 0 ? output : '(no output)';
 }
 
-async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinToolResult> {
+async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSignal): Promise<BuiltinToolResult> {
   const parsed = parseArgs(args);
   if (!parsed.ok) {
     return { ok: false, result: parsed.message };
@@ -179,6 +227,7 @@ async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinT
     cwd: ctx.locationPath,
     env: buildBashEnv(),
     timeoutMs,
+    signal,
   });
 
   return { ok: result.ok, result: formatBashResult(result, timeoutMs) };

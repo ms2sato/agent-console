@@ -58,10 +58,18 @@ function looksBinary(text: string): boolean {
   return text.includes('\0');
 }
 
-async function collectSearchableFiles(root: string, globPattern: string, ctx: BuiltinToolContext): Promise<string[]> {
+async function collectSearchableFiles(
+  root: string,
+  globPattern: string,
+  ctx: BuiltinToolContext,
+  signal?: AbortSignal,
+): Promise<string[]> {
   const glob = new Glob(globPattern);
   const files: string[] = [];
   for await (const match of glob.scan({ cwd: root, absolute: false })) {
+    if (signal?.aborted) {
+      break;
+    }
     const absoluteMatch = path.join(root, match);
     const confinement = await resolveConfinedPath(absoluteMatch, ctx.locationPath);
     if (!confinement.ok) continue;
@@ -101,7 +109,7 @@ function formatResult(
   return Array.from(byFile.keys()).join('\n');
 }
 
-async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinToolResult> {
+async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSignal): Promise<BuiltinToolResult> {
   const parsed = parseArgs(args);
   if (!parsed.ok) {
     return { ok: false, result: parsed.message };
@@ -121,10 +129,16 @@ async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinT
     return { ok: false, result: rootConfinement.message };
   }
 
-  const files = await collectSearchableFiles(rootConfinement.resolvedPath, globPattern ?? '**/*', ctx);
+  const files = await collectSearchableFiles(rootConfinement.resolvedPath, globPattern ?? '**/*', ctx, signal);
+  if (signal?.aborted) {
+    return { ok: false, result: 'aborted' };
+  }
 
   const matches: Array<{ file: string; lineNumber: number; lineContent: string }> = [];
   for (const file of files) {
+    if (signal?.aborted) {
+      return { ok: false, result: 'aborted' };
+    }
     let text: string;
     try {
       text = await Bun.file(file).text();

@@ -123,6 +123,23 @@ describe('CompositeToolExecutor', () => {
     expect(receivedCtx).toEqual({ locationPath: '/some/path' });
   });
 
+  it('forwards the exact signal object passed into callTool() as the third arg to builtin.execute()', async () => {
+    const readTool = makeBuiltinTool('Read');
+    const mcp = makeMcpStub([]);
+    const composite = new CompositeToolExecutor({
+      mcp,
+      builtins: [readTool],
+      ctx: { locationPath: '/work' },
+    });
+
+    const signal = new AbortController().signal;
+    await composite.callTool('Read', { path: 'x' }, signal);
+
+    expect(readTool.executeMock).toHaveBeenCalledTimes(1);
+    const receivedSignal = readTool.executeMock.mock.calls[0][2];
+    expect(receivedSignal).toBe(signal);
+  });
+
   it('converts a builtin tool execute() rejection into a resolved {ok:false} outcome instead of throwing', async () => {
     // Regression guard for the never-throws ToolExecutor contract (see mcp.ts
     // McpToolClient.callTool's own try/catch). AgentLoop.runTurn calls

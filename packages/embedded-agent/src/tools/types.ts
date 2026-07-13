@@ -29,5 +29,13 @@ export interface BuiltinToolResult {
 export interface BuiltinTool {
   name: EmbeddedAgentToolName;
   definition: ToolDefinition;
-  execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinToolResult>;
+  /**
+   * `signal` is optional and call-scoped (sourced from `AgentLoop`'s per-turn
+   * `AbortController`, forwarded unchanged by `CompositeToolExecutor.callTool`)
+   * — deliberately NOT folded into `BuiltinToolContext`, which stays a fixed
+   * per-session confinement root. An implementation that ignores `signal`
+   * simply never observes an abort; the never-throws contract still applies
+   * either way (see `BuiltinToolResult`'s callers).
+   */
+  execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSignal): Promise<BuiltinToolResult>;
 }

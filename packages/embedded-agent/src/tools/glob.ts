@@ -25,7 +25,7 @@ function parseArgs(args: unknown): { ok: true; value: GlobArgs } | { ok: false; 
   return { ok: true, value: { pattern: a.pattern, path: a.path as string | undefined } };
 }
 
-async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinToolResult> {
+async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSignal): Promise<BuiltinToolResult> {
   const parsed = parseArgs(args);
   if (!parsed.ok) {
     return { ok: false, result: parsed.message };
@@ -41,6 +41,9 @@ async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinT
   const glob = new Glob(pattern);
   const candidates: string[] = [];
   for await (const match of glob.scan({ cwd: root, absolute: false })) {
+    if (signal?.aborted) {
+      return { ok: false, result: 'aborted' };
+    }
     const absoluteMatch = path.join(root, match);
     // Defense against a matched symlink pointing outside locationPath: confine
     // every match too and drop it silently if it escapes.
@@ -52,6 +55,9 @@ async function execute(args: unknown, ctx: BuiltinToolContext): Promise<BuiltinT
 
   const withMtime: Array<{ file: string; mtimeMs: number }> = [];
   for (const file of candidates) {
+    if (signal?.aborted) {
+      return { ok: false, result: 'aborted' };
+    }
     try {
       const stat = await fsPromises.stat(file);
       withMtime.push({ file, mtimeMs: stat.mtimeMs });

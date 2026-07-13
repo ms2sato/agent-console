@@ -112,6 +112,86 @@ describe('bashTool', () => {
     const result = await bashTool.execute({ command: 'kill -9 $$' }, { locationPath });
 
     expect(result.result).not.toContain('Exit code: null');
+    // Strengthened per the architect follow-up (Issue #1052): external
+    // signal-death now surfaces an explicit marker instead of silence.
+    expect(result.result).toContain('[Killed by signal]');
+  });
+
+  it('kills the process group and resolves {ok:false, aborted:true} when the caller aborts mid-execution', async () => {
+    const pidFile = path.join(locationPath, 'abort.pid');
+    const controller = new AbortController();
+
+    const runPromise = runBash(`echo $$ > ${pidFile}; sleep 300`, {
+      cwd: locationPath,
+      env: buildBashEnv(),
+      timeoutMs: 600_000,
+      signal: controller.signal,
+    });
+
+    // Wait for the pid file to appear so we know the process actually started
+    // before aborting (otherwise we could abort before spawn() has a pid).
+    let pid: number | undefined;
+    for (let i = 0; i < 50; i++) {
+      try {
+        pid = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+        break;
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+    expect(pid).toBeDefined();
+
+    const start = Date.now();
+    controller.abort();
+    const result = await runPromise;
+    const elapsedMs = Date.now() - start;
+
+    expect(result).toMatchObject({ ok: false, aborted: true, timedOut: false });
+    // Worst case: 2s grace + escalation, well under the 300s sleep.
+    expect(elapsedMs).toBeLessThan(2500);
+
+    let alive = true;
+    try {
+      process.kill(pid as number, 0);
+    } catch {
+      alive = false;
+    }
+    expect(alive).toBe(false);
+  });
+
+  it('kills the process and resolves correctly when the signal is already aborted before runBash is called', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    const start = Date.now();
+    const result = await runBash('sleep 300', {
+      cwd: locationPath,
+      env: buildBashEnv(),
+      timeoutMs: 600_000,
+      signal: controller.signal,
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(result.aborted).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(elapsedMs).toBeLessThan(2500);
+  });
+
+  it('reassembles a multi-byte UTF-8 character whose bytes arrive in separate data events', async () => {
+    // 'é' encodes to 2 bytes in UTF-8 (0xC3 0xA9 = octal \303 \251). Two
+    // separate `printf` invocations with a `sleep` between them force two
+    // distinct 'data' events (mirroring the "bounds accumulation" test's
+    // technique above), defeating OS pipe coalescing and exercising the
+    // StringDecoder boundary-carry logic. POSIX printf's `\xHH` escape is not
+    // portable across `sh` implementations, so octal `\NNN` is used instead.
+    const result = await runBash("printf '\\303'; sleep 0.05; printf '\\251'", {
+      cwd: locationPath,
+      env: buildBashEnv(),
+      timeoutMs: 5000,
+    });
+
+    expect(result.stdout).toBe('é');
+    expect(result.stdout).not.toContain('�');
   });
 
   it('does not leak AGENT_CONSOLE_*-prefixed env vars (or their values) into the spawned command', async () => {
