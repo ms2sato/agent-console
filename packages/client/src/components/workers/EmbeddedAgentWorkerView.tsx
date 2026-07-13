@@ -145,10 +145,8 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
     case 'user-message':
       return (
         <div className="flex justify-end">
-          <div className="memo-content min-w-0 max-w-[80%] rounded-lg bg-blue-600/80 text-white px-3 py-2 text-sm">
-            <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
-              {entry.text}
-            </Markdown>
+          <div className="min-w-0 max-w-[80%] rounded-lg bg-blue-600/80 text-white px-3 py-2 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
+            {entry.text}
           </div>
         </div>
       );

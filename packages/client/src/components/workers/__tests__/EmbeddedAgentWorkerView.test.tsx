@@ -320,7 +320,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(pre?.querySelector('code')?.textContent).toContain("console.log('hi')");
     });
 
-    it('renders a user message with Markdown syntax as formatted HTML too', async () => {
+    it('renders a user message with Markdown syntax as literal text (not interpreted, #1073 architect audit)', async () => {
       const { container } = renderView({ sessionId: 's10c', workerId: 'w10c' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -333,8 +333,35 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      const bold = container.querySelector('strong');
-      expect(bold?.textContent).toBe('important');
+      // User input is verbatim, not Markdown -- the raw `**...**` syntax
+      // must render as plain text, never as a <strong> element.
+      expect(container.querySelector('strong')).toBeNull();
+      expect(screen.getByText('**important** request')).toBeTruthy();
+    });
+
+    it('preserves line breaks in a multi-line user message (regression: user messages must not be Markdown-interpreted, #1073 architect audit)', async () => {
+      const { container } = renderView({ sessionId: 's10d', workerId: 'w10d' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'line one\nline two' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Markdown (remark-gfm) would wrap the paragraph in a <p> element and
+      // rely on the default CSS `white-space: normal`, which visually
+      // collapses a single `\n` into a space -- a multi-line user message
+      // would render as one line. Plain-text rendering must NOT introduce a
+      // <p> wrapper and must apply `whitespace-pre-wrap` directly on the
+      // bubble so the line break is preserved.
+      expect(container.querySelector('p')).toBeNull();
+      const bubble = container.querySelector('.whitespace-pre-wrap');
+      expect(bubble).toBeTruthy();
+      expect(bubble?.textContent).toBe('line one\nline two');
     });
 
     it('does not execute or render a <script> tag from an assistant message (XSS defense-in-depth)', async () => {
@@ -359,7 +386,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText(/before/)).toBeTruthy();
     });
 
-    it('does not execute or render a <script> tag from a user message (XSS defense-in-depth)', async () => {
+    it('does not execute or render a <script> tag from a user message (XSS defense-in-depth via plain-text rendering)', async () => {
       const { container } = renderView({ sessionId: 's11b', workerId: 'w11b' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -377,10 +404,14 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
+      // User messages render as a plain text node (no Markdown pipeline, no
+      // rehype-sanitize needed here) -- React escapes text-node content by
+      // default, so the tag is inert and appears as literal text.
       expect(container.querySelector('script')).toBeNull();
+      expect(screen.getByText('hi <script>alert(1)</script> there')).toBeTruthy();
     });
 
-    it('applies the wrap-safe .memo-content class to assistant/user message bubbles (#1071)', async () => {
+    it('applies the wrap-safe overflow treatment to both assistant (.memo-content) and user (plain-text) message bubbles (#1071, revised for #1073 architect audit)', async () => {
       const { container } = renderView({ sessionId: 's12', workerId: 'w12' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -396,11 +427,17 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      const bubbles = container.querySelectorAll('.memo-content');
-      expect(bubbles.length).toBe(2);
-      for (const bubble of Array.from(bubbles)) {
-        expect(bubble.className).toContain('min-w-0');
-      }
+      // Assistant bubble still goes through the Markdown pipeline (.memo-content).
+      const assistantBubbles = container.querySelectorAll('.memo-content');
+      expect(assistantBubbles.length).toBe(1);
+      expect(assistantBubbles[0].className).toContain('min-w-0');
+
+      // User bubble is plain text now -- no .memo-content, but the same
+      // wrap-safety utilities apply directly on the bubble div.
+      const userBubble = screen.getByText('hi');
+      expect(userBubble.className).toContain('min-w-0');
+      expect(userBubble.className).toContain('whitespace-pre-wrap');
+      expect(userBubble.className).toContain('[overflow-wrap:anywhere]');
     });
   });
 
