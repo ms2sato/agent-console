@@ -147,6 +147,28 @@ describe('EmbeddedAgentManager', () => {
       expect(def.enabledTools).toBeUndefined();
     });
 
+    it('sets instructions from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        { name: 'Ollama', provider: VALID_PROVIDER, instructions: ['docs/local-note.md'] },
+        'creator-user-id'
+      );
+
+      expect(def.instructions).toEqual(['docs/local-note.md']);
+    });
+
+    it('leaves instructions undefined when absent from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        { name: 'Ollama', provider: VALID_PROVIDER },
+        'creator-user-id'
+      );
+
+      expect(def.instructions).toBeUndefined();
+    });
+
     it('fires onEmbeddedAgentCreated after a successful save', async () => {
       const { created, callbacks } = createCallbackRecorder();
       const manager = await getManager();
@@ -186,6 +208,7 @@ describe('EmbeddedAgentManager', () => {
           systemPrompt: 'orig prompt',
           maxToolIterations: 10,
           enabledTools: ['Read'],
+          instructions: ['docs/local-note.md'],
         },
         'owner-id'
       );
@@ -203,12 +226,13 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.systemPrompt).toBe('orig prompt');
       expect(updated?.maxToolIterations).toBe(10);
       expect(updated?.enabledTools).toEqual(['Read']);
+      expect(updated?.instructions).toEqual(['docs/local-note.md']);
       expect(updated?.provider).toEqual(VALID_PROVIDER);
       expect(updated?.createdBy).toBe('owner-id');
       expect(updated?.createdAt).toBe(created.createdAt);
     });
 
-    it('clears description/systemPrompt/maxToolIterations/enabledTools on null', async () => {
+    it('clears description/systemPrompt/maxToolIterations/enabledTools/instructions on null', async () => {
       const manager = await getManager();
       const created = await seed(manager);
 
@@ -217,12 +241,14 @@ describe('EmbeddedAgentManager', () => {
         systemPrompt: null,
         maxToolIterations: null,
         enabledTools: null,
+        instructions: null,
       });
 
       expect(updated?.description).toBeUndefined();
       expect(updated?.systemPrompt).toBeUndefined();
       expect(updated?.maxToolIterations).toBeUndefined();
       expect(updated?.enabledTools).toBeUndefined();
+      expect(updated?.instructions).toBeUndefined();
     });
 
     it('replaces enabledTools with the request value when present, including an explicit empty array', async () => {
@@ -232,6 +258,15 @@ describe('EmbeddedAgentManager', () => {
       const updated = await manager.updateEmbeddedAgent(created.id, { enabledTools: [] });
 
       expect(updated?.enabledTools).toEqual([]);
+    });
+
+    it('replaces instructions with the request value when present, including an explicit empty array', async () => {
+      const manager = await getManager();
+      const created = await seed(manager);
+
+      const updated = await manager.updateEmbeddedAgent(created.id, { instructions: [] });
+
+      expect(updated?.instructions).toEqual([]);
     });
 
     it('replaces the whole provider object when provider is present', async () => {

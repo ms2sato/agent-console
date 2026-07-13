@@ -43,7 +43,7 @@ describe('migration v20 (sessions.initiated_by)', () => {
     const db = await initializeDatabase(':memory:');
 
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(24);
+    expect(versionRes.rows[0]?.user_version).toBe(25);
 
     const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(sessions)`.execute(db);
     const initiatedBy = columns.rows.find((c) => c.name === 'initiated_by');

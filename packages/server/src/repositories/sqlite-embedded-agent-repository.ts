@@ -41,6 +41,7 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
           system_prompt: row.system_prompt,
           max_tool_iterations: row.max_tool_iterations,
           enabled_tools: row.enabled_tools,
+          instructions: row.instructions,
           // Note: created_at and created_by are intentionally NOT updated
           // (they must never change after the initial insert).
           updated_at: row.updated_at,

@@ -49,6 +49,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('system_prompt', 'text')
       .addColumn('max_tool_iterations', 'integer')
       .addColumn('enabled_tools', 'text')
+      .addColumn('instructions', 'text')
       .addColumn('created_by', 'text', (col) => col.notNull())
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
@@ -138,6 +139,36 @@ describe('SqliteEmbeddedAgentRepository', () => {
 
       expect(found?.enabledTools).toEqual(['Read', 'Glob']);
     });
+
+    it('round-trips instructions: undefined as a NULL column and back to undefined', async () => {
+      const def = buildDefinition({ id: 'no-instructions' });
+
+      await repository.save(def);
+      const found = await repository.findById('no-instructions');
+
+      expect(found?.instructions).toBeUndefined();
+    });
+
+    it('round-trips instructions: [] as an explicit empty array', async () => {
+      const def = buildDefinition({ id: 'empty-instructions', instructions: [] });
+
+      await repository.save(def);
+      const found = await repository.findById('empty-instructions');
+
+      expect(found?.instructions).toEqual([]);
+    });
+
+    it('round-trips a non-empty instructions array exactly', async () => {
+      const def = buildDefinition({
+        id: 'some-instructions',
+        instructions: ['docs/local-note.md', 'CONTRIBUTING.md'],
+      });
+
+      await repository.save(def);
+      const found = await repository.findById('some-instructions');
+
+      expect(found?.instructions).toEqual(['docs/local-note.md', 'CONTRIBUTING.md']);
+    });
   });
 
   describe('upsert', () => {
@@ -197,6 +228,20 @@ describe('SqliteEmbeddedAgentRepository', () => {
 
       const found = await repository.findById('x');
       expect(found?.enabledTools).toEqual(['Read', 'Glob', 'Grep']);
+    });
+
+    it('updates instructions on conflict (regression guard: onConflict lists columns explicitly)', async () => {
+      await repository.save(buildDefinition({ id: 'x', instructions: ['a.md'] }));
+      await repository.save(
+        buildDefinition({
+          id: 'x',
+          instructions: ['a.md', 'b.md'],
+          updatedAt: '2024-06-01T00:00:00.000Z',
+        })
+      );
+
+      const found = await repository.findById('x');
+      expect(found?.instructions).toEqual(['a.md', 'b.md']);
     });
   });
 

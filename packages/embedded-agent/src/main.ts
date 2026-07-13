@@ -15,7 +15,12 @@ import { AgentLoop } from './agent-loop.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
-import { assembleSystemPrompt, readAgentsMd } from './system-prompt.js';
+import {
+  assembleSystemPrompt,
+  loadInstructions,
+  type LoadInstructionsParams,
+  type LoadInstructionsResult,
+} from './system-prompt.js';
 import { resolveEnabledBuiltinTools } from './tools/index.js';
 import { CompositeToolExecutor } from './tools/composite-executor.js';
 
@@ -44,7 +49,7 @@ export interface McpClientLike extends ToolExecutor {
 export interface LoopFactories {
   createMcpClient(): McpClientLike;
   createAdapter(opts: { baseUrl: string; apiKey?: string }): ProviderAdapter;
-  readAgentsMd(cwd: string): Promise<string | null>;
+  loadInstructions(params: LoadInstructionsParams): Promise<LoadInstructionsResult>;
 }
 
 type InitCommand = Extract<v.InferOutput<typeof EmbeddedAgentCommandSchema>, { type: 'init' }>;
@@ -142,10 +147,13 @@ async function initializeLoop(
   factories: LoopFactories,
   init: InitCommand,
 ): Promise<AgentLoop | null> {
-  const agentsMd = await factories.readAgentsMd(init.context.cwd);
+  const instructions = await factories.loadInstructions({
+    cwd: init.context.cwd,
+    instructionsList: init.instructions,
+  });
   const systemPrompt = assembleSystemPrompt({
     context: init.context,
-    agentsMd,
+    instructions,
     definitionSystemPrompt: init.systemPrompt,
   });
 
@@ -225,7 +233,7 @@ if (import.meta.main) {
   const factories: LoopFactories = {
     createMcpClient: () => new McpToolClient(),
     createAdapter: (opts) => new OpenAIChatAdapter(opts),
-    readAgentsMd,
+    loadInstructions,
   };
   runLoop(io, factories)
     .then((code) => process.exit(code))

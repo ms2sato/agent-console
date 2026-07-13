@@ -20,6 +20,12 @@ const EnabledToolsSchema = v.pipe(
   v.check((arr) => new Set(arr).size === arr.length, 'duplicate tool name')
 );
 
+/**
+ * List of opt-in instruction-file paths. Unlike EnabledToolsSchema, no dedup
+ * check — duplicate paths are harmless (just re-read the same file twice).
+ */
+const InstructionsListSchema = v.array(v.pipe(v.string(), v.minLength(1)));
+
 export const EmbeddedAgentProviderSchema = v.strictObject({
   baseUrl: v.pipe(v.string(), v.url()),
   model: v.pipe(v.string(), v.minLength(1)),
@@ -34,6 +40,7 @@ export const EmbeddedAgentDefinitionSchema = v.strictObject({
   systemPrompt: v.optional(v.string()),
   maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   enabledTools: v.optional(EnabledToolsSchema),
+  instructions: v.optional(InstructionsListSchema),
   createdBy: v.string(),
   createdAt: v.string(),
   updatedAt: v.string(),
@@ -50,6 +57,7 @@ export const CreateEmbeddedAgentRequestSchema = v.strictObject({
   systemPrompt: v.optional(v.string()),
   maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   enabledTools: v.optional(EnabledToolsSchema),
+  instructions: v.optional(InstructionsListSchema),
 });
 
 /**
@@ -64,6 +72,7 @@ export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   systemPrompt: v.optional(v.nullable(v.string())),
   maxToolIterations: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
   enabledTools: v.optional(v.nullable(EnabledToolsSchema)),
+  instructions: v.optional(v.nullable(InstructionsListSchema)),
 });
 
 // === Protocol schemas ===
@@ -89,6 +98,7 @@ export const EmbeddedAgentCommandSchema = v.union([
     }),
     systemPrompt: v.optional(v.string()),
     enabledTools: v.optional(EnabledToolsSchema),
+    instructions: v.optional(v.array(v.string())),
     maxToolIterations: v.number(),
   }),
   v.strictObject({
