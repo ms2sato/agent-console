@@ -91,6 +91,80 @@ describe('migration v24 (sessions.initial_prompt_delivered)', () => {
     expect(row.initial_prompt_delivered).toBe(1);
   });
 
+  it('round-trips a 0 integer value', async () => {
+    const db = await initializeDatabase(':memory:');
+
+    await db
+      .insertInto('sessions')
+      .values({
+        id: 'session-0',
+        type: 'quick',
+        location_path: '/path',
+        server_pid: null,
+        initial_prompt: 'do something',
+        initial_prompt_delivered: 0,
+        title: null,
+        repository_id: null,
+        worktree_id: null,
+        paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
+        created_by: null,
+        initiated_by: null,
+        data_scope: 'quick',
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
+      })
+      .execute();
+
+    const row = await db
+      .selectFrom('sessions')
+      .where('id', '=', 'session-0')
+      .select('initial_prompt_delivered')
+      .executeTakeFirstOrThrow();
+
+    expect(row.initial_prompt_delivered).toBe(0);
+  });
+
+  it('defaults to null when the column is not specified', async () => {
+    const db = await initializeDatabase(':memory:');
+
+    await db
+      .insertInto('sessions')
+      .values({
+        id: 'session-null',
+        type: 'quick',
+        location_path: '/path',
+        server_pid: null,
+        initial_prompt: 'do something',
+        // initial_prompt_delivered omitted -- should default to null
+        title: null,
+        repository_id: null,
+        worktree_id: null,
+        paused_at: null,
+        parent_session_id: null,
+        parent_worker_id: null,
+        created_by: null,
+        initiated_by: null,
+        data_scope: 'quick',
+        data_scope_slug: null,
+        recovery_state: 'healthy',
+        orphaned_at: null,
+        orphaned_reason: null,
+      })
+      .execute();
+
+    const row = await db
+      .selectFrom('sessions')
+      .where('id', '=', 'session-null')
+      .select('initial_prompt_delivered')
+      .executeTakeFirstOrThrow();
+
+    expect(row.initial_prompt_delivered).toBeNull();
+  });
+
   it('is idempotent when re-applied (duplicate column is ignored)', async () => {
     const db = await initializeDatabase(':memory:');
 
