@@ -55,6 +55,9 @@ async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSig
 
   const withMtime: Array<{ file: string; mtimeMs: number }> = [];
   for (const file of candidates) {
+    if (signal?.aborted) {
+      return { ok: false, result: 'aborted' };
+    }
     try {
       const stat = await fsPromises.stat(file);
       withMtime.push({ file, mtimeMs: stat.mtimeMs });
