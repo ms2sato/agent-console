@@ -98,6 +98,7 @@ export class EmbeddedAgentManager {
       systemPrompt: request.systemPrompt,
       maxToolIterations: request.maxToolIterations,
       enabledTools: request.enabledTools,
+      instructions: request.instructions,
       createdBy,
       createdAt: now,
       updatedAt: now,
@@ -123,7 +124,7 @@ export class EmbeddedAgentManager {
    *
    * PATCH semantics matching UpdateEmbeddedAgentRequestSchema:
    * - undefined = no change
-   * - null = clear (for description / systemPrompt / maxToolIterations / enabledTools)
+   * - null = clear (for description / systemPrompt / maxToolIterations / enabledTools / instructions)
    * - `provider` replaces the whole provider object when present
    *
    * Preserves id / createdBy / createdAt, bumps updatedAt.
@@ -153,6 +154,8 @@ export class EmbeddedAgentManager {
           : (request.maxToolIterations ?? existing.maxToolIterations),
       enabledTools:
         request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools),
+      instructions:
+        request.instructions === null ? undefined : (request.instructions ?? existing.instructions),
       createdBy: existing.createdBy,
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),

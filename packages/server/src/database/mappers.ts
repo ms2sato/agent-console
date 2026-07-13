@@ -520,6 +520,7 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     system_prompt: def.systemPrompt ?? null,
     max_tool_iterations: def.maxToolIterations ?? null,
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
+    instructions: def.instructions !== undefined ? JSON.stringify(def.instructions) : null,
     created_by: def.createdBy,
     created_at: def.createdAt,
     updated_at: def.updatedAt,
@@ -547,6 +548,7 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
     maxToolIterations: row.max_tool_iterations ?? undefined,
     enabledTools:
       row.enabled_tools !== null ? (JSON.parse(row.enabled_tools) as EmbeddedAgentToolName[]) : undefined,
+    instructions: row.instructions !== null ? (JSON.parse(row.instructions) as string[]) : undefined,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

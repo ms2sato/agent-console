@@ -44,6 +44,10 @@ export interface EmbeddedAgentDefinition {
   maxToolIterations?: number; // per user turn; default 25
   // undefined = default read-only set (Read/Glob/Grep), [] = all builtin tools off, explicit array = exact set
   enabledTools?: EmbeddedAgentToolName[];
+  // opt-in explicit instruction-file list, each entry resolved relative to the
+  // session's locationPath via resolveConfinedPath before being read into the
+  // system prompt — see docs/design/embedded-agent-worker.md "AGENTS.md loader"
+  instructions?: string[];
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;
@@ -64,6 +68,7 @@ export type EmbeddedAgentCommand =
       systemPrompt?: string;
       // undefined = apply the loop's own default tool set, [] = no builtin tools, explicit array = exact set
       enabledTools?: EmbeddedAgentToolName[];
+      instructions?: string[];
       maxToolIterations: number;
     }
   | { v: 1; type: 'user-message'; id: string; text: string }

@@ -220,6 +220,8 @@ export interface EmbeddedAgentsTable {
   max_tool_iterations: number | null;
   /** JSON-serialized array of enabled builtin tool names (null = default read-only set applies downstream) */
   enabled_tools: string | null;
+  /** JSON-serialized array of opt-in instruction-file paths (null = none configured) */
+  instructions: string | null;
   /** User UUID (from users table) of the creator */
   created_by: string;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */

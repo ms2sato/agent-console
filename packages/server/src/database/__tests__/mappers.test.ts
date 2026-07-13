@@ -1245,6 +1245,7 @@ describe('mappers', () => {
       systemPrompt: 'You are helpful.',
       maxToolIterations: 30,
       enabledTools: ['Read', 'Glob'],
+      instructions: ['docs/local-note.md', 'CONTRIBUTING.md'],
       createdBy: 'user-uuid',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-02T00:00:00.000Z',
@@ -1262,6 +1263,7 @@ describe('mappers', () => {
       expect(row.system_prompt).toBe('You are helpful.');
       expect(row.max_tool_iterations).toBe(30);
       expect(row.enabled_tools).toBe('["Read","Glob"]');
+      expect(row.instructions).toBe('["docs/local-note.md","CONTRIBUTING.md"]');
       expect(row.created_by).toBe('user-uuid');
     });
 
@@ -1282,6 +1284,7 @@ describe('mappers', () => {
       expect(row.system_prompt).toBeNull();
       expect(row.max_tool_iterations).toBeNull();
       expect(row.enabled_tools).toBeNull();
+      expect(row.instructions).toBeNull();
     });
 
     it('maps an explicit empty enabledTools array to a serialized empty-array column', () => {
@@ -1300,6 +1303,22 @@ describe('mappers', () => {
       expect(row.enabled_tools).toBe('[]');
     });
 
+    it('maps an explicit empty instructions array to a serialized empty-array column', () => {
+      const emptyInstructions: EmbeddedAgentDefinition = {
+        id: 'def-6',
+        name: 'NoInstructions',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+        instructions: [],
+        createdBy: 'user-uuid',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+
+      const row = toEmbeddedAgentRow(emptyInstructions);
+
+      expect(row.instructions).toBe('[]');
+    });
+
     it('round-trips a full definition through row and back', () => {
       const row = toEmbeddedAgentRow(fullDefinition);
       // Simulate a SELECT row: the Generated timestamp columns resolve to the
@@ -1314,6 +1333,7 @@ describe('mappers', () => {
         system_prompt: row.system_prompt ?? null,
         max_tool_iterations: row.max_tool_iterations ?? null,
         enabled_tools: row.enabled_tools ?? null,
+        instructions: row.instructions ?? null,
         created_by: row.created_by,
         created_at: fullDefinition.createdAt,
         updated_at: fullDefinition.updatedAt,
@@ -1335,6 +1355,7 @@ describe('mappers', () => {
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: null,
+        instructions: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1347,6 +1368,7 @@ describe('mappers', () => {
       expect(restored.systemPrompt).toBeUndefined();
       expect(restored.maxToolIterations).toBeUndefined();
       expect(restored.enabledTools).toBeUndefined();
+      expect(restored.instructions).toBeUndefined();
     });
 
     it('unflattens a serialized empty-array column to an explicit empty array', () => {
@@ -1360,6 +1382,7 @@ describe('mappers', () => {
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: '[]',
+        instructions: '[]',
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1368,6 +1391,7 @@ describe('mappers', () => {
       const restored = toEmbeddedAgentDefinition(selectRow);
 
       expect(restored.enabledTools).toEqual([]);
+      expect(restored.instructions).toEqual([]);
     });
   });
 });

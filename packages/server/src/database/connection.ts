@@ -325,6 +325,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 24) {
     await migrateToV24(database);
   }
+
+  if (currentVersion < 25) {
+    await migrateToV25(database);
+  }
 }
 
 /**
@@ -1416,6 +1420,32 @@ export async function migrateToV24(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 24`.execute(database);
 
   logger.info('Migration to v24 completed');
+}
+
+/**
+ * Migration v25: Add `instructions` column to `embedded_agents`.
+ * Nullable TEXT column holding a JSON-serialized array of opt-in
+ * instruction-file paths (EmbeddedAgentDefinition.instructions); null = none
+ * configured.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV25(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v25: Adding instructions column to embedded_agents');
+
+  try {
+    await database.schema
+      .alterTable('embedded_agents')
+      .addColumn('instructions', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column instructions already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 25`.execute(database);
+
+  logger.info('Migration to v25 completed');
 }
 
 /**

@@ -41,8 +41,10 @@ class StubAdapter implements ProviderAdapter {
  * in tools/__tests__/index.test.ts). */
 class CapturingAdapter implements ProviderAdapter {
   readonly capturedToolsCalls: ProviderRunRequest['tools'][] = [];
+  readonly capturedMessagesCalls: ProviderRunRequest['messages'][] = [];
   async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
     this.capturedToolsCalls.push(req.tools);
+    this.capturedMessagesCalls.push(req.messages);
     yield { type: 'text-delta', text: 'hi' };
     yield { type: 'done', finishReason: 'stop' };
   }
@@ -84,7 +86,7 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
   return {
     createMcpClient: () => new StubMcpClient(),
     createAdapter: () => new StubAdapter(),
-    readAgentsMd: async () => null,
+    loadInstructions: async () => ({ segments: [] }),
     ...overrides,
   };
 }
@@ -229,6 +231,34 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
     expect(adapter.capturedToolsCalls[0]).toEqual([
       { name: 'close_session', description: 'closes', parameters: {} },
     ]);
+  });
+});
+
+describe('runLoop — instructions threading into the system prompt (Wave 5-4)', () => {
+  it('threads loadInstructions segments into the system prompt reaching the provider request payload', async () => {
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand({ instructions: ['docs/local-note.md'] }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({
+      createAdapter: () => adapter,
+      loadInstructions: async (params) => {
+        expect(params.instructionsList).toEqual(['docs/local-note.md']);
+        return {
+          segments: [{ origin: '/tmp/instructions/docs/local-note.md', content: 'INSTRUCTION_MARKER' }],
+        };
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedMessagesCalls).toHaveLength(1);
+    const systemMessage = adapter.capturedMessagesCalls[0].find((m) => m.role === 'system');
+    expect(systemMessage?.content).toContain(
+      '--- Instructions: /tmp/instructions/docs/local-note.md ---',
+    );
+    expect(systemMessage?.content).toContain('INSTRUCTION_MARKER');
   });
 });
 
