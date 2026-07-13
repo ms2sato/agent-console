@@ -78,4 +78,43 @@ describe('resolveConfinedPath', () => {
     const result = await resolveConfinedPath(locationPath, locationPath);
     expect(result.ok).toBe(true);
   });
+
+  describe('non-existent-segment escape shapes', () => {
+    it('rejects an escape through a non-existent middle segment', async () => {
+      const result = await resolveConfinedPath('foo/nonexistent/../../..', locationPath);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.message).toBe(CONFINEMENT_REJECTED_MESSAGE);
+      }
+    });
+
+    it('rejects a relative escape climbing above locationPath', async () => {
+      const result = await resolveConfinedPath('../../etc/hosts', locationPath);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.message).toBe(CONFINEMENT_REJECTED_MESSAGE);
+      }
+    });
+
+    it('rejects a chained non-existent-segment escape', async () => {
+      const result = await resolveConfinedPath('nonexistent/../../..', locationPath);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.message).toBe(CONFINEMENT_REJECTED_MESSAGE);
+      }
+    });
+
+    it('accepts a normalized relative path that stays inside locationPath', async () => {
+      const nested = path.join(locationPath, 'foo', 'bar');
+      await fsPromises.mkdir(path.dirname(nested), { recursive: true });
+      await fsPromises.writeFile(nested, 'hi');
+
+      const result = await resolveConfinedPath('./foo/bar', locationPath);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        const resolvedNested = await fsPromises.realpath(nested);
+        expect(result.resolvedPath).toBe(resolvedNested);
+      }
+    });
+  });
 });
