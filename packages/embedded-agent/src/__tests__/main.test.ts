@@ -159,6 +159,36 @@ describe('runLoop — lifecycle', () => {
     expect(await runLoop(io, factories)).toBe(1);
     expect(events.some((e) => e.type === 'fatal')).toBe(true);
   });
+
+  it('waits out the drain timeout (~2.5s, not the pre-bump 2s) before exiting on shutdown when the in-flight turn never settles', async () => {
+    // Simulates a turn stuck on a provider/tool call that ignores cancel()'s
+    // AbortSignal (e.g. a Bash child that ignored SIGTERM) — the scenario the
+    // TURN_DRAIN_TIMEOUT_MS bump (2000ms -> 2500ms) exists to give more
+    // headroom for on the shutdown path.
+    class HangingAdapter implements ProviderAdapter {
+      async *run(): AsyncIterable<ProviderEvent> {
+        await new Promise<never>(() => {}); // never resolves; ignores req.signal entirely
+        yield { type: 'done', finishReason: 'stop' }; // unreachable
+      }
+    }
+    const { io } = makeIo([
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => new HangingAdapter() });
+
+    const start = Date.now();
+    const exitCode = await runLoop(io, factories);
+    const elapsed = Date.now() - start;
+
+    expect(exitCode).toBe(0);
+    // Comfortably above the pre-bump 2000ms value and below a generous upper
+    // bound -- proves gracefulExit actually drained for ~2500ms rather than
+    // the old constant.
+    expect(elapsed).toBeGreaterThanOrEqual(2400);
+    expect(elapsed).toBeLessThan(4000);
+  });
 });
 
 describe('runLoop — builtin tool merging (enabledTools)', () => {

@@ -23,7 +23,9 @@ const EXIT_OK = 0;
 const EXIT_FATAL = 1;
 const EXIT_PROTOCOL = 2;
 const KNOWN_COMMAND_TYPES = new Set(['init', 'user-message', 'cancel', 'shutdown']);
-// 500ms buffer over KILL_GRACE_MS to allow SIGKILL escalation on shutdown, per PR #1063 architect note
+// 500ms buffer over Bash's process-group KILL_GRACE_MS so the SIGTERM ->
+// SIGKILL escalation on a stuck Bash child has time to complete before the
+// shutdown drain gives up.
 const TURN_DRAIN_TIMEOUT_MS = 2500;
 
 /** IO seam so the loop can be driven by a test harness or the real process. */
