@@ -32,8 +32,10 @@ const TOOL_GROUPS = [
   FILE_MODIFICATION_TOOL_NAMES,
 ];
 
+const flatToolNames = TOOL_GROUPS.flat();
 if (
-  new Set(TOOL_GROUPS.flat()).size !== EMBEDDED_AGENT_TOOL_NAMES.length ||
+  flatToolNames.length !== new Set(flatToolNames).size ||
+  flatToolNames.length !== EMBEDDED_AGENT_TOOL_NAMES.length ||
   !EMBEDDED_AGENT_TOOL_NAMES.every((name) => TOOL_GROUPS.some((group) => group.includes(name)))
 ) {
   throw new Error('EmbeddedAgentForm tool groups do not partition EMBEDDED_AGENT_TOOL_NAMES');

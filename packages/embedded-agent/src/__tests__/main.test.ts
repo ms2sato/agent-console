@@ -178,9 +178,9 @@ describe('runLoop — lifecycle', () => {
     ]);
     const factories = makeFactories({ createAdapter: () => new HangingAdapter() });
 
-    const start = Date.now();
+    const start = performance.now();
     const exitCode = await runLoop(io, factories);
-    const elapsed = Date.now() - start;
+    const elapsed = performance.now() - start;
 
     expect(exitCode).toBe(0);
     // Comfortably above the pre-bump 2000ms value and below a generous upper

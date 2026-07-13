@@ -27,6 +27,9 @@ function parseArgs(args: unknown): { ok: true; value: EditArgs } | { ok: false; 
   if (typeof a.old_string !== 'string') {
     return { ok: false, message: 'old_string is required and must be a string' };
   }
+  if (a.old_string.length === 0) {
+    return { ok: false, message: 'old_string must not be empty' };
+  }
   if (typeof a.new_string !== 'string') {
     return { ok: false, message: 'new_string is required and must be a string' };
   }
@@ -53,6 +56,9 @@ function parseArgs(args: unknown): { ok: true; value: EditArgs } | { ok: false; 
  * incomplete.
  */
 function countOccurrences(haystack: string, needle: string): number {
+  if (needle.length === 0) {
+    return 0;
+  }
   let count = 0;
   let index = haystack.indexOf(needle);
   while (index !== -1) {

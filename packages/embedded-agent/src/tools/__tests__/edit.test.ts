@@ -144,6 +144,19 @@ describe('editTool', () => {
     expect(result.result).toBe('new_string is required and must be a string');
   });
 
+  it('rejects an empty old_string instead of hanging (regression: countOccurrences infinite loop)', async () => {
+    const target = path.join(locationPath, 'a.txt');
+    await fsPromises.writeFile(target, 'hello world');
+
+    const result = await editTool.execute(
+      { file_path: target, old_string: '', new_string: 'x' },
+      { locationPath },
+    );
+
+    expect(result).toEqual({ ok: false, result: 'old_string must not be empty' });
+    await expect(fsPromises.readFile(target, 'utf-8')).resolves.toBe('hello world');
+  });
+
   it('rejects a non-existent file with a distinct failure shape', async () => {
     const result = await editTool.execute(
       { file_path: 'does-not-exist.txt', old_string: 'a', new_string: 'b' },
