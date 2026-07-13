@@ -430,6 +430,71 @@ describe('CreateWorktreeForm', () => {
       });
     });
 
+    describe('stale localStorage draft (Issue #1062)', () => {
+      const draftKey = 'stale-embedded-agent-draft-key';
+
+      beforeEach(() => {
+        localStorage.removeItem(draftKey);
+      });
+
+      afterEach(() => {
+        localStorage.removeItem(draftKey);
+      });
+
+      it('should drop a stale embeddedAgentId restored from localStorage and fall back to the resolved terminal agent', async () => {
+        const user = userEvent.setup();
+        localStorage.setItem(draftKey, JSON.stringify({ embeddedAgentId: 'nonexistent-embedded' }));
+
+        const { props } = renderCreateWorktreeForm({ defaultAgentId: 'claude-code', draftKey });
+
+        await waitFor(() => {
+          expect(screen.getByText('Local GPT')).toBeTruthy();
+        });
+
+        const branchInput = screen.getByPlaceholderText('New branch name');
+        await user.type(branchInput, 'feature/stale-embedded-draft');
+
+        const submitButton = screen.getByText('Create & Start Session');
+        await user.click(submitButton);
+
+        await waitFor(() => {
+          expect(props.onSubmit).toHaveBeenCalledTimes(1);
+        });
+
+        const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+        expect(submitCall[0]).toMatchObject({
+          agentId: 'claude-code',
+          embeddedAgentId: undefined,
+        });
+      });
+
+      it('should restore a valid agentId from localStorage and use it in the submitted request', async () => {
+        const user = userEvent.setup();
+        localStorage.setItem(draftKey, JSON.stringify({ agentId: 'custom-agent' }));
+
+        const { props } = renderCreateWorktreeForm({ defaultAgentId: 'claude-code', draftKey });
+
+        await waitFor(() => {
+          expect(screen.getByText('Local GPT')).toBeTruthy();
+        });
+
+        const branchInput = screen.getByPlaceholderText('New branch name');
+        await user.type(branchInput, 'feature/valid-agent-draft');
+
+        const submitButton = screen.getByText('Create & Start Session');
+        await user.click(submitButton);
+
+        await waitFor(() => {
+          expect(props.onSubmit).toHaveBeenCalledTimes(1);
+        });
+
+        const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+        expect(submitCall[0]).toMatchObject({
+          agentId: 'custom-agent',
+          embeddedAgentId: undefined,
+        });
+      });
+    });
   });
 
   describe('default agent sorting', () => {
