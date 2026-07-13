@@ -17,9 +17,11 @@
  * constant or the derived `EmbeddedAgentToolName` type, not a hardcoded list.
  *
  * `Bash`'s implementation ships in FF-1b (packages/embedded-agent/src/tools/bash.ts);
- * it stays OFF by default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS below.
+ * `Write`/`Edit`'s implementations ship in FF-1c
+ * (packages/embedded-agent/src/tools/write.ts, edit.ts). All three stay OFF by
+ * default — see DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS below.
  */
-export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash'] as const;
+export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'] as const;
 export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
 
 /** Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF. */

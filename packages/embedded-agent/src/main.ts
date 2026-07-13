@@ -23,7 +23,8 @@ const EXIT_OK = 0;
 const EXIT_FATAL = 1;
 const EXIT_PROTOCOL = 2;
 const KNOWN_COMMAND_TYPES = new Set(['init', 'user-message', 'cancel', 'shutdown']);
-const TURN_DRAIN_TIMEOUT_MS = 2000;
+// 500ms buffer over KILL_GRACE_MS to allow SIGKILL escalation on shutdown, per PR #1063 architect note
+const TURN_DRAIN_TIMEOUT_MS = 2500;
 
 /** IO seam so the loop can be driven by a test harness or the real process. */
 export interface LoopIO {

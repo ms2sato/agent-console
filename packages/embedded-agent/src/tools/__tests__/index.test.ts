@@ -4,11 +4,15 @@ import { readTool } from '../read.js';
 import { globTool } from '../glob.js';
 import { grepTool } from '../grep.js';
 import { bashTool } from '../bash.js';
+import { writeTool } from '../write.js';
+import { editTool } from '../edit.js';
 
 describe('resolveEnabledBuiltinTools', () => {
-  it('resolves the default read-only set when enabledTools is undefined (Bash stays off by default)', () => {
+  it('resolves the default read-only set when enabledTools is undefined (Bash/Write/Edit stay off by default)', () => {
     const result = resolveEnabledBuiltinTools(undefined);
     expect(result).toEqual([readTool, globTool, grepTool]);
+    expect(result).not.toContain(writeTool);
+    expect(result).not.toContain(editTool);
   });
 
   it('resolves to zero tools when enabledTools is an explicit empty array (policy-off)', () => {
@@ -26,12 +30,17 @@ describe('resolveEnabledBuiltinTools', () => {
     expect(result).toEqual([bashTool]);
   });
 
-  it('resolves all four tools when explicitly enabled in order', () => {
-    const result = resolveEnabledBuiltinTools(['Read', 'Glob', 'Grep', 'Bash']);
-    expect(result).toEqual([readTool, globTool, grepTool, bashTool]);
+  it('resolves Write/Edit to their tools now that FF-1c registered them', () => {
+    const result = resolveEnabledBuiltinTools(['Write', 'Edit']);
+    expect(result).toEqual([writeTool, editTool]);
+  });
+
+  it('resolves all six tools when explicitly enabled in order', () => {
+    const result = resolveEnabledBuiltinTools(['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit']);
+    expect(result).toEqual([readTool, globTool, grepTool, bashTool, writeTool, editTool]);
   });
 
   it('BUILTIN_TOOLS contains exactly the implemented tools in registry order', () => {
-    expect(BUILTIN_TOOLS).toEqual([readTool, globTool, grepTool, bashTool]);
+    expect(BUILTIN_TOOLS).toEqual([readTool, globTool, grepTool, bashTool, writeTool, editTool]);
   });
 });

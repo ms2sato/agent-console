@@ -1,6 +1,6 @@
 /**
  * Registry of builtin subprocess-local tools (Read/Glob/Grep in FF-1a; Bash in
- * FF-1b).
+ * FF-1b; Write/Edit in FF-1c).
  */
 
 import type { EmbeddedAgentToolName } from '@agent-console/shared';
@@ -10,6 +10,8 @@ import { readTool } from './read.js';
 import { globTool } from './glob.js';
 import { grepTool } from './grep.js';
 import { bashTool } from './bash.js';
+import { writeTool } from './write.js';
+import { editTool } from './edit.js';
 
 // Re-exported so existing consumers (composite-executor.ts, main.ts, test
 // files) keep importing these types from './index.js' / '../index.js'
@@ -18,11 +20,19 @@ import { bashTool } from './bash.js';
 export type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 
 /**
- * Registry of IMPLEMENTED builtin tools. `Bash` stays OFF by default (see
- * `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` in @agent-console/shared) — a
- * definition must opt in explicitly via `enabledTools`.
+ * Registry of IMPLEMENTED builtin tools. `Bash`, `Write`, and `Edit` stay OFF
+ * by default (see `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS` in
+ * @agent-console/shared) — a definition must opt in explicitly via
+ * `enabledTools`.
  */
-export const BUILTIN_TOOLS: readonly BuiltinTool[] = [readTool, globTool, grepTool, bashTool];
+export const BUILTIN_TOOLS: readonly BuiltinTool[] = [
+  readTool,
+  globTool,
+  grepTool,
+  bashTool,
+  writeTool,
+  editTool,
+];
 
 const BUILTIN_TOOLS_BY_NAME = new Map(BUILTIN_TOOLS.map((t) => [t.name, t]));
 
