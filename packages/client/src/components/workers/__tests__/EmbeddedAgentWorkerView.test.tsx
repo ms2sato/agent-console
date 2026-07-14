@@ -14,6 +14,11 @@ function flush(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 10));
 }
 
+/** True when `a` precedes `b` in document order -- used to assert chronological rendering across repeated element labels (e.g. multiple "Working" blocks) that text-index lookups can't disambiguate. */
+function isBefore(a: Node, b: Node): boolean {
+  return Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
 // MessagePanel (now embedded via EmbeddedAgentWorkerView) always fetches
 // message templates (a feature that works identically in embedded and PTY
 // per the architect's design), so this suite needs a minimal fetch mock even
@@ -620,7 +625,7 @@ describe('EmbeddedAgentWorkerView', () => {
   });
 
   describe('Unified Working accordion (#1088)', () => {
-    it('groups a multi-iteration turn (thinking -> tools -> thinking -> tools -> final) into ONE Working accordion, in chronological order', async () => {
+    it('groups a multi-iteration turn (thinking -> tools -> thinking -> tools -> final) into TWO Working accordions, interleaved chronologically around the intermediate narration (#1092)', async () => {
       const { container } = renderView({ sessionId: 's16', workerId: 'w16' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -642,20 +647,26 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      // Exactly one Working accordion for the whole turn.
-      expect(screen.getAllByText(/^Working/)).toHaveLength(1);
-      expect(screen.getByText('Working (2 tool calls)')).toBeTruthy();
+      // The non-empty intermediate assistant-message splits the turn's tool
+      // activity into two separate runs -- each iteration gets its own
+      // Working block, not one block for the whole turn.
+      const workingLabels = screen.getAllByText('Working (1 tool call)');
+      expect(workingLabels).toHaveLength(2);
 
-      // Chronological order preserved: the two outside assistant-message
-      // entries surround the (single, merged) Working accordion in text
-      // order, matching raw-entries arrival order.
+      // Chronological order preserved: block 1 -> intermediate note -> block
+      // 2 -> final answer, matching raw-entries arrival order. Text indices
+      // can't disambiguate the two identical "Working (1 tool call)" labels,
+      // so compare DOM position directly via compareDocumentPosition.
       const text = container.textContent ?? '';
-      const idxWorking = text.indexOf('Working (2 tool calls)');
       const idxIntermediate = text.indexOf('intermediate note');
       const idxFinal = text.indexOf('final answer');
-      expect(idxWorking).toBeGreaterThanOrEqual(0);
-      expect(idxIntermediate).toBeGreaterThan(idxWorking);
+      expect(idxIntermediate).toBeGreaterThanOrEqual(0);
       expect(idxFinal).toBeGreaterThan(idxIntermediate);
+
+      const [firstBlock, secondBlock] = workingLabels;
+      const intermediateNode = screen.getByText('intermediate note');
+      expect(isBefore(firstBlock, intermediateNode)).toBe(true);
+      expect(isBefore(intermediateNode, secondBlock)).toBe(true);
     });
 
     it('renders the Working accordion collapsed by default', async () => {
@@ -678,7 +689,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(details?.hasAttribute('open')).toBe(false);
     });
 
-    it('keeps a user-expanded Working accordion open when more entries are appended for the same turn (A3 regression: requires key={turnId})', async () => {
+    it('keeps a user-expanded Working accordion open when more entries are appended to the same run (A3\' regression: keyed by the run\'s first-entry key, not turnId)', async () => {
       renderView({ sessionId: 's18', workerId: 'w18' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -698,6 +709,12 @@ describe('EmbeddedAgentWorkerView', () => {
       let details = document.querySelector('details');
       expect(details?.hasAttribute('open')).toBe(true);
 
+      // This tool-call belongs to the SAME turnId and follows immediately
+      // (no outside entry in between), so it extends the currently-open run
+      // rather than starting a new one -- the run's first entry (the
+      // thinking entry above) stays the same, so the React key derived from
+      // it (entries[0].key) is unchanged across this re-render, which is
+      // what keeps the <details> DOM node -- and its open state -- alive.
       const secondChunk = ndjson({ v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: {} });
       act(() => {
         ws?.simulateMessage(
@@ -735,7 +752,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(allDetails.every((d) => !d.contains(finalNode))).toBe(true);
     });
 
-    it('keeps an intermediate assistant-message (mid-turn, between two tool rounds) outside any accordion', async () => {
+    it('keeps an intermediate assistant-message (mid-turn, between two tool rounds) outside any accordion, and splits the two tool rounds into separate Working blocks (#1092)', async () => {
       renderView({ sessionId: 's20', workerId: 'w20' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -754,19 +771,24 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
+      // The intermediate message stays outside every accordion regardless of
+      // how many Working blocks the turn ends up producing.
       const intermediateNode = screen.getByText('mid-turn placeholder text');
       const allDetails = Array.from(document.querySelectorAll('details'));
       expect(allDetails.every((d) => !d.contains(intermediateNode))).toBe(true);
-      // Exactly one Working accordion still covers both tool rounds.
-      expect(screen.getAllByText(/^Working/)).toHaveLength(1);
-      expect(screen.getByText('Working (2 tool calls)')).toBeTruthy();
+      // The non-empty intermediate message splits the two tool rounds into
+      // two separate Working blocks, one tool call each.
+      expect(screen.getAllByText('Working (1 tool call)')).toHaveLength(2);
     });
 
-    it('produces equivalent visible output for the same event sequence via replay (one history message) and live (sequential output messages)', async () => {
+    it('produces equivalent visible output for the same event sequence via replay (one history message) and live (sequential output messages), including the multi-block case (#1092)', async () => {
       const events = [
         { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking' },
         { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: { cmd: 'ls' } },
         { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'intermediate note' },
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c2', name: 'run_process_2', args: { cmd: 'ls -la' } },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c2', ok: true, result: 'done again' },
         { v: 1, type: 'assistant-message', turnId: 't1', text: 'final answer' },
       ];
 
@@ -801,19 +823,97 @@ describe('EmbeddedAgentWorkerView', () => {
       }
 
       // Both default-collapsed, so only the Working summary label+count and
-      // the outside final-message text are visible in either mode. Query
-      // scoped explicitly via `within(container)` -- RenderResult's own
-      // query methods are bound to `document.body` by default, so with BOTH
-      // views mounted simultaneously (no cleanup() between them) an
-      // unscoped query would see both views' content at once.
+      // the outside message text are visible in either mode. Query scoped
+      // explicitly via `within(container)` -- RenderResult's own query
+      // methods are bound to `document.body` by default, so with BOTH views
+      // mounted simultaneously (no cleanup() between them) an unscoped query
+      // would see both views' content at once.
       const replayScope = within(replayView.container);
       const liveScope = within(liveView.container);
-      expect(replayScope.getAllByText(/^Working/)).toHaveLength(1);
-      expect(liveScope.getAllByText(/^Working/)).toHaveLength(1);
-      expect(replayScope.getByText('Working (1 tool call)')).toBeTruthy();
-      expect(liveScope.getByText('Working (1 tool call)')).toBeTruthy();
+      // Two Working blocks (split by the intermediate note), one tool call each.
+      expect(replayScope.getAllByText('Working (1 tool call)')).toHaveLength(2);
+      expect(liveScope.getAllByText('Working (1 tool call)')).toHaveLength(2);
+      expect(replayScope.getByText('intermediate note')).toBeTruthy();
+      expect(liveScope.getByText('intermediate note')).toBeTruthy();
       expect(replayScope.getByText('final answer')).toBeTruthy();
       expect(liveScope.getByText('final answer')).toBeTruthy();
+    });
+
+    it('does not render a finalized-empty assistant-message as a chat bubble (#1092)', async () => {
+      renderView({ sessionId: 's22', workerId: 'w22' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'first_tool', args: {} },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok1' },
+        // An iteration that only emitted tool calls finalizes with empty text.
+        { v: 1, type: 'assistant-message', turnId: 't1', text: '' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Only the Working accordion's own bubble wrapper should exist -- no
+      // second, empty chat bubble for the finalized-empty assistant-message.
+      expect(screen.getByText('Working (1 tool call)')).toBeTruthy();
+      expect(document.querySelectorAll('.memo-content').length).toBe(0);
+    });
+
+    it('merges two groupable runs into ONE Working block when they are separated only by a finalized-empty assistant-message (suppress-then-group ordering, #1092)', async () => {
+      renderView({ sessionId: 's23', workerId: 'w23' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'first_tool', args: {} },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok1' },
+        // Finalized-empty assistant-message: not meaningful content, must be
+        // suppressed BEFORE grouping so it does not fragment the run.
+        { v: 1, type: 'assistant-message', turnId: 't1', text: '   ' },
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c2', name: 'second_tool', args: {} },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c2', ok: true, result: 'ok2' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // If suppression ran AFTER grouping, this would produce two separate
+      // one-tool-call blocks (the empty message would still act as a
+      // fragmenting boundary at grouping time). Suppress-then-group merges
+      // them into a single two-tool-call block instead.
+      expect(screen.getAllByText(/^Working/)).toHaveLength(1);
+      expect(screen.getByText('Working (2 tool calls)')).toBeTruthy();
+      expect(document.querySelectorAll('.memo-content').length).toBe(0);
+    });
+
+    it('still renders a streaming-empty assistant-message (the typing-indicator bubble), unlike a finalized-empty one (#1092)', async () => {
+      renderView({ sessionId: 's24', workerId: 'w24' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      // An `assistant-delta` with empty text opens a streaming assistant
+      // entry whose text is still empty -- this must render its bubble
+      // (with the typing-cursor pulse) rather than being suppressed like a
+      // finalized-empty entry.
+      const chunk = ndjson({ v: 1, type: 'assistant-delta', turnId: 't1', text: '' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      const bubbles = document.querySelectorAll('.memo-content');
+      expect(bubbles.length).toBe(1);
+      // The typing-cursor pulse indicator lives inside the streaming bubble.
+      expect(bubbles[0].querySelector('.animate-pulse')).toBeTruthy();
     });
   });
 });

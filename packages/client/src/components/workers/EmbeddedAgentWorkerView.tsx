@@ -14,6 +14,7 @@ type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinkin
 type OutsideEntry = Exclude<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
 
 interface WorkingGroup {
+  /** turnId of this run's entries, used only to detect a turn boundary while extending the run. */
   turnId: string;
   entries: GroupableEntry[];
 }
@@ -27,28 +28,54 @@ function isGroupable(entry: EmbeddedAgentChatEntry): entry is GroupableEntry {
 }
 
 /**
- * Derived view: walk entries once, coalescing assistant-thinking/tool-call
- * entries into one WorkingGroup per turnId, placed at the position of that
- * turn's first groupable entry. A multi-iteration turn (thinking -> tools ->
- * thinking -> tools -> final message) folds into a single group even though
- * an intermediate assistant-message entry for the same turn sits between the
- * two rounds of tool activity in the raw entries list -- that intermediate
- * entry still renders at its own position, unchanged.
+ * A finalized assistant-message with no text is an iteration that only
+ * emitted tool calls -- there is nothing to show, so it must not render as
+ * an empty chat bubble. A still-streaming empty assistant-message is kept:
+ * it is the container the typing-cursor pulse renders inside while text is
+ * still arriving, so suppressing it would hide the in-progress indicator.
+ */
+function isSuppressedEmptyAssistantMessage(entry: EmbeddedAgentChatEntry): boolean {
+  return entry.kind === 'assistant-message' && !entry.streaming && entry.text.trim() === '';
+}
+
+/**
+ * Derived view: two passes over entries.
+ *
+ * 1. Suppress finalized-empty assistant-message entries (see
+ *    isSuppressedEmptyAssistantMessage) -- they carry no content and must
+ *    not fragment the grouping below.
+ * 2. Walk the reduced list once, coalescing RUNS of consecutive groupable
+ *    (assistant-thinking / tool-call) entries into one WorkingGroup each. A
+ *    run closes as soon as a non-groupable entry appears or the turnId
+ *    changes between consecutive groupable entries; the next groupable
+ *    entry starts a new run. A single turn therefore produces one Working
+ *    block per tool-use iteration, not one block for the whole turn -- an
+ *    intermediate assistant-message between two rounds of tool activity
+ *    closes the first run and starts a second one, and both render at their
+ *    chronological position, unchanged from the raw entries order.
+ *
+ * Suppression must run before grouping: if a finalized-empty
+ * assistant-message was the only thing separating two groupable runs, its
+ * removal makes those runs directly adjacent, and they must merge into a
+ * single Working block -- the empty message was never meaningful content,
+ * so it should never have fragmented the grouping.
  */
 function buildDisplayItems(entries: EmbeddedAgentChatEntry[]): DisplayItem[] {
-  const groups = new Map<string, WorkingGroup>();
+  const reduced = entries.filter((entry) => !isSuppressedEmptyAssistantMessage(entry));
+
   const items: DisplayItem[] = [];
-  for (const entry of entries) {
+  let openGroup: WorkingGroup | null = null;
+  for (const entry of reduced) {
     if (isGroupable(entry)) {
-      let group = groups.get(entry.turnId);
-      if (!group) {
-        group = { turnId: entry.turnId, entries: [] };
-        groups.set(entry.turnId, group);
-        items.push({ kind: 'working-group', group });
+      if (openGroup && openGroup.turnId === entry.turnId) {
+        openGroup.entries.push(entry);
+      } else {
+        openGroup = { turnId: entry.turnId, entries: [entry] };
+        items.push({ kind: 'working-group', group: openGroup });
       }
-      group.entries.push(entry);
       continue;
     }
+    openGroup = null;
     items.push({ kind: 'entry', entry });
   }
   return items;
@@ -136,7 +163,7 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         )}
         {displayItems.map((item) =>
           item.kind === 'working-group' ? (
-            <WorkingAccordion key={item.group.turnId} group={item.group} />
+            <WorkingAccordion key={item.group.entries[0].key} group={item.group} />
           ) : (
             <ChatEntryRow key={item.entry.key} entry={item.entry} onRestart={restart} />
           ),
@@ -292,7 +319,7 @@ function ToolCallCard({ entry }: { entry: ToolCallEntry }) {
 }
 
 /**
- * Fixed label for the per-turn "Working" accordion. A single named constant
+ * Fixed label for the per-run "Working" accordion. A single named constant
  * so the label can be renamed later without touching render logic.
  */
 const WORKING_LABEL = 'Working';
@@ -304,12 +331,20 @@ function formatWorkingSummary(group: WorkingGroup): string {
 }
 
 /**
- * Collapsed-by-default accordion that groups all thinking/tool-call
- * activity for one turn into a single row, keeping the chat surface a clean
- * transcript. Keyed by `turnId` at the call site so React reuses the same
- * DOM node across re-renders as the turn streams -- native <details open>
- * state lives on the DOM node, not React state, so a stable key is what
- * keeps a user-expanded accordion open while more entries are appended.
+ * Collapsed-by-default accordion that groups one consecutive run of
+ * thinking/tool-call activity into a single row, keeping the chat surface a
+ * clean transcript. A turn that iterates through several tool-use rounds
+ * produces one of these per run, interleaved with any narration between
+ * rounds -- not one accordion for the whole turn.
+ *
+ * Keyed at the call site by the run's FIRST entry's stable store-assigned
+ * key (not `turnId`, which is no longer unique per run once a turn can
+ * produce multiple runs) so React reuses the same DOM node across
+ * re-renders as the run streams -- native <details open> state lives on the
+ * DOM node, not React state, so a stable key is what keeps a user-expanded
+ * accordion open while more entries are appended to the same run. The first
+ * entry's key never changes while the run is open (new entries only ever
+ * append to the run's tail), so it is stable for the run's whole lifetime.
  */
 function WorkingAccordion({ group }: { group: WorkingGroup }) {
   const isStreaming = group.entries.some(
