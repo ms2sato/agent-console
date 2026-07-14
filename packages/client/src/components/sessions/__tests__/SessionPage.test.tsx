@@ -433,14 +433,14 @@ describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
   // (also extracted to tabAppearance.ts for the same testability reason as
   // above). embedded-agent workers drive `activityState` through the same
   // app-wide `worker-activity` WebSocket path as agent workers (see
-  // useSessionPageState.ts), so the badge must render for both -- unifying
-  // what used to be a duplicate status indicator inside EmbeddedAgentWorkerView
-  // itself with the one shared bar every other worker type already uses.
-  it('embedded-agent tabs show the shared status bar activity badge like agent tabs, unlike terminal/git-diff', () => {
-    expect(showsActivityBadge('agent')).toBe(true);
+  // useSessionPageState.ts), so the badge must render for embedded-agent too --
+  // unifying what used to be a duplicate status indicator inside
+  // EmbeddedAgentWorkerView itself with the one shared bar every other worker
+  // type already uses. Exhaustive coverage of showsActivityBadge across all
+  // worker types lives in tabAppearance.test.ts; this pins only the value
+  // SessionPage's JSX relies on.
+  it('embedded-agent tabs show the shared status bar activity badge like agent tabs', () => {
     expect(showsActivityBadge('embedded-agent')).toBe(true);
-    expect(showsActivityBadge('terminal')).toBe(false);
-    expect(showsActivityBadge('git-diff')).toBe(false);
   });
 
   it('addAgentTab is exposed by useTabManagement\'s result shape SessionPage destructures', () => {
