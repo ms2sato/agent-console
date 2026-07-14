@@ -507,6 +507,44 @@ describe('SessionPauseResumeService', () => {
       expect(activateTerminalMock.mock.calls[0][1].revived).toBe(true);
     });
 
+    // initialPromptDelivered must survive resume/restart so the
+    // embedded-agent worker's re-fire guard (`if (session.initialPromptDelivered)
+    // return;`) still holds after the session is reloaded from the database.
+    it('should preserve initialPromptDelivered when resuming a session', async () => {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const restoredWorkers = new Map([['w1', agentWorker]]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        initialPromptDelivered: true,
+        workers: [buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent' })],
+      });
+
+      const setSessionMock = mock((_id: string, _session: InternalSession) => {});
+      const deps = createMockDeps({
+        setSession: setSessionMock,
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: mock(async () => {}),
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-1');
+
+      expect(setSessionMock).toHaveBeenCalledTimes(1);
+      const [, internalSession] = setSessionMock.mock.calls[0];
+      expect(internalSession.initialPromptDelivered).toBe(true);
+    });
+
     it('should restore terminal workers during resume', async () => {
       const terminalWorker = buildInternalTerminalWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', terminalWorker]]);
