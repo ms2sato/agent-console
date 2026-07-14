@@ -512,6 +512,36 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(innerDetails?.hasAttribute('open')).toBe(false);
     });
 
+    it('clicking only the outer summary opens the Working accordion without auto-opening the nested Thinking accordion', async () => {
+      renderView({ sessionId: 's13b', workerId: 'w13b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering deeply' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      // In a real browser, the nested <summary> is not clickable while its
+      // owning <details> is closed -- the UA stylesheet applies
+      // `details:not([open]) > *:not(summary) { display: none }`, which hides
+      // the inner Thinking <details> (a non-summary child of the outer
+      // Working <details>) entirely. A real user must click the OUTER
+      // summary first; only a separate, later click on the now-visible inner
+      // summary opens the inner accordion. This test drives that first click
+      // in isolation and asserts the inner accordion stays closed.
+      const user = userEvent.setup();
+      const [outerSummary] = Array.from(document.querySelectorAll('summary'));
+      await user.click(outerSummary);
+
+      const [outerDetails, innerDetails] = Array.from(document.querySelectorAll('details'));
+      expect(outerDetails?.hasAttribute('open')).toBe(true);
+      expect(innerDetails?.hasAttribute('open')).toBe(false);
+    });
+
     it('expands the thinking accordion body on clicking the nested summary (true-path)', async () => {
       renderView({ sessionId: 's14', workerId: 'w14' });
       const ws = MockWebSocket.getLastInstance();
