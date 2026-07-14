@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
-import { RefreshIcon, StopIcon, AlertCircleIcon } from '../Icons';
+import { RefreshIcon, AlertCircleIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 
@@ -170,17 +170,6 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         )}
       </div>
 
-      {isTurnActive && (
-        <div className="px-4 py-1.5 shrink-0 flex justify-end">
-          <button
-            onClick={cancel}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-900/40 text-red-300 hover:bg-red-900/60"
-          >
-            <StopIcon className="w-3.5 h-3.5" />
-            Cancel
-          </button>
-        </div>
-      )}
       <MessagePanel
         sessionId={sessionId}
         targetWorkerId={workerId}
@@ -188,9 +177,10 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         onSend={async (content) => {
           await sendUserMessage(content);
         }}
+        onEscape={cancel}
         slashCompletionEnabled={false}
         attachmentsEnabled={false}
-        sendDisabled={isTurnActive}
+        cancelState={{ active: isTurnActive, onCancel: cancel }}
       />
     </div>
   );

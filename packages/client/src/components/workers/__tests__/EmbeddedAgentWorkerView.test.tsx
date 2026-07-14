@@ -138,7 +138,7 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.getByRole('textbox', { name: 'Message input' })).toBeTruthy();
   });
 
-  it('gates sending (not the textarea) while a turn is active, and still shows Cancel', async () => {
+  it('morphs Send into Cancel (not merely disabling Send) while a turn is active', async () => {
     const user = userEvent.setup();
     renderView({ sessionId: 's2', workerId: 'w2' });
     const ws = MockWebSocket.getLastInstance();
@@ -160,9 +160,8 @@ describe('EmbeddedAgentWorkerView', () => {
     await user.type(textarea, 'still typing');
     expect(textarea.value).toBe('still typing');
 
-    // Only the Send action is gated.
-    const sendButton = screen.getByText('Send') as HTMLButtonElement;
-    expect(sendButton.disabled).toBe(true);
+    // Send is replaced by Cancel in the same slot, not merely disabled.
+    expect(screen.queryByText('Send')).toBeNull();
     expect(screen.getByText('Cancel')).toBeTruthy();
   });
 
@@ -189,6 +188,59 @@ describe('EmbeddedAgentWorkerView', () => {
     });
     const sendButton = screen.getByText('Send') as HTMLButtonElement;
     expect(sendButton.disabled).toBe(false);
+  });
+
+  it('clicking the morphed Cancel button sends embedded-cancel over the WebSocket', async () => {
+    renderView({ sessionId: 's2c', workerId: 'w2c' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
+    });
+    await flush();
+
+    const cancelButton = screen.getByText('Cancel') as HTMLButtonElement;
+    await act(async () => {
+      fireEvent.click(cancelButton);
+    });
+
+    const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0]));
+    expect(sent.some((m) => m.type === 'embedded-cancel')).toBe(true);
+  });
+
+  it('pressing Escape on the message input while a turn is active also sends embedded-cancel (onEscape wiring)', async () => {
+    renderView({ sessionId: 's2d', workerId: 'w2d' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
+    });
+    await flush();
+
+    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    });
+
+    const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0]));
+    expect(sent.some((m) => m.type === 'embedded-cancel')).toBe(true);
+  });
+
+  it('pressing Escape while idle is a safe no-op (onEscape is unconditional but does not throw or misbehave)', async () => {
+    renderView({ sessionId: 's2e', workerId: 'w2e' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    expect(() => {
+      fireEvent.keyDown(textarea, { key: 'Escape' });
+    }).not.toThrow();
+
+    // No user-message or unexpected send should result from an idle-time Escape.
+    const sent = (ws!.send.mock.calls as string[][] | undefined)?.map((c) => JSON.parse(c[0])) ?? [];
+    expect(sent.some((m) => m.type === 'embedded-user-message')).toBe(false);
   });
 
   it('sends a message on Ctrl+Enter and clears the draft', async () => {
