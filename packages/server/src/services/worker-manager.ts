@@ -51,6 +51,7 @@ import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import { writeUserOwnedSecretFile, rmRecursiveAsUser, type runAsUser } from './privilege-elevation.js';
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
+import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { createLogger } from '../lib/logger.js';
 import * as path from 'node:path';
 
@@ -239,6 +240,10 @@ export class WorkerManager {
      * (`runAsUser`).
      */
     private runAsUserImpl?: typeof runAsUser,
+    /** Test seam for the process-tree walk in `killWorker`. Defaults to the real implementation. */
+    private listDescendantPidsImpl: typeof listDescendantPids = listDescendantPids,
+    /** Test seam for the process-tree signal step in `killWorker`. Defaults to the real implementation. */
+    private signalPidsImpl: typeof signalPids = signalPids,
   ) {
     this.userMode = userMode;
     this.agentManager = agentManager;
@@ -1010,19 +1015,45 @@ export class WorkerManager {
           pty.onExit(() => resolve());
         });
 
+        // Construct the exit/timeout race SYNCHRONOUSLY here (registering the
+        // setTimeout immediately), before the async descendant-pid snapshot
+        // below. The race is only *awaited* further down, after `pty.kill()`.
+        // This ordering matters for the fake-timers test
+        // ('should resolve with timeout when PTY does not exit'): that test
+        // calls `jest.advanceTimersByTime(...)` synchronously right after
+        // invoking `killWorker()`, and expects the timer to already be
+        // registered at that point. Awaiting the real process-tree read
+        // (`listDescendantPidsImpl`) BEFORE constructing this race would
+        // defer the `setTimeout` registration past that synchronous call.
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        const TIMEOUT_SENTINEL = Symbol('timeout');
+        const exitOrTimeout = Promise.race([
+          exitPromise.then(() => 'exited' as const),
+          new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
+            timeoutHandle = setTimeout(() => resolve(TIMEOUT_SENTINEL), PTY_EXIT_TIMEOUT_MS);
+          }),
+        ]);
+
+        // Snapshot descendant pids BEFORE killing the PTY root. The PTY's
+        // root pid is a login shell, not the agent process itself (see
+        // sentinel-spawn-command.ts) -- the agent command is typed into
+        // that shell like a human user, so job control gives it its OWN
+        // process group, separate from the shell's. `pty.kill()` below
+        // only reaches the shell's pid/pgid, never the agent's. Snapshotting
+        // first (rather than after kill) avoids depending on how quickly a
+        // killed shell's children get reparented to init, which would still
+        // resolve via ppid=1 but adds a race against the read.
+        const descendantPids = await this.listDescendantPidsImpl(pty.pid);
+
         // Kill PTY process
         pty.kill();
+        if (descendantPids.length > 0) {
+          this.signalPidsImpl(descendantPids, 'SIGTERM');
+        }
 
         // Await exit with timeout to ensure directory handles are released
-        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
         try {
-          const TIMEOUT_SENTINEL = Symbol('timeout');
-          const result = await Promise.race([
-            exitPromise.then(() => 'exited' as const),
-            new Promise<typeof TIMEOUT_SENTINEL>((resolve) => {
-              timeoutHandle = setTimeout(() => resolve(TIMEOUT_SENTINEL), PTY_EXIT_TIMEOUT_MS);
-            }),
-          ]);
+          const result = await exitOrTimeout;
           if (result === TIMEOUT_SENTINEL) {
             logger.warn(
               { pid: pty.pid },
@@ -1033,6 +1064,13 @@ export class WorkerManager {
           if (timeoutHandle !== undefined) {
             clearTimeout(timeoutHandle);
           }
+        }
+
+        // Escalate: any descendant that ignored/outlived SIGTERM (e.g. the
+        // agent process still shutting down) gets SIGKILL. `signalPids`
+        // swallows ESRCH, so already-exited descendants are a silent no-op.
+        if (descendantPids.length > 0) {
+          this.signalPidsImpl(descendantPids, 'SIGKILL');
         }
 
         // Fire exit notifications for managed kill.

@@ -33,6 +33,7 @@ import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import type { listDescendantPids, signalPids } from '../../lib/process-tree.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -722,6 +723,89 @@ describe('WorkerManager', () => {
 
       // Should not throw
       await workerManager.killWorker(worker, 'test-session');
+    });
+
+    describe('process-tree descendant signaling', () => {
+      function buildManagerWithProcessTreeSeams(seams: {
+        listDescendantPidsImpl: typeof listDescendantPids;
+        signalPidsImpl: typeof signalPids;
+      }): WorkerManager {
+        const userMode = new SingleUserMode(ptyFactory.provider, {
+          id: 'test-user-id',
+          username: 'testuser',
+          homeDir: '/home/testuser',
+        });
+        return new WorkerManager(
+          userMode,
+          agentManager,
+          new WorkerOutputFileManager(),
+          undefined,
+          undefined,
+          undefined,
+          seams.listDescendantPidsImpl,
+          seams.signalPidsImpl,
+        );
+      }
+
+      it('calls listDescendantPidsImpl with the PTY pid, and signals descendants SIGTERM then SIGKILL', async () => {
+        const listCalls: number[] = [];
+        const signalCalls: Array<{ pids: number[]; signal: NodeJS.Signals }> = [];
+        const fakeDescendants = [123, 456];
+
+        const listDescendantPidsImplFake: typeof listDescendantPids = async (rootPid) => {
+          listCalls.push(rootPid);
+          return fakeDescendants;
+        };
+        const signalPidsImplFake: typeof signalPids = (pids, signal) => {
+          signalCalls.push({ pids, signal });
+        };
+
+        const wm = buildManagerWithProcessTreeSeams({
+          listDescendantPidsImpl: listDescendantPidsImplFake,
+          signalPidsImpl: signalPidsImplFake,
+        });
+        const worker = wm.initializeAgentWorker({
+          id: 'agent-tree-1',
+          name: 'Test Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+        await wm.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+        const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+
+        await wm.killWorker(worker, 'test-session');
+
+        expect(listCalls).toEqual([mockPty.pid]);
+        expect(signalCalls).toEqual([
+          { pids: fakeDescendants, signal: 'SIGTERM' },
+          { pids: fakeDescendants, signal: 'SIGKILL' },
+        ]);
+      });
+
+      it('never calls signalPidsImpl when listDescendantPidsImpl returns no descendants', async () => {
+        const signalCalls: Array<{ pids: number[]; signal: NodeJS.Signals }> = [];
+
+        const listDescendantPidsImplFake: typeof listDescendantPids = async () => [];
+        const signalPidsImplFake: typeof signalPids = (pids, signal) => {
+          signalCalls.push({ pids, signal });
+        };
+
+        const wm = buildManagerWithProcessTreeSeams({
+          listDescendantPidsImpl: listDescendantPidsImplFake,
+          signalPidsImpl: signalPidsImplFake,
+        });
+        const worker = wm.initializeAgentWorker({
+          id: 'agent-tree-2',
+          name: 'Test Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+        await wm.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+        await wm.killWorker(worker, 'test-session');
+
+        expect(signalCalls).toEqual([]);
+      });
     });
   });
 
