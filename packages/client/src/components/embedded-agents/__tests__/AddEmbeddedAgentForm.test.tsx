@@ -112,6 +112,24 @@ describe('AddEmbeddedAgentForm', () => {
     });
   });
 
+  it('includes instructions in the POST body when file paths are added', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderAddEmbeddedAgentForm({ onSuccess, onCancel: () => {} });
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByText('+ Add file'));
+    await user.type(screen.getByPlaceholderText('e.g., docs/AGENTS.md'), 'docs/AGENTS.md');
+    await user.click(screen.getByText('Add Embedded Agent'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = await getLastFetchBody();
+    expect(body).toMatchObject({ instructions: ['docs/AGENTS.md'] });
+  });
+
   it('invalidates the embedded-agents query on success (does not rely solely on the WS broadcast)', async () => {
     const user = userEvent.setup();
     const onSuccess = mock(() => {});

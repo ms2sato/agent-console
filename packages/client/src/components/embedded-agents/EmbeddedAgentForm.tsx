@@ -1,4 +1,4 @@
-import { useForm, type FieldError } from 'react-hook-form';
+import { useForm, useFieldArray, type FieldError } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import * as v from 'valibot';
 import {
@@ -40,6 +40,13 @@ if (
 ) {
   throw new Error('EmbeddedAgentForm tool groups do not partition EMBEDDED_AGENT_TOOL_NAMES');
 }
+
+const InstructionPathSchema = v.pipe(
+  v.string(),
+  v.trim(),
+  v.minLength(1, 'File path is required'),
+  v.check((val) => !val.startsWith('/'), 'Absolute paths are not allowed')
+);
 
 /**
  * Client-side form schema for embedded-agent creation/editing.
@@ -85,6 +92,12 @@ const EmbeddedAgentFormSchema = v.object({
   // Checkboxes structurally cannot produce a duplicate, so no need to
   // re-check duplicates client-side (unlike the server-side schema).
   enabledTools: v.array(v.picklist(EMBEDDED_AGENT_TOOL_NAMES)),
+
+  // Each entry is a literal relative file path; order matters (concatenated
+  // in array order into the system prompt — see docs/design/embedded-agent-worker.md).
+  // Modeled as {path: string}[] (not string[]) because useFieldArray requires
+  // an array of objects to key rows by `field.id`.
+  instructions: v.array(v.object({ path: InstructionPathSchema })),
 });
 
 export type EmbeddedAgentFormData = v.InferOutput<typeof EmbeddedAgentFormSchema>;
@@ -109,6 +122,7 @@ export function EmbeddedAgentForm({
   const {
     register,
     handleSubmit,
+    control,
     formState: { errors },
   } = useForm<EmbeddedAgentFormData>({
     resolver: valibotResolver(EmbeddedAgentFormSchema),
@@ -121,9 +135,12 @@ export function EmbeddedAgentForm({
       systemPrompt: '',
       maxToolIterationsInput: '',
       enabledTools: [...DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS],
+      instructions: [],
     },
     mode: 'onBlur',
   });
+
+  const { fields, append, remove } = useFieldArray({ control, name: 'instructions' });
 
   const title = mode === 'create' ? 'Add New Embedded Agent' : 'Edit Embedded Agent';
   const submitLabel = mode === 'create' ? 'Add Embedded Agent' : 'Save Changes';
@@ -249,6 +266,46 @@ export function EmbeddedAgentForm({
             </div>
           </FormField>
 
+          <FormField label="Instructions (optional)">
+            <div className="flex flex-col gap-2">
+              {fields.map((field, index) => (
+                <div key={field.id} className="flex gap-2 items-start">
+                  <div className="flex-1">
+                    <Input
+                      {...register(`instructions.${index}.path` as const)}
+                      placeholder="e.g., docs/AGENTS.md"
+                      error={errors.instructions?.[index]?.path}
+                    />
+                    {errors.instructions?.[index]?.path && (
+                      <p className="text-sm text-red-400 mt-1">
+                        {errors.instructions[index]?.path?.message}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => remove(index)}
+                    className="btn btn-danger text-sm"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => append({ path: '' })}
+                className="btn btn-secondary text-sm self-start"
+              >
+                + Add file
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Explicit instruction files loaded into the system prompt, in the order listed.
+              Relative file paths only (resolved within the session's working tree); absolute
+              paths are rejected.
+            </p>
+          </FormField>
+
           {error && <p className="text-sm text-red-400">{error}</p>}
           <div className="flex gap-2">
             <button type="submit" className="btn btn-primary text-sm">
@@ -271,4 +328,12 @@ export function EmbeddedAgentForm({
 export function parseMaxToolIterations(input?: string): number | undefined {
   const trimmed = input?.trim();
   return trimmed ? Number(trimmed) : undefined;
+}
+
+/**
+ * Flatten the form's `{path: string}[]` instructions rows into the plain
+ * `string[]` shape the API expects.
+ */
+export function toInstructionPaths(instructions: EmbeddedAgentFormData['instructions']): string[] {
+  return instructions.map((entry) => entry.path);
 }

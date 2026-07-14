@@ -93,6 +93,7 @@ const initialData: EmbeddedAgentFormData = {
   systemPrompt: '',
   maxToolIterationsInput: '',
   enabledTools: ['Read', 'Glob', 'Grep'],
+  instructions: [],
 };
 
 describe('EditEmbeddedAgentForm', () => {
@@ -126,6 +127,7 @@ describe('EditEmbeddedAgentForm', () => {
       systemPrompt: null,
       maxToolIterations: null,
       enabledTools: ['Read', 'Glob', 'Grep'],
+      instructions: null,
     });
   });
 
@@ -150,6 +152,51 @@ describe('EditEmbeddedAgentForm', () => {
 
     const body = (await getLastFetchBody()) as { enabledTools: string[] };
     expect([...body.enabledTools].sort()).toEqual(['Bash', 'Glob', 'Read']);
+  });
+
+  it('sends the added instruction file paths in the PATCH body', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderEditEmbeddedAgentForm({
+      embeddedAgentId: 'embedded-1',
+      initialData,
+      onSuccess,
+      onCancel: () => {},
+    });
+
+    await user.click(screen.getByText('+ Add file'));
+    await user.type(screen.getByPlaceholderText('e.g., docs/AGENTS.md'), 'docs/new-note.md');
+
+    await user.click(screen.getByText('Save Changes'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = await getLastFetchBody();
+    expect(body).toMatchObject({ instructions: ['docs/new-note.md'] });
+  });
+
+  it('sends instructions: null when all instruction entries are removed', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderEditEmbeddedAgentForm({
+      embeddedAgentId: 'embedded-1',
+      initialData: { ...initialData, instructions: [{ path: 'existing/note.md' }] },
+      onSuccess,
+      onCancel: () => {},
+    });
+
+    await user.click(screen.getByText('Remove'));
+
+    await user.click(screen.getByText('Save Changes'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = await getLastFetchBody();
+    expect(body).toMatchObject({ instructions: null });
   });
 
   it('invalidates the embedded-agents query on success (does not rely solely on the WS broadcast)', async () => {
