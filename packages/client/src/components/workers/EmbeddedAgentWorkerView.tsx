@@ -107,7 +107,7 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         targetWorkerId={workerId}
         newMessage={null}
         onSend={async (content) => {
-          sendUserMessage(content);
+          await sendUserMessage(content);
         }}
         slashCompletionEnabled={false}
         attachmentsEnabled={false}
