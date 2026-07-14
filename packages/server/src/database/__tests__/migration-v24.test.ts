@@ -41,7 +41,7 @@ describe('migration v24 (sessions.initial_prompt_delivered)', () => {
   it('advances the schema version to 24', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(25);
+    expect(versionRes.rows[0]?.user_version).toBe(26);
   });
 
   it('adds the initial_prompt_delivered column to sessions, nullable with no default', async () => {

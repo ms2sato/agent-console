@@ -108,6 +108,8 @@ export interface WorkersTable {
   base_commit: string | null;
   /** Embedded agent definition ID for embedded-agent workers (null for other worker types) */
   embedded_agent_id: string | null;
+  /** Eligibility marker for initial-prompt delivery (embedded-agent workers only; null for other types and legacy rows). See docs/glossary.md "Initial Prompt (Session)". */
+  deliver_initial_prompt_on_activation: number | null;
 }
 
 // Helper types for queries

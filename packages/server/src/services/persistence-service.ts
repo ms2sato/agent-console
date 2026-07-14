@@ -72,6 +72,8 @@ export interface PersistedEmbeddedAgentWorker extends PersistedWorkerBase {
   type: 'embedded-agent';
   embeddedAgentId: string;
   pid: number | null;  // agent subprocess PID (null when not activated)
+  /** See `InternalEmbeddedAgentWorker.deliverInitialPromptOnActivation`. */
+  deliverInitialPromptOnActivation: boolean;
 }
 
 export type PersistedWorker =

@@ -120,12 +120,13 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
   /**
    * Whether this worker is eligible to receive the session's `initialPrompt`
    * as its first user message once the loop reports `ready`.
-   * In-memory-only, mirroring how `subprocess`/`stdin` are also null-on-
-   * restore -- NOT part of {@link PersistedWorker}. Set true only for the
-   * session's initial embedded-agent worker (created with a non-empty
-   * `initialPrompt`); workers added later via the generic add-worker route
-   * are never eligible. See `docs/design/embedded-agent-worker.md` "Initial
-   * prompt delivery".
+   * Persisted via `PersistedEmbeddedAgentWorker.deliverInitialPromptOnActivation`
+   * and survives server restart -- unlike `subprocess`/`stdin`, which are
+   * always null-on-restore. Set true only for the session's initial
+   * embedded-agent worker (created with a non-empty `initialPrompt`);
+   * workers added later via the generic add-worker route are never
+   * eligible. See `docs/design/embedded-agent-worker.md` "Initial prompt
+   * delivery".
    */
   deliverInitialPromptOnActivation: boolean;
 }

@@ -224,6 +224,30 @@ describe('mappers', () => {
       expect(row.agent_id).toBeNull();
       expect(row.base_commit).toBeNull();
     });
+
+    it('writes deliver_initial_prompt_on_activation: 1 when the persisted worker is eligible', () => {
+      const worker = buildPersistedEmbeddedAgentWorker({
+        id: 'worker-1',
+        embeddedAgentId: 'def-1',
+        deliverInitialPromptOnActivation: true,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.deliver_initial_prompt_on_activation).toBe(1);
+    });
+
+    it('writes deliver_initial_prompt_on_activation: 0 when the persisted worker is not eligible', () => {
+      const worker = buildPersistedEmbeddedAgentWorker({
+        id: 'worker-1',
+        embeddedAgentId: 'def-1',
+        deliverInitialPromptOnActivation: false,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.deliver_initial_prompt_on_activation).toBe(0);
+    });
   });
 
   describe('toSessionRow - scope+slug invariants', () => {
@@ -419,6 +443,7 @@ describe('mappers', () => {
         agent_id: null, // Missing required field
         base_commit: null,
         embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -437,6 +462,7 @@ describe('mappers', () => {
         agent_id: null,
         base_commit: null, // Missing required field
         embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -455,6 +481,7 @@ describe('mappers', () => {
         agent_id: 'claude-code-builtin',
         base_commit: null,
         embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -475,6 +502,7 @@ describe('mappers', () => {
         agent_id: null,
         base_commit: null,
         embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -495,6 +523,7 @@ describe('mappers', () => {
         agent_id: null,
         base_commit: 'abc123def456',
         embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -515,6 +544,7 @@ describe('mappers', () => {
         agent_id: null,
         base_commit: null,
         embedded_agent_id: null, // Missing required field
+        deliver_initial_prompt_on_activation: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -533,6 +563,7 @@ describe('mappers', () => {
         agent_id: null,
         base_commit: null,
         embedded_agent_id: 'def-1',
+        deliver_initial_prompt_on_activation: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -540,6 +571,27 @@ describe('mappers', () => {
       expect(worker.type).toBe('embedded-agent');
       expect((worker as PersistedEmbeddedAgentWorker).embeddedAgentId).toBe('def-1');
       expect((worker as PersistedEmbeddedAgentWorker).pid).toBe(4321);
+      expect((worker as PersistedEmbeddedAgentWorker).deliverInitialPromptOnActivation).toBe(true);
+    });
+
+    it('maps deliver_initial_prompt_on_activation: null to deliverInitialPromptOnActivation: false', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: null,
+        agent_id: null,
+        base_commit: null,
+        embedded_agent_id: 'def-1',
+        deliver_initial_prompt_on_activation: null,
+      };
+
+      const worker = toPersistedWorker(dbWorker);
+
+      expect((worker as PersistedEmbeddedAgentWorker).deliverInitialPromptOnActivation).toBe(false);
     });
   });
 

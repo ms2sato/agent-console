@@ -82,6 +82,7 @@ export function buildPersistedEmbeddedAgentWorker(
     name: 'Embedded Agent',
     embeddedAgentId: 'test-embedded-agent-def-id',
     pid: null,
+    deliverInitialPromptOnActivation: false,
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
