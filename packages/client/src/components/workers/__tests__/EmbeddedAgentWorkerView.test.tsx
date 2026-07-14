@@ -487,6 +487,59 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(userBubble.className).toContain('whitespace-pre-wrap');
       expect(userBubble.className).toContain('[overflow-wrap:anywhere]');
     });
+
+    it('renders the assistant message bubble at full width (no max-w- constraint) while the user bubble keeps its max-w-[80%] cap (#1095)', async () => {
+      const { container } = renderView({ sessionId: 's12b', workerId: 'w12b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'hi' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const assistantBubble = container.querySelector('.memo-content');
+      expect(assistantBubble).not.toBeNull();
+      expect(assistantBubble?.className).not.toMatch(/max-w-/);
+
+      const userBubble = screen.getByText('hi');
+      expect(userBubble.className).toContain('max-w-[80%]');
+    });
+
+    it('keeps the wrap-enabling classes (.memo-content, min-w-0) on the assistant bubble for a long unbroken token at full width, with no max-w- constraint reintroduced (#1095)', async () => {
+      const { container } = renderView({ sessionId: 's12c', workerId: 'w12c' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      // A single unbroken token (no spaces) long enough that, without
+      // overflow-wrap:anywhere on `.memo-content` (styles.css) plus
+      // min-w-0 on the flex item, it would force the bubble wider than
+      // its container per the CSS Flexbox/Sizing spec (see the #1071
+      // comment in styles.css). happy-dom does not load external
+      // stylesheets, so this test cannot observe the actual wrap layout;
+      // it locks in that the classes the CSS rule depends on remain
+      // present once the max-w- cap is removed.
+      const longToken = 'https://example.com/' + 'a'.repeat(300);
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: longToken });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const assistantBubble = container.querySelector('.memo-content');
+      expect(assistantBubble).not.toBeNull();
+      expect(assistantBubble?.className).toContain('min-w-0');
+      expect(assistantBubble?.className).not.toMatch(/max-w-/);
+      expect(assistantBubble?.textContent).toContain(longToken);
+    });
   });
 
   describe('Thinking accordion (#1070)', () => {
