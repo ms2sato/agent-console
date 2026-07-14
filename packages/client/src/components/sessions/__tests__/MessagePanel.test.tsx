@@ -966,10 +966,11 @@ describe('MessagePanel', () => {
     });
   });
 
-  describe('sendDisabled prop', () => {
-    it('keeps the textarea editable while gating the Send button', async () => {
+  describe('cancelState prop', () => {
+    it('keeps the textarea editable and renders Cancel instead of Send while active', async () => {
+      const mockOnCancel = mock(() => {});
       const { container } = await act(async () =>
-        renderWithRouter(<MessagePanel {...defaultProps} sendDisabled={true} />),
+        renderWithRouter(<MessagePanel {...defaultProps} cancelState={{ active: true, onCancel: mockOnCancel }} />),
       );
       const view = within(container);
 
@@ -981,13 +982,16 @@ describe('MessagePanel', () => {
       });
       expect(textarea.value).toBe('still typing');
 
-      const sendButton = view.getByText('Send') as HTMLButtonElement;
-      expect(sendButton.disabled).toBe(true);
+      expect(view.queryByText('Send')).toBeNull();
+      const cancelButton = view.getByText('Cancel') as HTMLButtonElement;
+      expect(cancelButton).toBeTruthy();
+      expect(cancelButton.disabled).toBe(false);
     });
 
-    it('does not send on Ctrl+Enter while true', async () => {
+    it('does not send or cancel on Ctrl+Enter while active', async () => {
+      const mockOnCancel = mock(() => {});
       const { container } = await act(async () =>
-        renderWithRouter(<MessagePanel {...defaultProps} sendDisabled={true} />),
+        renderWithRouter(<MessagePanel {...defaultProps} cancelState={{ active: true, onCancel: mockOnCancel }} />),
       );
       const view = within(container);
 
@@ -1000,9 +1004,25 @@ describe('MessagePanel', () => {
       });
 
       expect(onSendMock).not.toHaveBeenCalled();
+      expect(mockOnCancel).not.toHaveBeenCalled();
     });
 
-    it('allows sending when omitted (defaults to false)', async () => {
+    it('clicking Cancel invokes onCancel regardless of draft content', async () => {
+      const mockOnCancel = mock(() => {});
+      const { container } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} cancelState={{ active: true, onCancel: mockOnCancel }} />),
+      );
+      const view = within(container);
+
+      const cancelButton = view.getByText('Cancel') as HTMLButtonElement;
+      await act(async () => {
+        fireEvent.click(cancelButton);
+      });
+
+      expect(mockOnCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows sending when cancelState is omitted (defaults to inactive)', async () => {
       const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
       const view = within(container);
 
@@ -1013,6 +1033,22 @@ describe('MessagePanel', () => {
 
       const sendButton = view.getByText('Send') as HTMLButtonElement;
       expect(sendButton.disabled).toBe(false);
+      expect(view.queryByText('Cancel')).toBeNull();
+    });
+
+    it('exposes accessible button names that match the active/inactive morph', async () => {
+      const mockOnCancel = mock(() => {});
+      const { container: activeContainer } = await act(async () =>
+        renderWithRouter(<MessagePanel {...defaultProps} cancelState={{ active: true, onCancel: mockOnCancel }} />),
+      );
+      const activeView = within(activeContainer);
+      expect(activeView.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+      expect(activeView.queryByRole('button', { name: 'Send' })).toBeNull();
+
+      const { container: inactiveContainer } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+      const inactiveView = within(inactiveContainer);
+      expect(inactiveView.getByRole('button', { name: 'Send' })).toBeTruthy();
+      expect(inactiveView.queryByRole('button', { name: 'Cancel' })).toBeNull();
     });
   });
 

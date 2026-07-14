@@ -8,6 +8,7 @@ import { useMessageTemplates } from '../../hooks/useMessageTemplates';
 import { skillKeys } from '../../lib/query-keys';
 import { TemplateSelector } from './TemplateSelector';
 import { TemplateManager } from './TemplateManager';
+import { StopIcon } from '../Icons';
 
 interface MessagePanelProps {
   sessionId: string;
@@ -18,7 +19,7 @@ interface MessagePanelProps {
   onEscape?: () => void;
   slashCompletionEnabled?: boolean;
   attachmentsEnabled?: boolean;
-  sendDisabled?: boolean;
+  cancelState?: { active: boolean; onCancel: () => void };
 }
 
 /** Determine if the send action should be enabled. */
@@ -27,9 +28,9 @@ export function canSend(
   content: string,
   sending: boolean,
   fileCount: number,
-  sendDisabled = false,
+  sendBlocked = false,
 ): boolean {
-  return !sending && !sendDisabled && (content.trim().length > 0 || fileCount > 0) && targetWorkerId.length > 0;
+  return !sending && !sendBlocked && (content.trim().length > 0 || fileCount > 0) && targetWorkerId.length > 0;
 }
 
 /** Validate file constraints before sending. Returns error [title, message] or null if valid. */
@@ -57,8 +58,9 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     onEscape,
     slashCompletionEnabled = true,
     attachmentsEnabled = true,
-    sendDisabled = false,
+    cancelState,
   }, ref) {
+  const sendBlocked = cancelState?.active ?? false;
   const { content, setContent, clearDraft } = useDraftMessage(sessionId, targetWorkerId);
   const [sending, setSending] = useState(false);
   const [hasUnread, setHasUnread] = useState(false);
@@ -169,7 +171,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
     // Ctrl/Cmd+Enter always sends, even with dropdown visible
     if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
       e.preventDefault();
-      if (!sendDisabled) {
+      if (!sendBlocked) {
         handleSend();
       }
       return;
@@ -216,7 +218,7 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
       e.preventDefault();
       onEscape?.();
     }
-  }, [handleSend, sendDisabled, showCompletion, templateSelectorOpen, filteredCommands, clampedIndex, selectCommand, onEscape]);
+  }, [handleSend, sendBlocked, showCompletion, templateSelectorOpen, filteredCommands, clampedIndex, selectCommand, onEscape]);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -376,14 +378,24 @@ export const MessagePanel = forwardRef<MessagePanelHandle, MessagePanelProps>(
           }}
         />
 
-        {/* Send button */}
-        <button
-          onClick={handleSend}
-          disabled={!canSend(targetWorkerId, content, sending, files.length, sendDisabled)}
-          className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded shrink-0"
-        >
-          Send
-        </button>
+        {/* Send button, morphs into Cancel while a turn is active */}
+        {cancelState?.active ? (
+          <button
+            onClick={cancelState.onCancel}
+            className="flex items-center gap-1 bg-red-900/40 hover:bg-red-900/60 text-red-300 text-sm px-3 py-1 rounded shrink-0"
+          >
+            <StopIcon className="w-3.5 h-3.5" />
+            Cancel
+          </button>
+        ) : (
+          <button
+            onClick={handleSend}
+            disabled={!canSend(targetWorkerId, content, sending, files.length, sendBlocked)}
+            className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 disabled:text-gray-500 text-white text-sm px-3 py-1 rounded shrink-0"
+          >
+            Send
+          </button>
+        )}
       </div>
 
       {/* File chips */}
