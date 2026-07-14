@@ -281,6 +281,7 @@ describe('EmbeddedAgentForm', () => {
       systemPrompt: 'Be helpful',
       maxToolIterationsInput: '25',
       enabledTools: ['Read', 'Glob', 'Grep'],
+      instructions: [{ path: 'docs/AGENTS.md' }],
     };
 
     it('should render form with pre-filled data', () => {
@@ -321,6 +322,147 @@ describe('EmbeddedAgentForm', () => {
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
       expect(formData.name).toBe('Existing Embedded Agent');
       expect(formData.apiKeyRef).toBe('');
+    });
+  });
+
+  describe('instructions', () => {
+    it('should render with no instruction entries by default', () => {
+      renderEmbeddedAgentForm();
+
+      expect(screen.queryByPlaceholderText('e.g., docs/AGENTS.md')).toBeNull();
+      expect(screen.getByText('+ Add file')).toBeTruthy();
+    });
+
+    it('should add and submit an instruction file path entry', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+
+      await user.click(screen.getByText('+ Add file'));
+      await user.type(screen.getByPlaceholderText('e.g., docs/AGENTS.md'), 'docs/AGENTS.md');
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect(formData.instructions).toEqual([{ path: 'docs/AGENTS.md' }]);
+    });
+
+    it('should show a validation error for an empty instruction file path', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+
+      await user.click(screen.getByText('+ Add file'));
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('File path is required')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should show a validation error for an absolute instruction file path', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+
+      await user.click(screen.getByText('+ Add file'));
+      await user.type(screen.getByPlaceholderText('e.g., docs/AGENTS.md'), '/etc/passwd');
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Absolute paths are not allowed')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should remove an instruction file path entry', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+
+      await user.click(screen.getByText('+ Add file'));
+      await user.click(screen.getByText('+ Add file'));
+      const pathInputs = screen.getAllByPlaceholderText('e.g., docs/AGENTS.md');
+      await user.type(pathInputs[0], 'docs/first.md');
+      await user.type(pathInputs[1], 'docs/second.md');
+
+      await user.click(screen.getAllByText('Remove')[0]);
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect(formData.instructions).toEqual([{ path: 'docs/second.md' }]);
+    });
+
+    it('should pre-fill instructions in edit mode', () => {
+      renderEmbeddedAgentForm({
+        mode: 'edit',
+        initialData: {
+          name: 'Existing Embedded Agent',
+          description: 'Test description',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'qwen3:32b',
+          apiKeyRef: 'my-key',
+          systemPrompt: 'Be helpful',
+          maxToolIterationsInput: '25',
+          enabledTools: ['Read', 'Glob', 'Grep'],
+          instructions: [{ path: 'docs/AGENTS.md' }],
+        },
+      });
+
+      expect(screen.getByDisplayValue('docs/AGENTS.md')).toBeTruthy();
+    });
+
+    it('should allow clearing all instructions in edit mode', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm({
+        mode: 'edit',
+        initialData: {
+          name: 'Existing Embedded Agent',
+          description: 'Test description',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'qwen3:32b',
+          apiKeyRef: 'my-key',
+          systemPrompt: 'Be helpful',
+          maxToolIterationsInput: '25',
+          enabledTools: ['Read', 'Glob', 'Grep'],
+          instructions: [{ path: 'docs/AGENTS.md' }],
+        },
+      });
+
+      await user.click(screen.getByText('Remove'));
+
+      await user.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect(formData.instructions).toEqual([]);
     });
   });
 });

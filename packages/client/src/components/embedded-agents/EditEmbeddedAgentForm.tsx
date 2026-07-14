@@ -3,7 +3,12 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { UpdateEmbeddedAgentRequest } from '@agent-console/shared';
 import { updateEmbeddedAgent } from '../../lib/api';
 import { embeddedAgentKeys } from '../../lib/query-keys';
-import { EmbeddedAgentForm, parseMaxToolIterations, type EmbeddedAgentFormData } from './EmbeddedAgentForm';
+import {
+  EmbeddedAgentForm,
+  parseMaxToolIterations,
+  toInstructionPaths,
+  type EmbeddedAgentFormData,
+} from './EmbeddedAgentForm';
 
 export interface EditEmbeddedAgentFormProps {
   embeddedAgentId: string;
@@ -58,6 +63,9 @@ export function EditEmbeddedAgentForm({
       // this form exists precisely to remove the "default vs explicit" PATCH
       // ambiguity that null/undefined would otherwise carry.
       enabledTools: data.enabledTools,
+      // Send null to clear (server: null = clear, undefined = no change), matching
+      // the description/systemPrompt/maxToolIterations pattern above.
+      instructions: data.instructions.length > 0 ? toInstructionPaths(data.instructions) : null,
     });
   };
 

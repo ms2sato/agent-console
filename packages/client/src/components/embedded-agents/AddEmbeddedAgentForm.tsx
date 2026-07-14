@@ -2,7 +2,12 @@ import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { createEmbeddedAgent } from '../../lib/api';
 import { embeddedAgentKeys } from '../../lib/query-keys';
-import { EmbeddedAgentForm, parseMaxToolIterations, type EmbeddedAgentFormData } from './EmbeddedAgentForm';
+import {
+  EmbeddedAgentForm,
+  parseMaxToolIterations,
+  toInstructionPaths,
+  type EmbeddedAgentFormData,
+} from './EmbeddedAgentForm';
 
 export interface AddEmbeddedAgentFormProps {
   onSuccess: () => void;
@@ -46,6 +51,7 @@ export function AddEmbeddedAgentForm({ onSuccess, onCancel }: AddEmbeddedAgentFo
       systemPrompt: data.systemPrompt || undefined,
       maxToolIterations: parseMaxToolIterations(data.maxToolIterationsInput),
       enabledTools: data.enabledTools,
+      instructions: data.instructions.length > 0 ? toInstructionPaths(data.instructions) : undefined,
     });
   };
 

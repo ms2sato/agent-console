@@ -345,6 +345,7 @@ function EmbeddedAgentsSection() {
                   systemPrompt: embeddedAgent.systemPrompt ?? '',
                   maxToolIterationsInput: embeddedAgent.maxToolIterations?.toString() ?? '',
                   enabledTools: embeddedAgent.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS.slice(),
+                  instructions: (embeddedAgent.instructions ?? []).map((path) => ({ path })),
                 }}
                 onSuccess={() => setEditingAgentId(null)}
                 onCancel={() => setEditingAgentId(null)}
