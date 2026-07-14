@@ -165,6 +165,7 @@ describe('PersistenceService', () => {
               name: 'Embedded Agent',
               embeddedAgentId: 'agent-def-1',
               pid: null,
+              deliverInitialPromptOnActivation: false,
               createdAt: '2026-01-01T00:00:00.000Z',
             },
           ],

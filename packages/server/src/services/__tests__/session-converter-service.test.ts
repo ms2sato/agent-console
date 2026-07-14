@@ -82,7 +82,15 @@ describe('SessionConverterService', () => {
         } else if (w.type === 'git-diff') {
           return { id: w.id, type: 'git-diff', name: w.name, createdAt: w.createdAt, baseCommit: w.baseCommit };
         } else {
-          return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, pid: w.subprocess?.pid ?? null };
+          return {
+            id: w.id,
+            type: 'embedded-agent',
+            name: w.name,
+            createdAt: w.createdAt,
+            embeddedAgentId: w.embeddedAgentId,
+            pid: w.subprocess?.pid ?? null,
+            deliverInitialPromptOnActivation: w.deliverInitialPromptOnActivation,
+          };
         }
       },
       getServerPid: () => 12345,

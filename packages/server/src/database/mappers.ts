@@ -146,6 +146,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       agent_id: worker.agentId,
       base_commit: null,
       embedded_agent_id: null,
+      deliver_initial_prompt_on_activation: null,
     };
   } else if (worker.type === 'terminal') {
     return {
@@ -154,6 +155,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       agent_id: null,
       base_commit: null,
       embedded_agent_id: null,
+      deliver_initial_prompt_on_activation: null,
     };
   } else if (worker.type === 'git-diff') {
     return {
@@ -162,6 +164,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       agent_id: null,
       base_commit: worker.baseCommit,
       embedded_agent_id: null,
+      deliver_initial_prompt_on_activation: null,
     };
   } else if (worker.type === 'embedded-agent') {
     return {
@@ -170,6 +173,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       agent_id: null,
       base_commit: null,
       embedded_agent_id: worker.embeddedAgentId,
+      deliver_initial_prompt_on_activation: worker.deliverInitialPromptOnActivation ? 1 : 0,
     };
   } else {
     return assertNever(worker, `Unknown worker type for worker ${base.id}`);
@@ -238,6 +242,7 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       createdAt: worker.created_at,
       pid: worker.pid ?? null,
       embeddedAgentId: worker.embedded_agent_id,
+      deliverInitialPromptOnActivation: worker.deliver_initial_prompt_on_activation === 1,
     } as PersistedEmbeddedAgentWorker;
   } else {
     // This should never be reached due to the validation above,

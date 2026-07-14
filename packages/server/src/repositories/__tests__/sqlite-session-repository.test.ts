@@ -68,6 +68,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('agent_id', 'text')
       .addColumn('base_commit', 'text')
       .addColumn('embedded_agent_id', 'text')
+      .addColumn('deliver_initial_prompt_on_activation', 'integer')
       .execute();
 
     repository = new SqliteSessionRepository(db);

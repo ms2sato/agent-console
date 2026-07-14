@@ -329,6 +329,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 25) {
     await migrateToV25(database);
   }
+
+  if (currentVersion < 26) {
+    await migrateToV26(database);
+  }
 }
 
 /**
@@ -1446,6 +1450,35 @@ export async function migrateToV25(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 25`.execute(database);
 
   logger.info('Migration to v25 completed');
+}
+
+/**
+ * Migration v26: Add `deliver_initial_prompt_on_activation` column to `workers`.
+ * Nullable INTEGER (0/1) column persisting the eligibility marker
+ * (`InternalEmbeddedAgentWorker.deliverInitialPromptOnActivation`) for
+ * embedded-agent workers; null/0 for non-embedded-agent workers and for
+ * legacy embedded-agent rows predating v26 (treated as "not eligible" by
+ * application code — same tri-state convention as v24's
+ * `initial_prompt_delivered`).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV26(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v26: Adding deliver_initial_prompt_on_activation column to workers');
+
+  try {
+    await database.schema
+      .alterTable('workers')
+      .addColumn('deliver_initial_prompt_on_activation', 'integer')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column deliver_initial_prompt_on_activation already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 26`.execute(database);
+
+  logger.info('Migration to v26 completed');
 }
 
 /**

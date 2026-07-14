@@ -964,6 +964,38 @@ describe('WorkerManager', () => {
         expect(persisted.pid).toBeNull();
       }
     });
+
+    it('should persist deliverInitialPromptOnActivation: true through to PersistedEmbeddedAgentWorker', () => {
+      const worker = buildInternalEmbeddedAgentWorker({
+        id: 'embedded-eligible',
+        embeddedAgentId: 'def-1',
+        subprocess: null,
+        deliverInitialPromptOnActivation: true,
+      });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') {
+        expect(persisted.deliverInitialPromptOnActivation).toBe(true);
+      }
+    });
+
+    it('should persist deliverInitialPromptOnActivation: false through to PersistedEmbeddedAgentWorker', () => {
+      const worker = buildInternalEmbeddedAgentWorker({
+        id: 'embedded-not-eligible',
+        embeddedAgentId: 'def-1',
+        subprocess: null,
+        deliverInitialPromptOnActivation: false,
+      });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') {
+        expect(persisted.deliverInitialPromptOnActivation).toBe(false);
+      }
+    });
   });
 
   // ========== initializeEmbeddedAgentWorker ==========
@@ -1060,9 +1092,14 @@ describe('WorkerManager', () => {
       }
     });
 
-    it('should restore embedded-agent workers with subprocess: null', () => {
+    it('should restore embedded-agent workers with subprocess: null and deliverInitialPromptOnActivation: true when persisted as eligible (Issue #1074)', () => {
       const persistedWorkers = [
-        buildPersistedEmbeddedAgentWorker({ id: 'restored-embedded', embeddedAgentId: 'def-1', pid: 4321 }),
+        buildPersistedEmbeddedAgentWorker({
+          id: 'restored-embedded',
+          embeddedAgentId: 'def-1',
+          pid: 4321,
+          deliverInitialPromptOnActivation: true,
+        }),
       ];
 
       const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
@@ -1076,9 +1113,33 @@ describe('WorkerManager', () => {
         expect(worker.activityState).toBe('unknown');
         expect(worker.outputOffset).toBe(0);
         expect(worker.connectionCallbacks.size).toBe(0);
-        // deliverInitialPromptOnActivation is in-memory-only and never
-        // persisted, so it always restores as false regardless of whether
-        // the original worker was eligible for initial-prompt delivery.
+        // Core regression-guard for Issue #1074: the eligibility marker now
+        // round-trips from the persisted row instead of being hard-coded false.
+        expect(worker.deliverInitialPromptOnActivation).toBe(true);
+      }
+    });
+
+    it('should restore embedded-agent workers with deliverInitialPromptOnActivation: false when persisted as not eligible', () => {
+      const persistedWorkers = [
+        buildPersistedEmbeddedAgentWorker({
+          id: 'restored-embedded-ineligible',
+          embeddedAgentId: 'def-1',
+          pid: 4321,
+          deliverInitialPromptOnActivation: false,
+        }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-embedded-ineligible')!;
+      expect(worker.type).toBe('embedded-agent');
+      if (worker.type === 'embedded-agent') {
+        expect(worker.subprocess).toBeNull();
+        expect(worker.stdin).toBeNull();
+        expect(worker.embeddedAgentId).toBe('def-1');
+        expect(worker.activityState).toBe('unknown');
+        expect(worker.outputOffset).toBe(0);
+        expect(worker.connectionCallbacks.size).toBe(0);
         expect(worker.deliverInitialPromptOnActivation).toBe(false);
       }
     });

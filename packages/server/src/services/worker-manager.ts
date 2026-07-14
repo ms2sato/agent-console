@@ -852,13 +852,10 @@ export class WorkerManager {
             // manifest at activation (mirrors the PTY-worker restore path).
             epoch: Date.now(),
             connectionCallbacks: new Map(), // Must be unique per worker
-            // In-memory-only eligibility marker, never
-            // persisted, so it cannot be recovered on restore. Accepted
-            // narrow edge case: a session whose initial embedded-agent
-            // worker was created but never activated before a server
-            // restart will not receive the initial-prompt delivery after
-            // restart (same category as other v1 "restart" limitations).
-            deliverInitialPromptOnActivation: false,
+            // Round-trips from PersistedEmbeddedAgentWorker.deliverInitialPromptOnActivation,
+            // written at create time by toPersistedWorker, so eligibility
+            // survives a server restart (Issue #1074).
+            deliverInitialPromptOnActivation: pw.deliverInitialPromptOnActivation,
           };
           break;
         default: {
@@ -932,6 +929,7 @@ export class WorkerManager {
           type: 'embedded-agent',
           embeddedAgentId: worker.embeddedAgentId,
           pid: worker.subprocess?.pid ?? null,
+          deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
         };
         return persistedEmbeddedAgent;
       }
