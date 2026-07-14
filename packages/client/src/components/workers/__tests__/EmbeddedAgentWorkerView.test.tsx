@@ -487,6 +487,30 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(userBubble.className).toContain('whitespace-pre-wrap');
       expect(userBubble.className).toContain('[overflow-wrap:anywhere]');
     });
+
+    it('renders the assistant message bubble at full width (no max-w- constraint) while the user bubble keeps its max-w-[80%] cap (#1095)', async () => {
+      const { container } = renderView({ sessionId: 's12b', workerId: 'w12b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'hi' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const assistantBubble = container.querySelector('.memo-content');
+      expect(assistantBubble).not.toBeNull();
+      expect(assistantBubble?.className).not.toMatch(/max-w-/);
+
+      const userBubble = screen.getByText('hi');
+      expect(userBubble.className).toContain('max-w-[80%]');
+    });
   });
 
   describe('Thinking accordion (#1070)', () => {

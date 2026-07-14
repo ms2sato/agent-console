@@ -214,7 +214,7 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
     case 'assistant-message':
       return (
         <div className="flex justify-start">
-          <div className="memo-content min-w-0 max-w-[80%] rounded-lg bg-slate-800 text-gray-100 px-3 py-2 text-sm">
+          <div className="memo-content min-w-0 rounded-lg bg-slate-800 text-gray-100 px-3 py-2 text-sm">
             <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
               {entry.text}
             </Markdown>
