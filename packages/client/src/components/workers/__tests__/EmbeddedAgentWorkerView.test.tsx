@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { render, screen, cleanup, act, fireEvent } from '@testing-library/react';
+import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EmbeddedAgentWorkerView } from '../EmbeddedAgentWorkerView';
@@ -485,7 +485,7 @@ describe('EmbeddedAgentWorkerView', () => {
   });
 
   describe('Thinking accordion (#1070)', () => {
-    it('renders a thinking entry collapsed by default (body not in the accessible/queryable tree)', async () => {
+    it('renders a thinking entry collapsed by default inside a collapsed-by-default Working accordion', async () => {
       renderView({ sessionId: 's13', workerId: 'w13' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -498,17 +498,51 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
+      // Thinking-only turn: no tool calls, so the outer summary shows just
+      // the bare label (no "(N tool calls)" suffix).
+      expect(screen.getByText('Working')).toBeTruthy();
       expect(screen.getByText('Thinking')).toBeTruthy();
       // Native <details> hides non-<summary> children via the UA stylesheet
       // (`details:not([open]) > *:not(summary) { display: none }`) rather
       // than removing them from the DOM, so a happy-dom text query still
       // finds the body node structurally present -- the `open` attribute is
       // the authoritative collapsed/expanded signal.
-      const details = document.querySelector('details');
-      expect(details?.hasAttribute('open')).toBe(false);
+      const [outerDetails, innerDetails] = Array.from(document.querySelectorAll('details'));
+      expect(outerDetails?.hasAttribute('open')).toBe(false);
+      expect(innerDetails?.hasAttribute('open')).toBe(false);
     });
 
-    it('expands the thinking accordion body on clicking the summary (true-path)', async () => {
+    it('clicking only the outer summary opens the Working accordion without auto-opening the nested Thinking accordion', async () => {
+      renderView({ sessionId: 's13b', workerId: 'w13b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering deeply' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      // In a real browser, the nested <summary> is not clickable while its
+      // owning <details> is closed -- the UA stylesheet applies
+      // `details:not([open]) > *:not(summary) { display: none }`, which hides
+      // the inner Thinking <details> (a non-summary child of the outer
+      // Working <details>) entirely. A real user must click the OUTER
+      // summary first; only a separate, later click on the now-visible inner
+      // summary opens the inner accordion. This test drives that first click
+      // in isolation and asserts the inner accordion stays closed.
+      const user = userEvent.setup();
+      const [outerSummary] = Array.from(document.querySelectorAll('summary'));
+      await user.click(outerSummary);
+
+      const [outerDetails, innerDetails] = Array.from(document.querySelectorAll('details'));
+      expect(outerDetails?.hasAttribute('open')).toBe(true);
+      expect(innerDetails?.hasAttribute('open')).toBe(false);
+    });
+
+    it('expands the thinking accordion body on clicking the nested summary (true-path)', async () => {
       renderView({ sessionId: 's14', workerId: 'w14' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -521,17 +555,24 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      // happy-dom's native <details> toggle only fires when the click
-      // target is the <summary> element itself, not a nested descendant
-      // (unlike real browsers, where the click bubbles up); click the
-      // <summary> directly to drive the true-path expand.
+      // happy-dom's native <details> toggle fires on the bubbling-phase
+      // click event for EVERY ancestor <details> along the click's
+      // propagation path, not just the summary's own direct parent (unlike
+      // a real browser, where only the summary's owning <details> toggles).
+      // For our nested Working > Thinking structure this means a single
+      // click on the innermost <summary> toggles BOTH <details> open in one
+      // go (the click bubbles from the inner summary, through the wrapper
+      // divs, up into the outer Working <details>). Click the inner
+      // <summary> directly (not a descendant of it) to drive the true-path
+      // expand of both accordions.
       const user = userEvent.setup();
-      const summary = document.querySelector('summary')!;
-      await user.click(summary);
+      const [, innerSummary] = Array.from(document.querySelectorAll('summary'));
+      await user.click(innerSummary);
 
       expect(screen.getByText('pondering deeply')).toBeTruthy();
-      const details = document.querySelector('details');
-      expect(details?.hasAttribute('open')).toBe(true);
+      const [outerDetails, innerDetails] = Array.from(document.querySelectorAll('details'));
+      expect(outerDetails?.hasAttribute('open')).toBe(true);
+      expect(innerDetails?.hasAttribute('open')).toBe(true);
     });
 
     it('applies overflow-wrap:anywhere to the thinking accordion body', async () => {
@@ -547,9 +588,12 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
+      // See the click-target rationale in the preceding test -- clicking the
+      // inner <summary> alone toggles both nested <details> open under
+      // happy-dom's bubbling-phase toggle behavior.
       const user = userEvent.setup();
-      const summary = document.querySelector('summary')!;
-      await user.click(summary);
+      const [, innerSummary] = Array.from(document.querySelectorAll('summary'));
+      await user.click(innerSummary);
 
       const body = screen.getByText('pondering');
       expect(body.className).toContain('[overflow-wrap:anywhere]');
@@ -570,7 +614,206 @@ describe('EmbeddedAgentWorkerView', () => {
 
       expect(screen.getByText('plain answer, no thinking')).toBeTruthy();
       expect(screen.queryByText('Thinking')).toBeNull();
+      expect(screen.queryByText('Working')).toBeNull();
       expect(document.querySelectorAll('details').length).toBe(0);
+    });
+  });
+
+  describe('Unified Working accordion (#1088)', () => {
+    it('groups a multi-iteration turn (thinking -> tools -> thinking -> tools -> final) into ONE Working accordion, in chronological order', async () => {
+      const { container } = renderView({ sessionId: 's16', workerId: 'w16' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'first-round-thinking' },
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'first_tool', args: {} },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'first-tool-result' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'intermediate note' },
+        { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'second-round-thinking' },
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c2', name: 'second_tool', args: {} },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c2', ok: true, result: 'second-tool-result' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'final answer' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Exactly one Working accordion for the whole turn.
+      expect(screen.getAllByText(/^Working/)).toHaveLength(1);
+      expect(screen.getByText('Working (2 tool calls)')).toBeTruthy();
+
+      // Chronological order preserved: the two outside assistant-message
+      // entries surround the (single, merged) Working accordion in text
+      // order, matching raw-entries arrival order.
+      const text = container.textContent ?? '';
+      const idxWorking = text.indexOf('Working (2 tool calls)');
+      const idxIntermediate = text.indexOf('intermediate note');
+      const idxFinal = text.indexOf('final answer');
+      expect(idxWorking).toBeGreaterThanOrEqual(0);
+      expect(idxIntermediate).toBeGreaterThan(idxWorking);
+      expect(idxFinal).toBeGreaterThan(idxIntermediate);
+    });
+
+    it('renders the Working accordion collapsed by default', async () => {
+      renderView({ sessionId: 's17', workerId: 'w17' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: { cmd: 'ls' } },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const details = document.querySelector('details');
+      expect(details?.hasAttribute('open')).toBe(false);
+    });
+
+    it('keeps a user-expanded Working accordion open when more entries are appended for the same turn (A3 regression: requires key={turnId})', async () => {
+      renderView({ sessionId: 's18', workerId: 'w18' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const firstChunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking one' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: firstChunk, offset: firstChunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      const user = userEvent.setup();
+      const outerSummary = document.querySelector('summary')!;
+      await user.click(outerSummary);
+
+      let details = document.querySelector('details');
+      expect(details?.hasAttribute('open')).toBe(true);
+
+      const secondChunk = ndjson({ v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: {} });
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'output', data: secondChunk, offset: firstChunk.length + secondChunk.length, epoch: 1 }),
+        );
+      });
+      await flush();
+
+      details = document.querySelector('details');
+      expect(details?.hasAttribute('open')).toBe(true);
+      expect(screen.getByText('Working (1 tool call)')).toBeTruthy();
+    });
+
+    it('keeps errors, fatal, exited, and final assistant messages outside any accordion', async () => {
+      renderView({ sessionId: 's19', workerId: 'w19' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking before error' },
+        { v: 1, type: 'turn-error', turnId: 't1', message: 'boom error' },
+        { v: 1, type: 'assistant-message', turnId: 't2', text: 'a final message' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const errorNode = screen.getByText(/boom error/);
+      const finalNode = screen.getByText('a final message');
+      const allDetails = Array.from(document.querySelectorAll('details'));
+      expect(allDetails.every((d) => !d.contains(errorNode))).toBe(true);
+      expect(allDetails.every((d) => !d.contains(finalNode))).toBe(true);
+    });
+
+    it('keeps an intermediate assistant-message (mid-turn, between two tool rounds) outside any accordion', async () => {
+      renderView({ sessionId: 's20', workerId: 'w20' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'first_tool', args: {} },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok1' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'mid-turn placeholder text' },
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c2', name: 'second_tool', args: {} },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c2', ok: true, result: 'ok2' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const intermediateNode = screen.getByText('mid-turn placeholder text');
+      const allDetails = Array.from(document.querySelectorAll('details'));
+      expect(allDetails.every((d) => !d.contains(intermediateNode))).toBe(true);
+      // Exactly one Working accordion still covers both tool rounds.
+      expect(screen.getAllByText(/^Working/)).toHaveLength(1);
+      expect(screen.getByText('Working (2 tool calls)')).toBeTruthy();
+    });
+
+    it('produces equivalent visible output for the same event sequence via replay (one history message) and live (sequential output messages)', async () => {
+      const events = [
+        { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking' },
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: { cmd: 'ls' } },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'final answer' },
+      ];
+
+      // (a) Replay: one history message.
+      const replayView = renderView({ sessionId: 's21a', workerId: 'w21a' });
+      const replayWs = MockWebSocket.getLastInstance();
+      act(() => {
+        replayWs?.simulateOpen();
+      });
+      const replayData = ndjson(...events);
+      act(() => {
+        replayWs?.simulateMessage(
+          JSON.stringify({ type: 'history', data: replayData, offset: replayData.length, startOffset: 0, epoch: 1 }),
+        );
+      });
+      await flush();
+
+      // (b) Live: sequential output messages, same order.
+      const liveView = renderView({ sessionId: 's21b', workerId: 'w21b' });
+      const liveWs = MockWebSocket.getLastInstance();
+      act(() => {
+        liveWs?.simulateOpen();
+      });
+      let offset = 0;
+      for (const event of events) {
+        const chunk = ndjson(event);
+        offset += chunk.length;
+        act(() => {
+          liveWs?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset, epoch: 1 }));
+        });
+        await flush();
+      }
+
+      // Both default-collapsed, so only the Working summary label+count and
+      // the outside final-message text are visible in either mode. Query
+      // scoped explicitly via `within(container)` -- RenderResult's own
+      // query methods are bound to `document.body` by default, so with BOTH
+      // views mounted simultaneously (no cleanup() between them) an
+      // unscoped query would see both views' content at once.
+      const replayScope = within(replayView.container);
+      const liveScope = within(liveView.container);
+      expect(replayScope.getAllByText(/^Working/)).toHaveLength(1);
+      expect(liveScope.getAllByText(/^Working/)).toHaveLength(1);
+      expect(replayScope.getByText('Working (1 tool call)')).toBeTruthy();
+      expect(liveScope.getByText('Working (1 tool call)')).toBeTruthy();
+      expect(replayScope.getByText('final answer')).toBeTruthy();
+      expect(liveScope.getByText('final answer')).toBeTruthy();
     });
   });
 });
