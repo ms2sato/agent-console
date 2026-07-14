@@ -806,6 +806,35 @@ describe('WorkerManager', () => {
 
         expect(signalCalls).toEqual([]);
       });
+
+      it('still kills the PTY and never calls signalPidsImpl when listDescendantPidsImpl throws', async () => {
+        const signalCalls: Array<{ pids: number[]; signal: NodeJS.Signals }> = [];
+
+        const listDescendantPidsImplFake: typeof listDescendantPids = async () => {
+          throw new Error('ps read failed');
+        };
+        const signalPidsImplFake: typeof signalPids = (pids, signal) => {
+          signalCalls.push({ pids, signal });
+        };
+
+        const wm = buildManagerWithProcessTreeSeams({
+          listDescendantPidsImpl: listDescendantPidsImplFake,
+          signalPidsImpl: signalPidsImplFake,
+        });
+        const worker = wm.initializeAgentWorker({
+          id: 'agent-tree-3',
+          name: 'Test Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+        await wm.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+        const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+
+        await expect(wm.killWorker(worker, 'test-session')).resolves.toBeUndefined();
+
+        expect(mockPty.killed).toBe(true);
+        expect(signalCalls).toEqual([]);
+      });
     });
   });
 
