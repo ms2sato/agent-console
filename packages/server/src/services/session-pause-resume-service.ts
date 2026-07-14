@@ -220,6 +220,7 @@ export class SessionPauseResumeService {
       createdAt: persisted.createdAt,
       workers,
       initialPrompt: persisted.initialPrompt,
+      initialPromptDelivered: persisted.initialPromptDelivered,
       title: persisted.title,
       parentSessionId: persisted.parentSessionId,
       parentWorkerId: persisted.parentWorkerId,
