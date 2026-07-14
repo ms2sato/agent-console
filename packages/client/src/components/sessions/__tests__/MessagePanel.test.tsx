@@ -193,6 +193,19 @@ describe('MessagePanel', () => {
     expect(view.getByText('Send')).toBeTruthy();
   });
 
+  it('renders the message textarea with `block` display so it aligns with the icon/Send buttons on the row baseline', async () => {
+    // Regression test for #1093: a textarea without an explicit `display`
+    // utility defaults to `inline-block`, which reserves descender strut
+    // space in its wrapper and shifts the textarea ~6px above the
+    // bottom-aligned icon/Send buttons in the `items-end` row. `block`
+    // removes the inline formatting context that causes the misalignment.
+    const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
+    const view = within(container);
+
+    const textarea = view.getByLabelText('Message input');
+    expect(textarea.className.split(/\s+/)).toContain('block');
+  });
+
   it('renders file attach button', async () => {
     const { container } = await act(async () => renderWithRouter(<MessagePanel {...defaultProps} />));
     const view = within(container);
