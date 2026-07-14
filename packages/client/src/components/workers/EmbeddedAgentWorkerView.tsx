@@ -2,11 +2,15 @@ import { useRef, useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
+import type { Element as HastElement, Text as HastText } from 'hast';
+import type { JSX } from 'react';
+import type { ExtraProps } from 'react-markdown';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
 import { RefreshIcon, AlertCircleIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
+import { PreviewPanel } from './PreviewPanel';
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
 type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
@@ -186,6 +190,77 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
   );
 }
 
+/**
+ * Fenced-code-block languages that get a Preview toggle. Matched
+ * case-insensitively against the `language-*` className react-markdown/
+ * rehype-sanitize places on a fenced block's `<code>` element (e.g. an LLM
+ * writing ` ```SVG ` still gets a preview).
+ */
+const PREVIEWABLE_LANG_PATTERN = /^language-(html|svg)$/i;
+
+/** Returns the single `<code>` hast child of a `<pre>` node, or null if absent (defensive -- should always be present for a fenced block). */
+function findCodeChild(node: HastElement | undefined): HastElement | null {
+  if (!node) return null;
+  const child = node.children.find(
+    (c): c is HastElement => c.type === 'element' && c.tagName === 'code',
+  );
+  return child ?? null;
+}
+
+/** Reads the `code` node's `className` and matches it against PREVIEWABLE_LANG_PATTERN. Returns null for inline spans/unrelated languages -- those must render unchanged. */
+function detectPreviewLang(codeNode: HastElement): 'html' | 'svg' | null {
+  const rawClassName = codeNode.properties?.className;
+  const classNames = Array.isArray(rawClassName) ? rawClassName.map(String) : [];
+  for (const className of classNames) {
+    const match = PREVIEWABLE_LANG_PATTERN.exec(className);
+    if (match) return match[1].toLowerCase() as 'html' | 'svg';
+  }
+  return null;
+}
+
+/** Concatenates the text content of a hast node's descendant text nodes, depth-first. */
+function extractText(node: HastElement): string {
+  return node.children
+    .map((child) => {
+      if (child.type === 'text') return (child as HastText).value;
+      if (child.type === 'element') return extractText(child as HastElement);
+      return '';
+    })
+    .join('');
+}
+
+/**
+ * Custom `pre` renderer for the finalized-assistant-message Markdown
+ * pipeline. react-markdown passes the underlying hast `Element` via
+ * `node` (passNode: true), which is used directly to detect a
+ * html/svg-language fenced block and extract its raw text -- rather than
+ * also overriding `code` and inspecting its rendered React children/props.
+ * This keeps the default `code`/inline-code rendering completely untouched
+ * (inline `code` spans never reach this component at all, since only a
+ * fenced block's wrapping `<pre>` does), and confines all preview-detection
+ * logic to a single override.
+ *
+ * On a match, renders the normal `<pre>` block exactly as before, plus a
+ * `PreviewPanel` as a sibling immediately below it (never nested inside
+ * `<pre>`/`<code>`).
+ */
+function PreviewablePre(props: JSX.IntrinsicElements['pre'] & ExtraProps) {
+  const { node, children, ...rest } = props;
+  const codeNode = findCodeChild(node);
+  const lang = codeNode ? detectPreviewLang(codeNode) : null;
+
+  if (!codeNode || lang === null) {
+    return <pre {...rest}>{children}</pre>;
+  }
+
+  return (
+    <>
+      <pre {...rest}>{children}</pre>
+      <PreviewPanel code={extractText(codeNode)} lang={lang} />
+    </>
+  );
+}
+
 interface ChatEntryRowProps {
   entry: OutsideEntry;
   onRestart: () => void;
@@ -205,7 +280,16 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
       return (
         <div className="flex justify-start">
           <div className="memo-content min-w-0 rounded-lg bg-slate-800 text-gray-100 px-3 py-2 text-sm">
-            <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
+            <Markdown
+              remarkPlugins={[remarkGfm]}
+              rehypePlugins={[rehypeSanitize]}
+              // Preview toggle activation is gated on finalized content only:
+              // a still-streaming message may contain an unclosed fence, and
+              // previewing partial/unsanitized-looking markup mid-stream is
+              // out of scope. `components: undefined` is identical to the
+              // pre-preview-toggle render for streaming entries.
+              components={!entry.streaming ? { pre: PreviewablePre } : undefined}
+            >
               {entry.text}
             </Markdown>
             {entry.streaming && <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-gray-400 animate-pulse align-middle" aria-hidden="true" />}

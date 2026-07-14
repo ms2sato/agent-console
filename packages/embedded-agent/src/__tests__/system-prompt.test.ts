@@ -52,6 +52,13 @@ describe('assembleSystemPrompt', () => {
     expect(prompt).toContain('fromSessionId');
   });
 
+  it('includes the sandboxed HTML/SVG preview guidance (#1097), naming both stripped vectors', () => {
+    const prompt = assembleSystemPrompt({ context, instructions: emptyInstructions });
+    expect(prompt).toContain('sandboxed preview');
+    expect(prompt).toContain('<script>');
+    expect(prompt).toContain('onclick');
+  });
+
   it('omits the Repository ID line when repositoryId is absent', () => {
     const prompt = assembleSystemPrompt({
       context: { sessionId: 's', workerId: 'w', cwd: '/c' },

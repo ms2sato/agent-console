@@ -73,6 +73,9 @@ function buildPreamble(context: SystemPromptContext): string {
   lines.push(
     'When an MCP tool accepts a sessionId or fromSessionId argument, use the Session ID above.',
   );
+  lines.push(
+    'HTML/SVG code blocks you write may be rendered in a sandboxed preview; keep them static only -- no <script> tags and no inline event handler attributes (onclick, onload, etc.), since these are stripped before rendering and will not run.',
+  );
   return lines.join('\n');
 }
 

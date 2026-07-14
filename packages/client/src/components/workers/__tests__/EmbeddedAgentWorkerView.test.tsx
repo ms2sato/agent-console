@@ -594,6 +594,99 @@ describe('EmbeddedAgentWorkerView', () => {
     });
   });
 
+  describe('HTML/SVG preview toggle (#1097)', () => {
+    it('renders a Preview toggle below a finalized assistant-message html fenced block', async () => {
+      const { container } = renderView({ sessionId: 's25', workerId: 'w25' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const markdown = ['```html', '<div>hi</div>', '```'].join('\n');
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: markdown });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Preview')).toBeTruthy();
+      // Collapsed by default -- no iframe mounted yet.
+      expect(container.querySelector('iframe')).toBeNull();
+    });
+
+    it('does NOT render a Preview toggle for a STREAMING assistant-message with the same fenced content (A1)', async () => {
+      renderView({ sessionId: 's26', workerId: 'w26' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      // assistant-delta keeps the entry in the streaming state (no
+      // assistant-message finalize event sent).
+      const markdown = ['```html', '<div>hi</div>', '```'].join('\n');
+      const chunk = ndjson({ v: 1, type: 'assistant-delta', turnId: 't1', text: markdown });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.queryByText('Preview')).toBeNull();
+    });
+
+    it('renders a Preview toggle for a mixed-case ```SVG fenced block', async () => {
+      renderView({ sessionId: 's27', workerId: 'w27' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const markdown = ['```SVG', '<svg><circle r="1"></circle></svg>', '```'].join('\n');
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: markdown });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Preview')).toBeTruthy();
+    });
+
+    it('does NOT render a Preview toggle for a fenced block with an unrelated language (javascript)', async () => {
+      renderView({ sessionId: 's28', workerId: 'w28' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const markdown = ['```javascript', "console.log('hi')", '```'].join('\n');
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: markdown });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.queryByText('Preview')).toBeNull();
+    });
+
+    it('leaves an inline code span (no fence) unaffected -- no Preview toggle, unchanged rendering', async () => {
+      const { container } = renderView({ sessionId: 's29', workerId: 'w29' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: 'see `inline code` here' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.queryByText('Preview')).toBeNull();
+      const code = container.querySelector('code');
+      expect(code?.textContent).toBe('inline code');
+      expect(container.querySelector('pre')).toBeNull();
+    });
+  });
+
   describe('Thinking accordion (#1070)', () => {
     it('renders a thinking entry collapsed by default inside a collapsed-by-default Working accordion', async () => {
       renderView({ sessionId: 's13', workerId: 'w13' });
