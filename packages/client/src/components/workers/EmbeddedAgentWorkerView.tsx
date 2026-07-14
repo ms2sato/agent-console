@@ -1,4 +1,4 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useMemo } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
@@ -7,6 +7,52 @@ import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
 import { RefreshIcon, StopIcon, AlertCircleIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
+
+/** Entries folded into the collapsed-by-default "Working" accordion. */
+type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
+/** Entries that always render as top-level transcript rows. */
+type OutsideEntry = Exclude<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
+
+interface WorkingGroup {
+  turnId: string;
+  entries: GroupableEntry[];
+}
+
+type DisplayItem =
+  | { kind: 'entry'; entry: OutsideEntry }
+  | { kind: 'working-group'; group: WorkingGroup };
+
+function isGroupable(entry: EmbeddedAgentChatEntry): entry is GroupableEntry {
+  return entry.kind === 'assistant-thinking' || entry.kind === 'tool-call';
+}
+
+/**
+ * Derived view: walk entries once, coalescing assistant-thinking/tool-call
+ * entries into one WorkingGroup per turnId, placed at the position of that
+ * turn's first groupable entry. A multi-iteration turn (thinking -> tools ->
+ * thinking -> tools -> final message) folds into a single group even though
+ * an intermediate assistant-message entry for the same turn sits between the
+ * two rounds of tool activity in the raw entries list -- that intermediate
+ * entry still renders at its own position, unchanged.
+ */
+function buildDisplayItems(entries: EmbeddedAgentChatEntry[]): DisplayItem[] {
+  const groups = new Map<string, WorkingGroup>();
+  const items: DisplayItem[] = [];
+  for (const entry of entries) {
+    if (isGroupable(entry)) {
+      let group = groups.get(entry.turnId);
+      if (!group) {
+        group = { turnId: entry.turnId, entries: [] };
+        groups.set(entry.turnId, group);
+        items.push({ kind: 'working-group', group });
+      }
+      group.entries.push(entry);
+      continue;
+    }
+    items.push({ kind: 'entry', entry });
+  }
+  return items;
+}
 
 interface EmbeddedAgentWorkerViewProps {
   sessionId: string;
@@ -47,6 +93,8 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
 
   const isTurnActive = activityState === 'active';
 
+  const displayItems = useMemo(() => buildDisplayItems(entries), [entries]);
+
   return (
     <div className="flex flex-col flex-1 min-h-0 bg-slate-900">
       <div className="px-4 py-2 bg-slate-800/60 border-b border-slate-700 text-gray-400 text-xs shrink-0">
@@ -86,9 +134,13 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         {entries.length === 0 && (
           <div className="text-gray-500 text-sm">No messages yet. Say hello to get started.</div>
         )}
-        {entries.map((entry) => (
-          <ChatEntryRow key={entry.key} entry={entry} onRestart={restart} />
-        ))}
+        {displayItems.map((item) =>
+          item.kind === 'working-group' ? (
+            <WorkingAccordion key={item.group.turnId} group={item.group} />
+          ) : (
+            <ChatEntryRow key={item.entry.key} entry={item.entry} onRestart={restart} />
+          ),
+        )}
       </div>
 
       {isTurnActive && (
@@ -118,7 +170,7 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
 }
 
 interface ChatEntryRowProps {
-  entry: EmbeddedAgentChatEntry;
+  entry: OutsideEntry;
   onRestart: () => void;
 }
 
@@ -143,10 +195,6 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
           </div>
         </div>
       );
-    case 'assistant-thinking':
-      return <ThinkingAccordion entry={entry} />;
-    case 'tool-call':
-      return <ToolCallCard entry={entry} />;
     case 'turn-error':
       return (
         <div className="text-sm text-red-400 bg-red-950/40 border border-red-800/50 rounded px-3 py-2">
@@ -189,23 +237,25 @@ type ThinkingEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking
  * out of scope per #1070) with the same overflow-wrap treatment as the
  * Markdown message bubbles (#1071), since thinking narrative can also
  * contain long unbroken tokens (e.g. quoted file contents).
+ *
+ * Only invoked from inside WorkingAccordion, which already supplies the
+ * chat-bubble positioning (flex justify-start / max-w-[80%]); this
+ * component renders just its own card so the two don't double-nest.
  */
 function ThinkingAccordion({ entry }: { entry: ThinkingEntry }) {
   return (
-    <div className="flex justify-start">
-      <div className="max-w-[80%] rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-xs">
-        <details>
-          <summary className="cursor-pointer text-gray-500 flex items-center gap-1.5">
-            <span>Thinking</span>
-            {entry.streaming && (
-              <span className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle" aria-hidden="true" />
-            )}
-          </summary>
-          <div className="mt-2 min-w-0 whitespace-pre-wrap text-gray-500 [overflow-wrap:anywhere]">
-            {entry.text}
-          </div>
-        </details>
-      </div>
+    <div className="rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-xs">
+      <details>
+        <summary className="cursor-pointer text-gray-500 flex items-center gap-1.5">
+          <span>Thinking</span>
+          {entry.streaming && (
+            <span className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle" aria-hidden="true" />
+          )}
+        </summary>
+        <div className="mt-2 min-w-0 whitespace-pre-wrap text-gray-500 [overflow-wrap:anywhere]">
+          {entry.text}
+        </div>
+      </details>
     </div>
   );
 }
@@ -237,6 +287,55 @@ function ToolCallCard({ entry }: { entry: ToolCallEntry }) {
           {entry.result?.result}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Fixed label for the per-turn "Working" accordion. A single named constant
+ * so the label can be renamed later without touching render logic.
+ */
+const WORKING_LABEL = 'Working';
+
+function formatWorkingSummary(group: WorkingGroup): string {
+  const toolCallCount = group.entries.filter((e) => e.kind === 'tool-call').length;
+  if (toolCallCount === 0) return WORKING_LABEL;
+  return `${WORKING_LABEL} (${toolCallCount} tool call${toolCallCount === 1 ? '' : 's'})`;
+}
+
+/**
+ * Collapsed-by-default accordion that groups all thinking/tool-call
+ * activity for one turn into a single row, keeping the chat surface a clean
+ * transcript. Keyed by `turnId` at the call site so React reuses the same
+ * DOM node across re-renders as the turn streams -- native <details open>
+ * state lives on the DOM node, not React state, so a stable key is what
+ * keeps a user-expanded accordion open while more entries are appended.
+ */
+function WorkingAccordion({ group }: { group: WorkingGroup }) {
+  const isStreaming = group.entries.some(
+    (e) => (e.kind === 'assistant-thinking' && e.streaming) || (e.kind === 'tool-call' && e.result === null),
+  );
+  return (
+    <div className="flex justify-start">
+      <div className="max-w-[80%] rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-xs">
+        <details>
+          <summary className="cursor-pointer text-gray-500 flex items-center gap-1.5">
+            <span>{formatWorkingSummary(group)}</span>
+            {isStreaming && (
+              <span className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle" aria-hidden="true" />
+            )}
+          </summary>
+          <div className="mt-2 space-y-2">
+            {group.entries.map((entry) =>
+              entry.kind === 'assistant-thinking' ? (
+                <ThinkingAccordion key={entry.key} entry={entry} />
+              ) : (
+                <ToolCallCard key={entry.key} entry={entry} />
+              ),
+            )}
+          </div>
+        </details>
+      </div>
     </div>
   );
 }
