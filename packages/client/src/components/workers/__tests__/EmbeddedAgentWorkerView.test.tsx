@@ -67,6 +67,49 @@ describe('EmbeddedAgentWorkerView', () => {
     }
   });
 
+  it('notifies onStatusChange with the connection status, starting at connecting and moving to connected on WS open', async () => {
+    const onStatusChange = mock(() => {});
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })}>
+        <EmbeddedAgentWorkerView sessionId="s-status" workerId="w-status" onStatusChange={onStatusChange} />
+      </QueryClientProvider>,
+    );
+
+    expect(onStatusChange).toHaveBeenCalledWith('connecting');
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    expect(onStatusChange).toHaveBeenLastCalledWith('connected');
+  });
+
+  it('does not render its own status/activity label, leaving that to the shared status bar', async () => {
+    renderView({ sessionId: 's-nolabel', workerId: 'w-nolabel' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+    await flush();
+
+    // The persistent amber notice text ("Conversation resets...") stays --
+    // only the removed per-view status row's exact labels are asserted absent.
+    expect(screen.queryByText('Connecting...')).toBeNull();
+    expect(screen.queryByText('Connected')).toBeNull();
+    expect(screen.queryByText('Disconnected')).toBeNull();
+    expect(screen.queryByText('Idle')).toBeNull();
+
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
+    });
+    await flush();
+    // 'Working...' is a duplicate concern of the removed status row; the
+    // Cancel button remains (asserted by the two tests below), but the
+    // "Working..." text label itself must not render inside the view.
+    expect(screen.queryByText('Working...')).toBeNull();
+  });
+
   it('always renders the persistent reset-on-restart note', () => {
     renderView({ sessionId: 's1', workerId: 'w1' });
 

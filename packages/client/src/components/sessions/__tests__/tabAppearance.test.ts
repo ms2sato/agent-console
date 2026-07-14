@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import type { Worker } from '@agent-console/shared';
-import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel } from '../tabAppearance';
+import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 
 describe('getTabDotColor', () => {
   it('returns blue for agent workers', () => {
@@ -51,5 +51,23 @@ describe('getWorkerTypeLabel', () => {
     expect(getWorkerTypeLabel('agent')).toBe('Agent');
     expect(getWorkerTypeLabel('terminal')).toBe('Terminal');
     expect(getWorkerTypeLabel('embedded-agent')).toBe('Embedded Agent');
+  });
+});
+
+describe('showsActivityBadge', () => {
+  it('shows the badge for agent tabs', () => {
+    expect(showsActivityBadge('agent')).toBe(true);
+  });
+
+  it('shows the badge for embedded-agent tabs (unified with the shared status bar)', () => {
+    expect(showsActivityBadge('embedded-agent')).toBe(true);
+  });
+
+  it('hides the badge for terminal tabs', () => {
+    expect(showsActivityBadge('terminal')).toBe(false);
+  });
+
+  it('hides the badge for git-diff tabs', () => {
+    expect(showsActivityBadge('git-diff')).toBe(false);
   });
 });

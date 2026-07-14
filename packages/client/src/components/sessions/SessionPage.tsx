@@ -17,7 +17,7 @@ import { useWorkerRouting } from './hooks/useWorkerRouting';
 import { useTabManagement } from './hooks/useTabManagement';
 import { useSessionPageState, type PageState } from './hooks/useSessionPageState';
 import { getConnectionStatusColor, getConnectionStatusText } from './sessionStatus';
-import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel } from './tabAppearance';
+import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from './tabAppearance';
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
@@ -493,6 +493,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           <EmbeddedAgentWorkerView
             sessionId={sessionId}
             workerId={activeTab.id}
+            onStatusChange={handleStatusChange}
           />
         ) : activeTab.workerType === 'git-diff' ? (
           <GitDiffWorkerView
@@ -597,8 +598,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         >
           {formatPath(session.locationPath)}
         </span>
-        {/* Activity state indicator (only for agent tab) */}
-        {activeTab?.workerType === 'agent' && activityState !== 'unknown' && (
+        {/* Activity state indicator (agent and embedded-agent tabs) */}
+        {activeTab && showsActivityBadge(activeTab.workerType) && activityState !== 'unknown' && (
           <span className={`text-xs px-2 py-0.5 rounded font-medium ${
             activityState === 'asking' ? 'bg-yellow-500/20 text-yellow-400' :
             activityState === 'active' ? 'bg-blue-500/20 text-blue-400' :

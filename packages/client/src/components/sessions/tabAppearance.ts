@@ -32,6 +32,17 @@ export function isCloseableTabType(workerType: Worker['type']): boolean {
   return workerType === 'terminal' || workerType === 'embedded-agent';
 }
 
+/**
+ * Worker types whose active tab shows the Idle/Working/Waiting-for-input
+ * activity badge in the shared bottom status bar. `agent` and
+ * `embedded-agent` both drive `activityState` via the app-wide
+ * `worker-activity` WebSocket event (see `useSessionPageState.ts`); other
+ * worker types (`terminal`, `git-diff`) have no comparable activity concept.
+ */
+export function showsActivityBadge(workerType: Worker['type']): boolean {
+  return workerType === 'agent' || workerType === 'embedded-agent';
+}
+
 /** Human-readable label for a worker type, used by `WorkerErrorFallback`'s
  * "<Type> Error: <name>" heading in `SessionPage.tsx`. */
 export function getWorkerTypeLabel(workerType: Worker['type']): string {
