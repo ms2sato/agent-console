@@ -854,7 +854,7 @@ export class WorkerManager {
             connectionCallbacks: new Map(), // Must be unique per worker
             // Round-trips from PersistedEmbeddedAgentWorker.deliverInitialPromptOnActivation,
             // written at create time by toPersistedWorker, so eligibility
-            // survives a server restart (Issue #1074).
+            // survives a server restart.
             deliverInitialPromptOnActivation: pw.deliverInitialPromptOnActivation,
           };
           break;
