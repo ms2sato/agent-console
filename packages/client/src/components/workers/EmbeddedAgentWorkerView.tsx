@@ -6,13 +6,15 @@ import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
 import { RefreshIcon, StopIcon, AlertCircleIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
+import type { ConnectionStatus } from '../terminal/terminal-contract';
 
 interface EmbeddedAgentWorkerViewProps {
   sessionId: string;
   workerId: string;
+  onStatusChange?: (status: ConnectionStatus) => void;
 }
 
-export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWorkerViewProps) {
+export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }: EmbeddedAgentWorkerViewProps) {
   const {
     status,
     entries,
@@ -34,6 +36,14 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWo
     if (!el) return;
     el.scrollTop = el.scrollHeight;
   }, [entries.length]);
+
+  // Bridge the store's connection status up to the parent's shared status
+  // bar, mirroring TerminalAdapter's StatusCallbackBridge pattern -- the
+  // status lives in an external store, so a parent notification is a
+  // component-scoped side effect, not derivable state.
+  useEffect(() => {
+    onStatusChange?.(status);
+  }, [status, onStatusChange]);
 
   const isTurnActive = activityState === 'active';
 
@@ -81,58 +91,30 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId }: EmbeddedAgentWo
         ))}
       </div>
 
-      <div className="border-t border-slate-700 px-4 py-3 shrink-0 flex flex-col gap-2">
-        <div className="flex items-center gap-2 text-xs text-gray-400">
-          <span className={`inline-block w-2 h-2 rounded-full ${activityStateColor(activityState)}`} aria-hidden="true" />
-          {activityStateLabel(status, activityState)}
-          {isTurnActive && (
-            <button
-              onClick={cancel}
-              className="ml-auto flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-900/40 text-red-300 hover:bg-red-900/60"
-            >
-              <StopIcon className="w-3.5 h-3.5" />
-              Cancel
-            </button>
-          )}
+      {isTurnActive && (
+        <div className="px-4 py-1.5 shrink-0 flex justify-end">
+          <button
+            onClick={cancel}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-red-900/40 text-red-300 hover:bg-red-900/60"
+          >
+            <StopIcon className="w-3.5 h-3.5" />
+            Cancel
+          </button>
         </div>
-        <MessagePanel
-          sessionId={sessionId}
-          targetWorkerId={workerId}
-          newMessage={null}
-          onSend={async (content) => {
-            sendUserMessage(content);
-          }}
-          slashCompletionEnabled={false}
-          attachmentsEnabled={false}
-          sendDisabled={isTurnActive}
-        />
-      </div>
+      )}
+      <MessagePanel
+        sessionId={sessionId}
+        targetWorkerId={workerId}
+        newMessage={null}
+        onSend={async (content) => {
+          sendUserMessage(content);
+        }}
+        slashCompletionEnabled={false}
+        attachmentsEnabled={false}
+        sendDisabled={isTurnActive}
+      />
     </div>
   );
-}
-
-function activityStateColor(state: string): string {
-  switch (state) {
-    case 'active':
-      return 'bg-blue-500';
-    case 'idle':
-      return 'bg-green-500';
-    default:
-      return 'bg-gray-500';
-  }
-}
-
-function activityStateLabel(status: string, activityState: string): string {
-  if (status === 'connecting') return 'Connecting...';
-  if (status === 'disconnected') return 'Disconnected';
-  switch (activityState) {
-    case 'active':
-      return 'Working...';
-    case 'idle':
-      return 'Idle';
-    default:
-      return 'Connected';
-  }
 }
 
 interface ChatEntryRowProps {
