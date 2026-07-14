@@ -63,7 +63,15 @@ export function sanitizePreviewFragment(fragment: string): string {
     }
   }
 
-  return doc.body.innerHTML;
+  // A full-document input (`<!DOCTYPE html><html><head>...`) places any
+  // <style> found before/in <head> into doc.head, not doc.body -- returning
+  // only doc.body.innerHTML would silently drop that CSS. <link>/<meta>/etc.
+  // in <head> are discarded: external <link> fetches are already blocked by
+  // the CSP (`default-src 'none'`), so only <style> is worth preserving.
+  const headStyles = Array.from(doc.head.querySelectorAll('style'))
+    .map((style) => style.outerHTML)
+    .join('');
+  return headStyles + doc.body.innerHTML;
 }
 
 /** Wraps a sanitized fragment in a full HTML document with the preview CSP meta tag. */

@@ -71,6 +71,21 @@ describe('sanitizePreviewFragment', () => {
     const result = sanitizePreviewFragment('<div><p>Hello <strong>world</strong></p></div>');
     expect(result).toContain('<p>Hello <strong>world</strong></p>');
   });
+
+  it('preserves <style> content from a full-document input where DOMParser places <style> in <head>', () => {
+    // Full-document input (DOCTYPE + <html><head>...</head><body>...</body></html>)
+    // is the LLM's most common output shape for HTML previews. DOMParser
+    // places a <style> found in an explicit <head> into doc.head, not
+    // doc.body -- unlike the body-only fragment in the "preserves <style>
+    // content" test above, which the parser places directly into doc.body
+    // since no <head>/<body> tags are present in that input. Both must
+    // survive sanitization.
+    const result = sanitizePreviewFragment(
+      '<!DOCTYPE html><html><head><style>.box { color: red; }</style></head><body><div class="box">hi</div></body></html>',
+    );
+    expect(result).toContain('.box { color: red; }');
+    expect(result).toContain('<div class="box">hi</div>');
+  });
 });
 
 describe('buildPreviewDocument', () => {
