@@ -95,19 +95,44 @@ export function collectDescendantPids(rootPid: number, table: ProcessTableEntry[
 }
 
 /**
+ * `ps -Ao pid,ppid` normally completes in well under 100ms; 5s is a generous
+ * safety margin against a wedged/hung `ps`, not a normal-path latency
+ * budget. `killWorker` awaits `readProcessTable` before `pty.kill()`, so an
+ * unbounded hang here would stall the entire kill cleanup path.
+ */
+const READ_PROCESS_TABLE_TIMEOUT_MS = 5000;
+
+/**
  * I/O: spawns `ps -Ao pid,ppid` and returns the parsed process table.
  * `-A` (all processes) and `-o pid,ppid` (custom columns) are supported by
  * both GNU `ps` (Linux) and BSD `ps` (macOS), and `procps` is installed in
  * the production Docker image.
+ *
+ * Bounded by `timeout`, which kills the process with `killSignal` (default
+ * `SIGTERM`) if it hasn't exited in time -- Bun handles the timer itself, no
+ * manual race needed. `stderr` is ignored rather than piped: we don't
+ * consume it, and an unconsumed pipe can fill up and block the child.
+ * `spawnCommand` is a test seam (mirrors the `readTableImpl` seam on
+ * `listDescendantPids` one level up) for exercising the timeout/failure path
+ * without depending on a real `ps` hang.
  */
-export async function readProcessTable(): Promise<ProcessTableEntry[]> {
-  const proc = Bun.spawn(['ps', '-Ao', 'pid,ppid'], {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
-  await proc.exited;
-  const stdout = await new Response(proc.stdout).text();
-  return parseProcessTable(stdout);
+export async function readProcessTable(
+  spawnCommand: string[] = ['ps', '-Ao', 'pid,ppid'],
+): Promise<ProcessTableEntry[]> {
+  try {
+    const proc = Bun.spawn(spawnCommand, {
+      stdout: 'pipe',
+      stderr: 'ignore',
+      timeout: READ_PROCESS_TABLE_TIMEOUT_MS,
+    });
+    await proc.exited;
+    const stdout = await new Response(proc.stdout).text();
+    return parseProcessTable(stdout);
+  } catch {
+    // Spawn failure or a read error -- behave like an empty process table,
+    // matching the existing safe fallback (collectDescendantPids returns []).
+    return [];
+  }
 }
 
 /**

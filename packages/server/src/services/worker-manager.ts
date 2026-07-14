@@ -1043,7 +1043,21 @@ export class WorkerManager {
         // first (rather than after kill) avoids depending on how quickly a
         // killed shell's children get reparented to init, which would still
         // resolve via ppid=1 but adds a race against the read.
-        const descendantPids = await this.listDescendantPidsImpl(pty.pid);
+        let descendantPids: number[];
+        try {
+          descendantPids = await this.listDescendantPidsImpl(pty.pid);
+        } catch (err) {
+          // Must not abort the rest of killWorker (pty.kill() below) on a
+          // process-tree read failure -- that would leak the PTY entirely.
+          // Falling back to [] only affects this one kill cycle; any
+          // descendant that leaks as a result is still caught by the next
+          // kill cycle's own tree walk.
+          logger.warn(
+            { pid: pty.pid, err },
+            'Failed to list descendant pids before kill, proceeding without descendant signaling',
+          );
+          descendantPids = [];
+        }
 
         // Kill PTY process
         pty.kill();

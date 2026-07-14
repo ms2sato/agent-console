@@ -5,6 +5,7 @@ import {
   collectDescendantPids,
   listDescendantPids,
   signalPids,
+  readProcessTable,
   type ProcessTableEntry,
 } from '../process-tree.js';
 
@@ -106,6 +107,36 @@ describe('collectDescendantPids', () => {
     ];
     expect(() => collectDescendantPids(1, table)).not.toThrow();
     expect(collectDescendantPids(1, table).sort()).toEqual([2]);
+  });
+});
+
+describe('readProcessTable', () => {
+  it('returns a non-empty real process table (happy path sanity check)', async () => {
+    const table = await readProcessTable();
+    expect(table.length).toBeGreaterThan(0);
+    // The current test process itself must appear in the real table.
+    expect(table.some((entry) => entry.pid === process.pid)).toBe(true);
+  });
+
+  it('does not hang past the bounded timeout when the spawned command never exits, and returns [] instead of throwing', async () => {
+    const start = Date.now();
+    // `sleep 30` never writes to stdout and never exits on its own within the
+    // test's own timeout budget below -- if the bounded `timeout` option
+    // (added by this fix) did not fire, this call would hang until `sleep`
+    // itself exits at 30s, which the outer `it(..., 15000)` budget would
+    // catch as a failure either way.
+    const table = await readProcessTable(['sleep', '30']);
+    const elapsed = Date.now() - start;
+
+    // Comfortably bounded well under `sleep 30`'s own duration, proving the
+    // internal timeout fired the kill rather than the process exiting on
+    // its own.
+    expect(elapsed).toBeLessThan(9000);
+    expect(table).toEqual([]);
+  }, 15000);
+
+  it('returns [] rather than throwing when the spawned command does not exist', async () => {
+    await expect(readProcessTable(['__agent-console-nonexistent-command__'])).resolves.toEqual([]);
   });
 });
 
