@@ -8,7 +8,7 @@ interface PreviewPanelProps {
 
 /**
  * Collapsed-by-default "Preview" toggle rendered below a fenced HTML/SVG
- * code block in an assistant chat message (Issue #1097). Security-critical:
+ * code block in an assistant chat message. Security-critical:
  * the `<iframe>` element is lazy-mounted (only created after the user
  * clicks "Preview") and, once mounted, has `sandbox=""` with NO tokens --
  * do not add any token (including `allow-scripts` / `allow-same-origin` /

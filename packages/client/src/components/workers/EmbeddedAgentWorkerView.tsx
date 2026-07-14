@@ -191,7 +191,7 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
 }
 
 /**
- * Fenced-code-block languages that get a Preview toggle (#1097). Matched
+ * Fenced-code-block languages that get a Preview toggle. Matched
  * case-insensitively against the `language-*` className react-markdown/
  * rehype-sanitize places on a fenced block's `<code>` element (e.g. an LLM
  * writing ` ```SVG ` still gets a preview).
@@ -231,13 +231,13 @@ function extractText(node: HastElement): string {
 
 /**
  * Custom `pre` renderer for the finalized-assistant-message Markdown
- * pipeline (#1097). react-markdown passes the underlying hast `Element` via
+ * pipeline. react-markdown passes the underlying hast `Element` via
  * `node` (passNode: true), which is used directly to detect a
  * html/svg-language fenced block and extract its raw text -- rather than
  * also overriding `code` and inspecting its rendered React children/props.
  * This keeps the default `code`/inline-code rendering completely untouched
  * (inline `code` spans never reach this component at all, since only a
- * fenced block's wrapping `<pre>` does), and confines all #1097-specific
+ * fenced block's wrapping `<pre>` does), and confines all preview-detection
  * logic to a single override.
  *
  * On a match, renders the normal `<pre>` block exactly as before, plus a
@@ -283,11 +283,11 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
             <Markdown
               remarkPlugins={[remarkGfm]}
               rehypePlugins={[rehypeSanitize]}
-              // Preview toggle activation is gated on finalized content only
-              // (A1): a still-streaming message may contain an unclosed
-              // fence, and previewing partial/unsanitized-looking markup
-              // mid-stream is out of scope. `components: undefined` is
-              // identical to the pre-#1097 render for streaming entries.
+              // Preview toggle activation is gated on finalized content only:
+              // a still-streaming message may contain an unclosed fence, and
+              // previewing partial/unsanitized-looking markup mid-stream is
+              // out of scope. `components: undefined` is identical to the
+              // pre-preview-toggle render for streaming entries.
               components={!entry.streaming ? { pre: PreviewablePre } : undefined}
             >
               {entry.text}

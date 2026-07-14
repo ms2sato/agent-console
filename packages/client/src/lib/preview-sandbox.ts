@@ -1,6 +1,6 @@
 /**
  * Sanitization + document assembly for the sandboxed HTML/SVG preview
- * feature (Issue #1097). These are pure functions (no React) so they are
+ * feature. These are pure functions (no React) so they are
  * independently unit-testable, and no part of the sanitizer relies on
  * regex-based HTML parsing -- regex cannot reliably parse HTML/SVG and is
  * explicitly prohibited for this purpose. `DOMParser` parses untrusted input
