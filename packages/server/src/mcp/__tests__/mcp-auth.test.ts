@@ -99,12 +99,12 @@ describe('resolveMcpAuthMode', () => {
     expect(resolveMcpAuthMode(undefined, 'none')).toBe('warn');
   });
 
-  it('defaults to enforce when unset and AUTH_MODE=multi-user (Phase 4 flip)', () => {
-    expect(resolveMcpAuthMode(undefined, 'multi-user')).toBe('enforce');
+  it('defaults to warn when unset and AUTH_MODE=multi-user (Sprint 2026-07-16: enforce-by-default deferred, see #1107)', () => {
+    expect(resolveMcpAuthMode(undefined, 'multi-user')).toBe('warn');
   });
 
-  it('an explicit AGENT_CONSOLE_MCP_AUTH=warn overrides the multi-user enforce default', () => {
-    expect(resolveMcpAuthMode('warn', 'multi-user')).toBe('warn');
+  it('an explicit AGENT_CONSOLE_MCP_AUTH=enforce opts into enforcement in multi-user mode', () => {
+    expect(resolveMcpAuthMode('enforce', 'multi-user')).toBe('enforce');
   });
 
   it('treats an empty string as unset (warn)', () => {
@@ -119,8 +119,8 @@ describe('resolveMcpAuthMode', () => {
     expect(resolveMcpAuthMode('', 'none')).toBe('warn');
   });
 
-  it('treats a whitespace-only string as unset (enforce in multi-user mode)', () => {
-    expect(resolveMcpAuthMode('  ', 'multi-user')).toBe('enforce');
+  it('treats a whitespace-only string as unset (warn, even in multi-user mode)', () => {
+    expect(resolveMcpAuthMode('  ', 'multi-user')).toBe('warn');
   });
 
   it('throws on an invalid non-empty value', () => {

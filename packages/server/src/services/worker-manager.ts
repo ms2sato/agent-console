@@ -475,11 +475,13 @@ export class WorkerManager {
         // Non-fatal skip (unlike EmbeddedAgentWorkerService's hard-fail):
         // terminal-agent PTY activation is a long-established
         // availability-critical path (create / revive / restart / restore).
-        // Under AGENT_CONSOLE_MCP_AUTH=enforce this worker's MCP calls are
-        // rejected (fail-closed); the worker itself still starts.
+        // The default AGENT_CONSOLE_MCP_AUTH mode is `warn`, so this
+        // worker's tokenless MCP calls are merely logged, not rejected;
+        // only an operator-opted-in `enforce` would reject them
+        // (fail-closed). The worker itself still starts either way.
         logger.warn(
           { workerId: worker.id, sessionId },
-          'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected under AGENT_CONSOLE_MCP_AUTH=enforce)',
+          'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)',
         );
       } else if (this.mcpTokenRegistry) {
         const osUser = await this.lookupOsUserFn(params.username);
