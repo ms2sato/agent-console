@@ -63,4 +63,57 @@ describe('loadProviderKey', () => {
     }
     expect(message).not.toContain('super-secret-value');
   });
+
+  describe('file mode warning', () => {
+    const makeSpyLogger = () => {
+      const calls: Array<[Record<string, unknown>, string]> = [];
+      return {
+        logger: { warn: (obj: Record<string, unknown>, msg: string) => calls.push([obj, msg]) },
+        calls,
+      };
+    };
+
+    it('warns when the file mode is world/group readable (0644)', async () => {
+      await Bun.write(keyFile, JSON.stringify({ openai: 'sk-test' }));
+      await Bun.spawn(['chmod', '644', keyFile]).exited;
+      const { logger: spyLogger, calls } = makeSpyLogger();
+
+      await loadProviderKey('openai', { filePath: keyFile, logger: spyLogger });
+
+      expect(calls).toHaveLength(1);
+      const [context, message] = calls[0];
+      expect(message).toContain('should be 0600');
+      expect(context.filePath).toBe(keyFile);
+      expect(message).not.toContain('sk-test');
+    });
+
+    it('warns when the file mode is group readable only (0640)', async () => {
+      await Bun.write(keyFile, JSON.stringify({ openai: 'sk-test' }));
+      await Bun.spawn(['chmod', '640', keyFile]).exited;
+      const { logger: spyLogger, calls } = makeSpyLogger();
+
+      await loadProviderKey('openai', { filePath: keyFile, logger: spyLogger });
+
+      expect(calls).toHaveLength(1);
+    });
+
+    it('does not warn when the file mode is already 0600', async () => {
+      await Bun.write(keyFile, JSON.stringify({ openai: 'sk-test' }));
+      await Bun.spawn(['chmod', '600', keyFile]).exited;
+      const { logger: spyLogger, calls } = makeSpyLogger();
+
+      await loadProviderKey('openai', { filePath: keyFile, logger: spyLogger });
+
+      expect(calls).toHaveLength(0);
+    });
+
+    it('does not fail activation when the mode is insecure', async () => {
+      await Bun.write(keyFile, JSON.stringify({ openai: 'sk-test' }));
+      await Bun.spawn(['chmod', '644', keyFile]).exited;
+
+      const key = await loadProviderKey('openai', { filePath: keyFile });
+
+      expect(key).toBe('sk-test');
+    });
+  });
 });
