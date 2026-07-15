@@ -11,6 +11,7 @@ import { RefreshIcon, AlertCircleIcon, CopyIcon, CheckIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 import { PreviewPanel } from './PreviewPanel';
+import { logger } from '../../lib/logger';
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
 type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
@@ -273,11 +274,24 @@ const COPY_MARKDOWN_FEEDBACK_MS = 1500;
  */
 function CopyMarkdownButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
+  const revertTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (revertTimeoutRef.current !== null) clearTimeout(revertTimeoutRef.current);
+    };
+  }, []);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(text);
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      logger.error('Failed to copy markdown:', err);
+      return;
+    }
     setCopied(true);
-    setTimeout(() => setCopied(false), COPY_MARKDOWN_FEEDBACK_MS);
+    if (revertTimeoutRef.current !== null) clearTimeout(revertTimeoutRef.current);
+    revertTimeoutRef.current = setTimeout(() => setCopied(false), COPY_MARKDOWN_FEEDBACK_MS);
   };
 
   const label = copied ? 'Copied!' : 'Copy as markdown';

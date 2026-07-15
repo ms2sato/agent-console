@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
 import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -1229,6 +1229,116 @@ describe('EmbeddedAgentWorkerView', () => {
 
       expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
       expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
+    });
+
+    it('a second click before the first feedback window elapses keeps "Copied!" visible until the SECOND click\'s own 1.5s window elapses (rapid-click timer reset, CodeRabbit #1121)', async () => {
+      await renderWithAssistantMessage('s34', 'w34', 'copy me twice');
+      const button = screen.getByRole('button', { name: 'Copy as markdown' });
+
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+      // 800ms after the FIRST click -- well under the first click's own 1.5s
+      // window, so this alone proves nothing about timer-reset behavior yet.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+      // Second click while still in the "Copied!" state must clear the first
+      // click's pending revert timer and arm a fresh one.
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+
+      // 800ms after the SECOND click = 1600ms after the FIRST click. Without
+      // the timer-reset fix, the first click's timer would have fired at
+      // 1500ms and already reverted the button by this point.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+      // 800ms further (1600ms after the SECOND click) -- the second click's
+      // own timer has now elapsed and the button reverts.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+    });
+
+    it('clears the pending revert timeout on unmount instead of leaking a scheduled setState (CodeRabbit #1121)', async () => {
+      const view = renderView({ sessionId: 's35', workerId: 'w35' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      const data = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'hi' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'copy me' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Spy on the real global timer functions (pass-through, not mocked
+      // implementations) rather than switching to fake timers -- sibling
+      // subsystems mounted alongside this component (TanStack Query's
+      // garbage-collection timer, the mock WebSocket) schedule their OWN
+      // timers on unmount, which would pollute a raw vi.getTimerCount()
+      // delta. Identifying our button's specific revert timer by its
+      // COPY_MARKDOWN_FEEDBACK_MS (1500ms) delay avoids that ambiguity.
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+      const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
+      try {
+        const button = screen.getByRole('button', { name: 'Copy as markdown' });
+        await act(async () => {
+          fireEvent.click(button);
+          await Promise.resolve();
+        });
+        expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+        const revertTimerCallIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 1500);
+        expect(revertTimerCallIndex).toBeGreaterThanOrEqual(0);
+        const revertTimerId = setTimeoutSpy.mock.results[revertTimerCallIndex]?.value;
+        expect(revertTimerId).toBeTruthy();
+
+        view.unmount();
+
+        // Unmount's effect cleanup must clear exactly this revert timer --
+        // not merely leave it dangling to fire a setState against an
+        // unmounted component later.
+        expect(clearTimeoutSpy.mock.calls.some((call) => call[0] === revertTimerId)).toBe(true);
+      } finally {
+        setTimeoutSpy.mockRestore();
+        clearTimeoutSpy.mockRestore();
+      }
+    });
+
+    it('logs and leaves the button in the idle "Copy as markdown" state when clipboard.writeText rejects, instead of throwing an unhandled rejection (CodeRabbit #1121)', async () => {
+      const consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        writeTextMock.mockRejectedValueOnce(new Error('document not focused'));
+        await renderWithAssistantMessage('s36', 'w36', 'copy me');
+
+        const button = screen.getByRole('button', { name: 'Copy as markdown' });
+        await act(async () => {
+          fireEvent.click(button);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(consoleErrorSpy).toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
     });
   });
 });
