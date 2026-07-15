@@ -41,15 +41,13 @@ interface UseTabManagementOptions {
 /**
  * Params accepted when adding an agent-type worker to a running session, via
  * the unified agent-selection picker (docs/design/embedded-agent-worker.md
- * "UI"). Only `embedded-agent` today: `POST /api/sessions/:id/workers`
- * (`CreateWorkerRequestSchema`) has never accepted `type: 'agent'` -- a
- * terminal AgentDefinition-backed worker can only be created at
- * session-creation time, not added to an already-running session. Widening
- * that REST contract is a server change outside this type's scope; the
- * picker shows terminal agents for completeness but does not wire them to a
- * call this type cannot express. See `AddAgentWorkerMenu.tsx`.
+ * "UI"). `type: 'agent'` (terminal AgentDefinition-backed) and
+ * `type: 'embedded-agent'` are both addable mid-session via
+ * `CreateWorkerRequestSchema`. See `AddAgentWorkerMenu.tsx`.
  */
-export type AddAgentWorkerParams = { type: 'embedded-agent'; embeddedAgentId: string };
+export type AddAgentWorkerParams =
+  | { type: 'embedded-agent'; embeddedAgentId: string }
+  | { type: 'agent'; agentId: string };
 
 export interface UseTabManagementResult {
   tabs: Tab[];

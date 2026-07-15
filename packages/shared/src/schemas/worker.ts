@@ -10,7 +10,9 @@ const WorkerOptionsSchema = v.strictObject({
 });
 
 /**
- * Schema for creating an agent worker (internal use only)
+ * Schema for creating a terminal-agent-backed worker. Reachable both from
+ * the internal session-creation path and from the client via the unified
+ * agent-selection picker.
  */
 const CreateAgentWorkerParamsSchema = v.strictObject({
   ...WorkerOptionsSchema.entries,
@@ -49,11 +51,14 @@ const CreateEmbeddedAgentWorkerParamsSchema = v.strictObject({
 });
 
 /**
- * Schema for API: clients can create terminal and embedded-agent workers
+ * Schema for API: clients can create terminal, embedded-agent, and agent
+ * worker types. Agent workers can be added to an already-running session via
+ * the unified agent-selection picker, not just at session-creation time.
  */
 export const CreateWorkerRequestSchema = v.union([
   CreateTerminalWorkerParamsSchema,
   CreateEmbeddedAgentWorkerParamsSchema,
+  CreateAgentWorkerParamsSchema,
 ]);
 
 /**
@@ -81,6 +86,6 @@ export type CreateWorkerParams =
   | CreateGitDiffWorkerParams
   | CreateEmbeddedAgentWorkerParams;
 
-// API types (client can only create terminal workers)
+// API types (client can create terminal, embedded-agent, and agent workers)
 export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema>;
 export type RestartWorkerRequest = v.InferOutput<typeof RestartWorkerRequestSchema>;

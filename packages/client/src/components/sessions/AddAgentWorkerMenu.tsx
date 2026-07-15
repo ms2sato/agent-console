@@ -19,15 +19,10 @@ interface AddAgentWorkerMenuProps {
  * doesn't depend on the agents/embedded-agents queries and is the most
  * common action.
  *
- * Judgment call: `POST /api/sessions/:sessionId/workers`
- * (`CreateWorkerRequestSchema`) only accepts `terminal` / `embedded-agent`
- * creation params -- adding a terminal `agent`-backed worker to an already
- * running session has never been REST-supported (it is only ever created at
- * session-creation time). Widening that schema is a server change outside
- * this PR's scope (client-only). Terminal items are therefore shown for
- * completeness (so the unified list matches the design) but are disabled
- * with an explanatory tooltip rather than wired to a call that would always
- * 400. Embedded-agent items are fully actionable today.
+ * Both terminal agent items and embedded-agent items are fully actionable:
+ * `POST /api/sessions/:sessionId/workers` (`CreateWorkerRequestSchema`)
+ * accepts `type: 'agent'` creation params in addition to `terminal` /
+ * `embedded-agent`.
  *
  * The empty-embedded-registry footer links to `/agents`, which now hosts the
  * `EmbeddedAgentDefinition` management UI (Phase 3.5).
@@ -52,6 +47,11 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
   const handleSelectEmbeddedAgent = async (embeddedAgentId: string) => {
     setOpen(false);
     await onSelect({ type: 'embedded-agent', embeddedAgentId });
+  };
+
+  const handleSelectAgent = async (agentId: string) => {
+    setOpen(false);
+    await onSelect({ type: 'agent', agentId });
   };
 
   const handleSelectShell = async () => {
@@ -98,9 +98,8 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
               key={`agent-${agent.id}`}
               role="menuitem"
               type="button"
-              disabled
-              title="Adding a terminal agent to a running session isn't supported yet"
-              className="w-full flex items-center justify-between px-3 py-2 text-sm text-left text-gray-500 cursor-not-allowed"
+              onClick={() => void handleSelectAgent(agent.id)}
+              className="w-full flex items-center justify-between px-3 py-2 text-sm text-left text-gray-200 hover:bg-slate-700"
             >
               <span className="truncate">{agent.name}</span>
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 shrink-0 ml-2">

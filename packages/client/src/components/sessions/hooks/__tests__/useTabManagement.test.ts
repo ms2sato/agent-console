@@ -454,6 +454,46 @@ describe('useTabManagement', () => {
       expect(navigateToWorker).toHaveBeenCalledWith('new-embedded-1');
     });
 
+    it('addAgentTab creates an agent worker and adds tab (Issue #1023)', async () => {
+      const workers = [createAgentWorker('agent-1')];
+      const navigateToWorker = mock(() => {});
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+        navigateToWorker,
+      });
+      createWorkerResponse = () => ({
+        worker: {
+          id: 'new-agent-1',
+          type: 'agent',
+          name: 'Claude Code',
+          agentId: 'claude-code-builtin',
+          createdAt: new Date().toISOString(),
+          activated: true,
+        },
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      expect(result.current.tabs).toHaveLength(1);
+
+      navigateToWorker.mockClear();
+
+      await act(async () => {
+        await result.current.addAgentTab({ type: 'agent', agentId: 'claude-code-builtin' });
+      });
+
+      const postCalls = findFetchCalls(/\/sessions\/session-1\/workers$/);
+      expect(postCalls).toHaveLength(1);
+      expect(postCalls[0].body).toEqual({
+        type: 'agent',
+        agentId: 'claude-code-builtin',
+      });
+      expect(result.current.tabs).toHaveLength(2);
+      expect(result.current.tabs[1].workerType).toBe('agent');
+      expect(navigateToWorker).toHaveBeenCalledWith('new-agent-1');
+    });
+
     it('addAgentTab surfaces an error via showError on API failure', async () => {
       const workers = [createAgentWorker('agent-1')];
       const showError = mock(() => {});
