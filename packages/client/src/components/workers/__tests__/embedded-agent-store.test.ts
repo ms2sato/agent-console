@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import type { AppServerMessage } from '@agent-console/shared';
+import { WS_CLOSE_CODE, type AppServerMessage } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import {
   getOrCreateEmbeddedAgentWorker,
@@ -487,6 +487,72 @@ describe('embedded-agent-store', () => {
       instance.dispose();
 
       await expect(sendPromise).rejects.toThrow();
+    });
+
+    it('rejects a pending send when the socket closes with a no-reconnect close code (architect audit R1a)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s36', 'w36');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const sendPromise = instance.sendUserMessage('hello agent');
+      // No reconnect will follow this code, so no future echo/error can ever
+      // settle the pending send.
+      ws!.simulateClose(WS_CLOSE_CODE.NORMAL_CLOSURE);
+
+      await expect(sendPromise).rejects.toThrow();
+    });
+
+    it('rejects a pending send when the socket closes after noReconnect was latched by a prior fatal error (architect audit R1a)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s36b', 'w36b');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      // Latches noReconnect without itself leaving a pending send behind.
+      ws!.simulateMessage(JSON.stringify({ type: 'error', message: 'session deleted', code: 'SESSION_DELETED' }));
+
+      const sendPromise = instance.sendUserMessage('hello agent');
+      ws!.simulateClose();
+
+      await expect(sendPromise).rejects.toThrow();
+    });
+
+    it('rejects a pending send when a same-epoch reconnect\'s history reply carries no confirming echo (architect audit R1b)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s37', 'w37');
+      const firstWs = MockWebSocket.getLastInstance();
+      firstWs!.simulateOpen();
+
+      const sendPromise = instance.sendUserMessage('hello agent');
+
+      // Connection drops before the server received the write; a fresh
+      // connection is established for the SAME epoch (no epoch bump).
+      instance.restart();
+      const secondWs = MockWebSocket.getLastInstance();
+      secondWs!.simulateOpen();
+
+      // The reconnect's history reply covers everything from offset 0, but
+      // contains no echo of the message -- the write never reached the server.
+      secondWs!.simulateMessage(historyMessage('', 0, 0, 1));
+
+      await expect(sendPromise).rejects.toThrow();
+    });
+
+    it('resolves a pending send when a same-epoch reconnect\'s history reply DOES carry the confirming echo (architect audit R1b, positive polarity)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s37b', 'w37b');
+      const firstWs = MockWebSocket.getLastInstance();
+      firstWs!.simulateOpen();
+
+      const sendPromise = instance.sendUserMessage('hello agent');
+
+      // The write DID reach the server before the connection dropped -- the
+      // reconnect's history reply replays it back.
+      instance.restart();
+      const secondWs = MockWebSocket.getLastInstance();
+      secondWs!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello agent' });
+      secondWs!.simulateMessage(historyMessage(data, data.length, 0, 1));
+
+      await expect(sendPromise).resolves.toBeUndefined();
     });
   });
 
