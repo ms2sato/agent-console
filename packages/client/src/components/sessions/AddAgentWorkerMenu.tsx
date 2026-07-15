@@ -21,8 +21,8 @@ interface AddAgentWorkerMenuProps {
  *
  * Both terminal agent items and embedded-agent items are fully actionable:
  * `POST /api/sessions/:sessionId/workers` (`CreateWorkerRequestSchema`)
- * accepts `type: 'agent'` creation params as of Issue #1023, in addition to
- * `terminal` / `embedded-agent`.
+ * accepts `type: 'agent'` creation params in addition to `terminal` /
+ * `embedded-agent`.
  *
  * The empty-embedded-registry footer links to `/agents`, which now hosts the
  * `EmbeddedAgentDefinition` management UI (Phase 3.5).

@@ -41,9 +41,9 @@ interface UseTabManagementOptions {
 /**
  * Params accepted when adding an agent-type worker to a running session, via
  * the unified agent-selection picker (docs/design/embedded-agent-worker.md
- * "UI"). `type: 'agent'` (terminal AgentDefinition-backed) became addable
- * mid-session in Issue #1023, widening `CreateWorkerRequestSchema` alongside
- * the pre-existing `embedded-agent` variant. See `AddAgentWorkerMenu.tsx`.
+ * "UI"). `type: 'agent'` (terminal AgentDefinition-backed) and
+ * `type: 'embedded-agent'` are both addable mid-session via
+ * `CreateWorkerRequestSchema`. See `AddAgentWorkerMenu.tsx`.
  */
 export type AddAgentWorkerParams =
   | { type: 'embedded-agent'; embeddedAgentId: string }

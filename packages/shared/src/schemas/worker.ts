@@ -10,9 +10,9 @@ const WorkerOptionsSchema = v.strictObject({
 });
 
 /**
- * Schema for creating a terminal-agent-backed worker (Issue #1023: also
- * reachable from the client via the unified agent-selection picker, in
- * addition to the internal session-creation path).
+ * Schema for creating a terminal-agent-backed worker. Reachable both from
+ * the internal session-creation path and from the client via the unified
+ * agent-selection picker.
  */
 const CreateAgentWorkerParamsSchema = v.strictObject({
   ...WorkerOptionsSchema.entries,
@@ -51,10 +51,9 @@ const CreateEmbeddedAgentWorkerParamsSchema = v.strictObject({
 });
 
 /**
- * Schema for API: clients can create terminal, embedded-agent, and (since
- * Issue #1023) agent worker types. Agent workers can be added to an
- * already-running session via the unified agent-selection picker, not just
- * at session-creation time.
+ * Schema for API: clients can create terminal, embedded-agent, and agent
+ * worker types. Agent workers can be added to an already-running session via
+ * the unified agent-selection picker, not just at session-creation time.
  */
 export const CreateWorkerRequestSchema = v.union([
   CreateTerminalWorkerParamsSchema,
