@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { readTool } from '../read.js';
+import { readTool, READ_MAX_BYTES } from '../read.js';
 
 describe('readTool', () => {
   let locationPath: string;
@@ -70,5 +70,60 @@ describe('readTool', () => {
     const result = await readTool.execute({ path: 'a.txt' }, { locationPath }, controller.signal);
 
     expect(result).toEqual({ ok: false, result: 'aborted' });
+  });
+
+  describe('byte cap', () => {
+    it('reads a file exactly at the cap unchanged, with no truncation notice', async () => {
+      const content = 'a'.repeat(READ_MAX_BYTES);
+      await fsPromises.writeFile(path.join(locationPath, 'exact.txt'), content);
+
+      const result = await readTool.execute({ path: 'exact.txt' }, { locationPath });
+
+      expect(result.ok).toBe(true);
+      expect(result.result).toBe(`1\t${content}`);
+      expect(result.result).not.toContain('truncated');
+    });
+
+    it('truncates a file exactly 1 byte over the cap and appends a truncation notice', async () => {
+      const content = 'a'.repeat(READ_MAX_BYTES + 1);
+      await fsPromises.writeFile(path.join(locationPath, 'over-by-one.txt'), content);
+
+      const result = await readTool.execute({ path: 'over-by-one.txt' }, { locationPath });
+
+      expect(result.ok).toBe(true);
+      expect(result.result).toContain(`1\t${'a'.repeat(READ_MAX_BYTES)}`);
+      expect(result.result).toContain(
+        `[Read truncated: file is ${READ_MAX_BYTES + 1} bytes, exceeding the ${READ_MAX_BYTES}-byte read cap.`,
+      );
+    });
+
+    it('truncates a file well over the cap to the cap size, plus a truncation notice', async () => {
+      const totalSize = READ_MAX_BYTES * 3;
+      const content = 'b'.repeat(totalSize);
+      await fsPromises.writeFile(path.join(locationPath, 'well-over.txt'), content);
+
+      const result = await readTool.execute({ path: 'well-over.txt' }, { locationPath });
+
+      expect(result.ok).toBe(true);
+      const [body, ...rest] = result.result.split('\n\n[Read truncated');
+      expect(body).toBe(`1\t${'b'.repeat(READ_MAX_BYTES)}`);
+      expect(rest.join('')).toContain(`file is ${totalSize} bytes`);
+    });
+
+    it('never splits a multibyte character at the truncation boundary', async () => {
+      // Fill up to one byte before the cap with ASCII, then place a 3-byte
+      // multibyte character straddling the cap so the backoff logic must
+      // drop the whole character rather than emit a partial/invalid tail.
+      const asciiPrefix = 'a'.repeat(READ_MAX_BYTES - 1);
+      const content = asciiPrefix + 'あ' + 'more content after the cap to push the file over the limit';
+      await fsPromises.writeFile(path.join(locationPath, 'multibyte.txt'), content);
+
+      const result = await readTool.execute({ path: 'multibyte.txt' }, { locationPath });
+
+      expect(result.ok).toBe(true);
+      expect(result.result).toContain('[Read truncated');
+      expect(result.result).not.toContain('あ');
+      expect(result.result).not.toContain('�');
+    });
   });
 });
