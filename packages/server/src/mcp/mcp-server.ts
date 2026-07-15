@@ -262,7 +262,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
       id: w.id,
       type: w.type,
       activityState:
-        w.type === 'agent'
+        w.type === 'agent' || w.type === 'embedded-agent'
           ? sessionManager.getWorkerActivityState(session.id, w.id) ?? 'unknown'
           : ('unknown' as AgentActivityState),
     }));
