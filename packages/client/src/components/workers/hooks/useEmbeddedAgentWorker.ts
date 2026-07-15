@@ -18,7 +18,7 @@ interface UseEmbeddedAgentWorkerReturn {
   activityState: AgentActivityState;
   workerError: { message: string; code?: WorkerErrorCode } | null;
   loadingHistory: boolean;
-  sendUserMessage: (text: string) => void;
+  sendUserMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restart: () => void;
   retry: () => void;
@@ -49,8 +49,8 @@ export function useEmbeddedAgentWorker(
   }, [sessionId, workerId]);
 
   const sendUserMessage = useCallback(
-    (text: string) => {
-      getOrCreateEmbeddedAgentWorker(sessionId, workerId).sendUserMessage(text);
+    (text: string): Promise<void> => {
+      return getOrCreateEmbeddedAgentWorker(sessionId, workerId).sendUserMessage(text);
     },
     [sessionId, workerId],
   );

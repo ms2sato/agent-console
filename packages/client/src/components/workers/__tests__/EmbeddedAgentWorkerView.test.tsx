@@ -243,14 +243,14 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(sent.some((m) => m.type === 'embedded-user-message')).toBe(false);
   });
 
-  it('sends a message on Ctrl+Enter and clears the draft', async () => {
+  it('sends a message on Ctrl+Enter but keeps the draft until the server confirms it, then clears it (#1024)', async () => {
     renderView({ sessionId: 's4', workerId: 'w4' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
     });
 
-    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)');
+    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
     await act(async () => {
       fireEvent.change(textarea, { target: { value: 'hello agent' } });
     });
@@ -260,7 +260,47 @@ describe('EmbeddedAgentWorkerView', () => {
 
     const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0]));
     expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello agent' });
-    expect((textarea as HTMLTextAreaElement).value).toBe('');
+    // Not yet cleared -- the server hasn't confirmed the send. Clearing here
+    // optimistically is exactly the bug #1024 reports.
+    expect(textarea.value).toBe('hello agent');
+
+    // Server echoes the message back, confirming it was accepted.
+    const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello agent' });
+    await act(async () => {
+      ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length, epoch: 1 }));
+    });
+    await flush();
+
+    expect(textarea.value).toBe('');
+  });
+
+  it('preserves the draft when the server rejects the send (TURN_IN_PROGRESS), letting the user retry without retyping (#1024)', async () => {
+    renderView({ sessionId: 's4b', workerId: 'w4b' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    const textarea = screen.getByPlaceholderText('Send message to worker... (Ctrl+Enter to send)') as HTMLTextAreaElement;
+    await act(async () => {
+      fireEvent.change(textarea, { target: { value: 'hello agent' } });
+    });
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
+    });
+
+    await act(async () => {
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'error', message: 'turn in progress', code: 'TURN_IN_PROGRESS' }),
+      );
+    });
+    await flush();
+
+    // The draft must survive the rejection -- the user should not have to retype it.
+    expect(textarea.value).toBe('hello agent');
+    // The Send button must be usable again, not stuck disabled from the failed send's `sending` state.
+    const sendButton = screen.getByText('Send') as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(false);
   });
 
   it('renders a turn-in-progress error non-fatally, with a Dismiss action, keeping entries', async () => {

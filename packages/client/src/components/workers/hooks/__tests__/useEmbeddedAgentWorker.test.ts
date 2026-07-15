@@ -54,7 +54,10 @@ describe('useEmbeddedAgentWorker', () => {
     });
 
     act(() => {
-      result.current.sendUserMessage('hello');
+      // Never confirmed within this test -- swallow the eventual dispose-time
+      // rejection (afterEach's _resetEmbeddedAgentWorkers) so it doesn't
+      // surface as an unhandled rejection.
+      result.current.sendUserMessage('hello').catch(() => {});
     });
 
     const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
