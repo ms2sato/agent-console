@@ -492,7 +492,7 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `NODE_ENV` | _(unset)_ | Set to `production` for browser-based deployments: it enables the web UI **and**, by default, marks the auth cookie `Secure`. The `Secure` cookie then needs a secure context — HTTPS, or `http://localhost` — see [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts). |
 | `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 | `PTY_PROVIDER` | _(unset; server default `bun-terminal`)_ | Override for the PTY backend. Valid values: `bun-terminal` (default; the `Bun.spawn({ terminal: ... })` provider, Bun ≥ 1.3.5) or `bun-pty` (the bun-pty native shared library). Stage 2 (Issue [#827](https://github.com/ms2sato/agent-console/issues/827)) flipped the compiled default to `bun-terminal`; `bun-pty` remains selectable for one release as a rollback escape hatch, with Stage 3 (Issue [#828](https://github.com/ms2sato/agent-console/issues/828)) removing it. The backend migration was evaluated under Issue [#824](https://github.com/ms2sato/agent-console/issues/824). The bootstrap script exposes this as `--pty-provider <name>` (or env `AGENT_CONSOLE_PTY_PROVIDER`); when unset, the rendered systemd unit omits the entry entirely so the server falls back to its compiled default. Invalid values are rejected at bootstrap time before any system state is touched. |
-| `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling: `off`, `warn`, or `enforce`. Unset resolves to `enforce` under `AUTH_MODE=multi-user`, `warn` otherwise. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
+| `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling: `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16; see Issue #1107 for the enforce-by-default restoration path). See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
 
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
@@ -875,21 +875,25 @@ identity (see [MCP Caller Token](glossary.md#mcp-caller-token)). The
 | Value | Behavior |
 |-------|----------|
 | `off` | Tokenless calls proceed unchecked (pre-#878 behavior). |
-| `warn` | Tokenless calls proceed, with a log line. Default for single-user (`AUTH_MODE=none`). |
-| `enforce` | Tokenless calls are rejected. **Default for multi-user (`AUTH_MODE=multi-user`)** since Phase 4. |
+| `warn` | Tokenless calls proceed, with a log line. **Default for every `AUTH_MODE`**, including multi-user, since Sprint 2026-07-16 (see Issue #1107). |
+| `enforce` | Tokenless calls are rejected. Briefly the default for multi-user (`AUTH_MODE=multi-user`) starting at Phase 4; reverted to `warn` in Sprint 2026-07-16. Opt in explicitly with `AGENT_CONSOLE_MCP_AUTH=enforce`. |
 
 A presented-but-mismatched token (the caller's verified identity does not
 own the claimed session) is **always** rejected, regardless of this setting
 — only the *missing-token* case is mode-dependent.
 
-Multi-user deployments do not need to set this variable — `enforce` is the
-default the moment `AUTH_MODE=multi-user` is set, and every agent path
-(embedded-agent via stdin `init`, terminal-agent via the token file below)
-carries a token by the time a multi-user instance can serve traffic. Set
-`AGENT_CONSOLE_MCP_AUTH=warn` explicitly only as a temporary escape hatch —
-e.g. while diagnosing a token-delivery regression — and unset it again once
-resolved; leaving `warn` enabled long-term reopens the caller-spoofing gap
-the token mechanism closes.
+Multi-user deployments do not need to set this variable — `warn` is the
+default regardless of `AUTH_MODE`, and it still logs tokenless callers for
+observability. The deployment model this project currently targets is a
+team-of-trust, where the ops cost of `enforce` (existing-session token
+re-delivery, Claude Code `headersHelper` per-OS-user wiring, a full dogfood
+pass) outweighs the safety benefit today. Operators that want stricter
+enforcement can set `AGENT_CONSOLE_MCP_AUTH=enforce` explicitly once every
+agent path (embedded-agent via stdin `init`, terminal-agent via the token
+file below, including `headersHelper` wiring per target user) carries a
+token — see [Terminal-agent MCP token file](#terminal-agent-mcp-token-file-multi-user-mode)
+below. Restoring `enforce` as the multi-user default is tracked in Issue
+[#1107](https://github.com/ms2sato/agent-console/issues/1107).
 
 ### Terminal-agent MCP token file (multi-user mode)
 
@@ -916,12 +920,18 @@ exact `headersHelper` config schema, since it is not exposed via `claude mcp
 add`'s CLI flags and may evolve across CLI releases). Configure it, per
 target user, to read `AGENT_CONSOLE_MCP_TOKEN_FILE` and return
 `{"Authorization": "Bearer <file contents>"}`. Until this is configured for a
-given user, that user's terminal-agent MCP calls are tokenless and are
-rejected outright under the `enforce` default above (fail-closed, by
-design) — a terminal agent still starts normally and runs, but its
-MCP-dependent tools (`delegate_to_worktree`, `run_process`,
-`send_session_message`, etc.) return an authentication error until the
-`headersHelper` is wired up for that account.
+given user, that user's terminal-agent MCP calls are tokenless; under the
+current `warn` default (see above) they are merely logged and still succeed,
+but a terminal agent's MCP-dependent tools (`delegate_to_worktree`,
+`run_process`, `send_session_message`, etc.) return an authentication error
+for that account once an operator opts into `AGENT_CONSOLE_MCP_AUTH=enforce`
+(fail-closed, by design) — a terminal agent still starts normally and runs
+either way. Functional verification of this wiring (the helper actually
+reads the file and the header reaches `/mcp`, not just mechanism presence in
+the CLI binary) is tracked as a prerequisite for Issue
+[#1107](https://github.com/ms2sato/agent-console/issues/1107) (restoring
+`enforce` as the multi-user default), not as a gate on general multi-user
+support.
 
 ## Post-deploy Verification (smoke tests)
 
@@ -1039,9 +1049,10 @@ What it verifies:
   real-deploy-layout smoke can catch, since a dev checkout would silently
   exercise the fallback too.
 - The loop completes its `init` handshake and reaches the `ready` state
-  against the real, `enforce`-mode `/mcp` endpoint — proving the multi-user
-  `enforce` default (see [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth)
-  above) does not break the already-working embedded-agent token delivery.
+  against the real, `enforce`-mode `/mcp` endpoint — proving `enforce` mode
+  (see [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth)
+  above; opt-in only since Sprint 2026-07-16, tracked by Issue #1107) does
+  not break the already-working embedded-agent token delivery.
 - Negative: neither the MCP bearer token nor the provider API key appear in
   `/proc/<pid>/cmdline` or `/proc/<pid>/environ` of the elevated subprocess,
   with an "actually executed" guard so a silently-skipped check (process

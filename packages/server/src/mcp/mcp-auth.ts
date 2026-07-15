@@ -78,9 +78,14 @@ export type McpAuthMode = 'off' | 'warn' | 'enforce';
  *   same convention as other server-config vars).
  * - Any other non-empty value throws (fail fast at startup — `createMcpApp`
  *   calls this during boot).
- * - Unset resolves to `enforce` when `AUTH_MODE=multi-user` (Phase 4,
- *   landed), `warn` otherwise (including single-user mode, where the gap is
- *   operationally moot)
+ * - Unset resolves to `warn` for every `AUTH_MODE`, including multi-user.
+ *   (Sprint 2026-07-16 decision: `enforce`-by-default for multi-user was
+ *   never rolled out because the ops cost — existing-session token
+ *   re-delivery, Claude Code `headersHelper` per-OS-user wiring, full
+ *   dogfood — outweighed the safety benefit for a team-of-trust deployment.
+ *   `warn` still logs tokenless callers for observability; operators can opt
+ *   into `enforce` explicitly via `AGENT_CONSOLE_MCP_AUTH=enforce`. See
+ *   Issue #1107 for the future restoration path.)
  *   (docs/design/embedded-agent-worker.md § "MCP caller identity").
  *
  * Rule 1 of `checkCallerOwnsSession` (a presented-but-mismatched token is
@@ -89,11 +94,11 @@ export type McpAuthMode = 'off' | 'warn' | 'enforce';
  */
 export function resolveMcpAuthMode(
   rawValue: string | undefined = process.env.AGENT_CONSOLE_MCP_AUTH,
-  authMode: string | undefined = process.env.AUTH_MODE,
+  _authMode: string | undefined = process.env.AUTH_MODE,
 ): McpAuthMode {
   const trimmed = rawValue?.trim();
   if (!trimmed) {
-    return authMode === 'multi-user' ? 'enforce' : 'warn';
+    return 'warn';
   }
   if (trimmed !== 'off' && trimmed !== 'warn' && trimmed !== 'enforce') {
     throw new Error(
