@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from 'react';
+import { useRef, useEffect, useMemo, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
@@ -7,10 +7,11 @@ import type { JSX } from 'react';
 import type { ExtraProps } from 'react-markdown';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
-import { RefreshIcon, AlertCircleIcon } from '../Icons';
+import { RefreshIcon, AlertCircleIcon, CopyIcon, CheckIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 import { PreviewPanel } from './PreviewPanel';
+import { logger } from '../../lib/logger';
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
 type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
@@ -261,6 +262,52 @@ function PreviewablePre(props: JSX.IntrinsicElements['pre'] & ExtraProps) {
   );
 }
 
+/** How long the Check-icon/"Copied!" feedback state holds before reverting to the idle Copy icon (#1118). */
+const COPY_MARKDOWN_FEEDBACK_MS = 1500;
+
+/**
+ * Icon-only button pinned to the bottom-right of an assistant message
+ * bubble. Copies the message's raw markdown SOURCE (the `text` prop, as
+ * received from the agent) to the clipboard -- never the rendered HTML the
+ * Markdown pipeline produces. On click, swaps to a Check icon and a
+ * "Copied!" tooltip for COPY_MARKDOWN_FEEDBACK_MS before reverting.
+ */
+function CopyMarkdownButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const revertTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (revertTimeoutRef.current !== null) clearTimeout(revertTimeoutRef.current);
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (err) {
+      logger.error('Failed to copy markdown:', err);
+      return;
+    }
+    setCopied(true);
+    if (revertTimeoutRef.current !== null) clearTimeout(revertTimeoutRef.current);
+    revertTimeoutRef.current = setTimeout(() => setCopied(false), COPY_MARKDOWN_FEEDBACK_MS);
+  };
+
+  const label = copied ? 'Copied!' : 'Copy as markdown';
+
+  return (
+    <button
+      onClick={handleCopy}
+      title={label}
+      aria-label={label}
+      className="text-gray-500 hover:text-gray-200 p-1 rounded hover:bg-slate-700 shrink-0"
+    >
+      {copied ? <CheckIcon className="w-3.5 h-3.5" /> : <CopyIcon className="w-3.5 h-3.5" />}
+    </button>
+  );
+}
+
 interface ChatEntryRowProps {
   entry: OutsideEntry;
   onRestart: () => void;
@@ -293,6 +340,9 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
               {entry.text}
             </Markdown>
             {entry.streaming && <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-gray-400 animate-pulse align-middle" aria-hidden="true" />}
+            <div className="flex justify-end mt-1">
+              <CopyMarkdownButton text={entry.text} />
+            </div>
           </div>
         </div>
       );

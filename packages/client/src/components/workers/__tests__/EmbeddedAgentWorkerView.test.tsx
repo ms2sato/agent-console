@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
 import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -1152,6 +1152,233 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bubbles.length).toBe(1);
       // The typing-cursor pulse indicator lives inside the streaming bubble.
       expect(bubbles[0].querySelector('.animate-pulse')).toBeTruthy();
+    });
+  });
+
+  describe('Copy markdown button (#1118)', () => {
+    // Preserve the original clipboard descriptor so we can restore it per-test.
+    // happy-dom provides a real clipboard implementation; we swap it out for a
+    // jest-mock so we can assert on `writeText` calls without touching the OS.
+    const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(navigator),
+      'clipboard',
+    );
+
+    // Fresh writeText mock per test so counts / args do not bleed across tests.
+    let writeTextMock: ReturnType<typeof mock>;
+
+    function installClipboardMock() {
+      writeTextMock = mock(() => Promise.resolve());
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: writeTextMock },
+        writable: true,
+        configurable: true,
+      });
+    }
+
+    function restoreClipboard() {
+      Reflect.deleteProperty(navigator, 'clipboard');
+      if (originalClipboardDescriptor && !('clipboard' in navigator)) {
+        Object.defineProperty(Object.getPrototypeOf(navigator), 'clipboard', originalClipboardDescriptor);
+      }
+    }
+
+    beforeEach(() => {
+      installClipboardMock();
+    });
+
+    afterEach(() => {
+      restoreClipboard();
+    });
+
+    async function renderWithAssistantMessage(sessionId: string, workerId: string, text: string) {
+      renderView({ sessionId, workerId });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      const data = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'hi' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+    }
+
+    it('renders a copy-markdown button on an assistant message bubble', async () => {
+      await renderWithAssistantMessage('s30', 'w30', '**hello** world');
+
+      expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+    });
+
+    it('does not render a copy-markdown button on a user message bubble', async () => {
+      renderView({ sessionId: 's31', workerId: 'w31' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'only a user message' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('only a user message')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
+    });
+
+    it('copies the raw markdown text (not rendered HTML) to the clipboard on click', async () => {
+      const markdown = '# Heading\n\n**bold** and `code`';
+      await renderWithAssistantMessage('s32', 'w32', markdown);
+
+      const button = screen.getByRole('button', { name: 'Copy as markdown' });
+      // We use `fireEvent` rather than `userEvent` because `userEvent.setup()`
+      // installs its own clipboard stub via a `navigator.clipboard` getter,
+      // which shadows the mock installed above. `fireEvent.click` bypasses
+      // that setup and dispatches the click directly; the extra
+      // `await Promise.resolve()` yields so the async click handler's
+      // `await navigator.clipboard.writeText` microtask resolves before we
+      // assert (mirrors the McpInstallSection copy-button test pattern).
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+
+      expect(writeTextMock).toHaveBeenCalledTimes(1);
+      expect(writeTextMock.mock.calls[0]?.[0]).toBe(markdown);
+    });
+
+    it('switches to a Check icon + "Copied!" tooltip after clicking, then reverts to idle after 1.5s', async () => {
+      await renderWithAssistantMessage('s33', 'w33', 'copy me');
+
+      const button = screen.getByRole('button', { name: 'Copy as markdown' });
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+
+      const copiedButton = screen.getByRole('button', { name: 'Copied!' });
+      expect(copiedButton.title).toBe('Copied!');
+      expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1600));
+      });
+
+      expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
+    });
+
+    it('a second click before the first feedback window elapses keeps "Copied!" visible until the SECOND click\'s own 1.5s window elapses (rapid-click timer reset, CodeRabbit #1121)', async () => {
+      await renderWithAssistantMessage('s34', 'w34', 'copy me twice');
+      const button = screen.getByRole('button', { name: 'Copy as markdown' });
+
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+      // 800ms after the FIRST click -- well under the first click's own 1.5s
+      // window, so this alone proves nothing about timer-reset behavior yet.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+      // Second click while still in the "Copied!" state must clear the first
+      // click's pending revert timer and arm a fresh one.
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+
+      // 800ms after the SECOND click = 1600ms after the FIRST click. Without
+      // the timer-reset fix, the first click's timer would have fired at
+      // 1500ms and already reverted the button by this point.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+      // 800ms further (1600ms after the SECOND click) -- the second click's
+      // own timer has now elapsed and the button reverts.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 800));
+      });
+      expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+    });
+
+    it('clears the pending revert timeout on unmount instead of leaking a scheduled setState (CodeRabbit #1121)', async () => {
+      const view = renderView({ sessionId: 's35', workerId: 'w35' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      const data = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'hi' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'copy me' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Spy on the real global timer functions (pass-through, not mocked
+      // implementations) rather than switching to fake timers -- sibling
+      // subsystems mounted alongside this component (TanStack Query's
+      // garbage-collection timer, the mock WebSocket) schedule their OWN
+      // timers on unmount, which would pollute a raw vi.getTimerCount()
+      // delta. Identifying our button's specific revert timer by its
+      // COPY_MARKDOWN_FEEDBACK_MS (1500ms) delay avoids that ambiguity.
+      const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
+      const clearTimeoutSpy = spyOn(globalThis, 'clearTimeout');
+      try {
+        const button = screen.getByRole('button', { name: 'Copy as markdown' });
+        await act(async () => {
+          fireEvent.click(button);
+          await Promise.resolve();
+        });
+        expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+
+        const revertTimerCallIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 1500);
+        expect(revertTimerCallIndex).toBeGreaterThanOrEqual(0);
+        const revertTimerId = setTimeoutSpy.mock.results[revertTimerCallIndex]?.value;
+        expect(revertTimerId).toBeTruthy();
+
+        view.unmount();
+
+        // Unmount's effect cleanup must clear exactly this revert timer --
+        // not merely leave it dangling to fire a setState against an
+        // unmounted component later.
+        expect(clearTimeoutSpy.mock.calls.some((call) => call[0] === revertTimerId)).toBe(true);
+      } finally {
+        setTimeoutSpy.mockRestore();
+        clearTimeoutSpy.mockRestore();
+      }
+    });
+
+    it('logs and leaves the button in the idle "Copy as markdown" state when clipboard.writeText rejects, instead of throwing an unhandled rejection (CodeRabbit #1121)', async () => {
+      const consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        writeTextMock.mockRejectedValueOnce(new Error('document not focused'));
+        await renderWithAssistantMessage('s36', 'w36', 'copy me');
+
+        const button = screen.getByRole('button', { name: 'Copy as markdown' });
+        await act(async () => {
+          fireEvent.click(button);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(consoleErrorSpy).toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
+      } finally {
+        consoleErrorSpy.mockRestore();
+      }
     });
   });
 });
