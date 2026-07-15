@@ -6,7 +6,7 @@ import type { Session, Worker, AgentActivityState } from '@agent-console/shared'
 
 const originalFetch = globalThis.fetch;
 const mockFetch = mock(() => Promise.resolve(new Response()));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} });
 
 afterAll(() => {
   globalThis.fetch = originalFetch;
