@@ -375,6 +375,20 @@ describe('EmbeddedAgentCommandSchema', () => {
     }
   });
 
+  it('rejects an init command with an empty-string entry in instructions', () => {
+    const init = {
+      v: 1,
+      type: 'init',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      instructions: [''],
+      maxToolIterations: 25,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+    expect(result.success).toBe(false);
+  });
+
   it('parses an init command without instructions (absent, not required)', () => {
     const init = {
       v: 1,
