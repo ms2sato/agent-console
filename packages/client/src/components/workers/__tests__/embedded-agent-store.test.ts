@@ -423,6 +423,53 @@ describe('embedded-agent-store', () => {
     expect(secondWs).not.toBe(firstWs);
   });
 
+  it('preserves accumulated entries on a plain reconnect resume (fromOffset > 0, same epoch, startOffset === requestedFromOffset)', async () => {
+    // Complements the epoch-bump tests below: this is the common-case
+    // reconnect (no server restart) where the client already has some
+    // history cached and asks only for the tail. Issue #1021/#1022's
+    // CRITICAL/MAJOR bugs were both in the epoch-reset paths; this test
+    // pins down the plain incremental-resume path so a future change to
+    // applyBytes's `isFresh` logic can't silently start resetting it too.
+    const instance = getOrCreateEmbeddedAgentWorker('s17c', 'w17c');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+
+    const initialData = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'first' });
+    ws1!.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+    await flush();
+    const entriesAfterFirst = instance.getSnapshot().entries;
+    expect(entriesAfterFirst).toHaveLength(1);
+    const firstEntryRef = entriesAfterFirst[0];
+
+    // Force a fresh WS connection without an epoch bump (a plain reconnect,
+    // e.g. a dropped connection resuming) -- lastOffset carries over from
+    // the prior connection.
+    instance.restart();
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2!.simulateOpen();
+
+    const sent = lastSentMessages(ws2!);
+    expect(sent).toContainEqual({ type: 'request-history', fromOffset: initialData.length });
+
+    // The server's response starts exactly where requested (not a fresh
+    // load) and carries only the new tail.
+    const tailData = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second' });
+    ws2!.simulateMessage(
+      historyMessage(tailData, initialData.length + tailData.length, initialData.length, 1),
+    );
+    await flush();
+
+    const entriesAfterSecond = instance.getSnapshot().entries;
+    // The pre-existing entry is the SAME object reference -- proof
+    // resetChatState was NOT invoked (a reset replaces `entries` with a
+    // brand-new empty array, which would also change this reference).
+    expect(entriesAfterSecond[0]).toBe(firstEntryRef);
+    expect(entriesAfterSecond).toHaveLength(2);
+    expect(entriesAfterSecond[0]).toMatchObject({ kind: 'user-message', text: 'first' });
+    expect(entriesAfterSecond[1]).toMatchObject({ kind: 'user-message', text: 'second' });
+  });
+
   it('resets accumulated entries on an epoch bump (worker restarted server-side)', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s17', 'w17');
     const ws = MockWebSocket.getLastInstance();
