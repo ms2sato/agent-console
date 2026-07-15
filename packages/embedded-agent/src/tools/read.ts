@@ -3,11 +3,30 @@
  * locationPath, and returns `cat -n`-style line-numbered output.
  */
 
+import * as fsPromises from 'node:fs/promises';
 import type { BuiltinTool, BuiltinToolContext, BuiltinToolResult } from './types.js';
 import { resolveConfinedPath } from './path-confinement.js';
+import { trimToUtf8Boundary } from '../truncate.js';
 
 const DEFAULT_LIMIT = 2000;
 const DEFAULT_OFFSET = 0;
+
+/**
+ * Per-file byte cap on how much of a file this tool loads into subprocess
+ * memory, matching Grep's per-file size threshold (see `grep.ts`). A file
+ * over the cap is not rejected outright (unlike Grep, which skips it) -- the
+ * first READ_MAX_BYTES bytes are still useful to the model, so Read returns
+ * that prefix plus an explicit truncation notice instead of loading the
+ * entire file (which could be arbitrarily large) into memory first.
+ */
+export const READ_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Extra bytes read past the cap so `trimToUtf8Boundary` can see the byte
+ * immediately after the cut and back off if it would split a multibyte
+ * character (UTF-8 code points are at most 4 bytes).
+ */
+const UTF8_BOUNDARY_LOOKAHEAD_BYTES = 4;
 
 interface ReadArgs {
   path: string;
@@ -56,13 +75,30 @@ async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSig
   }
 
   try {
-    const text = await Bun.file(confinement.resolvedPath).text();
+    const stat = await fsPromises.stat(confinement.resolvedPath);
+    const bunFile = Bun.file(confinement.resolvedPath);
+    let text: string;
+    let truncated = false;
+    if (stat.size > READ_MAX_BYTES) {
+      const bytes = new Uint8Array(
+        await bunFile.slice(0, READ_MAX_BYTES + UTF8_BOUNDARY_LOOKAHEAD_BYTES).arrayBuffer(),
+      );
+      text = new TextDecoder().decode(trimToUtf8Boundary(bytes, READ_MAX_BYTES));
+      truncated = true;
+    } else {
+      text = await bunFile.text();
+    }
+
     const lines = text.split('\n');
     const selected = lines.slice(offset, offset + limit);
     const formatted = selected
       .map((lineContent, index) => `${offset + index + 1}\t${lineContent}`)
       .join('\n');
-    return { ok: true, result: formatted };
+    const notice = truncated
+      ? `\n\n[Read truncated: file is ${stat.size} bytes, exceeding the ${READ_MAX_BYTES}-byte read cap. ` +
+        `Showing content from the first ${READ_MAX_BYTES} bytes only.]`
+      : '';
+    return { ok: true, result: formatted + notice };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, result: `Failed to read file: ${message}` };
