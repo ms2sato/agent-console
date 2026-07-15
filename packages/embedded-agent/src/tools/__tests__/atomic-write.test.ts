@@ -54,6 +54,32 @@ describe('atomicWrite', () => {
     expect(entries).toEqual(['clean.txt']);
   });
 
+  it('preserves the existing file mode (exec bit) across an overwrite', async () => {
+    const target = path.join(dir, 'script.sh');
+    await fsPromises.writeFile(target, '#!/bin/sh\necho old\n');
+    await fsPromises.chmod(target, 0o755);
+
+    await atomicWrite(target, '#!/bin/sh\necho new\n');
+
+    const { mode } = await fsPromises.stat(target);
+    expect(mode & 0o777).toBe(0o755);
+  });
+
+  it('applies the default umask mode (no mode to preserve) for a newly-created file', async () => {
+    const target = path.join(dir, 'new-file.txt');
+    const control = path.join(dir, 'control.txt');
+    // Umask-dependent baseline: what Bun.write produces with no prior file at
+    // the destination, established independently of atomicWrite's own logic.
+    await Bun.write(control, 'baseline');
+    const { mode: controlMode } = await fsPromises.stat(control);
+
+    await atomicWrite(target, 'content');
+
+    const { mode } = await fsPromises.stat(target);
+    expect(mode & 0o777).toBe(controlMode & 0o777);
+    expect(mode & 0o777).not.toBe(0o755);
+  });
+
   it('cleans up the temp file and rethrows when the final rename fails', async () => {
     // Renaming a plain file onto an existing directory fails at the OS level
     // (EISDIR) -- this simulates the temp-write succeeding but the rename
