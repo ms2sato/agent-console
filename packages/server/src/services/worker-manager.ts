@@ -475,11 +475,10 @@ export class WorkerManager {
         // Non-fatal skip (unlike EmbeddedAgentWorkerService's hard-fail):
         // terminal-agent PTY activation is a long-established
         // availability-critical path (create / revive / restart / restore).
-        // The default AGENT_CONSOLE_MCP_AUTH mode is `warn`, so this worker's
-        // tokenless MCP calls are merely logged, not rejected; only an
-        // operator-opted-in AGENT_CONSOLE_MCP_AUTH=enforce would reject them
+        // The default AGENT_CONSOLE_MCP_AUTH mode is `warn`, so this
+        // worker's tokenless MCP calls are merely logged, not rejected;
+        // only an operator-opted-in `enforce` would reject them
         // (fail-closed). The worker itself still starts either way.
-        // Restoring enforce-by-default is tracked in Issue #1107.
         logger.warn(
           { workerId: worker.id, sessionId },
           'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)',

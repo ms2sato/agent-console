@@ -84,8 +84,8 @@ export type McpAuthMode = 'off' | 'warn' | 'enforce';
  *   re-delivery, Claude Code `headersHelper` per-OS-user wiring, full
  *   dogfood — outweighed the safety benefit for a team-of-trust deployment.
  *   `warn` still logs tokenless callers for observability; operators can opt
- *   into `enforce` explicitly via `AGENT_CONSOLE_MCP_AUTH=enforce`. See
- *   Issue #1107 for the future restoration path.)
+ *   into `enforce` explicitly via `AGENT_CONSOLE_MCP_AUTH=enforce`. The
+ *   future restoration path is tracked separately.)
  *   (docs/design/embedded-agent-worker.md § "MCP caller identity").
  *
  * Rule 1 of `checkCallerOwnsSession` (a presented-but-mismatched token is

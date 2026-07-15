@@ -1539,6 +1539,50 @@ describe('WorkerManager', () => {
       expect(env!.AGENT_CONSOLE_MCP_TOKEN_FILE).toBeUndefined();
     });
 
+    it('multi-user + missing createdByUserId + AGENT_CONSOLE_MCP_AUTH=enforce: still skips minting but activation succeeds (mint-skip is independent of the auth mode)', async () => {
+      // Regression guard for the AGENT_CONSOLE_MCP_AUTH default change
+      // (Sprint 2026-07-16): this mint-skip branch never consulted the auth
+      // mode and must not start depending on it now that the default
+      // differs from before.
+      const originalMcpAuth = process.env.AGENT_CONSOLE_MCP_AUTH;
+      process.env.AUTH_MODE = 'multi-user';
+      process.env.AGENT_CONSOLE_MCP_AUTH = 'enforce';
+      try {
+        const registry = createFakeMcpTokenRegistry();
+        const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+        const wm = buildManagerWithSeams({
+          mcpTokenRegistry: registry,
+          lookupOsUserFn: defaultLookupOsUserFn,
+          runAsUserImpl,
+        });
+
+        const worker = wm.initializeAgentWorker({
+          id: 'mcp-agent-3b',
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+
+        await wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'alice',
+          // createdByUserId intentionally omitted (legacy / ownerless session)
+        });
+
+        expect(registry.mint).not.toHaveBeenCalled();
+        expect(worker.mcpToken).toBeNull();
+        expect(worker.pty).not.toBeNull();
+        const env = getLastSpawnEnv();
+        expect(env!.AGENT_CONSOLE_MCP_TOKEN_FILE).toBeUndefined();
+      } finally {
+        if (originalMcpAuth === undefined) {
+          delete process.env.AGENT_CONSOLE_MCP_AUTH;
+        } else {
+          process.env.AGENT_CONSOLE_MCP_AUTH = originalMcpAuth;
+        }
+      }
+    });
+
     it('multi-user + writeUserOwnedSecretFile failure: activation throws and revokes the just-minted token', async () => {
       process.env.AUTH_MODE = 'multi-user';
       const registry = createFakeMcpTokenRegistry();

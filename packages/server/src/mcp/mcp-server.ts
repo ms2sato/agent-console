@@ -243,12 +243,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
   // caller identity"). The registry defaults to empty and the mode resolves
   // from AGENT_CONSOLE_MCP_AUTH, defaulting to `warn` for every AUTH_MODE
-  // (Sprint 2026-07-16 decision — `enforce`-by-default for multi-user was
-  // deferred; see Issue #1107); tests override both. Passing
-  // `serverConfig.AUTH_MODE` explicitly (rather than relying on the
-  // parameter default reading `process.env.AUTH_MODE` directly) keeps this
-  // resolution on the same canonical source as the `serverConfig.AUTH_MODE`
-  // check two lines below.
+  // (Sprint 2026-07-16 decision: `enforce`-by-default for multi-user was
+  // deferred); tests override both. Passing `serverConfig.AUTH_MODE`
+  // explicitly (rather than relying on the parameter default reading
+  // `process.env.AUTH_MODE` directly) keeps this resolution on the same
+  // canonical source as the `serverConfig.AUTH_MODE` check two lines below.
   const mcpTokenRegistry = deps.mcpTokenRegistry ?? new McpTokenRegistry();
   const mcpAuthMode = deps.mcpAuthMode ?? resolveMcpAuthMode(undefined, serverConfig.AUTH_MODE);
   if (serverConfig.AUTH_MODE === 'multi-user' && mcpAuthMode === 'warn') {
