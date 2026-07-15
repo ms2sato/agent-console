@@ -12,7 +12,7 @@
  * the rename still severs them, since the target inode is replaced regardless
  * of the temp file's mode. Preserving hardlink identity would require an
  * in-place write (truncate+write) instead, which sacrifices crash safety;
- * that trade-off is accepted here per architect review (Issue #1067).
+ * that trade-off is accepted here per architect review.
  */
 
 import * as fsPromises from 'node:fs/promises';
