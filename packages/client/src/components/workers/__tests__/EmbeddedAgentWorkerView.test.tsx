@@ -1114,4 +1114,121 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bubbles[0].querySelector('.animate-pulse')).toBeTruthy();
     });
   });
+
+  describe('Copy markdown button (#1118)', () => {
+    // Preserve the original clipboard descriptor so we can restore it per-test.
+    // happy-dom provides a real clipboard implementation; we swap it out for a
+    // jest-mock so we can assert on `writeText` calls without touching the OS.
+    const originalClipboardDescriptor = Object.getOwnPropertyDescriptor(
+      Object.getPrototypeOf(navigator),
+      'clipboard',
+    );
+
+    // Fresh writeText mock per test so counts / args do not bleed across tests.
+    let writeTextMock: ReturnType<typeof mock>;
+
+    function installClipboardMock() {
+      writeTextMock = mock(() => Promise.resolve());
+      Object.defineProperty(navigator, 'clipboard', {
+        value: { writeText: writeTextMock },
+        writable: true,
+        configurable: true,
+      });
+    }
+
+    function restoreClipboard() {
+      Reflect.deleteProperty(navigator, 'clipboard');
+      if (originalClipboardDescriptor && !('clipboard' in navigator)) {
+        Object.defineProperty(Object.getPrototypeOf(navigator), 'clipboard', originalClipboardDescriptor);
+      }
+    }
+
+    beforeEach(() => {
+      installClipboardMock();
+    });
+
+    afterEach(() => {
+      restoreClipboard();
+    });
+
+    async function renderWithAssistantMessage(sessionId: string, workerId: string, text: string) {
+      renderView({ sessionId, workerId });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      const data = ndjson(
+        { v: 1, type: 'user-message', id: 'u1', text: 'hi' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+    }
+
+    it('renders a copy-markdown button on an assistant message bubble', async () => {
+      await renderWithAssistantMessage('s30', 'w30', '**hello** world');
+
+      expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+    });
+
+    it('does not render a copy-markdown button on a user message bubble', async () => {
+      renderView({ sessionId: 's31', workerId: 'w31' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'only a user message' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('only a user message')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
+    });
+
+    it('copies the raw markdown text (not rendered HTML) to the clipboard on click', async () => {
+      const markdown = '# Heading\n\n**bold** and `code`';
+      await renderWithAssistantMessage('s32', 'w32', markdown);
+
+      const button = screen.getByRole('button', { name: 'Copy as markdown' });
+      // We use `fireEvent` rather than `userEvent` because `userEvent.setup()`
+      // installs its own clipboard stub via a `navigator.clipboard` getter,
+      // which shadows the mock installed above. `fireEvent.click` bypasses
+      // that setup and dispatches the click directly; the extra
+      // `await Promise.resolve()` yields so the async click handler's
+      // `await navigator.clipboard.writeText` microtask resolves before we
+      // assert (mirrors the McpInstallSection copy-button test pattern).
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+
+      expect(writeTextMock).toHaveBeenCalledTimes(1);
+      expect(writeTextMock.mock.calls[0]?.[0]).toBe(markdown);
+    });
+
+    it('switches to a Check icon + "Copied!" tooltip after clicking, then reverts to idle after 1.5s', async () => {
+      await renderWithAssistantMessage('s33', 'w33', 'copy me');
+
+      const button = screen.getByRole('button', { name: 'Copy as markdown' });
+      await act(async () => {
+        fireEvent.click(button);
+        await Promise.resolve();
+      });
+
+      const copiedButton = screen.getByRole('button', { name: 'Copied!' });
+      expect(copiedButton.title).toBe('Copied!');
+      expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 1600));
+      });
+
+      expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
+    });
+  });
 });
