@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { truncateToBytes } from '../truncate.js';
+import { truncateToBytes, trimToUtf8Boundary } from '../truncate.js';
 
 const byteLen = (s: string) => new TextEncoder().encode(s).length;
 
@@ -39,5 +39,28 @@ describe('truncateToBytes', () => {
     expect(byteLen(r.text)).toBeLessThanOrEqual(16384);
     // No replacement character introduced by a mid-codepoint cut.
     expect(r.text.includes('�')).toBe(false);
+  });
+});
+
+describe('trimToUtf8Boundary', () => {
+  const encoder = new TextEncoder();
+
+  it('returns the input unchanged when it already fits', () => {
+    const bytes = encoder.encode('abcd');
+    expect(trimToUtf8Boundary(bytes, 10)).toBe(bytes);
+  });
+
+  it('backs off a raw byte buffer to a code-point boundary given a lookahead byte', () => {
+    // 'a' (1 byte) + 'あ' (3 bytes), over-read by 1 byte past the maxBytes cut
+    // so the boundary check can see into the split character.
+    const bytes = encoder.encode('aあ');
+    const trimmed = trimToUtf8Boundary(bytes, 2);
+    expect(new TextDecoder().decode(trimmed)).toBe('a');
+  });
+
+  it('keeps a whole multibyte character when the cut lands exactly after it', () => {
+    const bytes = encoder.encode('aあb'); // 'a'(1) + 'あ'(3) + 'b'(1) = 5 bytes
+    const trimmed = trimToUtf8Boundary(bytes, 4);
+    expect(new TextDecoder().decode(trimmed)).toBe('aあ');
   });
 });
