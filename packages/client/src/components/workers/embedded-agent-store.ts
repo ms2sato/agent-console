@@ -74,7 +74,7 @@ export interface EmbeddedAgentInstance {
    * accepted), or rejects if the WS is not connected, the server rejects the
    * send (e.g. `TURN_IN_PROGRESS`), or the worker restarts before either
    * happens. Callers (MessagePanel via `onSend`) rely on rejection to avoid
-   * clearing the input draft -- see Issue #1024.
+   * clearing the input draft.
    */
   sendUserMessage(text: string): Promise<void>;
   /** Abort the in-flight turn (`embedded-cancel`). */
