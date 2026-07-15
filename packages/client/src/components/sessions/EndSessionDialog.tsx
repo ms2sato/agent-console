@@ -39,9 +39,10 @@ export function EndSessionDialog({
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
 
-  // Check if any agent workers are in 'active' or 'asking' state
+  // Check if any agent or embedded-agent workers are in 'active' or 'asking' state
+  // (embedded-agent workers only ever report 'active'/'idle', never 'asking')
   const hasActiveWorkers = session && workerActivityStates && session.workers.some(
-    w => w.type === 'agent' &&
+    w => (w.type === 'agent' || w.type === 'embedded-agent') &&
       (workerActivityStates[w.id] === 'active' || workerActivityStates[w.id] === 'asking')
   );
 
