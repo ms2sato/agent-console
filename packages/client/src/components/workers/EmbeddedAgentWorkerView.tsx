@@ -381,32 +381,36 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
 type ThinkingEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' }>;
 
 /**
- * Collapsed-by-default accordion for streamed thinking/reasoning text.
- * Follows the same native <details>/<summary> convention as ToolCallCard
- * below (correct keyboard/AT semantics for free, no manual aria-expanded
- * state). Body renders as plain text (NOT through the Markdown pipeline --
- * out of scope per #1070) with the same overflow-wrap treatment as the
- * Markdown message bubbles (#1071), since thinking narrative can also
- * contain long unbroken tokens (e.g. quoted file contents).
+ * Inline (non-collapsible) block for streamed thinking/reasoning text,
+ * rendered directly inside the WorkingAccordion body. Previously this was
+ * its own nested <details>/<summary> accordion, requiring a second click
+ * after opening Working -- flattened per #1119 (owner: the extra nesting
+ * level served no purpose Thinking specifically needed, unlike ToolCallCard
+ * below, which keeps its own accordion since individual tool calls are
+ * still meaningfully toggled one at a time). Body renders as plain text
+ * (NOT through the Markdown pipeline -- out of scope per #1070) with the
+ * same overflow-wrap treatment as the Markdown message bubbles (#1071),
+ * since thinking narrative can also contain long unbroken tokens (e.g.
+ * quoted file contents).
  *
  * Only invoked from inside WorkingAccordion, which already supplies the
  * chat-bubble positioning (flex justify-start / max-w-[80%]); this
- * component renders just its own card so the two don't double-nest.
+ * component renders just its own card so the two don't double-nest. Opening
+ * Working now directly reveals this block's content -- there is no
+ * intermediate collapsed state of its own.
  */
-function ThinkingAccordion({ entry }: { entry: ThinkingEntry }) {
+function ThinkingBlock({ entry }: { entry: ThinkingEntry }) {
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-800/40 px-3 py-2 text-xs">
-      <details>
-        <summary className="cursor-pointer text-gray-500 flex items-center gap-1.5">
-          <span>Thinking</span>
-          {entry.streaming && (
-            <span className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle" aria-hidden="true" />
-          )}
-        </summary>
-        <div className="mt-2 min-w-0 whitespace-pre-wrap text-gray-500 [overflow-wrap:anywhere]">
-          {entry.text}
-        </div>
-      </details>
+      <div className="text-gray-500 flex items-center gap-1.5">
+        <span>Thinking</span>
+        {entry.streaming && (
+          <span className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle" aria-hidden="true" />
+        )}
+      </div>
+      <div className="mt-2 min-w-0 whitespace-pre-wrap text-gray-500 [overflow-wrap:anywhere]">
+        {entry.text}
+      </div>
     </div>
   );
 }
@@ -487,7 +491,7 @@ function WorkingAccordion({ group }: { group: WorkingGroup }) {
           <div className="mt-2 space-y-2">
             {group.entries.map((entry) =>
               entry.kind === 'assistant-thinking' ? (
-                <ThinkingAccordion key={entry.key} entry={entry} />
+                <ThinkingBlock key={entry.key} entry={entry} />
               ) : (
                 <ToolCallCard key={entry.key} entry={entry} />
               ),
