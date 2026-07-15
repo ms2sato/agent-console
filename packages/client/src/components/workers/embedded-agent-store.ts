@@ -68,8 +68,15 @@ export interface EmbeddedAgentSnapshot {
 export interface EmbeddedAgentInstance {
   subscribe(listener: () => void): () => void;
   getSnapshot(): EmbeddedAgentSnapshot;
-  /** Send a user message (`embedded-user-message`). */
-  sendUserMessage(text: string): void;
+  /**
+   * Send a user message (`embedded-user-message`). Resolves once the server
+   * has echoed the message back as a `user-message` event (confirmed
+   * accepted), or rejects if the WS is not connected, the server rejects the
+   * send (e.g. `TURN_IN_PROGRESS`), or the worker restarts before either
+   * happens. Callers (MessagePanel via `onSend`) rely on rejection to avoid
+   * clearing the input draft -- see Issue #1024.
+   */
+  sendUserMessage(text: string): Promise<void>;
   /** Abort the in-flight turn (`embedded-cancel`). */
   cancel(): void;
   /**
@@ -147,6 +154,12 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private resyncing = false;
   private queuedOutput: Array<{ data: string; offset: number }> = [];
 
+  // Tracks the in-flight sendUserMessage promise, if any (§ sendUserMessage
+  // doc comment). Only one send can be outstanding at a time in practice --
+  // MessagePanel disables the Send button while its own onSend promise is
+  // pending -- so a single slot (rather than a queue/map) is sufficient.
+  private pendingSend: { resolve: () => void; reject: (err: Error) => void } | null = null;
+
   private splitter = new NdjsonLineSplitter();
 
   // Index maps for folding streamed events into the entries array. Cleared
@@ -188,8 +201,19 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   getSnapshot = (): EmbeddedAgentSnapshot => this.snapshot;
 
-  sendUserMessage = (text: string): void => {
-    this.send({ type: 'embedded-user-message', text });
+  sendUserMessage = (text: string): Promise<void> => {
+    // Defensive: superseded by the new send below. Should not happen in
+    // practice (MessagePanel disables Send while a prior send is pending)
+    // but avoids leaking an unsettled promise if it ever does.
+    this.rejectPendingSend('Superseded by a newer send');
+    return new Promise((resolve, reject) => {
+      const sent = this.send({ type: 'embedded-user-message', text });
+      if (!sent) {
+        reject(new Error('Not connected'));
+        return;
+      }
+      this.pendingSend = { resolve, reject };
+    });
   };
 
   cancel = (): void => {
@@ -231,6 +255,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   dispose = (): void => {
     if (this.disposed) return;
     this.disposed = true;
+    this.rejectPendingSend('Worker disposed');
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.idleTimer) clearTimeout(this.idleTimer);
@@ -346,9 +371,23 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.ws = null;
   }
 
-  private send(message: EmbeddedAgentSendMessage): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+  /** Returns whether the message was actually written to an open socket. */
+  private send(message: EmbeddedAgentSendMessage): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     this.ws.send(JSON.stringify(message));
+    return true;
+  }
+
+  private resolvePendingSend(): void {
+    if (!this.pendingSend) return;
+    this.pendingSend.resolve();
+    this.pendingSend = null;
+  }
+
+  private rejectPendingSend(message: string): void {
+    if (!this.pendingSend) return;
+    this.pendingSend.reject(new Error(message));
+    this.pendingSend = null;
   }
 
   private requestHistory(): void {
@@ -424,6 +463,10 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   }
 
   private beginEpochReset(newEpoch: number): void {
+    // The worker restarted server-side; whatever send was in flight will
+    // never be echoed back in the old epoch. Reject so the caller (and
+    // MessagePanel's draft-preservation) doesn't hang forever.
+    this.rejectPendingSend('Worker restarted before the message was confirmed');
     this.resetChatState();
     this.epoch = newEpoch;
     this.lastOffset = 0;
@@ -586,6 +629,9 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         return true;
       case 'user-message':
         this.pushEntry({ key: `user-${event.id}`, kind: 'user-message', id: event.id, text: event.text });
+        // Confirms this client's own sendUserMessage() was accepted; see the
+        // `pendingSend` field comment.
+        this.resolvePendingSend();
         return true;
       case 'exited':
         this.pushEntry({ key: `exited-${this.entryKeyCounter++}`, kind: 'exited', code: event.code });
@@ -720,6 +766,10 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   private handleError(message: string, code?: WorkerErrorCode): void {
     this.patch({ workerError: { message, code } });
+    // A send-reject (e.g. TURN_IN_PROGRESS) arrives here, not as a
+    // rejected `send()` call -- reject the pending promise so MessagePanel
+    // preserves the input draft instead of clearing it optimistically.
+    this.rejectPendingSend(message);
     if (code === 'SESSION_DELETED' || code === 'SESSION_PAUSED') {
       this.noReconnect = true;
       if (this.reconnectTimer) {
