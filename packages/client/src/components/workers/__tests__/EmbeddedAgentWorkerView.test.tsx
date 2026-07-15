@@ -727,8 +727,8 @@ describe('EmbeddedAgentWorkerView', () => {
     });
   });
 
-  describe('Thinking accordion (#1070)', () => {
-    it('renders a thinking entry collapsed by default inside a collapsed-by-default Working accordion', async () => {
+  describe('Thinking inline under Working, no nested accordion (#1119, supersedes #1070)', () => {
+    it('renders a thinking entry directly (no nested accordion) inside a collapsed-by-default Working accordion', async () => {
       renderView({ sessionId: 's13', workerId: 'w13' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -745,17 +745,16 @@ describe('EmbeddedAgentWorkerView', () => {
       // the bare label (no "(N tool calls)" suffix).
       expect(screen.getByText('Working')).toBeTruthy();
       expect(screen.getByText('Thinking')).toBeTruthy();
-      // Native <details> hides non-<summary> children via the UA stylesheet
-      // (`details:not([open]) > *:not(summary) { display: none }`) rather
-      // than removing them from the DOM, so a happy-dom text query still
-      // finds the body node structurally present -- the `open` attribute is
-      // the authoritative collapsed/expanded signal.
-      const [outerDetails, innerDetails] = Array.from(document.querySelectorAll('details'));
-      expect(outerDetails?.hasAttribute('open')).toBe(false);
-      expect(innerDetails?.hasAttribute('open')).toBe(false);
+      expect(screen.getByText('pondering deeply')).toBeTruthy();
+      // Only the Working accordion itself is a <details> -- Thinking no
+      // longer nests its own accordion, so there is exactly one collapsed
+      // <details> for the whole group.
+      const allDetails = Array.from(document.querySelectorAll('details'));
+      expect(allDetails).toHaveLength(1);
+      expect(allDetails[0]?.hasAttribute('open')).toBe(false);
     });
 
-    it('clicking only the outer summary opens the Working accordion without auto-opening the nested Thinking accordion', async () => {
+    it('clicking the outer Working summary directly reveals the Thinking content -- no second click required (#1119)', async () => {
       renderView({ sessionId: 's13b', workerId: 'w13b' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -768,57 +767,24 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      // In a real browser, the nested <summary> is not clickable while its
-      // owning <details> is closed -- the UA stylesheet applies
-      // `details:not([open]) > *:not(summary) { display: none }`, which hides
-      // the inner Thinking <details> (a non-summary child of the outer
-      // Working <details>) entirely. A real user must click the OUTER
-      // summary first; only a separate, later click on the now-visible inner
-      // summary opens the inner accordion. This test drives that first click
-      // in isolation and asserts the inner accordion stays closed.
+      // A single click on the Working accordion's own summary is now
+      // sufficient to reveal Thinking content directly -- there is no
+      // second, nested accordion to open. Asserting exactly one <details>
+      // exists (rather than just checking the outer one is open) is what
+      // actually distinguishes this from the old nested-accordion shape,
+      // where a second, still-closed inner <details> would also be present
+      // at this point.
       const user = userEvent.setup();
-      const [outerSummary] = Array.from(document.querySelectorAll('summary'));
+      const outerSummary = document.querySelector('summary')!;
       await user.click(outerSummary);
 
-      const [outerDetails, innerDetails] = Array.from(document.querySelectorAll('details'));
-      expect(outerDetails?.hasAttribute('open')).toBe(true);
-      expect(innerDetails?.hasAttribute('open')).toBe(false);
-    });
-
-    it('expands the thinking accordion body on clicking the nested summary (true-path)', async () => {
-      renderView({ sessionId: 's14', workerId: 'w14' });
-      const ws = MockWebSocket.getLastInstance();
-      act(() => {
-        ws?.simulateOpen();
-      });
-
-      const chunk = ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering deeply' });
-      act(() => {
-        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
-      });
-      await flush();
-
-      // happy-dom's native <details> toggle fires on the bubbling-phase
-      // click event for EVERY ancestor <details> along the click's
-      // propagation path, not just the summary's own direct parent (unlike
-      // a real browser, where only the summary's owning <details> toggles).
-      // For our nested Working > Thinking structure this means a single
-      // click on the innermost <summary> toggles BOTH <details> open in one
-      // go (the click bubbles from the inner summary, through the wrapper
-      // divs, up into the outer Working <details>). Click the inner
-      // <summary> directly (not a descendant of it) to drive the true-path
-      // expand of both accordions.
-      const user = userEvent.setup();
-      const [, innerSummary] = Array.from(document.querySelectorAll('summary'));
-      await user.click(innerSummary);
-
+      const allDetails = Array.from(document.querySelectorAll('details'));
+      expect(allDetails).toHaveLength(1);
+      expect(allDetails[0]?.hasAttribute('open')).toBe(true);
       expect(screen.getByText('pondering deeply')).toBeTruthy();
-      const [outerDetails, innerDetails] = Array.from(document.querySelectorAll('details'));
-      expect(outerDetails?.hasAttribute('open')).toBe(true);
-      expect(innerDetails?.hasAttribute('open')).toBe(true);
     });
 
-    it('applies overflow-wrap:anywhere to the thinking accordion body', async () => {
+    it('applies overflow-wrap:anywhere to the thinking content', async () => {
       renderView({ sessionId: 's14b', workerId: 'w14b' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -831,12 +797,9 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      // See the click-target rationale in the preceding test -- clicking the
-      // inner <summary> alone toggles both nested <details> open under
-      // happy-dom's bubbling-phase toggle behavior.
       const user = userEvent.setup();
-      const [, innerSummary] = Array.from(document.querySelectorAll('summary'));
-      await user.click(innerSummary);
+      const outerSummary = document.querySelector('summary')!;
+      await user.click(outerSummary);
 
       const body = screen.getByText('pondering');
       expect(body.className).toContain('[overflow-wrap:anywhere]');
@@ -859,6 +822,45 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.queryByText('Thinking')).toBeNull();
       expect(screen.queryByText('Working')).toBeNull();
       expect(document.querySelectorAll('details').length).toBe(0);
+    });
+
+    it('preserves the existing per-tool accordion when a run mixes thinking and a tool call -- only Thinking is flattened, Tool keeps its own nested accordion (#1119)', async () => {
+      renderView({ sessionId: 's15b', workerId: 'w15b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        { v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'pondering the tool choice' },
+        { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run_process', args: { cmd: 'ls' } },
+        { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Exactly two <details>: the outer Working accordion and the Tool
+      // card's own nested accordion. Thinking contributes zero -- its
+      // content sits directly in the Working body as a plain block.
+      const allDetails = Array.from(document.querySelectorAll('details'));
+      expect(allDetails).toHaveLength(2);
+      expect(allDetails.every((d) => !d.hasAttribute('open'))).toBe(true);
+
+      const user = userEvent.setup();
+      const outerSummary = document.querySelector('summary')!;
+      await user.click(outerSummary);
+
+      // Opening Working alone is enough to see the thinking text and the
+      // Tool row's summary (name + running/result state) -- but the Tool
+      // accordion's own body (the JSON args) stays collapsed until its own
+      // summary is clicked, preserving existing per-tool toggle behavior.
+      expect(screen.getByText('pondering the tool choice')).toBeTruthy();
+      expect(screen.getByText('run_process')).toBeTruthy();
+      const [outerDetailsAfter, toolDetailsAfter] = Array.from(document.querySelectorAll('details'));
+      expect(outerDetailsAfter?.hasAttribute('open')).toBe(true);
+      expect(toolDetailsAfter?.hasAttribute('open')).toBe(false);
     });
   });
 
