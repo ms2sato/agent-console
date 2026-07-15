@@ -35,7 +35,9 @@ export async function atomicWrite(resolvedPath: string, content: string): Promis
       const { mode } = await fsPromises.stat(resolvedPath);
       await fsPromises.chmod(tempPath, mode);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+      if (!(typeof err === 'object' && err !== null && 'code' in err && err.code === 'ENOENT')) {
+        throw err;
+      }
       // Target does not exist yet -- new file, no mode to preserve.
     }
     await fsPromises.rename(tempPath, resolvedPath);
