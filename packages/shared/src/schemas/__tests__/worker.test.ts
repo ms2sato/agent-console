@@ -6,7 +6,8 @@ import {
 } from '../worker';
 
 describe('CreateWorkerRequestSchema', () => {
-  // CreateWorkerRequestSchema only accepts terminal workers (client API restriction)
+  // CreateWorkerRequestSchema accepts terminal, embedded-agent, and (since
+  // Issue #1023) agent worker creation params from the client.
 
   it('should accept terminal worker', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
@@ -84,10 +85,51 @@ describe('CreateWorkerRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('should reject agent worker (not allowed from client)', () => {
+  it('should accept agent worker (Issue #1023: terminal agents addable mid-session)', () => {
     const result = v.safeParse(CreateWorkerRequestSchema, {
       type: 'agent',
       agentId: 'agent-123',
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'agent') {
+      expect(result.output.agentId).toBe('agent-123');
+    }
+  });
+
+  it('should accept agent worker with optional name and continueConversation', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: 'agent-123',
+      name: 'My Agent',
+      continueConversation: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'agent') {
+      expect(result.output.name).toBe('My Agent');
+      expect(result.output.continueConversation).toBe(true);
+    }
+  });
+
+  it('should reject agent worker without agentId', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject agent worker with empty agentId', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject agent worker with an unknown key', () => {
+    const result = v.safeParse(CreateWorkerRequestSchema, {
+      type: 'agent',
+      agentId: 'agent-123',
+      unexpectedField: 'leaked',
     });
     expect(result.success).toBe(false);
   });

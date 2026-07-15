@@ -170,7 +170,7 @@ describe('AddAgentWorkerMenu', () => {
     expect(onSelect).toHaveBeenCalledWith({ type: 'embedded-agent', embeddedAgentId: 'embedded-1' });
   });
 
-  it('terminal agent items are disabled (adding an agent-backed worker to a running session is not REST-supported)', async () => {
+  it('selecting a terminal agent item calls onSelect with { type: "agent", agentId } (Issue #1023)', async () => {
     agentsResponse = {
       agents: [{ id: 'claude-code', name: 'Claude Code', isBuiltIn: true }],
     };
@@ -186,10 +186,10 @@ describe('AddAgentWorkerMenu', () => {
       expect(screen.getByText('Claude Code')).toBeTruthy();
     });
     const item = screen.getByText('Claude Code').closest('button');
-    expect(item?.disabled).toBe(true);
+    expect(item?.disabled).toBe(false);
 
     await user.click(item!);
-    expect(onSelect).not.toHaveBeenCalled();
+    expect(onSelect).toHaveBeenCalledWith({ type: 'agent', agentId: 'claude-code' });
   });
 
   it('shows "No agents configured" when both registries are empty', async () => {

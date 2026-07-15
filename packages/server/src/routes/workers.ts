@@ -285,8 +285,10 @@ const workers = new Hono<AppBindings>()
       throw new NotFoundError('Session');
     }
 
-    // Extract continueConversation (only terminal workers carry this flag)
-    const continueConversation = body.type === 'terminal' && body.continueConversation === true;
+    // Extract continueConversation (terminal and agent workers carry this flag;
+    // embedded-agent and git-diff variants do not declare it in their schema)
+    const continueConversation =
+      (body.type === 'terminal' || body.type === 'agent') && body.continueConversation === true;
 
     const worker = await sessionManager.createWorker(sessionId, body, continueConversation);
 

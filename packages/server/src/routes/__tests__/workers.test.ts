@@ -698,6 +698,70 @@ describe('Workers API', () => {
       expect(body.error).toContain('Embedded agent definition not found');
     });
 
+    it('should create an agent worker successfully (Issue #1023: addable mid-session)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'agent', agentId: 'claude-code-builtin' }),
+      });
+
+      expect(res.status).toBe(201);
+
+      const body = (await res.json()) as { worker: { id: string; type: string; agentId: string } };
+      expect(body.worker).toBeDefined();
+      expect(body.worker.id).toBeString();
+      expect(body.worker.type).toBe('agent');
+      expect(body.worker.agentId).toBe('claude-code-builtin');
+    });
+
+    it('should reject an agent worker without agentId with 400', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'agent' }),
+      });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('should forward continueConversation to the agent-type PTY spawn (claude -c)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'agent',
+          agentId: 'claude-code-builtin',
+          continueConversation: true,
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      // The agent command is typed into the login shell after the sentinel
+      // fires (see worker-manager.ts sentinel-spawn-command.ts), not passed
+      // via spawn argv -- so assert against the newest PTY instance's
+      // writtenData rather than the spawn call args.
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty?.writtenData.join('')).toContain('claude -c');
+    });
+
     it('should reject continueConversation on the embedded-agent variant (strict union, 400)', async () => {
       // continueConversation is only a field of the terminal variant. The
       // request union is composed of strictObjects, so an embedded-agent body
