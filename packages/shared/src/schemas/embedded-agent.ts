@@ -98,7 +98,7 @@ export const EmbeddedAgentCommandSchema = v.union([
     }),
     systemPrompt: v.optional(v.string()),
     enabledTools: v.optional(EnabledToolsSchema),
-    instructions: v.optional(v.array(v.string())),
+    instructions: v.optional(InstructionsListSchema),
     maxToolIterations: v.number(),
   }),
   v.strictObject({
