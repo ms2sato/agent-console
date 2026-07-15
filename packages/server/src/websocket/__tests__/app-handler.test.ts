@@ -105,6 +105,34 @@ describe('App Handler', () => {
       });
     });
 
+    it('should include embedded-agent workers', async () => {
+      const sessions: Session[] = [
+        buildQuickSession({
+          id: 'session-1',
+          locationPath: '/path/1',
+          createdAt: '2024-01-01',
+          workers: [
+            { id: 'worker-1', type: 'embedded-agent', embeddedAgentId: 'embedded-1', name: 'Embedded Agent', createdAt: '2024-01-01', activated: true },
+          ],
+        }),
+      ];
+
+      const deps = {
+        getAllSessions: () => sessions,
+        getAllPausedSessions: async () => [],
+        getWorkerActivityState: (sessionId: string, workerId: string): AgentActivityState | undefined => {
+          if (sessionId === 'session-1' && workerId === 'worker-1') return 'active';
+          return undefined;
+        },
+      };
+
+      const msg = await buildSessionsSyncMessage(deps);
+
+      expect(msg.activityStates).toEqual([
+        { sessionId: 'session-1', workerId: 'worker-1', activityState: 'active' },
+      ]);
+    });
+
     it('should skip terminal workers', async () => {
       const sessions: Session[] = [
         buildQuickSession({

@@ -56,11 +56,11 @@ export async function buildSessionsSyncMessage(
   // Combine both lists
   const allSessions = [...activeSessions, ...pausedSessions];
 
-  // Collect activity states for all agent workers (only active sessions have activity states)
+  // Collect activity states for agent and embedded-agent workers (only active sessions have activity states)
   const activityStates: WorkerActivityInfo[] = [];
   for (const session of activeSessions) {
     for (const worker of session.workers) {
-      if (worker.type === 'agent') {
+      if (worker.type === 'agent' || worker.type === 'embedded-agent') {
         const state = deps.getWorkerActivityState(session.id, worker.id);
         if (state) {
           activityStates.push({

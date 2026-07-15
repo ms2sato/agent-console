@@ -316,6 +316,51 @@ describe('SessionPauseResumeService', () => {
       expect(onSessionResumed).toHaveBeenCalledTimes(1);
     });
 
+    it('should include embedded-agent worker activity states in the onSessionResumed callback', async () => {
+      const embeddedWorker = buildInternalEmbeddedAgentWorker({ id: 'w1' });
+      const restoredWorkers = new Map([['w1', embeddedWorker]]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+      });
+
+      const onSessionResumed = mock(() => {});
+      const mockPublicSession = {
+        id: 'session-1',
+        type: 'worktree' as const,
+        workers: [{ id: 'w1', type: 'embedded-agent' as const }],
+      } as unknown as Session;
+
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: mock(async () => {}),
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+        toPublicSession: mock(() => mockPublicSession),
+        getWorkerActivityState: mock((sessionId: string, workerId: string) =>
+          sessionId === 'session-1' && workerId === 'w1' ? 'active' : undefined
+        ),
+        getSessionLifecycleCallbacks: () => ({ onSessionResumed }),
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      await service.resumeSession('session-1');
+
+      expect(onSessionResumed).toHaveBeenCalledWith(
+        mockPublicSession,
+        [{ sessionId: 'session-1', workerId: 'w1', activityState: 'active' }]
+      );
+    });
+
     it('should prevent concurrent resume attempts for the same session', async () => {
       const persisted = buildPersistedWorktreeSession({ id: 'session-1', serverPid: null, pausedAt: '2026-01-01T00:00:00.000Z' });
 

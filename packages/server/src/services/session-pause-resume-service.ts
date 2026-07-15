@@ -349,7 +349,7 @@ export class SessionPauseResumeService {
     // Collect activity states for resumed session's workers
     const activityStates: WorkerActivityInfo[] = [];
     for (const worker of publicSession.workers) {
-      if (worker.type === 'agent') {
+      if (worker.type === 'agent' || worker.type === 'embedded-agent') {
         const state = this.deps.getWorkerActivityState(id, worker.id);
         if (state) {
           activityStates.push({ sessionId: id, workerId: worker.id, activityState: state });
