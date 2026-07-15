@@ -35,6 +35,7 @@ import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
+import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
 // Declaring the parameter type makes `mock.calls` typed correctly so the
@@ -59,6 +60,23 @@ const mockFetchPullRequestUrl = mock<
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
 const TEST_REPO_PATH = '/test/repo';
+
+// Embedded-agent definition the createWorker path resolves against, mirroring
+// worker-lifecycle-manager.test.ts's EMBEDDED_AGENT_DEF. Used by the
+// get_session_status activityState tests (Issue #1128).
+const TEST_EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
+  id: 'def-1',
+  name: 'My Local Model',
+  provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+  createdBy: 'user-1',
+  createdAt: '2024-01-01T00:00:00.000Z',
+  updatedAt: '2024-01-01T00:00:00.000Z',
+};
+
+const testEmbeddedAgentManagerStub = {
+  getEmbeddedAgent: (id: string): EmbeddedAgentDefinition | undefined =>
+    id === TEST_EMBEDDED_AGENT_DEF.id ? TEST_EMBEDDED_AGENT_DEF : undefined,
+};
 
 // Create mock PTY factory
 const ptyFactory = createMockPtyFactory(30000);
@@ -282,6 +300,7 @@ describe('MCP Server Tools', () => {
         },
         getWorktreeIndexNumber: async () => 0,
       },
+      embeddedAgentManager: testEmbeddedAgentManagerStub,
     });
 
     // Create RepositoryManager (initially empty). Tests that create worktree
@@ -961,6 +980,42 @@ describe('MCP Server Tools', () => {
       const agentWorker = data.workers.find((w) => w.type === 'agent');
       expect(agentWorker).toBeDefined();
       expect(agentWorker!.activityState).toBeDefined();
+    });
+
+    it('should report embedded-agent worker activity state (Issue #1128)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const embeddedWorker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      expect(embeddedWorker).toBeDefined();
+
+      // Simulate a loop-emitted activityState update (see
+      // worker-lifecycle-manager.ts getWorkerActivityState, which reads this
+      // field directly for embedded-agent workers instead of going through
+      // ActivityDetector).
+      const internalWorker = sessionManager.getWorker(session.id, embeddedWorker!.id)!;
+      expect(internalWorker).toBeDefined();
+      expect(internalWorker.type).toBe('embedded-agent');
+      if (internalWorker.type === 'embedded-agent') {
+        internalWorker.activityState = 'active';
+      }
+
+      const response = await callTool(app, mcpSessionId, 'get_session_status', {
+        sessionId: session.id,
+      }, nextId++);
+      const data = parseToolResult(response) as {
+        workers: Array<{ id: string; type: string; activityState: string }>;
+      };
+
+      const embeddedAgentWorker = data.workers.find((w) => w.type === 'embedded-agent');
+      expect(embeddedAgentWorker).toBeDefined();
+      expect(embeddedAgentWorker!.activityState).toBe('active');
     });
 
     it('should report terminated worker when PTY has exited', async () => {
