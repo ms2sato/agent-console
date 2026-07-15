@@ -1545,6 +1545,7 @@ describe('WorkerManager', () => {
       // mode and must not start depending on it now that the default
       // differs from before.
       const originalMcpAuth = process.env.AGENT_CONSOLE_MCP_AUTH;
+      const originalAuthModeLocal = process.env.AUTH_MODE;
       process.env.AUTH_MODE = 'multi-user';
       process.env.AGENT_CONSOLE_MCP_AUTH = 'enforce';
       try {
@@ -1579,6 +1580,11 @@ describe('WorkerManager', () => {
           delete process.env.AGENT_CONSOLE_MCP_AUTH;
         } else {
           process.env.AGENT_CONSOLE_MCP_AUTH = originalMcpAuth;
+        }
+        if (originalAuthModeLocal === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthModeLocal;
         }
       }
     });
