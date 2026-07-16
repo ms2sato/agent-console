@@ -271,6 +271,11 @@ export class AgentLoop {
         if (signal.aborted) {
           return { kind: 'canceled' };
         }
+        // Non-retryable provider errors (4xx like 400/401/404) fail fast without
+        // burning retries/backoff -- they will never succeed on retry.
+        if (err instanceof ProviderError && !err.retryable) {
+          return { kind: 'error', message: errorMessage(err) };
+        }
         if (attempt === MAX_PROVIDER_ATTEMPTS) {
           return { kind: 'error', message: errorMessage(err) };
         }
