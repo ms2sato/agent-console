@@ -26,6 +26,7 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { setupWebSocketRoutes, EMBEDDED_USER_MESSAGE_MAX_BYTES } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -177,6 +178,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
       jobQueue: testJobQueue,
       agentManager,
       embeddedAgentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {

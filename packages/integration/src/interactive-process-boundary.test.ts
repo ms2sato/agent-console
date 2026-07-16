@@ -30,6 +30,7 @@ import { RepositoryManager } from '@agent-console/server/src/services/repository
 import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
+import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 // The shared type — this is the contract we're verifying
 import type { InteractiveProcessInfo } from '@agent-console/shared';
 
@@ -139,6 +140,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
     });
 

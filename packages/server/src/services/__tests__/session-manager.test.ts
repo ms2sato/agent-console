@@ -94,6 +94,7 @@ describe('SessionManager', () => {
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: defaultRepositoryLookup,
       repositoryEnvLookup: defaultRepositoryEnvLookup,
     });
@@ -154,6 +155,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         // Lookup returns undefined for every id — creation must fail fast.
         repositoryLookup: { getRepositorySlug: () => undefined },
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -310,6 +312,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -458,6 +461,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: {
           getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
         },
@@ -605,6 +609,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: {
           getEmbeddedAgent: (id: string) =>
             id === 'stub-def'
@@ -660,6 +665,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => defs.get(id) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -757,6 +763,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -1019,6 +1026,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         sharedAccountLookup: {
@@ -1046,6 +1054,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         sharedAccountLookup: {
@@ -1116,6 +1125,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         usernameLookup,
@@ -1412,6 +1422,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -1450,6 +1461,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -1490,6 +1502,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -1525,6 +1538,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -2546,7 +2560,7 @@ describe('SessionManager', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager, repositoryLookup: defaultRepositoryLookup, repositoryEnvLookup: defaultRepositoryEnvLookup });
+      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager, mcpTokenRegistry: new McpTokenRegistry(), repositoryLookup: defaultRepositoryLookup, repositoryEnvLookup: defaultRepositoryEnvLookup });
     }
 
     it('should return null from resumeSession when session path no longer exists', async () => {
@@ -3838,6 +3852,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: null,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -4031,6 +4046,7 @@ describe('SessionManager', () => {
         pathExists: pathExistsOnlyDuringInit,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -4076,6 +4092,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -4220,6 +4237,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: { getRepositorySlug: (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
         repositoryEnvLookup: envLookup,
       });

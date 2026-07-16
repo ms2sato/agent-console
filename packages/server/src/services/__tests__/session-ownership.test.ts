@@ -20,6 +20,7 @@ import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SingleUserMode } from '../user-mode.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory(30000);
@@ -73,6 +74,7 @@ describe('Session Ownership (createdBy)', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
