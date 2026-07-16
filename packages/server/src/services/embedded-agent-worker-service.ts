@@ -118,6 +118,22 @@ const KNOWN_EVENT_TYPES = new Set<string>([
 const STDERR_LOG_CAP = 2048;
 
 /**
+ * Marks the small, enumerable set of `runActivation` failure reasons whose
+ * `message` is safe to forward to the client verbatim (session/worker/
+ * definition lookup failures, missing `createdBy`). Every other failure in
+ * `runActivation` (provider key loading, spawn username resolution, process
+ * spawn, output reset, persistence) throws a plain `Error` and must NOT be
+ * wrapped in this class -- callers use `instanceof` to decide whether
+ * `err.message` is client-safe or must be replaced with a generic fallback.
+ */
+export class EmbeddedAgentActivationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EmbeddedAgentActivationError';
+  }
+}
+
+/**
  * Result of {@link EmbeddedAgentWorkerService.sendUserMessage}. `code` is the
  * machine-checkable discriminant callers should switch on; `error` is the
  * human-readable string for logging only (its exact wording is NOT a
@@ -229,11 +245,13 @@ export class EmbeddedAgentWorkerService {
   private async runActivation(sessionId: string, workerId: string): Promise<void> {
     const session = this.deps.getSession(sessionId);
     if (!session) {
-      throw new Error(`Cannot activate embedded-agent worker: session ${sessionId} not found`);
+      throw new EmbeddedAgentActivationError(
+        `Cannot activate embedded-agent worker: session ${sessionId} not found`,
+      );
     }
     const worker = session.workers.get(workerId);
     if (!worker || worker.type !== 'embedded-agent') {
-      throw new Error(
+      throw new EmbeddedAgentActivationError(
         `Cannot activate embedded-agent worker: worker ${workerId} is not an embedded-agent worker`,
       );
     }
@@ -247,7 +265,7 @@ export class EmbeddedAgentWorkerService {
     // Step 1: resolve the definition. No built-in fallback (unlike terminal agents).
     const definition = this.deps.getEmbeddedAgent(worker.embeddedAgentId);
     if (!definition) {
-      throw new Error(
+      throw new EmbeddedAgentActivationError(
         `Embedded agent definition not found (deleted): ${worker.embeddedAgentId}. The worker stays deactivated.`,
       );
     }
@@ -262,7 +280,7 @@ export class EmbeddedAgentWorkerService {
     // is comparable to session ownership (checkCallerOwnsSession strictly rejects
     // ownerless sessions, so a token minted from one would false-reject every call).
     if (!session.createdBy) {
-      throw new Error(
+      throw new EmbeddedAgentActivationError(
         `Cannot activate embedded-agent worker: session ${sessionId} has no createdBy, so an MCP caller identity cannot be minted`,
       );
     }

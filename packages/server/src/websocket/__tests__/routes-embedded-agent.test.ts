@@ -83,6 +83,8 @@ function makeFakeSpawn(): {
   captured: SpawnAsUserOpts[];
   stdinWrites: string[];
   simulateExit: (code: number) => void;
+  /** Set before opening a connection to make the NEXT spawn throw instead of succeeding. */
+  throwOnNextSpawn: Error | null;
 } {
   const captured: SpawnAsUserOpts[] = [];
   const stdinWrites: string[] = [];
@@ -121,12 +123,30 @@ function makeFakeSpawn(): {
     kill: () => {},
   };
 
+  const state = { throwOnNextSpawn: null as Error | null };
+
   const fn: SpawnAsUserFn = (opts) => {
+    if (state.throwOnNextSpawn) {
+      const err = state.throwOnNextSpawn;
+      state.throwOnNextSpawn = null;
+      throw err;
+    }
     captured.push(opts);
     return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
   };
 
-  return { fn, captured, stdinWrites, simulateExit };
+  return {
+    fn,
+    captured,
+    stdinWrites,
+    simulateExit,
+    get throwOnNextSpawn() {
+      return state.throwOnNextSpawn;
+    },
+    set throwOnNextSpawn(err: Error | null) {
+      state.throwOnNextSpawn = err;
+    },
+  };
 }
 
 async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
@@ -308,12 +328,41 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     const errorMsg = JSON.parse(mockWs.sentMessages[0]);
     expect(errorMsg.type).toBe('error');
     expect(errorMsg.code).toBe('ACTIVATION_FAILED');
-    expect(typeof errorMsg.message).toBe('string');
-    expect(errorMsg.message.length).toBeGreaterThan(0);
+    // Allowlisted (developer-authored) reason: the real descriptive message
+    // is forwarded verbatim, not replaced with the generic fallback.
+    expect(errorMsg.message).toContain('Embedded agent definition not found');
+    expect(errorMsg.message).toContain(definition.id);
 
     // Critical: the socket must stay open (architect pre-directive #2).
     expect(mockWs.closeCalls.length).toBe(0);
     // No spawn should have happened.
+    expect(fake.captured.length).toBe(0);
+  });
+
+  it('replaces a NON-allowlisted activation failure with a generic message, without leaking the raw error', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    // Inject a raw, "sensitive-looking" error at the spawn step (a downstream,
+    // unbounded-content failure -- NOT an EmbeddedAgentActivationError), the
+    // same seam a filesystem/provider-key error would hit in production.
+    fake.throwOnNextSpawn = new Error('spawn EACCES: /home/alice/.ssh/id_rsa permission denied');
+
+    const { mockWs } = openConnection(sessionId, workerId);
+
+    await waitFor(() => mockWs.sentMessages.length > 0);
+
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('ACTIVATION_FAILED');
+    expect(errorMsg.message).toBe(
+      'Embedded-agent activation failed. Contact an administrator if this persists.',
+    );
+    expect(errorMsg.message).not.toContain('id_rsa');
+    expect(errorMsg.message).not.toContain('EACCES');
+
+    // Socket stays open per the same activation-failure contract.
+    expect(mockWs.closeCalls.length).toBe(0);
+    // The throwing spawn call is consumed (not recorded as a successful
+    // capture), and no further spawn was attempted.
     expect(fake.captured.length).toBe(0);
   });
 
