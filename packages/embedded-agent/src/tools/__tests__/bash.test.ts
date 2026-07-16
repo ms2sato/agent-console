@@ -68,6 +68,11 @@ describe('bashTool', () => {
     await new Promise((r) => setTimeout(r, 300));
 
     const pid = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+    // Guard against a NaN pid (e.g. an empty pidFile read on a timing fluke)
+    // silently turning into a false-positive pass: process.kill(NaN, 0) throws
+    // a TypeError, which the catch block below would otherwise mistake for
+    // "process not alive".
+    expect(pid).toBeGreaterThan(0);
     let alive = true;
     try {
       process.kill(pid, 0);
@@ -133,13 +138,21 @@ describe('bashTool', () => {
     let pid: number | undefined;
     for (let i = 0; i < 50; i++) {
       try {
-        pid = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+        const parsed = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+        // A read that races the writer's open()-before-write can observe an
+        // empty file (NaN here) rather than ENOENT -- retry instead of
+        // accepting a NaN pid, which would otherwise make process.kill(pid, 0)
+        // below throw and silently pass as "process not alive".
+        if (Number.isNaN(parsed)) {
+          throw new Error('pid file read before it was written');
+        }
+        pid = parsed;
         break;
       } catch {
         await new Promise((r) => setTimeout(r, 50));
       }
     }
-    expect(pid).toBeDefined();
+    expect(pid).toBeGreaterThan(0);
 
     const start = Date.now();
     controller.abort();
@@ -273,6 +286,11 @@ describe('bashTool', () => {
     await new Promise((r) => setTimeout(r, 300));
 
     const pid = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+    // Guard against a NaN pid (e.g. an empty pidFile read on a timing fluke)
+    // silently turning into a false-positive pass: process.kill(NaN, 0) throws
+    // a TypeError, which the catch block below would otherwise mistake for
+    // "process not alive".
+    expect(pid).toBeGreaterThan(0);
     let alive = true;
     try {
       process.kill(pid, 0);
