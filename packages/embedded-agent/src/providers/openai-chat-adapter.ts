@@ -71,12 +71,21 @@ function toOpenAITools(tools: ToolDefinition[]): unknown[] {
   }));
 }
 
-/** Parse a `retry-after` header (delta-seconds only; HTTP-date is ignored). */
+/**
+ * Parse a `retry-after` header. Supports both forms allowed by RFC 9110
+ * § 10.2.3: delta-seconds (`"120"`) and HTTP-date (`"Wed, 21 Oct 2026
+ * 07:28:00 GMT"`).
+ */
 function parseRetryAfterMs(header: string | null): number | undefined {
   if (header === null) return undefined;
-  const seconds = Number(header.trim());
+  const trimmed = header.trim();
+  const seconds = Number(trimmed);
   if (Number.isFinite(seconds) && seconds >= 0) {
     return Math.round(seconds * 1000);
+  }
+  const date = new Date(trimmed);
+  if (!Number.isNaN(date.getTime())) {
+    return Math.max(0, date.getTime() - Date.now());
   }
   return undefined;
 }

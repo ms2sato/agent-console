@@ -331,6 +331,59 @@ describe('OpenAIChatAdapter — HTTP errors', () => {
     expect((caught as ProviderError).retryable).toBe(true);
   });
 
+  it('parses an HTTP-date retry-after header in the future into a positive retryAfterMs', async () => {
+    const future = new Date(Date.now() + 5000).toUTCString();
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 429, headers: { 'retry-after': future } }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const retryAfterMs = (caught as ProviderError).retryAfterMs;
+    expect(retryAfterMs).toBeGreaterThan(0);
+    expect(retryAfterMs).toBeLessThanOrEqual(5000);
+  });
+
+  it('clamps an HTTP-date retry-after header in the past to 0', async () => {
+    const past = new Date(Date.now() - 5000).toUTCString();
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 429, headers: { 'retry-after': past } }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as ProviderError).retryAfterMs).toBe(0);
+  });
+
+  it('ignores an invalid retry-after header', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({ status: 429, headers: { 'retry-after': 'not-a-valid-value' } }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as ProviderError).retryAfterMs).toBeUndefined();
+  });
+
   it('marks 5xx retryable and 4xx non-retryable', async () => {
     const server = new OpenAIChatAdapter({
       baseUrl: 'http://x/v1',
