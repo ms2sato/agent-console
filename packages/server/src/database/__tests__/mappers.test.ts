@@ -1470,5 +1470,80 @@ describe('mappers', () => {
 
       expect(restored?.enabledTools).toBeUndefined();
     });
+
+    it('does not throw and falls back to undefined when instructions contains malformed JSON', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-malformed-instructions',
+        name: 'Malformed',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: null,
+        instructions: '["docs/note.md"',
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      let restored: EmbeddedAgentDefinition | undefined;
+      expect(() => {
+        restored = toEmbeddedAgentDefinition(selectRow);
+      }).not.toThrow();
+
+      expect(restored?.instructions).toBeUndefined();
+    });
+
+    it('does not throw and falls back to undefined when enabled_tools parses to a non-array value', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-non-array-tools',
+        name: 'NonArray',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: '{}',
+        instructions: null,
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      let restored: EmbeddedAgentDefinition | undefined;
+      expect(() => {
+        restored = toEmbeddedAgentDefinition(selectRow);
+      }).not.toThrow();
+
+      expect(restored?.enabledTools).toBeUndefined();
+    });
+
+    it('does not throw and falls back to undefined when instructions parses to a non-array value', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-non-array-instructions',
+        name: 'NonArray',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: null,
+        instructions: '"foo"',
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      let restored: EmbeddedAgentDefinition | undefined;
+      expect(() => {
+        restored = toEmbeddedAgentDefinition(selectRow);
+      }).not.toThrow();
+
+      expect(restored?.instructions).toBeUndefined();
+    });
   });
 });

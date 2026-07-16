@@ -533,6 +533,36 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
 }
 
 /**
+ * Parse a nullable JSON-array-string embedded-agent column (`enabled_tools`,
+ * `instructions`) into a typed array. This is the only boundary where DB
+ * content becomes a typed policy value, so both failure modes are guarded
+ * and treated the same as a NULL column (warn + fall back to `undefined`):
+ * the string not being valid JSON at all, and the JSON parsing successfully
+ * to a non-array value (e.g. `'"foo"'` or `'{}'`) that would otherwise
+ * silently misbehave when a caller iterates it as an array.
+ */
+function parseEmbeddedAgentJsonArrayColumn<T>(
+  value: string | null,
+  embeddedAgentId: string,
+  fieldName: 'enabled_tools' | 'instructions'
+): T[] | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
+      return undefined;
+    }
+    return parsed as T[];
+  } catch {
+    logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
+    return undefined;
+  }
+}
+
+/**
  * Convert a database embedded agent row to an EmbeddedAgentDefinition.
  * Unflattens the `provider_*` columns into the nested `provider` object.
  *
@@ -540,20 +570,17 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
  * @returns The EmbeddedAgentDefinition object
  */
 export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentDefinition {
-  // enabledTools: NULL in DB is the "follow the default" signal. Once a
-  // definition is edited via the Add/Edit form, it is written as an
-  // explicit array (per Q1 裁定) — this pins the enabled set to the
-  // values shown at edit time. Future default changes do NOT propagate
-  // to edited definitions.
-  let enabledTools: EmbeddedAgentToolName[] | undefined;
-  if (row.enabled_tools !== null) {
-    try {
-      enabledTools = JSON.parse(row.enabled_tools) as EmbeddedAgentToolName[];
-    } catch {
-      logger.warn({ embeddedAgentId: row.id }, 'Failed to parse enabled_tools, ignoring');
-      enabledTools = undefined;
-    }
-  }
+  // enabledTools / instructions: NULL in DB is the "follow the default" (or
+  // "no instructions") signal. Once a definition is edited via the Add/Edit
+  // form, it is written as an explicit array (per the Q1 design decision) —
+  // this pins the enabled set to the values shown at edit time. Future
+  // default changes do NOT propagate to edited definitions.
+  const enabledTools = parseEmbeddedAgentJsonArrayColumn<EmbeddedAgentToolName>(
+    row.enabled_tools,
+    row.id,
+    'enabled_tools'
+  );
+  const instructions = parseEmbeddedAgentJsonArrayColumn<string>(row.instructions, row.id, 'instructions');
 
   return {
     id: row.id,
@@ -567,7 +594,7 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
     systemPrompt: row.system_prompt ?? undefined,
     maxToolIterations: row.max_tool_iterations ?? undefined,
     enabledTools,
-    instructions: row.instructions !== null ? (JSON.parse(row.instructions) as string[]) : undefined,
+    instructions,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
