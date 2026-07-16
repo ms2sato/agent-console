@@ -40,6 +40,7 @@ import type { RunAsUserOpts, RunAsUserResult } from '@agent-console/server/src/s
 import { EmbeddedAgentManager } from '@agent-console/server/src/services/embedded-agent-manager';
 import { SqliteEmbeddedAgentRepository } from '@agent-console/server/src/repositories/sqlite-embedded-agent-repository';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
+import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 
 const TEST_CONFIG_DIR = '/test/config';
 const TEST_REPO_PATH = '/test/repo';
@@ -84,6 +85,7 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
       jobQueue: testJobQueue,
       agentManager,
       embeddedAgentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
       repositoryLookup: {
         getRepositorySlug: (id) => (id === TEST_REPO_ID ? 'test-repo' : undefined),

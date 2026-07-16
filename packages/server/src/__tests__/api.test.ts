@@ -116,6 +116,7 @@ import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
 import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser } from './test-utils.js';
 import { SingleUserMode } from '../services/user-mode.js';
+import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 
 // =============================================================================
 // Test Setup
@@ -293,6 +294,7 @@ describe('API Routes Integration', () => {
         sessionRepository,
         jobQueue: testJobQueue,
         agentManager: testAgentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: { getRepositorySlug: () => 'test-repo' },
         repositoryEnvLookup: {
           getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),

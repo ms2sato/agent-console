@@ -292,6 +292,7 @@ describe('MCP Server Tools', () => {
       jobQueue: testJobQueue,
       agentManager,
       annotationService,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager?.getRepositorySlug(id) },
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {

@@ -25,6 +25,7 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import { setupWebSocketRoutes } from '../routes.js';
 import { WebSocketConnectionRegistry } from '../connection-registry.js';
 import type { AppContext } from '../../app-context.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -90,6 +91,7 @@ describe('Worker WebSocket history and notifications', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {

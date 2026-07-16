@@ -20,6 +20,7 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -66,6 +67,7 @@ describe('Workers API', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
       // Resolve only 'agent-def-1'; any other embeddedAgentId is dangling and
       // createWorker rejects it (surfaced as 400 by the route error handler).
       embeddedAgentManager: {

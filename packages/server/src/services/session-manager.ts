@@ -117,10 +117,15 @@ interface SessionManagerOptions {
   /**
    * Per-worker MCP bearer token registry. Minted at embedded-agent activation
    * and delivered to the loop over stdin; revoked on exit / deactivation.
-   * Defaults to a fresh registry so unit tests need no threading; production
-   * (createAppContext) passes the SAME registry `/mcp` verifies against.
+   * Required (no default): a fresh-registry fallback here previously let a
+   * caller silently construct a registry disconnected from the one the
+   * `/mcp` route verifies against, breaking MCP token verification with no
+   * compile-time or obvious runtime signal. Production (createAppContext)
+   * passes the SAME registry `/mcp` verifies against; other callers (tests)
+   * that don't exercise the `/mcp` boundary can pass `new McpTokenRegistry()`
+   * explicitly.
    */
-  mcpTokenRegistry?: McpTokenRegistry;
+  mcpTokenRegistry: McpTokenRegistry;
   /**
    * MCP Streamable-HTTP base URL delivered to the embedded-agent loop in its
    * init message. Defaults to the local server's `/mcp` endpoint.
@@ -251,9 +256,10 @@ export class SessionManager {
     // MCP token registry: constructed BEFORE WorkerManager so both the PTY
     // path (terminal-agent workers, multi-user MCP identity) and the
     // embedded-agent path share the SAME registry instance the `/mcp` route
-    // verifies against. Defaults to a fresh instance (unit tests need no
-    // threading); production passes the same registry via options.
-    this.mcpTokenRegistry = options.mcpTokenRegistry ?? new McpTokenRegistry();
+    // verifies against. Required (no default): every caller must supply the
+    // registry explicitly so it can never be silently disconnected from the
+    // one `/mcp` verifies against.
+    this.mcpTokenRegistry = options.mcpTokenRegistry;
     this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager, this.mcpTokenRegistry);
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
