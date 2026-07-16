@@ -92,7 +92,7 @@ describe('Workers API', () => {
 
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', asAppContext({ sessionManager }));
+      c.set('appContext', asAppContext({ sessionManager, agentManager: agentMgr }));
       await next();
     });
     app.onError(onApiError);
@@ -736,6 +736,27 @@ describe('Workers API', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('should reject an agent worker with an unknown agentId with 400 (Issue #1135)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'agent', agentId: 'does-not-exist' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Agent not found: does-not-exist');
+      // No PTY should be spawned for the rejected worker (only the
+      // session's own initial agent PTY from createSession above).
+      expect(ptyFactory.instances.length).toBe(1);
     });
 
     it('should forward continueConversation to the agent-type PTY spawn (claude -c)', async () => {
