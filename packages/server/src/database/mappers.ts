@@ -540,6 +540,21 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
  * @returns The EmbeddedAgentDefinition object
  */
 export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentDefinition {
+  // enabledTools: NULL in DB is the "follow the default" signal. Once a
+  // definition is edited via the Add/Edit form, it is written as an
+  // explicit array (per Q1 裁定) — this pins the enabled set to the
+  // values shown at edit time. Future default changes do NOT propagate
+  // to edited definitions.
+  let enabledTools: EmbeddedAgentToolName[] | undefined;
+  if (row.enabled_tools !== null) {
+    try {
+      enabledTools = JSON.parse(row.enabled_tools) as EmbeddedAgentToolName[];
+    } catch {
+      logger.warn({ embeddedAgentId: row.id }, 'Failed to parse enabled_tools, ignoring');
+      enabledTools = undefined;
+    }
+  }
+
   return {
     id: row.id,
     name: row.name,
@@ -551,8 +566,7 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
     },
     systemPrompt: row.system_prompt ?? undefined,
     maxToolIterations: row.max_tool_iterations ?? undefined,
-    enabledTools:
-      row.enabled_tools !== null ? (JSON.parse(row.enabled_tools) as EmbeddedAgentToolName[]) : undefined,
+    enabledTools,
     instructions: row.instructions !== null ? (JSON.parse(row.instructions) as string[]) : undefined,
     createdBy: row.created_by,
     createdAt: row.created_at,

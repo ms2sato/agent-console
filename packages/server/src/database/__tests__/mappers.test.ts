@@ -1445,5 +1445,30 @@ describe('mappers', () => {
       expect(restored.enabledTools).toEqual([]);
       expect(restored.instructions).toEqual([]);
     });
+
+    it('does not throw and falls back to undefined when enabled_tools contains malformed JSON', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-malformed',
+        name: 'Malformed',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: '["Read"',
+        instructions: null,
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      let restored: EmbeddedAgentDefinition | undefined;
+      expect(() => {
+        restored = toEmbeddedAgentDefinition(selectRow);
+      }).not.toThrow();
+
+      expect(restored?.enabledTools).toBeUndefined();
+    });
   });
 });

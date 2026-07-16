@@ -24,7 +24,15 @@
 export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'] as const;
 export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
 
-/** Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF. */
+/**
+ * Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF.
+ *
+ * Note that a definition that has ever been through the Add/Edit form persists
+ * `enabledTools` as an explicit array (never leaves it `undefined`) — so a
+ * change to this default does NOT propagate to already-edited definitions.
+ * Only definitions that have never been saved through the form (still
+ * `undefined` at the DB level) pick up a change here.
+ */
 export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolName[] = [
   'Read',
   'Glob',

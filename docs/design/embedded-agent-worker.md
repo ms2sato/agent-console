@@ -444,6 +444,8 @@ The undefined→default resolution happens **in the subprocess** (`resolveEnable
 
 **Persistence.** New nullable `embedded_agents.enabled_tools TEXT` column (JSON array string; `NULL` ↔ `undefined`, `'[]'` ↔ `[]`, `'["Read","Glob"]'` ↔ `['Read','Glob']`). PATCH semantics on `UpdateEmbeddedAgentRequestSchema` follow the same convention as the sibling optional fields: `enabledTools: null` resets to `undefined` (default), `undefined` (key absent) means no change, an explicit array replaces.
 
+**Edit-save pinning.** The Add/Edit form always writes an explicit array for `enabledTools` on save — it never leaves the field `undefined`. Once a definition has been through Add/Edit, its `enabledTools` is pinned to that snapshot and will NOT track future changes to `DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS`. Only definitions that have never been saved through the form (still `NULL`/`undefined` at the DB level) pick up a default change.
+
 ### Path confinement (the FF-1a "minimum floor")
 
 All three FF-1a tools resolve their target path through `resolveConfinedPath` (`packages/embedded-agent/src/tools/path-confinement.ts`) before touching the filesystem:
