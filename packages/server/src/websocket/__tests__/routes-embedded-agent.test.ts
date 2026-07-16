@@ -433,6 +433,30 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     expect(mockWs.closeCalls.length).toBe(0);
   });
 
+  it('serves request-history for an embedded-agent worker with the shared history-response shape', async () => {
+    // request-history is handled by shared isStreamWorker machinery before
+    // the embedded-agent worker-type branch (routes.ts), so this test guards
+    // that routes-layer coverage exists for the embedded-agent shape too --
+    // the PTY-focused routes-history.test.ts only exercises PTY workers.
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'request-history' }) }, mockWs);
+
+    await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).type === 'history'));
+    const historyMsg = mockWs.sentMessages.map((m) => JSON.parse(m)).find((m) => m.type === 'history');
+    expect(historyMsg).toMatchObject({
+      type: 'history',
+      data: expect.any(String),
+      offset: expect.any(Number),
+      startOffset: expect.any(Number),
+      epoch: expect.any(Number),
+    });
+    expect(mockWs.closeCalls.length).toBe(0);
+  });
+
   it('rejects input/resize with an error message and keeps the socket open', async () => {
     const { sessionId, workerId } = await createEmbeddedAgentSession();
     const { handlers, mockWs } = openConnection(sessionId, workerId);
