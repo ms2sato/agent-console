@@ -269,6 +269,20 @@ describe('AgentLoop — provider retries', () => {
     const turnError = h.events.find((e) => e.type === 'turn-error');
     expect(turnError).toMatchObject({ message: 'turn canceled' });
   });
+
+  it('fails fast on a non-retryable provider error without retrying or sleeping', async () => {
+    const h = makeLoop([
+      {
+        kind: 'throw',
+        error: new ProviderError('bad request', { retryable: false, status: 400 }),
+      },
+    ]);
+    await h.loop.runTurn('t1', 'hi');
+    expect(h.adapter.calls).toBe(1);
+    expect(h.sleeps).toEqual([]);
+    const turnError = h.events.find((e) => e.type === 'turn-error');
+    expect(turnError).toMatchObject({ message: 'bad request' });
+  });
 });
 
 describe('AgentLoop — malformed tool arguments', () => {
