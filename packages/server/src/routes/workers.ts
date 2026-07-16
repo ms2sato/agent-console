@@ -279,10 +279,21 @@ const workers = new Hono<AppBindings>()
     const sessionId = c.req.param('sessionId');
     const body = c.req.valid('json');
 
-    const { sessionManager } = c.get('appContext');
+    const { sessionManager, agentManager } = c.get('appContext');
     const session = sessionManager.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session');
+    }
+
+    // Fail-fast agent existence validation, mirroring worktrees.ts's
+    // `agentManager.getAgent()` check. Without this, an unknown agentId
+    // silently falls back to the default agent at PTY activation instead
+    // of surfacing an error to the caller.
+    if (body.type === 'agent') {
+      const agent = agentManager.getAgent(body.agentId);
+      if (!agent) {
+        throw new ValidationError(`Agent not found: ${body.agentId}`);
+      }
     }
 
     // Extract continueConversation (terminal and agent workers carry this flag;
