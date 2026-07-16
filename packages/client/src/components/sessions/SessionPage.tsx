@@ -431,6 +431,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
 
+  const primaryAgentTabId = tabs.find(t => t.workerType === 'agent')?.id;
+
   const tabButtons = tabs.map(tab => (
     <button
       key={tab.id}
@@ -452,7 +454,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         <span className={`inline-block w-2 h-2 rounded-full ${getTabDotColor(tab.workerType)}`} aria-hidden="true" />
       )}
       {tab.name}
-      {isCloseableTabType(tab.workerType) && (
+      {isCloseableTabType(tab.workerType, tab.id === primaryAgentTabId) && (
         <button
           type="button"
           aria-label="Close tab"

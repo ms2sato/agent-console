@@ -15,7 +15,7 @@ import {
 } from '../workerRestart';
 import { sessionToPageState } from '../SessionPage';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
-import type { UseTabManagementResult, AddAgentWorkerParams } from '../hooks/useTabManagement';
+import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
 
 // Test helpers
@@ -457,6 +457,24 @@ describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
       updateTabsFromSession: () => {},
     };
     expect(typeof result.addAgentTab).toBe('function');
+  });
+});
+
+describe('primary agent tab close-button wiring (Issue #1134)', () => {
+  // Pins the primaryAgentTabId computation SessionPage.tsx's tab bar JSX
+  // relies on: the first 'agent'-type tab in array order stays fixed
+  // (non-closeable); any later 'agent'-type tab (added via the picker) is
+  // closeable. See tabAppearance.ts's isCloseableTabType for the full contract.
+  it('only the first agent-type tab in array order is treated as primary', () => {
+    const tabs: Tab[] = [
+      { id: 'agent-1', workerType: 'agent', name: 'Claude Code' },
+      { id: 'terminal-1', workerType: 'terminal', name: 'Shell' },
+      { id: 'agent-2', workerType: 'agent', name: 'Claude Code 2' },
+    ];
+    const primaryAgentTabId = tabs.find(t => t.workerType === 'agent')?.id;
+
+    expect(isCloseableTabType('agent', tabs[0].id === primaryAgentTabId)).toBe(false);
+    expect(isCloseableTabType('agent', tabs[2].id === primaryAgentTabId)).toBe(true);
   });
 });
 
