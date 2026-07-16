@@ -111,4 +111,32 @@ describe('Client-Server Boundary: type:"agent" worker creation (Issue #1023)', (
 
     expect(res.status).toBe(400);
   });
+
+  it('rejects an agent worker request with an unknown agentId at the real HTTP boundary (400, not a silent default-agent fallback)', async () => {
+    const owner = await ctx.userRepository.upsertByOsUid(54323, 'owner3', '/home/owner3');
+    const created = await ctx.sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path', agentId: CLAUDE_CODE_AGENT_ID },
+      { createdBy: owner.id },
+    );
+    const app = await createTestApp(ctx);
+
+    const res = await app.request(`/api/sessions/${created.id}/workers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'agent', agentId: 'does-not-exist' }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Agent not found: does-not-exist');
+
+    // No second agent worker should have been persisted for the rejected
+    // request (only the session's own initial agent worker remains).
+    const session = ctx.sessionManager.getAllSessions().find((s) => s.id === created.id);
+    if (!session) {
+      throw new Error('session not found after rejected worker creation');
+    }
+    const agentWorkers = session.workers.filter((w) => w.type === 'agent');
+    expect(agentWorkers).toHaveLength(1);
+  });
 });
