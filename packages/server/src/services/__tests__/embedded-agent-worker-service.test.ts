@@ -8,6 +8,7 @@ import {
 } from '../../__tests__/utils/build-test-data.js';
 import {
   EmbeddedAgentWorkerService,
+  EmbeddedAgentActivationError,
   resolveEmbeddedAgentEntryPath,
 } from '../embedded-agent-worker-service.js';
 
@@ -376,6 +377,33 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('not found');
     expect(h.fake.captured.length).toBe(0);
     expect(h.mint).not.toHaveBeenCalled();
+    // Enumerable, developer-authored reason -- must be allowlisted so
+    // routes.ts forwards the message verbatim to the client.
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
+  });
+
+  it('rejects activation for a session id with no matching session', async () => {
+    const h = setup();
+    await expect(h.service.activate('no-such-session', h.workerId)).rejects.toThrow('not found');
+    await expect(h.service.activate('no-such-session', h.workerId)).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
+    expect(h.fake.captured.length).toBe(0);
+    expect(h.mint).not.toHaveBeenCalled();
+  });
+
+  it('rejects activation for a worker id that is not an embedded-agent worker', async () => {
+    const h = setup();
+    await expect(h.service.activate(h.sessionId, 'no-such-worker')).rejects.toThrow(
+      'not an embedded-agent worker',
+    );
+    await expect(h.service.activate(h.sessionId, 'no-such-worker')).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
+    expect(h.fake.captured.length).toBe(0);
+    expect(h.mint).not.toHaveBeenCalled();
   });
 
   it('rejects a dangling apiKeyRef without spawning', async () => {
@@ -388,6 +416,11 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     });
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('not present');
     expect(h.fake.captured.length).toBe(0);
+    // Downstream/unbounded reason -- must NOT be allowlisted, so routes.ts
+    // replaces it with the generic client-facing fallback.
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.not.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
   });
 
   it('rejects a session without createdBy without minting or spawning', async () => {
@@ -395,6 +428,9 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('createdBy');
     expect(h.mint).not.toHaveBeenCalled();
     expect(h.fake.captured.length).toBe(0);
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
   });
 
   it('resets output epoch and offset (restart semantics)', async () => {
@@ -426,6 +462,13 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
     expect(h.worker.subprocess).toBeNull();
     expect(h.worker.stdin).toBeNull();
+    // Polarity guard: a downstream/unbounded failure (process spawn here)
+    // must propagate as whatever it originally was, NOT get wrapped in
+    // EmbeddedAgentActivationError -- that would widen the client-safe
+    // allowlist to a step whose error content is not enumerable.
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.not.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
   });
 
   it('does NOT revoke the token on a successful activation', async () => {

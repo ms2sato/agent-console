@@ -24,6 +24,7 @@ import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
 import { withRepositoryRemote } from '../lib/repository-remote.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
+import { EmbeddedAgentActivationError } from '../services/embedded-agent-worker-service.js';
 
 const logger = createLogger('websocket');
 
@@ -62,6 +63,17 @@ const currentServerPid = getServerPid();
  * reused for consistency across both directions of the channel.
  */
 export const EMBEDDED_USER_MESSAGE_MAX_BYTES = 262144; // 256 KiB
+
+/**
+ * Client-visible fallback for an activation failure whose message is NOT
+ * from the {@link EmbeddedAgentActivationError} allowlist (e.g. provider key
+ * loading, spawn username resolution, process spawn, filesystem, DB errors).
+ * Those errors can carry unbounded/unstructured content, so their real
+ * `message` stays server-side-only (see the `logger.warn` call alongside
+ * this constant's use site) and only this fixed string reaches the client.
+ */
+const GENERIC_ACTIVATION_FAILURE_MESSAGE =
+  'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 /**
  * Safely get the WebSocket ready state from a WSContext.
@@ -824,17 +836,28 @@ export async function setupWebSocketRoutes(
           // subprocess (idempotent no-op if already activated -- Phase 2's
           // in-flight guard already makes concurrent opens await the same
           // promise, so no extra guard is needed here) instead of restoring a
-          // PTY. Every spec error-table row for activation failure (dangling
-          // definition, dangling apiKeyRef, missing session.createdBy, ...)
-          // must be user-readable in the UI and must NOT close the socket
-          // silently (see docs/design/embedded-agent-worker.md
-          // "WebSocket & client protocol").
+          // PTY. Every activation failure must surface as a WS error message
+          // in the UI and must NOT close the socket silently (see
+          // docs/design/embedded-agent-worker.md "WebSocket & client
+          // protocol"). The enumerable, developer-authored reasons (dangling
+          // definition, missing session.createdBy, ...) are forwarded
+          // verbatim; unbounded/downstream reasons (dangling apiKeyRef,
+          // spawn, filesystem, DB, ...) are replaced with a fixed generic
+          // message -- see the catch block below.
           if (worker.type === 'embedded-agent') {
             (async () => {
               try {
                 await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
               } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
+                // Only the enumerable, developer-authored reasons (marked by
+                // EmbeddedAgentActivationError) are safe to forward verbatim.
+                // Everything else (provider key loading, spawn, filesystem,
+                // DB, ...) is replaced with a fixed generic message client-side
+                // -- the full error still reaches the server-side log below.
+                const message =
+                  err instanceof EmbeddedAgentActivationError
+                    ? err.message
+                    : GENERIC_ACTIVATION_FAILURE_MESSAGE;
                 logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed');
                 if (!connectionClosed) {
                   sendWorkerError(ws, message, 'ACTIVATION_FAILED');
