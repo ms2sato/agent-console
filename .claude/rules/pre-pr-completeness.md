@@ -96,7 +96,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     (Lesson: Sprint 2026-06-30 PR #926 — backend correctly populated `Session.createdByUsername`, the WebSocket message carried it, but `SessionBaseSchema` in `packages/shared/src/schemas/app-server-message.ts` was not updated. valibot stripped the unknown field; the frontend received `undefined`. All unit tests passed because the frontend tests injected the field directly via a mock factory, bypassing the parse path entirely. The bug surfaced only when the owner ran manual Browser QA and noticed the sidebar label was absent. Three hours of cross-layer debugging followed before the schema gap was identified. The agent and the Orchestrator both had approved skipping integration tests with the rationale "derived field, simple shape, unit tests suffice" — a joint judgment failure that this question is meant to prevent. The deeper structural fix is tracked in Issue #927 — `v.strictObject` migration plus server/client schema version handshake.)
 
-11. **Tool surface symmetry check — for PRs that introduce a new worker / agent / execution surface analogous to an existing one:**
+11. **Tool surface symmetry check — for PRs that introduce a new worker / agent / execution surface analogous to an existing one, OR add/change a cross-surface agent operation:**
 
     When this PR introduces a new worker kind, agent kind, or execution surface that is architecturally analogous to an existing one (e.g., a new agent kind alongside terminal-agent / Claude Code), answer these four questions before the design's initial phase merges:
 
@@ -109,6 +109,17 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     (Lesson: Sprint 2026-07-11/12 — Embedded Agent Worker v1 (umbrella [#1004](https://github.com/ms2sato/agent-console/issues/1004)) shipped without built-in tools (`Read` / `Write` / `Edit` / `Bash` / `Glob` / `Grep`), the largest gap identified in the post-v1 dogfood retro. The tools were not deferred by a documented decision — the spec review simply never asked whether the new surface matched terminal-agent's tool set. Three fast-follow PRs closed the gap after the fact: [#1042](https://github.com/ms2sato/agent-console/issues/1042) (FF-1a, Read/Glob/Grep), [#1043](https://github.com/ms2sato/agent-console/issues/1043) (FF-1b, Bash), and [#1044](https://github.com/ms2sato/agent-console/issues/1044) (FF-1c, Write/Edit). Asking Q11 during the original phase-decomposition review would have surfaced the gap and let the fast-follows be filed and scheduled before v1 shipped, instead of after dogfood found the hole. See [Issue #1046](https://github.com/ms2sato/agent-console/issues/1046).)
 
+    **5. Operation exposure tables (Issue #1160 PR-D extension):** the four questions above cover *tool-level* symmetry (what can this agent kind invoke?). A structurally different question is *operation-level* symmetry across consumer surfaces (UI, MCP, embedded-visible): does every surface that lets a caller act on "an agent" (list, resolve, create a session with one, add one to a session, manage its definition) expose the same set of operations, or record an explicit reason when it doesn't?
+
+    That second question is now type-enforced, not just reviewed by hand: `AGENT_OPERATIONS` (`packages/shared/src/types/agent-operations.ts`) is the single writer of every cross-surface agent operation, and each surface owns a table typed `satisfies Record<AgentOperation, SurfaceExposure>` — `packages/client/src/lib/agent-operations-ui.ts` (UI), `packages/server/src/mcp/agent-operations-mcp.ts` (MCP), `packages/server/src/mcp/agent-operations-embedded.ts` (embedded-visible). Apply this sub-check whenever a PR does either of the following:
+
+    - **Adds a new entry to `AGENT_OPERATIONS`** — the `satisfies` typing already makes an omission a compile error in all three tables, so this case cannot silently merge with an incomplete table. The human judgment this sub-check adds: confirm each table's new entry has an *accurate* `via` (a real, human-locatable entry point) or `reason` (a real rationale, not a placeholder), not just a value that satisfies the type.
+    - **Adds a new consumer surface** analogous to UI / MCP / embedded-visible (e.g., a future CLI or webhook surface that lets a caller act on agents) — add a fourth exposure table for it in the same PR, covering all of `AGENT_OPERATIONS`, following the same `satisfies Record<AgentOperation, SurfaceExposure>` pattern and co-located with that surface's own code.
+
+    Where a table's `via` claim is mechanically checkable (e.g., the MCP table's `via` naming a tool that must actually be registered in `packages/server/src/mcp/mcp-server.ts`), add or extend the corresponding test (see `packages/server/src/mcp/__tests__/agent-operations-mcp.test.ts` for the pattern) instead of relying on review alone. Where it is not mechanically checkable (UI `via` claims naming a component/page), accuracy stays a review-time judgment call — this residue is the same "process rule as the residual net" pattern documented in `docs/design/agent-surface.md` Mechanism 3.
+
+    (Lesson: this rule itself — Issue [#1160](https://github.com/ms2sato/agent-console/issues/1160) PR-D built the exposure-table mechanism specifically because Q11's original four questions catch tool-level gaps like the embedded-agent-v1 case above, but had no equivalent for operation-level gaps like `list_agents` silently excluding embedded agents while `delegate_to_worktree` accepted them — see `docs/design/agent-surface.md` §0 "Verified current state" for that concrete parity bug.)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -120,7 +131,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A cross-runtime spawn (Question 6) — required regardless of whether other criteria match
   - A shared / persistent artifact write (Question 7) — required regardless of whether other criteria match
   - A derived field added to a shared type that crosses the server/client wire (Question 10) — required regardless of whether other criteria match
-  - A new worker / agent / execution surface analogous to an existing one (Question 11) — required regardless of whether other criteria match
+  - A new worker / agent / execution surface analogous to an existing one, or a new entry in `AGENT_OPERATIONS` / a new agent-operations exposure table (Question 11) — required regardless of whether other criteria match
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns
 - **Not required** for single-file bug fixes, typo corrections, or test-only additions
 

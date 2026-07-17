@@ -40,9 +40,61 @@ Two new types in `packages/shared/src/types/agent-surface.ts`:
 
 Following the same strict-thin-wrapper discipline documented in [`elevation-helpers.md`](../../.claude/rules/elevation-helpers.md) for the privilege-elevation primitives: `AgentDirectory` owns no lifecycle, no caching, and no CRUD. It is constructed fresh (or once, at `AppContext` wiring time) over the live manager instances and reads through to them on every call. Suggestion policy (which agent generates a branch/title suggestion for a delegated worktree) and default-agent policy (`repository.defaultAgentId` fallback) are NOT absorbed into `AgentDirectory` — they stay at the caller (`delegate_to_worktree`'s handler), exactly as the elevation helpers keep ENOENT-tolerance and retry semantics at the caller rather than the primitive.
 
-## Mechanism 3: `AGENT_OPERATIONS` exposure table (planned, PR-D — not yet built)
+## Mechanism 3: `AGENT_OPERATIONS` exposure tables (implemented, PR-D)
 
-A future mechanism, out of scope for this PR, will let each MCP tool / REST route declare which `AgentKind`(s) it supports via a static exposure table (working name `AGENT_OPERATIONS`), so a tool surface's actual capability can be checked against the declared table mechanically (the same kind of structural check the tool-surface-symmetry review from Issue #1046 asks about by hand today). This is deferred to PR-D of the Issue #1160 migration; this document does not specify its shape, only reserves the concept so PR-A's audit is not mistaken for having built it.
+Mechanisms 1 and 2 answer "can a consumer query both registries uniformly, and does an omitted `AgentKind` fail the build?" They do **not** answer a structurally different question: does every consumer *surface* (UI, MCP, embedded-agent-visible) expose the *same set of operations* on agents, or does one surface silently drift ahead of or behind the others? That was the concrete symptom that opened Issue #1160: `list_agents` (MCP) listed terminal agents only while `delegate_to_worktree` (also MCP) already accepted embedded ids — a same-surface, cross-*operation* parity gap that Mechanisms 1/2 have no way to catch, because both operations query the same registries correctly in isolation.
+
+### The single-writer operation enum
+
+`AGENT_OPERATIONS` (`packages/shared/src/types/agent-operations.ts`) is the single writer of every cross-surface agent operation:
+
+```ts
+export const AGENT_OPERATIONS = [
+  'listAgents',             // enumerate selectable agents
+  'resolveAgent',           // ref (id/name) -> definition, incl. ambiguity handling
+  'createSessionWithAgent', // new worktree session with an initial agent worker
+  'addWorkerToSession',     // add an agent worker to an existing session
+  'manageDefinitions',      // CRUD on agent definitions
+] as const;
+export type AgentOperation = (typeof AGENT_OPERATIONS)[number];
+
+export type SurfaceExposure =
+  | { exposed: true; via: string }      // entry point, human-locatable
+  | { exposed: false; reason: string }; // explicit opt-out with rationale
+```
+
+An operation belongs in this enum when a user or agent can perform it against "an agent" through more than one surface, or when its absence from a surface must be an explicit recorded decision rather than silence.
+
+### One exposure table per surface, `satisfies Record<AgentOperation, SurfaceExposure>`
+
+Each surface owns its own table, colocated with that surface's code:
+
+| Table | File |
+|---|---|
+| UI | `packages/client/src/lib/agent-operations-ui.ts` |
+| MCP | `packages/server/src/mcp/agent-operations-mcp.ts` |
+| Embedded-visible | `packages/server/src/mcp/agent-operations-embedded.ts` |
+
+The `satisfies Record<AgentOperation, SurfaceExposure>` typing is the compile-time gate: adding a sixth operation to `AGENT_OPERATIONS` fails the build in every one of these tables until that table records an explicit `{ exposed: true; via }` or `{ exposed: false; reason }` entry for it. Types cannot force a UI affordance to exist -- they *can* force the omission to be a recorded decision instead of silence.
+
+### Initial content (verbatim from the architect's spec, Issue #1160)
+
+| Operation | UI | MCP | Embedded-visible |
+|---|---|---|---|
+| `listAgents` | pickers + /agents page | `list_agents` (both kinds after PR-A) | same MCP tool via /mcp endpoint |
+| `resolveAgent` | picker selection | `delegate_to_worktree` agentId/agentName | same |
+| `createSessionWithAgent` | CreateWorktreeForm | `delegate_to_worktree` | same |
+| `addWorkerToSession` | AddAgentWorkerMenu | `not-exposed`: delegate model is one-worktree-one-session; adding workers to foreign sessions crosses the #878 auth boundary | same |
+| `manageDefinitions` | /agents page + settings | `not-exposed`: definition CRUD is an owner/console concern, not a delegation concern | same |
+
+Two honesty notes, carried over from the spec:
+
+- **The embedded-visible surface is structurally identical to the MCP surface.** Embedded agents reach the same `/mcp` endpoint with a token; there is no caller-specific tool filter for these operations (the settled premise behind the embedded-agent-worker design's builtin-tool gating, which is a *separate*, already-solved concern via `EMBEDDED_AGENT_TOOL_NAMES`). `agent-operations-embedded.ts`'s table is therefore mostly `via: 'MCP endpoint (shared) — <tool name>'`, and its sibling test asserts `exposed` parity against the MCP table operation-by-operation -- a drift between the two tables is a bug, not a design choice, so it fails a test rather than requiring a reviewer to notice.
+- **Mechanical checking is applied where the claim is checkable, review where it is not.** The MCP and embedded-visible tables' `via` claims name a real registered MCP tool, so `packages/server/src/mcp/__tests__/agent-operations-mcp.test.ts` and `agent-operations-embedded.test.ts` parse `mcp-server.ts`'s actual tool registrations and assert every `exposed: true` claim names one that exists. The UI table's `via` claims name a component/page, which has no equivalent single source of truth to parse against without excessive coupling to file layout -- accuracy there stays a review-time judgment call. This division is the Option-D residue the process-rule extension below names explicitly: types and mechanical tests shrink what a reviewer must check by hand, they don't eliminate the need for judgment entirely.
+
+### Process-rule residue
+
+Whatever an exposure table's `satisfies` typing and mechanical tests cannot catch -- whether a `via`/`reason` claim is *accurate*, whether a newly-introduced surface remembered to add its own table at all -- is handled by `.claude/rules/pre-pr-completeness.md` Q11's extension (sub-question 5), which extends the pre-existing tool-surface-symmetry check from Issue #1046 to this operation-level parity. The goal, as with Mechanisms 1 and 2, is to shrink the review-by-convention surface to only what types and tests genuinely cannot enforce.
 
 ## Uniform listing principle (client convergence, PR-C)
 
@@ -75,7 +127,7 @@ Issue #1160 is decomposed into four PRs:
 - **PR-A** — shared types (`AgentKind`, `AgentDirectoryEntry`, `AgentSurface`, `AgentResolution`), `AgentManager` / `EmbeddedAgentManager` implementing `AgentSurface`, the new `AgentDirectory` service, and MCP wiring (`list_agents` gains embedded-agent parity; `delegate_to_worktree`'s inline resolution block is replaced by `AgentDirectory.resolve`).
 - **PR-B** — REST routes (`packages/server/src/routes/worktrees.ts`, `routes/workers.ts`) adopt `AgentDirectory` for any cross-registry agent listing/resolution currently duplicated there.
 - **PR-C (this PR)** — client-only convergence. `packages/client/src/hooks/useAgentDirectory.ts` merges the client's existing two per-registry queries (`useAgents` / `useEmbeddedAgents`) into one `AgentDirectoryEntry[]` (terminal first, then embedded -- mirroring the server's `AgentDirectory.listAll()` order). The non-discriminated `{ agentId?; embeddedAgentId? }` selection shape is replaced by a discriminated `AgentSelection` union (client-local UI state, not a wire type) so an invalid "both set" / "neither set" state is unrepresentable. `WorktreeAgentSelector` is renamed `UnifiedAgentSelector` and adopted uniformly by `QuickSessionForm` and (visible-but-disabled for embedded) `RestartSessionDialog`. A single-writer presentation table (`AGENT_KIND_PRESENTATION`) replaces per-component inline badge/optgroup markup. PR-C required **no wire or schema change**: `CreateQuickSessionRequestSchema` already carried `embeddedAgentId` (mutually exclusive with `agentId` via a `v.check`) since before this migration, so the client-side widening of `QuickSessionForm` to accept embedded selections needed only client code. This is a narrower mechanism than originally sketched ("consumes a unified agent list sourced from the REST/WebSocket surface PR-B exposes") -- PR-B's server-side `AgentDirectory` adoption did not add a new cross-registry REST/WS endpoint for the client to consume, so PR-C merges client-side instead, over the two endpoints that already existed.
-- **PR-D** — the `AGENT_OPERATIONS` exposure-table mechanism (Mechanism 3 above), giving each tool/route surface a declared, checkable capability set per `AgentKind`.
+- **PR-D (this PR)** — the `AGENT_OPERATIONS` exposure-table mechanism (Mechanism 3 above): the shared `AgentOperation` / `SurfaceExposure` types, the UI / MCP / embedded-visible tables, the MCP-table mechanical cross-check tests, and the `pre-pr-completeness.md` Q11 process-rule extension. Closes Issue #1160.
 
 ## Cross-references
 
@@ -83,6 +135,7 @@ Issue #1160 is decomposed into four PRs:
 - [`elevation-helpers.md`](../../.claude/rules/elevation-helpers.md) — the strict-thin-wrapper + "extract when two PRs converge" discipline this design's `AgentDirectory` follows.
 - Issue [#1160](https://github.com/ms2sato/agent-console/issues/1160) — umbrella tracking PR-A through PR-D.
 - Issue [#1161](https://github.com/ms2sato/agent-console/issues/1161) — the original `delegate_to_worktree` embedded-agent-selection gap that PR #1165's short-term facade fixed, and that `AgentDirectory.resolve` now formalizes.
-- Issue [#1046](https://github.com/ms2sato/agent-console/issues/1046) — the tool-surface-symmetry process check that Mechanism 3 (PR-D) will make structural.
+- Issue [#1046](https://github.com/ms2sato/agent-console/issues/1046) — the tool-surface-symmetry process check that Mechanism 3 (PR-D) extends from tool-level to operation-level parity.
+- [`pre-pr-completeness.md`](../../.claude/rules/pre-pr-completeness.md) Q11 sub-question 5 — the process-rule residue for exposure-table accuracy that Mechanism 3's types and mechanical tests cannot enforce.
 - PR [#1165](https://github.com/ms2sato/agent-console/pull/1165) — the short-term two-registry facade in `delegate_to_worktree` that this design's `AgentDirectory.resolve` absorbs verbatim.
 - Issue [#1171](https://github.com/ms2sato/agent-console/issues/1171) — server-side cross-type restart (embedded-agent restart support), the prerequisite for `RestartSessionDialog`'s embedded entries to become selectable instead of disabled-with-notice. Blocked on Issue #1123 (conversation transcript restore).
