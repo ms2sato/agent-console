@@ -97,6 +97,16 @@ describe('shared index exports', () => {
     expect(splitter.carry).toBe('{"b":2}');
   });
 
+  it('should re-export AGENT_KINDS and the AgentKind values it derives', async () => {
+    const mod = await import('../index.js');
+
+    // AGENT_KINDS is the single writer of the 'terminal' | 'embedded' union
+    // (packages/shared/src/types/agent-surface.ts) — verify the runtime
+    // constant is actually re-exported through the barrel, not just the
+    // type-only AgentKind/AgentSurface/AgentDirectoryEntry/AgentResolution.
+    expect(mod.AGENT_KINDS).toEqual(['terminal', 'embedded']);
+  });
+
   it('should export ConditionalWakeupInfo type', async () => {
     const mod = await import('../index.js');
 

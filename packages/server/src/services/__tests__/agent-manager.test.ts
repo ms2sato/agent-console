@@ -552,6 +552,46 @@ describe('AgentManager', () => {
     });
   });
 
+  describe('AgentSurface<"terminal"> conformance', () => {
+    it('exposes kind "terminal"', async () => {
+      const { manager } = await getAgentManager();
+      expect(manager.kind).toBe('terminal');
+    });
+
+    it('list() wraps getAllAgents() entries with kind "terminal"', async () => {
+      const { manager } = await getAgentManager();
+      const entries = manager.list();
+      expect(entries.length).toBeGreaterThanOrEqual(1);
+      for (const entry of entries) {
+        expect(entry.kind).toBe('terminal');
+      }
+      const claudeCode = entries.find((e: { agent: AgentDefinition }) => e.agent.name === 'Claude Code');
+      expect(claudeCode).toBeDefined();
+    });
+
+    it('get(id) wraps getAgent(id) with kind "terminal", or returns undefined', async () => {
+      const { manager, CLAUDE_CODE_AGENT_ID } = await getAgentManager();
+      const found = manager.get(CLAUDE_CODE_AGENT_ID);
+      expect(found).toEqual({ kind: 'terminal', agent: manager.getAgent(CLAUDE_CODE_AGENT_ID) });
+
+      const missing = manager.get('non-existent');
+      expect(missing).toBeUndefined();
+    });
+
+    it('findByName(name) wraps getAgentsByName(name) with kind "terminal"', async () => {
+      const { manager } = await getAgentManager();
+      await manager.registerAgent({
+        name: 'Findable Agent',
+        commandTemplate: 'cmd {{prompt}}',
+      });
+      const entries = manager.findByName('Findable Agent');
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({ kind: 'terminal', agent: manager.getAgentsByName('Findable Agent')[0] });
+
+      expect(manager.findByName('No Such Agent')).toEqual([]);
+    });
+  });
+
   describe('unregisterAgent', () => {
     it('should unregister a custom agent', async () => {
       const { manager } = await getAgentManager();

@@ -361,4 +361,45 @@ describe('EmbeddedAgentManager', () => {
       expect(deleted).toEqual([created.id]);
     });
   });
+
+  describe('AgentSurface<"embedded"> conformance', () => {
+    it('exposes kind "embedded"', async () => {
+      const manager = await getManager();
+      expect(manager.kind).toBe('embedded');
+    });
+
+    it('list() wraps getAllEmbeddedAgents() entries with kind "embedded"', async () => {
+      const manager = await getManager();
+      await manager.createEmbeddedAgent({ name: 'Listed', provider: VALID_PROVIDER }, 'user-1');
+
+      const entries = manager.list();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({ kind: 'embedded', agent: manager.getAllEmbeddedAgents()[0] });
+    });
+
+    it('get(id) wraps getEmbeddedAgent(id) with kind "embedded", or returns undefined', async () => {
+      const manager = await getManager();
+      const created = await manager.createEmbeddedAgent(
+        { name: 'Findable', provider: VALID_PROVIDER },
+        'user-1',
+      );
+
+      expect(manager.get(created.id)).toEqual({ kind: 'embedded', agent: created });
+      expect(manager.get('non-existent')).toBeUndefined();
+    });
+
+    it('findByName(name) wraps a name filter over getAllEmbeddedAgents() with kind "embedded"', async () => {
+      const manager = await getManager();
+      const created = await manager.createEmbeddedAgent(
+        { name: 'Shared Name', provider: VALID_PROVIDER },
+        'user-1',
+      );
+      await manager.createEmbeddedAgent({ name: 'Other Name', provider: VALID_PROVIDER }, 'user-1');
+
+      const entries = manager.findByName('Shared Name');
+      expect(entries).toEqual([{ kind: 'embedded', agent: created }]);
+
+      expect(manager.findByName('No Such Name')).toEqual([]);
+    });
+  });
 });
