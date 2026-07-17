@@ -96,7 +96,8 @@ async function execute(args: unknown, ctx: BuiltinToolContext, signal?: AbortSig
       .join('\n');
     const notice = truncated
       ? `\n\n[Read truncated: file is ${stat.size} bytes, exceeding the ${READ_MAX_BYTES}-byte read cap. ` +
-        `Showing content from the first ${READ_MAX_BYTES} bytes only.]`
+        `Showing content from the first ${READ_MAX_BYTES} bytes only. ` +
+        `Use the Bash tool (e.g. \`tail -c\` or \`sed -n\`) to view content beyond this cap.]`
       : '';
     return { ok: true, result: formatted + notice };
   } catch (err) {
