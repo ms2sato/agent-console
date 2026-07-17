@@ -829,6 +829,40 @@ describe('embedded-agent-store', () => {
     expect(finalEntries[1]).toMatchObject({ kind: 'user-message', text: 'after failure' });
   });
 
+  it('resolves a pending send whose confirming echo is still queued when the epoch-2 history response lands (#1120: flush-before-reject ordering)', async () => {
+    // Edge-of-edge race from the #1120 architect audit: a send is issued
+    // while an epoch resync is outstanding, and its confirming echo arrives
+    // as live output DURING the resync -- so it lands in the resync queue,
+    // not folded yet. If the history response that completes the resync
+    // rejects the pending send BEFORE flushing that queue, the reject fires
+    // even though the very next step would have resolved it via the queued
+    // echo.
+    const { instance, ws } = connectAndBumpEpoch('s21', 'w21');
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+
+    const sendPromise = instance.sendUserMessage('hello agent');
+
+    // The confirming echo arrives as live output for the new epoch while
+    // still resyncing -- queued, not folded yet (resolvePendingSend has NOT
+    // run at this point).
+    const echoData = ndjson({ v: 1, type: 'user-message', id: 'echo', text: 'hello agent' });
+    ws.simulateMessage(outputMessage(echoData, 50, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // queued, not folded
+
+    // The epoch-2 history response lands, at an offset strictly BEFORE the
+    // queued echo's offset (so the echo is not covered/dropped by the flush
+    // -- it is genuinely newer and gets folded), and its own payload does
+    // not itself contain a confirming user-message (empty).
+    ws.simulateMessage(historyMessage('', 20, 0, 2));
+
+    await expect(sendPromise).resolves.toBeUndefined();
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'hello agent' });
+  });
+
   it('disposes and re-subscribes to app-ws session-deleted', () => {
     const bus = makeAppBus();
     _setAppSubscribe(bus.subscribe);
