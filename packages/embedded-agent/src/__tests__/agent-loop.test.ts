@@ -511,4 +511,71 @@ describe('AgentLoop — context-usage accounting (Token accounting, Context Hand
     expect(usageEvents).toHaveLength(1);
     expect(usageEvents[0]).toEqual({ v: 1, type: 'context-usage', promptTokens: 200, estimated: false });
   });
+
+  it("emits context-usage using iteration 1's usage when iteration 2's provider call fails (last successful attempt wins)", async () => {
+    // Iteration 1 succeeds with a tool call (usage: 100, recorded into
+    // turnUsage). Iteration 2's provider call then fails non-retryably, so
+    // the turn concludes via the `outcome.kind === 'error'` exit path, which
+    // never produces a usage value of its own -- turnUsage must still carry
+    // iteration 1's value at that point.
+    const h = makeLoop([
+      {
+        kind: 'events',
+        events: [
+          { type: 'tool-call', callId: 'c1', name: 'do_thing', argsJson: '{}' },
+          {
+            type: 'done',
+            finishReason: 'tool_calls',
+            usage: { promptTokens: 100, completionTokens: 1, totalTokens: 101 },
+          },
+        ],
+      },
+      {
+        kind: 'throw',
+        error: new ProviderError('bad request', { retryable: false, status: 400 }),
+      },
+    ]);
+    await h.loop.runTurn('t1', 'hi');
+
+    const usageEvents = h.events.filter((e) => e.type === 'context-usage');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toEqual({ v: 1, type: 'context-usage', promptTokens: 100, estimated: false });
+    expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'bad request' });
+  });
+
+  it('emits context-usage using the successful iteration\'s usage when the turn is canceled mid-tool-execution', async () => {
+    // A single provider attempt succeeds with a tool call (usage: 150). The
+    // executor cancels the turn as soon as the tool call executes, so the
+    // turn concludes via the post-execution abort-signal check inside the
+    // tool-call loop -- another exit path that never produces its own usage
+    // value.
+    const loopRef: { current: AgentLoop | null } = { current: null };
+    const executor = new StubExecutor({ ok: true, result: 'ignored' }, () =>
+      loopRef.current?.cancel(),
+    );
+    const h = makeLoop(
+      [
+        {
+          kind: 'events',
+          events: [
+            { type: 'tool-call', callId: 'c1', name: 'do_thing', argsJson: '{"x":1}' },
+            {
+              type: 'done',
+              finishReason: 'tool_calls',
+              usage: { promptTokens: 150, completionTokens: 1, totalTokens: 151 },
+            },
+          ],
+        },
+      ],
+      { executor },
+    );
+    loopRef.current = h.loop;
+
+    await h.loop.runTurn('t1', 'hi');
+
+    const usageEvents = h.events.filter((e) => e.type === 'context-usage');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toEqual({ v: 1, type: 'context-usage', promptTokens: 150, estimated: false });
+    expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+  });
 });

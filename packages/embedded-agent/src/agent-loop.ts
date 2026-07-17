@@ -154,10 +154,12 @@ export class AgentLoop {
       for (let iteration = 0; iteration < this.deps.maxToolIterations; iteration++) {
         const outcome = await this.runProviderWithRetries(this.conversation, turnId, abort.signal);
         if (outcome.kind === 'canceled') {
+          this.emitContextUsageIfKnown(turnUsage);
           this.emitTurnError(turnId, 'turn canceled');
           return;
         }
         if (outcome.kind === 'error') {
+          this.emitContextUsageIfKnown(turnUsage);
           this.emitTurnError(turnId, outcome.message);
           return;
         }
@@ -194,6 +196,7 @@ export class AgentLoop {
                 responded,
                 'tool call not completed: turn ended after repeated malformed arguments',
               );
+              this.emitContextUsageIfKnown(turnUsage);
               this.emitTurnError(
                 turnId,
                 `tool arguments could not be parsed after ${MAX_MALFORMED_REASKS} re-asks: ${parsed.message}`,
@@ -212,6 +215,7 @@ export class AgentLoop {
 
           if (abort.signal.aborted) {
             this.fillPendingToolResponses(outcome.toolCalls, responded, 'tool call canceled');
+            this.emitContextUsageIfKnown(turnUsage);
             this.emitTurnError(turnId, 'turn canceled');
             return;
           }
@@ -226,6 +230,7 @@ export class AgentLoop {
           const result = await this.deps.executor.callTool(call.name, parsed.value, abort.signal);
           if (abort.signal.aborted) {
             this.fillPendingToolResponses(outcome.toolCalls, responded, 'tool call canceled');
+            this.emitContextUsageIfKnown(turnUsage);
             this.emitTurnError(turnId, 'turn canceled');
             return;
           }
