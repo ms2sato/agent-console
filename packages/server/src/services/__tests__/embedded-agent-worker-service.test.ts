@@ -793,7 +793,7 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect(r2).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
   });
 
-  it('appends the user-message event BEFORE forwarding it to stdin', async () => {
+  it('forwards the user-message command to stdin BEFORE appending the persisted event', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
     const initWrites = h.fake.stdinWrites.length;
@@ -814,9 +814,11 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
     expect(res.ok).toBe(true);
 
-    // Both were recorded at call-time; append must strictly precede forward.
-    // If production forwarded before appending, order would be ['forward','append'].
-    expect(order).toEqual(['append', 'forward']);
+    // Both were recorded at call-time; forward must strictly precede append,
+    // so a WRITE_FAILED (stdin throws) never leaves a persisted/broadcast
+    // echo for a message the loop never actually received. Since neither
+    // call is async, this ordering doesn't affect replay stability.
+    expect(order).toEqual(['forward', 'append']);
 
     // The forwarded command shape matches the user-message.
     const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
@@ -859,10 +861,11 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
   });
 
-  it('rejects with code WRITE_FAILED when the stdin write throws', async () => {
+  it('rejects with code WRITE_FAILED when the stdin write throws, without persisting/broadcasting a phantom echo', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
     expect(h.worker.stdin).not.toBeNull();
+    h.bufferOutput.mockClear();
 
     // Lowest-level mock: make the fake FileSink's write throw, mirroring a
     // real EPIPE/write failure on the underlying stdin stream.
@@ -872,6 +875,11 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
 
     const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
     expect(res).toEqual({ ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' });
+
+    // The loop never received the message, so no user-message event may be
+    // persisted/broadcast for it -- a phantom echo would falsely resolve the
+    // sending client's pending promise despite the WRITE_FAILED response.
+    expect(h.bufferOutput).not.toHaveBeenCalled();
   });
 
   it('re-admits a message after the loop reports idle', async () => {

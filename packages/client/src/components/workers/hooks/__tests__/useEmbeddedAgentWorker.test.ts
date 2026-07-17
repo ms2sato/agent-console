@@ -60,7 +60,7 @@ describe('useEmbeddedAgentWorker', () => {
       result.current.sendUserMessage('hello').catch(() => {});
     });
 
-    const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0])) as {
+    const sent = ws!.send.mock.calls.map((c) => JSON.parse(c[0])) as {
       type: string;
       text?: string;
       clientMessageId?: string;

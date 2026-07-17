@@ -451,9 +451,12 @@ export class EmbeddedAgentWorkerService {
       text,
       ...(clientMessageId !== undefined ? { clientMessageId } : {}),
     };
-    // Append BEFORE forwarding so replay ordering is stable.
-    this.appendEvent(runtime.ctx, event);
-
+    // Forward BEFORE appending: both calls are synchronous (no await between
+    // them, nothing else can interleave), so ordering doesn't affect replay
+    // stability either way -- but writing first means a WRITE_FAILED never
+    // leaves a persisted/broadcast echo for a message the loop never
+    // actually received (which would falsely resolve the client's pending
+    // send despite the error response).
     try {
       this.writeCommand(stdin, command);
     } catch (err) {
@@ -461,6 +464,7 @@ export class EmbeddedAgentWorkerService {
       logger.warn({ sessionId, workerId, err }, 'Failed to forward user message to embedded-agent stdin');
       return { ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' };
     }
+    this.appendEvent(runtime.ctx, event);
 
     return { ok: true, id };
   }
