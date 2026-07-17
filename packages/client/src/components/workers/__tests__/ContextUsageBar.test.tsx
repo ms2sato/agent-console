@@ -97,7 +97,7 @@ describe('ContextUsageBar', () => {
       expect(bar.querySelector('div')?.className).toContain('bg-red-600');
     });
 
-    it('shows a hover tooltip with rounded percentage and raw token counts', () => {
+    it('shows a hover tooltip with rounded percentage and raw token counts, with no estimate indicator when the reading is provider-reported (estimated: false)', () => {
       render(
         <ContextUsageBar
           contextWindowTokens={1000}
@@ -109,6 +109,20 @@ describe('ContextUsageBar', () => {
 
       const bar = screen.getByRole('progressbar');
       expect(bar.getAttribute('title')).toBe('30% (300 / 1000 tokens)');
+    });
+
+    it('shows a leading ~ and a trailing "; estimated" clause in the tooltip when the reading is the chars/4 fallback (estimated: true)', () => {
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1000}
+          contextUsage={{ promptTokens: 300, estimated: true }}
+          softRatio={0.5}
+          hardRatio={0.8}
+        />,
+      );
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('title')).toBe('~30% (300 / 1000 tokens; estimated)');
     });
 
     it('renders without a fill/percentage title when contextUsage is null despite contextWindowTokens being configured', () => {
@@ -162,7 +176,7 @@ describe('ContextUsageBar', () => {
       expect(bar.style.backgroundImage).toContain('repeating-linear-gradient');
     });
 
-    it('shows the estimated-tokens tooltip text when contextUsage is present', () => {
+    it('shows a leading ~ and a trailing "(estimated)" clause when the reading is the chars/4 fallback (estimated: true)', () => {
       render(
         <ContextUsageBar
           contextWindowTokens={undefined}
@@ -174,8 +188,22 @@ describe('ContextUsageBar', () => {
 
       const bar = screen.getByRole('progressbar');
       expect(bar.getAttribute('title')).toBe(
-        '~300 tokens used (estimated; set contextWindowTokens for a gauge)',
+        '~300 tokens used (estimated); set contextWindowTokens for a gauge',
       );
+    });
+
+    it('omits the estimate indicator when the reading is provider-reported (estimated: false)', () => {
+      render(
+        <ContextUsageBar
+          contextWindowTokens={undefined}
+          contextUsage={{ promptTokens: 300, estimated: false }}
+          softRatio={0.5}
+          hardRatio={0.8}
+        />,
+      );
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('title')).toBe('300 tokens used; set contextWindowTokens for a gauge');
     });
 
     it('omits the title attribute when contextUsage is null', () => {

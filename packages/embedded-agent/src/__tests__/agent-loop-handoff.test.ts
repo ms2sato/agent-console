@@ -158,7 +158,7 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
     expect(events.find((e) => e.type === 'context-handoff')).toBeUndefined();
   });
 
-  it('emits a fresh context-usage (estimated: true) immediately after a successful reset', async () => {
+  it('emits TWO context-usage events for a successful handoff: the distillation call\'s own pre-reset usage, then a fresh post-reset estimate', async () => {
     const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
     const { deps, events } = makeDeps({ adapter });
     const loop = new AgentLoop(deps);
@@ -166,13 +166,50 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
     await loop.handoff();
 
     const usageEvents = events.filter((e) => e.type === 'context-usage');
-    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents).toHaveLength(2);
+    // Neither this adapter script nor `textResponse` sends a provider `usage`
+    // payload, so both readings fall back to the chars/4 estimate.
     expect(usageEvents[0]).toMatchObject({ estimated: true });
-    // The context-usage event follows the context-handoff marker, both before
-    // idle. No assistant-delta -- the distillation call suppresses streaming
-    // deltas (see the regression test below); the marker carries the full text.
+    expect(usageEvents[1]).toMatchObject({ estimated: true });
+    // Order: state(active) -> context-usage (pre-reset, distillation call's own
+    // usage) -> context-handoff -> context-usage (post-reset estimate) -> state(idle).
+    // No assistant-delta -- the distillation call suppresses streaming deltas
+    // (see the regression test below); the marker carries the full text.
     const types = events.map((e) => e.type);
-    expect(types).toEqual(['state', 'context-handoff', 'context-usage', 'state']);
+    expect(types).toEqual(['state', 'context-usage', 'context-handoff', 'context-usage', 'state']);
+  });
+
+  it('the pre-reset context-usage carries the distillation call\'s own real usage when the provider sends one', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        kind: 'events',
+        events: [
+          { type: 'text-delta', text: 'SUMMARY' },
+          {
+            type: 'done',
+            finishReason: 'stop',
+            usage: { promptTokens: 12345, completionTokens: 10, totalTokens: 12355 },
+          },
+        ],
+      },
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.handoff();
+
+    const usageEvents = events.filter((e) => e.type === 'context-usage');
+    expect(usageEvents).toHaveLength(2);
+    // First (pre-reset) event: the distillation call's own real usage.
+    expect(usageEvents[0]).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 12345,
+      estimated: false,
+    });
+    // Second (post-reset) event: always a fresh chars/4 estimate over the
+    // brand-new seed conversation, regardless of the first event's source.
+    expect(usageEvents[1]).toMatchObject({ estimated: true });
   });
 
   it('regression: suppresses assistant-delta/assistant-thinking-delta during the distillation call, but a subsequent normal runTurn still streams them', async () => {
@@ -193,10 +230,17 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
 
     await loop.handoff();
 
-    // Only state (active/idle), context-usage, and context-handoff should be
-    // present for the handoff call -- no assistant-delta / assistant-thinking-delta,
-    // and no dangling assistant-message either (handoff() never emits one).
-    expect(events.map((e) => e.type)).toEqual(['state', 'context-handoff', 'context-usage', 'state']);
+    // Only state (active/idle), context-usage (x2), and context-handoff should
+    // be present for the handoff call -- no assistant-delta /
+    // assistant-thinking-delta, and no dangling assistant-message either
+    // (handoff() never emits one).
+    expect(events.map((e) => e.type)).toEqual([
+      'state',
+      'context-usage',
+      'context-handoff',
+      'context-usage',
+      'state',
+    ]);
     expect(events.find((e) => e.type === 'assistant-delta')).toBeUndefined();
     expect(events.find((e) => e.type === 'assistant-thinking-delta')).toBeUndefined();
     expect(events.find((e) => e.type === 'assistant-message')).toBeUndefined();
@@ -237,7 +281,7 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
     expect(messagesForT2[0]).toEqual({ role: 'system', content: 'ORIGINAL_SYSTEM_PROMPT' });
   });
 
-  it('ignores any tool calls the provider returns for the distillation request (no execution, no tool-call/tool-result events)', async () => {
+  it('rejects the distillation (turn-error, no context-handoff, conversation untouched) when the provider returns any tool calls, even alongside text', async () => {
     const adapter = new ScriptedAdapter([
       {
         kind: 'events',
@@ -247,6 +291,7 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
           { type: 'done', finishReason: 'tool_calls' },
         ],
       },
+      textResponse('reply to t2'),
     ]);
     let toolCalled = false;
     const { deps, events } = makeDeps({
@@ -268,11 +313,41 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
     expect(toolCalled).toBe(false);
     expect(events.find((e) => e.type === 'tool-call')).toBeUndefined();
     expect(events.find((e) => e.type === 'tool-result')).toBeUndefined();
-    expect(events.find((e) => e.type === 'context-handoff')).toEqual({
-      v: 1,
-      type: 'context-handoff',
-      distillation: 'SUMMARY',
+    expect(events.find((e) => e.type === 'context-handoff')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError).toMatchObject({
+      message: expect.stringContaining('no usable distillation'),
     });
+
+    // Conversation is provably untouched: a subsequent turn matches a fresh
+    // baseline loop's request exactly (preserve-on-failure).
+    await loop.runTurn('t2', 'next message');
+    const messagesForT2 = adapter.capturedMessages.at(-1)!;
+
+    const baselineAdapter = new ScriptedAdapter([textResponse('reply to t2')]);
+    const { deps: baselineDeps } = makeDeps({ adapter: baselineAdapter });
+    const baselineLoop = new AgentLoop(baselineDeps);
+    await baselineLoop.runTurn('t2', 'next message');
+    const baselineMessages = baselineAdapter.capturedMessages.at(-1)!;
+
+    expect(messagesForT2).toEqual(baselineMessages);
+  });
+
+  it('rejects the distillation (turn-error, no context-handoff) when the provider returns empty/whitespace-only text', async () => {
+    const adapter = new ScriptedAdapter([textResponse('   \n\t  ')]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.handoff();
+
+    expect(events.find((e) => e.type === 'context-handoff')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError).toMatchObject({
+      message: expect.stringContaining('no usable distillation'),
+    });
+    // No context-usage either -- the response was rejected before step 6's
+    // pre-reset usage emission and step 12's post-reset estimate.
+    expect(events.find((e) => e.type === 'context-usage')).toBeUndefined();
   });
 
   it('emits turn-error when handoff is canceled mid-flight, and the conversation stays untouched', async () => {

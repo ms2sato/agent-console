@@ -4,7 +4,7 @@ import { render, screen, cleanup, act, fireEvent, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EmbeddedAgentWorkerView } from '../EmbeddedAgentWorkerView';
-import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
+import { MockWebSocket, installMockWebSocket, decodeSentMessages } from '../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers } from '../embedded-agent-store';
 
 function ndjson(...events: Record<string, unknown>[]): string {
@@ -1675,6 +1675,45 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText(/Context is 70% full/)).toBeTruthy();
     });
 
+    it('auto-hides both banners once usage drops back below their thresholds (no dismiss click required), and re-shows on a fresh upward crossing (CodeRabbit: downward-crossing regression)', async () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      renderView({ sessionId: 's-ctx-3b', workerId: 'w-ctx-3b', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // Cross both soft (50%) and hard (80%) in one update: 900/1000 = 90%.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 900, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+      expect(screen.getByText(/consider starting a handoff/)).toBeTruthy();
+      expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
+
+      // Drop below BOTH thresholds without dismissing either banner first
+      // (e.g. a successful handoff): 200/1000 = 20%. Both banners must
+      // disappear on their own.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 200, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+      expect(screen.queryByText(/consider starting a handoff/)).toBeNull();
+      expect(screen.queryByText(/start a handoff now to avoid losing/)).toBeNull();
+
+      // A fresh upward crossing re-arms and re-shows both banners.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 950, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+      expect(screen.getByText(/consider starting a handoff/)).toBeTruthy();
+      expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
+    });
+
     it('shows both soft and hard banners simultaneously when a single update crosses both thresholds', async () => {
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
       renderView({ sessionId: 's-ctx-4', workerId: 'w-ctx-4', embeddedAgentId: 'ea-1' });
@@ -1713,7 +1752,7 @@ describe('EmbeddedAgentWorkerView', () => {
 
       await user.click(screen.getByRole('button', { name: 'Handoff now' }));
 
-      const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+      const sent = decodeSentMessages(ws!.send.mock.calls);
       expect(sent).toContainEqual({ type: 'embedded-handoff' });
       expect(screen.getByText('Handing off…')).toBeTruthy();
 
@@ -1734,6 +1773,40 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(details.open).toBe(true);
     });
 
+    it('disables the banner "Handoff now" CTA once handoffInFlight is set, and clicking it again does not send a second embedded-handoff', async () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({ sessionId: 's-ctx-5b', workerId: 'w-ctx-5b', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const banner = screen.getByRole('button', { name: 'Handoff now' }) as HTMLButtonElement;
+      expect(banner.disabled).toBe(false);
+
+      await user.click(banner);
+      expect(banner.disabled).toBe(true);
+
+      // userEvent respects the `disabled` attribute and will not dispatch a
+      // click, but exercise the underlying handler directly too (defense in
+      // depth against the store's own admission-atomicity guard, not only
+      // the DOM-level disabled attribute) by firing a raw click event.
+      fireEvent.click(banner);
+
+      const handoffSends = decodeSentMessages(ws!.send.mock.calls).filter(
+        (m) => m.type === 'embedded-handoff',
+      );
+      expect(handoffSends).toHaveLength(1);
+    });
+
     it('renders an always-reachable "Start handoff" button that sends embedded-handoff and disables itself while in flight', async () => {
       const user = userEvent.setup();
       renderView({ sessionId: 's-ctx-6', workerId: 'w-ctx-6' });
@@ -1747,7 +1820,7 @@ describe('EmbeddedAgentWorkerView', () => {
 
       await user.click(button);
 
-      const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+      const sent = decodeSentMessages(ws!.send.mock.calls);
       expect(sent).toContainEqual({ type: 'embedded-handoff' });
       expect((screen.getByRole('button', { name: 'Start handoff' }) as HTMLButtonElement).disabled).toBe(true);
     });

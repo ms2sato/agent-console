@@ -37,11 +37,18 @@ export const EmbeddedAgentProviderSchema = v.strictObject({
  * and persisted here for forward-compat but is NOT read by any Phase A code
  * path — see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)".
  */
-export const EmbeddedAgentHandoffConfigSchema = v.strictObject({
-  softRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
-  hardRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
-  auto: v.optional(v.boolean()),
-});
+export const EmbeddedAgentHandoffConfigSchema = v.pipe(
+  v.strictObject({
+    softRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
+    hardRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
+    auto: v.optional(v.boolean()),
+  }),
+  v.check(
+    (val) =>
+      val.softRatio === undefined || val.hardRatio === undefined || val.softRatio <= val.hardRatio,
+    'softRatio must be less than or equal to hardRatio',
+  ),
+);
 
 export const EmbeddedAgentDefinitionSchema = v.strictObject({
   id: v.pipe(v.string(), v.minLength(1)),
@@ -183,7 +190,7 @@ export const EmbeddedAgentEventSchema = v.union([
   v.strictObject({
     v: v.literal(1),
     type: v.literal('context-usage'),
-    promptTokens: v.number(),
+    promptTokens: v.pipe(v.number(), v.integer(), v.minValue(0)),
     estimated: v.boolean(),
   }),
   v.strictObject({

@@ -1,5 +1,17 @@
 import { mock } from 'bun:test';
-import { WS_CLOSE_CODE } from '@agent-console/shared';
+import { WS_CLOSE_CODE, type EmbeddedAgentClientMessage, type WorkerClientMessage } from '@agent-console/shared';
+
+/**
+ * Everything an embedded-agent worker's store actually writes to its
+ * WebSocket -- the `EmbeddedAgentClientMessage` union plus the two
+ * byte-offset/epoch history messages it shares with `WorkerClientMessage`
+ * (`request-history`/`request-history-range`, content-agnostic machinery --
+ * see `packages/shared/src/types/session.ts`). Mirrors the store's own
+ * (unexported) `EmbeddedAgentSendMessage` type in `embedded-agent-store.ts`.
+ */
+type EmbeddedAgentSentMessage =
+  | EmbeddedAgentClientMessage
+  | Extract<WorkerClientMessage, { type: 'request-history' | 'request-history-range' }>;
 
 /**
  * Mock WebSocket for testing.
@@ -100,6 +112,64 @@ export class MockWebSocket {
   static clearInstances() {
     MockWebSocket.instances = [];
   }
+}
+
+/** Single writer of the `EmbeddedAgentSentMessage['type']` literal set --
+ * mirrors the shared unions in `packages/shared/src/types/session.ts` so a
+ * future variant addition there is a one-line update here, not a silent
+ * gap. `satisfies` keeps this array in sync with the union at compile time
+ * (a typo or a missed variant fails to compile). */
+const EMBEDDED_AGENT_SENT_MESSAGE_TYPES = [
+  'embedded-user-message',
+  'embedded-cancel',
+  'embedded-handoff',
+  'request-history',
+  'request-history-range',
+] as const satisfies readonly EmbeddedAgentSentMessage['type'][];
+
+/**
+ * Runtime shape guard for `EmbeddedAgentSentMessage` -- checks `type`
+ * against the known literals above. There is no valibot schema for this
+ * client->server union to reuse (the server parses it manually in
+ * `websocket/routes.ts`), so this is a minimal structural check rather than
+ * a full schema parse; sufficient for tests that only assert on `type` and
+ * pass-through fields (`text`, `clientMessageId`, `fromOffset`).
+ */
+function isEmbeddedAgentSentMessage(value: unknown): value is EmbeddedAgentSentMessage {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    typeof value.type === 'string' &&
+    (EMBEDDED_AGENT_SENT_MESSAGE_TYPES as readonly string[]).includes(value.type)
+  );
+}
+
+/**
+ * Decode one `MockWebSocket.send()` call's JSON payload as an
+ * `EmbeddedAgentSentMessage`, asserting its shape at runtime instead of
+ * casting through `unknown` (`raw as unknown as T`). Throws on a payload
+ * that isn't a recognized message shape, surfacing a malformed test fixture
+ * as a loud failure instead of a silently-wrong assertion downstream.
+ */
+export function decodeSentMessage(raw: string): EmbeddedAgentSentMessage {
+  const parsed: unknown = JSON.parse(raw);
+  if (!isEmbeddedAgentSentMessage(parsed)) {
+    throw new Error(`Not a recognized EmbeddedAgentSentMessage: ${raw}`);
+  }
+  return parsed;
+}
+
+/**
+ * Decode every call recorded on a `MockWebSocket.send` mock (`.mock.calls`,
+ * shaped `[data: string][]`) as `EmbeddedAgentSentMessage`s, in call order.
+ * Replaces the `(ws.send.mock.calls as unknown as string[][])` pattern at
+ * embedded-agent test call sites.
+ */
+export function decodeSentMessages(
+  calls: readonly (readonly [string])[],
+): EmbeddedAgentSentMessage[] {
+  return calls.map(([raw]) => decodeSentMessage(raw));
 }
 
 /**

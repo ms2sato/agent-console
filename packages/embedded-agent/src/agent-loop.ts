@@ -425,21 +425,41 @@ export class AgentLoop {
         return;
       }
       // No tool calls are expected or handled for the distillation request;
-      // if the provider returns any anyway, they are ignored entirely.
+      // if the provider returns any anyway, they are ignored entirely -- but a
+      // tool-call-only (or empty/whitespace-only text) response has nothing
+      // usable to seed the fresh conversation with, so it is rejected as a
+      // failure rather than silently replacing the conversation with an
+      // empty or partial summary (preserve-on-failure).
+      if (outcome.toolCalls.length > 0 || outcome.text.trim().length === 0) {
+        this.emitTurnError(
+          turnId,
+          'Context handoff failed: provider returned no usable distillation',
+        );
+        return;
+      }
+
+      // The distillation call's own usage -- reflects the (large, pre-handoff)
+      // prompt size -- emitted before the reset. See "Handoff's own usage" in
+      // docs/design/embedded-agent-worker.md.
+      this.emitContextUsageIfKnown(outcome.usage);
 
       const distillation = truncateToBytes(outcome.text, WIRE_EVENT_MAX_BYTES).text;
-      // Emitted BEFORE any conversation mutation -- the persisted/broadcast
-      // marker must be self-consistent with what actually happened.
-      this.deps.emit({ v: 1, type: 'context-handoff', distillation });
 
       let newSystemPrompt: string;
       try {
         newSystemPrompt = await this.deps.reassembleSystemPrompt();
       } catch {
-        // Degrade gracefully rather than abort: the marker above already
-        // committed to completing the reset.
+        // Degrade gracefully rather than abort: distillation already
+        // succeeded, so the reset must complete as a unit even in this
+        // degraded form.
         newSystemPrompt = this.deps.systemPrompt;
       }
+
+      // Emitted BEFORE the conversation mutation, and with no `await` between
+      // this line and the splice below -- the persisted/broadcast marker is
+      // never followed by an async gap that could leave a completed-handoff
+      // marker persisted while the old conversation is still intact.
+      this.deps.emit({ v: 1, type: 'context-handoff', distillation });
 
       const seedText = `This conversation continues from a previous one. Prior context summary: ${distillation}`;
       this.conversation.splice(

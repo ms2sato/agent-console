@@ -353,6 +353,16 @@ describe('EmbeddedAgentHandoffConfigSchema', () => {
     expect(one.success).toBe(true);
   });
 
+  it('rejects an inverted pair where softRatio > hardRatio', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.9, hardRatio: 0.5 });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts softRatio === hardRatio (boundary, not inverted)', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.75, hardRatio: 0.75 });
+    expect(result.success).toBe(true);
+  });
+
   it('rejects a softRatio below 0', () => {
     const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: -0.1 });
     expect(result.success).toBe(false);
@@ -687,6 +697,26 @@ describe('EmbeddedAgentEventSchema', () => {
       promptTokens: 1234,
       estimated: false,
       unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a context-usage event with a negative promptTokens', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-usage',
+      promptTokens: -1,
+      estimated: false,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a context-usage event with a fractional promptTokens', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 12.5,
+      estimated: false,
     });
     expect(result.success).toBe(false);
   });

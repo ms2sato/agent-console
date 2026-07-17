@@ -206,8 +206,22 @@ export class OpenAIChatAdapter implements ProviderAdapter {
           // Read usage BEFORE the choice-presence guard below: the final
           // usage-bearing chunk has an EMPTY `choices` array per the OpenAI
           // streaming contract, so the early-continue would otherwise skip it.
-          if (chunk.usage !== null && chunk.usage !== undefined) {
-            capturedUsage = chunk.usage;
+          // The SSE payload is untrusted JSON -- validate the shape (integer,
+          // non-negative counters) before accepting it, so a malformed
+          // compatible-provider response falls through to the chars/4
+          // estimated fallback instead of corrupting context accounting.
+          const usage = chunk.usage;
+          if (
+            usage !== null &&
+            usage !== undefined &&
+            Number.isSafeInteger(usage.prompt_tokens) &&
+            usage.prompt_tokens >= 0 &&
+            Number.isSafeInteger(usage.completion_tokens) &&
+            usage.completion_tokens >= 0 &&
+            Number.isSafeInteger(usage.total_tokens) &&
+            usage.total_tokens >= 0
+          ) {
+            capturedUsage = usage;
           }
           const choice = chunk.choices?.[0];
           if (choice === undefined) continue;

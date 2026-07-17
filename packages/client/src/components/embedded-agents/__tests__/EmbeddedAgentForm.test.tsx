@@ -605,6 +605,83 @@ describe('EmbeddedAgentForm', () => {
       expect(screen.getByDisplayValue('80')).toBeTruthy();
       expect(screen.getByDisplayValue('95')).toBeTruthy();
     });
+
+    it('round-trips a decimal threshold (e.g. 75.6%) through the Edit form unchanged, instead of drifting to a whole percent (CodeRabbit: formatHandoffRatioInput precision)', () => {
+      renderEmbeddedAgentForm({
+        mode: 'edit',
+        initialData: {
+          name: 'Existing Embedded Agent',
+          description: '',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'qwen3:32b',
+          apiKeyRef: '',
+          systemPrompt: '',
+          maxToolIterationsInput: '',
+          enabledTools: ['Read', 'Glob', 'Grep'],
+          instructions: [],
+          contextWindowTokensInput: '128000',
+          handoffSoftRatioInput: formatHandoffRatioInput(0.756),
+          handoffHardRatioInput: formatHandoffRatioInput(0.9),
+        },
+      });
+
+      // Must show "75.6", NOT "76" -- a decimal threshold stored by a prior
+      // save must not drift when the definition is re-opened for editing.
+      expect(screen.getByDisplayValue('75.6')).toBeTruthy();
+      expect(screen.getByDisplayValue('90')).toBeTruthy();
+    });
+
+    it('should reject submission when the soft threshold exceeds the hard threshold', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('75'), '95');
+      await user.type(screen.getByPlaceholderText('90'), '80');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Soft threshold must not exceed the hard threshold')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should allow submission when the soft threshold equals the hard threshold', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('75'), '80');
+      await user.type(screen.getByPlaceholderText('90'), '80');
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('should allow submission when only one of the two threshold inputs is set (no cross-field comparison possible)', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('75'), '95');
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 
   describe('parseContextWindowTokens', () => {
@@ -651,12 +728,16 @@ describe('EmbeddedAgentForm', () => {
   });
 
   describe('formatHandoffRatioInput', () => {
-    it('should format a 0-1 ratio into a rounded percentage string', () => {
+    it('should format a whole-percent 0-1 ratio into a plain percentage string', () => {
       expect(formatHandoffRatioInput(0.75)).toBe('75');
     });
 
-    it('should round to the nearest integer percentage', () => {
-      expect(formatHandoffRatioInput(0.756)).toBe('76');
+    it('should preserve decimal precision instead of rounding to the nearest integer percentage (CodeRabbit: precision-loss regression)', () => {
+      expect(formatHandoffRatioInput(0.756)).toBe('75.6');
+    });
+
+    it('should format a floating-point-noise value cleanly (0.7000000000000001 * 100 -> "70", not "70.00000000000001")', () => {
+      expect(formatHandoffRatioInput(0.7000000000000001)).toBe('70');
     });
 
     it('should map undefined to an empty string', () => {

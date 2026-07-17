@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useEmbeddedAgentWorker } from '../useEmbeddedAgentWorker';
-import { MockWebSocket, installMockWebSocket } from '../../../../test/mock-websocket';
+import { MockWebSocket, installMockWebSocket, decodeSentMessages } from '../../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers, _inspect, getOrCreateEmbeddedAgentWorker } from '../../embedded-agent-store';
 
 describe('useEmbeddedAgentWorker', () => {
@@ -82,7 +82,7 @@ describe('useEmbeddedAgentWorker', () => {
       result.current.cancel();
     });
 
-    const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+    const sent = decodeSentMessages(ws!.send.mock.calls);
     expect(sent).toContainEqual({ type: 'embedded-cancel' });
   });
 
@@ -99,7 +99,7 @@ describe('useEmbeddedAgentWorker', () => {
       result.current.triggerHandoff();
     });
 
-    const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+    const sent = decodeSentMessages(ws!.send.mock.calls);
     expect(sent).toContainEqual({ type: 'embedded-handoff' });
     expect(result.current.handoffInFlight).toBe(true);
   });

@@ -401,6 +401,61 @@ describe('OpenAIChatAdapter — token usage (Context Handoff Phase A)', () => {
     const done = events.at(-1);
     expect(done).toEqual({ type: 'done', finishReason: 'stop', usage: undefined });
   });
+
+  it('rejects a malformed usage chunk with a negative prompt_tokens, falling back to undefined', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":-5,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({ type: 'done', finishReason: null, usage: undefined });
+  });
+
+  it('rejects a malformed usage chunk with a non-integer prompt_tokens, falling back to undefined', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":10.5,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({ type: 'done', finishReason: null, usage: undefined });
+  });
+
+  it('still accepts a well-formed usage chunk (regression)', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({
+      type: 'done',
+      finishReason: null,
+      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+    });
+  });
 });
 
 describe('OpenAIChatAdapter — HTTP errors', () => {

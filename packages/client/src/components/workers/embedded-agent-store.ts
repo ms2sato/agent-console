@@ -256,7 +256,17 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   };
 
   triggerHandoff = (): void => {
-    this.send({ type: 'embedded-handoff' });
+    // Reject duplicate triggers (e.g. a rapid double-click) rather than
+    // sending a second `embedded-handoff` while one is already in flight --
+    // the server-side admission gate would reject the second anyway, but
+    // rejecting here avoids a redundant round trip and a spurious error.
+    if (this.snapshot.handoffInFlight) return;
+    // Only latch `handoffInFlight` when the socket write actually succeeded
+    // -- mirrors sendUserMessage's `send()` return-value check. A failed
+    // (not-connected) send must not leave the UI showing "Handing off…" for
+    // a message that was never transmitted.
+    const sent = this.send({ type: 'embedded-handoff' });
+    if (!sent) return;
     this.patch({ handoffInFlight: true });
   };
 
@@ -859,6 +869,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // rejected `send()` call -- reject the pending promise so MessagePanel
     // preserves the input draft instead of clearing it optimistically.
     this.rejectPendingSend(message);
+    // An immediate/synchronous server admission error for `embedded-handoff`
+    // (e.g. TURN_IN_PROGRESS, ACTIVATION_FAILED) arrives here as a WS
+    // `error` message, NOT as a `turn-error` NDJSON event -- clear the flag
+    // on this path too, mirroring the `turn-error` case in foldEvent, so a
+    // rejected handoff doesn't leave "Handing off…" stuck indefinitely.
+    if (this.snapshot.handoffInFlight) {
+      this.patch({ handoffInFlight: false });
+    }
     if (code === 'SESSION_DELETED' || code === 'SESSION_PAUSED') {
       this.noReconnect = true;
       if (this.reconnectTimer) {

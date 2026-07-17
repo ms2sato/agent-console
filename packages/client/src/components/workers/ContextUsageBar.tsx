@@ -32,7 +32,9 @@ export function ContextUsageBar({
   if (contextWindowTokens === undefined) {
     const title =
       contextUsage !== null
-        ? `~${contextUsage.promptTokens} tokens used (estimated; set contextWindowTokens for a gauge)`
+        ? `${contextUsage.estimated ? '~' : ''}${contextUsage.promptTokens} tokens used${
+            contextUsage.estimated ? ' (estimated)' : ''
+          }; set contextWindowTokens for a gauge`
         : undefined;
     return (
       <div
@@ -52,7 +54,9 @@ export function ContextUsageBar({
   const color = ratio >= hardRatio ? 'bg-red-600' : ratio >= softRatio ? 'bg-amber-500' : 'bg-gray-500';
   const title =
     contextUsage !== null
-      ? `${Math.round(pct)}% (${contextUsage.promptTokens} / ${contextWindowTokens} tokens)`
+      ? `${contextUsage.estimated ? '~' : ''}${Math.round(pct)}% (${contextUsage.promptTokens} / ${contextWindowTokens} tokens${
+          contextUsage.estimated ? '; estimated' : ''
+        })`
       : undefined;
 
   return (

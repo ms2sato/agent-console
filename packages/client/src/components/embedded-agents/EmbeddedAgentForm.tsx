@@ -57,7 +57,7 @@ const InstructionPathSchema = v.pipe(
  * submit) get their own client-side pipe -- mirrors the pattern in
  * `AgentForm.tsx` (`continueTemplate`, `headlessTemplate`).
  */
-const EmbeddedAgentFormSchema = v.object({
+const EmbeddedAgentFormRawSchema = v.object({
   name: CreateEmbeddedAgentRequestSchema.entries.name,
   description: v.optional(v.pipe(v.string(), v.trim())),
 
@@ -138,6 +138,38 @@ const EmbeddedAgentFormSchema = v.object({
   // an array of objects to key rows by `field.id`.
   instructions: v.array(v.object({ path: InstructionPathSchema })),
 });
+
+/**
+ * Object-level cross-field check: when both handoff threshold inputs are
+ * present, the soft threshold must not exceed the hard threshold (mirrors
+ * the server-side `EmbeddedAgentHandoffConfigSchema` invariant on the parsed
+ * 0-1 ratios). A value that already failed its own per-field format/range
+ * check (`Number.isNaN`) is skipped here -- that field's own error message
+ * already explains the problem, so this check does not pile on a second,
+ * misleading "soft exceeds hard" message. Attached via `v.forward` to
+ * `handoffHardRatioInput` (react-hook-form's valibotResolver silently drops
+ * issues with no dot path, so an unforwarded object-level `v.check` would
+ * never surface as a visible form error).
+ */
+const EmbeddedAgentFormSchema = v.pipe(
+  EmbeddedAgentFormRawSchema,
+  v.forward(
+    v.partialCheck(
+      [['handoffSoftRatioInput'], ['handoffHardRatioInput']],
+      ({ handoffSoftRatioInput, handoffHardRatioInput }) => {
+        const soft = handoffSoftRatioInput?.trim();
+        const hard = handoffHardRatioInput?.trim();
+        if (!soft || !hard) return true;
+        const softNum = Number(soft);
+        const hardNum = Number(hard);
+        if (Number.isNaN(softNum) || Number.isNaN(hardNum)) return true;
+        return softNum <= hardNum;
+      },
+      'Soft threshold must not exceed the hard threshold',
+    ),
+    ['handoffHardRatioInput'],
+  ),
+);
 
 export type EmbeddedAgentFormData = v.InferOutput<typeof EmbeddedAgentFormSchema>;
 
@@ -435,11 +467,24 @@ export function parseHandoffRatio(input?: string): number | undefined {
   return trimmed ? Number(trimmed) / 100 : undefined;
 }
 
+/** Decimal places `formatHandoffRatioInput` rounds to -- enough to strip
+ * floating-point representation noise (e.g. `0.7000000000000001 * 100`)
+ * while preserving any genuine decimal precision a stored ratio carries
+ * (e.g. `0.756 * 100` stays `75.6`, never rounded to a whole percent). */
+const HANDOFF_RATIO_INPUT_PRECISION = 4;
+
 /**
- * Format a 0-1 handoff ratio (e.g. 0.75) back into the form's percentage
- * input string (e.g. "75"), for pre-filling the Edit form. `undefined` maps
- * to the empty string.
+ * Format a 0-1 handoff ratio (e.g. 0.756) back into the form's percentage
+ * input string (e.g. "75.6"), for pre-filling the Edit form. `undefined`
+ * maps to the empty string. Does NOT round to a whole percent -- a stored
+ * decimal threshold must round-trip through Edit unchanged; only
+ * floating-point noise from the `* 100` multiplication is stripped (via
+ * `Number`'s own trailing-zero-free string conversion after rounding to
+ * `HANDOFF_RATIO_INPUT_PRECISION` decimal places).
  */
 export function formatHandoffRatioInput(ratio: number | undefined): string {
-  return ratio !== undefined ? String(Math.round(ratio * 100)) : '';
+  if (ratio === undefined) return '';
+  const scale = 10 ** HANDOFF_RATIO_INPUT_PRECISION;
+  const pct = Math.round(ratio * 100 * scale) / scale;
+  return String(pct);
 }

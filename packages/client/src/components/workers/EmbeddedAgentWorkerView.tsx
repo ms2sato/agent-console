@@ -171,8 +171,16 @@ export function EmbeddedAgentWorkerView({
   useEffect(() => {
     if (ratio === null) return;
     const prevRatio = prevRatioRef.current;
-    if (crossedThreshold(prevRatio, ratio, softRatio)) setSoftBannerShown(true);
-    if (crossedThreshold(prevRatio, ratio, hardRatio)) setHardBannerShown(true);
+    if (ratio < softRatio) {
+      setSoftBannerShown(false);
+    } else if (crossedThreshold(prevRatio, ratio, softRatio)) {
+      setSoftBannerShown(true);
+    }
+    if (ratio < hardRatio) {
+      setHardBannerShown(false);
+    } else if (crossedThreshold(prevRatio, ratio, hardRatio)) {
+      setHardBannerShown(true);
+    }
     prevRatioRef.current = ratio;
   }, [ratio, softRatio, hardRatio]);
 
@@ -263,7 +271,11 @@ export function EmbeddedAgentWorkerView({
         <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0 flex items-center justify-between gap-3">
           <span>Context is {Math.round(ratio * 100)}% full — consider starting a handoff</span>
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={triggerHandoff} className="btn btn-primary text-xs shrink-0">
+            <button
+              onClick={triggerHandoff}
+              disabled={isTurnActive || handoffInFlight}
+              className="btn btn-primary text-xs shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               Handoff now
             </button>
             <button
@@ -287,7 +299,11 @@ export function EmbeddedAgentWorkerView({
             context
           </span>
           <div className="flex items-center gap-2 shrink-0">
-            <button onClick={triggerHandoff} className="btn btn-primary text-xs shrink-0">
+            <button
+              onClick={triggerHandoff}
+              disabled={isTurnActive || handoffInFlight}
+              className="btn btn-primary text-xs shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
               Handoff now
             </button>
             <button
