@@ -531,22 +531,28 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     } else {
       this.patch({ loadingHistory: false });
     }
-    // A history response (startOffset is only ever set for those, never for
-    // live `output`) covers everything the server has from `requestedFromOffset`
-    // onward. If a send confirmation is still pending after folding it, the
-    // write must have been lost when the connection dropped before the
-    // server received it (an accepted send's echo would already have
-    // resolved it via foldEvent's user-message case above) -- reject so the
-    // caller doesn't hang waiting for a confirmation that will never arrive.
-    if (typeof startOffset === 'number') {
-      this.rejectPendingSend('Reconnected but the message was not confirmed');
-    }
     // A `history` response that lands while an epoch resync is outstanding
     // completes that resync: replay whatever output arrived and was queued
     // in the meantime, now that we know exactly what this history payload
-    // already covers.
+    // already covers. This MUST run before the reject check below -- a
+    // pending send's confirming echo can be sitting in the resync queue
+    // (not yet folded) at the moment this history response arrives, and
+    // flushing gives it a chance to resolve the pending send before the
+    // reject below would otherwise fire and kill it (#1120).
     if (typeof startOffset === 'number' && this.resyncing) {
       this.flushResyncQueue(offset);
+    }
+    // A history response (startOffset is only ever set for those, never for
+    // live `output`) covers everything the server has from `requestedFromOffset`
+    // onward. If a send confirmation is still pending after folding it AND
+    // after the resync-queue flush above, the write must have been lost when
+    // the connection dropped before the server received it (an accepted
+    // send's echo would already have resolved it via foldEvent's
+    // user-message case, either during this fold or during the flush above)
+    // -- reject so the caller doesn't hang waiting for a confirmation that
+    // will never arrive.
+    if (typeof startOffset === 'number' && this.pendingSend !== null) {
+      this.rejectPendingSend('Reconnected but the message was not confirmed');
     }
   }
 
