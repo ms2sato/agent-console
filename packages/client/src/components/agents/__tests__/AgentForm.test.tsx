@@ -98,6 +98,27 @@ describe('AgentForm', () => {
       expect(formData.commandTemplate).toBe('myagent --msg {{prompt}}');
     });
 
+    it('should populate the Base Agent select with agents from useAgents (hooks/useAgents.ts)', async () => {
+      mockFetch.mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          agents: [
+            { id: 'claude-code', name: 'Claude Code', isBuiltIn: true },
+            { id: 'custom-agent', name: 'Custom Agent', isBuiltIn: false },
+          ],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      );
+
+      renderAgentForm();
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: 'Claude Code (built-in)' })).toBeTruthy();
+      });
+      expect(screen.getByRole('option', { name: 'Custom Agent' })).toBeTruthy();
+    });
+
     it('should show validation error for missing name', async () => {
       const user = userEvent.setup();
       const { props } = renderAgentForm();
@@ -363,6 +384,27 @@ describe('AgentForm', () => {
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as AgentFormData;
       expect(formData.description).toBe('');
+    });
+
+    it('should exclude the agent being edited from the Base Agent select options', async () => {
+      mockFetch.mockImplementation(() =>
+        Promise.resolve(new Response(JSON.stringify({
+          agents: [
+            { id: 'existing-agent-id', name: 'Existing Agent', isBuiltIn: false },
+            { id: 'other-agent', name: 'Other Agent', isBuiltIn: false },
+          ],
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      );
+
+      renderAgentForm({ mode: 'edit', agentId: 'existing-agent-id', initialData });
+
+      await waitFor(() => {
+        expect(screen.getByRole('option', { name: 'Other Agent' })).toBeTruthy();
+      });
+      expect(screen.queryByRole('option', { name: 'Existing Agent' })).toBeNull();
     });
   });
 

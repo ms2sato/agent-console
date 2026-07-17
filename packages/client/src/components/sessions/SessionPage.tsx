@@ -21,7 +21,7 @@ import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBa
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
-import type { Session, Worker } from '@agent-console/shared';
+import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { MemoPanel } from './MemoPanel';
 import { useAgents } from '../../hooks/useAgents';
@@ -69,6 +69,26 @@ function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerE
 export interface SessionPageProps {
   sessionId: string;
   workerId?: string;  // Optional - if not provided, will redirect to default worker
+}
+
+/**
+ * Resolves whether the active tab's terminal agent has `stripScrollbackClear`
+ * enabled. Returns false when the active tab isn't a terminal-agent worker
+ * (embedded-agent / terminal-shell workers have no `AgentDefinition` entry
+ * and never match), or when its agent isn't found in the fetched agents
+ * list (e.g. still loading).
+ *
+ * @internal Exported for testing
+ */
+export function resolveShouldStripScrollback(
+  workers: Worker[],
+  activeTabId: string | null,
+  agents: AgentDefinition[]
+): boolean {
+  const activeWorker = workers.find((w) => w.id === activeTabId);
+  const activeAgentId = activeWorker?.type === 'agent' ? activeWorker.agentId : undefined;
+  const activeAgent = activeAgentId ? agents.find((a) => a.id === activeAgentId) : undefined;
+  return activeAgent?.stripScrollbackClear ?? false;
 }
 
 export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPageProps) {
@@ -422,11 +442,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   const activeTab = tabs.find(t => t.id === activeTabId);
 
-  // Determine if active worker's agent has stripScrollbackClear enabled
-  const activeWorker = session.workers.find(w => w.id === activeTabId);
-  const activeAgentId = activeWorker?.type === 'agent' ? activeWorker.agentId : undefined;
-  const activeAgent = activeAgentId ? agents.find(a => a.id === activeAgentId) : undefined;
-  const shouldStripScrollback = activeAgent?.stripScrollbackClear ?? false;
+  const shouldStripScrollback = resolveShouldStripScrollback(session.workers, activeTabId, agents);
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
