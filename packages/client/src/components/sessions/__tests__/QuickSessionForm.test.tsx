@@ -41,7 +41,14 @@ function createMockResponse(body: unknown) {
 function resolveUrl(input: unknown): string {
   if (typeof input === 'string') return input;
   if (input instanceof URL) return input.toString();
-  if (input && typeof input === 'object' && 'url' in input) return (input as Request).url;
+  if (
+    input &&
+    typeof input === 'object' &&
+    'url' in input &&
+    typeof (input as { url: unknown }).url === 'string'
+  ) {
+    return (input as { url: string }).url;
+  }
   return '';
 }
 

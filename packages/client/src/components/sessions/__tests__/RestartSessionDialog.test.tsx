@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
-import { render, screen, waitFor, cleanup } from '@testing-library/react';
+import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RestartSessionDialog, type RestartSessionDialogProps } from '../RestartSessionDialog';
@@ -563,15 +563,19 @@ describe('RestartSessionDialog', () => {
         expect(screen.getByText('Local GPT')).toBeTruthy();
       });
 
-      // The embedded <option> is disabled -- a real browser will not fire a
-      // selectOptions change for it. Attempting the interaction anyway
-      // documents that even so, no code path can produce an embedded id in
-      // the submitted payload (RestartWorkerRequestSchema has no
-      // embeddedAgentId field; see restartAgentWorker in lib/api.ts).
+      // The embedded <option> is disabled, so a real browser (and
+      // userEvent.selectOptions, which refuses to select a disabled option)
+      // would never fire this change. Dispatch the change event directly so
+      // handleAgentSelectionChange's embedded no-op guard actually runs --
+      // this proves the guard itself is what makes an embedded id
+      // unreachable, not merely that the UI never offers the interaction.
       const agentSelect = screen.getByRole('combobox') as HTMLSelectElement;
-      await user.selectOptions(agentSelect, 'embedded:embedded-1').catch(() => {
-        // userEvent correctly refuses to select a disabled option; ignore.
-      });
+      const agentIdBeforeAttempt = agentSelect.value;
+      fireEvent.change(agentSelect, { target: { value: 'embedded:embedded-1' } });
+
+      // The guard discarded the embedded selection: the select's controlled
+      // value is unchanged.
+      expect(agentSelect.value).toBe(agentIdBeforeAttempt);
 
       const newSessionButton = screen.getByText('New Session');
       await user.click(newSessionButton);

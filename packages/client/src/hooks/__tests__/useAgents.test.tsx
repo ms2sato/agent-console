@@ -6,7 +6,7 @@ import { useResolvedAgentId } from '../useAgents';
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
 const mockFetch = mock((_input: RequestInfo | URL) => Promise.resolve(new Response()));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 // Restore original fetch after all tests
 afterAll(() => {

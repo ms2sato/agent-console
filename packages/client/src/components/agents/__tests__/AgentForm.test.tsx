@@ -13,7 +13,7 @@ import {
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
 const mockFetch = mock((_input: RequestInfo | URL) => Promise.resolve(new Response()));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 beforeEach(() => {
   // Mock fetch to return empty agents list
