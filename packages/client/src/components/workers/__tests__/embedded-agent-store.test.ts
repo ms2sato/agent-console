@@ -626,6 +626,71 @@ describe('embedded-agent-store', () => {
     expect(entriesAfterSecond[1]).toMatchObject({ kind: 'user-message', text: 'second' });
   });
 
+  it('resets accumulated entries when the server prunes and returns a startOffset different from what was requested, while the epoch stays the SAME (architect audit follow-up #1114)', async () => {
+    // Complements the plain-resume test above (same epoch, startOffset ===
+    // requestedFromOffset -> no reset) and the epoch-bump tests below
+    // (epoch differs -> reset via beginEpochReset/acceptEpoch). This is the
+    // third, previously-uncovered branch: the epoch is unchanged (no server
+    // restart) but the history response's startOffset does not match what
+    // was requested -- e.g. the server pruned its buffer and can only serve
+    // from a different offset. applyBytes's `isFresh` check must still
+    // treat this as a fresh load and reset chat state, entirely outside the
+    // epoch-bump machinery (acceptEpoch short-circuits to true for
+    // `epoch === this.epoch` and never calls beginEpochReset here).
+    const instance = getOrCreateEmbeddedAgentWorker('s17d', 'w17d');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+
+    const initialData = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'first' });
+    ws1!.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+    await flush();
+    const entriesAfterFirst = instance.getSnapshot().entries;
+    expect(entriesAfterFirst).toHaveLength(1);
+    const firstEntryRef = entriesAfterFirst[0];
+
+    // Plain reconnect (no epoch bump): lastOffset carries over, so the
+    // client requests fromOffset: initialData.length.
+    instance.restart();
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2!.simulateOpen();
+    expect(lastSentMessages(ws2!)).toContainEqual({
+      type: 'request-history',
+      fromOffset: initialData.length,
+    });
+
+    // The server responds with the SAME epoch (no restart) but pruned its
+    // buffer, so it cannot resume from the requested offset and instead
+    // sends a fresh payload starting at 0.
+    const prunedData = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second (post-prune)' });
+    ws2!.simulateMessage(historyMessage(prunedData, prunedData.length, 0, 1));
+    await flush();
+
+    const entriesAfterPrune = instance.getSnapshot().entries;
+    // Fresh reset: the old entry's reference must NOT survive -- the new
+    // array is entirely rebuilt from the pruned payload, not appended to
+    // the prior accumulation.
+    expect(entriesAfterPrune).toHaveLength(1);
+    expect(entriesAfterPrune[0]).not.toBe(firstEntryRef);
+    expect(entriesAfterPrune[0]).toMatchObject({ kind: 'user-message', text: 'second (post-prune)' });
+
+    // The reset went through applyBytes's isFresh branch, NOT
+    // beginEpochReset's epoch-bump path: no second request-history was sent
+    // on ws2 (beginEpochReset would issue one), and the resync-queue
+    // machinery was never armed, so a subsequent live `output` for the same
+    // epoch folds immediately instead of being queued.
+    expect(
+      lastSentMessages(ws2!).filter((m) => (m as { type: string }).type === 'request-history'),
+    ).toHaveLength(1);
+
+    const liveData = ndjson({ v: 1, type: 'user-message', id: 'u3', text: 'third (live)' });
+    ws2!.simulateMessage(outputMessage(liveData, prunedData.length + liveData.length, 1));
+    await flush();
+    const entriesAfterLive = instance.getSnapshot().entries;
+    expect(entriesAfterLive).toHaveLength(2);
+    expect(entriesAfterLive[1]).toMatchObject({ kind: 'user-message', text: 'third (live)' });
+  });
+
   it('resets accumulated entries on an epoch bump (worker restarted server-side)', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s17', 'w17');
     const ws = MockWebSocket.getLastInstance();
