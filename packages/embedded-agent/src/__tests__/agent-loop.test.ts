@@ -98,6 +98,8 @@ function makeLoop(
     maxToolIterations?: number;
     retryDelaysMs?: [number, number];
     onSleep?: (loopRef: { current: AgentLoop | null }) => void;
+    reassembleSystemPrompt?: () => Promise<string>;
+    loadHandoffPrompt?: () => Promise<string>;
   } = {},
 ): Harness {
   const events: EmbeddedAgentEvent[] = [];
@@ -119,6 +121,8 @@ function makeLoop(
       sleeps.push(ms);
       opts.onSleep?.(loopRef);
     },
+    reassembleSystemPrompt: opts.reassembleSystemPrompt ?? (async () => 'sys'),
+    loadHandoffPrompt: opts.loadHandoffPrompt ?? (async () => 'DISTILL_PROMPT'),
   };
   const loop = new AgentLoop(deps);
   loopRef.current = loop;
@@ -141,6 +145,7 @@ describe('AgentLoop — event ordering', () => {
       'tool-call',
       'tool-result',
       'assistant-message',
+      'context-usage',
       'state',
     ]);
     expect(h.events[0]).toEqual({ v: 1, type: 'state', state: 'active' });
@@ -190,6 +195,7 @@ describe('AgentLoop — event ordering', () => {
       'assistant-delta',
       'assistant-delta',
       'assistant-message',
+      'context-usage',
       'state',
     ]);
     const thinking = h.events.filter((e) => e.type === 'assistant-thinking-delta');
@@ -203,7 +209,13 @@ describe('AgentLoop — event ordering', () => {
     const h = makeLoop([textResponse('plain answer')]);
     await h.loop.runTurn('t1', 'hi');
     expect(h.events.filter((e) => e.type === 'assistant-thinking-delta')).toHaveLength(0);
-    expect(types(h.events)).toEqual(['state', 'assistant-delta', 'assistant-message', 'state']);
+    expect(types(h.events)).toEqual([
+      'state',
+      'assistant-delta',
+      'assistant-message',
+      'context-usage',
+      'state',
+    ]);
   });
 });
 
@@ -428,5 +440,75 @@ describe('AgentLoop — wire-event size caps', () => {
     await h.loop.runTurn('t1', 'hi');
     const toolCall = h.events.find((e) => e.type === 'tool-call') as { args: unknown } | undefined;
     expect(toolCall!.args).toEqual({ a: 1 });
+  });
+});
+
+describe('AgentLoop — context-usage accounting (Token accounting, Context Handoff Phase A)', () => {
+  it('falls back to a chars/4 estimate (estimated: true) when the provider omits usage', async () => {
+    const h = makeLoop([textResponse('ok')]);
+    await h.loop.runTurn('t1', 'hi');
+    const usageEvent = h.events.find((e) => e.type === 'context-usage') as
+      | { promptTokens: number; estimated: boolean }
+      | undefined;
+    expect(usageEvent).toBeDefined();
+    expect(usageEvent!.estimated).toBe(true);
+    expect(usageEvent!.promptTokens).toBeGreaterThan(0);
+  });
+
+  it('uses the real usage.promptTokens (estimated: false) when the provider sends usage', async () => {
+    const h = makeLoop([
+      {
+        kind: 'events',
+        events: [
+          { type: 'text-delta', text: 'ok' },
+          {
+            type: 'done',
+            finishReason: 'stop',
+            usage: { promptTokens: 123, completionTokens: 4, totalTokens: 127 },
+          },
+        ],
+      },
+    ]);
+    await h.loop.runTurn('t1', 'hi');
+    const usageEvent = h.events.find((e) => e.type === 'context-usage');
+    expect(usageEvent).toEqual({ v: 1, type: 'context-usage', promptTokens: 123, estimated: false });
+  });
+
+  it("does not emit context-usage when the turn's very first provider attempt fails (all retries exhausted)", async () => {
+    const h = makeLoop([{ kind: 'throw', error: new Error('down') }]);
+    await h.loop.runTurn('t1', 'hi');
+    expect(h.events.find((e) => e.type === 'context-usage')).toBeUndefined();
+    expect(h.events.find((e) => e.type === 'turn-error')).toBeDefined();
+  });
+
+  it("emits context-usage exactly once for a multi-tool-call turn, using the LAST iteration's usage value", async () => {
+    const h = makeLoop([
+      {
+        kind: 'events',
+        events: [
+          { type: 'tool-call', callId: 'c1', name: 'do', argsJson: '{}' },
+          {
+            type: 'done',
+            finishReason: 'tool_calls',
+            usage: { promptTokens: 100, completionTokens: 1, totalTokens: 101 },
+          },
+        ],
+      },
+      {
+        kind: 'events',
+        events: [
+          { type: 'text-delta', text: 'done' },
+          {
+            type: 'done',
+            finishReason: 'stop',
+            usage: { promptTokens: 200, completionTokens: 2, totalTokens: 202 },
+          },
+        ],
+      },
+    ]);
+    await h.loop.runTurn('t1', 'hi');
+    const usageEvents = h.events.filter((e) => e.type === 'context-usage');
+    expect(usageEvents).toHaveLength(1);
+    expect(usageEvents[0]).toEqual({ v: 1, type: 'context-usage', promptTokens: 200, estimated: false });
   });
 });

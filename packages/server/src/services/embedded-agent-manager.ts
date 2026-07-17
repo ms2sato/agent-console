@@ -120,6 +120,8 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
       maxToolIterations: request.maxToolIterations,
       enabledTools: request.enabledTools,
       instructions: request.instructions,
+      contextWindowTokens: request.contextWindowTokens,
+      handoff: request.handoff,
       createdBy,
       createdAt: now,
       updatedAt: now,
@@ -177,6 +179,11 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
         request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools),
       instructions:
         request.instructions === null ? undefined : (request.instructions ?? existing.instructions),
+      contextWindowTokens:
+        request.contextWindowTokens === null
+          ? undefined
+          : (request.contextWindowTokens ?? existing.contextWindowTokens),
+      handoff: request.handoff === null ? undefined : (request.handoff ?? existing.handoff),
       createdBy: existing.createdBy,
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),

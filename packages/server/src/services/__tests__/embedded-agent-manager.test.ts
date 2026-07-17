@@ -169,6 +169,35 @@ describe('EmbeddedAgentManager', () => {
       expect(def.instructions).toBeUndefined();
     });
 
+    it('sets contextWindowTokens and handoff from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        {
+          name: 'Ollama',
+          provider: VALID_PROVIDER,
+          contextWindowTokens: 128000,
+          handoff: { softRatio: 0.75, hardRatio: 0.9, auto: true },
+        },
+        'creator-user-id'
+      );
+
+      expect(def.contextWindowTokens).toBe(128000);
+      expect(def.handoff).toEqual({ softRatio: 0.75, hardRatio: 0.9, auto: true });
+    });
+
+    it('leaves contextWindowTokens/handoff undefined when absent from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        { name: 'Ollama', provider: VALID_PROVIDER },
+        'creator-user-id'
+      );
+
+      expect(def.contextWindowTokens).toBeUndefined();
+      expect(def.handoff).toBeUndefined();
+    });
+
     it('fires onEmbeddedAgentCreated after a successful save', async () => {
       const { created, callbacks } = createCallbackRecorder();
       const manager = await getManager();
@@ -209,6 +238,8 @@ describe('EmbeddedAgentManager', () => {
           maxToolIterations: 10,
           enabledTools: ['Read'],
           instructions: ['docs/local-note.md'],
+          contextWindowTokens: 32000,
+          handoff: { softRatio: 0.7, hardRatio: 0.85, auto: false },
         },
         'owner-id'
       );
@@ -227,12 +258,14 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.maxToolIterations).toBe(10);
       expect(updated?.enabledTools).toEqual(['Read']);
       expect(updated?.instructions).toEqual(['docs/local-note.md']);
+      expect(updated?.contextWindowTokens).toBe(32000);
+      expect(updated?.handoff).toEqual({ softRatio: 0.7, hardRatio: 0.85, auto: false });
       expect(updated?.provider).toEqual(VALID_PROVIDER);
       expect(updated?.createdBy).toBe('owner-id');
       expect(updated?.createdAt).toBe(created.createdAt);
     });
 
-    it('clears description/systemPrompt/maxToolIterations/enabledTools/instructions on null', async () => {
+    it('clears description/systemPrompt/maxToolIterations/enabledTools/instructions/contextWindowTokens/handoff on null', async () => {
       const manager = await getManager();
       const created = await seed(manager);
 
@@ -242,6 +275,8 @@ describe('EmbeddedAgentManager', () => {
         maxToolIterations: null,
         enabledTools: null,
         instructions: null,
+        contextWindowTokens: null,
+        handoff: null,
       });
 
       expect(updated?.description).toBeUndefined();
@@ -249,6 +284,21 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.maxToolIterations).toBeUndefined();
       expect(updated?.enabledTools).toBeUndefined();
       expect(updated?.instructions).toBeUndefined();
+      expect(updated?.contextWindowTokens).toBeUndefined();
+      expect(updated?.handoff).toBeUndefined();
+    });
+
+    it('replaces the whole handoff object when handoff is present (no per-subfield merge)', async () => {
+      const manager = await getManager();
+      const created = await seed(manager);
+
+      const updated = await manager.updateEmbeddedAgent(created.id, {
+        handoff: { softRatio: 0.6 },
+      });
+
+      // Whole-object replace: hardRatio/auto from the original handoff are
+      // NOT carried over even though only softRatio was specified.
+      expect(updated?.handoff).toEqual({ softRatio: 0.6 });
     });
 
     it('replaces enabledTools with the request value when present, including an explicit empty array', async () => {

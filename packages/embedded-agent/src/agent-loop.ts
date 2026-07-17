@@ -41,6 +41,10 @@ export interface AgentLoopDeps {
   maxToolIterations: number;
   retryDelaysMs?: [number, number];
   sleep?: (ms: number) => Promise<void>;
+  /** Context Handoff (Phase A): re-runs loadInstructions + assembleSystemPrompt. */
+  reassembleSystemPrompt: () => Promise<string>;
+  /** Context Handoff (Phase A): loads the (possibly operator-overridden) distillation prompt. */
+  loadHandoffPrompt: () => Promise<string>;
 }
 
 interface ProviderToolCall {
@@ -49,8 +53,13 @@ interface ProviderToolCall {
   argsJson: string;
 }
 
+interface TurnUsage {
+  promptTokens: number;
+  estimated: boolean;
+}
+
 type ProviderOutcome =
-  | { kind: 'ok'; text: string; toolCalls: ProviderToolCall[] }
+  | { kind: 'ok'; text: string; toolCalls: ProviderToolCall[]; usage?: TurnUsage }
   | { kind: 'error'; message: string }
   | { kind: 'canceled' };
 
@@ -97,6 +106,17 @@ function capToolCallArgsForWire(argsJson: string, parsedValue: Record<string, un
   return truncated ? text : parsedValue;
 }
 
+/**
+ * Fallback token estimate for providers that ignore `stream_options` and
+ * never send `usage`: chars/4 summed over every message's `.content` in the
+ * given array, rounded. `tool_calls` on assistant messages are not counted --
+ * only `.content` size matters for this coarse estimate.
+ */
+function estimateTokensFromChars(messages: ChatMessage[]): number {
+  const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  return Math.round(totalChars / 4);
+}
+
 export class AgentLoop {
   private readonly deps: AgentLoopDeps;
   private readonly retryDelaysMs: [number, number];
@@ -126,9 +146,13 @@ export class AgentLoop {
       this.conversation.push({ role: 'user', content: text });
 
       let malformedReAsks = 0;
+      // Last-attempt-wins: overwritten on every successful provider attempt
+      // this turn, emitted once at the turn's actual conclusion (see Token
+      // accounting -- "turn-scoped, last-attempt wins" in the design doc).
+      let turnUsage: TurnUsage | undefined;
 
       for (let iteration = 0; iteration < this.deps.maxToolIterations; iteration++) {
-        const outcome = await this.runProviderWithRetries(turnId, abort.signal);
+        const outcome = await this.runProviderWithRetries(this.conversation, turnId, abort.signal);
         if (outcome.kind === 'canceled') {
           this.emitTurnError(turnId, 'turn canceled');
           return;
@@ -137,6 +161,7 @@ export class AgentLoop {
           this.emitTurnError(turnId, outcome.message);
           return;
         }
+        turnUsage = outcome.usage;
 
         // Always emit the assistant message, even when the text is empty.
         this.deps.emit({
@@ -148,6 +173,7 @@ export class AgentLoop {
         this.conversation.push(this.buildAssistantMessage(outcome.text, outcome.toolCalls));
 
         if (outcome.toolCalls.length === 0) {
+          this.emitContextUsageIfKnown(turnUsage);
           this.emitIdle();
           return;
         }
@@ -221,6 +247,7 @@ export class AgentLoop {
         }
       }
 
+      this.emitContextUsageIfKnown(turnUsage);
       this.emitTurnError(turnId, 'maximum tool iterations reached');
     } finally {
       this.currentAbort = null;
@@ -261,12 +288,13 @@ export class AgentLoop {
   }
 
   private async runProviderWithRetries(
+    messages: ChatMessage[],
     turnId: string,
     signal: AbortSignal,
   ): Promise<ProviderOutcome> {
     for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt++) {
       try {
-        return await this.runProviderAttempt(turnId, signal);
+        return await this.runProviderAttempt(messages, turnId, signal);
       } catch (err) {
         if (signal.aborted) {
           return { kind: 'canceled' };
@@ -297,15 +325,19 @@ export class AgentLoop {
   }
 
   private async runProviderAttempt(
+    messages: ChatMessage[],
     turnId: string,
     signal: AbortSignal,
-  ): Promise<{ kind: 'ok'; text: string; toolCalls: ProviderToolCall[] }> {
+  ): Promise<{ kind: 'ok'; text: string; toolCalls: ProviderToolCall[]; usage: TurnUsage }> {
     let text = '';
     const toolCalls: ProviderToolCall[] = [];
+    let providerUsage:
+      | { promptTokens: number; completionTokens: number; totalTokens: number }
+      | undefined;
 
     for await (const event of this.deps.adapter.run({
       model: this.deps.model,
-      messages: this.conversation,
+      messages,
       tools: this.deps.tools,
       signal,
     })) {
@@ -327,11 +359,93 @@ export class AgentLoop {
           toolCalls.push({ callId: event.callId, name: event.name, argsJson: event.argsJson });
           break;
         case 'done':
+          if (event.usage !== undefined) providerUsage = event.usage;
           break;
       }
     }
 
-    return { kind: 'ok', text, toolCalls };
+    const usage: TurnUsage =
+      providerUsage !== undefined
+        ? { promptTokens: providerUsage.promptTokens, estimated: false }
+        : { promptTokens: estimateTokensFromChars(messages), estimated: true };
+
+    return { kind: 'ok', text, toolCalls, usage };
+  }
+
+  /**
+   * Context Handoff (Phase A): distill the conversation so far into a summary,
+   * then atomically reset the conversation to a fresh system prompt + a seed
+   * message carrying that summary. See docs/design/embedded-agent-worker.md
+   * "AgentLoop.handoff()" for the normative step list and the failure
+   * invariant this method must uphold: every early-return path here returns
+   * strictly before the `context-handoff` marker is emitted, so
+   * `this.conversation` is NEVER mutated without that marker having been
+   * emitted first.
+   */
+  async handoff(): Promise<void> {
+    const abort = new AbortController();
+    this.currentAbort = abort;
+
+    try {
+      this.deps.emit({ v: 1, type: 'state', state: 'active' });
+      const turnId = crypto.randomUUID();
+
+      let handoffPromptText: string;
+      try {
+        handoffPromptText = await this.deps.loadHandoffPrompt();
+      } catch (err) {
+        this.emitTurnError(turnId, `failed to load handoff prompt: ${errorMessage(err)}`);
+        return;
+      }
+
+      // Transient request array -- NEVER pushed onto this.conversation.
+      const messages: ChatMessage[] = [
+        ...this.conversation,
+        { role: 'user', content: handoffPromptText },
+      ];
+
+      const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal);
+      if (outcome.kind === 'canceled') {
+        this.emitTurnError(turnId, 'Context handoff failed: turn canceled');
+        return;
+      }
+      if (outcome.kind === 'error') {
+        this.emitTurnError(turnId, `Context handoff failed: ${outcome.message}`);
+        return;
+      }
+      // No tool calls are expected or handled for the distillation request;
+      // if the provider returns any anyway, they are ignored entirely.
+
+      const distillation = truncateToBytes(outcome.text, WIRE_EVENT_MAX_BYTES).text;
+      // Emitted BEFORE any conversation mutation -- the persisted/broadcast
+      // marker must be self-consistent with what actually happened.
+      this.deps.emit({ v: 1, type: 'context-handoff', distillation });
+
+      let newSystemPrompt: string;
+      try {
+        newSystemPrompt = await this.deps.reassembleSystemPrompt();
+      } catch {
+        // Degrade gracefully rather than abort: the marker above already
+        // committed to completing the reset.
+        newSystemPrompt = this.deps.systemPrompt;
+      }
+
+      const seedText = `This conversation continues from a previous one. Prior context summary: ${distillation}`;
+      this.conversation.splice(
+        0,
+        this.conversation.length,
+        { role: 'system', content: newSystemPrompt },
+        { role: 'user', content: seedText },
+      );
+
+      this.emitContextUsageIfKnown({
+        promptTokens: estimateTokensFromChars(this.conversation),
+        estimated: true,
+      });
+      this.emitIdle();
+    } finally {
+      this.currentAbort = null;
+    }
   }
 
   private emitTurnError(turnId: string, message: string): void {
@@ -341,5 +455,15 @@ export class AgentLoop {
 
   private emitIdle(): void {
     this.deps.emit({ v: 1, type: 'state', state: 'idle' });
+  }
+
+  private emitContextUsageIfKnown(usage: TurnUsage | undefined): void {
+    if (usage === undefined) return;
+    this.deps.emit({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: usage.promptTokens,
+      estimated: usage.estimated,
+    });
   }
 }

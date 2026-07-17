@@ -900,6 +900,92 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
   });
 });
 
+describe('EmbeddedAgentWorkerService.triggerHandoff', () => {
+  it('forwards a handoff command to stdin and admits synchronously', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+
+    expect(res).toEqual({ ok: true });
+    const forwarded = JSON.parse(h.fake.stdinWrites[before]);
+    expect(forwarded).toEqual({ v: 1, type: 'handoff' });
+  });
+
+  it('does not append any persisted/broadcast event for the handoff trigger itself', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+
+    expect(res.ok).toBe(true);
+    expect(h.bufferOutput).not.toHaveBeenCalled();
+  });
+
+  it('rejects with NOT_ACTIVATED when the subprocess is null', async () => {
+    const h = setup();
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
+  });
+
+  it('rejects a second concurrent trigger synchronously (turn in progress)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const p1 = h.service.triggerHandoff(h.sessionId, h.workerId);
+    const p2 = h.service.triggerHandoff(h.sessionId, h.workerId);
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1.ok).toBe(true);
+    expect(r2).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
+  });
+
+  it('rejects a handoff while a sendUserMessage turn is already active (shared admission gate)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const sendResult = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    expect(sendResult.ok).toBe(true);
+
+    const handoffResult = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(handoffResult).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
+  });
+
+  it('rejects with code WRITE_FAILED when the stdin write throws, and clears turnActive so a retry is possible', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.worker.stdin!.write = () => {
+      throw new Error('EPIPE');
+    };
+
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(res).toEqual({ ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' });
+
+    // turnActive was cleared on failure: a subsequent send is admitted.
+    h.worker.stdin!.write = () => 0;
+    const retry = await h.service.sendUserMessage(h.sessionId, h.workerId, 'retry');
+    expect(retry.ok).toBe(true);
+  });
+
+  it('re-admits a handoff after the loop reports idle', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(first.ok).toBe(true);
+    expect((await h.service.triggerHandoff(h.sessionId, h.workerId)).ok).toBe(false);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.worker.activityState === 'idle');
+
+    const third = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(third.ok).toBe(true);
+  });
+});
+
 describe('EmbeddedAgentWorkerService.cancel', () => {
   it('forwards a cancel command', async () => {
     const h = setup();

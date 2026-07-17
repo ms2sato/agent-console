@@ -281,6 +281,8 @@ export interface EmbeddedAgentDefinition {
   maxToolIterations?: number; // per user turn; default 25
   enabledTools?: EmbeddedAgentToolName[]; // FF-1a; undefined = default read-only set, [] = all builtin tools off — see Built-in tools
   instructions?: string[];    // opt-in instruction-file list, resolved relative to locationPath via resolveConfinedPath — see AGENTS.md loader
+  contextWindowTokens?: number;  // Context Handoff (Phase A); operator-declared model context window, denominator for the usage ratio
+  handoff?: { softRatio?: number; hardRatio?: number; auto?: boolean }; // Context Handoff (Phase A); auto is accepted/persisted but NOT read until Phase B
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;
@@ -291,7 +293,7 @@ export interface EmbeddedAgentDefinition {
 
 Plus a valibot schema in `packages/shared/src/schemas/embedded-agent.ts` (strictObject; `baseUrl` validated with `v.pipe(v.string(), v.url())`).
 
-**DB:** new table `embedded_agents` (columns mirroring the type incl. `created_by`; `provider_*` flattened: `provider_base_url`, `provider_model`, `provider_api_key_ref`). New migration `migrateToV<next>` in `packages/server/src/database/connection.ts` (check the current max `user_version` in `runMigrations`, `connection.ts:226-315`, and take the next number; v21 was the latest at the time of writing).
+**DB:** new table `embedded_agents` (columns mirroring the type incl. `created_by`; `provider_*` flattened: `provider_base_url`, `provider_model`, `provider_api_key_ref`). New migration `migrateToV<next>` in `packages/server/src/database/connection.ts` (check the current max `user_version` in `runMigrations`, `connection.ts:226-315`, and take the next number; v21 was the latest at the time of writing). The Context Handoff (Phase A) columns (`context_window_tokens`, `handoff_soft_ratio`, `handoff_hard_ratio`, `handoff_auto`) land in migration v27 — see [Context Handoff (Phase A)](#context-handoff-phase-a).
 
 **Server:** `packages/server/src/services/embedded-agent-manager.ts`, modeled on `AgentManager` (`agent-manager.ts:25-106`): in-memory `Map` + SQLite repository, CRUD methods, lifecycle callbacks broadcasting `embedded-agent-created/updated/deleted` app messages. No built-in definition (unlike `AgentManager` there is no default; the registry starts empty and the UI prompts the user to create one).
 
@@ -379,6 +381,7 @@ type EmbeddedAgentCommand =
       instructions?: string[] }               // opt-in instruction-file list, forwarded unchanged; the loop resolves + confines + loads them — see AGENTS.md loader
   | { v: 1; type: 'user-message'; id: string; text: string } // id minted by server, echoed in events
   | { v: 1; type: 'cancel' }                                 // abort the in-flight turn (AbortController)
+  | { v: 1; type: 'handoff' }                                // Context Handoff (Phase A); manual trigger, see below
   | { v: 1; type: 'shutdown' };
 ```
 
@@ -393,8 +396,10 @@ type EmbeddedAgentEvent =
   | { v: 1; type: 'assistant-message'; turnId: string; text: string }// final full text of one assistant message
   | { v: 1; type: 'tool-call'; turnId: string; callId: string; name: string; args: unknown }
   | { v: 1; type: 'tool-result'; turnId: string; callId: string; ok: boolean; result: string } // result truncated to 16 KiB
-  | { v: 1; type: 'turn-error'; turnId: string; message: string }    // turn aborted (provider error, iteration cap, cancel)
-  | { v: 1; type: 'fatal'; message: string };                        // loop is about to exit(1)
+  | { v: 1; type: 'turn-error'; turnId: string; message: string }    // turn aborted (provider error, iteration cap, cancel, handoff failure)
+  | { v: 1; type: 'fatal'; message: string }                         // loop is about to exit(1)
+  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean } // Context Handoff (Phase A); emitted after every turn/handoff attempt that produced a usable value
+  | { v: 1; type: 'context-handoff'; distillation: string };         // Context Handoff (Phase A); persisted marker, emitted immediately before the atomic conversation reset
 ```
 
 Two further event kinds are written into the persisted stream by the SERVER, not the loop, so that the on-disk log is the complete transcript. The **replay/persistence union includes them** — clients that parsed only `EmbeddedAgentEvent` would silently drop every user message and exit row from replayed history:
@@ -562,7 +567,8 @@ Server side (`packages/server/src/websocket/routes.ts`):
 ```ts
 type EmbeddedAgentClientMessage =
   | { type: 'embedded-user-message'; text: string }   // -> EmbeddedAgentWorkerService.sendUserMessage
-  | { type: 'embedded-cancel' };                      // -> forward { type: 'cancel' } to stdin
+  | { type: 'embedded-cancel' }                        // -> forward { type: 'cancel' } to stdin
+  | { type: 'embedded-handoff' };                       // Context Handoff (Phase A); -> EmbeddedAgentWorkerService.triggerHandoff, see below
 ```
 
   `request-history` is shared with the PTY path (same semantics).
@@ -686,10 +692,115 @@ Normalization (v1 scope): parse `argsJson` with `JSON.parse` and require the res
 - Dispatch: extend `SessionPage.tsx` (`:42`, `:459`, `:504-505`, error-fallback `:49-56`).
 - Worker creation: adding a worker presents a **single unified "agent" entry point** covering both kinds: the picker lists terminal-agent definitions (`AgentDefinition`, existing agents registry) and embedded-agent definitions (`EmbeddedAgentDefinition`, `GET /api/embedded-agents`) in one list, each item carrying a kind badge (Terminal / Embedded). Selecting an item creates the matching worker type (`agent` + `agentId` vs `embedded-agent` + `embeddedAgentId`) — the user never chooses a "worker type" as a separate prior step; the kind is a property of the chosen agent. When the embedded registry is empty, the picker still lists terminal agents and shows an empty-state note linking to the Agents umbrella's management UI (Phase 3.5). Embedded-agent workers are NOT auto-created with sessions (unlike the git-diff worker, `session-manager.ts:620-623`). Terminal-agent items in the picker are shown but **disabled** with an explanatory tooltip: `CreateWorkerRequestSchema` (`packages/shared/src/schemas/worker.ts`) does not accept `type: 'agent'` creation params over the client-facing `POST /api/sessions/:sessionId/workers` route -- a terminal `AgentWorker` has only ever been creatable at session-creation time, never added to an already-running session. Listing terminal items disabled (rather than omitting them) keeps the unified list matching this section's design while accurately reflecting the current REST surface; widening the schema to support it is out of this PR's scope.
 - Management surface: the agents management UI presents both registries under one "Agents" umbrella (sections or badges distinguishing the kinds); CRUD stays per-registry — REST endpoints and the data model are unchanged. This unification is **presentation-only**, per the separate-registry decision in [Embedded agent registry](#embedded-agent-registry-embeddedagentdefinition).
+- Context-window usage bar, threshold banners, and the manual handoff trigger are specified separately in [Context Handoff (Phase A)](#context-handoff-phase-a) — they attach to `EmbeddedAgentWorkerView` but are enough surface area to warrant their own section.
 
 ### AI-generated HTML/SVG preview: sanitizer as depth, not the boundary
 
 The `PreviewPanel` (Phase 3, `packages/client/src/components/workers/PreviewPanel.tsx` + `packages/client/src/lib/preview-sandbox.ts`) renders AI-generated `html`/`svg` code blocks through three layers, and the layers do not carry equal weight. The engine-independent guarantee — the property that holds regardless of which browser renders the frame — is carried entirely by the two **declarative, structural** layers: the `<iframe sandbox="">` with no tokens (no `allow-scripts`, so script execution is refused outright by the browser regardless of document content) and the wrapper document's `<meta http-equiv="Content-Security-Policy">` (`default-src 'none'`, blocking script execution and all network fetches independently of the sandbox attribute). Both are enforced by whatever engine renders the frame, Safari and Firefox included, because they are spec-mandated browser behaviors, not sanitizer output. The `DOMParser`-based sanitizer (`sanitizePreviewFragment`) is the third layer, and it is **defense-in-depth, not the boundary**: markup that survives it on a differently-parsing engine — an mXSS-class divergence, where a HTML5 parser's foreign-content/RAWTEXT/adoption-agency edge cases let sanitized-looking output mutate into live markup on a second parse — still lands inside a script-blocked, opaque-origin, network-blocked iframe. Cross-engine sanitizer variance therefore erodes depth; it does not by itself open a direct hole. This distinction is the design precondition for the sanitizer's evolution (Issue #1106): empirically-verified sanitizer gaps against real Chromium (see the regression corpus in `preview-sandbox.test.ts` and Issue #1162 for a concrete documented case) are tracked and hardened over time, but a gap is not a merge-blocking security incident as long as the sandbox + CSP layers remain intact — those two are what must never regress.
+
+## Context Handoff (Phase A)
+
+**Status:** implementation-grade spec, Phase A only (Issue [#1122](https://github.com/ms2sato/agent-console/issues/1122)). Landed after v1 shipped; extends the Stdio protocol, `EmbeddedAgentDefinition`, and the client store/view specified above rather than superseding them.
+
+**Problem.** v1's [UI](#ui) states a persistent, non-dismissable notice: conversation resets when the worker or the server restarts — a worker-type inconsistency against terminal agents, which continue via `-c`. Context Handoff does not remove that notice (a restart still resets everything — [Transcript persistence / restart-resume](#post-v1-fast-follows) is the separate, not-yet-designed fast-follow that would change it). What it adds is a way to avoid *involuntarily* losing context **within** a live worker's lifetime: when the conversation approaches the model's context window, the user can trigger a **handoff** — the loop asks the model to distill the conversation so far, then seeds a fresh conversation with that distillation instead of the raw history.
+
+**Explicitly not this design (owner directives, out of scope permanently):**
+1. Claude Code-style in-place compaction — summarizing mid-turn on the same conversation confuses the model's own sense of context, per owner.
+2. Archiving old context — the old context is not needed once distilled, per owner.
+3. A general hooks/event framework (matcher syntax, hierarchical config) — `context-handoff` is a single, purpose-built event name; it does not borrow `PreCompact` or other harness vocabulary because this design does not compact.
+4. Mid-turn handoff — handoff only runs between turns, exactly like `user-message` (never breaks an in-flight tool-call cycle).
+5. Cross-worker / cross-session handoff.
+
+**Phase split.** Phase A (this section) is **manual trigger + an always-visible usage bar + prompt-file override only**. Phase B (separate Issue, filed after Phase A dogfood) adds hard-threshold auto-fire, a shell-script override handler with trust-gating, and reads `EmbeddedAgentDefinition.handoff.auto`. Phase A's loop and server code MUST NOT read `handoff.auto` — the field is accepted and persisted (forward-compat for Phase B) but inert until Phase B lands.
+
+### Token accounting
+
+**Source.** `OpenAIChatAdapter`'s request body gains `stream_options: { include_usage: true }`. Per the OpenAI streaming contract this causes one additional SSE chunk at the end of the stream carrying `usage: { prompt_tokens, completion_tokens, total_tokens }` with an **empty `choices` array** — the adapter's existing `const choice = chunk.choices?.[0]; if (choice === undefined) continue;` early-continue would silently skip this chunk, so the usage read MUST happen before that guard, independent of `choice` presence. `OpenAIStreamChunk` gains `usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null`; the adapter keeps the latest non-null value seen across the stream and includes it on the `done` event: `ProviderEvent`'s `{ type: 'done'; finishReason: string | null }` variant gains an optional `usage?: { promptTokens: number; completionTokens: number; totalTokens: number }` field (field names translated from the wire's snake_case to the adapter's existing camelCase convention).
+
+**Fallback.** A provider that ignores `stream_options` (older/non-compliant OpenAI-compatible servers) never sends `usage`; `done.usage` is then `undefined`. `AgentLoop` falls back to a **chars/4 estimate** over the full `conversation` array's `content` (all messages, JSON length of `content` strings summed, divided by 4) for that attempt, and the resulting `context-usage` event carries `estimated: true`. A real `usage.prompt_tokens` value carries `estimated: false`.
+
+**Granularity — turn-scoped, last-attempt wins.** `runTurn`'s tool-iteration loop makes one provider request per iteration (growing `conversation` each time a tool result is appended); a turn that used 3 tool calls made 4 requests. `AgentLoop` tracks the most recent successful attempt's usage in a turn-scoped variable (real value if the provider returned `usage`, chars/4 estimate otherwise) and, at the turn's terminal exit point (no more tool calls, or the iteration cap), emits **one** `context-usage` event carrying that last value — never an event per iteration. A turn that fails on its very first provider attempt (no successful response at all that turn) has no captured value and emits **no** `context-usage` event; a turn that succeeds on iteration N then later iterations fail still emits one using iteration N's value, at whichever point the turn actually concludes. This is the property audited at review: *"context-usage is the last provider request's prompt_tokens, not an intermediate one."*
+
+**Handoff's own usage.** The distillation request (below) is itself one provider call and follows the identical last-attempt-wins/fallback logic; its `context-usage` reflects the (large, pre-handoff) prompt size and is emitted before the atomic conversation reset. A second `context-usage` follows immediately after the reset, this one always `estimated: true` (chars/4 over the brand-new two-message seed conversation, since no provider call has run against it yet) — this is what makes the bar visibly drop right after a successful handoff instead of staying pinned at the pre-handoff percentage until the next real turn completes.
+
+**Denominator.** `EmbeddedAgentDefinition.contextWindowTokens?: number` (new field, migration v27 below) is the ratio's denominator; it travels to the client exclusively through the existing `embedded-agent-created` / `embedded-agent-updated` registry broadcasts (no new wire event needed — [Embedded agent registry](#embedded-agent-registry-embeddedagentdefinition) already covers this path). When unset, the client shows raw token counts with no ratio, no color escalation, and no threshold banners (there is nothing to compare against) — see UI below.
+
+### Handoff prompt loader
+
+New module `packages/embedded-agent/src/handoff-prompt.ts`, deliberately a narrower cousin of the [AGENTS.md loader](#agentsmd-loader), not a call into it — the semantics differ (override, not concatenation):
+
+```ts
+export interface LoadHandoffPromptParams { cwd: string; homeDir?: string; xdgConfigHome?: string }
+export async function loadHandoffPrompt(params: LoadHandoffPromptParams): Promise<{ content: string; origin: string }>
+```
+
+- **Layer 1 (repo):** `<cwd>/.agent-console/handoff-prompt.md` — a single literal path, not a chain walk (unlike AGENTS.md, `cwd` already IS the session's `locationPath`, so there is no ancestor chain to consider).
+- **Layer 2 (global):** `<configHome>/agent-console/handoff-prompt.md`, same XDG resolution (`xdgConfigHome ?? process.env.XDG_CONFIG_HOME ?? path.join(homeDir, '.config')`) as the instruction loader.
+- **Layer 3 (bundled default):** a string constant `DEFAULT_HANDOFF_PROMPT` in the same module (not a shipped file — avoids a packaging/resolution concern for a few paragraphs of static text).
+- **Precedence is override, not concatenation:** the first layer whose file exists and is readable wins outright; the other layers are not read. This is the one place Phase A's "same 3-layer precedence as instructions" language (Issue [#1122](https://github.com/ms2sato/agent-console/issues/1122) §f) means *order of preference*, not *order of concatenation* — a distillation prompt is one coherent instruction, not layered guidance.
+- **Cap:** 16 KiB via the existing `truncateToBytes` (same constant/behavior as `INSTRUCTION_PER_FILE_CAP_BYTES`), warn-logged on truncation, no in-prompt marker.
+- **Read timing:** loaded fresh on every `handoff` command (not cached at activation) — so editing the override file takes effect on the very next handoff, without a worker restart.
+
+Bundled default (Layer 3), the canonical text implementers must ship verbatim unless the owner revises it:
+
+```text
+This conversation is approaching its context window limit. Produce a concise
+but complete distillation of the conversation so far: the task, key
+decisions made, the current state of any in-progress work, and the concrete
+next steps. Write only the distillation text, with no preamble or
+meta-commentary -- it will directly seed a fresh conversation that continues
+this work.
+```
+
+### `AgentLoop.handoff()`
+
+**Admission.** `handoff` shares the exact same `turnActive`/`currentTurn` gate in `main.ts`'s `runLoop` that `user-message` uses: a `handoff` command received while a turn (normal or a prior handoff) is active is ignored with a stderr log, mirroring "`user-message` while a turn is active" in [Error handling & edge cases](#error-handling--edge-cases). Server-side, `EmbeddedAgentWorkerService.triggerHandoff` performs the identical synchronous `runtime.turnActive` check-and-set `sendUserMessage` does before writing to stdin, returning `TURN_IN_PROGRESS` otherwise — no new admission mechanism, the existing one is reused for a second command type.
+
+**Steps** (`AgentLoopDeps` gains `reassembleSystemPrompt: () => Promise<string>` and `loadHandoffPrompt: () => Promise<string>`, both closures built once in `main.ts`'s `initializeLoop` over the same `init` fields already used to build the system prompt at activation):
+
+1. Emit `{ type: 'state', state: 'active' }` (existing event, existing client gating — see UI below for how the client shows a distinct "Handing off…" label on top of this).
+2. `await this.deps.loadHandoffPrompt()`. On throw: `emitTurnError` with a synthetic `turnId` (`crypto.randomUUID()`), return. **`this.conversation` has not been touched.**
+3. Build a **transient** request array `[...this.conversation, { role: 'user', content: handoffPromptText }]` — passed directly into the provider call, never pushed onto `this.conversation`. (This requires factoring `runProviderWithRetries`/`runProviderAttempt` to accept an explicit `messages` argument instead of implicitly reading `this.conversation`, so `runTurn` and `handoff` share the retry/backoff/timeout logic without duplicating it — a pure refactor of the existing methods' signature, no behavior change for `runTurn`'s own call sites.)
+4. Run it through the same retry-with-backoff path (`MAX_PROVIDER_ATTEMPTS`, `DEFAULT_RETRY_DELAYS_MS`, the same idle/total timeouts at the adapter level) normal turns use. On failure or cancel: `emitTurnError`, return. **`this.conversation` still has not been touched — this is the failure invariant.** No tool calls are expected or handled in this request (the distillation prompt does not offer tools); if a provider ignores that framing and returns tool calls anyway, they are ignored (not executed, not surfaced) — the loop reads only `outcome.text`.
+5. On success, `distillation = outcome.text` (capped at the same 256 KiB `WIRE_EVENT_MAX_BYTES` UTF-8-safe truncation `assistant-message` uses, applied before emission). Emit `{ type: 'context-handoff', distillation }` **before** any conversation mutation — so the persisted/broadcast log is self-consistent even in the (unreachable in practice, since nothing async follows) case of a crash between this line and the next.
+6. `await this.deps.reassembleSystemPrompt()` — re-runs `loadInstructions` + `assembleSystemPrompt` so AGENTS.md/CLAUDE.md edits made during the worker's lifetime are picked up, per Issue [#1122](https://github.com/ms2sato/agent-console/issues/1122) §d's "AGENTS.md changes also get picked up" side benefit. On throw here (e.g. a transient fs error), fall back to the ORIGINAL `deps.systemPrompt` string captured at construction rather than aborting: step 5 already emitted the persisted marker, so the reset must complete as a unit once distillation itself succeeded, even in this degraded form.
+7. Seed text (fixed, NOT operator-overridable — distinct from the handoff prompt above): `` `This conversation continues from a previous one. Prior context summary: ${distillation}` ``.
+8. **Atomic switch**, one synchronous statement: `this.conversation.splice(0, this.conversation.length, { role: 'system', content: newSystemPrompt }, { role: 'user', content: seedText })`. Nothing async happens between step 6 completing and this splice.
+9. Emit a fresh `context-usage` (chars/4 estimate of the two-message seed conversation, `estimated: true` — see Token accounting above).
+10. `emitIdle()` — same `{ type: 'state', state: 'idle' }` every turn ends with; `runtime.turnActive` clears server-side exactly as it does today.
+
+**Failure invariant (the property under audit).** Every early-return path (prompt-load failure at step 2, provider failure/cancel at step 4) returns strictly before step 5's `context-handoff` emission — there is no path that mutates `this.conversation` without also having successfully emitted the marker. Conversely, once step 5 has run, steps 6-10 are a straight-line sequence that always completes the reset (degrading gracefully at step 6, never aborting). A polarity test MUST assert both directions directly against `this.conversation`'s observable content (not just "a turn-error was emitted"): drive a fake adapter that throws for the distillation request and assert the array is byte-identical to its pre-handoff state (verified by driving a subsequent `runTurn` and inspecting the `messages` array the fake adapter actually received); then flip the fake to succeed and assert the array now matches the seed shape.
+
+### UI
+
+Attaches to `EmbeddedAgentWorkerView` (v1 spec, [UI](#ui) above) as new siblings, not as changes to `MessagePanel` — `MessagePanel` is shared with PTY workers and stays worker-type-agnostic, exactly like the existing v1 reset-notice banner already positioned as a sibling above it.
+
+**Always-visible usage bar.** A 2px-tall horizontal bar rendered as an in-flow sibling between the transcript scroll region and `<MessagePanel>` (both are existing siblings inside `EmbeddedAgentWorkerView`'s flex-column root; the bar and its banner insert between them, each `shrink-0` so the transcript's `flex-1` scroll region is unaffected). `role="progressbar"`; when `contextWindowTokens` is defined, also `aria-valuenow`/`aria-valuemin={0}`/`aria-valuemax={100}` (determinate); when undefined, those three attributes are omitted (indeterminate) and the track renders as a dashed/striped pattern with no fill and a tooltip reading `~N tokens used (estimated; set contextWindowTokens for a gauge)` — no animation (an animated stripe here would be visual noise per owner UX review). No numeric label is drawn on the bar itself (space-constrained); the same percentage + raw-token detail is available on hover via a tooltip. Color bands, `ratio = contextUsage.promptTokens / contextWindowTokens`: `ratio < softRatio` → subtle/gray (minimal visual noise); `softRatio <= ratio < hardRatio` → amber; `ratio >= hardRatio` → red. `softRatio`/`hardRatio` default to 0.75/0.90 when the definition's `handoff.softRatio`/`handoff.hardRatio` are unset. A `contextWindowTokens` change (via the registry broadcast) is reflected on the next render with no transition animation — the bar simply switches from the dashed/indeterminate rendering to a solid, ratio-driven fill (or vice versa).
+
+**Threshold banners.** Two independently-tracked thresholds (soft, hard), each fires **at most once per crossing**: crossing is defined as `prevRatio < threshold <= currentRatio` (treating "no prior reading yet" as `prevRatio = 0`, so a worker whose very first usage reading already exceeds a threshold still fires once). Dismissing a banner hides it without resetting the crossing state — it does not reappear until the ratio drops back below that specific threshold and crosses it again. A single usage update that jumps across both thresholds at once (e.g. 60% -> 95% in one turn) fires both banners in that update, independently. Soft: amber banner, "Context is `N`% full — consider starting a handoff", CTA button "Handoff now". Hard: red banner, more urgent copy, same CTA — Phase A does **not** auto-trigger anything at the hard threshold (that is Phase B's entire purpose); the red banner and the bar's red color are Phase A's only hard-threshold behavior. Neither banner renders when `contextWindowTokens` is undefined (no ratio to compare against a threshold).
+
+**Handoff in flight.** The client sets a local `handoffInFlight` flag when it sends `embedded-handoff` (via the store's `triggerHandoff()` action, mirroring `cancel()`) and clears it when it observes either `context-handoff` (success) or `turn-error` (failure) — safe because the server-side admission gate guarantees no other turn can be interleaved during this window. While `handoffInFlight`, the view shows a `Handing off…` label wherever it already shows an activity indicator, and `MessagePanel`'s existing `cancelState` prop is passed `{ active: isTurnActive || handoffInFlight, onCancel: cancel }` — Send is disabled via the SAME mechanism a normal in-flight turn already uses, no new gating primitive. `cancel()` also works against an in-flight handoff (the loop's `AbortController` is shared between `runTurn` and `handoff`), surfacing as an ordinary `turn-error`.
+
+**Handoff CTA placement.** Reachable from (a) either threshold banner's CTA button, and (b) a button in `EmbeddedAgentWorkerView`'s own chrome (e.g. near the activity/status indicator) so a handoff can be triggered even with both banners dismissed — never inside `MessagePanel`, per the shared-contract principle above.
+
+**Transcript divider on completion.** The `context-handoff` event folds into a new `EmbeddedAgentChatEntry` kind (`{ kind: 'context-handoff'; distillation: string }`), rendered as a `<details>`/`<summary>` row using the same native-disclosure + stable-key discipline `WorkingAccordion` already uses ([WebSocket & client protocol](#websocket--client-protocol) context; see the component for the keying rationale), closed by default: summary line `— Context handoff: conversation restarted from summary —`, expanded body shows the full `distillation` text.
+
+**Failure surfacing.** A handoff failure emits an ordinary `turn-error` (message prefixed, e.g. `Context handoff failed: <reason>`) — rendered by the existing `turn-error` chat-entry case, no new UI needed for the failure path itself; the conversation is provably unchanged (see the failure invariant above), so the existing "the conversation stays usable for the next message" framing already covers retry.
+
+### Definition config, migration, and forms
+
+`EmbeddedAgentDefinition.handoff?: { softRatio?: number; hardRatio?: number; auto?: boolean }` — whole-object replace on `PATCH` (same mechanics as the required `provider` field: `handoff: null` clears to `undefined`, an explicit object replaces wholesale, `undefined`/absent key means no change), not a per-subfield merge; there is no existing partial-nested-object PATCH precedent in this schema to extend instead, and whole-object replace keeps the three ratios/flag internally consistent by construction.
+
+**Migration v27** (`packages/server/src/database/connection.ts`, following the `migrateToV26` template exactly): adds nullable columns `context_window_tokens INTEGER`, `handoff_soft_ratio REAL`, `handoff_hard_ratio REAL`, `handoff_auto INTEGER` (0/1 boolean convention, matching `deliver_initial_prompt_on_activation`) to `embedded_agents`. Mapper (`mappers.ts`) flattens/reconstructs `handoff` the same way `provider` flattens to `provider_*` columns, except reconstruction is conditional (build the nested object only when at least one of the three columns is non-null; `provider` is unconditional because it is required).
+
+**Forms.** `EmbeddedAgentForm.tsx` gains an optional `contextWindowTokens` numeric input (mirrors the existing `maxToolIterationsInput` string-state/parse-on-save pattern exactly) and optional `handoff.softRatio` / `handoff.hardRatio` percentage inputs (e.g. a "75" input maps to `0.75`). Phase A's form does **not** expose an `auto` checkbox — the schema accepts the field (forward-compat for Phase B's UI), but this form never writes a value for it, so it stays `undefined` for every definition created or edited through Phase A tooling.
+
+### Testing (additions to the plan above)
+
+- **Unit — loop package:** the usage-accounting fallback (real `usage.prompt_tokens` vs chars/4 estimate, `estimated` flag correctness), last-attempt-wins granularity across a multi-iteration turn, the handoff prompt loader's 3-layer override precedence (repo beats global beats bundled; cap/truncation), and — **mandatory, the audited property** — the `handoff()` failure-invariant polarity test described above (both directions, asserted against the actual `messages` array a subsequent provider call receives, not merely against emitted-event side effects).
+- **Unit — client:** the threshold-crossing pure function (`prevRatio < threshold <= currentRatio`) at its boundary values — exactly-at-threshold on both sides, `prevRatio = null`/first-ever reading, a single update crossing both thresholds at once, dismiss-then-redisplay-only-on-a-fresh-crossing.
+- **Integration (`packages/integration/src/`):** the Q10 wire-boundary test extended to cover `context-usage` and `context-handoff` round-tripping through `EmbeddedAgentStreamEventSchema`, and `EmbeddedAgentDefinition`'s `contextWindowTokens`/`handoff` fields round-tripping through the REST CRUD + registry-broadcast path.
+- **Browser QA (mandatory, gated true-path per `workflow.md` §5):** the bar's three color bands and hover tooltip; a soft-threshold banner appearing on crossing and not reappearing until dismissed-then-re-crossed; a full manual handoff (banner CTA -> `Handing off…` -> transcript divider with expandable distillation -> bar visibly drops).
 
 ## Error handling & edge cases
 
@@ -712,6 +823,9 @@ The `PreviewPanel` (Phase 3, `packages/client/src/components/workers/PreviewPane
 | Mid-round abort (`cancel` or the re-ask cap exceeded while tool calls from the current turn are still unresponded) | Synthetic tool-role error messages are inserted for every unresponded `tool_call_id` before `turn-error` is emitted, keeping the conversation valid for the next turn (every `tool_calls` entry has a matching tool response). See [The loop's turn cycle](#the-loops-turn-cycle). |
 | WS client disconnects | Callbacks detached; subprocess keeps running (parity with PTY workers). |
 | Server restart | Orphan reaping SIGTERMs the loop via the persisted pid (`killOrphanWorkers`, unchanged); next access re-activates with a fresh epoch + conversation. |
+| Context Handoff: distillation provider call fails or is canceled | `turn-error` emitted; `conversation` is untouched (failure invariant); no `context-handoff` event; the worker is left exactly as usable as after any other failed turn — retry is a fresh `handoff` command. See [Context Handoff (Phase A)](#context-handoff-phase-a). |
+| Context Handoff: `handoff` received while a turn (or another handoff) is active | Ignored with a stderr log on the loop side / `TURN_IN_PROGRESS` on the server side — identical to "`user-message` while a turn is active" above, same admission gate. |
+| Context Handoff: `contextWindowTokens` unset on the definition | Client shows raw token counts with no ratio, no color escalation, no threshold banners; manual handoff remains available regardless (it never depended on the ratio). |
 
 ## Testing plan
 
@@ -740,7 +854,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 
 ## Post-v1 fast-follows
 
-1. **Transcript persistence / restart-resume** (the deferred Design Decision): persist conversation state so re-activation can restore instead of reset; must solve the mid-turn / mid-tool-call restore case.
+1. **Transcript persistence / restart-resume** (the deferred Design Decision): persist conversation state so re-activation can restore instead of reset; must solve the mid-turn / mid-tool-call restore case. Context Handoff (Phase A)'s `context-handoff` marker event is deliberately persisted into the same NDJSON stream a future restore would replay, so a handoff boundary within a worker's lifetime is already representable when this fast-follow is designed — it does not need its own retrofit.
 2. `asking` activity state (loop-side heuristics or model-declared).
 3. Inbound `send_session_message` → `user-message` routing for embedded-agent workers (extend `canReceiveSessionMessages`).
 4. Non-native tool-calling: text-parse fallback, constrained decoding (llama.cpp / vLLM structured output).
@@ -749,6 +863,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 7. Anthropic (and other) provider adapters.
 8. Turn queueing while active.
 9. Instruction-loader remainder: other-tool globals (`~/.claude/CLAUDE.md`, `~/.config/opencode/AGENTS.md`, etc.), `@import`/include syntax, dynamic reload / re-read on file change (the loader reads once per activation), other-vendor formats (`.cursor/rules`, etc.), glob/directory/URL entries in `instructions[]` (literal file paths only today), and a session-user-scope per-user `instructions` override (definition-scope only today).
+10. **Context Handoff Phase B** (separate Issue, filed after Phase A dogfood): hard-threshold auto-fire (reads `EmbeddedAgentDefinition.handoff.auto`, inert in Phase A), a shell-script override handler (stdin JSON `{conversation, metadata, provider}` -> stdout distillation text, non-zero exit or 30s timeout falls back to the built-in prompt-file path, Codex-style trust-gating on script hash changes). See [Context Handoff (Phase A)](#context-handoff-phase-a).
 
 ## Cross-references
 
@@ -761,6 +876,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 - Issue [#1004](https://github.com/ms2sato/agent-console/issues/1004) -- umbrella tracking Phases 0a-4 plus the post-v1 fast-follows below.
 - Issue [#1107](https://github.com/ms2sato/agent-console/issues/1107) -- restoring the multi-user `enforce` default (reverted to `warn` in Sprint 2026-07-16); tracks the `headersHelper` functional dogfood step re-scoped out of the #1004 Completion checklist.
 - Issues [#1042](https://github.com/ms2sato/agent-console/issues/1042) (FF-1a), [#1043](https://github.com/ms2sato/agent-console/issues/1043) (FF-1b), [#1044](https://github.com/ms2sato/agent-console/issues/1044) (FF-1c), [#1045](https://github.com/ms2sato/agent-console/issues/1045) (FF-2) -- [Built-in tools](#built-in-tools-fast-follow) fast-follow series.
+- Issue [#1122](https://github.com/ms2sato/agent-console/issues/1122) -- Context Handoff Phase A, designed in [Context Handoff (Phase A)](#context-handoff-phase-a); Phase B (auto-fire + script override) is a separate Issue to be filed after Phase A dogfood.
 - MCP server implementation: `packages/server/src/mcp/mcp-server.ts`.
 - Elevation primitives: `packages/server/src/services/privilege-elevation.ts`.
 - Subprocess-management precedent: `packages/server/src/services/interactive-process-manager.ts` (volatile by design; this design combines its mechanics with worker persistence).

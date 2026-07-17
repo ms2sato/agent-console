@@ -27,15 +27,36 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
 
-function embeddedViewFetch(input: RequestInfo | URL): Promise<Response> {
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
-  if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
-  return Promise.resolve(new Response('null', { status: 404 }));
+/** Builds a fetch stub that also serves `/api/embedded-agents` with the given registry (Context Handoff Phase A: `EmbeddedAgentWorkerView` looks up its worker's definition via `useEmbeddedAgents`). */
+function makeEmbeddedViewFetch(embeddedAgents: unknown[] = []) {
+  return (input: RequestInfo | URL): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
+    if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
+    if (url.endsWith('/api/embedded-agents')) return Promise.resolve(jsonResponse({ embeddedAgents }));
+    return Promise.resolve(new Response('null', { status: 404 }));
+  };
+}
+
+const embeddedViewFetch = makeEmbeddedViewFetch();
+
+/** Fixture `EmbeddedAgentDefinition` with Context Handoff (Phase A) fields set to easy-to-reason-about values (soft 50%, hard 80% of a 1000-token window). */
+function embeddedAgentFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'ea-1',
+    name: 'Test Embedded Agent',
+    provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+    createdBy: 'user-1',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    contextWindowTokens: 1000,
+    handoff: { softRatio: 0.5, hardRatio: 0.8 },
+    ...overrides,
+  };
 }
 
 /** Render EmbeddedAgentWorkerView with the QueryClientProvider MessagePanel needs. */
-function renderView(props: { sessionId: string; workerId: string }) {
+function renderView(props: { sessionId: string; workerId: string; embeddedAgentId?: string }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -1531,6 +1552,198 @@ describe('EmbeddedAgentWorkerView', () => {
         Reflect.deleteProperty(document, 'execCommand');
         consoleErrorSpy.mockRestore();
       }
+    });
+  });
+
+  describe('Context Handoff (Phase A)', () => {
+    it('renders an indeterminate progressbar with no aria-value* attributes when the worker has no contextWindowTokens configured', () => {
+      renderView({ sessionId: 's-ctx-1', workerId: 'w-ctx-1' });
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-valuenow')).toBeNull();
+      expect(bar.getAttribute('aria-valuemin')).toBeNull();
+      expect(bar.getAttribute('aria-valuemax')).toBeNull();
+    });
+
+    it('renders a determinate progressbar with aria-valuenow and color bands driven by context-usage events', async () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      renderView({ sessionId: 's-ctx-2', workerId: 'w-ctx-2', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // Below soft threshold: 300/1000 = 30% < 50%.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 300, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+      let bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-valuenow')).toBe('30');
+      expect(bar.querySelector('div')?.className).toContain('bg-gray-500');
+
+      // Soft band: 600/1000 = 60%, between 50% and 80%.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+      bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-valuenow')).toBe('60');
+      expect(bar.querySelector('div')?.className).toContain('bg-amber-500');
+
+      // Hard band: 900/1000 = 90% >= 80%.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 900, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+      bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-valuenow')).toBe('90');
+      expect(bar.querySelector('div')?.className).toContain('bg-red-600');
+    });
+
+    it('shows the soft banner on crossing; dismissing hides it until the ratio dips below the threshold and crosses again', async () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({ sessionId: 's-ctx-3', workerId: 'w-ctx-3', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // Cross soft (50%) but stay below hard (80%): 600/1000 = 60%.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+      expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
+
+      await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+      expect(screen.queryByText(/Context is/)).toBeNull();
+
+      // Still above threshold -- must NOT reappear without a fresh crossing.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 650, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+      expect(screen.queryByText(/Context is/)).toBeNull();
+
+      // Dip below the soft threshold.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 300, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+      expect(screen.queryByText(/Context is/)).toBeNull();
+
+      // Re-cross -- the banner reappears.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 700, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+      expect(screen.getByText(/Context is 70% full/)).toBeTruthy();
+    });
+
+    it('shows both soft and hard banners simultaneously when a single update crosses both thresholds', async () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      renderView({ sessionId: 's-ctx-4', workerId: 'w-ctx-4', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // 950/1000 = 95% crosses both soft (50%) and hard (80%) in one update.
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 950, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText(/consider starting a handoff/)).toBeTruthy();
+      expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
+    });
+
+    it('a banner CTA click sends embedded-handoff and shows "Handing off…"; the transcript divider appears on context-handoff and clears the in-flight label', async () => {
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      const user = userEvent.setup();
+      renderView({ sessionId: 's-ctx-5', workerId: 'w-ctx-5', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      await user.click(screen.getByRole('button', { name: 'Handoff now' }));
+
+      const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+      expect(sent).toContainEqual({ type: 'embedded-handoff' });
+      expect(screen.getByText('Handing off…')).toBeTruthy();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-handoff', distillation: 'the distilled summary text' });
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
+      });
+      await flush();
+
+      expect(screen.queryByText('Handing off…')).toBeNull();
+      const summary = screen.getByText('— Context handoff: conversation restarted from summary —');
+      const details = summary.closest('details') as HTMLDetailsElement;
+      expect(details).toBeTruthy();
+      expect(details.open).toBe(false);
+      expect(screen.getByText('the distilled summary text')).toBeTruthy();
+
+      fireEvent.click(summary);
+      expect(details.open).toBe(true);
+    });
+
+    it('renders an always-reachable "Start handoff" button that sends embedded-handoff and disables itself while in flight', async () => {
+      const user = userEvent.setup();
+      renderView({ sessionId: 's-ctx-6', workerId: 'w-ctx-6' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const button = screen.getByRole('button', { name: 'Start handoff' }) as HTMLButtonElement;
+      expect(button.disabled).toBe(false);
+
+      await user.click(button);
+
+      const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+      expect(sent).toContainEqual({ type: 'embedded-handoff' });
+      expect((screen.getByRole('button', { name: 'Start handoff' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('blocks Send (morphs to Cancel) while a handoff is in flight, mirroring an active turn', async () => {
+      renderView({ sessionId: 's-ctx-7', workerId: 'w-ctx-7' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      expect(screen.queryByText('Cancel')).toBeNull();
+
+      const button = screen.getByRole('button', { name: 'Start handoff' });
+      await act(async () => {
+        fireEvent.click(button);
+      });
+
+      expect(screen.queryByText('Send')).toBeNull();
+      expect(screen.getByText('Cancel')).toBeTruthy();
     });
   });
 });

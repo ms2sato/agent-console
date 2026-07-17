@@ -62,6 +62,10 @@ interface OpenAIStreamChunk {
     };
     finish_reason?: string | null;
   }>;
+  // Sent with `stream_options: { include_usage: true }` on the FINAL chunk of
+  // the stream, which per the OpenAI streaming contract carries an EMPTY
+  // `choices` array. Top-level on the chunk, not nested under `choices`.
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
 }
 
 function toOpenAITools(tools: ToolDefinition[]): unknown[] {
@@ -151,6 +155,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
         model: req.model,
         messages: req.messages,
         stream: true,
+        stream_options: { include_usage: true },
       };
       // Omit `tools` entirely when the list is empty (some providers reject `[]`).
       if (req.tools.length > 0) {
@@ -181,6 +186,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       const parser = new SseParser();
       const toolCalls = new Map<number, AccumulatedToolCall>();
       let finishReason: string | null = null;
+      let capturedUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
       const decoder = new TextDecoder();
       const reader = res.body.getReader();
 
@@ -197,6 +203,12 @@ export class OpenAIChatAdapter implements ProviderAdapter {
           }
           if (sseLine.kind === 'ignore') continue;
           const chunk = sseLine.json as OpenAIStreamChunk;
+          // Read usage BEFORE the choice-presence guard below: the final
+          // usage-bearing chunk has an EMPTY `choices` array per the OpenAI
+          // streaming contract, so the early-continue would otherwise skip it.
+          if (chunk.usage !== null && chunk.usage !== undefined) {
+            capturedUsage = chunk.usage;
+          }
           const choice = chunk.choices?.[0];
           if (choice === undefined) continue;
 
@@ -233,7 +245,18 @@ export class OpenAIChatAdapter implements ProviderAdapter {
         const [, call] = entry;
         yield { type: 'tool-call', callId: call.id, name: call.name, argsJson: call.args };
       }
-      yield { type: 'done', finishReason };
+      yield {
+        type: 'done',
+        finishReason,
+        usage:
+          capturedUsage !== null
+            ? {
+                promptTokens: capturedUsage.prompt_tokens,
+                completionTokens: capturedUsage.completion_tokens,
+                totalTokens: capturedUsage.total_tokens,
+              }
+            : undefined,
+      };
     } catch (err) {
       if (abort.reason === 'idle-timeout' || abort.reason === 'total-timeout') {
         throw new ProviderError(`provider ${abort.reason} exceeded`, { retryable: true });

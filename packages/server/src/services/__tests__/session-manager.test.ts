@@ -704,6 +704,15 @@ describe('SessionManager', () => {
       expect(manager.cancelEmbeddedAgentTurn(sessionId, workerId)).toBe(false);
     });
 
+    it('triggerEmbeddedAgentHandoff returns not-activated for a never-activated worker (facade delegation)', async () => {
+      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const res = await manager.triggerEmbeddedAgentHandoff(sessionId, workerId);
+
+      expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
+    });
+
     it('deactivateEmbeddedAgentWorker resolves as a no-op for a never-activated worker', async () => {
       const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
       const { sessionId, workerId } = await createEmbeddedWorker(manager);

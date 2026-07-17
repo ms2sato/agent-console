@@ -11,7 +11,14 @@ import { RefreshIcon, AlertCircleIcon, CopyIcon, CheckIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 import { PreviewPanel } from './PreviewPanel';
+import { ContextUsageBar } from './ContextUsageBar';
+import { crossedThreshold } from './context-usage-threshold';
+import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
+
+/** Defaults when `EmbeddedAgentDefinition.handoff.softRatio`/`hardRatio` are unset -- see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI. */
+const DEFAULT_SOFT_RATIO = 0.75;
+const DEFAULT_HARD_RATIO = 0.9;
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
 type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
@@ -89,21 +96,63 @@ function buildDisplayItems(entries: EmbeddedAgentChatEntry[]): DisplayItem[] {
 interface EmbeddedAgentWorkerViewProps {
   sessionId: string;
   workerId: string;
+  /** `EmbeddedAgentWorker.embeddedAgentId` -- looked up against the embedded-agent registry (`useEmbeddedAgents`) for `contextWindowTokens`/`handoff` (Context Handoff Phase A). Undefined only defensively (every embedded-agent worker carries one). */
+  embeddedAgentId?: string;
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
-export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }: EmbeddedAgentWorkerViewProps) {
+export function EmbeddedAgentWorkerView({
+  sessionId,
+  workerId,
+  embeddedAgentId,
+  onStatusChange,
+}: EmbeddedAgentWorkerViewProps) {
   const {
     status,
     entries,
     activityState,
     workerError,
+    contextUsage,
+    handoffInFlight,
     sendUserMessage,
     cancel,
     restart,
     retry,
     dismissError,
+    triggerHandoff,
   } = useEmbeddedAgentWorker({ sessionId, workerId });
+
+  const { embeddedAgents } = useEmbeddedAgents();
+  const embeddedAgentDefinition = useMemo(
+    () => embeddedAgents.find((a) => a.id === embeddedAgentId),
+    [embeddedAgents, embeddedAgentId],
+  );
+  const contextWindowTokens = embeddedAgentDefinition?.contextWindowTokens;
+  const softRatio = embeddedAgentDefinition?.handoff?.softRatio ?? DEFAULT_SOFT_RATIO;
+  const hardRatio = embeddedAgentDefinition?.handoff?.hardRatio ?? DEFAULT_HARD_RATIO;
+  const ratio =
+    contextWindowTokens !== undefined && contextUsage !== null
+      ? contextUsage.promptTokens / contextWindowTokens
+      : null;
+
+  // Threshold-crossing tracking (Context Handoff Phase A): local UI state,
+  // not a useEffect case -- per frontend.md "Avoid useEffect" (derived
+  // state computed during render) and docs/design/embedded-agent-worker.md
+  // "Context Handoff (Phase A)" § UI "Threshold banners". `prevRatioRef`
+  // holds the last-seen ratio across renders; each render where `ratio`
+  // changes compares it against both thresholds independently via
+  // `crossedThreshold` before advancing the ref. This is idempotent across
+  // Strict-Mode's double-render (the second pass computes prevRatio===ratio,
+  // which crossedThreshold treats as "no crossing").
+  const prevRatioRef = useRef<number | null>(null);
+  const [softBannerShown, setSoftBannerShown] = useState(false);
+  const [hardBannerShown, setHardBannerShown] = useState(false);
+  if (ratio !== null) {
+    const prevRatio = prevRatioRef.current;
+    if (crossedThreshold(prevRatio, ratio, softRatio)) setSoftBannerShown(true);
+    if (crossedThreshold(prevRatio, ratio, hardRatio)) setHardBannerShown(true);
+    prevRatioRef.current = ratio;
+  }
 
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -175,6 +224,80 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         )}
       </div>
 
+      {/* Context Handoff (Phase A) chrome: usage bar, threshold banners, and
+          the always-reachable manual handoff CTA -- siblings inserted
+          between the transcript and MessagePanel, never inside MessagePanel
+          (shared with PTY workers, stays worker-type-agnostic). See
+          docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
+          UI. */}
+      <ContextUsageBar
+        contextWindowTokens={contextWindowTokens}
+        contextUsage={contextUsage}
+        softRatio={softRatio}
+        hardRatio={hardRatio}
+      />
+
+      {ratio !== null && softBannerShown && (
+        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0 flex items-center justify-between gap-3">
+          <span>Context is {Math.round(ratio * 100)}% full — consider starting a handoff</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={triggerHandoff} className="btn btn-primary text-xs shrink-0">
+              Handoff now
+            </button>
+            <button
+              onClick={() => setSoftBannerShown(false)}
+              aria-label="Dismiss"
+              className="text-amber-300 hover:text-white text-xs shrink-0"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {ratio !== null && hardBannerShown && (
+        <div
+          role="alert"
+          className="px-4 py-2 bg-red-900/30 border-b border-red-700/50 text-red-200 text-sm shrink-0 flex items-center justify-between gap-3"
+        >
+          <span>
+            Context is critically full ({Math.round(ratio * 100)}%) — start a handoff now to avoid losing
+            context
+          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={triggerHandoff} className="btn btn-primary text-xs shrink-0">
+              Handoff now
+            </button>
+            <button
+              onClick={() => setHardBannerShown(false)}
+              aria-label="Dismiss"
+              className="text-red-300 hover:text-white text-xs shrink-0"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 py-1 bg-slate-800/40 border-b border-slate-800 flex items-center justify-end gap-3 text-xs text-gray-500 shrink-0">
+        {handoffInFlight && (
+          <span className="flex items-center gap-1.5">
+            Handing off…
+            <span
+              className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle"
+              aria-hidden="true"
+            />
+          </span>
+        )}
+        <button
+          onClick={triggerHandoff}
+          disabled={handoffInFlight || isTurnActive}
+          className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Start handoff
+        </button>
+      </div>
+
       <MessagePanel
         sessionId={sessionId}
         targetWorkerId={workerId}
@@ -185,7 +308,7 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         onEscape={cancel}
         slashCompletionEnabled={false}
         attachmentsEnabled={false}
-        cancelState={{ active: isTurnActive, onCancel: cancel }}
+        cancelState={{ active: isTurnActive || handoffInFlight, onCancel: cancel }}
       />
     </div>
   );
@@ -418,6 +541,19 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
             <RefreshIcon className="w-3.5 h-3.5" />
             Restart
           </button>
+        </div>
+      );
+    case 'context-handoff':
+      return (
+        <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          <details>
+            <summary className="cursor-pointer text-xs text-gray-400">
+              — Context handoff: conversation restarted from summary —
+            </summary>
+            <div className="mt-2 min-w-0 whitespace-pre-wrap text-xs text-gray-300 [overflow-wrap:anywhere]">
+              {entry.distillation}
+            </div>
+          </details>
         </div>
       );
     default: {
