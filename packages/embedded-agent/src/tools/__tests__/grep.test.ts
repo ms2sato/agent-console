@@ -111,6 +111,27 @@ describe('grepTool', () => {
     expect(result.result).toBe('pattern is required and must be a string');
   });
 
+  it('rejects a non-string path argument', async () => {
+    const result = await grepTool.execute({ pattern: 'x', path: 42 }, { locationPath });
+
+    expect(result.ok).toBe(false);
+    expect(result.result).toBe('path must be a string');
+  });
+
+  it('rejects a non-string glob argument', async () => {
+    const result = await grepTool.execute({ pattern: 'x', glob: 42 }, { locationPath });
+
+    expect(result.ok).toBe(false);
+    expect(result.result).toBe('glob must be a string');
+  });
+
+  it('rejects a non-boolean caseInsensitive argument', async () => {
+    const result = await grepTool.execute({ pattern: 'x', caseInsensitive: 'yes' }, { locationPath });
+
+    expect(result.ok).toBe(false);
+    expect(result.result).toBe('caseInsensitive must be a boolean');
+  });
+
   it('rejects an invalid outputMode', async () => {
     const result = await grepTool.execute({ pattern: 'x', outputMode: 'bogus' }, { locationPath });
 

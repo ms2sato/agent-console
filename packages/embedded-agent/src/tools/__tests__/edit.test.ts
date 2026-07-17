@@ -144,6 +144,16 @@ describe('editTool', () => {
     expect(result.result).toBe('new_string is required and must be a string');
   });
 
+  it('rejects a non-boolean replace_all argument', async () => {
+    const result = await editTool.execute(
+      { file_path: 'a.txt', old_string: 'a', new_string: 'b', replace_all: 'yes' },
+      { locationPath },
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.result).toBe('replace_all must be a boolean');
+  });
+
   it('rejects an empty old_string instead of hanging (regression: countOccurrences infinite loop)', async () => {
     const target = path.join(locationPath, 'a.txt');
     await fsPromises.writeFile(target, 'hello world');
@@ -165,6 +175,27 @@ describe('editTool', () => {
 
     expect(result.ok).toBe(false);
     expect(result.result).toMatch(/^Failed to read file: /);
+  });
+
+  it('formats a "Failed to write file" message when the write-back fails', async () => {
+    const target = path.join(locationPath, 'a.txt');
+    await fsPromises.writeFile(target, 'hello world');
+    // Read succeeds (file itself keeps its own permissions), but the directory
+    // loses write permission, so atomicWrite's temp-file creation fails --
+    // exercising the write-back catch branch distinct from the read-failure one.
+    await fsPromises.chmod(locationPath, 0o555);
+
+    try {
+      const result = await editTool.execute(
+        { file_path: target, old_string: 'world', new_string: 'there' },
+        { locationPath },
+      );
+
+      expect(result.ok).toBe(false);
+      expect(result.result).toMatch(/^Failed to write file: /);
+    } finally {
+      await fsPromises.chmod(locationPath, 0o755);
+    }
   });
 
   it('returns {ok:false, result:"aborted"} without editing when the signal is already aborted', async () => {
