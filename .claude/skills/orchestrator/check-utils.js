@@ -102,6 +102,18 @@ function expectedTestExt(sourceExt) {
   return '.ts';
 }
 
+// Alternate extension accepted as sibling coverage alongside the primary
+// suggestion above. `.tsx` sources may have a JSX-free pure-logic test
+// that naturally lives as `.ts` (no runtime need for the JSX-enabling
+// extension) — sibling matching below already accepts any test extension
+// via basename comparison, so this only affects the *suggested* path shown
+// for missing coverage (see Issue #1049). No alternate is offered for
+// other source extensions; the reverse (a `.ts` source suggesting a `.tsx`
+// alternate) is not a real-world case and is out of scope.
+function alternateTestExt(sourceExt) {
+  return sourceExt === '.tsx' ? '.ts' : null;
+}
+
 // Files excluded from coverage requirements (no runtime logic to test)
 const COVERAGE_EXCLUSIONS = [
   /^packages\/shared\/src\/types\/.+\.ts$/,
@@ -227,7 +239,9 @@ export function findTestFiles(changedFiles) {
 
     const needsCoverage = requiresTestCoverage(prodFile);
     const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + expectedTestExt(ext);
-    testCoverage.push({ file: prodFile, hasTest, expectedTestPath, needsCoverage });
+    const altExt = alternateTestExt(ext);
+    const alternateTestPath = altExt ? dir + '/__tests__/' + fileName + '.test' + altExt : null;
+    testCoverage.push({ file: prodFile, hasTest, expectedTestPath, alternateTestPath, needsCoverage });
   }
 
   return { testFiles, productionFiles, testCoverage };
