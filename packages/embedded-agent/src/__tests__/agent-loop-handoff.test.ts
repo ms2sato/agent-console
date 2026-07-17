@@ -77,9 +77,13 @@ function makeDeps(overrides: Partial<AgentLoopDeps> & { adapter: ProviderAdapter
 
 describe('AgentLoop.handoff() — failure invariant (polarity, mandatory)', () => {
   it('FAILS to reset the conversation when the distillation provider call fails: no context-handoff, and a subsequent turn sees exactly the pre-handoff conversation', async () => {
-    // Distillation request fails on all 3 retry attempts, then a plain
-    // success is scripted for the subsequent runTurn call.
+    // Seed a successful turn first, then distillation fails on all 3 retry
+    // attempts, then a plain success is scripted for the subsequent runTurn
+    // call. Seeding matters: an implementation that incorrectly wipes
+    // `this.conversation` on failure would otherwise be indistinguishable
+    // from a correct one, since a fresh loop has nothing to preserve either.
     const adapter = new ScriptedAdapter([
+      textResponse('seed reply'),
       { kind: 'throw', error: new Error('boom') },
       { kind: 'throw', error: new Error('boom') },
       { kind: 'throw', error: new Error('boom') },
@@ -87,6 +91,8 @@ describe('AgentLoop.handoff() — failure invariant (polarity, mandatory)', () =
     ]);
     const { deps, events } = makeDeps({ adapter });
     const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t0', 'seed message');
 
     await loop.handoff();
 
@@ -97,15 +103,21 @@ describe('AgentLoop.handoff() — failure invariant (polarity, mandatory)', () =
     await loop.runTurn('t2', 'next message');
     const messagesForT2 = adapter.capturedMessages.at(-1)!;
 
-    // Baseline: a FRESH loop instance (handoff() never called) with the same
-    // systemPrompt, driven by the identical runTurn call.
-    const baselineAdapter = new ScriptedAdapter([textResponse('reply to t2')]);
+    // Baseline: a loop seeded with the IDENTICAL prior turn (but no handoff
+    // attempt in between), driven by the identical runTurn call. Comparing
+    // against a baseline that also carries the seeded history -- rather than
+    // an empty fresh loop -- is what actually proves preservation.
+    const baselineAdapter = new ScriptedAdapter([textResponse('seed reply'), textResponse('reply to t2')]);
     const { deps: baselineDeps } = makeDeps({ adapter: baselineAdapter });
     const baselineLoop = new AgentLoop(baselineDeps);
+    await baselineLoop.runTurn('t0', 'seed message');
     await baselineLoop.runTurn('t2', 'next message');
     const baselineMessages = baselineAdapter.capturedMessages.at(-1)!;
 
     expect(messagesForT2).toEqual(baselineMessages);
+    // Sanity: the seeded turn's history is actually present, not merely
+    // equal to an equally-empty baseline.
+    expect(messagesForT2.some((m) => m.role === 'assistant' && m.content === 'seed reply')).toBe(true);
   });
 
   it('SUCCEEDS: emits context-handoff and atomically resets the conversation to the seed shape a subsequent turn actually sends', async () => {
@@ -282,7 +294,11 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
   });
 
   it('rejects the distillation (turn-error, no context-handoff, conversation untouched) when the provider returns any tool calls, even alongside text', async () => {
+    // Seed a successful turn first -- see the failure-invariant polarity test
+    // above for why an empty-vs-empty baseline can't distinguish "preserved"
+    // from "wrongly reset".
     const adapter = new ScriptedAdapter([
+      textResponse('seed reply'),
       {
         kind: 'events',
         events: [
@@ -308,6 +324,8 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
     });
     const loop = new AgentLoop(deps);
 
+    await loop.runTurn('t0', 'seed message');
+
     await loop.handoff();
 
     expect(toolCalled).toBe(false);
@@ -319,18 +337,20 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
       message: expect.stringContaining('no usable distillation'),
     });
 
-    // Conversation is provably untouched: a subsequent turn matches a fresh
-    // baseline loop's request exactly (preserve-on-failure).
+    // Conversation is provably untouched: a subsequent turn matches a
+    // baseline loop seeded with the IDENTICAL prior turn (preserve-on-failure).
     await loop.runTurn('t2', 'next message');
     const messagesForT2 = adapter.capturedMessages.at(-1)!;
 
-    const baselineAdapter = new ScriptedAdapter([textResponse('reply to t2')]);
+    const baselineAdapter = new ScriptedAdapter([textResponse('seed reply'), textResponse('reply to t2')]);
     const { deps: baselineDeps } = makeDeps({ adapter: baselineAdapter });
     const baselineLoop = new AgentLoop(baselineDeps);
+    await baselineLoop.runTurn('t0', 'seed message');
     await baselineLoop.runTurn('t2', 'next message');
     const baselineMessages = baselineAdapter.capturedMessages.at(-1)!;
 
     expect(messagesForT2).toEqual(baselineMessages);
+    expect(messagesForT2.some((m) => m.role === 'assistant' && m.content === 'seed reply')).toBe(true);
   });
 
   it('rejects the distillation (turn-error, no context-handoff) when the provider returns empty/whitespace-only text', async () => {
@@ -351,20 +371,36 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
   });
 
   it('emits turn-error when handoff is canceled mid-flight, and the conversation stays untouched', async () => {
+    let signalProviderStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      signalProviderStarted = resolve;
+    });
     const abortingAdapter: ProviderAdapter = {
       async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+        signalProviderStarted();
         // Never resolves; the loop's own AbortController drives cancellation.
         await new Promise<never>((_resolve, reject) => {
           req.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
         });
       },
     };
-    const { deps, events } = makeDeps({ adapter: abortingAdapter });
+    // Seed with a responsive adapter first so the loop carries prior turn
+    // history into the canceled handoff -- see the failure-invariant
+    // polarity test above for why an empty-vs-empty baseline can't
+    // distinguish "preserved" from "wrongly reset".
+    const seedAdapter = new ScriptedAdapter([textResponse('seed reply')]);
+    const { deps, events } = makeDeps({ adapter: seedAdapter });
     const loop = new AgentLoop(deps);
 
+    await loop.runTurn('t0', 'seed message');
+
+    // AgentLoop captured `deps` by reference at construction; swap the
+    // adapter field on that same object so the handoff call reaches the
+    // never-resolving aborting adapter instead of the seed one.
+    deps.adapter = abortingAdapter;
+
     const handoffPromise = loop.handoff();
-    // Give the handoff a tick to reach the provider call, then cancel it.
-    await new Promise((r) => setTimeout(r, 5));
+    await providerStarted;
     loop.cancel();
     await handoffPromise;
 
@@ -373,22 +409,21 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
     expect(turnError).toMatchObject({ message: expect.stringContaining('Context handoff failed') });
 
     // Drive a subsequent turn on the SAME (already-canceled) loop instance
-    // and compare against a fresh baseline loop with an identical
-    // systemPrompt and no prior handoff -- the conversations must match.
-    // AgentLoop captured `deps` by reference at construction; swap the
-    // adapter field on that same object so the canceled loop's next turn
-    // uses a responsive adapter instead of the never-resolving one.
+    // and compare against a baseline loop seeded with the IDENTICAL prior
+    // turn (but no handoff attempt) -- the conversations must match.
     const followUpAdapter = new ScriptedAdapter([textResponse('reply')]);
     deps.adapter = followUpAdapter;
     await loop.runTurn('t2', 'next');
     const messagesForT2 = followUpAdapter.capturedMessages.at(-1)!;
 
-    const baselineAdapter = new ScriptedAdapter([textResponse('reply')]);
+    const baselineAdapter = new ScriptedAdapter([textResponse('seed reply'), textResponse('reply')]);
     const { deps: baselineDeps } = makeDeps({ adapter: baselineAdapter });
     const baselineLoop = new AgentLoop(baselineDeps);
+    await baselineLoop.runTurn('t0', 'seed message');
     await baselineLoop.runTurn('t2', 'next');
     const baselineMessages = baselineAdapter.capturedMessages.at(-1)!;
 
     expect(messagesForT2).toEqual(baselineMessages);
+    expect(messagesForT2.some((m) => m.role === 'assistant' && m.content === 'seed reply')).toBe(true);
   });
 });

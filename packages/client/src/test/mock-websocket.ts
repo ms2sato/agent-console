@@ -128,21 +128,47 @@ const EMBEDDED_AGENT_SENT_MESSAGE_TYPES = [
 ] as const satisfies readonly EmbeddedAgentSentMessage['type'][];
 
 /**
+ * Per-variant field checks, keyed by `type`. Each validator only confirms
+ * the variant's *required* fields are present with the correct primitive
+ * type -- shallow validation is intentional (this is test infrastructure,
+ * not a production security boundary). Optional fields (`clientMessageId`,
+ * `fromOffset`, `maxBytes`) are not checked here; a wrong-typed optional
+ * field is a much rarer test-fixture mistake than a missing required one.
+ */
+const SENT_MESSAGE_VALIDATORS: {
+  [K in EmbeddedAgentSentMessage['type']]: (value: Record<string, unknown>) => boolean;
+} = {
+  'embedded-user-message': (value) => typeof value.text === 'string',
+  'embedded-cancel': () => true,
+  'embedded-handoff': () => true,
+  'request-history': () => true,
+  'request-history-range': (value) =>
+    typeof value.requestId === 'number' && typeof value.beforeOffset === 'number',
+};
+
+/**
  * Runtime shape guard for `EmbeddedAgentSentMessage` -- checks `type`
- * against the known literals above. There is no valibot schema for this
+ * against the known literals above, then dispatches to the matching
+ * variant's field validator so a payload with a valid `type` but a
+ * missing/wrong-typed required field (e.g. `embedded-user-message` with no
+ * `text`) is rejected too. There is no valibot schema for this
  * client->server union to reuse (the server parses it manually in
  * `websocket/routes.ts`), so this is a minimal structural check rather than
  * a full schema parse; sufficient for tests that only assert on `type` and
  * pass-through fields (`text`, `clientMessageId`, `fromOffset`).
  */
 function isEmbeddedAgentSentMessage(value: unknown): value is EmbeddedAgentSentMessage {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    'type' in value &&
-    typeof value.type === 'string' &&
-    (EMBEDDED_AGENT_SENT_MESSAGE_TYPES as readonly string[]).includes(value.type)
-  );
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('type' in value) ||
+    typeof value.type !== 'string' ||
+    !(EMBEDDED_AGENT_SENT_MESSAGE_TYPES as readonly string[]).includes(value.type)
+  ) {
+    return false;
+  }
+  const validator = SENT_MESSAGE_VALIDATORS[value.type as EmbeddedAgentSentMessage['type']];
+  return validator(value as Record<string, unknown>);
 }
 
 /**

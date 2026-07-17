@@ -323,7 +323,7 @@ describe('OpenAIChatAdapter — request body', () => {
     await collect(
       adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
     );
-    expect((capturedBody as Record<string, unknown>).stream_options).toEqual({ include_usage: true });
+    expect(capturedBody).toMatchObject({ stream_options: { include_usage: true } });
   });
 });
 
