@@ -291,10 +291,11 @@ export class AgentLoop {
     messages: ChatMessage[],
     turnId: string,
     signal: AbortSignal,
+    opts: { emitDeltas: boolean } = { emitDeltas: true },
   ): Promise<ProviderOutcome> {
     for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt++) {
       try {
-        return await this.runProviderAttempt(messages, turnId, signal);
+        return await this.runProviderAttempt(messages, turnId, signal, opts);
       } catch (err) {
         if (signal.aborted) {
           return { kind: 'canceled' };
@@ -328,6 +329,7 @@ export class AgentLoop {
     messages: ChatMessage[],
     turnId: string,
     signal: AbortSignal,
+    opts: { emitDeltas: boolean },
   ): Promise<{ kind: 'ok'; text: string; toolCalls: ProviderToolCall[]; usage: TurnUsage }> {
     let text = '';
     const toolCalls: ProviderToolCall[] = [];
@@ -344,7 +346,14 @@ export class AgentLoop {
       switch (event.type) {
         case 'text-delta':
           text += event.text;
-          this.deps.emit({ v: 1, type: 'assistant-delta', turnId, text: event.text });
+          // Context Handoff (Phase A): the distillation call (handoff() ->
+          // runProviderWithRetries with emitDeltas: false) must NOT stream its
+          // text on the wire -- only the context-handoff marker (with the full
+          // distillation string) is meant to reach the client. Streaming these
+          // deltas anyway leaves a dangling assistant-message bubble on the
+          // client (handoff() never emits the closing assistant-message for
+          // this turnId; only runTurn does).
+          if (opts.emitDeltas) this.deps.emit({ v: 1, type: 'assistant-delta', turnId, text: event.text });
           break;
         case 'reasoning-delta':
           // Thinking/reasoning content is a separate stream from the final
@@ -353,7 +362,7 @@ export class AgentLoop {
           // history). There is no terminal/final counterpart event -- the
           // iteration's unconditional `assistant-message` emit is the
           // implicit end-of-thinking boundary the client uses instead.
-          this.deps.emit({ v: 1, type: 'assistant-thinking-delta', turnId, text: event.text });
+          if (opts.emitDeltas) this.deps.emit({ v: 1, type: 'assistant-thinking-delta', turnId, text: event.text });
           break;
         case 'tool-call':
           toolCalls.push({ callId: event.callId, name: event.name, argsJson: event.argsJson });
@@ -404,7 +413,9 @@ export class AgentLoop {
         { role: 'user', content: handoffPromptText },
       ];
 
-      const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal);
+      const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal, {
+        emitDeltas: false,
+      });
       if (outcome.kind === 'canceled') {
         this.emitTurnError(turnId, 'Context handoff failed: turn canceled');
         return;

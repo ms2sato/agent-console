@@ -135,24 +135,46 @@ export function EmbeddedAgentWorkerView({
       ? contextUsage.promptTokens / contextWindowTokens
       : null;
 
-  // Threshold-crossing tracking (Context Handoff Phase A): local UI state,
-  // not a useEffect case -- per frontend.md "Avoid useEffect" (derived
-  // state computed during render) and docs/design/embedded-agent-worker.md
-  // "Context Handoff (Phase A)" § UI "Threshold banners". `prevRatioRef`
-  // holds the last-seen ratio across renders; each render where `ratio`
-  // changes compares it against both thresholds independently via
-  // `crossedThreshold` before advancing the ref. This is idempotent across
-  // Strict-Mode's double-render (the second pass computes prevRatio===ratio,
-  // which crossedThreshold treats as "no crossing").
+  // Threshold-crossing tracking (Context Handoff Phase A): reacting to
+  // `ratio` changing over time against the store's asynchronous, external
+  // updates is a legitimate useEffect use case per frontend.md's own
+  // carve-out ("Component-scoped ... browser API subscriptions") -- this is
+  // the same shape as the store-status bridge effect below, not a case of
+  // deriving state from current props during render. A plain render-phase
+  // `if (...) setState(...)` comparison was tried first but proved
+  // unreliable in a real browser: `contextUsage` arrives via a store
+  // `patch()`/`notify()` outside React's render cycle, and interleaving that
+  // external notification with a same-pass "adjust state during render"
+  // write let a later, unrelated re-render (e.g. the `activityState` ->
+  // `idle` update that follows moments later) observe the OLD `false` state
+  // and clobber the crossing that had just been recorded -- confirmed via
+  // live console tracing (banner state flips true -> false across two
+  // consecutive renders with no dismiss click and no code path setting it
+  // back to false). Root-caused to React.StrictMode's dev-mode double-invoke
+  // of the render function (active for `bun run dev`, which is how this was
+  // dogfooded) interacting with the render-phase `setState` + direct
+  // `prevRatioRef` mutation: the ref (a plain mutable object) survives a
+  // discarded/re-invoked render pass, but a pending `setSoftBannerShown(true)`
+  // from that pass does not, so a later render sees "already past the
+  // threshold" on the ref while `softBannerShown` is still stuck at its
+  // pre-crossing value. `useEffect` avoids this because the ref advance and
+  // the setState calls run together, atomically, after commit -- not subject
+  // to StrictMode's render-phase double-invoke -- keyed only off `ratio`
+  // actually changing. Regression-guarded in
+  // EmbeddedAgentWorkerView.test.tsx's `renderViewStrict`-based tests (only
+  // reproducible with `<StrictMode>` wrapping, matching main.tsx's app root).
+  // See docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
+  // UI "Threshold banners".
   const prevRatioRef = useRef<number | null>(null);
   const [softBannerShown, setSoftBannerShown] = useState(false);
   const [hardBannerShown, setHardBannerShown] = useState(false);
-  if (ratio !== null) {
+  useEffect(() => {
+    if (ratio === null) return;
     const prevRatio = prevRatioRef.current;
     if (crossedThreshold(prevRatio, ratio, softRatio)) setSoftBannerShown(true);
     if (crossedThreshold(prevRatio, ratio, hardRatio)) setHardBannerShown(true);
     prevRatioRef.current = ratio;
-  }
+  }, [ratio, softRatio, hardRatio]);
 
   const listRef = useRef<HTMLDivElement>(null);
 

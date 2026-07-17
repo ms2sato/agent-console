@@ -168,9 +168,55 @@ describe('AgentLoop.handoff() — additional behaviors', () => {
     const usageEvents = events.filter((e) => e.type === 'context-usage');
     expect(usageEvents).toHaveLength(1);
     expect(usageEvents[0]).toMatchObject({ estimated: true });
-    // The context-usage event follows the context-handoff marker, both before idle.
+    // The context-usage event follows the context-handoff marker, both before
+    // idle. No assistant-delta -- the distillation call suppresses streaming
+    // deltas (see the regression test below); the marker carries the full text.
     const types = events.map((e) => e.type);
-    expect(types).toEqual(['state', 'assistant-delta', 'context-handoff', 'context-usage', 'state']);
+    expect(types).toEqual(['state', 'context-handoff', 'context-usage', 'state']);
+  });
+
+  it('regression: suppresses assistant-delta/assistant-thinking-delta during the distillation call, but a subsequent normal runTurn still streams them', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        kind: 'events',
+        events: [
+          { type: 'reasoning-delta', text: 'thinking about it' },
+          { type: 'text-delta', text: 'DISTIL' },
+          { type: 'text-delta', text: 'LATION' },
+          { type: 'done', finishReason: 'stop' },
+        ],
+      },
+      textResponse('reply to next'),
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.handoff();
+
+    // Only state (active/idle), context-usage, and context-handoff should be
+    // present for the handoff call -- no assistant-delta / assistant-thinking-delta,
+    // and no dangling assistant-message either (handoff() never emits one).
+    expect(events.map((e) => e.type)).toEqual(['state', 'context-handoff', 'context-usage', 'state']);
+    expect(events.find((e) => e.type === 'assistant-delta')).toBeUndefined();
+    expect(events.find((e) => e.type === 'assistant-thinking-delta')).toBeUndefined();
+    expect(events.find((e) => e.type === 'assistant-message')).toBeUndefined();
+    expect(events.find((e) => e.type === 'context-handoff')).toEqual({
+      v: 1,
+      type: 'context-handoff',
+      distillation: 'DISTILLATION',
+    });
+
+    // Existing runTurn behavior is unchanged: a normal turn still streams
+    // assistant-delta as before.
+    events.length = 0;
+    await loop.runTurn('t2', 'next');
+    const deltaEvents = events.filter((e) => e.type === 'assistant-delta');
+    expect(deltaEvents).toHaveLength(1);
+    expect(deltaEvents[0]).toMatchObject({ turnId: 't2', text: 'reply to next' });
+    expect(events.find((e) => e.type === 'assistant-message')).toMatchObject({
+      turnId: 't2',
+      text: 'reply to next',
+    });
   });
 
   it('falls back to the ORIGINAL system prompt when reassembleSystemPrompt throws, but still completes the reset', async () => {

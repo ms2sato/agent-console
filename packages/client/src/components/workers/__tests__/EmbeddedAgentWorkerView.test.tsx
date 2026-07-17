@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
+import { StrictMode } from 'react';
 import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -62,6 +63,29 @@ function renderView(props: { sessionId: string; workerId: string; embeddedAgentI
     <QueryClientProvider client={queryClient}>
       <EmbeddedAgentWorkerView {...props} />
     </QueryClientProvider>,
+  );
+}
+
+/**
+ * Same as `renderView`, but wrapped in `React.StrictMode`, matching production
+ * (`main.tsx` wraps the entire app in `<StrictMode>`). This distinction matters
+ * for the Context Handoff (Phase A) threshold-banner tests below: StrictMode's
+ * dev-mode double-invoke of the render function is what actually reproduces the
+ * real-browser bug where a render-phase `if (...) setState(...)` threshold-crossing
+ * check silently failed to keep the banner visible. `renderView` (no StrictMode)
+ * cannot reproduce that failure mode -- which is exactly why the original
+ * implementation passed every other test in this file while still being broken
+ * in the real browser. See the `useEffect` fix + its inline comment in
+ * EmbeddedAgentWorkerView.tsx for the full mechanism.
+ */
+function renderViewStrict(props: { sessionId: string; workerId: string; embeddedAgentId?: string }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  return render(
+    <StrictMode>
+      <QueryClientProvider client={queryClient}>
+        <EmbeddedAgentWorkerView {...props} />
+      </QueryClientProvider>
+    </StrictMode>,
   );
 }
 
@@ -1744,6 +1768,90 @@ describe('EmbeddedAgentWorkerView', () => {
 
       expect(screen.queryByText('Send')).toBeNull();
       expect(screen.getByText('Cancel')).toBeTruthy();
+    });
+
+    describe('StrictMode threshold-crossing regression (real-browser bug, dogfood #1122 Phase A)', () => {
+      // These tests render via `renderViewStrict` (React.StrictMode), not the
+      // plain `renderView` used everywhere else in this file -- see
+      // `renderViewStrict`'s doc comment. Without StrictMode, the ORIGINAL
+      // render-phase `if (ratio !== null) { ...; setSoftBannerShown(true); ... }`
+      // implementation passed all of the crossing/dismiss tests above despite
+      // being broken in the real browser: StrictMode's double-invoke of the
+      // render function, combined with mutating `prevRatioRef` and setting React
+      // state from the same render-phase conditional, let a later render observe
+      // a stale `false` banner even though the ref had already advanced past the
+      // crossing. These tests pin the actual observed failure shape.
+
+      it('shows the soft banner under StrictMode immediately after a threshold-crossing update', async () => {
+        globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+        renderViewStrict({ sessionId: 's-ctx-strict-1', workerId: 'w-ctx-strict-1', embeddedAgentId: 'ea-1' });
+        const ws = MockWebSocket.getLastInstance();
+        act(() => {
+          ws?.simulateOpen();
+        });
+        await flush();
+
+        // Cross soft (50%): 600/1000 = 60%.
+        act(() => {
+          const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+          ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+        });
+        await flush();
+
+        expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
+      });
+
+      it('keeps the soft banner shown across a SEPARATE, unrelated store update (activityState) that never touches ratio -- the exact interleaving that clobbered the banner back to hidden under the old render-phase implementation', async () => {
+        globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+        renderViewStrict({ sessionId: 's-ctx-strict-2', workerId: 'w-ctx-strict-2', embeddedAgentId: 'ea-1' });
+        const ws = MockWebSocket.getLastInstance();
+        act(() => {
+          ws?.simulateOpen();
+        });
+        await flush();
+
+        act(() => {
+          const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+          ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+        });
+        await flush();
+        expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
+
+        // A SEPARATE WS event, delivered via its own store patch()/notify() (a
+        // separate `act()`, mirroring two distinct WebSocket message events in
+        // the real browser), that does not touch contextUsage/ratio at all.
+        act(() => {
+          ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'idle' }));
+        });
+        await flush();
+
+        expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
+      });
+
+      it('shows the hard banner under StrictMode and keeps it shown across an unrelated activityState update', async () => {
+        globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+        renderViewStrict({ sessionId: 's-ctx-strict-3', workerId: 'w-ctx-strict-3', embeddedAgentId: 'ea-1' });
+        const ws = MockWebSocket.getLastInstance();
+        act(() => {
+          ws?.simulateOpen();
+        });
+        await flush();
+
+        // Cross hard (80%): 900/1000 = 90%.
+        act(() => {
+          const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 900, estimated: false });
+          ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+        });
+        await flush();
+        expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
+
+        act(() => {
+          ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
+        });
+        await flush();
+
+        expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
+      });
     });
   });
 });
