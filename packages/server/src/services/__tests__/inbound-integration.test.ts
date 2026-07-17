@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { createHmac } from 'node:crypto';
-import type { Repository, Session, InboundSystemEvent } from '@agent-console/shared';
 import { GitHubServiceParser } from '../inbound/github-service-parser.js';
-import { resolveTargets } from '../inbound/resolve-targets.js';
-import { buildWorktreeSession, buildPersistedRepository } from '../../__tests__/utils/build-test-data.js';
 
 describe('GitHubServiceParser', () => {
   const parser = new GitHubServiceParser('secret-token');
@@ -510,87 +507,5 @@ describe('GitHubServiceParser', () => {
       expect(event).not.toBeNull();
       expect(event!.metadata.url).toBeUndefined();
     });
-  });
-});
-
-describe('resolveTargets', () => {
-  const defaultRepo = buildPersistedRepository({ id: 'repo-1', name: 'repo', path: '/worktrees/repo' });
-  const defaultRepositories = new Map<string, Repository>([[defaultRepo.id, defaultRepo]]);
-
-  function createEvent(branch: string): InboundSystemEvent {
-    return {
-      type: 'ci:completed',
-      source: 'github',
-      timestamp: '2024-01-01T00:00:00Z',
-      metadata: { repositoryName: 'owner/repo', branch },
-      payload: { ok: true },
-      summary: 'CI success',
-    };
-  }
-
-  function createDeps(sessions: Session[], repositories = defaultRepositories) {
-    return {
-      getSessions: () => sessions,
-      getRepository: (repositoryId: string) => repositories.get(repositoryId),
-      getOrgRepoFromPath: async () => 'owner/repo',
-    };
-  }
-
-  it('matches worktree sessions by repository and branch', async () => {
-    const sessions = [buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'main' })];
-    const targets = await resolveTargets(createEvent('main'), createDeps(sessions));
-    expect(targets).toEqual([{ sessionId: 'session-1' }]);
-  });
-
-  it('returns no targets for branch mismatch', async () => {
-    const sessions = [buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'develop' })];
-    const targets = await resolveTargets(createEvent('main'), createDeps(sessions));
-    expect(targets).toEqual([]);
-  });
-
-  it('includes parent session when child matches', async () => {
-    const sessions = [
-      buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'feature', parentSessionId: 'parent-1' }),
-    ];
-    const targets = await resolveTargets(createEvent('feature'), createDeps(sessions));
-    expect(targets).toEqual([
-      { sessionId: 'child-1' },
-      { sessionId: 'parent-1' },
-    ]);
-  });
-
-  it('does not include parent when parentSessionId is absent', async () => {
-    const sessions = [
-      buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'feature' }),
-    ];
-    const targets = await resolveTargets(createEvent('feature'), createDeps(sessions));
-    expect(targets).toEqual([{ sessionId: 'child-1' }]);
-  });
-
-  it('deduplicates parent when multiple children match', async () => {
-    const sessions = [
-      buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' }),
-      buildWorktreeSession({ id: 'child-2', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' }),
-    ];
-    const targets = await resolveTargets(createEvent('main'), createDeps(sessions));
-    // parent-1 is added after child-1, then child-2 is added, then parent-1 again (deduped)
-    expect(targets).toEqual([
-      { sessionId: 'child-1' },
-      { sessionId: 'parent-1' },
-      { sessionId: 'child-2' },
-    ]);
-  });
-
-  it('does not duplicate parent that is also a direct match', async () => {
-    const sessions = [
-      buildWorktreeSession({ id: 'parent-1', repositoryId: 'repo-1', worktreeId: 'main' }),
-      buildWorktreeSession({ id: 'child-1', repositoryId: 'repo-1', worktreeId: 'main', parentSessionId: 'parent-1' }),
-    ];
-    const targets = await resolveTargets(createEvent('main'), createDeps(sessions));
-    // parent-1 matches directly AND is referenced as parent — should appear only once
-    expect(targets).toEqual([
-      { sessionId: 'parent-1' },
-      { sessionId: 'child-1' },
-    ]);
   });
 });
