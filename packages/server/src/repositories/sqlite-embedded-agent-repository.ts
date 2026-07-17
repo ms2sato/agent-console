@@ -42,6 +42,10 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
           max_tool_iterations: row.max_tool_iterations,
           enabled_tools: row.enabled_tools,
           instructions: row.instructions,
+          context_window_tokens: row.context_window_tokens,
+          handoff_soft_ratio: row.handoff_soft_ratio,
+          handoff_hard_ratio: row.handoff_hard_ratio,
+          handoff_auto: row.handoff_auto,
           // Note: created_at and created_by are intentionally NOT updated
           // (they must never change after the initial insert).
           updated_at: row.updated_at,

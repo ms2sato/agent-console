@@ -57,7 +57,7 @@ const InstructionPathSchema = v.pipe(
  * submit) get their own client-side pipe -- mirrors the pattern in
  * `AgentForm.tsx` (`continueTemplate`, `headlessTemplate`).
  */
-const EmbeddedAgentFormSchema = v.object({
+const EmbeddedAgentFormRawSchema = v.object({
   name: CreateEmbeddedAgentRequestSchema.entries.name,
   description: v.optional(v.pipe(v.string(), v.trim())),
 
@@ -93,12 +93,83 @@ const EmbeddedAgentFormSchema = v.object({
   // re-check duplicates client-side (unlike the server-side schema).
   enabledTools: v.array(v.picklist(EMBEDDED_AGENT_TOOL_NAMES)),
 
+  // Context Handoff (Phase A) fields -- form-specific string inputs
+  // converted on submit (see parseContextWindowTokens/parseHandoffRatio
+  // below), mirroring maxToolIterationsInput's string-state/parse-on-save
+  // pattern exactly. Empty string means "not set". `handoff.auto` is
+  // deliberately NOT exposed here -- see docs/design/embedded-agent-worker.md
+  // "Context Handoff (Phase A)" § Definition config, migration, and forms.
+  contextWindowTokensInput: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim(),
+      v.check(
+        (val) => !val || (/^\d+$/.test(val) && Number(val) >= 1),
+        'Must be a positive integer'
+      )
+    )
+  ),
+  // Percentage inputs (e.g. "75" maps to 0.75 on save). 0-100 inclusive,
+  // matching the server schema's 0-1 minValue/maxValue bounds.
+  handoffSoftRatioInput: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim(),
+      v.check(
+        (val) => !val || (/^\d+(\.\d+)?$/.test(val) && Number(val) >= 0 && Number(val) <= 100),
+        'Must be a number between 0 and 100'
+      )
+    )
+  ),
+  handoffHardRatioInput: v.optional(
+    v.pipe(
+      v.string(),
+      v.trim(),
+      v.check(
+        (val) => !val || (/^\d+(\.\d+)?$/.test(val) && Number(val) >= 0 && Number(val) <= 100),
+        'Must be a number between 0 and 100'
+      )
+    )
+  ),
+
   // Each entry is a literal relative file path; order matters (concatenated
   // in array order into the system prompt — see docs/design/embedded-agent-worker.md).
   // Modeled as {path: string}[] (not string[]) because useFieldArray requires
   // an array of objects to key rows by `field.id`.
   instructions: v.array(v.object({ path: InstructionPathSchema })),
 });
+
+/**
+ * Object-level cross-field check: when both handoff threshold inputs are
+ * present, the soft threshold must not exceed the hard threshold (mirrors
+ * the server-side `EmbeddedAgentHandoffConfigSchema` invariant on the parsed
+ * 0-1 ratios). A value that already failed its own per-field format/range
+ * check (`Number.isNaN`) is skipped here -- that field's own error message
+ * already explains the problem, so this check does not pile on a second,
+ * misleading "soft exceeds hard" message. Attached via `v.forward` to
+ * `handoffHardRatioInput` (react-hook-form's valibotResolver silently drops
+ * issues with no dot path, so an unforwarded object-level `v.check` would
+ * never surface as a visible form error).
+ */
+const EmbeddedAgentFormSchema = v.pipe(
+  EmbeddedAgentFormRawSchema,
+  v.forward(
+    v.partialCheck(
+      [['handoffSoftRatioInput'], ['handoffHardRatioInput']],
+      ({ handoffSoftRatioInput, handoffHardRatioInput }) => {
+        const soft = handoffSoftRatioInput?.trim();
+        const hard = handoffHardRatioInput?.trim();
+        if (!soft || !hard) return true;
+        const softNum = Number(soft);
+        const hardNum = Number(hard);
+        if (Number.isNaN(softNum) || Number.isNaN(hardNum)) return true;
+        return softNum <= hardNum;
+      },
+      'Soft threshold must not exceed the hard threshold',
+    ),
+    ['handoffHardRatioInput'],
+  ),
+);
 
 export type EmbeddedAgentFormData = v.InferOutput<typeof EmbeddedAgentFormSchema>;
 
@@ -136,6 +207,9 @@ export function EmbeddedAgentForm({
       maxToolIterationsInput: '',
       enabledTools: [...DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS],
       instructions: [],
+      contextWindowTokensInput: '',
+      handoffSoftRatioInput: '',
+      handoffHardRatioInput: '',
     },
     mode: 'onBlur',
   });
@@ -219,6 +293,43 @@ export function EmbeddedAgentForm({
             />
             <p className="text-xs text-gray-500 mt-1">
               Maximum tool-call iterations per user turn. Defaults to 25 if left empty.
+            </p>
+          </FormField>
+
+          <FormField label="Context Window Tokens (optional)" error={errors.contextWindowTokensInput}>
+            <Input
+              {...register('contextWindowTokensInput')}
+              placeholder="e.g., 128000"
+              inputMode="numeric"
+              error={errors.contextWindowTokensInput}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Model's context window size, in tokens. Denominator for the context-usage bar and
+              handoff thresholds; leave empty to show raw token counts with no gauge.
+            </p>
+          </FormField>
+
+          <FormField label="Handoff Soft Threshold % (optional)" error={errors.handoffSoftRatioInput}>
+            <Input
+              {...register('handoffSoftRatioInput')}
+              placeholder="75"
+              inputMode="decimal"
+              error={errors.handoffSoftRatioInput}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Usage percentage at which the amber "consider a handoff" banner appears. Defaults to 75%.
+            </p>
+          </FormField>
+
+          <FormField label="Handoff Hard Threshold % (optional)" error={errors.handoffHardRatioInput}>
+            <Input
+              {...register('handoffHardRatioInput')}
+              placeholder="90"
+              inputMode="decimal"
+              error={errors.handoffHardRatioInput}
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              Usage percentage at which the red "handoff now" banner appears. Defaults to 90%.
             </p>
           </FormField>
 
@@ -336,4 +447,44 @@ export function parseMaxToolIterations(input?: string): number | undefined {
  */
 export function toInstructionPaths(instructions: EmbeddedAgentFormData['instructions']): string[] {
   return instructions.map((entry) => entry.path);
+}
+
+/**
+ * Parse the form's `contextWindowTokensInput` string into the request's
+ * numeric `contextWindowTokens` field. Empty string means "not set".
+ */
+export function parseContextWindowTokens(input?: string): number | undefined {
+  const trimmed = input?.trim();
+  return trimmed ? Number(trimmed) : undefined;
+}
+
+/**
+ * Parse a Context Handoff (Phase A) percentage input (e.g. "75") into the
+ * request's 0-1 ratio field (e.g. 0.75). Empty string means "not set".
+ */
+export function parseHandoffRatio(input?: string): number | undefined {
+  const trimmed = input?.trim();
+  return trimmed ? Number(trimmed) / 100 : undefined;
+}
+
+/** Decimal places `formatHandoffRatioInput` rounds to -- enough to strip
+ * floating-point representation noise (e.g. `0.7000000000000001 * 100`)
+ * while preserving any genuine decimal precision a stored ratio carries
+ * (e.g. `0.756 * 100` stays `75.6`, never rounded to a whole percent). */
+const HANDOFF_RATIO_INPUT_PRECISION = 4;
+
+/**
+ * Format a 0-1 handoff ratio (e.g. 0.756) back into the form's percentage
+ * input string (e.g. "75.6"), for pre-filling the Edit form. `undefined`
+ * maps to the empty string. Does NOT round to a whole percent -- a stored
+ * decimal threshold must round-trip through Edit unchanged; only
+ * floating-point noise from the `* 100` multiplication is stripped (via
+ * `Number`'s own trailing-zero-free string conversion after rounding to
+ * `HANDOFF_RATIO_INPUT_PRECISION` decimal places).
+ */
+export function formatHandoffRatioInput(ratio: number | undefined): string {
+  if (ratio === undefined) return '';
+  const scale = 10 ** HANDOFF_RATIO_INPUT_PRECISION;
+  const pct = Math.round(ratio * 100 * scale) / scale;
+  return String(pct);
 }

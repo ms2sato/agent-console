@@ -34,7 +34,11 @@ export type ProviderEvent =
   | { type: 'text-delta'; text: string }
   | { type: 'reasoning-delta'; text: string }
   | { type: 'tool-call'; callId: string; name: string; argsJson: string }
-  | { type: 'done'; finishReason: string | null };
+  | {
+      type: 'done';
+      finishReason: string | null;
+      usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+    };
 
 export interface ProviderRunRequest {
   model: string;

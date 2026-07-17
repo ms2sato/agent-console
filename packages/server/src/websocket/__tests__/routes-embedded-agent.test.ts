@@ -560,6 +560,71 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     expect(mockWs.closeCalls.length).toBe(0);
   });
 
+  it('forwards embedded-handoff to the loop stdin (Context Handoff Phase A)', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+
+    await waitFor(() => fake.stdinWrites.length >= 2);
+    const handoffCommand = JSON.parse(fake.stdinWrites[1]);
+    expect(handoffCommand).toEqual({ v: 1, type: 'handoff' });
+    expect(mockWs.closeCalls.length).toBe(0);
+  });
+
+  it('rejects embedded-handoff with ACTIVATION_FAILED when the worker never activated (NOT_ACTIVATED code mapping)', async () => {
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      sessionOwnerUserId,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: sessionOwnerUserId },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    await embeddedAgentManager.deleteEmbeddedAgent(definition.id);
+
+    const { handlers, mockWs } = openConnection(session.id, worker!.id);
+    await waitFor(() => mockWs.sentMessages.length > 0);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+
+    await waitFor(() => mockWs.sentMessages.length > 0);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('ACTIVATION_FAILED');
+    expect(mockWs.closeCalls.length).toBe(0);
+  });
+
+  it('rejects embedded-handoff with TURN_IN_PROGRESS while a turn is already active', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    // Synchronous admission (before any await), so two back-to-back
+    // onMessage calls reliably serialize: the first sets turnActive=true
+    // before the second call's admission runs -- mirrors the
+    // embedded-user-message TURN_IN_PROGRESS test above.
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+
+    await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).code === 'TURN_IN_PROGRESS'));
+    const errorMsg = mockWs.sentMessages.map((m) => JSON.parse(m)).find((m) => m.code === 'TURN_IN_PROGRESS');
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.message).toBe('turn in progress');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Only the first handoff should have reached the loop's stdin.
+    await waitFor(() => fake.stdinWrites.length >= 2);
+    expect(fake.stdinWrites.length).toBe(2); // init + first handoff
+  });
+
   it('serves request-history for an embedded-agent worker with the shared history-response shape', async () => {
     // request-history is handled by shared isStreamWorker machinery before
     // the embedded-agent worker-type branch (routes.ts), so this test guards

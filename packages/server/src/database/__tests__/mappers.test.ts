@@ -1298,6 +1298,8 @@ describe('mappers', () => {
       maxToolIterations: 30,
       enabledTools: ['Read', 'Glob'],
       instructions: ['docs/local-note.md', 'CONTRIBUTING.md'],
+      contextWindowTokens: 128000,
+      handoff: { softRatio: 0.75, hardRatio: 0.9, auto: true },
       createdBy: 'user-uuid',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-02T00:00:00.000Z',
@@ -1316,6 +1318,10 @@ describe('mappers', () => {
       expect(row.max_tool_iterations).toBe(30);
       expect(row.enabled_tools).toBe('["Read","Glob"]');
       expect(row.instructions).toBe('["docs/local-note.md","CONTRIBUTING.md"]');
+      expect(row.context_window_tokens).toBe(128000);
+      expect(row.handoff_soft_ratio).toBe(0.75);
+      expect(row.handoff_hard_ratio).toBe(0.9);
+      expect(row.handoff_auto).toBe(1);
       expect(row.created_by).toBe('user-uuid');
     });
 
@@ -1337,6 +1343,28 @@ describe('mappers', () => {
       expect(row.max_tool_iterations).toBeNull();
       expect(row.enabled_tools).toBeNull();
       expect(row.instructions).toBeNull();
+      expect(row.context_window_tokens).toBeNull();
+      expect(row.handoff_soft_ratio).toBeNull();
+      expect(row.handoff_hard_ratio).toBeNull();
+      expect(row.handoff_auto).toBeNull();
+    });
+
+    it('maps a handoff config with auto explicitly false to handoff_auto: 0', () => {
+      const autoFalse: EmbeddedAgentDefinition = {
+        id: 'def-auto-false',
+        name: 'AutoFalse',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+        handoff: { auto: false },
+        createdBy: 'user-uuid',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+
+      const row = toEmbeddedAgentRow(autoFalse);
+
+      expect(row.handoff_auto).toBe(0);
+      expect(row.handoff_soft_ratio).toBeNull();
+      expect(row.handoff_hard_ratio).toBeNull();
     });
 
     it('maps an explicit empty enabledTools array to a serialized empty-array column', () => {
@@ -1386,6 +1414,10 @@ describe('mappers', () => {
         max_tool_iterations: row.max_tool_iterations ?? null,
         enabled_tools: row.enabled_tools ?? null,
         instructions: row.instructions ?? null,
+        context_window_tokens: row.context_window_tokens ?? null,
+        handoff_soft_ratio: row.handoff_soft_ratio ?? null,
+        handoff_hard_ratio: row.handoff_hard_ratio ?? null,
+        handoff_auto: row.handoff_auto ?? null,
         created_by: row.created_by,
         created_at: fullDefinition.createdAt,
         updated_at: fullDefinition.updatedAt,
@@ -1408,6 +1440,10 @@ describe('mappers', () => {
         max_tool_iterations: null,
         enabled_tools: null,
         instructions: null,
+        context_window_tokens: null,
+        handoff_soft_ratio: null,
+        handoff_hard_ratio: null,
+        handoff_auto: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1421,6 +1457,8 @@ describe('mappers', () => {
       expect(restored.maxToolIterations).toBeUndefined();
       expect(restored.enabledTools).toBeUndefined();
       expect(restored.instructions).toBeUndefined();
+      expect(restored.contextWindowTokens).toBeUndefined();
+      expect(restored.handoff).toBeUndefined();
     });
 
     it('unflattens a serialized empty-array column to an explicit empty array', () => {
@@ -1435,6 +1473,10 @@ describe('mappers', () => {
         max_tool_iterations: null,
         enabled_tools: '[]',
         instructions: '[]',
+        context_window_tokens: null,
+        handoff_soft_ratio: null,
+        handoff_hard_ratio: null,
+        handoff_auto: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1458,6 +1500,10 @@ describe('mappers', () => {
         max_tool_iterations: null,
         enabled_tools: '["Read"',
         instructions: null,
+        context_window_tokens: null,
+        handoff_soft_ratio: null,
+        handoff_hard_ratio: null,
+        handoff_auto: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1483,6 +1529,10 @@ describe('mappers', () => {
         max_tool_iterations: null,
         enabled_tools: null,
         instructions: '["docs/note.md"',
+        context_window_tokens: null,
+        handoff_soft_ratio: null,
+        handoff_hard_ratio: null,
+        handoff_auto: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1508,6 +1558,10 @@ describe('mappers', () => {
         max_tool_iterations: null,
         enabled_tools: '{}',
         instructions: null,
+        context_window_tokens: null,
+        handoff_soft_ratio: null,
+        handoff_hard_ratio: null,
+        handoff_auto: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1533,6 +1587,10 @@ describe('mappers', () => {
         max_tool_iterations: null,
         enabled_tools: null,
         instructions: '"foo"',
+        context_window_tokens: null,
+        handoff_soft_ratio: null,
+        handoff_hard_ratio: null,
+        handoff_auto: null,
         created_by: 'user-uuid',
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
@@ -1544,6 +1602,58 @@ describe('mappers', () => {
       }).not.toThrow();
 
       expect(restored?.instructions).toBeUndefined();
+    });
+
+    it('reconstructs handoff when only one of the three columns is non-null', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-partial-handoff',
+        name: 'PartialHandoff',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: null,
+        instructions: null,
+        context_window_tokens: null,
+        handoff_soft_ratio: 0.6,
+        handoff_hard_ratio: null,
+        handoff_auto: null,
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      const restored = toEmbeddedAgentDefinition(selectRow);
+
+      expect(restored.handoff).toEqual({ softRatio: 0.6, hardRatio: undefined, auto: undefined });
+    });
+
+    it('reconstructs handoff.auto as false when handoff_auto is 0', () => {
+      const selectRow: EmbeddedAgentRow = {
+        id: 'def-auto-false',
+        name: 'AutoFalse',
+        description: null,
+        provider_base_url: 'http://localhost:11434/v1',
+        provider_model: 'llama3',
+        provider_api_key_ref: null,
+        system_prompt: null,
+        max_tool_iterations: null,
+        enabled_tools: null,
+        instructions: null,
+        context_window_tokens: null,
+        handoff_soft_ratio: null,
+        handoff_hard_ratio: null,
+        handoff_auto: 0,
+        created_by: 'user-uuid',
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      };
+
+      const restored = toEmbeddedAgentDefinition(selectRow);
+
+      expect(restored.handoff).toEqual({ softRatio: undefined, hardRatio: undefined, auto: false });
     });
   });
 });

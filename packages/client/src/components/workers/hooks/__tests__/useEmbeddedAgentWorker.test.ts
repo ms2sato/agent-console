@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { renderHook, act } from '@testing-library/react';
 import { useEmbeddedAgentWorker } from '../useEmbeddedAgentWorker';
-import { MockWebSocket, installMockWebSocket } from '../../../../test/mock-websocket';
+import { MockWebSocket, installMockWebSocket, decodeSentMessages } from '../../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers, _inspect, getOrCreateEmbeddedAgentWorker } from '../../embedded-agent-store';
 
 describe('useEmbeddedAgentWorker', () => {
@@ -82,8 +82,43 @@ describe('useEmbeddedAgentWorker', () => {
       result.current.cancel();
     });
 
-    const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
+    const sent = decodeSentMessages(ws!.send.mock.calls);
     expect(sent).toContainEqual({ type: 'embedded-cancel' });
+  });
+
+  it('triggerHandoff forwards embedded-handoff to the store and reflects handoffInFlight', () => {
+    const { result } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's4b', workerId: 'w4b' }));
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    expect(result.current.handoffInFlight).toBe(false);
+
+    act(() => {
+      result.current.triggerHandoff();
+    });
+
+    const sent = decodeSentMessages(ws!.send.mock.calls);
+    expect(sent).toContainEqual({ type: 'embedded-handoff' });
+    expect(result.current.handoffInFlight).toBe(true);
+  });
+
+  it('exposes contextUsage from the store, updated by a context-usage NDJSON row', () => {
+    const { result } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's4c', workerId: 'w4c' }));
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    expect(result.current.contextUsage).toBeNull();
+
+    act(() => {
+      const data = JSON.stringify({ v: 1, type: 'context-usage', promptTokens: 1234, estimated: true }) + '\n';
+      ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+    });
+
+    expect(result.current.contextUsage).toEqual({ promptTokens: 1234, estimated: true });
   });
 
   it('acquire/release keeps the underlying store instance alive across a remount (ref counting)', () => {

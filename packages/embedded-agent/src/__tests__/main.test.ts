@@ -87,6 +87,7 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     createMcpClient: () => new StubMcpClient(),
     createAdapter: () => new StubAdapter(),
     loadInstructions: async () => ({ segments: [] }),
+    loadHandoffPrompt: async () => ({ content: 'DEFAULT_HANDOFF_PROMPT_STUB', origin: 'bundled-default' }),
     ...overrides,
   };
 }

@@ -130,6 +130,45 @@ describe('AddEmbeddedAgentForm', () => {
     expect(body).toMatchObject({ instructions: ['docs/AGENTS.md'] });
   });
 
+  it('includes contextWindowTokens and a handoff object in the POST body when the threshold fields are filled', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderAddEmbeddedAgentForm({ onSuccess, onCancel: () => {} });
+
+    await fillRequiredFields(user);
+    await user.type(screen.getByPlaceholderText('e.g., 128000'), '128000');
+    await user.type(screen.getByPlaceholderText('75'), '80');
+    await user.type(screen.getByPlaceholderText('90'), '95');
+    await user.click(screen.getByText('Add Embedded Agent'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = await getLastFetchBody();
+    expect(body).toMatchObject({
+      contextWindowTokens: 128000,
+      handoff: { softRatio: 0.8, hardRatio: 0.95 },
+    });
+  });
+
+  it('omits contextWindowTokens and handoff from the POST body when the threshold fields are left empty', async () => {
+    const user = userEvent.setup();
+    const onSuccess = mock(() => {});
+    renderAddEmbeddedAgentForm({ onSuccess, onCancel: () => {} });
+
+    await fillRequiredFields(user);
+    await user.click(screen.getByText('Add Embedded Agent'));
+
+    await waitFor(() => {
+      expect(onSuccess).toHaveBeenCalledTimes(1);
+    });
+
+    const body = (await getLastFetchBody()) as Record<string, unknown>;
+    expect('contextWindowTokens' in body).toBe(false);
+    expect('handoff' in body).toBe(false);
+  });
+
   it('invalidates the embedded-agents query on success (does not rely solely on the WS broadcast)', async () => {
     const user = userEvent.setup();
     const onSuccess = mock(() => {});

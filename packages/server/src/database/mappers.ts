@@ -526,6 +526,10 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     max_tool_iterations: def.maxToolIterations ?? null,
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
     instructions: def.instructions !== undefined ? JSON.stringify(def.instructions) : null,
+    context_window_tokens: def.contextWindowTokens ?? null,
+    handoff_soft_ratio: def.handoff?.softRatio ?? null,
+    handoff_hard_ratio: def.handoff?.hardRatio ?? null,
+    handoff_auto: def.handoff?.auto !== undefined ? (def.handoff.auto ? 1 : 0) : null,
     created_by: def.createdBy,
     created_at: def.createdAt,
     updated_at: def.updatedAt,
@@ -582,6 +586,19 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
   );
   const instructions = parseEmbeddedAgentJsonArrayColumn<string>(row.instructions, row.id, 'instructions');
 
+  // `handoff` is reconstructed conditionally: unlike `provider` (required,
+  // always rebuilt), an all-null triple must yield `undefined`, not `{}`, so
+  // an unconfigured definition round-trips to "no handoff config" exactly as
+  // it was written.
+  const handoff =
+    row.handoff_soft_ratio !== null || row.handoff_hard_ratio !== null || row.handoff_auto !== null
+      ? {
+          softRatio: row.handoff_soft_ratio ?? undefined,
+          hardRatio: row.handoff_hard_ratio ?? undefined,
+          auto: row.handoff_auto !== null ? row.handoff_auto === 1 : undefined,
+        }
+      : undefined;
+
   return {
     id: row.id,
     name: row.name,
@@ -595,6 +612,8 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
     maxToolIterations: row.max_tool_iterations ?? undefined,
     enabledTools,
     instructions,
+    contextWindowTokens: row.context_window_tokens ?? undefined,
+    handoff,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

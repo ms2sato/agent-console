@@ -1,6 +1,7 @@
 export {
   EmbeddedAgentForm,
   parseMaxToolIterations,
+  formatHandoffRatioInput,
   type EmbeddedAgentFormData,
   type EmbeddedAgentFormProps,
 } from './EmbeddedAgentForm';
