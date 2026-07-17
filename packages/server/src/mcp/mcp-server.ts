@@ -185,9 +185,7 @@ export interface McpDependencies {
   /**
    * EmbeddedAgentManager, consulted by `delegate_to_worktree`'s agent
    * resolver as a fallback when `agentId` / `agentName` does not match any
-   * `AgentManager` (terminal) agent. Short-term facade fix for Issue #1161;
-   * the structural unification of both registries is tracked by the
-   * strategic Issue #1160.
+   * `AgentManager` (terminal) agent.
    */
   embeddedAgentManager: Pick<EmbeddedAgentManager, 'getEmbeddedAgent' | 'getAllEmbeddedAgents'>;
   timerManager: TimerManager;
@@ -720,9 +718,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         // Resolve agent: agentId takes precedence over agentName. Checks
         // AgentManager (terminal agents) first, falling back to
-        // EmbeddedAgentManager when there is no terminal match. Short-term
-        // facade fix for Issue #1161; the structural unification of both
-        // registries is tracked by the strategic Issue #1160. A name that
+        // EmbeddedAgentManager when there is no terminal match. A name that
         // matches in both registries is rejected as ambiguous, same as a
         // name matching multiple agents within one registry.
         let selectedAgentId: string | undefined;
@@ -911,9 +907,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // Find the initial worker ID from the created session. The initial
-        // worker is either a terminal agent or (Issue #1161) an embedded
-        // agent, depending on which registry `selectedAgentId` /
-        // `selectedEmbeddedAgentId` resolved from above.
+        // worker is either a terminal agent or an embedded agent, depending
+        // on which registry `selectedAgentId` / `selectedEmbeddedAgentId`
+        // resolved from above.
         const agentWorker = currentSession.workers.find(
           (w) => w.type === 'agent' || w.type === 'embedded-agent',
         );
