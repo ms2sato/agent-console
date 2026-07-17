@@ -12,6 +12,22 @@ The stored configuration for an AI agent, including command templates and activi
 - **Aliases:** Agent configuration, Agent preset
 - **See:** [Agent concepts in session-worker-design.md](design/session-worker-design.md#agent-types)
 
+### AgentKind
+**Implemented (Issue #1160 PR-A).** The discriminator `'terminal' | 'embedded'` distinguishing which registry an agent entry belongs to. Single writer: the `AGENT_KINDS` constant in [agent-surface.ts](../packages/shared/src/types/agent-surface.ts); every consumer derives from it or the `AgentKind` type rather than hardcoding the union. Does not merge [AgentDefinition](#agentdefinition) and [EmbeddedAgentDefinition](#embeddedagentdefinition) — the two registries stay separate; `AgentKind` only tags which one a given [AgentDirectoryEntry](#agentdirectoryentry) came from.
+- **See:** [Agent Surface design](design/agent-surface.md)
+
+### AgentDirectoryEntry
+**Implemented (Issue #1160 PR-A).** A kind-tagged union `{ kind: 'terminal'; agent: AgentDefinition } | { kind: 'embedded'; agent: EmbeddedAgentDefinition }` returned by [AgentSurface](#agentsurface) and [AgentDirectory](#agentdirectory). Full-fidelity (not a lossy summary projection) — consumers narrow on `kind` via an exhaustive switch/if-else to recover the concrete `AgentDefinition` or `EmbeddedAgentDefinition`.
+- **See:** [Agent Surface design](design/agent-surface.md)
+
+### AgentSurface
+**Implemented (Issue #1160 PR-A).** A per-registry query interface (`list` / `get` / `findByName`, generic over [AgentKind](#agentkind)) implemented by both `AgentManager` (`AgentSurface<'terminal'>`) and `EmbeddedAgentManager` (`AgentSurface<'embedded'>`). Read-only query surface; does not add CRUD or lifecycle methods beyond what each manager already exposes.
+- **See:** [Agent Surface design](design/agent-surface.md)
+
+### AgentDirectory
+**Implemented (Issue #1160 PR-A).** A stateless, policy-free composite (`packages/server/src/services/agent-directory.ts`) over the `terminal` and `embedded` [AgentSurface](#agentsurface) registries. Provides `listAll()` (used by the MCP `list_agents` tool) and `resolve({ agentId?, agentName? })` (used by `delegate_to_worktree`'s agent resolver, absorbing the short-term two-registry facade from PR #1165 verbatim — same terminal-first-by-id precedence and ambiguity error messages). Owns no lifecycle, no caching, no CRUD; suggestion policy and default-agent policy stay at callers, following the same strict-thin-wrapper discipline as [`privilege-elevation.ts`](../.claude/rules/elevation-helpers.md). Does NOT merge [AgentDefinition](#agentdefinition) and [EmbeddedAgentDefinition](#embeddedagentdefinition) — the two registries remain separate data models with separate id namespaces; `AgentDirectory` only unifies what their consumers can *query*.
+- **See:** [Agent Surface design](design/agent-surface.md)
+
 ### Repository
 A registered Git repository available for session creation. Code reference: `repositoryId` (UUID).
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)

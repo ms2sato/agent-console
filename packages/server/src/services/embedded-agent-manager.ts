@@ -2,6 +2,8 @@ import {
   type EmbeddedAgentDefinition,
   type CreateEmbeddedAgentRequest,
   type UpdateEmbeddedAgentRequest,
+  type AgentDirectoryEntry,
+  type AgentSurface,
 } from '@agent-console/shared';
 import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
@@ -21,7 +23,9 @@ export interface EmbeddedAgentLifecycleCallbacks {
  * repository. Modeled on AgentManager, but with no built-in/default definition:
  * the registry starts empty and every definition is user-created.
  */
-export class EmbeddedAgentManager {
+export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
+  readonly kind = 'embedded' as const;
+
   private embeddedAgents: Map<string, EmbeddedAgentDefinition> = new Map();
   private lifecycleCallbacks: EmbeddedAgentLifecycleCallbacks | null = null;
   private repository: EmbeddedAgentRepository;
@@ -76,6 +80,23 @@ export class EmbeddedAgentManager {
    */
   getEmbeddedAgent(id: string): EmbeddedAgentDefinition | undefined {
     return this.embeddedAgents.get(id);
+  }
+
+  // ---------- AgentSurface<'embedded'> ----------
+
+  list(): Extract<AgentDirectoryEntry, { kind: 'embedded' }>[] {
+    return this.getAllEmbeddedAgents().map((agent) => ({ kind: 'embedded' as const, agent }));
+  }
+
+  get(id: string): Extract<AgentDirectoryEntry, { kind: 'embedded' }> | undefined {
+    const agent = this.getEmbeddedAgent(id);
+    return agent ? { kind: 'embedded', agent } : undefined;
+  }
+
+  findByName(name: string): Extract<AgentDirectoryEntry, { kind: 'embedded' }>[] {
+    return this.getAllEmbeddedAgents()
+      .filter((a) => a.name === name)
+      .map((agent) => ({ kind: 'embedded' as const, agent }));
   }
 
   /**

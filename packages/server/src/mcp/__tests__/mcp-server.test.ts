@@ -35,7 +35,8 @@ import { McpTokenRegistry, type McpAuthMode } from '../mcp-auth.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
-import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import { AgentDirectory } from '../../services/agent-directory.js';
+import type { AgentDirectoryEntry, EmbeddedAgentDefinition } from '@agent-console/shared';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
 // Declaring the parameter type makes `mock.calls` typed correctly so the
@@ -82,11 +83,27 @@ const TEST_EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
 // agentName resolver (Issue #1161).
 let embeddedAgentDefsById: Map<string, EmbeddedAgentDefinition>;
 
+// Also satisfies AgentSurface<'embedded'> (Issue #1160 PR-A) so it can be
+// passed as the `embedded` surface to a real AgentDirectory in tests. The
+// pre-existing getEmbeddedAgent/getAllEmbeddedAgents methods are kept
+// unmodified -- SessionManager.create(...) still consumes this same stub
+// object via its `Pick<EmbeddedAgentManager, 'getEmbeddedAgent'>` param.
 const testEmbeddedAgentManagerStub = {
+  kind: 'embedded' as const,
   getEmbeddedAgent: (id: string): EmbeddedAgentDefinition | undefined =>
     embeddedAgentDefsById.get(id),
   getAllEmbeddedAgents: (): EmbeddedAgentDefinition[] =>
     Array.from(embeddedAgentDefsById.values()),
+  list: (): Extract<AgentDirectoryEntry, { kind: 'embedded' }>[] =>
+    Array.from(embeddedAgentDefsById.values()).map((agent) => ({ kind: 'embedded' as const, agent })),
+  get: (id: string): Extract<AgentDirectoryEntry, { kind: 'embedded' }> | undefined => {
+    const agent = embeddedAgentDefsById.get(id);
+    return agent ? { kind: 'embedded', agent } : undefined;
+  },
+  findByName: (name: string): Extract<AgentDirectoryEntry, { kind: 'embedded' }>[] =>
+    Array.from(embeddedAgentDefsById.values())
+      .filter((a) => a.name === name)
+      .map((agent) => ({ kind: 'embedded' as const, agent })),
 };
 
 // Create mock PTY factory
@@ -225,7 +242,8 @@ describe('MCP Server Tools', () => {
   async function remountMcpApp(
     authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry },
   ): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, embeddedAgentManager: testEmbeddedAgentManagerStub, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
+    const agentDirectory = new AgentDirectory({ terminal: agentManager, embedded: testEmbeddedAgentManagerStub });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -460,19 +478,50 @@ describe('MCP Server Tools', () => {
       const response = await callTool(app, mcpSessionId, 'list_agents', {}, nextId++);
       const data = parseToolResult(response) as {
         agents: Array<{
+          kind: string;
           id: string;
           name: string;
           description?: string;
-          isBuiltIn: boolean;
+          isBuiltIn?: boolean;
         }>;
       };
 
-      expect(data.agents).toHaveLength(2);
+      // `beforeEach` always seeds `embeddedAgentDefsById` with one entry
+      // (Issue #1160 PR-A parity), so the total count includes it. Filter
+      // to terminal agents to keep this test's focus on terminal
+      // registration count.
+      const terminalAgents = data.agents.filter((a) => a.kind === 'terminal');
+      expect(terminalAgents).toHaveLength(2);
 
-      const custom = data.agents.find((a) => a.name === 'Custom Agent');
+      const custom = terminalAgents.find((a) => a.name === 'Custom Agent');
       expect(custom).toBeDefined();
       expect(custom!.description).toBe('A custom test agent');
       expect(custom!.isBuiltIn).toBe(false);
+    });
+
+    it('should include embedded agents with kind "embedded" and no terminal-only fields', async () => {
+      const response = await callTool(app, mcpSessionId, 'list_agents', {}, nextId++);
+      const data = parseToolResult(response) as {
+        agents: Array<Record<string, unknown>>;
+      };
+
+      const embedded = data.agents.find((a) => a.kind === 'embedded');
+      expect(embedded).toBeDefined();
+      expect(embedded!.id).toBe(TEST_EMBEDDED_AGENT_DEF.id);
+      expect(embedded!.name).toBe(TEST_EMBEDDED_AGENT_DEF.name);
+      expect(embedded).not.toHaveProperty('isBuiltIn');
+      expect(embedded).not.toHaveProperty('capabilities');
+    });
+
+    it('should tag terminal agents with kind "terminal"', async () => {
+      const response = await callTool(app, mcpSessionId, 'list_agents', {}, nextId++);
+      const data = parseToolResult(response) as {
+        agents: Array<{ kind: string; id: string }>;
+      };
+
+      const builtIn = data.agents.find((a) => a.id === 'claude-code-builtin');
+      expect(builtIn).toBeDefined();
+      expect(builtIn!.kind).toBe('terminal');
     });
 
     it('should not expose internal template fields', async () => {
@@ -490,11 +539,12 @@ describe('MCP Server Tools', () => {
       }
     });
 
-    it('should include all capability flags as booleans', async () => {
+    it('should include all capability flags as booleans (terminal agents only)', async () => {
       const response = await callTool(app, mcpSessionId, 'list_agents', {}, nextId++);
       const data = parseToolResult(response) as {
         agents: Array<{
-          capabilities: {
+          kind: string;
+          capabilities?: {
             supportsContinue: unknown;
             supportsHeadlessMode: unknown;
             supportsActivityDetection: unknown;
@@ -502,11 +552,13 @@ describe('MCP Server Tools', () => {
         }>;
       };
 
-      for (const agent of data.agents) {
+      const terminalAgents = data.agents.filter((a) => a.kind === 'terminal');
+      expect(terminalAgents.length).toBeGreaterThanOrEqual(1);
+      for (const agent of terminalAgents) {
         expect(agent.capabilities).toBeDefined();
-        expect(typeof agent.capabilities.supportsContinue).toBe('boolean');
-        expect(typeof agent.capabilities.supportsHeadlessMode).toBe('boolean');
-        expect(typeof agent.capabilities.supportsActivityDetection).toBe('boolean');
+        expect(typeof agent.capabilities!.supportsContinue).toBe('boolean');
+        expect(typeof agent.capabilities!.supportsHeadlessMode).toBe('boolean');
+        expect(typeof agent.capabilities!.supportsActivityDetection).toBe('boolean');
       }
     });
   });

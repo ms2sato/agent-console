@@ -766,3 +766,4 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 - Subprocess-management precedent: `packages/server/src/services/interactive-process-manager.ts` (volatile by design; this design combines its mechanics with worker persistence).
 - Output-file machinery reused as-is: `packages/server/src/lib/worker-output-file.ts`, `worker-output-manifest.ts`.
 - Shared service core: `packages/server/src/app-context.ts`, `packages/server/src/services/`.
+- [Agent Surface design](agent-surface.md) -- the cross-surface query layer (`AgentSurface` / `AgentDirectory`) unifying `list_agents` and `delegate_to_worktree`'s agent resolution across this design's `EmbeddedAgentManager` and the terminal-agent `AgentManager`, without merging the two registries (Issue #1160).

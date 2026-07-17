@@ -139,7 +139,7 @@ const mcpApp = createMcpApp({
   sessionManager: appContext.sessionManager,
   repositoryManager: appContext.repositoryManager,
   agentManager: appContext.agentManager,
-  embeddedAgentManager: appContext.embeddedAgentManager,
+  agentDirectory: appContext.agentDirectory,
   timerManager: appContext.timerManager,
   conditionalWakeupManager: appContext.conditionalWakeupManager,
   interactiveProcessManager: appContext.interactiveProcessManager,

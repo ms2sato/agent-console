@@ -50,6 +50,7 @@ import { AgentManager as AgentManagerClass } from './services/agent-manager.js';
 import { SqliteAgentRepository } from './repositories/sqlite-agent-repository.js';
 import { EmbeddedAgentManager as EmbeddedAgentManagerClass } from './services/embedded-agent-manager.js';
 import { SqliteEmbeddedAgentRepository } from './repositories/sqlite-embedded-agent-repository.js';
+import { AgentDirectory } from './services/agent-directory.js';
 import { McpTokenRegistry } from './mcp/mcp-auth.js';
 import { SqliteTimerRepository } from './repositories/sqlite-timer-repository.js';
 import { SqliteUserRepository } from './repositories/sqlite-user-repository.js';
@@ -115,6 +116,9 @@ export interface AppContext {
 
   /** Embedded-agent definition management (OpenAI-compatible provider registry) */
   embeddedAgentManager: EmbeddedAgentManager;
+
+  /** Cross-registry agent query adapter over agentManager + embeddedAgentManager (agent-surface migration PR-A) */
+  agentDirectory: AgentDirectory;
 
   /**
    * Per-worker MCP bearer token registry (MCP caller identity). SessionManager mints
@@ -268,6 +272,10 @@ export async function createAppContext(
   // 4.1. Create embedded-agent manager (separate registry from AgentManager)
   const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
   const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
+
+  // 4.1.1. Cross-registry query adapter (agent-surface migration PR-A).
+  // Stateless composite over agentManager + embeddedAgentManager.
+  const agentDirectory = new AgentDirectory({ terminal: agentManager, embedded: embeddedAgentManager });
 
   // 4.2. Create the MCP token registry. Shared by SessionManager (mints at
   // embedded-agent activation) and the /mcp route (verifies bearer tokens).
@@ -546,6 +554,7 @@ export async function createAppContext(
     systemCapabilities,
     agentManager,
     embeddedAgentManager,
+    agentDirectory,
     mcpTokenRegistry,
     worktreeService,
     repositorySlackIntegrationService,
@@ -637,6 +646,10 @@ export async function createTestContext(
   // Create embedded-agent manager (separate registry from AgentManager)
   const embeddedAgentRepository = new SqliteEmbeddedAgentRepository(db);
   const embeddedAgentManager = await EmbeddedAgentManagerClass.create(embeddedAgentRepository);
+
+  // Cross-registry query adapter (agent-surface migration PR-A). Stateless
+  // composite over agentManager + embeddedAgentManager.
+  const agentDirectory = new AgentDirectory({ terminal: agentManager, embedded: embeddedAgentManager });
 
   // MCP token registry shared by SessionManager and (in production) the /mcp route.
   const mcpTokenRegistry = new McpTokenRegistry();
@@ -766,6 +779,7 @@ export async function createTestContext(
     systemCapabilities,
     agentManager,
     embeddedAgentManager,
+    agentDirectory,
     mcpTokenRegistry,
     worktreeService,
     repositorySlackIntegrationService,
