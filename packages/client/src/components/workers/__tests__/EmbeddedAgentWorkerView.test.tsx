@@ -1231,6 +1231,51 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
     });
 
+    it('does NOT render a copy-markdown button for a STREAMING assistant-message (#1124)', async () => {
+      renderView({ sessionId: 's30b', workerId: 'w30b' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      // assistant-delta keeps the entry in the streaming state (no
+      // assistant-message finalize event sent), mirroring the Preview-toggle
+      // streaming test above (A1).
+      const chunk = ndjson({ v: 1, type: 'assistant-delta', turnId: 't1', text: 'partial mark' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('partial mark')).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
+    });
+
+    it('renders a copy-markdown button once a STREAMING assistant-message finalizes (#1124)', async () => {
+      renderView({ sessionId: 's30c', workerId: 'w30c' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const chunk = ndjson({ v: 1, type: 'assistant-delta', turnId: 't1', text: 'partial mark' });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'output', data: chunk, offset: chunk.length, epoch: 1 }));
+      });
+      await flush();
+      expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
+
+      const finalize = ndjson({ v: 1, type: 'assistant-message', turnId: 't1', text: 'partial mark done' });
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'output', data: finalize, offset: chunk.length + finalize.length, epoch: 1 }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+    });
+
     it('copies the raw markdown text (not rendered HTML) to the clipboard on click', async () => {
       const markdown = '# Heading\n\n**bold** and `code`';
       await renderWithAssistantMessage('s32', 'w32', markdown);

@@ -340,9 +340,11 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
               {entry.text}
             </Markdown>
             {entry.streaming && <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-gray-400 animate-pulse align-middle" aria-hidden="true" />}
-            <div className="flex justify-end mt-1">
-              <CopyMarkdownButton text={entry.text} />
-            </div>
+            {!entry.streaming && (
+              <div className="flex justify-end mt-1">
+                <CopyMarkdownButton text={entry.text} />
+              </div>
+            )}
           </div>
         </div>
       );
