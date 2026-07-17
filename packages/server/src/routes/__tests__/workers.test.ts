@@ -21,6 +21,7 @@ import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { AgentDirectory } from '../../services/agent-directory.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -90,9 +91,23 @@ describe('Workers API', () => {
       },
     });
 
+    // Route-level appContext.agentDirectory needs both surfaces at
+    // construction (compile-time exhaustiveness gate). The workers.ts route
+    // only calls `.get('terminal', ...)`, so the embedded surface is a
+    // minimal stub -- this route never exercises embedded-agent lookups
+    // through agentDirectory (embedded-agent existence is validated deeper,
+    // in worker-lifecycle-manager.ts via the embeddedAgentManager above).
+    const emptyEmbeddedSurface = {
+      kind: 'embedded' as const,
+      list: () => [],
+      get: () => undefined,
+      findByName: () => [],
+    };
+    const agentDirectory = new AgentDirectory({ terminal: agentMgr, embedded: emptyEmbeddedSurface });
+
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', asAppContext({ sessionManager, agentManager: agentMgr }));
+      c.set('appContext', asAppContext({ sessionManager, agentManager: agentMgr, agentDirectory }));
       await next();
     });
     app.onError(onApiError);
