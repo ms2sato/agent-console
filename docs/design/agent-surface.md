@@ -42,7 +42,7 @@ Following the same strict-thin-wrapper discipline documented in [`elevation-help
 
 ## Mechanism 3: `AGENT_OPERATIONS` exposure table (planned, PR-D — not yet built)
 
-A future mechanism, out of scope for this PR, will let each MCP tool / REST route declare which `AgentKind`(s) it supports via a static exposure table (working name `AGENT_OPERATIONS`), so a tool surface's actual capability can be checked against the declared table mechanically (the same kind of structural check `pre-pr-completeness.md` Question 11 asks about by hand today). This is deferred to PR-D of the Issue #1160 migration; this document does not specify its shape, only reserves the concept so PR-A's audit is not mistaken for having built it.
+A future mechanism, out of scope for this PR, will let each MCP tool / REST route declare which `AgentKind`(s) it supports via a static exposure table (working name `AGENT_OPERATIONS`), so a tool surface's actual capability can be checked against the declared table mechanically (the same kind of structural check the tool-surface-symmetry review from Issue #1046 asks about by hand today). This is deferred to PR-D of the Issue #1160 migration; this document does not specify its shape, only reserves the concept so PR-A's audit is not mistaken for having built it.
 
 ## Migration order
 
@@ -59,5 +59,5 @@ Issue #1160 is decomposed into four PRs:
 - [`elevation-helpers.md`](../../.claude/rules/elevation-helpers.md) — the strict-thin-wrapper + "extract when two PRs converge" discipline this design's `AgentDirectory` follows.
 - Issue [#1160](https://github.com/ms2sato/agent-console/issues/1160) — umbrella tracking PR-A through PR-D.
 - Issue [#1161](https://github.com/ms2sato/agent-console/issues/1161) — the original `delegate_to_worktree` embedded-agent-selection gap that PR #1165's short-term facade fixed, and that `AgentDirectory.resolve` now formalizes.
-- Issue [#1122](https://github.com/ms2sato/agent-console/issues/1122) — related tool-surface-symmetry tracking (`pre-pr-completeness.md` Question 11).
+- Issue [#1046](https://github.com/ms2sato/agent-console/issues/1046) — the tool-surface-symmetry process check that Mechanism 3 (PR-D) will make structural.
 - PR [#1165](https://github.com/ms2sato/agent-console/pull/1165) — the short-term two-registry facade in `delegate_to_worktree` that this design's `AgentDirectory.resolve` absorbs verbatim.
