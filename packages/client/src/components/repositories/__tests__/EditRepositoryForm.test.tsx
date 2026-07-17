@@ -756,6 +756,13 @@ describe('EditRepositoryForm', () => {
 
       expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
       expect(screen.getByText('My Custom Agent')).toBeTruthy();
+
+      // Regression guard for the useAgents relocation (hooks/useAgents.ts):
+      // the dropdown's option count must track the fetched agents list
+      // exactly (1 "None" option + 1 per fetched agent), not silently drop
+      // or duplicate entries.
+      const select = screen.getByRole('combobox', { name: /Default Agent/ });
+      expect(select.querySelectorAll('option')).toHaveLength(3);
     });
 
     it('should show current defaultAgentId as selected', async () => {

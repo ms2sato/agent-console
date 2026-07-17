@@ -6,14 +6,14 @@
  * code in tests (logic duplication anti-pattern).
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import type { Session, Worker } from '@agent-console/shared';
+import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import {
   extractRestartableSession,
   findAgentWorker,
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState, resolveActiveEmbeddedAgentId } from '../SessionPage';
+import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId } from '../SessionPage';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
@@ -99,6 +99,49 @@ describe('findAgentWorker', () => {
     // Boundary: [].find(...) is undefined. A session that reaches restart with no
     // workers must not crash — the caller surfaces "no agent worker" instead.
     expect(findAgentWorker([])).toBeUndefined();
+  });
+});
+
+describe('resolveShouldStripScrollback', () => {
+  const agents: AgentDefinition[] = [
+    { id: 'strip-agent', stripScrollbackClear: true } as AgentDefinition,
+    { id: 'plain-agent', stripScrollbackClear: false } as AgentDefinition,
+  ];
+
+  it('returns true when the active tab is an agent worker whose agent has stripScrollbackClear enabled', () => {
+    const workers: Worker[] = [
+      { id: 'agent-1', type: 'agent', name: 'A', agentId: 'strip-agent', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'agent-1', agents)).toBe(true);
+  });
+
+  it('returns false when the active tab is an agent worker whose agent has stripScrollbackClear disabled', () => {
+    const workers: Worker[] = [
+      { id: 'agent-1', type: 'agent', name: 'A', agentId: 'plain-agent', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'agent-1', agents)).toBe(false);
+  });
+
+  it('returns false when the active tab is a terminal (non-agent) worker', () => {
+    const workers: Worker[] = [
+      { id: 'terminal-1', type: 'terminal', name: 'Terminal', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'terminal-1', agents)).toBe(false);
+  });
+
+  it('returns false when activeTabId is null (vacuous boundary)', () => {
+    expect(resolveShouldStripScrollback([], null, agents)).toBe(false);
+  });
+
+  it('returns false when the agent is not found in the fetched agents list (e.g. still loading)', () => {
+    const workers: Worker[] = [
+      { id: 'agent-1', type: 'agent', name: 'A', agentId: 'unknown-agent', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'agent-1', agents)).toBe(false);
   });
 });
 

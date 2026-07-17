@@ -10,7 +10,7 @@ import {
 } from '@agent-console/shared';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay } from '../ui/Spinner';
-import { useAgents } from '../AgentSelector';
+import { useAgents } from '../../hooks/useAgents';
 
 /**
  * Client-side form schema for agent creation/editing.

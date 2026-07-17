@@ -10,7 +10,8 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { restartAgentWorker, getSession } from '../../lib/api';
-import { AgentSelector, useResolvedAgentId } from '../AgentSelector';
+import { UnifiedAgentSelector, type AgentSelection } from '../AgentSelector';
+import { useResolvedAgentId } from '../../hooks/useAgents';
 
 export interface RestartSessionDialogProps {
   open: boolean;
@@ -88,6 +89,18 @@ export function RestartSessionDialog({
     onOpenChange(false);
   };
 
+  // Embedded agents are visible in the picker (uniform-listing principle,
+  // docs/design/agent-surface.md) but disabled: restart is terminal-only
+  // end-to-end today (RestartWorkerRequestSchema has no embeddedAgentId
+  // field, tracked by #1171, blocked on #1123 transcript restore). Only a
+  // 'terminal' selection ever reaches setSelectedAgentId, so it is
+  // structurally impossible for a submit to carry an embedded id.
+  const handleAgentSelectionChange = (selection: AgentSelection) => {
+    if (selection.kind === 'terminal') {
+      setSelectedAgentId(selection.agentId);
+    }
+  };
+
   return (
     <AlertDialog open={open} onOpenChange={handleClose}>
       <AlertDialogContent>
@@ -100,11 +113,12 @@ export function RestartSessionDialog({
         <div className="space-y-2">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-400 shrink-0 w-14">Agent:</span>
-            <AgentSelector
-              value={resolvedAgentId}
-              onChange={setSelectedAgentId}
+            <UnifiedAgentSelector
+              agentId={resolvedAgentId}
+              onChange={handleAgentSelectionChange}
               className="flex-1"
               priorityAgentId={currentAgentId}
+              disabledKinds={[{ kind: 'embedded', context: 'restart' }]}
             />
           </div>
           {isWorktreeSession && (

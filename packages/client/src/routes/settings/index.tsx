@@ -4,7 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { AgentDefinition } from '@agent-console/shared';
 import { unregisterAgent } from '../../lib/api';
 import { agentKeys } from '../../lib/query-keys';
-import { useAgents } from '../../components/AgentSelector';
+import { useAgents } from '../../hooks/useAgents';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { AddAgentForm, CapabilityIndicator } from '../../components/agents';
 import { McpInstallSection } from '../../components/settings/McpInstallSection';

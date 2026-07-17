@@ -8,7 +8,7 @@ import {
 } from '@agent-console/shared';
 import { unregisterAgent, deleteEmbeddedAgent } from '../../lib/api';
 import { agentKeys, embeddedAgentKeys } from '../../lib/query-keys';
-import { useAgents } from '../../components/AgentSelector';
+import { useAgents } from '../../hooks/useAgents';
 import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { AddAgentForm, CapabilityIndicator } from '../../components/agents';
 import {
