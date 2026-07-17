@@ -26,6 +26,7 @@ import type { UserMode, LoginResult, PtySpawnRequest } from '../../services/user
 import type { PtyInstance } from '../../lib/pty-provider.js';
 import { setupWebSocketRoutes, notifySessionPaused } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -97,6 +98,7 @@ describe('Worker WebSocket connection error codes', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
@@ -314,6 +316,7 @@ describe('WebSocket authentication rejection (C4)', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {

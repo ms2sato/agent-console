@@ -430,6 +430,47 @@ describe('CreateWorktreeForm', () => {
       });
     });
 
+    it('exercises both switch arms of the UnifiedAgentSelector onChange handler in one render (Issue #1160 PR-C)', async () => {
+      const user = userEvent.setup();
+      const { props } = renderCreateWorktreeForm({ defaultAgentId: 'claude-code' });
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const branchInput = screen.getByPlaceholderText('New branch name');
+      await user.type(branchInput, 'feature/switch-both-arms');
+
+      const select = screen.getByRole('combobox') as HTMLSelectElement;
+
+      // 'embedded' arm: select an embedded agent and submit.
+      await user.selectOptions(select, 'embedded:embedded-1');
+      await user.click(screen.getByText('Create & Start Session'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+      const firstCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(firstCall[0]).toMatchObject({
+        agentId: undefined,
+        embeddedAgentId: 'embedded-1',
+      });
+
+      // 'terminal' arm: switch back to a terminal agent in the same render
+      // and submit again.
+      await user.selectOptions(select, 'terminal:custom-agent');
+      await user.click(screen.getByText('Create & Start Session'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(2);
+      });
+      const secondCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[1];
+      expect(secondCall[0]).toMatchObject({
+        agentId: 'custom-agent',
+        embeddedAgentId: undefined,
+      });
+    });
+
     describe('stale localStorage draft (Issue #1062)', () => {
       const draftKey = 'stale-embedded-agent-draft-key';
 

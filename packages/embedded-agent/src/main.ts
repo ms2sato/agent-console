@@ -12,6 +12,7 @@ import { NdjsonLineSplitter, type EmbeddedAgentEvent } from '@agent-console/shar
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
+import { loadHandoffPrompt } from './handoff-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
@@ -27,7 +28,7 @@ import { CompositeToolExecutor } from './tools/composite-executor.js';
 const EXIT_OK = 0;
 const EXIT_FATAL = 1;
 const EXIT_PROTOCOL = 2;
-const KNOWN_COMMAND_TYPES = new Set(['init', 'user-message', 'cancel', 'shutdown']);
+const KNOWN_COMMAND_TYPES = new Set(['init', 'user-message', 'cancel', 'handoff', 'shutdown']);
 // 500ms buffer over Bash's process-group KILL_GRACE_MS so the SIGTERM ->
 // SIGKILL escalation on a stuck Bash child has time to complete before the
 // shutdown drain gives up.
@@ -50,6 +51,7 @@ export interface LoopFactories {
   createMcpClient(): McpClientLike;
   createAdapter(opts: { baseUrl: string; apiKey?: string }): ProviderAdapter;
   loadInstructions(params: LoadInstructionsParams): Promise<LoadInstructionsResult>;
+  loadHandoffPrompt: typeof loadHandoffPrompt;
 }
 
 type InitCommand = Extract<v.InferOutput<typeof EmbeddedAgentCommandSchema>, { type: 'init' }>;
@@ -130,6 +132,22 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
           });
         break;
       }
+      case 'handoff': {
+        if (turnActive) {
+          io.logError('Ignoring handoff received while a turn is active');
+          break;
+        }
+        turnActive = true;
+        currentTurn = loop
+          .handoff()
+          .catch((err) => {
+            io.logError(`Handoff failed: ${err instanceof Error ? err.message : String(err)}`);
+          })
+          .finally(() => {
+            turnActive = false;
+          });
+        break;
+      }
       case 'cancel':
         loop.cancel();
         break;
@@ -192,6 +210,21 @@ async function initializeLoop(
     emit: (event) => io.writeEvent(event),
     systemPrompt,
     maxToolIterations: init.maxToolIterations,
+    reassembleSystemPrompt: async () => {
+      const reloadedInstructions = await factories.loadInstructions({
+        cwd: init.context.cwd,
+        instructionsList: init.instructions,
+      });
+      return assembleSystemPrompt({
+        context: init.context,
+        instructions: reloadedInstructions,
+        definitionSystemPrompt: init.systemPrompt,
+      });
+    },
+    loadHandoffPrompt: async () => {
+      const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
+      return content;
+    },
   });
 
   io.writeEvent({ v: 1, type: 'ready' });
@@ -234,6 +267,7 @@ if (import.meta.main) {
     createMcpClient: () => new McpToolClient(),
     createAdapter: (opts) => new OpenAIChatAdapter(opts),
     loadInstructions,
+    loadHandoffPrompt,
   };
   runLoop(io, factories)
     .then((code) => process.exit(code))

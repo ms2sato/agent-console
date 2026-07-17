@@ -68,6 +68,19 @@ describe('writeTool', () => {
     expect(result.result).toBe('content is required and must be a string');
   });
 
+  it('formats a "Failed to write file" message when atomicWrite fails', async () => {
+    // A directory already exists at the target path, so atomicWrite's final
+    // rename fails with EISDIR -- exercising the write tool's catch branch
+    // that formats atomicWrite's rejection into a result message.
+    const target = path.join(locationPath, 'blocked-dir');
+    await fsPromises.mkdir(target);
+
+    const result = await writeTool.execute({ file_path: target, content: 'new content' }, { locationPath });
+
+    expect(result.ok).toBe(false);
+    expect(result.result).toMatch(/^Failed to write file: /);
+  });
+
   it('leaves no stray temp file behind after a successful write (atomic write verification)', async () => {
     const target = path.join(locationPath, 'atomic.txt');
 

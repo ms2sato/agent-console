@@ -185,10 +185,13 @@ export function useTabManagement({
     const tab = tabs.find(t => t.id === tabId);
     if (!tab) return;
 
-    // Fixed tabs (agent, git-diff) cannot be closed -- only opt-in workers a
-    // user added to the running session (terminal, embedded-agent). Mirrors
-    // the tab bar's close-button visibility in `tabAppearance.ts`.
-    if (!isCloseableTabType(tab.workerType)) return;
+    // Fixed tabs (git-diff, and the session's primary agent worker) cannot be
+    // closed -- only opt-in workers a user added to the running session
+    // (terminal, embedded-agent, and any additional agent worker added via
+    // the picker). Mirrors the tab bar's close-button visibility in
+    // `tabAppearance.ts`.
+    const primaryAgentTabId = tabs.find(t => t.workerType === 'agent')?.id;
+    if (!isCloseableTabType(tab.workerType, tab.id === primaryAgentTabId)) return;
 
     try {
       await deleteWorker(sessionId, tabId);

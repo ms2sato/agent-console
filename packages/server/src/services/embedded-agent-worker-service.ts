@@ -113,9 +113,27 @@ const KNOWN_EVENT_TYPES = new Set<string>([
   'tool-result',
   'turn-error',
   'fatal',
+  'context-usage',
+  'context-handoff',
 ]);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
+
+/**
+ * Marks the small, enumerable set of `runActivation` failure reasons whose
+ * `message` is safe to forward to the client verbatim (session/worker/
+ * definition lookup failures, missing `createdBy`). Every other failure in
+ * `runActivation` (provider key loading, spawn username resolution, process
+ * spawn, output reset, persistence) throws a plain `Error` and must NOT be
+ * wrapped in this class -- callers use `instanceof` to decide whether
+ * `err.message` is client-safe or must be replaced with a generic fallback.
+ */
+export class EmbeddedAgentActivationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EmbeddedAgentActivationError';
+  }
+}
 
 /**
  * Result of {@link EmbeddedAgentWorkerService.sendUserMessage}. `code` is the
@@ -125,6 +143,18 @@ const STDERR_LOG_CAP = 2048;
  */
 export type SendUserMessageResult =
   | { ok: true; id: string }
+  | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
+
+/**
+ * Result of {@link EmbeddedAgentWorkerService.triggerHandoff}. Deliberately
+ * NOT `SendUserMessageResult` -- the success case there carries an `id` that
+ * has no meaning for a handoff trigger (there is no `EmbeddedAgentServerEvent`
+ * appended for this command; the loop's own `context-handoff` event IS the
+ * persisted marker once it succeeds). See docs/design/embedded-agent-worker.md
+ * "Context Handoff (Phase A)".
+ */
+export type TriggerHandoffResult =
+  | { ok: true }
   | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
 
 export interface EmbeddedAgentWorkerServiceDeps {
@@ -229,11 +259,13 @@ export class EmbeddedAgentWorkerService {
   private async runActivation(sessionId: string, workerId: string): Promise<void> {
     const session = this.deps.getSession(sessionId);
     if (!session) {
-      throw new Error(`Cannot activate embedded-agent worker: session ${sessionId} not found`);
+      throw new EmbeddedAgentActivationError(
+        `Cannot activate embedded-agent worker: session ${sessionId} not found`,
+      );
     }
     const worker = session.workers.get(workerId);
     if (!worker || worker.type !== 'embedded-agent') {
-      throw new Error(
+      throw new EmbeddedAgentActivationError(
         `Cannot activate embedded-agent worker: worker ${workerId} is not an embedded-agent worker`,
       );
     }
@@ -247,7 +279,7 @@ export class EmbeddedAgentWorkerService {
     // Step 1: resolve the definition. No built-in fallback (unlike terminal agents).
     const definition = this.deps.getEmbeddedAgent(worker.embeddedAgentId);
     if (!definition) {
-      throw new Error(
+      throw new EmbeddedAgentActivationError(
         `Embedded agent definition not found (deleted): ${worker.embeddedAgentId}. The worker stays deactivated.`,
       );
     }
@@ -262,7 +294,7 @@ export class EmbeddedAgentWorkerService {
     // is comparable to session ownership (checkCallerOwnsSession strictly rejects
     // ownerless sessions, so a token minted from one would false-reject every call).
     if (!session.createdBy) {
-      throw new Error(
+      throw new EmbeddedAgentActivationError(
         `Cannot activate embedded-agent worker: session ${sessionId} has no createdBy, so an MCP caller identity cannot be minted`,
       );
     }
@@ -395,6 +427,7 @@ export class EmbeddedAgentWorkerService {
     sessionId: string,
     workerId: string,
     text: string,
+    clientMessageId?: string,
   ): Promise<SendUserMessageResult> {
     const session = this.deps.getSession(sessionId);
     const worker = session?.workers.get(workerId);
@@ -419,19 +452,81 @@ export class EmbeddedAgentWorkerService {
     // --- end synchronous admission ---
 
     const id = crypto.randomUUID();
-    const event: EmbeddedAgentServerEvent = { v: 1, type: 'user-message', id, text };
-    // Append BEFORE forwarding so replay ordering is stable.
-    this.appendEvent(runtime.ctx, event);
-
+    // Two separate objects: `command` (stdin, loop protocol -- unchanged
+    // shape) and `event` (persisted stream, may carry `clientMessageId`).
+    // The loop protocol is correlation-agnostic; only the persisted/broadcast
+    // event carries the client's correlation id. Do NOT reuse one object for
+    // both -- see docs/design/embedded-agent-worker.md.
+    const command: EmbeddedAgentCommand = { v: 1, type: 'user-message', id, text };
+    const event: EmbeddedAgentServerEvent = {
+      v: 1,
+      type: 'user-message',
+      id,
+      text,
+      ...(clientMessageId !== undefined ? { clientMessageId } : {}),
+    };
+    // Forward BEFORE appending: both calls are synchronous (no await between
+    // them, nothing else can interleave), so ordering doesn't affect replay
+    // stability either way -- but writing first means a WRITE_FAILED never
+    // leaves a persisted/broadcast echo for a message the loop never
+    // actually received (which would falsely resolve the client's pending
+    // send despite the error response).
     try {
-      this.writeCommand(stdin, event);
+      this.writeCommand(stdin, command);
     } catch (err) {
       runtime.turnActive = false;
       logger.warn({ sessionId, workerId, err }, 'Failed to forward user message to embedded-agent stdin');
       return { ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' };
     }
+    this.appendEvent(runtime.ctx, event);
 
     return { ok: true, id };
+  }
+
+  /**
+   * Forward a manual Context Handoff (Phase A) trigger to the loop. Admission
+   * mirrors {@link sendUserMessage} exactly (the same synchronous
+   * check-and-set gate, reused for a second command type) -- see
+   * docs/design/embedded-agent-worker.md "Context Handoff (Phase A)"
+   * § `AgentLoop.handoff()` Admission.
+   *
+   * Unlike `sendUserMessage`, there is no `EmbeddedAgentServerEvent` to
+   * append to the persisted stream here: the loop's own `context-handoff`
+   * event IS the persisted marker once the handoff succeeds, so this method
+   * does not call `appendEvent`.
+   */
+  async triggerHandoff(sessionId: string, workerId: string): Promise<TriggerHandoffResult> {
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    const runtime = this.runtimes.get(workerId);
+
+    // --- synchronous admission (no await before turnActive is set) ---
+    if (
+      !session ||
+      !worker ||
+      worker.type !== 'embedded-agent' ||
+      worker.subprocess === null ||
+      !worker.stdin ||
+      !runtime
+    ) {
+      return { ok: false, code: 'NOT_ACTIVATED', error: 'not activated' };
+    }
+    const stdin = worker.stdin;
+    if (runtime.turnActive) {
+      return { ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' };
+    }
+    runtime.turnActive = true;
+    // --- end synchronous admission ---
+
+    try {
+      this.writeCommand(stdin, { v: 1, type: 'handoff' });
+    } catch (err) {
+      runtime.turnActive = false;
+      logger.warn({ sessionId, workerId, err }, 'Failed to forward handoff to embedded-agent stdin');
+      return { ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' };
+    }
+
+    return { ok: true };
   }
 
   /**

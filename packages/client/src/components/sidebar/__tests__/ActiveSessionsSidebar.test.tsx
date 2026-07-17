@@ -279,6 +279,18 @@ describe('ActiveSessionsSidebar', () => {
       const sidebar = screen.getByRole('complementary', { name: 'Active sessions' });
       expect(sidebar.style.width).toBe(`${customWidth}px`);
     });
+
+    it('should have an explicit h-full class on the <aside> so it gets a bounded height even without a flex-row parent (Issue #1170)', async () => {
+      // On desktop, the aside's height comes from `align-items: stretch` in
+      // the parent flex row. On mobile, the aside is rendered inside a
+      // non-flex-row drawer wrapper, so it needs its own explicit height to
+      // bound the internal `overflow-y-auto` session list — otherwise the
+      // list grows unbounded and long session lists get cut off.
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
+
+      const sidebar = screen.getByRole('complementary', { name: 'Active sessions' });
+      expect(sidebar.className.split(' ')).toContain('h-full');
+    });
   });
 
   describe('Navigation', () => {

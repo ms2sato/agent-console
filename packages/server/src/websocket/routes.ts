@@ -24,6 +24,7 @@ import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
 import { withRepositoryRemote } from '../lib/repository-remote.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
+import { EmbeddedAgentActivationError } from '../services/embedded-agent-worker-service.js';
 
 const logger = createLogger('websocket');
 
@@ -62,6 +63,25 @@ const currentServerPid = getServerPid();
  * reused for consistency across both directions of the channel.
  */
 export const EMBEDDED_USER_MESSAGE_MAX_BYTES = 262144; // 256 KiB
+
+/**
+ * Client-visible fallback for an activation failure whose message is NOT
+ * from the {@link EmbeddedAgentActivationError} allowlist (e.g. provider key
+ * loading, spawn username resolution, process spawn, filesystem, DB errors).
+ * Those errors can carry unbounded/unstructured content, so their real
+ * `message` stays server-side-only (see the `logger.warn` call alongside
+ * this constant's use site) and only this fixed string reaches the client.
+ */
+const GENERIC_ACTIVATION_FAILURE_MESSAGE =
+  'Embedded-agent activation failed. Contact an administrator if this persists.';
+
+/**
+ * Length cap for an embedded-agent `embedded-user-message.clientMessageId`.
+ * The value is persisted verbatim into the output file per message, so an
+ * unbounded client-supplied string must not reach disk. 64 chars is plenty
+ * for a UUID (36 chars) with headroom for other id schemes.
+ */
+export const EMBEDDED_CLIENT_MESSAGE_ID_MAX_LENGTH = 64;
 
 /**
  * Safely get the WebSocket ready state from a WSContext.
@@ -824,17 +844,28 @@ export async function setupWebSocketRoutes(
           // subprocess (idempotent no-op if already activated -- Phase 2's
           // in-flight guard already makes concurrent opens await the same
           // promise, so no extra guard is needed here) instead of restoring a
-          // PTY. Every spec error-table row for activation failure (dangling
-          // definition, dangling apiKeyRef, missing session.createdBy, ...)
-          // must be user-readable in the UI and must NOT close the socket
-          // silently (see docs/design/embedded-agent-worker.md
-          // "WebSocket & client protocol").
+          // PTY. Every activation failure must surface as a WS error message
+          // in the UI and must NOT close the socket silently (see
+          // docs/design/embedded-agent-worker.md "WebSocket & client
+          // protocol"). The enumerable, developer-authored reasons (dangling
+          // definition, missing session.createdBy, ...) are forwarded
+          // verbatim; unbounded/downstream reasons (dangling apiKeyRef,
+          // spawn, filesystem, DB, ...) are replaced with a fixed generic
+          // message -- see the catch block below.
           if (worker.type === 'embedded-agent') {
             (async () => {
               try {
                 await sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
               } catch (err) {
-                const message = err instanceof Error ? err.message : String(err);
+                // Only the enumerable, developer-authored reasons (marked by
+                // EmbeddedAgentActivationError) are safe to forward verbatim.
+                // Everything else (provider key loading, spawn, filesystem,
+                // DB, ...) is replaced with a fixed generic message client-side
+                // -- the full error still reaches the server-side log below.
+                const message =
+                  err instanceof EmbeddedAgentActivationError
+                    ? err.message
+                    : GENERIC_ACTIVATION_FAILURE_MESSAGE;
                 logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed');
                 if (!connectionClosed) {
                   sendWorkerError(ws, message, 'ACTIVATION_FAILED');
@@ -1095,6 +1126,38 @@ export async function setupWebSocketRoutes(
                 }
                 const text = parsedObj.text;
 
+                if (
+                  parsedObj.clientMessageId !== undefined &&
+                  typeof parsedObj.clientMessageId !== 'string'
+                ) {
+                  logger.warn(
+                    { sessionId, workerId },
+                    'Invalid embedded-user-message: clientMessageId must be a string',
+                  );
+                  sendWorkerError(
+                    ws,
+                    'Invalid embedded-user-message: clientMessageId must be a string',
+                    'UNSUPPORTED_OPERATION',
+                  );
+                  return;
+                }
+                if (
+                  typeof parsedObj.clientMessageId === 'string' &&
+                  parsedObj.clientMessageId.length > EMBEDDED_CLIENT_MESSAGE_ID_MAX_LENGTH
+                ) {
+                  logger.warn(
+                    { sessionId, workerId, length: parsedObj.clientMessageId.length },
+                    'Invalid embedded-user-message: clientMessageId exceeds the length cap',
+                  );
+                  sendWorkerError(
+                    ws,
+                    `Invalid embedded-user-message: clientMessageId exceeds the ${EMBEDDED_CLIENT_MESSAGE_ID_MAX_LENGTH}-character limit`,
+                    'UNSUPPORTED_OPERATION',
+                  );
+                  return;
+                }
+                const clientMessageId: string | undefined = parsedObj.clientMessageId;
+
                 const textByteLength = Buffer.byteLength(text, 'utf-8');
                 if (textByteLength > EMBEDDED_USER_MESSAGE_MAX_BYTES) {
                   logger.warn(
@@ -1109,7 +1172,7 @@ export async function setupWebSocketRoutes(
                   return;
                 }
 
-                void sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, text).then((result) => {
+                void sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, text, clientMessageId).then((result) => {
                   if (result.ok) return;
                   // Switch on the machine-checkable `code`, not the
                   // human-readable `error` string -- a future wording tweak
@@ -1141,6 +1204,33 @@ export async function setupWebSocketRoutes(
                 if (!forwarded) {
                   logger.debug({ sessionId, workerId }, 'embedded-cancel had no effect (worker not activated)');
                 }
+                return;
+              }
+
+              case 'embedded-handoff': {
+                void sessionManager.triggerEmbeddedAgentHandoff(sessionId, workerId).then((result) => {
+                  if (result.ok) return;
+                  // Switch on the machine-checkable `code`, not the
+                  // human-readable `error` string -- mirrors the
+                  // embedded-user-message handling above.
+                  switch (result.code) {
+                    case 'TURN_IN_PROGRESS':
+                      sendWorkerError(ws, result.error, 'TURN_IN_PROGRESS');
+                      return;
+                    case 'NOT_ACTIVATED':
+                    case 'WRITE_FAILED':
+                      sendWorkerError(ws, result.error, 'ACTIVATION_FAILED');
+                      return;
+                    default: {
+                      const _exhaustive: never = result.code;
+                      logger.warn({ sessionId, workerId, code: _exhaustive }, 'Unknown triggerHandoff error code');
+                      sendWorkerError(ws, result.error, 'ACTIVATION_FAILED');
+                    }
+                  }
+                }).catch((err) => {
+                  logger.error({ sessionId, workerId, err }, 'Error forwarding embedded-handoff');
+                  sendWorkerError(ws, 'Failed to trigger handoff', 'ACTIVATION_FAILED');
+                });
                 return;
               }
 

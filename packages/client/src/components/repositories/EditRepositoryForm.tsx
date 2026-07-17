@@ -16,7 +16,7 @@ import {
 import { repositoryKeys, notificationKeys } from '../../lib/query-keys';
 import { FormField, Input, Textarea } from '../ui/FormField';
 import { FormOverlay, Spinner } from '../ui/Spinner';
-import { useAgents } from '../AgentSelector';
+import { useAgents } from '../../hooks/useAgents';
 
 // Form data schema - all fields are optional and can be empty
 const EditRepositoryFormSchema = v.object({

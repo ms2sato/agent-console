@@ -20,6 +20,8 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { AgentDirectory } from '../../services/agent-directory.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -66,6 +68,7 @@ describe('Workers API', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
       // Resolve only 'agent-def-1'; any other embeddedAgentId is dangling and
       // createWorker rejects it (surfaced as 400 by the route error handler).
       embeddedAgentManager: {
@@ -88,9 +91,23 @@ describe('Workers API', () => {
       },
     });
 
+    // Route-level appContext.agentDirectory needs both surfaces at
+    // construction (compile-time exhaustiveness gate). The workers.ts route
+    // only calls `.get('terminal', ...)`, so the embedded surface is a
+    // minimal stub -- this route never exercises embedded-agent lookups
+    // through agentDirectory (embedded-agent existence is validated deeper,
+    // in worker-lifecycle-manager.ts via the embeddedAgentManager above).
+    const emptyEmbeddedSurface = {
+      kind: 'embedded' as const,
+      list: () => [],
+      get: () => undefined,
+      findByName: () => [],
+    };
+    const agentDirectory = new AgentDirectory({ terminal: agentMgr, embedded: emptyEmbeddedSurface });
+
     app = new Hono<AppBindings>();
     app.use('*', async (c, next) => {
-      c.set('appContext', asAppContext({ sessionManager }));
+      c.set('appContext', asAppContext({ sessionManager, agentManager: agentMgr, agentDirectory }));
       await next();
     });
     app.onError(onApiError);
@@ -734,6 +751,27 @@ describe('Workers API', () => {
       });
 
       expect(res.status).toBe(400);
+    });
+
+    it('should reject an agent worker with an unknown agentId with 400 (Issue #1135)', async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'agent', agentId: 'does-not-exist' }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Agent not found: does-not-exist');
+      // No PTY should be spawned for the rejected worker (only the
+      // session's own initial agent PTY from createSession above).
+      expect(ptyFactory.instances.length).toBe(1);
     });
 
     it('should forward continueConversation to the agent-type PTY spawn (claude -c)', async () => {

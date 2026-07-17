@@ -13,6 +13,14 @@ Manual browser verification procedure for UI changes using Chrome DevTools MCP.
 - PR modifies `packages/client/src/components/`
 - Visual or interaction behavior needs confirmation beyond automated tests
 
+## Worked Examples
+
+- [Embedded Agent UI](embedded-agent-worked-example.md) — isolated dev
+  instance setup, dummy Embedded Agent registration, and a query-gated stub
+  technique for reaching true-path chat/thinking/tool content without a real
+  LLM provider. Use this for any PR touching `EmbeddedAgentWorkerView.tsx`
+  or related embedded-agent chat rendering.
+
 ## Procedure
 
 ### 1. Start Dev Server

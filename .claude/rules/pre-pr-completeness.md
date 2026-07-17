@@ -1,8 +1,8 @@
 # Pre-PR Completeness Gap-Scan
 
-Before opening a PR that introduces a **new skill, script, rule, file type, or canonical procedure**, walk this 7-question mechanical checklist. Each question should take 30 seconds to 2 minutes. If any answer is "unsure", resolve before pushing.
+Before opening a PR that introduces a **new skill, script, rule, file type, or canonical procedure**, walk this mechanical checklist. Each question should take 30 seconds to 2 minutes. If any answer is "unsure", resolve before pushing.
 
-## The seven questions
+## The questions
 
 1. **Does a similar existing mechanism already exist?**
    - `ls` the relevant directories (`.claude/rules/`, `.claude/skills/`, `.claude/skills/orchestrator/`, `scripts/`, `packages/*/src/`)
@@ -96,6 +96,19 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     (Lesson: Sprint 2026-06-30 PR #926 — backend correctly populated `Session.createdByUsername`, the WebSocket message carried it, but `SessionBaseSchema` in `packages/shared/src/schemas/app-server-message.ts` was not updated. valibot stripped the unknown field; the frontend received `undefined`. All unit tests passed because the frontend tests injected the field directly via a mock factory, bypassing the parse path entirely. The bug surfaced only when the owner ran manual Browser QA and noticed the sidebar label was absent. Three hours of cross-layer debugging followed before the schema gap was identified. The agent and the Orchestrator both had approved skipping integration tests with the rationale "derived field, simple shape, unit tests suffice" — a joint judgment failure that this question is meant to prevent. The deeper structural fix is tracked in Issue #927 — `v.strictObject` migration plus server/client schema version handshake.)
 
+11. **Tool surface symmetry check — for PRs that introduce a new worker / agent / execution surface analogous to an existing one:**
+
+    When this PR introduces a new worker kind, agent kind, or execution surface that is architecturally analogous to an existing one (e.g., a new agent kind alongside terminal-agent / Claude Code), answer these four questions before the design's initial phase merges:
+
+    1. **What tools does the analogous existing surface expose** to the user / model? (e.g., terminal-agent exposes `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, MCP tools, and permission prompts.)
+    2. **Does the new surface expose the same, a superset, a subset, or an intentionally distinct set** of tools?
+    3. **If subset:** list the missing tools and confirm each is either filed as a fast-follow Issue linked from this PR, or documented as an "intentional non-goal, will not be added" in the spec. The fast-follow Issue must exist **before** the initial phase merges, not after.
+    4. **If intentionally distinct:** document the divergence rationale in the spec's Non-goals (or equivalent) section, and confirm the user is informed (an Experimental label, an in-UI notice, or a docs entry).
+
+    **Why:** the phase-decomposition review at design time did not ask this question for embedded-agent v1, so a large parity gap shipped silently and was only caught in post-release dogfood.
+
+    (Lesson: Sprint 2026-07-11/12 — Embedded Agent Worker v1 (umbrella [#1004](https://github.com/ms2sato/agent-console/issues/1004)) shipped without built-in tools (`Read` / `Write` / `Edit` / `Bash` / `Glob` / `Grep`), the largest gap identified in the post-v1 dogfood retro. The tools were not deferred by a documented decision — the spec review simply never asked whether the new surface matched terminal-agent's tool set. Three fast-follow PRs closed the gap after the fact: [#1042](https://github.com/ms2sato/agent-console/issues/1042) (FF-1a, Read/Glob/Grep), [#1043](https://github.com/ms2sato/agent-console/issues/1043) (FF-1b, Bash), and [#1044](https://github.com/ms2sato/agent-console/issues/1044) (FF-1c, Write/Edit). Asking Q11 during the original phase-decomposition review would have surfaced the gap and let the fast-follows be filed and scheduled before v1 shipped, instead of after dogfood found the hole. See [Issue #1046](https://github.com/ms2sato/agent-console/issues/1046).)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -107,6 +120,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A cross-runtime spawn (Question 6) — required regardless of whether other criteria match
   - A shared / persistent artifact write (Question 7) — required regardless of whether other criteria match
   - A derived field added to a shared type that crosses the server/client wire (Question 10) — required regardless of whether other criteria match
+  - A new worker / agent / execution surface analogous to an existing one (Question 11) — required regardless of whether other criteria match
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns
 - **Not required** for single-file bug fixes, typo corrections, or test-only additions
 

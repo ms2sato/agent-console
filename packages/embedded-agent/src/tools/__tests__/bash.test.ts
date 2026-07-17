@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fsPromises from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { bashTool, runBash } from '../bash.js';
+import { bashTool, runBash, formatBashResult } from '../bash.js';
 import { buildBashEnv } from '../env-cleaner.js';
 
 describe('bashTool', () => {
@@ -68,6 +68,11 @@ describe('bashTool', () => {
     await new Promise((r) => setTimeout(r, 300));
 
     const pid = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+    // Guard against a NaN pid (e.g. an empty pidFile read on a timing fluke)
+    // silently turning into a false-positive pass: process.kill(NaN, 0) throws
+    // a TypeError, which the catch block below would otherwise mistake for
+    // "process not alive".
+    expect(pid).toBeGreaterThan(0);
     let alive = true;
     try {
       process.kill(pid, 0);
@@ -133,13 +138,21 @@ describe('bashTool', () => {
     let pid: number | undefined;
     for (let i = 0; i < 50; i++) {
       try {
-        pid = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+        const parsed = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+        // A read that races the writer's open()-before-write can observe an
+        // empty file (NaN here) rather than ENOENT -- retry instead of
+        // accepting a NaN pid, which would otherwise make process.kill(pid, 0)
+        // below throw and silently pass as "process not alive".
+        if (Number.isNaN(parsed)) {
+          throw new Error('pid file read before it was written');
+        }
+        pid = parsed;
         break;
       } catch {
         await new Promise((r) => setTimeout(r, 50));
       }
     }
-    expect(pid).toBeDefined();
+    expect(pid).toBeGreaterThan(0);
 
     const start = Date.now();
     controller.abort();
@@ -218,5 +231,100 @@ describe('bashTool', () => {
         process.env.AGENT_CONSOLE_MCP_TOKEN = previous;
       }
     }
+  });
+
+  it('formats an aborted result with the abort marker, independent of exit code', () => {
+    const output = formatBashResult(
+      { ok: false, exitCode: null, stdout: 'partial output', stderr: '', timedOut: false, aborted: true },
+      5000,
+    );
+
+    expect(output).toContain('partial output');
+    expect(output).toContain('[Command aborted and its process group was terminated.]');
+    // aborted takes priority over the exitCode===null branch in the else-if chain.
+    expect(output).not.toContain('[Killed by signal]');
+  });
+
+  it('formats stderr output alongside the exit-code / signal-kill marker', () => {
+    const withExitCode = formatBashResult(
+      { ok: true, exitCode: 3, stdout: '', stderr: 'boom', timedOut: false, aborted: false },
+      5000,
+    );
+    expect(withExitCode).toContain('[stderr]\nboom');
+    expect(withExitCode).toContain('[Exit code: 3]');
+
+    const withoutExitCode = formatBashResult(
+      { ok: false, exitCode: null, stdout: '', stderr: 'boom', timedOut: false, aborted: false },
+      5000,
+    );
+    expect(withoutExitCode).toContain('[stderr]\nboom');
+    expect(withoutExitCode).toContain('[Killed by signal]');
+  });
+
+  it('escalates to SIGKILL after the grace period when the process ignores SIGTERM', async () => {
+    const pidFile = path.join(locationPath, 'ignore-term.pid');
+    const start = Date.now();
+
+    const result = await runBash(`trap '' TERM; echo $$ > ${pidFile}; while :; do :; done`, {
+      cwd: locationPath,
+      env: buildBashEnv(),
+      timeoutMs: 500,
+    });
+    const elapsedMs = Date.now() - start;
+
+    expect(result.timedOut).toBe(true);
+    expect(result.ok).toBe(false);
+    // The process ignores SIGTERM (trap '' TERM), so it can only have died via
+    // the SIGKILL escalation fired KILL_GRACE_MS after the SIGTERM -- proves
+    // the escalation branch actually ran, not just that SIGTERM alone worked.
+    // Bounds are widened (vs. the raw ~2500ms expectation) to tolerate CI
+    // scheduling jitter around the real setTimeout-driven grace window.
+    expect(elapsedMs).toBeGreaterThanOrEqual(2000);
+    expect(elapsedMs).toBeLessThan(6000);
+
+    // Brief grace window for signal delivery to actually land.
+    await new Promise((r) => setTimeout(r, 300));
+
+    const pid = parseInt((await fsPromises.readFile(pidFile, 'utf-8')).trim(), 10);
+    // Guard against a NaN pid (e.g. an empty pidFile read on a timing fluke)
+    // silently turning into a false-positive pass: process.kill(NaN, 0) throws
+    // a TypeError, which the catch block below would otherwise mistake for
+    // "process not alive".
+    expect(pid).toBeGreaterThan(0);
+    let alive = true;
+    try {
+      process.kill(pid, 0);
+    } catch {
+      alive = false;
+    }
+    expect(alive).toBe(false);
+  });
+
+  it('surfaces a spawn failure (e.g. ENOENT from a nonexistent cwd) as {ok:false} instead of throwing', async () => {
+    // Exercises the real `child.on('error', ...)` path via an actual spawn
+    // failure (nonexistent cwd) rather than mocking `spawn`, per this repo's
+    // "mock at the lowest level" testing rule -- a real OS-level failure is
+    // lower-level than mocking the child_process module.
+    const result = await runBash('echo hi', {
+      cwd: path.join(locationPath, 'this-directory-does-not-exist'),
+      env: buildBashEnv(),
+      timeoutMs: 5000,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.exitCode).toBeNull();
+    expect(result.timedOut).toBe(false);
+    expect(result.aborted).toBe(false);
+    expect(result.stderr).toContain('Failed to spawn command');
+  });
+
+  it('rejects non-string/non-number typed timeout and description arguments', async () => {
+    const badTimeout = await bashTool.execute({ command: 'echo hi', timeout: 'not-a-number' }, { locationPath });
+    expect(badTimeout.ok).toBe(false);
+    expect(badTimeout.result).toBe('timeout must be a number');
+
+    const badDescription = await bashTool.execute({ command: 'echo hi', description: 42 }, { locationPath });
+    expect(badDescription.ok).toBe(false);
+    expect(badDescription.result).toBe('description must be a string');
   });
 });

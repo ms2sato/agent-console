@@ -169,6 +169,35 @@ describe('EmbeddedAgentManager', () => {
       expect(def.instructions).toBeUndefined();
     });
 
+    it('sets contextWindowTokens and handoff from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        {
+          name: 'Ollama',
+          provider: VALID_PROVIDER,
+          contextWindowTokens: 128000,
+          handoff: { softRatio: 0.75, hardRatio: 0.9, auto: true },
+        },
+        'creator-user-id'
+      );
+
+      expect(def.contextWindowTokens).toBe(128000);
+      expect(def.handoff).toEqual({ softRatio: 0.75, hardRatio: 0.9, auto: true });
+    });
+
+    it('leaves contextWindowTokens/handoff undefined when absent from the request', async () => {
+      const manager = await getManager();
+
+      const def = await manager.createEmbeddedAgent(
+        { name: 'Ollama', provider: VALID_PROVIDER },
+        'creator-user-id'
+      );
+
+      expect(def.contextWindowTokens).toBeUndefined();
+      expect(def.handoff).toBeUndefined();
+    });
+
     it('fires onEmbeddedAgentCreated after a successful save', async () => {
       const { created, callbacks } = createCallbackRecorder();
       const manager = await getManager();
@@ -209,6 +238,8 @@ describe('EmbeddedAgentManager', () => {
           maxToolIterations: 10,
           enabledTools: ['Read'],
           instructions: ['docs/local-note.md'],
+          contextWindowTokens: 32000,
+          handoff: { softRatio: 0.7, hardRatio: 0.85, auto: false },
         },
         'owner-id'
       );
@@ -227,12 +258,14 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.maxToolIterations).toBe(10);
       expect(updated?.enabledTools).toEqual(['Read']);
       expect(updated?.instructions).toEqual(['docs/local-note.md']);
+      expect(updated?.contextWindowTokens).toBe(32000);
+      expect(updated?.handoff).toEqual({ softRatio: 0.7, hardRatio: 0.85, auto: false });
       expect(updated?.provider).toEqual(VALID_PROVIDER);
       expect(updated?.createdBy).toBe('owner-id');
       expect(updated?.createdAt).toBe(created.createdAt);
     });
 
-    it('clears description/systemPrompt/maxToolIterations/enabledTools/instructions on null', async () => {
+    it('clears description/systemPrompt/maxToolIterations/enabledTools/instructions/contextWindowTokens/handoff on null', async () => {
       const manager = await getManager();
       const created = await seed(manager);
 
@@ -242,6 +275,8 @@ describe('EmbeddedAgentManager', () => {
         maxToolIterations: null,
         enabledTools: null,
         instructions: null,
+        contextWindowTokens: null,
+        handoff: null,
       });
 
       expect(updated?.description).toBeUndefined();
@@ -249,6 +284,21 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.maxToolIterations).toBeUndefined();
       expect(updated?.enabledTools).toBeUndefined();
       expect(updated?.instructions).toBeUndefined();
+      expect(updated?.contextWindowTokens).toBeUndefined();
+      expect(updated?.handoff).toBeUndefined();
+    });
+
+    it('replaces the whole handoff object when handoff is present (no per-subfield merge)', async () => {
+      const manager = await getManager();
+      const created = await seed(manager);
+
+      const updated = await manager.updateEmbeddedAgent(created.id, {
+        handoff: { softRatio: 0.6 },
+      });
+
+      // Whole-object replace: hardRatio/auto from the original handoff are
+      // NOT carried over even though only softRatio was specified.
+      expect(updated?.handoff).toEqual({ softRatio: 0.6 });
     });
 
     it('replaces enabledTools with the request value when present, including an explicit empty array', async () => {
@@ -359,6 +409,47 @@ describe('EmbeddedAgentManager', () => {
       await manager.deleteEmbeddedAgent(created.id);
 
       expect(deleted).toEqual([created.id]);
+    });
+  });
+
+  describe('AgentSurface<"embedded"> conformance', () => {
+    it('exposes kind "embedded"', async () => {
+      const manager = await getManager();
+      expect(manager.kind).toBe('embedded');
+    });
+
+    it('list() wraps getAllEmbeddedAgents() entries with kind "embedded"', async () => {
+      const manager = await getManager();
+      await manager.createEmbeddedAgent({ name: 'Listed', provider: VALID_PROVIDER }, 'user-1');
+
+      const entries = manager.list();
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toEqual({ kind: 'embedded', agent: manager.getAllEmbeddedAgents()[0] });
+    });
+
+    it('get(id) wraps getEmbeddedAgent(id) with kind "embedded", or returns undefined', async () => {
+      const manager = await getManager();
+      const created = await manager.createEmbeddedAgent(
+        { name: 'Findable', provider: VALID_PROVIDER },
+        'user-1',
+      );
+
+      expect(manager.get(created.id)).toEqual({ kind: 'embedded', agent: created });
+      expect(manager.get('non-existent')).toBeUndefined();
+    });
+
+    it('findByName(name) wraps a name filter over getAllEmbeddedAgents() with kind "embedded"', async () => {
+      const manager = await getManager();
+      const created = await manager.createEmbeddedAgent(
+        { name: 'Shared Name', provider: VALID_PROVIDER },
+        'user-1',
+      );
+      await manager.createEmbeddedAgent({ name: 'Other Name', provider: VALID_PROVIDER }, 'user-1');
+
+      const entries = manager.findByName('Shared Name');
+      expect(entries).toEqual([{ kind: 'embedded', agent: created }]);
+
+      expect(manager.findByName('No Such Name')).toEqual([]);
     });
   });
 });

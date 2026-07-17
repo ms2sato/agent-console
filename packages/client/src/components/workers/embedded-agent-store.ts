@@ -54,7 +54,20 @@ export type EmbeddedAgentChatEntry =
     }
   | { key: string; kind: 'turn-error'; turnId: string; message: string }
   | { key: string; kind: 'fatal'; message: string }
-  | { key: string; kind: 'exited'; code: number | null };
+  | { key: string; kind: 'exited'; code: number | null }
+  | { key: string; kind: 'context-handoff'; distillation: string };
+
+/**
+ * Latest known context-window usage reading (Context Handoff Phase A).
+ * `estimated: false` means the value came straight from the provider's
+ * `usage.prompt_tokens`; `estimated: true` means the loop's chars/4 fallback
+ * was used (no provider usage reporting, or the fresh post-handoff seed
+ * conversation). See docs/design/embedded-agent-worker.md "Token accounting".
+ */
+export interface EmbeddedAgentContextUsage {
+  promptTokens: number;
+  estimated: boolean;
+}
 
 export interface EmbeddedAgentSnapshot {
   version: number; // bumped on every change
@@ -63,6 +76,14 @@ export interface EmbeddedAgentSnapshot {
   activityState: AgentActivityState;
   workerError: { message: string; code?: WorkerErrorCode } | null;
   loadingHistory: boolean;
+  contextUsage: EmbeddedAgentContextUsage | null;
+  /**
+   * True from the moment `triggerHandoff()` sends `embedded-handoff` until
+   * either a `context-handoff` (success) or a `turn-error` (failure) event is
+   * observed -- see docs/design/embedded-agent-worker.md "Context Handoff
+   * (Phase A)" § UI "Handoff in flight".
+   */
+  handoffInFlight: boolean;
 }
 
 export interface EmbeddedAgentInstance {
@@ -79,6 +100,13 @@ export interface EmbeddedAgentInstance {
   sendUserMessage(text: string): Promise<void>;
   /** Abort the in-flight turn (`embedded-cancel`). */
   cancel(): void;
+  /**
+   * Trigger a manual context handoff (`embedded-handoff`) and optimistically
+   * set `handoffInFlight` -- cleared on the resulting `context-handoff`
+   * (success) or `turn-error` (failure). See docs/design/embedded-agent-worker.md
+   * "Context Handoff (Phase A)" § UI "Handoff in flight".
+   */
+  triggerHandoff(): void;
   /**
    * Force a fresh WebSocket connection. The server's onOpen handler
    * re-activates the loop when `subprocess === null` (the exited-worker
@@ -158,7 +186,11 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   // doc comment). Only one send can be outstanding at a time in practice --
   // MessagePanel disables the Send button while its own onSend promise is
   // pending -- so a single slot (rather than a queue/map) is sufficient.
-  private pendingSend: { resolve: () => void; reject: (err: Error) => void } | null = null;
+  private pendingSend: {
+    resolve: () => void;
+    reject: (err: Error) => void;
+    clientMessageId: string;
+  } | null = null;
 
   private splitter = new NdjsonLineSplitter();
 
@@ -187,6 +219,8 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       activityState: 'unknown',
       workerError: null,
       loadingHistory: false,
+      contextUsage: null,
+      handoffInFlight: false,
     };
     this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
     this.connect();
@@ -206,18 +240,34 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // practice (MessagePanel disables Send while a prior send is pending)
     // but avoids leaking an unsettled promise if it ever does.
     this.rejectPendingSend('Superseded by a newer send');
+    const clientMessageId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
-      const sent = this.send({ type: 'embedded-user-message', text });
+      const sent = this.send({ type: 'embedded-user-message', text, clientMessageId });
       if (!sent) {
         reject(new Error('Not connected'));
         return;
       }
-      this.pendingSend = { resolve, reject };
+      this.pendingSend = { resolve, reject, clientMessageId };
     });
   };
 
   cancel = (): void => {
     this.send({ type: 'embedded-cancel' });
+  };
+
+  triggerHandoff = (): void => {
+    // Reject duplicate triggers (e.g. a rapid double-click) rather than
+    // sending a second `embedded-handoff` while one is already in flight --
+    // the server-side admission gate would reject the second anyway, but
+    // rejecting here avoids a redundant round trip and a spurious error.
+    if (this.snapshot.handoffInFlight) return;
+    // Only latch `handoffInFlight` when the socket write actually succeeded
+    // -- mirrors sendUserMessage's `send()` return-value check. A failed
+    // (not-connected) send must not leave the UI showing "Handing off…" for
+    // a message that was never transmitted.
+    const sent = this.send({ type: 'embedded-handoff' });
+    if (!sent) return;
+    this.patch({ handoffInFlight: true });
   };
 
   restart = (): void => {
@@ -531,22 +581,28 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     } else {
       this.patch({ loadingHistory: false });
     }
-    // A history response (startOffset is only ever set for those, never for
-    // live `output`) covers everything the server has from `requestedFromOffset`
-    // onward. If a send confirmation is still pending after folding it, the
-    // write must have been lost when the connection dropped before the
-    // server received it (an accepted send's echo would already have
-    // resolved it via foldEvent's user-message case above) -- reject so the
-    // caller doesn't hang waiting for a confirmation that will never arrive.
-    if (typeof startOffset === 'number') {
-      this.rejectPendingSend('Reconnected but the message was not confirmed');
-    }
     // A `history` response that lands while an epoch resync is outstanding
     // completes that resync: replay whatever output arrived and was queued
     // in the meantime, now that we know exactly what this history payload
-    // already covers.
+    // already covers. This MUST run before the reject check below -- a
+    // pending send's confirming echo can be sitting in the resync queue
+    // (not yet folded) at the moment this history response arrives, and
+    // flushing gives it a chance to resolve the pending send before the
+    // reject below would otherwise fire and kill it (#1120).
     if (typeof startOffset === 'number' && this.resyncing) {
       this.flushResyncQueue(offset);
+    }
+    // A history response (startOffset is only ever set for those, never for
+    // live `output`) covers everything the server has from `requestedFromOffset`
+    // onward. If a send confirmation is still pending after folding it AND
+    // after the resync-queue flush above, the write must have been lost when
+    // the connection dropped before the server received it (an accepted
+    // send's echo would already have resolved it via foldEvent's
+    // user-message case, either during this fold or during the flush above)
+    // -- reject so the caller doesn't hang waiting for a confirmation that
+    // will never arrive.
+    if (typeof startOffset === 'number' && this.pendingSend !== null) {
+      this.rejectPendingSend('Reconnected but the message was not confirmed');
     }
   }
 
@@ -636,6 +692,15 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // leave its thinking entry permanently streaming (no other event
         // will ever finalize it for this turnId).
         this.closeOpenThinking(event.turnId);
+        // A turn-error observed while a handoff is in flight is guaranteed to
+        // be the handoff's OWN failure -- the server-side admission gate
+        // guarantees no other turn can be interleaved during a handoff (see
+        // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
+        // AgentLoop.handoff() Admission). Clear the flag so the "Handing
+        // off..." indicator doesn't stick around after a failed handoff.
+        if (this.snapshot.handoffInFlight) {
+          this.patch({ handoffInFlight: false });
+        }
         return true;
       case 'fatal':
         this.pushEntry({ key: `fatal-${this.entryKeyCounter++}`, kind: 'fatal', message: event.message });
@@ -646,9 +711,15 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         return true;
       case 'user-message':
         this.pushEntry({ key: `user-${event.id}`, kind: 'user-message', id: event.id, text: event.text });
-        // Confirms this client's own sendUserMessage() was accepted; see the
-        // `pendingSend` field comment.
-        this.resolvePendingSend();
+        // Confirms THIS client's own sendUserMessage() was accepted -- correlated
+        // by clientMessageId, not "any user-message event", so a different
+        // client's (or a different tab's) echo cannot falsely resolve our
+        // pending send. Undefined-vs-undefined (no pending, or a legacy replay
+        // row with no clientMessageId) is safe: resolvePendingSend() is a no-op
+        // when pendingSend is null.
+        if (this.pendingSend?.clientMessageId === event.clientMessageId) {
+          this.resolvePendingSend();
+        }
         return true;
       case 'exited':
         this.pushEntry({ key: `exited-${this.entryKeyCounter++}`, kind: 'exited', code: event.code });
@@ -656,6 +727,17 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // entry was still open (e.g. a crash mid-turn); no per-turnId signal
         // will ever arrive at this point, so close all open thinking entries.
         this.closeAllOpenThinking();
+        return true;
+      case 'context-usage':
+        this.patch({ contextUsage: { promptTokens: event.promptTokens, estimated: event.estimated } });
+        return false; // not a chat row
+      case 'context-handoff':
+        this.patch({ handoffInFlight: false });
+        this.pushEntry({
+          key: `context-handoff-${this.entryKeyCounter++}`,
+          kind: 'context-handoff',
+          distillation: event.distillation,
+        });
         return true;
       default: {
         const _exhaustive: never = event;
@@ -787,6 +869,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // rejected `send()` call -- reject the pending promise so MessagePanel
     // preserves the input draft instead of clearing it optimistically.
     this.rejectPendingSend(message);
+    // An immediate/synchronous server admission error for `embedded-handoff`
+    // (e.g. TURN_IN_PROGRESS, ACTIVATION_FAILED) arrives here as a WS
+    // `error` message, NOT as a `turn-error` NDJSON event -- clear the flag
+    // on this path too, mirroring the `turn-error` case in foldEvent, so a
+    // rejected handoff doesn't leave "Handing off…" stuck indefinitely.
+    if (this.snapshot.handoffInFlight) {
+      this.patch({ handoffInFlight: false });
+    }
     if (code === 'SESSION_DELETED' || code === 'SESSION_PAUSED') {
       this.noReconnect = true;
       if (this.reconnectTimer) {

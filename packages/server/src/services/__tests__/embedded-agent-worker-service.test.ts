@@ -8,6 +8,7 @@ import {
 } from '../../__tests__/utils/build-test-data.js';
 import {
   EmbeddedAgentWorkerService,
+  EmbeddedAgentActivationError,
   resolveEmbeddedAgentEntryPath,
 } from '../embedded-agent-worker-service.js';
 
@@ -376,6 +377,33 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('not found');
     expect(h.fake.captured.length).toBe(0);
     expect(h.mint).not.toHaveBeenCalled();
+    // Enumerable, developer-authored reason -- must be allowlisted so
+    // routes.ts forwards the message verbatim to the client.
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
+  });
+
+  it('rejects activation for a session id with no matching session', async () => {
+    const h = setup();
+    await expect(h.service.activate('no-such-session', h.workerId)).rejects.toThrow('not found');
+    await expect(h.service.activate('no-such-session', h.workerId)).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
+    expect(h.fake.captured.length).toBe(0);
+    expect(h.mint).not.toHaveBeenCalled();
+  });
+
+  it('rejects activation for a worker id that is not an embedded-agent worker', async () => {
+    const h = setup();
+    await expect(h.service.activate(h.sessionId, 'no-such-worker')).rejects.toThrow(
+      'not an embedded-agent worker',
+    );
+    await expect(h.service.activate(h.sessionId, 'no-such-worker')).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
+    expect(h.fake.captured.length).toBe(0);
+    expect(h.mint).not.toHaveBeenCalled();
   });
 
   it('rejects a dangling apiKeyRef without spawning', async () => {
@@ -388,6 +416,11 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     });
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('not present');
     expect(h.fake.captured.length).toBe(0);
+    // Downstream/unbounded reason -- must NOT be allowlisted, so routes.ts
+    // replaces it with the generic client-facing fallback.
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.not.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
   });
 
   it('rejects a session without createdBy without minting or spawning', async () => {
@@ -395,6 +428,9 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('createdBy');
     expect(h.mint).not.toHaveBeenCalled();
     expect(h.fake.captured.length).toBe(0);
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
   });
 
   it('resets output epoch and offset (restart semantics)', async () => {
@@ -426,6 +462,13 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
     expect(h.worker.subprocess).toBeNull();
     expect(h.worker.stdin).toBeNull();
+    // Polarity guard: a downstream/unbounded failure (process spawn here)
+    // must propagate as whatever it originally was, NOT get wrapped in
+    // EmbeddedAgentActivationError -- that would widen the client-safe
+    // allowlist to a step whose error content is not enumerable.
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.not.toBeInstanceOf(
+      EmbeddedAgentActivationError,
+    );
   });
 
   it('does NOT revoke the token on a successful activation', async () => {
@@ -750,7 +793,7 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect(r2).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
   });
 
-  it('appends the user-message event BEFORE forwarding it to stdin', async () => {
+  it('forwards the user-message command to stdin BEFORE appending the persisted event', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
     const initWrites = h.fake.stdinWrites.length;
@@ -771,15 +814,45 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
     expect(res.ok).toBe(true);
 
-    // Both were recorded at call-time; append must strictly precede forward.
-    // If production forwarded before appending, order would be ['forward','append'].
-    expect(order).toEqual(['append', 'forward']);
+    // Both were recorded at call-time; forward must strictly precede append,
+    // so a WRITE_FAILED (stdin throws) never leaves a persisted/broadcast
+    // echo for a message the loop never actually received. Since neither
+    // call is async, this ordering doesn't affect replay stability.
+    expect(order).toEqual(['forward', 'append']);
 
     // The forwarded command shape matches the user-message.
     const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
     expect(forwarded.type).toBe('user-message');
     expect(forwarded.text).toBe('hello');
     if (res.ok) expect(forwarded.id).toBe(res.id);
+
+    // clientMessageId was omitted by the caller: the key must be entirely
+    // absent (not present with an `undefined` value) on the appended event.
+    const appended = JSON.parse(appendedLines(h.bufferOutput)[0]);
+    expect('clientMessageId' in appended).toBe(false);
+  });
+
+  it('threads clientMessageId into the appended/broadcast event but NOT into the stdin command (loop protocol unchanged)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello', 'test-client-msg-id');
+    expect(res.ok).toBe(true);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.clientMessageId).toBe('test-client-msg-id');
+
+    // Loop protocol is correlation-agnostic: the stdin-forwarded command
+    // must never carry clientMessageId, even when the caller supplied one.
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded.type).toBe('user-message');
+    expect('clientMessageId' in forwarded).toBe(false);
   });
 
   it('rejects with not activated when the subprocess is null', async () => {
@@ -788,10 +861,11 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
   });
 
-  it('rejects with code WRITE_FAILED when the stdin write throws', async () => {
+  it('rejects with code WRITE_FAILED when the stdin write throws, without persisting/broadcasting a phantom echo', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
     expect(h.worker.stdin).not.toBeNull();
+    h.bufferOutput.mockClear();
 
     // Lowest-level mock: make the fake FileSink's write throw, mirroring a
     // real EPIPE/write failure on the underlying stdin stream.
@@ -801,6 +875,11 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
 
     const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
     expect(res).toEqual({ ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' });
+
+    // The loop never received the message, so no user-message event may be
+    // persisted/broadcast for it -- a phantom echo would falsely resolve the
+    // sending client's pending promise despite the WRITE_FAILED response.
+    expect(h.bufferOutput).not.toHaveBeenCalled();
   });
 
   it('re-admits a message after the loop reports idle', async () => {
@@ -817,6 +896,92 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     await waitFor(() => h.worker.activityState === 'idle');
 
     const third = await h.service.sendUserMessage(h.sessionId, h.workerId, 'three');
+    expect(third.ok).toBe(true);
+  });
+});
+
+describe('EmbeddedAgentWorkerService.triggerHandoff', () => {
+  it('forwards a handoff command to stdin and admits synchronously', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+
+    expect(res).toEqual({ ok: true });
+    const forwarded = JSON.parse(h.fake.stdinWrites[before]);
+    expect(forwarded).toEqual({ v: 1, type: 'handoff' });
+  });
+
+  it('does not append any persisted/broadcast event for the handoff trigger itself', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+
+    expect(res.ok).toBe(true);
+    expect(h.bufferOutput).not.toHaveBeenCalled();
+  });
+
+  it('rejects with NOT_ACTIVATED when the subprocess is null', async () => {
+    const h = setup();
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
+  });
+
+  it('rejects a second concurrent trigger synchronously (turn in progress)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const p1 = h.service.triggerHandoff(h.sessionId, h.workerId);
+    const p2 = h.service.triggerHandoff(h.sessionId, h.workerId);
+    const [r1, r2] = await Promise.all([p1, p2]);
+
+    expect(r1.ok).toBe(true);
+    expect(r2).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
+  });
+
+  it('rejects a handoff while a sendUserMessage turn is already active (shared admission gate)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const sendResult = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    expect(sendResult.ok).toBe(true);
+
+    const handoffResult = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(handoffResult).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
+  });
+
+  it('rejects with code WRITE_FAILED when the stdin write throws, and clears turnActive so a retry is possible', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.worker.stdin!.write = () => {
+      throw new Error('EPIPE');
+    };
+
+    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(res).toEqual({ ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' });
+
+    // turnActive was cleared on failure: a subsequent send is admitted.
+    h.worker.stdin!.write = () => 0;
+    const retry = await h.service.sendUserMessage(h.sessionId, h.workerId, 'retry');
+    expect(retry.ok).toBe(true);
+  });
+
+  it('re-admits a handoff after the loop reports idle', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(first.ok).toBe(true);
+    expect((await h.service.triggerHandoff(h.sessionId, h.workerId)).ok).toBe(false);
+
+    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
+    await waitFor(() => h.worker.activityState === 'idle');
+
+    const third = await h.service.triggerHandoff(h.sessionId, h.workerId);
     expect(third.ok).toBe(true);
   });
 });

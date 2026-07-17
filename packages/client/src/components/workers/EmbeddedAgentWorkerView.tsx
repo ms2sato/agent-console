@@ -11,7 +11,14 @@ import { RefreshIcon, AlertCircleIcon, CopyIcon, CheckIcon } from '../Icons';
 import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 import { PreviewPanel } from './PreviewPanel';
+import { ContextUsageBar } from './ContextUsageBar';
+import { crossedThreshold } from './context-usage-threshold';
+import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
+
+/** Defaults when `EmbeddedAgentDefinition.handoff.softRatio`/`hardRatio` are unset -- see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI. */
+const DEFAULT_SOFT_RATIO = 0.75;
+const DEFAULT_HARD_RATIO = 0.9;
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
 type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
@@ -89,21 +96,93 @@ function buildDisplayItems(entries: EmbeddedAgentChatEntry[]): DisplayItem[] {
 interface EmbeddedAgentWorkerViewProps {
   sessionId: string;
   workerId: string;
+  /** `EmbeddedAgentWorker.embeddedAgentId` -- looked up against the embedded-agent registry (`useEmbeddedAgents`) for `contextWindowTokens`/`handoff` (Context Handoff Phase A). Undefined only defensively (every embedded-agent worker carries one). */
+  embeddedAgentId?: string;
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
-export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }: EmbeddedAgentWorkerViewProps) {
+export function EmbeddedAgentWorkerView({
+  sessionId,
+  workerId,
+  embeddedAgentId,
+  onStatusChange,
+}: EmbeddedAgentWorkerViewProps) {
   const {
     status,
     entries,
     activityState,
     workerError,
+    contextUsage,
+    handoffInFlight,
     sendUserMessage,
     cancel,
     restart,
     retry,
     dismissError,
+    triggerHandoff,
   } = useEmbeddedAgentWorker({ sessionId, workerId });
+
+  const { embeddedAgents } = useEmbeddedAgents();
+  const embeddedAgentDefinition = useMemo(
+    () => embeddedAgents.find((a) => a.id === embeddedAgentId),
+    [embeddedAgents, embeddedAgentId],
+  );
+  const contextWindowTokens = embeddedAgentDefinition?.contextWindowTokens;
+  const softRatio = embeddedAgentDefinition?.handoff?.softRatio ?? DEFAULT_SOFT_RATIO;
+  const hardRatio = embeddedAgentDefinition?.handoff?.hardRatio ?? DEFAULT_HARD_RATIO;
+  const ratio =
+    contextWindowTokens !== undefined && contextUsage !== null
+      ? contextUsage.promptTokens / contextWindowTokens
+      : null;
+
+  // Threshold-crossing tracking (Context Handoff Phase A): reacting to
+  // `ratio` changing over time against the store's asynchronous, external
+  // updates is a legitimate useEffect use case per frontend.md's own
+  // carve-out ("Component-scoped ... browser API subscriptions") -- this is
+  // the same shape as the store-status bridge effect below, not a case of
+  // deriving state from current props during render. A plain render-phase
+  // `if (...) setState(...)` comparison was tried first but proved
+  // unreliable in a real browser: `contextUsage` arrives via a store
+  // `patch()`/`notify()` outside React's render cycle, and interleaving that
+  // external notification with a same-pass "adjust state during render"
+  // write let a later, unrelated re-render (e.g. the `activityState` ->
+  // `idle` update that follows moments later) observe the OLD `false` state
+  // and clobber the crossing that had just been recorded -- confirmed via
+  // live console tracing (banner state flips true -> false across two
+  // consecutive renders with no dismiss click and no code path setting it
+  // back to false). Root-caused to React.StrictMode's dev-mode double-invoke
+  // of the render function (active for `bun run dev`, which is how this was
+  // dogfooded) interacting with the render-phase `setState` + direct
+  // `prevRatioRef` mutation: the ref (a plain mutable object) survives a
+  // discarded/re-invoked render pass, but a pending `setSoftBannerShown(true)`
+  // from that pass does not, so a later render sees "already past the
+  // threshold" on the ref while `softBannerShown` is still stuck at its
+  // pre-crossing value. `useEffect` avoids this because the ref advance and
+  // the setState calls run together, atomically, after commit -- not subject
+  // to StrictMode's render-phase double-invoke -- keyed only off `ratio`
+  // actually changing. Regression-guarded in
+  // EmbeddedAgentWorkerView.test.tsx's `renderViewStrict`-based tests (only
+  // reproducible with `<StrictMode>` wrapping, matching main.tsx's app root).
+  // See docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
+  // UI "Threshold banners".
+  const prevRatioRef = useRef<number | null>(null);
+  const [softBannerShown, setSoftBannerShown] = useState(false);
+  const [hardBannerShown, setHardBannerShown] = useState(false);
+  useEffect(() => {
+    if (ratio === null) return;
+    const prevRatio = prevRatioRef.current;
+    if (ratio < softRatio) {
+      setSoftBannerShown(false);
+    } else if (crossedThreshold(prevRatio, ratio, softRatio)) {
+      setSoftBannerShown(true);
+    }
+    if (ratio < hardRatio) {
+      setHardBannerShown(false);
+    } else if (crossedThreshold(prevRatio, ratio, hardRatio)) {
+      setHardBannerShown(true);
+    }
+    prevRatioRef.current = ratio;
+  }, [ratio, softRatio, hardRatio]);
 
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -175,6 +254,88 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         )}
       </div>
 
+      {/* Context Handoff (Phase A) chrome: usage bar, threshold banners, and
+          the always-reachable manual handoff CTA -- siblings inserted
+          between the transcript and MessagePanel, never inside MessagePanel
+          (shared with PTY workers, stays worker-type-agnostic). See
+          docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
+          UI. */}
+      <ContextUsageBar
+        contextWindowTokens={contextWindowTokens}
+        contextUsage={contextUsage}
+        softRatio={softRatio}
+        hardRatio={hardRatio}
+      />
+
+      {ratio !== null && softBannerShown && (
+        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0 flex items-center justify-between gap-3">
+          <span>Context is {Math.round(ratio * 100)}% full — consider starting a handoff</span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={triggerHandoff}
+              disabled={isTurnActive || handoffInFlight}
+              className="btn btn-primary text-xs shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Handoff now
+            </button>
+            <button
+              onClick={() => setSoftBannerShown(false)}
+              aria-label="Dismiss"
+              className="text-amber-300 hover:text-white text-xs shrink-0"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {ratio !== null && hardBannerShown && (
+        <div
+          role="alert"
+          className="px-4 py-2 bg-red-900/30 border-b border-red-700/50 text-red-200 text-sm shrink-0 flex items-center justify-between gap-3"
+        >
+          <span>
+            Context is critically full ({Math.round(ratio * 100)}%) — start a handoff now to avoid losing
+            context
+          </span>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={triggerHandoff}
+              disabled={isTurnActive || handoffInFlight}
+              className="btn btn-primary text-xs shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Handoff now
+            </button>
+            <button
+              onClick={() => setHardBannerShown(false)}
+              aria-label="Dismiss"
+              className="text-red-300 hover:text-white text-xs shrink-0"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="px-4 py-1 bg-slate-800/40 border-b border-slate-800 flex items-center justify-end gap-3 text-xs text-gray-500 shrink-0">
+        {handoffInFlight && (
+          <span className="flex items-center gap-1.5">
+            Handing off…
+            <span
+              className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle"
+              aria-hidden="true"
+            />
+          </span>
+        )}
+        <button
+          onClick={triggerHandoff}
+          disabled={handoffInFlight || isTurnActive}
+          className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          Start handoff
+        </button>
+      </div>
+
       <MessagePanel
         sessionId={sessionId}
         targetWorkerId={workerId}
@@ -185,7 +346,7 @@ export function EmbeddedAgentWorkerView({ sessionId, workerId, onStatusChange }:
         onEscape={cancel}
         slashCompletionEnabled={false}
         attachmentsEnabled={false}
-        cancelState={{ active: isTurnActive, onCancel: cancel }}
+        cancelState={{ active: isTurnActive || handoffInFlight, onCancel: cancel }}
       />
     </div>
   );
@@ -266,6 +427,30 @@ function PreviewablePre(props: JSX.IntrinsicElements['pre'] & ExtraProps) {
 const COPY_MARKDOWN_FEEDBACK_MS = 1500;
 
 /**
+ * Legacy clipboard-copy technique via a temporary hidden textarea + the
+ * deprecated `document.execCommand('copy')` API. Used as a fallback when
+ * `navigator.clipboard` is unavailable, which happens whenever the page is
+ * served from a non-secure context (plain HTTP, e.g. LAN dev-server access
+ * at http://192.168.x.x:5173/) -- `navigator.clipboard` is undefined outside
+ * HTTPS/localhost, so the modern API silently cannot be used there (#1159).
+ */
+function copyViaExecCommand(text: string): boolean {
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  // Keep off-screen so it never affects layout or scroll position.
+  textarea.style.position = 'fixed';
+  textarea.style.left = '-9999px';
+  document.body.appendChild(textarea);
+  try {
+    textarea.focus();
+    textarea.select();
+    return document.execCommand('copy');
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
+
+/**
  * Icon-only button pinned to the bottom-right of an assistant message
  * bubble. Copies the message's raw markdown SOURCE (the `text` prop, as
  * received from the agent) to the clipboard -- never the rendered HTML the
@@ -283,12 +468,35 @@ function CopyMarkdownButton({ text }: { text: string }) {
   }, []);
 
   const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (err) {
-      logger.error('Failed to copy markdown:', err);
+    let ok = false;
+    let lastError: unknown;
+
+    if (navigator.clipboard && window.isSecureContext) {
+      try {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    // Fall back to the legacy execCommand('copy') technique when the
+    // Clipboard API is unavailable (non-secure context, e.g. LAN access
+    // over plain HTTP) or when it threw above.
+    if (!ok) {
+      try {
+        ok = copyViaExecCommand(text);
+        if (!ok) lastError = new Error('execCommand("copy") returned false');
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    if (!ok) {
+      logger.error('Failed to copy markdown:', lastError);
       return;
     }
+
     setCopied(true);
     if (revertTimeoutRef.current !== null) clearTimeout(revertTimeoutRef.current);
     revertTimeoutRef.current = setTimeout(() => setCopied(false), COPY_MARKDOWN_FEEDBACK_MS);
@@ -340,9 +548,11 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
               {entry.text}
             </Markdown>
             {entry.streaming && <span className="inline-block w-1.5 h-3.5 ml-0.5 bg-gray-400 animate-pulse align-middle" aria-hidden="true" />}
-            <div className="flex justify-end mt-1">
-              <CopyMarkdownButton text={entry.text} />
-            </div>
+            {!entry.streaming && (
+              <div className="flex justify-end mt-1">
+                <CopyMarkdownButton text={entry.text} />
+              </div>
+            )}
           </div>
         </div>
       );
@@ -369,6 +579,19 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
             <RefreshIcon className="w-3.5 h-3.5" />
             Restart
           </button>
+        </div>
+      );
+    case 'context-handoff':
+      return (
+        <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          <details>
+            <summary className="cursor-pointer text-xs text-gray-400">
+              — Context handoff: conversation restarted from summary —
+            </summary>
+            <div className="mt-2 min-w-0 whitespace-pre-wrap text-xs text-gray-300 [overflow-wrap:anywhere]">
+              {entry.distillation}
+            </div>
+          </details>
         </div>
       );
     default: {

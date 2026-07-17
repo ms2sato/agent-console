@@ -95,6 +95,9 @@ describe('readTool', () => {
       expect(result.result).toContain(
         `[Read truncated: file is ${READ_MAX_BYTES + 1} bytes, exceeding the ${READ_MAX_BYTES}-byte read cap.`,
       );
+      expect(result.result).toContain(
+        'Use the Bash tool (e.g. `tail -c` or `sed -n`) to view content beyond this cap.',
+      );
     });
 
     it('truncates a file well over the cap to the cap size, plus a truncation notice', async () => {
@@ -108,6 +111,9 @@ describe('readTool', () => {
       const [body, ...rest] = result.result.split('\n\n[Read truncated');
       expect(body).toBe(`1\t${'b'.repeat(READ_MAX_BYTES)}`);
       expect(rest.join('')).toContain(`file is ${totalSize} bytes`);
+      expect(rest.join('')).toContain(
+        'Use the Bash tool (e.g. `tail -c` or `sed -n`) to view content beyond this cap.',
+      );
     });
 
     it('never splits a multibyte character at the truncation boundary', async () => {

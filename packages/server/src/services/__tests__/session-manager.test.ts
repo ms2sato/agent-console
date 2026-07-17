@@ -94,6 +94,7 @@ describe('SessionManager', () => {
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: defaultRepositoryLookup,
       repositoryEnvLookup: defaultRepositoryEnvLookup,
     });
@@ -154,6 +155,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         // Lookup returns undefined for every id — creation must fail fast.
         repositoryLookup: { getRepositorySlug: () => undefined },
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -310,6 +312,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -458,6 +461,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: {
           getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
         },
@@ -605,6 +609,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: {
           getEmbeddedAgent: (id: string) =>
             id === 'stub-def'
@@ -660,6 +665,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => defs.get(id) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -696,6 +702,15 @@ describe('SessionManager', () => {
       const { sessionId, workerId } = await createEmbeddedWorker(manager);
 
       expect(manager.cancelEmbeddedAgentTurn(sessionId, workerId)).toBe(false);
+    });
+
+    it('triggerEmbeddedAgentHandoff returns not-activated for a never-activated worker (facade delegation)', async () => {
+      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const res = await manager.triggerEmbeddedAgentHandoff(sessionId, workerId);
+
+      expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
     });
 
     it('deactivateEmbeddedAgentWorker resolves as a no-op for a never-activated worker', async () => {
@@ -757,6 +772,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -783,6 +799,75 @@ describe('SessionManager', () => {
       // immediately after issuing deactivate resolves that race via the real
       // exit path (not the multi-second timeout), matching the
       // `EmbeddedAgentWorkerService.deactivate escalation` test pattern.
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('sendEmbeddedAgentUserMessage threads clientMessageId through to the persisted/broadcast event (facade pass-through)', async () => {
+      // Issue #1117: SessionManager.sendEmbeddedAgentUserMessage is a
+      // one-line pass-through to EmbeddedAgentWorkerService.sendUserMessage.
+      // There is no injectable test double for that internal service, so
+      // this test proves the pass-through via the public interface: read
+      // the persisted transcript back through getWorkerOutputHistory (the
+      // same read path the client uses on reconnect) and confirm the
+      // clientMessageId argument survived the facade call unchanged.
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const subprocess = { pid: 4444, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      expect(worker).not.toBeNull();
+
+      await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+
+      const res = await manager.sendEmbeddedAgentUserMessage(session.id, worker!.id, 'hi', 'client-msg-99');
+      expect(res).toEqual({ ok: true, id: expect.any(String) });
+
+      const history = await manager.getWorkerOutputHistory(session.id, worker!.id, 0);
+      expect(history).not.toBeNull();
+      const userMessageLine = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; clientMessageId?: string })
+        .find((event: { type: string; clientMessageId?: string }) => event.type === 'user-message');
+      expect(userMessageLine?.clientMessageId).toBe('client-msg-99');
+
+      // Teardown (mirrors the sibling tests in this describe block).
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
       simulateExit(0);
       await deactivatePromise;
@@ -1019,6 +1104,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         sharedAccountLookup: {
@@ -1046,6 +1132,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         sharedAccountLookup: {
@@ -1116,6 +1203,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         usernameLookup,
@@ -1412,6 +1500,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -1450,6 +1539,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -1490,6 +1580,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -1525,6 +1616,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         ptyMessageInjectionService: mockInjectionService,
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
@@ -2546,7 +2638,7 @@ describe('SessionManager', () => {
     // Helper to get SessionManager with custom pathExists mock using factory pattern
     async function getSessionManagerWithPathExists(pathExistsFn: (path: string) => Promise<boolean>) {
       const module = await import(`../session-manager.js?v=${++importCounter}`);
-      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager, repositoryLookup: defaultRepositoryLookup, repositoryEnvLookup: defaultRepositoryEnvLookup });
+      return module.SessionManager.create({ userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }), pathExists: pathExistsFn, agentManager, mcpTokenRegistry: new McpTokenRegistry(), repositoryLookup: defaultRepositoryLookup, repositoryEnvLookup: defaultRepositoryEnvLookup });
     }
 
     it('should return null from resumeSession when session path no longer exists', async () => {
@@ -3838,6 +3930,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: null,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -4031,6 +4124,7 @@ describe('SessionManager', () => {
         pathExists: pathExistsOnlyDuringInit,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -4076,6 +4170,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
@@ -4220,6 +4315,7 @@ describe('SessionManager', () => {
         pathExists: mockPathExists,
         jobQueue: testJobQueue,
         agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
         repositoryLookup: { getRepositorySlug: (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
         repositoryEnvLookup: envLookup,
       });

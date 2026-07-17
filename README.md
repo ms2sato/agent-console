@@ -247,10 +247,13 @@ Agent Console exposes [MCP (Model Context Protocol)](https://modelcontextprotoco
 Register the Agent Console MCP server in Claude Code (one-time):
 
 ```bash
-# For production (default port 6340)
+# For production (default port 6340) for user scope
+claude mcp add --scope user --transport http agent-console http://localhost:6340/mcp
+
+# For production (default port 6340) for local scope
 claude mcp add --transport http agent-console http://localhost:6340/mcp
 
-# For development (if using a different port, match your .env PORT)
+# For development (if using a different port, match your .env PORT) for local scope
 claude mcp add --transport http agent-console-dev http://localhost:3457/mcp
 ```
 

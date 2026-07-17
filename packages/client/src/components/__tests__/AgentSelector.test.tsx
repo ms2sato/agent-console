@@ -3,17 +3,15 @@ import { render, screen, waitFor, cleanup, renderHook } from '@testing-library/r
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
-  AgentSelector,
-  useResolvedAgentId,
   useResolvedEmbeddedAgentId,
-  WorktreeAgentSelector,
+  UnifiedAgentSelector,
 } from '../AgentSelector';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
 const mockFetch = mock((_input: RequestInfo | URL) => Promise.resolve(new Response()));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 // Restore original fetch after all tests
 afterAll(() => {
@@ -56,179 +54,10 @@ function createTestWrapper() {
   };
 }
 
-function renderAgentSelector(props: Partial<React.ComponentProps<typeof AgentSelector>> = {}) {
-  const defaultProps = {
-    onChange: mock(() => {}),
-  };
-
-  const mergedProps = { ...defaultProps, ...props };
-
-  return {
-    ...render(
-      <AgentSelector {...mergedProps} />,
-      { wrapper: createTestWrapper() }
-    ),
-    props: mergedProps,
-  };
-}
-
-describe('AgentSelector', () => {
-  beforeEach(() => {
-    mockFetch.mockReset();
-    mockFetch.mockResolvedValue(createMockResponse(mockAgentsResponse));
-  });
-
-  describe('priority sorting', () => {
-    it('should render agents in original order without priorityAgentId', async () => {
-      renderAgentSelector();
-
-      // Wait for agents to load
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      const options = screen.getAllByRole('option');
-      expect(options[0].textContent).toBe('Claude Code (built-in)');
-      expect(options[1].textContent).toBe('Custom Agent');
-      expect(options[2].textContent).toBe('Another Agent');
-    });
-
-    it('should render the priority agent first when priorityAgentId is set', async () => {
-      renderAgentSelector({ priorityAgentId: 'another-agent' });
-
-      // Wait for agents to load
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      const options = screen.getAllByRole('option');
-      expect(options[0].textContent).toBe('Another Agent');
-      expect(options[1].textContent).toBe('Claude Code (built-in)');
-      expect(options[2].textContent).toBe('Custom Agent');
-    });
-
-    it('should select the priority agent when priorityAgentId is set and no value is provided', async () => {
-      renderAgentSelector({ priorityAgentId: 'another-agent' });
-
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      const select = screen.getByRole('combobox') as HTMLSelectElement;
-      expect(select.value).toBe('another-agent');
-    });
-
-    it('should keep original order when priorityAgentId does not match any agent', async () => {
-      renderAgentSelector({ priorityAgentId: 'nonexistent-agent' });
-
-      // Wait for agents to load
-      await waitFor(() => {
-        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
-      });
-
-      const options = screen.getAllByRole('option');
-      expect(options[0].textContent).toBe('Claude Code (built-in)');
-      expect(options[1].textContent).toBe('Custom Agent');
-      expect(options[2].textContent).toBe('Another Agent');
-    });
-  });
-
-  describe('loading state', () => {
-    it('should show loading state while fetching agents', () => {
-      // Use a fetch that never resolves to keep loading state
-      mockFetch.mockReturnValue(new Promise(() => {}));
-
-      renderAgentSelector({ value: undefined });
-
-      expect(screen.getByText('Loading...')).toBeTruthy();
-    });
-  });
-});
-
-describe('useResolvedAgentId', () => {
-  beforeEach(() => {
-    mockFetch.mockReset();
-    mockFetch.mockResolvedValue(createMockResponse(mockAgentsResponse));
-  });
-
-  it('should return the original value while loading', () => {
-    // Use a fetch that never resolves to keep loading state
-    mockFetch.mockReturnValue(new Promise(() => {}));
-
-    const { result } = renderHook(
-      () => useResolvedAgentId('some-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    expect(result.current).toBe('some-agent');
-  });
-
-  it('should return undefined while loading when value is undefined', () => {
-    mockFetch.mockReturnValue(new Promise(() => {}));
-
-    const { result } = renderHook(
-      () => useResolvedAgentId(undefined),
-      { wrapper: createTestWrapper() }
-    );
-
-    expect(result.current).toBeUndefined();
-  });
-
-  it('should return first agent when value is undefined and agents are loaded', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId(undefined),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('claude-code');
-    });
-  });
-
-  it('should return priority agent when value is undefined and priorityAgentId is set', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId(undefined, 'another-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('another-agent');
-    });
-  });
-
-  it('should return existing value when it matches an agent', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId('custom-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('custom-agent');
-    });
-  });
-
-  it('should return first agent when value does not match any agent', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId('nonexistent-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('claude-code');
-    });
-  });
-
-  it('should return priority agent when value does not match and priorityAgentId is set', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId('nonexistent-agent', 'another-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('another-agent');
-    });
-  });
-});
+// Note: useResolvedAgentId (and useAgents / getAgentName) now live in
+// hooks/useAgents.ts -- see hooks/__tests__/useAgents.test.tsx for their
+// coverage (moved there when the hooks<->component import cycle was fixed,
+// Issue #1160 PR-C follow-up).
 
 const mockEmbeddedAgentsResponse = {
   embeddedAgents: [
@@ -320,27 +149,27 @@ describe('useResolvedEmbeddedAgentId', () => {
   });
 });
 
-describe('WorktreeAgentSelector', () => {
+describe('UnifiedAgentSelector', () => {
   beforeEach(() => {
     mockFetch.mockReset();
     mockFetchImplementation();
   });
 
-  function renderWorktreeAgentSelector(
-    props: Partial<React.ComponentProps<typeof WorktreeAgentSelector>> = {}
+  function renderUnifiedAgentSelector(
+    props: Partial<React.ComponentProps<typeof UnifiedAgentSelector>> = {}
   ) {
     const defaultProps = {
       onChange: mock(() => {}),
     };
     const mergedProps = { ...defaultProps, ...props };
     return {
-      ...render(<WorktreeAgentSelector {...mergedProps} />, { wrapper: createTestWrapper() }),
+      ...render(<UnifiedAgentSelector {...mergedProps} />, { wrapper: createTestWrapper() }),
       props: mergedProps,
     };
   }
 
   it('renders terminal and embedded agent groups', async () => {
-    const { container } = renderWorktreeAgentSelector();
+    const { container } = renderUnifiedAgentSelector();
 
     await waitFor(() => {
       expect(screen.getByText('Local GPT')).toBeTruthy();
@@ -357,7 +186,7 @@ describe('WorktreeAgentSelector', () => {
   });
 
   it('defaults selection to the priority terminal agent when neither agentId nor embeddedAgentId is given', async () => {
-    renderWorktreeAgentSelector({ priorityAgentId: 'another-agent' });
+    renderUnifiedAgentSelector({ priorityAgentId: 'another-agent' });
 
     await waitFor(() => {
       expect(screen.getByText('Local GPT')).toBeTruthy();
@@ -368,7 +197,7 @@ describe('WorktreeAgentSelector', () => {
   });
 
   it('falls back to the terminal default when embeddedAgentId does not match any embedded agent', async () => {
-    renderWorktreeAgentSelector({ embeddedAgentId: 'nonexistent-embedded', priorityAgentId: 'another-agent' });
+    renderUnifiedAgentSelector({ embeddedAgentId: 'nonexistent-embedded', priorityAgentId: 'another-agent' });
 
     await waitFor(() => {
       expect(screen.getByText('Local GPT')).toBeTruthy();
@@ -378,9 +207,9 @@ describe('WorktreeAgentSelector', () => {
     expect(select.value).toBe('terminal:another-agent');
   });
 
-  it('calls onChange with embeddedAgentId when an embedded option is selected', async () => {
+  it('calls onChange with a discriminated embedded selection when an embedded option is selected', async () => {
     const user = userEvent.setup();
-    const { props } = renderWorktreeAgentSelector();
+    const { props } = renderUnifiedAgentSelector();
 
     await waitFor(() => {
       expect(screen.getByText('Local GPT')).toBeTruthy();
@@ -389,12 +218,12 @@ describe('WorktreeAgentSelector', () => {
     const select = screen.getByRole('combobox') as HTMLSelectElement;
     await user.selectOptions(select, 'embedded:embedded-2');
 
-    expect(props.onChange).toHaveBeenCalledWith({ embeddedAgentId: 'embedded-2' });
+    expect(props.onChange).toHaveBeenCalledWith({ kind: 'embedded', embeddedAgentId: 'embedded-2' });
   });
 
-  it('calls onChange with agentId when a terminal option is selected', async () => {
+  it('calls onChange with a discriminated terminal selection when a terminal option is selected', async () => {
     const user = userEvent.setup();
-    const { props } = renderWorktreeAgentSelector({ embeddedAgentId: 'embedded-1' });
+    const { props } = renderUnifiedAgentSelector({ embeddedAgentId: 'embedded-1' });
 
     await waitFor(() => {
       expect(screen.getByText('Local GPT')).toBeTruthy();
@@ -403,6 +232,46 @@ describe('WorktreeAgentSelector', () => {
     const select = screen.getByRole('combobox') as HTMLSelectElement;
     await user.selectOptions(select, 'terminal:custom-agent');
 
-    expect(props.onChange).toHaveBeenCalledWith({ agentId: 'custom-agent' });
+    expect(props.onChange).toHaveBeenCalledWith({ kind: 'terminal', agentId: 'custom-agent' });
+  });
+
+  describe('disabledKinds', () => {
+    it('renders embedded options as disabled and shows the restart notice when embedded is disabled', async () => {
+      renderUnifiedAgentSelector({
+        disabledKinds: [{ kind: 'embedded', context: 'restart' }],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const embeddedOption = screen.getByText('Local GPT').closest('option') as HTMLOptionElement;
+      expect(embeddedOption.disabled).toBe(true);
+
+      const terminalOption = screen.getByText('Claude Code (built-in)').closest('option') as HTMLOptionElement;
+      expect(terminalOption.disabled).toBe(false);
+
+      expect(screen.getByText(/Restarting into an embedded agent requires cross-type restart support/)).toBeTruthy();
+    });
+
+    it('does not render a notice when the disabled kind has no entries', async () => {
+      mockFetch.mockImplementation((input) => {
+        const url = resolveUrl(input);
+        if (url.includes('embedded-agents')) {
+          return Promise.resolve(createMockResponse({ embeddedAgents: [] }));
+        }
+        return Promise.resolve(createMockResponse(mockAgentsResponse));
+      });
+
+      renderUnifiedAgentSelector({
+        disabledKinds: [{ kind: 'embedded', context: 'restart' }],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      expect(screen.queryByText(/Restarting into an embedded agent requires/)).toBeNull();
+    });
   });
 });
