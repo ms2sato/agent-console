@@ -559,7 +559,7 @@ export function ActiveSessionsSidebar({
     <aside
       ref={sidebarRef}
       aria-label="Active sessions"
-      className={`bg-slate-900 border-r border-slate-700 flex flex-col shrink-0 relative ${
+      className={`bg-slate-900 border-r border-slate-700 flex flex-col h-full shrink-0 relative ${
         isResizing ? '' : 'transition-all duration-200'
       }`}
       style={{ width: sidebarWidth }}
