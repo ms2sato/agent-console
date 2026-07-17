@@ -12,6 +12,7 @@ import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { _getPullsInProgress, _getDeletionsInProgress } from '../worktrees.js';
 import { CLAUDE_CODE_AGENT_ID } from '../../services/agent-manager.js';
+import { AgentDirectory } from '../../services/agent-directory.js';
 
 // ---------------------------------------------------------------------------
 // Test constants
@@ -314,16 +315,54 @@ describe('Worktrees API', () => {
   // =========================================================================
 
   describe('POST /api/repositories/:id/worktrees (Issue #1038 embedded-agent selection)', () => {
+    // Widened (agent-surface migration PR-B) so this mock can also serve as
+    // the `terminal` surface of a real `AgentDirectory` -- the route's
+    // embedded-agent validation now reads `agentDirectory.get('embedded', ...)`
+    // instead of `embeddedAgentManager.getEmbeddedAgent(...)`, and the
+    // `AgentDirectory` constructor requires a working `AgentSurface` for
+    // every kind at construction time (compile-time exhaustiveness gate).
+    const getAgent = mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' }));
     const mockAgentManager = {
-      getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
+      getAgent,
+      kind: 'terminal' as const,
+      list: () => [],
+      get: () => {
+        const agent = getAgent();
+        return agent ? { kind: 'terminal' as const, agent } : undefined;
+      },
+      findByName: () => [],
     } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
 
+    // Widened the same way as mockAgentManager above, so it can serve as the
+    // `embedded` surface of a real `AgentDirectory`.
     function createMockEmbeddedAgentManager(knownId: string) {
+      const getEmbeddedAgent = mock((id: string) =>
+        id === knownId ? { id: knownId, name: 'My Embedded Agent' } : undefined,
+      );
       return {
-        getEmbeddedAgent: mock((id: string) =>
-          id === knownId ? { id: knownId, name: 'My Embedded Agent' } : undefined,
-        ),
+        getEmbeddedAgent,
+        kind: 'embedded' as const,
+        list: () => [],
+        get: (id: string) => {
+          const agent = getEmbeddedAgent(id);
+          return agent ? { kind: 'embedded' as const, agent } : undefined;
+        },
+        findByName: () => [],
       } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'];
+    }
+
+    // mockAgentManager / createMockEmbeddedAgentManager are cast to the real
+    // AgentManager / EmbeddedAgentManager classes above (both of which
+    // `implements AgentSurface<K>`, agent-surface migration PR-A), so they
+    // are directly assignable here without further casting. The trailing
+    // `!` strips the `| undefined` that `Parameters<typeof asAppContext>`
+    // widens to (asAppContext's param type is a Partial<AppContext>) -- the
+    // mocks above always construct a real object, never undefined.
+    function createAgentDirectory(knownEmbeddedId: string) {
+      return new AgentDirectory({
+        terminal: mockAgentManager!,
+        embedded: createMockEmbeddedAgentManager(knownEmbeddedId)!,
+      });
     }
 
     /**
@@ -352,6 +391,7 @@ describe('Worktrees API', () => {
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          agentDirectory: createAgentDirectory('known-embedded-agent'),
           sessionManager: { createSession: mock() } as unknown as SessionManager,
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
@@ -395,6 +435,7 @@ describe('Worktrees API', () => {
           worktreeService: mockWorktreeService,
           agentManager: mockAgentManager,
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          agentDirectory: createAgentDirectory('known-embedded-agent'),
           sessionManager: { createSession: createSessionMock } as unknown as SessionManager,
           broadcastToApp: () => {},
           suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
@@ -551,11 +592,22 @@ describe('Worktrees API', () => {
       return { mockFn };
     }
 
+    // Widened (agent-surface migration PR-B) so this mock can also serve as
+    // the `embedded` surface of a real `AgentDirectory` -- the route's
+    // embedded-agent validation now reads `agentDirectory.get('embedded', ...)`.
     function createMockEmbeddedAgentManager(knownId: string) {
+      const getEmbeddedAgent = mock((id: string) =>
+        id === knownId ? { id: knownId, name: 'My Embedded Agent' } : undefined,
+      );
       return {
-        getEmbeddedAgent: mock((id: string) =>
-          id === knownId ? { id: knownId, name: 'My Embedded Agent' } : undefined,
-        ),
+        getEmbeddedAgent,
+        kind: 'embedded' as const,
+        list: () => [],
+        get: (id: string) => {
+          const agent = getEmbeddedAgent(id);
+          return agent ? { kind: 'embedded' as const, agent } : undefined;
+        },
+        findByName: () => [],
       } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'];
     }
 
@@ -571,6 +623,22 @@ describe('Worktrees API', () => {
         getAgent: mock((id: string) => ({ id, name: 'Mock Agent' })),
       } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
     }
+
+    /**
+     * The route's terminal-agent resolution (`agentManager.getAgent(...)`,
+     * feeding `suggestSessionMetadata`) is untouched by the agent-surface
+     * migration and still reads `createEchoingAgentManager()` directly, not
+     * `agentDirectory`. This test only needs `agentDirectory`'s `embedded`
+     * surface (for the `embeddedAgentId` existence check), so the `terminal`
+     * surface here is an unused stub satisfying the constructor's
+     * compile-time exhaustiveness gate.
+     */
+    const emptyTerminalSurface = {
+      kind: 'terminal' as const,
+      list: () => [],
+      get: () => undefined,
+      findByName: () => [],
+    };
 
     /**
      * Mirrors the capture helpers used elsewhere in this file: resolve a
@@ -603,6 +671,10 @@ describe('Worktrees API', () => {
           worktreeService: mockWorktreeService,
           agentManager: createEchoingAgentManager(),
           embeddedAgentManager: createMockEmbeddedAgentManager('known-embedded-agent'),
+          agentDirectory: new AgentDirectory({
+            terminal: emptyTerminalSurface,
+            embedded: createMockEmbeddedAgentManager('known-embedded-agent')!,
+          }),
           sessionManager: { createSession: mock() } as unknown as SessionManager,
           broadcastToApp: () => {},
           suggestSessionMetadata: suggestionMock as unknown as Parameters<typeof asAppContext>[0]['suggestSessionMetadata'],

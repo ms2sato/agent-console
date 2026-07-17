@@ -48,7 +48,7 @@ const worktrees = new Hono<AppBindings>()
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, agentManager, embeddedAgentManager, worktreeService, broadcastToApp, suggestSessionMetadata } = c.get('appContext');
+    const { repositoryManager, sessionManager, agentManager, agentDirectory, worktreeService, broadcastToApp, suggestSessionMetadata } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -72,7 +72,7 @@ const worktrees = new Hono<AppBindings>()
 
     // Validate the embedded agent exists before returning accepted.
     if (embeddedAgentId) {
-      const embeddedAgent = embeddedAgentManager.getEmbeddedAgent(embeddedAgentId);
+      const embeddedAgent = agentDirectory.get('embedded', embeddedAgentId)?.agent;
       if (!embeddedAgent) {
         throw new ValidationError(`Embedded agent not found: ${embeddedAgentId}`);
       }
