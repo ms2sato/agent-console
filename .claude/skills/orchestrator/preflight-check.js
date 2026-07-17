@@ -132,8 +132,9 @@ function run(changedFiles) {
 
     if (gaps.length > 0) {
       console.log(`### Missing Tests (${gaps.length})\n`);
-      for (const { file, expectedTestPath } of gaps) {
-        console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\``);
+      for (const { file, expectedTestPath, alternateTestPath } of gaps) {
+        const alt = alternateTestPath ? ` (or \`${alternateTestPath}\` if JSX-free)` : '';
+        console.log(`- ❌ \`${file}\` — expected: \`${expectedTestPath}\`${alt}`);
       }
       console.log();
     }
