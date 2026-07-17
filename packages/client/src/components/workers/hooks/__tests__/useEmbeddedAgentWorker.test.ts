@@ -60,8 +60,15 @@ describe('useEmbeddedAgentWorker', () => {
       result.current.sendUserMessage('hello').catch(() => {});
     });
 
-    const sent = (ws!.send.mock.calls as unknown as string[][]).map((c) => JSON.parse(c[0]));
-    expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello' });
+    const sent = ws!.send.mock.calls.map((c) => JSON.parse(c[0])) as {
+      type: string;
+      text?: string;
+      clientMessageId?: string;
+    }[];
+    const sentMessage = sent.find((m) => m.type === 'embedded-user-message');
+    expect(sentMessage?.text).toBe('hello');
+    // Issue #1117: a per-send correlation id, generated client-side.
+    expect(sentMessage?.clientMessageId).toBeTruthy();
   });
 
   it('cancel forwards to the store', () => {

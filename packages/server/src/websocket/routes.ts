@@ -76,6 +76,14 @@ const GENERIC_ACTIVATION_FAILURE_MESSAGE =
   'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 /**
+ * Length cap for an embedded-agent `embedded-user-message.clientMessageId`.
+ * The value is persisted verbatim into the output file per message, so an
+ * unbounded client-supplied string must not reach disk. 64 chars is plenty
+ * for a UUID (36 chars) with headroom for other id schemes.
+ */
+export const EMBEDDED_CLIENT_MESSAGE_ID_MAX_LENGTH = 64;
+
+/**
  * Safely get the WebSocket ready state from a WSContext.
  * Returns undefined if readyState is not accessible.
  */
@@ -1118,6 +1126,38 @@ export async function setupWebSocketRoutes(
                 }
                 const text = parsedObj.text;
 
+                if (
+                  parsedObj.clientMessageId !== undefined &&
+                  typeof parsedObj.clientMessageId !== 'string'
+                ) {
+                  logger.warn(
+                    { sessionId, workerId },
+                    'Invalid embedded-user-message: clientMessageId must be a string',
+                  );
+                  sendWorkerError(
+                    ws,
+                    'Invalid embedded-user-message: clientMessageId must be a string',
+                    'UNSUPPORTED_OPERATION',
+                  );
+                  return;
+                }
+                if (
+                  typeof parsedObj.clientMessageId === 'string' &&
+                  parsedObj.clientMessageId.length > EMBEDDED_CLIENT_MESSAGE_ID_MAX_LENGTH
+                ) {
+                  logger.warn(
+                    { sessionId, workerId, length: parsedObj.clientMessageId.length },
+                    'Invalid embedded-user-message: clientMessageId exceeds the length cap',
+                  );
+                  sendWorkerError(
+                    ws,
+                    `Invalid embedded-user-message: clientMessageId exceeds the ${EMBEDDED_CLIENT_MESSAGE_ID_MAX_LENGTH}-character limit`,
+                    'UNSUPPORTED_OPERATION',
+                  );
+                  return;
+                }
+                const clientMessageId: string | undefined = parsedObj.clientMessageId;
+
                 const textByteLength = Buffer.byteLength(text, 'utf-8');
                 if (textByteLength > EMBEDDED_USER_MESSAGE_MAX_BYTES) {
                   logger.warn(
@@ -1132,7 +1172,7 @@ export async function setupWebSocketRoutes(
                   return;
                 }
 
-                void sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, text).then((result) => {
+                void sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, text, clientMessageId).then((result) => {
                   if (result.ok) return;
                   // Switch on the machine-checkable `code`, not the
                   // human-readable `error` string -- a future wording tweak

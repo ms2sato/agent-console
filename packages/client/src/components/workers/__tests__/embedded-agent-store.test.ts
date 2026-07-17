@@ -399,12 +399,18 @@ describe('embedded-agent-store', () => {
     // surface as an unhandled rejection.
     instance.sendUserMessage('hello agent').catch(() => {});
 
-    const sent = lastSentMessages(ws!);
-    expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello agent' });
+    const sent = (
+      lastSentMessages(ws!) as { type: string; text?: string; clientMessageId?: string }[]
+    ).find((m) => m.type === 'embedded-user-message')!;
+    expect(sent.text).toBe('hello agent');
+    // Issue #1117: a per-send correlation id, generated client-side, so the
+    // server's echo can be matched back to THIS specific send.
+    expect(typeof sent.clientMessageId).toBe('string');
+    expect(sent.clientMessageId?.length).toBeGreaterThan(0);
   });
 
   describe('sendUserMessage confirmation (#1024: preserve draft on reject)', () => {
-    it('resolves once the server echoes the message back as a user-message event', async () => {
+    it('resolves once the server echoes the message back as a user-message event carrying the SAME clientMessageId (correlated, not "any echo")', async () => {
       const instance = getOrCreateEmbeddedAgentWorker('s30', 'w30');
       const ws = MockWebSocket.getLastInstance();
       ws!.simulateOpen();
@@ -418,7 +424,18 @@ describe('embedded-agent-store', () => {
       // Not yet confirmed -- the server hasn't echoed the message back.
       expect(settled).toBe(false);
 
-      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello agent' });
+      const sentClientMessageId = (
+        lastSentMessages(ws!) as { type: string; clientMessageId?: string }[]
+      ).find((m) => m.type === 'embedded-user-message')?.clientMessageId;
+      expect(sentClientMessageId).toBeTruthy();
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text: 'hello agent',
+        clientMessageId: sentClientMessageId,
+      });
       ws!.simulateMessage(outputMessage(data, data.length));
 
       await expect(sendPromise).resolves.toBeUndefined();
@@ -472,7 +489,17 @@ describe('embedded-agent-store', () => {
 
       await expect(first).rejects.toThrow();
 
-      const data = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second' });
+      const sentMessages = lastSentMessages(ws!) as { clientMessageId?: string }[];
+      const secondClientMessageId = sentMessages[sentMessages.length - 1]?.clientMessageId;
+      expect(secondClientMessageId).toBeTruthy();
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u2',
+        text: 'second',
+        clientMessageId: secondClientMessageId,
+      });
       ws!.simulateMessage(outputMessage(data, data.length));
 
       await expect(second).resolves.toBeUndefined();
@@ -542,6 +569,10 @@ describe('embedded-agent-store', () => {
       firstWs!.simulateOpen();
 
       const sendPromise = instance.sendUserMessage('hello agent');
+      const sentClientMessageId = (
+        lastSentMessages(firstWs!) as { type: string; clientMessageId?: string }[]
+      ).find((m) => m.type === 'embedded-user-message')?.clientMessageId;
+      expect(sentClientMessageId).toBeTruthy();
 
       // The write DID reach the server before the connection dropped -- the
       // reconnect's history reply replays it back.
@@ -549,10 +580,110 @@ describe('embedded-agent-store', () => {
       const secondWs = MockWebSocket.getLastInstance();
       secondWs!.simulateOpen();
 
-      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello agent' });
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text: 'hello agent',
+        clientMessageId: sentClientMessageId,
+      });
       secondWs!.simulateMessage(historyMessage(data, data.length, 0, 1));
 
       await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it('does NOT resolve the pending send on a user-message echo carrying a DIFFERENT clientMessageId (multi-client false-confirm regression, Issue #1117); the echo still folds as an entry, and the pending later settles via the existing history-fold-reject path', async () => {
+      // Simulates the exact bug: the SAME embedded-agent worker open in two
+      // tabs/clients both send concurrently. Another client's send is
+      // accepted and echoed first -- that echo must NOT resolve THIS
+      // client's still-pending send (it isn't the confirmation for OUR
+      // send), even though pre-#1117 code resolved on ANY user-message echo
+      // regardless of correlation id.
+      const instance = getOrCreateEmbeddedAgentWorker('s37c', 'w37c');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const sendPromise = instance.sendUserMessage('hello from tab A');
+      let settled = false;
+      let rejected = false;
+      sendPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          rejected = true;
+        },
+      );
+
+      // Another client's (tab B's) send is accepted and echoed back first,
+      // with a DIFFERENT clientMessageId.
+      const otherClientEcho = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u-other',
+        text: 'hello from tab B',
+        clientMessageId: 'some-other-clients-uuid',
+      });
+      ws!.simulateMessage(outputMessage(otherClientEcho, otherClientEcho.length));
+      await flush();
+
+      // The other client's message still folds as an ordinary chat entry...
+      const entries = instance.getSnapshot().entries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'hello from tab B' });
+      // ...but it must NOT have resolved (nor rejected) our pending send.
+      expect(settled).toBe(false);
+      expect(rejected).toBe(false);
+
+      // The pending send eventually settles via the EXISTING history-fold-reject
+      // path (a same-epoch reconnect whose history reply carries no confirming
+      // echo for OUR clientMessageId) -- unchanged by this Issue, reused here
+      // only to observe that the pending slot is still live (not already
+      // resolved by the mismatched echo above).
+      instance.restart();
+      const secondWs = MockWebSocket.getLastInstance();
+      secondWs!.simulateOpen();
+      secondWs!.simulateMessage(historyMessage('', 0, 0, 1));
+
+      await expect(sendPromise).rejects.toThrow();
+    });
+
+    it('does NOT resolve the pending send on a user-message echo with NO clientMessageId field at all (replayed pre-#1117 history row / legacy echo)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s37d', 'w37d');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const sendPromise = instance.sendUserMessage('hello agent');
+      let settled = false;
+      let rejected = false;
+      sendPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          rejected = true;
+        },
+      );
+
+      // A legacy-shaped echo -- no clientMessageId field at all (e.g. a
+      // replayed history row persisted before this field existed).
+      const legacyEcho = ndjson({ v: 1, type: 'user-message', id: 'u-legacy', text: 'legacy row' });
+      ws!.simulateMessage(outputMessage(legacyEcho, legacyEcho.length));
+      await flush();
+
+      const entries = instance.getSnapshot().entries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'legacy row' });
+      expect(settled).toBe(false);
+      expect(rejected).toBe(false);
+
+      // Confirm the pending slot is still live via the existing reject path.
+      instance.restart();
+      const secondWs = MockWebSocket.getLastInstance();
+      secondWs!.simulateOpen();
+      secondWs!.simulateMessage(historyMessage('', 0, 0, 1));
+
+      await expect(sendPromise).rejects.toThrow();
     });
   });
 
@@ -907,11 +1038,21 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().entries).toHaveLength(0);
 
     const sendPromise = instance.sendUserMessage('hello agent');
+    const sentClientMessageId = (
+      lastSentMessages(ws) as { type: string; clientMessageId?: string }[]
+    ).find((m) => m.type === 'embedded-user-message')?.clientMessageId;
+    expect(sentClientMessageId).toBeTruthy();
 
     // The confirming echo arrives as live output for the new epoch while
     // still resyncing -- queued, not folded yet (resolvePendingSend has NOT
     // run at this point).
-    const echoData = ndjson({ v: 1, type: 'user-message', id: 'echo', text: 'hello agent' });
+    const echoData = ndjson({
+      v: 1,
+      type: 'user-message',
+      id: 'echo',
+      text: 'hello agent',
+      clientMessageId: sentClientMessageId,
+    });
     ws.simulateMessage(outputMessage(echoData, 50, 2));
     await flush();
     expect(instance.getSnapshot().entries).toHaveLength(0); // queued, not folded

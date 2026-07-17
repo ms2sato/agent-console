@@ -167,6 +167,7 @@ export const EmbeddedAgentServerEventSchema = v.union([
     type: v.literal('user-message'),
     id: v.string(),
     text: v.string(),
+    clientMessageId: v.optional(v.string()),
   }),
   v.strictObject({
     v: v.literal(1),

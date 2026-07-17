@@ -413,6 +413,7 @@ export class EmbeddedAgentWorkerService {
     sessionId: string,
     workerId: string,
     text: string,
+    clientMessageId?: string,
   ): Promise<SendUserMessageResult> {
     const session = this.deps.getSession(sessionId);
     const worker = session?.workers.get(workerId);
@@ -437,17 +438,33 @@ export class EmbeddedAgentWorkerService {
     // --- end synchronous admission ---
 
     const id = crypto.randomUUID();
-    const event: EmbeddedAgentServerEvent = { v: 1, type: 'user-message', id, text };
-    // Append BEFORE forwarding so replay ordering is stable.
-    this.appendEvent(runtime.ctx, event);
-
+    // Two separate objects: `command` (stdin, loop protocol -- unchanged
+    // shape) and `event` (persisted stream, may carry `clientMessageId`).
+    // The loop protocol is correlation-agnostic; only the persisted/broadcast
+    // event carries the client's correlation id. Do NOT reuse one object for
+    // both -- see docs/design/embedded-agent-worker.md.
+    const command: EmbeddedAgentCommand = { v: 1, type: 'user-message', id, text };
+    const event: EmbeddedAgentServerEvent = {
+      v: 1,
+      type: 'user-message',
+      id,
+      text,
+      ...(clientMessageId !== undefined ? { clientMessageId } : {}),
+    };
+    // Forward BEFORE appending: both calls are synchronous (no await between
+    // them, nothing else can interleave), so ordering doesn't affect replay
+    // stability either way -- but writing first means a WRITE_FAILED never
+    // leaves a persisted/broadcast echo for a message the loop never
+    // actually received (which would falsely resolve the client's pending
+    // send despite the error response).
     try {
-      this.writeCommand(stdin, event);
+      this.writeCommand(stdin, command);
     } catch (err) {
       runtime.turnActive = false;
       logger.warn({ sessionId, workerId, err }, 'Failed to forward user message to embedded-agent stdin');
       return { ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' };
     }
+    this.appendEvent(runtime.ctx, event);
 
     return { ok: true, id };
   }

@@ -590,8 +590,9 @@ export class SessionManager {
     sessionId: string,
     workerId: string,
     text: string,
+    clientMessageId?: string,
   ): Promise<SendUserMessageResult> {
-    return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text);
+    return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text, clientMessageId);
   }
 
   /** Forward a cancel command to an embedded-agent worker's loop. */

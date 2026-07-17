@@ -371,13 +371,22 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     const { handlers, mockWs } = openConnection(sessionId, workerId);
     await waitFor(() => fake.captured.length === 1);
 
-    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-user-message', text: 'hello loop' }) }, mockWs);
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello loop', clientMessageId: 'cid-1' }) },
+      mockWs,
+    );
 
     await waitFor(() => fake.stdinWrites.length >= 2);
     const userMessageCommand = JSON.parse(fake.stdinWrites[1]);
     expect(userMessageCommand.type).toBe('user-message');
     expect(userMessageCommand.text).toBe('hello loop');
     expect(mockWs.closeCalls.length).toBe(0);
+
+    // Regression guard for the "loop protocol zero change" invariant: the
+    // client's clientMessageId must never leak into the stdin command sent
+    // to the subprocess, even though it's carried on the persisted/broadcast
+    // server event.
+    expect(userMessageCommand).not.toHaveProperty('clientMessageId');
   });
 
   it('rejects a malformed embedded-user-message (non-string text) with an error instead of silently dropping it', async () => {
@@ -396,6 +405,73 @@ describe('Worker WebSocket: embedded-agent branch', () => {
 
     // Never reached the loop's stdin.
     expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('rejects a malformed embedded-user-message (non-string clientMessageId) with an error instead of silently dropping it', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello', clientMessageId: 42 }) },
+      mockWs,
+    );
+
+    expect(mockWs.sentMessages.length).toBe(1);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('UNSUPPORTED_OPERATION');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Never reached the loop's stdin.
+    expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('rejects an embedded-user-message with an over-length clientMessageId with an error instead of silently dropping it', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    const overLongId = 'a'.repeat(65);
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello', clientMessageId: overLongId }) },
+      mockWs,
+    );
+
+    expect(mockWs.sentMessages.length).toBe(1);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('UNSUPPORTED_OPERATION');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Never reached the loop's stdin.
+    expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('echoes a valid clientMessageId verbatim in the broadcast user-message event', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello loop', clientMessageId: 'cid-42' }) },
+      mockWs,
+    );
+
+    await waitFor(() =>
+      mockWs.sentMessages
+        .map((m) => JSON.parse(m))
+        .some((m) => m.type === 'output' && JSON.parse(m.data.trimEnd()).type === 'user-message'),
+    );
+    const outputMsg = mockWs.sentMessages
+      .map((m) => JSON.parse(m))
+      .find((m) => m.type === 'output' && JSON.parse(m.data.trimEnd()).type === 'user-message');
+    const persistedEvent = JSON.parse(outputMsg.data.trimEnd());
+    expect(persistedEvent.text).toBe('hello loop');
+    expect(persistedEvent.clientMessageId).toBe('cid-42');
   });
 
   it('rejects an oversized embedded-user-message with MESSAGE_TOO_LARGE instead of forwarding it', async () => {

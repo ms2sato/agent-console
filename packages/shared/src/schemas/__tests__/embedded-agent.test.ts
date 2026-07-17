@@ -467,6 +467,45 @@ describe('EmbeddedAgentServerEventSchema', () => {
     const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'exited', code: null });
     expect(result.success).toBe(true);
   });
+
+  it('parses a user-message event with the optional clientMessageId field', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'hi',
+      clientMessageId: 'client-generated-uuid',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({
+        v: 1,
+        type: 'user-message',
+        id: 'm1',
+        text: 'hi',
+        clientMessageId: 'client-generated-uuid',
+      });
+    }
+  });
+
+  it('parses a user-message event WITHOUT clientMessageId (replay of files persisted before this field existed)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('clientMessageId' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a non-string clientMessageId', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'hi',
+      clientMessageId: 42,
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('EmbeddedAgentStreamEventSchema', () => {
