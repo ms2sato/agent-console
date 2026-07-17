@@ -40,6 +40,22 @@ function getRepositoryId(session: Session): string {
   return session.type === 'worktree' ? session.repositoryId : '';
 }
 
+/**
+ * Resolve the `embeddedAgentId` prop passed to `EmbeddedAgentWorkerView` for
+ * the active tab's worker -- undefined when the active worker isn't an
+ * embedded-agent type. Extracted (mirroring `sessionToPageState`'s export
+ * above) so this Context Handoff (Phase A) wiring -- see
+ * docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI -- is
+ * testable without a full SessionPage render.
+ */
+export function resolveActiveEmbeddedAgentId(
+  workers: Worker[],
+  activeTabId: string | null,
+): string | undefined {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.embeddedAgentId : undefined;
+}
+
 // Error fallback UI for worker tabs
 interface WorkerErrorFallbackProps {
   error: Error;
@@ -430,8 +446,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   // Context Handoff (Phase A): resolved so EmbeddedAgentWorkerView can look up
   // the definition's contextWindowTokens/handoff -- see
   // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI.
-  const activeEmbeddedAgentId =
-    activeWorker?.type === 'embedded-agent' ? activeWorker.embeddedAgentId : undefined;
+  const activeEmbeddedAgentId = resolveActiveEmbeddedAgentId(session.workers, activeTabId);
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);

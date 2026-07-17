@@ -7,6 +7,9 @@ import {
   READ_ONLY_TOOL_NAMES,
   COMMAND_EXECUTION_TOOL_NAMES,
   FILE_MODIFICATION_TOOL_NAMES,
+  parseContextWindowTokens,
+  parseHandoffRatio,
+  formatHandoffRatioInput,
   type EmbeddedAgentFormData,
 } from '../EmbeddedAgentForm';
 
@@ -463,6 +466,205 @@ describe('EmbeddedAgentForm', () => {
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
       expect(formData.instructions).toEqual([]);
+    });
+  });
+
+  describe('Context Handoff (Phase A) fields', () => {
+    it('should render the contextWindowTokens/handoffSoftRatio/handoffHardRatio inputs', () => {
+      renderEmbeddedAgentForm();
+
+      expect(screen.getByPlaceholderText('e.g., 128000')).toBeTruthy();
+      expect(screen.getByPlaceholderText('75')).toBeTruthy();
+      expect(screen.getByPlaceholderText('90')).toBeTruthy();
+    });
+
+    it('should submit typed values for contextWindowTokensInput/handoffSoftRatioInput/handoffHardRatioInput', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('e.g., 128000'), '128000');
+      await user.type(screen.getByPlaceholderText('75'), '80');
+      await user.type(screen.getByPlaceholderText('90'), '95');
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect(formData.contextWindowTokensInput).toBe('128000');
+      expect(formData.handoffSoftRatioInput).toBe('80');
+      expect(formData.handoffHardRatioInput).toBe('95');
+    });
+
+    it('should submit empty strings for contextWindowTokensInput/handoffSoftRatioInput/handoffHardRatioInput when left blank', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
+      expect(formData.contextWindowTokensInput).toBe('');
+      expect(formData.handoffSoftRatioInput).toBe('');
+      expect(formData.handoffHardRatioInput).toBe('');
+      // The submitted raw string form data converts to `undefined` via the
+      // module's parse helpers (this is what AddEmbeddedAgentForm/
+      // EditEmbeddedAgentForm actually call on submit -- see
+      // parseContextWindowTokens/parseHandoffRatio unit tests below).
+      expect(parseContextWindowTokens(formData.contextWindowTokensInput)).toBeUndefined();
+      expect(parseHandoffRatio(formData.handoffSoftRatioInput)).toBeUndefined();
+      expect(parseHandoffRatio(formData.handoffHardRatioInput)).toBeUndefined();
+    });
+
+    it('should show a validation error for a non-integer contextWindowTokensInput', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('e.g., 128000'), 'abc');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a positive integer')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should show a validation error for a handoffSoftRatioInput above 100', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('75'), '150');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a number between 0 and 100')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should show a validation error for a negative handoffHardRatioInput', async () => {
+      const user = userEvent.setup();
+      const { props } = renderEmbeddedAgentForm();
+
+      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
+      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
+      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
+      await user.type(screen.getByPlaceholderText('90'), '-5');
+      await user.tab();
+
+      await user.click(screen.getByText('Add Embedded Agent'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Must be a number between 0 and 100')).toBeTruthy();
+      });
+      expect(props.onSubmit).not.toHaveBeenCalled();
+    });
+
+    it('should pre-fill percentage inputs in edit mode via formatHandoffRatioInput', () => {
+      renderEmbeddedAgentForm({
+        mode: 'edit',
+        initialData: {
+          name: 'Existing Embedded Agent',
+          description: 'Test description',
+          baseUrl: 'http://localhost:11434/v1',
+          model: 'qwen3:32b',
+          apiKeyRef: 'my-key',
+          systemPrompt: 'Be helpful',
+          maxToolIterationsInput: '25',
+          enabledTools: ['Read', 'Glob', 'Grep'],
+          instructions: [],
+          contextWindowTokensInput: '128000',
+          handoffSoftRatioInput: formatHandoffRatioInput(0.8),
+          handoffHardRatioInput: formatHandoffRatioInput(0.95),
+        },
+      });
+
+      expect(screen.getByDisplayValue('128000')).toBeTruthy();
+      expect(screen.getByDisplayValue('80')).toBeTruthy();
+      expect(screen.getByDisplayValue('95')).toBeTruthy();
+    });
+  });
+
+  describe('parseContextWindowTokens', () => {
+    it('should return undefined for an empty string', () => {
+      expect(parseContextWindowTokens('')).toBeUndefined();
+    });
+
+    it('should return undefined for undefined input', () => {
+      expect(parseContextWindowTokens(undefined)).toBeUndefined();
+    });
+
+    it('should return undefined for a whitespace-only string', () => {
+      expect(parseContextWindowTokens('   ')).toBeUndefined();
+    });
+
+    it('should return the parsed number for a numeric string', () => {
+      expect(parseContextWindowTokens('128000')).toBe(128000);
+    });
+  });
+
+  describe('parseHandoffRatio', () => {
+    it('should return undefined for an empty string', () => {
+      expect(parseHandoffRatio('')).toBeUndefined();
+    });
+
+    it('should return undefined for undefined input', () => {
+      expect(parseHandoffRatio(undefined)).toBeUndefined();
+    });
+
+    it('should convert a percentage string into a 0-1 ratio', () => {
+      expect(parseHandoffRatio('75')).toBe(0.75);
+    });
+
+    it('should convert 100 into a ratio of 1', () => {
+      expect(parseHandoffRatio('100')).toBe(1);
+    });
+
+    it('should convert 0 into a ratio of 0', () => {
+      // '0' is truthy-empty-check-sensitive: the guard is `trimmed ? ... :
+      // undefined`, and the string '0' is truthy (non-empty), so this must
+      // return 0, not undefined.
+      expect(parseHandoffRatio('0')).toBe(0);
+    });
+  });
+
+  describe('formatHandoffRatioInput', () => {
+    it('should format a 0-1 ratio into a rounded percentage string', () => {
+      expect(formatHandoffRatioInput(0.75)).toBe('75');
+    });
+
+    it('should round to the nearest integer percentage', () => {
+      expect(formatHandoffRatioInput(0.756)).toBe('76');
+    });
+
+    it('should map undefined to an empty string', () => {
+      expect(formatHandoffRatioInput(undefined)).toBe('');
+    });
+
+    it('should map a ratio of 0 to "0"', () => {
+      expect(formatHandoffRatioInput(0)).toBe('0');
     });
   });
 });
