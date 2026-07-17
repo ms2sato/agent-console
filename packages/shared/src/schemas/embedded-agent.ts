@@ -32,6 +32,24 @@ export const EmbeddedAgentProviderSchema = v.strictObject({
   apiKeyRef: v.optional(v.pipe(v.string(), v.minLength(1))),
 });
 
+/**
+ * Context Handoff (Phase A) threshold/auto-fire config. `auto` is accepted
+ * and persisted here for forward-compat but is NOT read by any Phase A code
+ * path — see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)".
+ */
+export const EmbeddedAgentHandoffConfigSchema = v.pipe(
+  v.strictObject({
+    softRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
+    hardRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
+    auto: v.optional(v.boolean()),
+  }),
+  v.check(
+    (val) =>
+      val.softRatio === undefined || val.hardRatio === undefined || val.softRatio <= val.hardRatio,
+    'softRatio must be less than or equal to hardRatio',
+  ),
+);
+
 export const EmbeddedAgentDefinitionSchema = v.strictObject({
   id: v.pipe(v.string(), v.minLength(1)),
   name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
@@ -41,6 +59,8 @@ export const EmbeddedAgentDefinitionSchema = v.strictObject({
   maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   enabledTools: v.optional(EnabledToolsSchema),
   instructions: v.optional(InstructionsListSchema),
+  contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  handoff: v.optional(EmbeddedAgentHandoffConfigSchema),
   createdBy: v.string(),
   createdAt: v.string(),
   updatedAt: v.string(),
@@ -58,12 +78,17 @@ export const CreateEmbeddedAgentRequestSchema = v.strictObject({
   maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   enabledTools: v.optional(EnabledToolsSchema),
   instructions: v.optional(InstructionsListSchema),
+  contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+  handoff: v.optional(EmbeddedAgentHandoffConfigSchema),
 });
 
 /**
  * Schema for updating an embedded agent definition.
  * PATCH semantics: null = clear the field, undefined = no change.
- * `provider` is a whole-object replacement (no partial provider updates).
+ * `provider` is a whole-object replacement (no partial provider updates);
+ * `handoff` follows the same whole-object replacement convention (no
+ * per-subfield PATCH merging — see docs/design/embedded-agent-worker.md
+ * "Context Handoff (Phase A)" § Definition config, migration, and forms).
  */
 export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Name cannot be empty'))),
@@ -73,6 +98,8 @@ export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   maxToolIterations: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
   enabledTools: v.optional(v.nullable(EnabledToolsSchema)),
   instructions: v.optional(v.nullable(InstructionsListSchema)),
+  contextWindowTokens: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
+  handoff: v.optional(v.nullable(EmbeddedAgentHandoffConfigSchema)),
 });
 
 // === Protocol schemas ===
@@ -108,6 +135,7 @@ export const EmbeddedAgentCommandSchema = v.union([
     text: v.string(),
   }),
   v.strictObject({ v: v.literal(1), type: v.literal('cancel') }),
+  v.strictObject({ v: v.literal(1), type: v.literal('handoff') }),
   v.strictObject({ v: v.literal(1), type: v.literal('shutdown') }),
 ]);
 
@@ -159,6 +187,17 @@ export const EmbeddedAgentEventSchema = v.union([
     message: v.string(),
   }),
   v.strictObject({ v: v.literal(1), type: v.literal('fatal'), message: v.string() }),
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('context-usage'),
+    promptTokens: v.pipe(v.number(), v.integer(), v.minValue(0)),
+    estimated: v.boolean(),
+  }),
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('context-handoff'),
+    distillation: v.string(),
+  }),
 ]);
 
 export const EmbeddedAgentServerEventSchema = v.union([

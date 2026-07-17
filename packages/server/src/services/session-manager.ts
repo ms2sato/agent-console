@@ -21,7 +21,11 @@ import type {
 import type { InternalSession, SessionCreationContext } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
-import { EmbeddedAgentWorkerService, type SendUserMessageResult } from './embedded-agent-worker-service.js';
+import {
+  EmbeddedAgentWorkerService,
+  type SendUserMessageResult,
+  type TriggerHandoffResult,
+} from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn } from './privilege-elevation.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
@@ -598,6 +602,11 @@ export class SessionManager {
   /** Forward a cancel command to an embedded-agent worker's loop. */
   cancelEmbeddedAgentTurn(sessionId: string, workerId: string): boolean {
     return this.embeddedAgentWorkerService.cancel(sessionId, workerId);
+  }
+
+  /** Forward a handoff trigger to an embedded-agent worker's loop. Rejects with TURN_IN_PROGRESS when a turn is already active. */
+  async triggerEmbeddedAgentHandoff(sessionId: string, workerId: string): Promise<TriggerHandoffResult> {
+    return this.embeddedAgentWorkerService.triggerHandoff(sessionId, workerId);
   }
 
   /** Gracefully deactivate an embedded-agent worker's loop subprocess. */

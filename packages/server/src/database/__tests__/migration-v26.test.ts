@@ -71,7 +71,7 @@ describe('migration v26 (workers.deliver_initial_prompt_on_activation)', () => {
   it('advances the schema version to 26', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(26);
+    expect(versionRes.rows[0]?.user_version).toBe(27);
   });
 
   it('adds the deliver_initial_prompt_on_activation column to workers, nullable with no default', async () => {

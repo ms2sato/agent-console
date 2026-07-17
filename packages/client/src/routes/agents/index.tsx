@@ -17,6 +17,7 @@ import {
   EmbeddedAgentDeleteDialog,
   canManageEmbeddedAgent,
   findReferencingWorkers,
+  formatHandoffRatioInput,
   type EmbeddedAgentWorkerReference,
 } from '../../components/embedded-agents';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
@@ -346,6 +347,9 @@ function EmbeddedAgentsSection() {
                   maxToolIterationsInput: embeddedAgent.maxToolIterations?.toString() ?? '',
                   enabledTools: embeddedAgent.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS.slice(),
                   instructions: (embeddedAgent.instructions ?? []).map((path) => ({ path })),
+                  contextWindowTokensInput: embeddedAgent.contextWindowTokens?.toString() ?? '',
+                  handoffSoftRatioInput: formatHandoffRatioInput(embeddedAgent.handoff?.softRatio),
+                  handoffHardRatioInput: formatHandoffRatioInput(embeddedAgent.handoff?.hardRatio),
                 }}
                 onSuccess={() => setEditingAgentId(null)}
                 onCancel={() => setEditingAgentId(null)}

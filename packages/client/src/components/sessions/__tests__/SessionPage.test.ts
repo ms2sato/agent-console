@@ -13,7 +13,7 @@ import {
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState, resolveShouldStripScrollback } from '../SessionPage';
+import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId } from '../SessionPage';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
@@ -500,6 +500,60 @@ describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
       updateTabsFromSession: () => {},
     };
     expect(typeof result.addAgentTab).toBe('function');
+  });
+});
+
+describe('resolveActiveEmbeddedAgentId (Context Handoff Phase A, Issue #1122)', () => {
+  // SessionPage.tsx's active-tab render branch passes this value as
+  // EmbeddedAgentWorkerView's `embeddedAgentId` prop -- see
+  // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI.
+  // Pinning the derivation here (mirroring the `activeAgentId` pattern one
+  // level up: `activeWorker?.type === 'agent' ? activeWorker.agentId :
+  // undefined`) verifies the resolved id is exactly the active tab's
+  // worker's `embeddedAgentId`, not any other worker's.
+  it('resolves the embeddedAgentId when the active tab worker is embedded-agent type', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+      embeddedWorker,
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, 'embedded-worker-1')).toBe('embedded-agent-1');
+  });
+
+  it('returns undefined when the active tab worker is not embedded-agent type', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, 'agent-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId does not match any worker', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, 'nonexistent-tab')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty worker list (vacuous boundary)', () => {
+    expect(resolveActiveEmbeddedAgentId([], 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId is null', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, null)).toBeUndefined();
   });
 });
 

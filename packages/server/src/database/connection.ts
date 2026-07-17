@@ -333,6 +333,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 26) {
     await migrateToV26(database);
   }
+
+  if (currentVersion < 27) {
+    await migrateToV27(database);
+  }
 }
 
 /**
@@ -1479,6 +1483,66 @@ export async function migrateToV26(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 26`.execute(database);
 
   logger.info('Migration to v26 completed');
+}
+
+/**
+ * Migration v27: Add Context Handoff (Phase A) columns to `embedded_agents`.
+ * Nullable columns: `context_window_tokens` (INTEGER, operator-declared model
+ * context window, denominator for the usage ratio), `handoff_soft_ratio` /
+ * `handoff_hard_ratio` (REAL, 0..1 thresholds), and `handoff_auto` (INTEGER
+ * 0/1, matching the `deliver_initial_prompt_on_activation` boolean
+ * convention) — the Phase B auto-fire flag, accepted/persisted but NOT read
+ * by any Phase A code path. See docs/design/embedded-agent-worker.md
+ * "Context Handoff (Phase A)".
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV27(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v27: Adding Context Handoff (Phase A) columns to embedded_agents');
+
+  try {
+    await database.schema
+      .alterTable('embedded_agents')
+      .addColumn('context_window_tokens', 'integer')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column context_window_tokens already exists, skipping');
+  }
+
+  try {
+    await database.schema
+      .alterTable('embedded_agents')
+      .addColumn('handoff_soft_ratio', 'real')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column handoff_soft_ratio already exists, skipping');
+  }
+
+  try {
+    await database.schema
+      .alterTable('embedded_agents')
+      .addColumn('handoff_hard_ratio', 'real')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column handoff_hard_ratio already exists, skipping');
+  }
+
+  try {
+    await database.schema
+      .alterTable('embedded_agents')
+      .addColumn('handoff_auto', 'integer')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column handoff_auto already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 27`.execute(database);
+
+  logger.info('Migration to v27 completed');
 }
 
 /**

@@ -1207,6 +1207,33 @@ export async function setupWebSocketRoutes(
                 return;
               }
 
+              case 'embedded-handoff': {
+                void sessionManager.triggerEmbeddedAgentHandoff(sessionId, workerId).then((result) => {
+                  if (result.ok) return;
+                  // Switch on the machine-checkable `code`, not the
+                  // human-readable `error` string -- mirrors the
+                  // embedded-user-message handling above.
+                  switch (result.code) {
+                    case 'TURN_IN_PROGRESS':
+                      sendWorkerError(ws, result.error, 'TURN_IN_PROGRESS');
+                      return;
+                    case 'NOT_ACTIVATED':
+                    case 'WRITE_FAILED':
+                      sendWorkerError(ws, result.error, 'ACTIVATION_FAILED');
+                      return;
+                    default: {
+                      const _exhaustive: never = result.code;
+                      logger.warn({ sessionId, workerId, code: _exhaustive }, 'Unknown triggerHandoff error code');
+                      sendWorkerError(ws, result.error, 'ACTIVATION_FAILED');
+                    }
+                  }
+                }).catch((err) => {
+                  logger.error({ sessionId, workerId, err }, 'Error forwarding embedded-handoff');
+                  sendWorkerError(ws, 'Failed to trigger handoff', 'ACTIVATION_FAILED');
+                });
+                return;
+              }
+
               default:
                 // Includes input/resize/image and any other unrecognized
                 // type: every non-supported message is explicitly rejected

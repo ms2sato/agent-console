@@ -54,7 +54,20 @@ export type EmbeddedAgentChatEntry =
     }
   | { key: string; kind: 'turn-error'; turnId: string; message: string }
   | { key: string; kind: 'fatal'; message: string }
-  | { key: string; kind: 'exited'; code: number | null };
+  | { key: string; kind: 'exited'; code: number | null }
+  | { key: string; kind: 'context-handoff'; distillation: string };
+
+/**
+ * Latest known context-window usage reading (Context Handoff Phase A).
+ * `estimated: false` means the value came straight from the provider's
+ * `usage.prompt_tokens`; `estimated: true` means the loop's chars/4 fallback
+ * was used (no provider usage reporting, or the fresh post-handoff seed
+ * conversation). See docs/design/embedded-agent-worker.md "Token accounting".
+ */
+export interface EmbeddedAgentContextUsage {
+  promptTokens: number;
+  estimated: boolean;
+}
 
 export interface EmbeddedAgentSnapshot {
   version: number; // bumped on every change
@@ -63,6 +76,14 @@ export interface EmbeddedAgentSnapshot {
   activityState: AgentActivityState;
   workerError: { message: string; code?: WorkerErrorCode } | null;
   loadingHistory: boolean;
+  contextUsage: EmbeddedAgentContextUsage | null;
+  /**
+   * True from the moment `triggerHandoff()` sends `embedded-handoff` until
+   * either a `context-handoff` (success) or a `turn-error` (failure) event is
+   * observed -- see docs/design/embedded-agent-worker.md "Context Handoff
+   * (Phase A)" § UI "Handoff in flight".
+   */
+  handoffInFlight: boolean;
 }
 
 export interface EmbeddedAgentInstance {
@@ -79,6 +100,13 @@ export interface EmbeddedAgentInstance {
   sendUserMessage(text: string): Promise<void>;
   /** Abort the in-flight turn (`embedded-cancel`). */
   cancel(): void;
+  /**
+   * Trigger a manual context handoff (`embedded-handoff`) and optimistically
+   * set `handoffInFlight` -- cleared on the resulting `context-handoff`
+   * (success) or `turn-error` (failure). See docs/design/embedded-agent-worker.md
+   * "Context Handoff (Phase A)" § UI "Handoff in flight".
+   */
+  triggerHandoff(): void;
   /**
    * Force a fresh WebSocket connection. The server's onOpen handler
    * re-activates the loop when `subprocess === null` (the exited-worker
@@ -191,6 +219,8 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       activityState: 'unknown',
       workerError: null,
       loadingHistory: false,
+      contextUsage: null,
+      handoffInFlight: false,
     };
     this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
     this.connect();
@@ -223,6 +253,21 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   cancel = (): void => {
     this.send({ type: 'embedded-cancel' });
+  };
+
+  triggerHandoff = (): void => {
+    // Reject duplicate triggers (e.g. a rapid double-click) rather than
+    // sending a second `embedded-handoff` while one is already in flight --
+    // the server-side admission gate would reject the second anyway, but
+    // rejecting here avoids a redundant round trip and a spurious error.
+    if (this.snapshot.handoffInFlight) return;
+    // Only latch `handoffInFlight` when the socket write actually succeeded
+    // -- mirrors sendUserMessage's `send()` return-value check. A failed
+    // (not-connected) send must not leave the UI showing "Handing off…" for
+    // a message that was never transmitted.
+    const sent = this.send({ type: 'embedded-handoff' });
+    if (!sent) return;
+    this.patch({ handoffInFlight: true });
   };
 
   restart = (): void => {
@@ -647,6 +692,15 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // leave its thinking entry permanently streaming (no other event
         // will ever finalize it for this turnId).
         this.closeOpenThinking(event.turnId);
+        // A turn-error observed while a handoff is in flight is guaranteed to
+        // be the handoff's OWN failure -- the server-side admission gate
+        // guarantees no other turn can be interleaved during a handoff (see
+        // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
+        // AgentLoop.handoff() Admission). Clear the flag so the "Handing
+        // off..." indicator doesn't stick around after a failed handoff.
+        if (this.snapshot.handoffInFlight) {
+          this.patch({ handoffInFlight: false });
+        }
         return true;
       case 'fatal':
         this.pushEntry({ key: `fatal-${this.entryKeyCounter++}`, kind: 'fatal', message: event.message });
@@ -673,6 +727,17 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // entry was still open (e.g. a crash mid-turn); no per-turnId signal
         // will ever arrive at this point, so close all open thinking entries.
         this.closeAllOpenThinking();
+        return true;
+      case 'context-usage':
+        this.patch({ contextUsage: { promptTokens: event.promptTokens, estimated: event.estimated } });
+        return false; // not a chat row
+      case 'context-handoff':
+        this.patch({ handoffInFlight: false });
+        this.pushEntry({
+          key: `context-handoff-${this.entryKeyCounter++}`,
+          kind: 'context-handoff',
+          distillation: event.distillation,
+        });
         return true;
       default: {
         const _exhaustive: never = event;
@@ -804,6 +869,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // rejected `send()` call -- reject the pending promise so MessagePanel
     // preserves the input draft instead of clearing it optimistically.
     this.rejectPendingSend(message);
+    // An immediate/synchronous server admission error for `embedded-handoff`
+    // (e.g. TURN_IN_PROGRESS, ACTIVATION_FAILED) arrives here as a WS
+    // `error` message, NOT as a `turn-error` NDJSON event -- clear the flag
+    // on this path too, mirroring the `turn-error` case in foldEvent, so a
+    // rejected handoff doesn't leave "Handing off…" stuck indefinitely.
+    if (this.snapshot.handoffInFlight) {
+      this.patch({ handoffInFlight: false });
+    }
     if (code === 'SESSION_DELETED' || code === 'SESSION_PAUSED') {
       this.noReconnect = true;
       if (this.reconnectTimer) {
