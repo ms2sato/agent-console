@@ -3,10 +3,10 @@ import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
 import {
   UnifiedAgentSelector,
-  useResolvedAgentId,
   useResolvedEmbeddedAgentId,
   type AgentSelection,
 } from '../AgentSelector';
+import { useResolvedAgentId } from '../../hooks/useAgents';
 import { FormOverlay } from '../ui/Spinner';
 import { useAuth } from '../../lib/auth';
 import type { CreateQuickSessionRequest } from '@agent-console/shared';

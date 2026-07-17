@@ -3,7 +3,6 @@ import { render, screen, waitFor, cleanup, renderHook } from '@testing-library/r
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
-  useResolvedAgentId,
   useResolvedEmbeddedAgentId,
   UnifiedAgentSelector,
 } from '../AgentSelector';
@@ -55,90 +54,10 @@ function createTestWrapper() {
   };
 }
 
-describe('useResolvedAgentId', () => {
-  beforeEach(() => {
-    mockFetch.mockReset();
-    mockFetch.mockResolvedValue(createMockResponse(mockAgentsResponse));
-  });
-
-  it('should return the original value while loading', () => {
-    // Use a fetch that never resolves to keep loading state
-    mockFetch.mockReturnValue(new Promise(() => {}));
-
-    const { result } = renderHook(
-      () => useResolvedAgentId('some-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    expect(result.current).toBe('some-agent');
-  });
-
-  it('should return undefined while loading when value is undefined', () => {
-    mockFetch.mockReturnValue(new Promise(() => {}));
-
-    const { result } = renderHook(
-      () => useResolvedAgentId(undefined),
-      { wrapper: createTestWrapper() }
-    );
-
-    expect(result.current).toBeUndefined();
-  });
-
-  it('should return first agent when value is undefined and agents are loaded', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId(undefined),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('claude-code');
-    });
-  });
-
-  it('should return priority agent when value is undefined and priorityAgentId is set', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId(undefined, 'another-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('another-agent');
-    });
-  });
-
-  it('should return existing value when it matches an agent', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId('custom-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('custom-agent');
-    });
-  });
-
-  it('should return first agent when value does not match any agent', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId('nonexistent-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('claude-code');
-    });
-  });
-
-  it('should return priority agent when value does not match and priorityAgentId is set', async () => {
-    const { result } = renderHook(
-      () => useResolvedAgentId('nonexistent-agent', 'another-agent'),
-      { wrapper: createTestWrapper() }
-    );
-
-    await waitFor(() => {
-      expect(result.current).toBe('another-agent');
-    });
-  });
-});
+// Note: useResolvedAgentId (and useAgents / getAgentName) now live in
+// hooks/useAgents.ts -- see hooks/__tests__/useAgents.test.tsx for their
+// coverage (moved there when the hooks<->component import cycle was fixed,
+// Issue #1160 PR-C follow-up).
 
 const mockEmbeddedAgentsResponse = {
   embeddedAgents: [

@@ -1,53 +1,21 @@
 import { useMemo } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import type { AgentDefinition, AgentDirectoryEntry, AgentKind } from '@agent-console/shared';
-import { fetchAgents } from '../lib/api';
-import { agentKeys } from '../lib/query-keys';
+import type { AgentDirectoryEntry, AgentKind } from '@agent-console/shared';
 import { useEmbeddedAgents } from '../hooks/useEmbeddedAgents';
 import { useAgentDirectory } from '../hooks/useAgentDirectory';
-import { AGENT_KIND_PRESENTATION, AgentKindNotice, type NoticeContext } from './agents';
+import { AGENT_KIND_PRESENTATION } from './agents/agentKindPresentation';
+import { AgentKindNotice, type NoticeContext } from './agents/AgentKindNotice';
 
-function useSortedAgents(priorityAgentId?: string) {
-  const { data, isLoading } = useQuery({
-    queryKey: agentKeys.all(),
-    queryFn: fetchAgents,
-  });
-
-  const sortedAgents = useMemo(() => {
-    const agents = data?.agents ?? [];
-    if (!priorityAgentId) return agents;
-    return [...agents].sort((a, b) => {
-      if (a.id === priorityAgentId) return -1;
-      if (b.id === priorityAgentId) return 1;
-      return 0;
-    });
-  }, [data?.agents, priorityAgentId]);
-
-  return { sortedAgents, isLoading };
-}
-
-/**
- * Hook that resolves the effective agent ID with fallback logic.
- * Returns the given value if it matches a known agent, otherwise falls back to the first
- * sorted agent. While loading, returns the original value unchanged.
- *
- * Shares the same TanStack Query cache as the agent pickers, so no extra network request is made.
- */
-export function useResolvedAgentId(
-  value: string | undefined,
-  priorityAgentId?: string
-): string | undefined {
-  const { sortedAgents, isLoading } = useSortedAgents(priorityAgentId);
-
-  if (isLoading) return value;
-  const valueExists = value != null && sortedAgents.some((a) => a.id === value);
-  return valueExists ? value : sortedAgents[0]?.id;
-}
+// `useAgents` / `useResolvedAgentId` / `getAgentName` live in
+// `hooks/useAgents.ts`, not here -- keeping them in this file created a
+// hooks<->component import cycle (`useAgentDirectory.ts` needs `useAgents`,
+// this file needs `useAgentDirectory` for `UnifiedAgentSelector`). Import
+// from `hooks/useAgents` directly; this file re-exports nothing for them.
 
 /**
  * Hook that resolves the effective embedded agent ID with fallback logic.
- * Unlike useResolvedAgentId, embedded agent selection is optional: an unknown/stale
- * value falls back to undefined (unset) rather than the first embedded agent.
+ * Unlike useResolvedAgentId (hooks/useAgents.ts), embedded agent selection
+ * is optional: an unknown/stale value falls back to undefined (unset)
+ * rather than the first embedded agent.
  */
 export function useResolvedEmbeddedAgentId(value: string | undefined): string | undefined {
   const { embeddedAgents, isLoading } = useEmbeddedAgents();
@@ -55,26 +23,6 @@ export function useResolvedEmbeddedAgentId(value: string | undefined): string | 
   if (isLoading) return value;
   const valueExists = value != null && embeddedAgents.some((a) => a.id === value);
   return valueExists ? value : undefined;
-}
-
-export function useAgents() {
-  const { data, isLoading, error, refetch } = useQuery({
-    queryKey: agentKeys.all(),
-    queryFn: fetchAgents,
-  });
-
-  return {
-    agents: data?.agents ?? [],
-    isLoading,
-    error,
-    refetch,
-  };
-}
-
-export function getAgentName(agents: AgentDefinition[], agentId?: string): string {
-  if (!agentId) return 'Unknown';
-  const agent = agents.find((a) => a.id === agentId);
-  return agent?.name ?? 'Unknown';
 }
 
 /**

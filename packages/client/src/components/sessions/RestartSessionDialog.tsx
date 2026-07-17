@@ -10,7 +10,8 @@ import {
   AlertDialogCancel,
 } from '../ui/alert-dialog';
 import { restartAgentWorker, getSession } from '../../lib/api';
-import { UnifiedAgentSelector, useResolvedAgentId, type AgentSelection } from '../AgentSelector';
+import { UnifiedAgentSelector, type AgentSelection } from '../AgentSelector';
+import { useResolvedAgentId } from '../../hooks/useAgents';
 
 export interface RestartSessionDialogProps {
   open: boolean;

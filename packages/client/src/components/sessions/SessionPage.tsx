@@ -24,7 +24,7 @@ import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
 import type { Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { MemoPanel } from './MemoPanel';
-import { useAgents } from '../AgentSelector';
+import { useAgents } from '../../hooks/useAgents';
 import { logger } from '../../lib/logger';
 
 export { sessionToPageState } from './hooks/useSessionPageState';

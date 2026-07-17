@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { Link } from '@tanstack/react-router';
-import { useAgents } from '../AgentSelector';
+import { useAgents } from '../../hooks/useAgents';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { AGENT_KIND_PRESENTATION } from '../agents';
 import type { AddAgentWorkerParams } from './hooks/useTabManagement';

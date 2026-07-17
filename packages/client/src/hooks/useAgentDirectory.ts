@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import type { AgentDirectoryEntry } from '@agent-console/shared';
-import { useAgents } from '../components/AgentSelector';
+import { useAgents } from './useAgents';
 import { useEmbeddedAgents } from './useEmbeddedAgents';
 
 export interface UseAgentDirectoryResult {
@@ -22,8 +22,8 @@ export interface UseAgentDirectoryResult {
  * present agents consistently.
  *
  * This hook applies no sorting or priority policy -- that decision stays at
- * each consumer, mirroring the existing `useSortedAgents(priorityAgentId)`
- * pattern in `AgentSelector.tsx` (unaffected by this hook).
+ * each consumer, mirroring the existing internal `useSortedAgents(priorityAgentId)`
+ * pattern in `hooks/useAgents.ts` (unaffected by this hook).
  */
 export function useAgentDirectory(): UseAgentDirectoryResult {
   const {
