@@ -1,5 +1,7 @@
 import {
   type AgentDefinition,
+  type AgentDirectoryEntry,
+  type AgentSurface,
   type CreateAgentRequest,
   type UpdateAgentRequest,
   computeCapabilities,
@@ -21,7 +23,9 @@ export interface AgentLifecycleCallbacks {
   onAgentDeleted: (agentId: string) => void;
 }
 
-export class AgentManager {
+export class AgentManager implements AgentSurface<'terminal'> {
+  readonly kind = 'terminal' as const;
+
   private agents: Map<string, AgentDefinition> = new Map();
   private lifecycleCallbacks: AgentLifecycleCallbacks | null = null;
   private repository: AgentRepository;
@@ -96,6 +100,21 @@ export class AgentManager {
    */
   getAgentsByName(name: string): AgentDefinition[] {
     return this.getAllAgents().filter((agent) => agent.name === name);
+  }
+
+  // ---------- AgentSurface<'terminal'> ----------
+
+  list(): Extract<AgentDirectoryEntry, { kind: 'terminal' }>[] {
+    return this.getAllAgents().map((agent) => ({ kind: 'terminal' as const, agent }));
+  }
+
+  get(id: string): Extract<AgentDirectoryEntry, { kind: 'terminal' }> | undefined {
+    const agent = this.getAgent(id);
+    return agent ? { kind: 'terminal', agent } : undefined;
+  }
+
+  findByName(name: string): Extract<AgentDirectoryEntry, { kind: 'terminal' }>[] {
+    return this.getAgentsByName(name).map((agent) => ({ kind: 'terminal' as const, agent }));
   }
 
   /**
