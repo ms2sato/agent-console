@@ -1424,7 +1424,10 @@ describe('EmbeddedAgentWorkerView', () => {
       const execCommandMock = mock(() => true);
       // happy-dom does not implement execCommand, so assign it directly
       // rather than spyOn-wrapping a nonexistent method.
-      (document as unknown as { execCommand: typeof execCommandMock }).execCommand = execCommandMock;
+      Object.defineProperty(document, 'execCommand', {
+        value: execCommandMock,
+        configurable: true,
+      });
       try {
         await renderWithAssistantMessage('s37', 'w37', 'copy me via fallback');
 
@@ -1447,7 +1450,10 @@ describe('EmbeddedAgentWorkerView', () => {
       const consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
       installUndefinedClipboard();
       const execCommandMock = mock(() => false);
-      (document as unknown as { execCommand: typeof execCommandMock }).execCommand = execCommandMock;
+      Object.defineProperty(document, 'execCommand', {
+        value: execCommandMock,
+        configurable: true,
+      });
       try {
         await renderWithAssistantMessage('s38', 'w38', 'copy me but fail');
 
