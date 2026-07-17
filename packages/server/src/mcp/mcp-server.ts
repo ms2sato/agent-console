@@ -15,6 +15,7 @@ import { z } from 'zod';
 import type { SessionManager } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
 import type { AgentManager } from '../services/agent-manager.js';
+import type { EmbeddedAgentManager } from '../services/embedded-agent-manager.js';
 import type { TimerManager } from '../services/timer-manager.js';
 import type { ConditionalWakeupManager } from '../services/conditional-wakeup-manager.js';
 import type { InteractiveProcessManager } from '../services/interactive-process-manager.js';
@@ -181,6 +182,14 @@ export interface McpDependencies {
   sessionManager: SessionManager;
   repositoryManager: RepositoryManager;
   agentManager: AgentManager;
+  /**
+   * EmbeddedAgentManager, consulted by `delegate_to_worktree`'s agent
+   * resolver as a fallback when `agentId` / `agentName` does not match any
+   * `AgentManager` (terminal) agent. Short-term facade fix for Issue #1161;
+   * the structural unification of both registries is tracked by the
+   * strategic Issue #1160.
+   */
+  embeddedAgentManager: Pick<EmbeddedAgentManager, 'getEmbeddedAgent' | 'getAllEmbeddedAgents'>;
   timerManager: TimerManager;
   conditionalWakeupManager: ConditionalWakeupManager;
   interactiveProcessManager: InteractiveProcessManager;
@@ -238,7 +247,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp, findOpenPullRequest } = deps;
+  const { sessionManager, repositoryManager, agentManager, embeddedAgentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp, findOpenPullRequest } = deps;
 
   // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
   // caller identity"). The registry defaults to empty and the mode resolves
@@ -709,28 +718,58 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(`Repository not found: ${repositoryId}`);
         }
 
-        // Resolve agent: agentId takes precedence over agentName
-        let selectedAgentId: string;
+        // Resolve agent: agentId takes precedence over agentName. Checks
+        // AgentManager (terminal agents) first, falling back to
+        // EmbeddedAgentManager when there is no terminal match. Short-term
+        // facade fix for Issue #1161; the structural unification of both
+        // registries is tracked by the strategic Issue #1160. A name that
+        // matches in both registries is rejected as ambiguous, same as a
+        // name matching multiple agents within one registry.
+        let selectedAgentId: string | undefined;
+        let selectedEmbeddedAgentId: string | undefined;
         if (agentId) {
-          selectedAgentId = agentId;
+          if (agentManager.getAgent(agentId)) {
+            selectedAgentId = agentId;
+          } else if (embeddedAgentManager.getEmbeddedAgent(agentId)) {
+            selectedEmbeddedAgentId = agentId;
+          } else {
+            return errorResult(`Agent not found: ${agentId}`);
+          }
         } else if (agentName) {
-          const matches = agentManager.getAgentsByName(agentName);
-          if (matches.length === 0) {
+          const terminalMatches = agentManager.getAgentsByName(agentName);
+          const embeddedMatches = embeddedAgentManager
+            .getAllEmbeddedAgents()
+            .filter((a) => a.name === agentName);
+          const totalMatches = terminalMatches.length + embeddedMatches.length;
+          if (totalMatches === 0) {
             return errorResult(`No agent found with name: ${agentName}`);
           }
-          if (matches.length > 1) {
-            const ids = matches.map((a) => `${a.name} (${a.id})`).join(', ');
+          if (totalMatches > 1) {
+            const ids = [...terminalMatches, ...embeddedMatches]
+              .map((a) => `${a.name} (${a.id})`)
+              .join(', ');
             return errorResult(
               `Multiple agents match name "${agentName}": ${ids}. Use agentId to specify.`,
             );
           }
-          selectedAgentId = matches[0].id;
+          if (terminalMatches.length === 1) {
+            selectedAgentId = terminalMatches[0].id;
+          } else {
+            selectedEmbeddedAgentId = embeddedMatches[0].id;
+          }
         } else {
           selectedAgentId = repo.defaultAgentId ?? CLAUDE_CODE_AGENT_ID;
         }
-        const agent = agentManager.getAgent(selectedAgentId);
+
+        // `agent` (a terminal AgentDefinition) drives suggestSessionMetadata's
+        // headless branch/title generation below regardless of the initial
+        // worker's own type -- embedded agents have no headless CLI template
+        // for branch-name suggestion (mirrors the REST worktree-creation
+        // route's terminal-agent fallback, packages/server/src/routes/worktrees.ts).
+        const suggestionAgentId = selectedAgentId ?? repo.defaultAgentId ?? CLAUDE_CODE_AGENT_ID;
+        const agent = agentManager.getAgent(suggestionAgentId);
         if (!agent) {
-          return errorResult(`Agent not found: ${selectedAgentId}`);
+          return errorResult(`Agent not found: ${suggestionAgentId}`);
         }
 
         // Inherit createdBy from parent session (if delegated)
@@ -826,6 +865,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
           baseBranch: effectiveBaseBranch,
           useRemote: useRemote !== false,
           agentId: selectedAgentId,
+          embeddedAgentId: selectedEmbeddedAgentId,
           initialPrompt: effectivePrompt,
           title: effectiveTitle,
           autoStartSession: true,
@@ -870,8 +910,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult('Session was deleted before delegation could complete');
         }
 
-        // Find the agent worker ID from the created session
-        const agentWorker = currentSession.workers.find((w) => w.type === 'agent');
+        // Find the initial worker ID from the created session. The initial
+        // worker is either a terminal agent or (Issue #1161) an embedded
+        // agent, depending on which registry `selectedAgentId` /
+        // `selectedEmbeddedAgentId` resolved from above.
+        const agentWorker = currentSession.workers.find(
+          (w) => w.type === 'agent' || w.type === 'embedded-agent',
+        );
         if (!agentWorker) {
           return errorResult('Session created but no agent worker was found');
         }

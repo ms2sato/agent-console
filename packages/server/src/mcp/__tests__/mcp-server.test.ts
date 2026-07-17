@@ -73,9 +73,20 @@ const TEST_EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   updatedAt: '2024-01-01T00:00:00.000Z',
 };
 
+// Map-backed embedded-agent registry stub, reset in `beforeEach` (mirrors
+// `mcpRunAsUserCapture` / `mockSuggestSessionMetadata` reset pattern) so
+// tests don't leak dynamically-registered fixtures into each other.
+// Seeded with `TEST_EMBEDDED_AGENT_DEF` by default so the pre-existing
+// `get_session_status` activityState tests keep resolving 'def-1'.
+// `getAllEmbeddedAgents` is required by `delegate_to_worktree`'s
+// agentName resolver (Issue #1161).
+let embeddedAgentDefsById: Map<string, EmbeddedAgentDefinition>;
+
 const testEmbeddedAgentManagerStub = {
   getEmbeddedAgent: (id: string): EmbeddedAgentDefinition | undefined =>
-    id === TEST_EMBEDDED_AGENT_DEF.id ? TEST_EMBEDDED_AGENT_DEF : undefined,
+    embeddedAgentDefsById.get(id),
+  getAllEmbeddedAgents: (): EmbeddedAgentDefinition[] =>
+    Array.from(embeddedAgentDefsById.values()),
 };
 
 // Create mock PTY factory
@@ -214,7 +225,7 @@ describe('MCP Server Tools', () => {
   async function remountMcpApp(
     authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry },
   ): Promise<void> {
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, embeddedAgentManager: testEmbeddedAgentManagerStub, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
     app = new Hono();
     app.route('', mcpApp);
     mcpSessionId = await initializeMcp(app);
@@ -251,6 +262,10 @@ describe('MCP Server Tools', () => {
     mcpRunAsUserCapture.lastCommand = '';
     mcpRunAsUserCapture.capturedWorktreePath = '';
     mcpRunAsUserCapture.responseOverride = null;
+
+    // Reset the embedded-agent registry stub, seeded with the default
+    // fixture (see `testEmbeddedAgentManagerStub` comment above).
+    embeddedAgentDefsById = new Map([[TEST_EMBEDDED_AGENT_DEF.id, TEST_EMBEDDED_AGENT_DEF]]);
 
     // Reset session metadata suggester mock
     mockSuggestSessionMetadata.mockReset();
@@ -2087,6 +2102,93 @@ describe('MCP Server Tools', () => {
       expect(response.result?.isError).toBeUndefined();
       expect(findSpawnCallByCommand('agent-by-id')).toBeDefined();
       expect(findSpawnCallByCommand('agent-by-name')).toBeUndefined();
+    });
+
+    // -----------------------------------------------------------------------
+    // EmbeddedAgent selection (Issue #1161): agentId/agentName resolves
+    // against EmbeddedAgentManager as a fallback when there is no
+    // AgentManager (terminal) match. Short-term facade fix; the structural
+    // unification of both registries is tracked by Issue #1160.
+    // -----------------------------------------------------------------------
+
+    it('should create an embedded-agent initial worker when agentId matches an embedded agent', async () => {
+      await setupDelegateEnvironment('feat/embedded-by-id');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test embedded agent selection by id',
+        branch: 'feat/embedded-by-id',
+        agentId: TEST_EMBEDDED_AGENT_DEF.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string; workerId: string };
+
+      const session = sessionManager.getSession(data.sessionId);
+      expect(session).toBeDefined();
+      const worker = session!.workers.find((w) => w.id === data.workerId);
+      expect(worker).toBeDefined();
+      expect(worker!.type).toBe('embedded-agent');
+      if (worker!.type === 'embedded-agent') {
+        expect(worker!.embeddedAgentId).toBe(TEST_EMBEDDED_AGENT_DEF.id);
+      }
+    });
+
+    it('should create an embedded-agent initial worker when agentName matches an embedded agent', async () => {
+      await setupDelegateEnvironment('feat/embedded-by-name');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test embedded agent selection by name',
+        branch: 'feat/embedded-by-name',
+        agentName: TEST_EMBEDDED_AGENT_DEF.name,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string; workerId: string };
+
+      const session = sessionManager.getSession(data.sessionId);
+      expect(session).toBeDefined();
+      const worker = session!.workers.find((w) => w.id === data.workerId);
+      expect(worker).toBeDefined();
+      expect(worker!.type).toBe('embedded-agent');
+      if (worker!.type === 'embedded-agent') {
+        expect(worker!.embeddedAgentId).toBe(TEST_EMBEDDED_AGENT_DEF.id);
+      }
+    });
+
+    it('should return error when agentName matches both a terminal agent and an embedded agent', async () => {
+      const sharedName = 'Shared Cross-Registry Name';
+      const terminalAgent = await agentManager.registerAgent({
+        name: sharedName,
+        commandTemplate: 'shared-name-terminal {{prompt}}',
+      });
+      const embeddedDef: EmbeddedAgentDefinition = {
+        id: 'def-shared-name',
+        name: sharedName,
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        createdBy: 'user-1',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      };
+      embeddedAgentDefsById.set(embeddedDef.id, embeddedDef);
+
+      await setupDelegateEnvironment('feat/cross-registry-ambiguous');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test cross-registry ambiguous agentName',
+        branch: 'feat/cross-registry-ambiguous',
+        agentName: sharedName,
+      }, nextId++);
+      const data = parseToolResult(response) as { error: string };
+
+      expect(response.result?.isError).toBe(true);
+      expect(data.error).toContain(`Multiple agents match name "${sharedName}"`);
+      expect(data.error).toContain('Use agentId to specify');
+      // Sanity: both registries' matches are named in the error message.
+      expect(data.error).toContain(`(${terminalAgent.id})`);
+      expect(data.error).toContain(`(${embeddedDef.id})`);
     });
 
     // -----------------------------------------------------------------------
