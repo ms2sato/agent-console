@@ -1185,12 +1185,34 @@ describe('EmbeddedAgentWorkerView', () => {
       }
     }
 
+    // happy-dom does not implement `window.isSecureContext` (it is
+    // `undefined`, i.e. falsy) regardless of the mocked `http://localhost`
+    // location above. Real browsers treat `http://localhost` as a secure
+    // context, so we stub `true` here to match real-browser behavior for
+    // every test in this block except the #1159 non-secure-context tests,
+    // which explicitly override it back to a falsy value.
+    const originalIsSecureContextDescriptor = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
+
+    function installSecureContext() {
+      Object.defineProperty(window, 'isSecureContext', { value: true, writable: true, configurable: true });
+    }
+
+    function restoreSecureContext() {
+      if (originalIsSecureContextDescriptor) {
+        Object.defineProperty(window, 'isSecureContext', originalIsSecureContextDescriptor);
+      } else {
+        Reflect.deleteProperty(window, 'isSecureContext');
+      }
+    }
+
     beforeEach(() => {
       installClipboardMock();
+      installSecureContext();
     });
 
     afterEach(() => {
       restoreClipboard();
+      restoreSecureContext();
     });
 
     async function renderWithAssistantMessage(sessionId: string, workerId: string, text: string) {
@@ -1379,6 +1401,69 @@ describe('EmbeddedAgentWorkerView', () => {
         expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
       } finally {
+        consoleErrorSpy.mockRestore();
+      }
+    });
+
+    // navigator.clipboard is only defined in a secure context (HTTPS or
+    // localhost/127.0.0.1). Dev-server access over plain-HTTP LAN
+    // (e.g. http://192.168.1.12:5173/) leaves it undefined, so the
+    // primary path must fall back to the legacy execCommand('copy')
+    // technique instead of silently failing (#1159).
+    function installUndefinedClipboard() {
+      Object.defineProperty(navigator, 'clipboard', {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window, 'isSecureContext', { value: false, writable: true, configurable: true });
+    }
+
+    it('falls back to document.execCommand("copy") and shows "Copied!" when navigator.clipboard is unavailable (non-secure context, #1159)', async () => {
+      installUndefinedClipboard();
+      const execCommandMock = mock(() => true);
+      // happy-dom does not implement execCommand, so assign it directly
+      // rather than spyOn-wrapping a nonexistent method.
+      (document as unknown as { execCommand: typeof execCommandMock }).execCommand = execCommandMock;
+      try {
+        await renderWithAssistantMessage('s37', 'w37', 'copy me via fallback');
+
+        const button = screen.getByRole('button', { name: 'Copy as markdown' });
+        await act(async () => {
+          fireEvent.click(button);
+          await Promise.resolve();
+        });
+
+        expect(execCommandMock).toHaveBeenCalledWith('copy');
+        expect(writeTextMock).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Copied!' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Copy as markdown' })).toBeNull();
+      } finally {
+        Reflect.deleteProperty(document, 'execCommand');
+      }
+    });
+
+    it('logs and leaves the button in the idle "Copy as markdown" state when BOTH the clipboard API and the execCommand fallback fail (#1159)', async () => {
+      const consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      installUndefinedClipboard();
+      const execCommandMock = mock(() => false);
+      (document as unknown as { execCommand: typeof execCommandMock }).execCommand = execCommandMock;
+      try {
+        await renderWithAssistantMessage('s38', 'w38', 'copy me but fail');
+
+        const button = screen.getByRole('button', { name: 'Copy as markdown' });
+        await act(async () => {
+          fireEvent.click(button);
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+
+        expect(execCommandMock).toHaveBeenCalledWith('copy');
+        expect(consoleErrorSpy).toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
+        expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
+      } finally {
+        Reflect.deleteProperty(document, 'execCommand');
         consoleErrorSpy.mockRestore();
       }
     });
