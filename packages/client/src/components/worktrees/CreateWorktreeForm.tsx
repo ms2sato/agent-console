@@ -3,7 +3,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
-import { WorktreeAgentSelector, useResolvedAgentId, useResolvedEmbeddedAgentId } from '../AgentSelector';
+import { UnifiedAgentSelector, useResolvedAgentId, useResolvedEmbeddedAgentId } from '../AgentSelector';
 import { Spinner } from '../ui/Spinner';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
@@ -302,16 +302,19 @@ export function CreateWorktreeForm({
             {headerSlot}
             <div className="flex items-center gap-2 min-w-0">
               <span className="text-sm text-gray-400">Agent:</span>
-              <WorktreeAgentSelector
+              <UnifiedAgentSelector
                 agentId={resolvedAgentId}
                 embeddedAgentId={resolvedEmbeddedAgentId}
                 onChange={(selection) => {
-                  if (selection.embeddedAgentId) {
-                    setValue('embeddedAgentId', selection.embeddedAgentId, { shouldDirty: true });
-                    setValue('agentId', undefined, { shouldDirty: true });
-                  } else {
-                    setValue('agentId', selection.agentId, { shouldDirty: true });
-                    setValue('embeddedAgentId', undefined, { shouldDirty: true });
+                  switch (selection.kind) {
+                    case 'embedded':
+                      setValue('embeddedAgentId', selection.embeddedAgentId, { shouldDirty: true });
+                      setValue('agentId', undefined, { shouldDirty: true });
+                      return;
+                    case 'terminal':
+                      setValue('agentId', selection.agentId, { shouldDirty: true });
+                      setValue('embeddedAgentId', undefined, { shouldDirty: true });
+                      return;
                   }
                 }}
                 priorityAgentId={defaultAgentId ?? undefined}

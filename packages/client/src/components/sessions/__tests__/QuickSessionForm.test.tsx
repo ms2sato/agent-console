@@ -7,7 +7,7 @@ import { setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/au
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
+const mockFetch = mock((_input: RequestInfo | URL) => Promise.resolve(new Response()));
 globalThis.fetch = mockFetch as unknown as typeof fetch;
 
 afterAll(() => {
@@ -26,12 +26,33 @@ const mockAgentsResponse = {
   ],
 };
 
+const mockEmbeddedAgentsResponse = {
+  embeddedAgents: [{ id: 'embedded-1', name: 'Local GPT' }],
+};
+
 function createMockResponse(body: unknown) {
   return {
     ok: true,
     status: 200,
     json: () => Promise.resolve(body),
   } as unknown as Response;
+}
+
+function resolveUrl(input: unknown): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof URL) return input.toString();
+  if (input && typeof input === 'object' && 'url' in input) return (input as Request).url;
+  return '';
+}
+
+function mockFetchWithEmbedded() {
+  mockFetch.mockImplementation((input: unknown) => {
+    const url = resolveUrl(input);
+    if (url.includes('embedded-agents')) {
+      return Promise.resolve(createMockResponse(mockEmbeddedAgentsResponse));
+    }
+    return Promise.resolve(createMockResponse(mockAgentsResponse));
+  });
 }
 
 // Wrapper component with QueryClientProvider
@@ -123,7 +144,7 @@ describe('QuickSessionForm', () => {
 
       // Select different agent
       const agentSelect = screen.getByRole('combobox');
-      await user.selectOptions(agentSelect, 'custom-agent');
+      await user.selectOptions(agentSelect, 'terminal:custom-agent');
 
       // Submit form
       const submitButton = screen.getByText('Start');
@@ -138,6 +159,79 @@ describe('QuickSessionForm', () => {
       expect(submitCall[0]).toMatchObject({
         agentId: 'custom-agent',
       });
+    });
+  });
+
+  describe('agent kind selection (Issue #1160 PR-C, polarity pair)', () => {
+    beforeEach(() => {
+      mockFetch.mockReset();
+      mockFetchWithEmbedded();
+      resetAuth();
+    });
+
+    it('submits { agentId } without embeddedAgentId when no interaction happens (terminal default)', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].agentId).toBe('claude-code');
+      expect(submitCall[0].embeddedAgentId).toBeUndefined();
+    });
+
+    it('submits { embeddedAgentId } WITHOUT agentId when an embedded agent is selected', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const agentSelect = screen.getByRole('combobox');
+      await user.selectOptions(agentSelect, 'embedded:embedded-1');
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].embeddedAgentId).toBe('embedded-1');
+      expect(submitCall[0].agentId).toBeUndefined();
+    });
+
+    it('submits { agentId } WITHOUT embeddedAgentId when a terminal agent is (re-)selected', async () => {
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Local GPT')).toBeTruthy();
+      });
+
+      const agentSelect = screen.getByRole('combobox');
+      // Select embedded first, then switch back to terminal.
+      await user.selectOptions(agentSelect, 'embedded:embedded-1');
+      await user.selectOptions(agentSelect, 'terminal:custom-agent');
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].agentId).toBe('custom-agent');
+      expect(submitCall[0].embeddedAgentId).toBeUndefined();
     });
   });
 

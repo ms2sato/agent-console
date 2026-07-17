@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Link } from '@tanstack/react-router';
 import { useAgents } from '../AgentSelector';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
+import { AGENT_KIND_PRESENTATION } from '../agents';
 import type { AddAgentWorkerParams } from './hooks/useTabManagement';
 
 interface AddAgentWorkerMenuProps {
@@ -102,8 +103,8 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
               className="w-full flex items-center justify-between px-3 py-2 text-sm text-left text-gray-200 hover:bg-slate-700"
             >
               <span className="truncate">{agent.name}</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 shrink-0 ml-2">
-                Terminal
+              <span className={`${AGENT_KIND_PRESENTATION.terminal.badgeClassName} shrink-0 ml-2`}>
+                {AGENT_KIND_PRESENTATION.terminal.badgeLabel}
               </span>
             </button>
           ))}
@@ -116,8 +117,8 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
               className="w-full flex items-center justify-between px-3 py-2 text-sm text-left text-gray-200 hover:bg-slate-700"
             >
               <span className="truncate">{embeddedAgent.name}</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300 shrink-0 ml-2">
-                Embedded · Experimental
+              <span className={`${AGENT_KIND_PRESENTATION.embedded.badgeClassName} shrink-0 ml-2`}>
+                {AGENT_KIND_PRESENTATION.embedded.badgeLabel}
               </span>
             </button>
           ))}
