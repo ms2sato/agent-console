@@ -413,6 +413,7 @@ export class EmbeddedAgentWorkerService {
     sessionId: string,
     workerId: string,
     text: string,
+    clientMessageId?: string,
   ): Promise<SendUserMessageResult> {
     const session = this.deps.getSession(sessionId);
     const worker = session?.workers.get(workerId);
@@ -437,12 +438,24 @@ export class EmbeddedAgentWorkerService {
     // --- end synchronous admission ---
 
     const id = crypto.randomUUID();
-    const event: EmbeddedAgentServerEvent = { v: 1, type: 'user-message', id, text };
+    // Two separate objects: `command` (stdin, loop protocol -- unchanged
+    // shape) and `event` (persisted stream, may carry `clientMessageId`).
+    // The loop protocol is correlation-agnostic; only the persisted/broadcast
+    // event carries the client's correlation id. Do NOT reuse one object for
+    // both -- see docs/design/embedded-agent-worker.md.
+    const command: EmbeddedAgentCommand = { v: 1, type: 'user-message', id, text };
+    const event: EmbeddedAgentServerEvent = {
+      v: 1,
+      type: 'user-message',
+      id,
+      text,
+      ...(clientMessageId !== undefined ? { clientMessageId } : {}),
+    };
     // Append BEFORE forwarding so replay ordering is stable.
     this.appendEvent(runtime.ctx, event);
 
     try {
-      this.writeCommand(stdin, event);
+      this.writeCommand(stdin, command);
     } catch (err) {
       runtime.turnActive = false;
       logger.warn({ sessionId, workerId, err }, 'Failed to forward user message to embedded-agent stdin');

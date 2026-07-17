@@ -158,7 +158,11 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   // doc comment). Only one send can be outstanding at a time in practice --
   // MessagePanel disables the Send button while its own onSend promise is
   // pending -- so a single slot (rather than a queue/map) is sufficient.
-  private pendingSend: { resolve: () => void; reject: (err: Error) => void } | null = null;
+  private pendingSend: {
+    resolve: () => void;
+    reject: (err: Error) => void;
+    clientMessageId: string;
+  } | null = null;
 
   private splitter = new NdjsonLineSplitter();
 
@@ -206,13 +210,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // practice (MessagePanel disables Send while a prior send is pending)
     // but avoids leaking an unsettled promise if it ever does.
     this.rejectPendingSend('Superseded by a newer send');
+    const clientMessageId = crypto.randomUUID();
     return new Promise((resolve, reject) => {
-      const sent = this.send({ type: 'embedded-user-message', text });
+      const sent = this.send({ type: 'embedded-user-message', text, clientMessageId });
       if (!sent) {
         reject(new Error('Not connected'));
         return;
       }
-      this.pendingSend = { resolve, reject };
+      this.pendingSend = { resolve, reject, clientMessageId };
     });
   };
 
@@ -652,9 +657,15 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         return true;
       case 'user-message':
         this.pushEntry({ key: `user-${event.id}`, kind: 'user-message', id: event.id, text: event.text });
-        // Confirms this client's own sendUserMessage() was accepted; see the
-        // `pendingSend` field comment.
-        this.resolvePendingSend();
+        // Confirms THIS client's own sendUserMessage() was accepted -- correlated
+        // by clientMessageId, not "any user-message event", so a different
+        // client's (or a different tab's) echo cannot falsely resolve our
+        // pending send. Undefined-vs-undefined (no pending, or a legacy replay
+        // row with no clientMessageId) is safe: resolvePendingSend() is a no-op
+        // when pendingSend is null.
+        if (this.pendingSend?.clientMessageId === event.clientMessageId) {
+          this.resolvePendingSend();
+        }
         return true;
       case 'exited':
         this.pushEntry({ key: `exited-${this.entryKeyCounter++}`, kind: 'exited', code: event.code });

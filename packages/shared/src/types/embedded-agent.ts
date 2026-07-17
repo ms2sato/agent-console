@@ -107,7 +107,20 @@ export type EmbeddedAgentEvent =
  * from replayed history.
  */
 export type EmbeddedAgentServerEvent =
-  | { v: 1; type: 'user-message'; id: string; text: string }
+  | {
+      v: 1;
+      type: 'user-message';
+      id: string;
+      text: string;
+      // Client-generated correlation id, echoed verbatim when the client
+      // supplied one on the originating `embedded-user-message`. Separate
+      // from the server-assigned `id` (which feeds the client entry key,
+      // `user-${id}`) so a client-supplied value can never collide with or
+      // pollute that key -- see docs/design/embedded-agent-worker.md. Absent
+      // for server-originated sends (e.g. the initial prompt delivery),
+      // which have no client to correlate with.
+      clientMessageId?: string;
+    }
   | { v: 1; type: 'exited'; code: number | null };
 
 /**

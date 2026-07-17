@@ -258,14 +258,28 @@ describe('EmbeddedAgentWorkerView', () => {
       fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true });
     });
 
-    const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0]));
-    expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello agent' });
+    const sent = (ws!.send.mock.calls as string[][]).map((c) => JSON.parse(c[0])) as {
+      type: string;
+      text?: string;
+      clientMessageId?: string;
+    }[];
+    const sentMessage = sent.find((m) => m.type === 'embedded-user-message');
+    expect(sentMessage?.text).toBe('hello agent');
+    // Issue #1117: the client always attaches a per-send correlation id.
+    expect(sentMessage?.clientMessageId).toBeTruthy();
     // Not yet cleared -- the server hasn't confirmed the send. Clearing here
     // optimistically is exactly the bug #1024 reports.
     expect(textarea.value).toBe('hello agent');
 
-    // Server echoes the message back, confirming it was accepted.
-    const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello agent' });
+    // Server echoes the message back, confirming it was accepted (correlated
+    // by clientMessageId, Issue #1117).
+    const data = ndjson({
+      v: 1,
+      type: 'user-message',
+      id: 'u1',
+      text: 'hello agent',
+      clientMessageId: sentMessage?.clientMessageId,
+    });
     await act(async () => {
       ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length, epoch: 1 }));
     });

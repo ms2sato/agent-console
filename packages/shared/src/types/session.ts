@@ -154,7 +154,7 @@ export type WorkerClientMessage =
  * types it will never receive.
  */
 export type EmbeddedAgentClientMessage =
-  | { type: 'embedded-user-message'; text: string }
+  | { type: 'embedded-user-message'; text: string; clientMessageId?: string }
   | { type: 'embedded-cancel' };
 
 /**

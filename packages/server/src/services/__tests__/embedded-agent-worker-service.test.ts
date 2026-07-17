@@ -823,6 +823,34 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect(forwarded.type).toBe('user-message');
     expect(forwarded.text).toBe('hello');
     if (res.ok) expect(forwarded.id).toBe(res.id);
+
+    // clientMessageId was omitted by the caller: the key must be entirely
+    // absent (not present with an `undefined` value) on the appended event.
+    const appended = JSON.parse(appendedLines(h.bufferOutput)[0]);
+    expect('clientMessageId' in appended).toBe(false);
+  });
+
+  it('threads clientMessageId into the appended/broadcast event but NOT into the stdin command (loop protocol unchanged)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello', 'test-client-msg-id');
+    expect(res.ok).toBe(true);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.clientMessageId).toBe('test-client-msg-id');
+
+    // Loop protocol is correlation-agnostic: the stdin-forwarded command
+    // must never carry clientMessageId, even when the caller supplied one.
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded.type).toBe('user-message');
+    expect('clientMessageId' in forwarded).toBe(false);
   });
 
   it('rejects with not activated when the subprocess is null', async () => {
