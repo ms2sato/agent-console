@@ -479,6 +479,85 @@ describe('loadInstructions — instructions[] confinement (h, i, j, k; A9)', () 
   });
 });
 
+describe('loadInstructions — non-ENOENT read error is warn-logged, not thrown (m)', () => {
+  function makeRejectingBunFile(errorCode: string, message: string) {
+    return {
+      text: () => {
+        const err = new Error(message) as NodeJS.ErrnoException;
+        err.code = errorCode;
+        return Promise.reject(err);
+      },
+    } as ReturnType<typeof Bun.file>;
+  }
+
+  it('(m1) warn-logs and skips the directory when AGENTS.md read fails with EACCES', async () => {
+    const cwd = await makeTempDir();
+    const agentsPath = join(cwd, 'AGENTS.md');
+    const originalBunFile = Bun.file.bind(Bun);
+
+    const fileSpy = spyOn(Bun, 'file').mockImplementation((filePath: unknown, ...rest: unknown[]) => {
+      if (filePath === agentsPath) {
+        return makeRejectingBunFile('EACCES', 'EACCES: permission denied, open ' + agentsPath);
+      }
+      return (originalBunFile as (...args: unknown[]) => ReturnType<typeof Bun.file>)(
+        filePath,
+        ...rest,
+      );
+    });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadInstructions({
+        cwd,
+        xdgConfigHome: await isolatedXdgConfigHome(),
+      });
+
+      // The directory yields no segment -- the read error is non-fatal to
+      // the overall activation, not a thrown exception.
+      expect(result.segments).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes(agentsPath))).toBe(true);
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('EACCES'))).toBe(true);
+    } finally {
+      fileSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('(m2) warn-logs and skips the directory when CLAUDE.md read fails with EACCES (AGENTS.md absent)', async () => {
+    const cwd = await makeTempDir();
+    const claudePath = join(cwd, 'CLAUDE.md');
+    const originalBunFile = Bun.file.bind(Bun);
+
+    const fileSpy = spyOn(Bun, 'file').mockImplementation((filePath: unknown, ...rest: unknown[]) => {
+      if (filePath === claudePath) {
+        return makeRejectingBunFile('EACCES', 'EACCES: permission denied, open ' + claudePath);
+      }
+      return (originalBunFile as (...args: unknown[]) => ReturnType<typeof Bun.file>)(
+        filePath,
+        ...rest,
+      );
+    });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadInstructions({
+        cwd,
+        xdgConfigHome: await isolatedXdgConfigHome(),
+      });
+
+      // AGENTS.md is genuinely absent (real ENOENT via the unmocked path),
+      // so resolution falls through to CLAUDE.md, whose non-ENOENT failure
+      // must also be warn-logged rather than thrown.
+      expect(result.segments).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes(claudePath))).toBe(true);
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('EACCES'))).toBe(true);
+    } finally {
+      fileSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+});
+
 describe('loadInstructions — routine absence is silent (l, anti-noise)', () => {
   it('emits no log at all when a directory has neither AGENTS.md nor CLAUDE.md', async () => {
     const cwd = await makeTempDir();
