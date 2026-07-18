@@ -65,13 +65,13 @@ const sessions = new Hono<AppBindings>()
       throw new ValidationError(validation.error || 'Invalid path');
     }
 
-    const { sessionManager, sharedAccountRegistry, embeddedAgentManager } = c.get('appContext');
+    const { sessionManager, sharedAccountRegistry, agentDirectory } = c.get('appContext');
     const authUser = c.get('authUser');
 
     // Validate the embedded agent exists before returning accepted (fail
     // fast for invalid config, mirrors POST /:id/worktrees).
     if (body.embeddedAgentId) {
-      const embeddedAgent = embeddedAgentManager.getEmbeddedAgent(body.embeddedAgentId);
+      const embeddedAgent = agentDirectory.get('embedded', body.embeddedAgentId)?.agent;
       if (!embeddedAgent) {
         throw new ValidationError(`Embedded agent not found: ${body.embeddedAgentId}`);
       }

@@ -257,7 +257,9 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
     expect(persistedSessions).toHaveLength(0);
 
     // No separate "orphaned git-diff worker" check is needed: a git-diff
-    // worker only exists as an entry in a session's `workers` map, so the
+    // worker's presence is tracked via its entry in a session's `workers`
+    // map, and its file watcher is stopped through that same entry
+    // (deleteSession iterates session.workers to call stopWatching), so the
     // "no ghost session" assertion above already covers it.
   });
 });

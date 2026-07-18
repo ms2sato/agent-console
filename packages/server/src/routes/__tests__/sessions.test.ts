@@ -20,6 +20,7 @@ import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { AgentDirectory } from '../../services/agent-directory.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -476,9 +477,14 @@ describe('Sessions API - POST /api/sessions (embeddedAgentId pre-validation)', (
     app.use('*', async (c, next) => {
       c.set('appContext', asAppContext({
         sessionManager,
-        embeddedAgentManager: {
-          getEmbeddedAgent: mock(() => undefined),
-        } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'],
+        // Widened (agent-surface migration) so the pre-validation check
+        // (`agentDirectory.get('embedded', ...)`) can be exercised without a
+        // real EmbeddedAgentManager. `get` always returns undefined so any
+        // embeddedAgentId in this describe block is "dangling".
+        agentDirectory: new AgentDirectory({
+          terminal: { kind: 'terminal', list: () => [], get: () => undefined, findByName: () => [] },
+          embedded: { kind: 'embedded', list: () => [], get: () => undefined, findByName: () => [] },
+        }),
       }));
       await next();
     });
