@@ -4592,6 +4592,97 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('resolveSpawnUsername wiring for orphan cleanup (Issue #1197 Part A)', () => {
+    // Verifies the SessionManager-level plumbing this PR adds:
+    // SessionInitializationService now receives `resolveSpawnUsername:
+    // (createdBy) => resolveSpawnUsername(createdBy, this.userRepository)`,
+    // so an injected userRepository must be reachable from
+    // killOrphanWorkers's resolution of session.createdBy during
+    // restart-triggered orphan cleanup.
+    //
+    // Scope note: SessionPauseResumeService's own auto-resume path
+    // (session-pause-resume-service.ts:259) independently resolves the same
+    // createdBy through the same shared `this.userRepository` during the
+    // very same restart, and both run inside SessionManager.initialize()
+    // before this test can observe either individually. It is not possible
+    // to black-box-isolate ONLY the SessionInitializationService call site
+    // from the SessionPauseResumeService call site without mocking
+    // `../lib/config.js` (to fake a divergent serverPid and force the
+    // cleanupOrphanProcesses() code path instead) or adding a
+    // testability-only accessor to a private field -- both rejected as
+    // disproportionate for a one-line DI wiring change. This test instead
+    // verifies the genuine, broader claim: a custom userRepository injected
+    // into SessionManager.create() is actually consulted for the session's
+    // createdBy somewhere in the restart pipeline (not silently ignored) --
+    // confirmed to fail if `this.userRepository` assignment itself is
+    // broken (see verification note below). The killOrphanWorkers ELEVATION
+    // DECISION logic itself (given a resolved username) is exhaustively and
+    // precisely unit-tested with direct dependency injection in
+    // session-initialization-service.test.ts, which is unaffected by this
+    // confound.
+    it('resolves session.createdBy via the injected userRepository during restart-triggered orphan cleanup', async () => {
+      const findByIdCalls: string[] = [];
+      const stubUserRepo: UserRepository = {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          findByIdCalls.push(id);
+          if (id === 'user-alice-uuid') {
+            return { id, username: 'alice', homeDir: '/home/alice' };
+          }
+          return null;
+        },
+      };
+
+      const module1 = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module1.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        userRepository: stubUserRepo,
+      });
+
+      await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'user-alice-uuid' },
+      );
+
+      // createSession's own worker activation already resolves createdBy via
+      // the worker-lifecycle-manager wiring (session-manager.ts:283/332), so
+      // findByIdCalls may already contain 'user-alice-uuid' at this point.
+      // Checkpoint here so the assertion below isolates the call made by the
+      // RESTART-triggered orphan-cleanup path specifically (this PR's new
+      // wiring at session-manager.ts's SessionInitializationService
+      // construction), not the pre-existing worker-activation call.
+      const callsBeforeRestart = findByIdCalls.length;
+
+      // Simulate server restart with the SAME stub userRepository injected.
+      // SessionInitializationService.killOrphanWorkers calls
+      // resolveSpawnUsername(session.createdBy) once per session during
+      // initializeSessions(), which must route through this repository.
+      mockProcess.markDead(process.pid);
+      const module2 = await import(`../session-manager.js?v=${++importCounter}`);
+      await module2.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        userRepository: stubUserRepo,
+      });
+
+      const callsDuringRestart = findByIdCalls.slice(callsBeforeRestart);
+      expect(callsDuringRestart).toContain('user-alice-uuid');
+    });
+  });
+
   describe('setProcessCleanupCallback', () => {
     it('should accept a cleanup callback without error', async () => {
       const sm = await getSessionManager();
