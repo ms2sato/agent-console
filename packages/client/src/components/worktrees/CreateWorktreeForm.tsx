@@ -72,7 +72,8 @@ export function CreateWorktreeForm({
     watch,
     setValue,
     reset,
-    formState: { errors, dirtyFields },
+    control,
+    formState: { errors },
   } = useForm<CreateWorktreeFormData>({
     resolver: valibotResolver(CreateWorktreeFormSchema),
     defaultValues: {
@@ -93,14 +94,17 @@ export function CreateWorktreeForm({
   // Tracks whether draft was cleared (e.g., after successful submit) to skip unmount save
   const draftClearedRef = useRef(false);
 
-  // Ref to access dirtyFields inside effects without re-triggering them
-  const dirtyFieldsRef = useRef(dirtyFields);
-  dirtyFieldsRef.current = dirtyFields;
-
   /** Pick only user-modified fields from form values, so props-derived defaults
-   *  (e.g., agentId from server) are not persisted and can update between sessions. */
+   *  (e.g., agentId from server) are not persisted and can update between sessions.
+   *  Reads react-hook-form's live internal dirty state (control._formState.dirtyFields)
+   *  rather than a render-synced ref: reset()/setValue() mutate this internal state
+   *  synchronously, without waiting for a React render/commit. A render-synced ref
+   *  would go stale under React 18 StrictMode's dev-only double-invoke (mount ->
+   *  simulated unmount -> mount again with no render in between), causing the
+   *  simulated-unmount cleanup to read an empty ref and clobber a just-restored
+   *  draft with `{}`. */
   const pickDirtyValues = useCallback((values: Record<string, unknown>): Record<string, unknown> => {
-    const dirty = dirtyFieldsRef.current;
+    const dirty = control._formState.dirtyFields;
     const result: Record<string, unknown> = {};
     for (const key of Object.keys(values)) {
       if (dirty[key as keyof typeof dirty]) {
@@ -108,7 +112,8 @@ export function CreateWorktreeForm({
       }
     }
     return result;
-  }, []);
+    // control is a stable ref from react-hook-form
+  }, [control]);
 
   // Restore draft on mount (skipped when prefillValues is provided)
   useEffect(() => {
