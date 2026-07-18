@@ -370,6 +370,14 @@ A per-worker incarnation identifier: the creation timestamp (milliseconds) minte
 
 The `request-history-range` / `history-range` worker-WebSocket message pair for paging older history upward. A request names a `beforeOffset` (fetch bytes strictly before this Absolute Stream Offset), an optional `maxBytes` hint, and a `requestId` echoed back for correlation. The server answers with one storage unit's worth of bytes (a single Archive Segment or the live window — never stitched across a boundary), a `hasMore` flag (`startOffset > firstAvailableOffset`), and the Worker Epoch captured under the per-worker lock. Defined in [terminal-history-paging.md](design/terminal-history-paging.md) §5.
 
+## Roles
+
+### Orchestrator
+The single owner-facing role for repository-level coordination. Owns prioritization, delegation, first-responder duties, work review, acceptance check, merge authority (subject to owner thresholds), retro execution, and rule/skill maintenance. The Orchestrator is invoked via the [`orchestrator`](../.claude/skills/orchestrator/SKILL.md) skill (typically `/orchestrator`). Auto-provisions the [Architect](#architect) session on startup if absent. Delegate workers spawned by the Orchestrator default to the `sonnet` model.
+
+### Architect
+An internal-only role for design review, spec drafting, multi-round audit, and cross-domain design consultation. **One Architect session per repository**, persistent across sprints, auto-provisioned by the [Orchestrator](#orchestrator) on startup. Idle-until-explicit-push — acts only on explicit Orchestrator messages. Owner does not interact with the Architect directly. Invoked via the [`architect`](../.claude/skills/architect/SKILL.md) skill and defaults to the `fable` model. Full role definition: [`docs/design/architect-role.md`](./design/architect-role.md).
+
 ## Maintenance
 
 This glossary is canonical. When the following changes are introduced, the glossary must be updated in the same PR:
