@@ -34,9 +34,11 @@
  *      `sandbox` attribute value (read from its source, not hardcoded --
  *      see readProductionIframeAttrs below, so a future weakening of that
  *      attribute is caught here too). Asserts no script execution reaches
- *      observable state: no JS dialog (alert/confirm/prompt) fires, and no
- *      "script executed" console signal appears. This must hold for EVERY
- *      vector, including the known gap -- containment does not depend on
+ *      observable state: the blocking assertion is that no JS dialog
+ *      (alert/confirm/prompt) fires; any "script executed" console signal
+ *      is captured as corroborating (informational) evidence, not the
+ *      assertion itself. This must hold for EVERY vector, including the
+ *      known gap -- containment does not depend on
  *      sanitizer completeness (see PR #1164's empirical finding that
  *      sandbox="" alone fully contains the known gap).
  *
