@@ -1072,6 +1072,37 @@ detached
       }
     });
 
+    // ⑤b Non-errno-shaped stat rejection (no `code` property at all) on the
+    //    primary repo dir must also NOT route to destructive recovery — the
+    //    errno type-guard must not mistake "no code" for ENOENT/ENOTDIR.
+    it('should fail without destructive recovery when stat(repoPath) rejects with a plain Error (no code)', async () => {
+      mockRepo.records.push({
+        id: 'wt-1',
+        repositoryId: 'repo-1',
+        path: '/worktrees/feature',
+        indexNumber: 1,
+        createdAt: new Date().toISOString(),
+      });
+
+      const statSpy = spyOn(fs.promises, 'stat').mockImplementation((() =>
+        Promise.reject(new Error('unexpected stat failure'))
+      ) as typeof fs.promises.stat);
+
+      try {
+        const WorktreeService = await getWorktreeService();
+        const service = new WorktreeService({ worktreeRepository: mockRepo });
+
+        const result = await service.removeWorktree('/repo', '/worktrees/feature');
+
+        expect(result.success).toBe(false);
+        expect(result.error).toBeDefined();
+        expect(mockGit.removeWorktree).not.toHaveBeenCalled();
+        expect(mockRepo.records.find((r) => r.path === '/worktrees/feature')).toBeDefined();
+      } finally {
+        statSpy.mockRestore();
+      }
+    });
+
     // ⑥ Primary repo dir present + worktree dir MISSING: upgrade `force=true`
     //    internally and route through the existing fallback (#895).
     it('should upgrade force=true internally when worktree path is missing (#895)', async () => {

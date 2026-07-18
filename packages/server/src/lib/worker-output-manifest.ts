@@ -16,6 +16,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { createLogger } from './logger.js';
+import { isErrnoException } from './type-guards.js';
 
 const logger = createLogger('worker-output-manifest');
 
@@ -110,7 +111,7 @@ export async function readManifest(manifestPath: string): Promise<WorkerOutputMa
   try {
     raw = await fs.readFile(manifestPath, 'utf-8');
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    if (isErrnoException(error) && error.code === 'ENOENT') {
       return null;
     }
     logger.warn({ manifestPath, err: error }, 'Failed to read output manifest');

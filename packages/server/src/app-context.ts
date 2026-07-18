@@ -140,7 +140,7 @@ export interface AppContext {
    * User identity repository — resolves a `users.id` UUID back to an OS
    * username / home dir. Exposed on AppContext so that MCP `delegate_to_worktree`
    * can resolve the parent session's `createdBy` for `runAsUser`
-   * elevation (Issue #844).
+   * elevation.
    */
   userRepository: UserRepository;
 
@@ -171,21 +171,21 @@ export interface AppContext {
   /** Broadcast a message to all connected app WebSocket clients */
   broadcastToApp: (msg: AppServerMessage) => void;
 
-  /** Fetch PR URL for a branch (Issue #885: requestUsername elevates gh CLI) */
+  /** Fetch PR URL for a branch; requestUsername elevates gh CLI */
   fetchPullRequestUrl: (
     branch: string,
     cwd: string,
     requestUsername: string | null,
   ) => Promise<string | null>;
 
-  /** Find open PR for a branch (Issue #885: requestUsername elevates gh CLI) */
+  /** Find open PR for a branch; requestUsername elevates gh CLI */
   findOpenPullRequest: (
     branch: string,
     cwd: string,
     requestUsername: string | null,
   ) => Promise<OpenPrInfo | null>;
 
-  /** Fetch GitHub issue (Issue #885: requestUsername elevates gh CLI) */
+  /** Fetch GitHub issue; requestUsername elevates gh CLI */
   fetchGitHubIssue: (
     reference: string,
     repoPath: string,
@@ -196,7 +196,7 @@ export interface AppContext {
   generateRepositoryDescription: GenerateRepositoryDescriptionFn;
 
   /**
-   * Clone-and-register repository service (Issue #834). Owns the in-memory
+   * Clone-and-register repository service. Owns the in-memory
    * job state for `POST /api/repositories/clone` and the matching status
    * endpoint. Singleton across the process so polling sees the same state
    * the enqueue call mutated.
@@ -517,7 +517,7 @@ export async function createAppContext(
       sessionManager.getSessionsUsingRepository(repoId),
   });
 
-  // 7.1. Construct the clone-and-register service (Issue #834). Singleton so
+  // 7.1. Construct the clone-and-register service. Singleton so
   // background jobs and polling share the same in-memory state map.
   const repositoryCloneService = new RepositoryCloneService({
     sourceReposDir: getSourceReposDir(),
@@ -721,7 +721,7 @@ export async function createTestContext(
       sessionManager.getSessionsUsingRepository(repoId),
   });
 
-  // Clone-and-register service for the test context (Issue #834).
+  // Clone-and-register service for the test context.
   const repositoryCloneService = new RepositoryCloneService({
     sourceReposDir: getSourceReposDir(),
     registrar: repositoryManager,
@@ -820,7 +820,7 @@ export async function shutdownAppContext(
   context.interactiveProcessManager.disposeAll();
   context.branchWatcherService.stopAll();
 
-  // Cancel any pending clone-job eviction timers (Issue #834). Keeping a
+  // Cancel any pending clone-job eviction timers. Keeping a
   // pending setTimeout alive after the process tries to exit would block the
   // event loop; the eviction is purely an in-memory bookkeeping concern.
   context.repositoryCloneService.dispose();

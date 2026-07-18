@@ -207,8 +207,8 @@ async function cleanupOrphanedWorktree(
     // 5. Remove the worktree dir + DB row via the git-less helper.
     //    Idempotent — fs.rm with force does not throw on missing paths,
     //    and deleteByPath does not throw on missing rows. In multi-user mode
-    //    (Issue #882) the requestUsername threads through so the elevated
-    //    `rm -rf` runs as the worktree-owning user.
+    //    the requestUsername threads through so the elevated `rm -rf` runs
+    //    as the worktree-owning user.
     try {
       await worktreeService.removeOrphanedWorktree(canonicalPath, requestUsername);
     } catch (error) {
@@ -265,10 +265,9 @@ export interface DeleteWorktreeParams {
    * - `git worktree remove` / fallback `rm -rf` route through `runAsUser` so
    *   they execute as the worktree-owning user, fixing the `Permission denied`
    *   failure when the server user (`agentconsole`) tries to delete files
-   *   owned by a delegated user (Issue #882).
+   *   owned by a delegated user.
    * - `findOpenPullRequest`'s `gh pr list` invocation runs under the
-   *   requesting user's gh auth token instead of the server user's (Issue
-   *   #885).
+   *   requesting user's gh auth token instead of the server user's.
    *
    * Optional / null / undefined / single-user mode — both elevation points
    * bypass `sudo` and the existing direct-spawn behaviour is preserved.
@@ -384,9 +383,9 @@ export async function deleteWorktree(
     }
 
     // 6c. Remove worktree via git. `requestUsername` threads down so that in
-    //     multi-user mode (Issue #882) the `git worktree remove` / fallback
-    //     `rm -rf` run as the worktree-owning user; null in single-user mode
-    //     preserves the historical direct-spawn path.
+    //     multi-user mode the `git worktree remove` / fallback `rm -rf` run
+    //     as the worktree-owning user; null in single-user mode preserves
+    //     the historical direct-spawn path.
     const result = await worktreeService.removeWorktree(repo.path, worktreePath, force, requestUsername);
 
     if (!result.success) {

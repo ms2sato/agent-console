@@ -92,10 +92,8 @@ const worktrees = new Hono<AppBindings>()
 
         switch (mode) {
           case 'prompt': {
-            // Generate branch name from prompt using the selected agent.
             // Thread the authenticated OS username down so the headless agent
-            // command runs as the requesting user in multi-user mode (Issue
-            // #856 -- mirrors Issue #835 / PR #842 for description gen). In
+            // command runs as the requesting user in multi-user mode. In
             // single-user mode `runAsUser` reads this value but `AUTH_MODE`
             // gates the elevation to a no-op.
             const suggestion = await suggestSessionMetadata({
@@ -150,8 +148,8 @@ const worktrees = new Hono<AppBindings>()
           context: { createdBy: authUser.id },
           // Thread the authenticated OS username down to `git worktree add`
           // so multi-user installs create the worktree as the requesting
-          // user (Issue #838). In single-user mode, `runAsUser` reads this
-          // value but `AUTH_MODE` gates the elevation to a no-op.
+          // user. In single-user mode, `runAsUser` reads this value but
+          // `AUTH_MODE` gates the elevation to a no-op.
           requestUsername: authUser.username,
         }, sessionManager, worktreeService);
 
@@ -311,19 +309,17 @@ const worktrees = new Hono<AppBindings>()
     // Return accepted immediately
     return c.json({ accepted: true }, 202);
   })
-  // Delete a worktree
   // Optionally accepts taskId query parameter for async WebSocket notification
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
     const { repositoryManager, sessionManager, worktreeService, broadcastToApp, findOpenPullRequest } = c.get('appContext');
     // Thread the authenticated OS username down to the deletion service so
-    // multi-user installs (a) delete the worktree as the worktree-owning user
-    // — fixing the `Permission denied` failure when `agentconsole` tries to
-    // remove a delegated user's files (Issue #882, mirrors the create-side
-    // thread-through in this same file), and (b) run the `gh pr list`
-    // open-PR check under the requesting user's gh auth token (Issue #885).
-    // In single-user mode, `runAsUser` reads this value but `AUTH_MODE` gates
-    // the elevation to a no-op for both paths.
+    // multi-user installs (a) delete the worktree as the worktree-owning
+    // user — fixing the `Permission denied` failure when `agentconsole`
+    // tries to remove a delegated user's files, and (b) run the
+    // `gh pr list` open-PR check under the requesting user's gh auth token.
+    // In single-user mode, `runAsUser` reads this value but `AUTH_MODE`
+    // gates the elevation to a no-op for both paths.
     const authUser = c.get('authUser');
 
     // Get worktree path from URL (everything after /worktrees/)

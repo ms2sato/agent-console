@@ -57,12 +57,6 @@ export interface JobHandlerDeps {
   rmRecursiveAsUserImpl?: RmRecursiveAsUserFn;
 }
 
-/**
- * Register all job handlers with the job queue.
- * @param jobQueue The JobQueue instance to register handlers with
- * @param workerOutputFileManager Manager used by output-cleanup handlers
- * @param deps Test-only dependency injection. Production callers omit.
- */
 export function registerJobHandlers(
   jobQueue: JobQueue,
   workerOutputFileManager: WorkerOutputFileManager,
@@ -70,7 +64,6 @@ export function registerJobHandlers(
 ): void {
   const rmRecursiveAsUserImpl: RmRecursiveAsUserFn =
     deps.rmRecursiveAsUserImpl ?? defaultRmRecursiveAsUser;
-  // Handler for deleting all output files for a session
   jobQueue.registerHandler<CleanupSessionOutputsPayload>(
     JOB_TYPES.CLEANUP_SESSION_OUTPUTS,
     async (payload) => {
@@ -92,7 +85,6 @@ export function registerJobHandlers(
     }
   );
 
-  // Handler for deleting output file for a single worker
   jobQueue.registerHandler<CleanupWorkerOutputPayload>(
     JOB_TYPES.CLEANUP_WORKER_OUTPUT,
     async (payload) => {
@@ -117,29 +109,22 @@ export function registerJobHandlers(
     }
   );
 
-  // Handler for removing repository data directory.
-  //
-  // Issue #884: in `AUTH_MODE=multi-user`, `repoDir` contains a `worktrees/*`
-  // subtree owned by individual users (Issue #838 / PR #843). The historical
-  // direct `fs.rm` here ran as the server process (`agentconsole`) and failed
-  // with `EACCES` on the first user-owned descendant, surfacing as the
-  // silent-unregister symptom reported in Issue #871. When `requestUsername`
-  // is set AND elevation actually applies (`shouldElevateForUser`), route the
-  // recursive removal through `rmRecursiveAsUser` (PR #888) so it executes
-  // as that user. Single-user / null / same-user preserves the original
-  // direct `fs.rm` path (and its ENOENT idempotency).
+  // In multi-user mode, `repoDir` may contain a `worktrees/*` subtree owned
+  // by individual users; running `fs.rm` as the server process fails with
+  // EACCES on the first user-owned descendant. When `requestUsername` is set
+  // AND elevation applies (`shouldElevateForUser`), route the recursive
+  // removal through `rmRecursiveAsUser` so it executes as that user. The
+  // single-user / null / same-user path keeps the original direct `fs.rm`
+  // (and its ENOENT idempotency).
   //
   // When `extraDir` is set (by the manager, only when the registered repo's
-  // `path` lives under `getSourceReposDir()`), also remove that directory
-  // AFTER the main `repoDir` has been removed successfully. Same elevation
-  // decision, same idempotent / error-handling shape. If the main `repoDir`
-  // removal throws, `extraDir` is not attempted -- the job queue retries the
-  // whole job.
+  // `path` lives under `getSourceReposDir()`), it is removed AFTER `repoDir`
+  // succeeds -- if the main removal throws, `extraDir` is not attempted, so
+  // a retry reprocesses both.
   //
-  // Layering note: the elevated branch uses the dedicated layer helper rather
-  // than inlining a `rm -rf -- <shellEscape(path)>` command at this site;
-  // `rmRecursiveAsUser` is the canonical encapsulation, analogous to how
-  // `lib/git.ts` encapsulates git command construction.
+  // The elevated branch routes through `rmRecursiveAsUser` rather than
+  // inlining a `rm -rf` command here, mirroring how `lib/git.ts`
+  // encapsulates git command construction.
   jobQueue.registerHandler<CleanupRepositoryPayload>(
     JOB_TYPES.CLEANUP_REPOSITORY,
     async ({ repoDir, requestUsername, extraDir }) => {
@@ -207,7 +192,6 @@ export function registerJobHandlers(
           await fs.rm(target, { recursive: true });
           logger.info({ target }, 'Repository data cleanup completed');
         } catch (error) {
-          // Handle ENOENT (file not found) gracefully - directory already gone
           if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
             logger.debug(
               { target },
@@ -220,9 +204,6 @@ export function registerJobHandlers(
         }
       };
 
-      // Main repoDir first. If it throws, do not attempt extraDir -- the job
-      // queue will retry and the next attempt processes both. This preserves
-      // the atomicity contract of a single CLEANUP_REPOSITORY job.
       await removeOne(repoDir);
       if (extraDir != null) {
         await removeOne(extraDir);

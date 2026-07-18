@@ -197,7 +197,6 @@ const sessions = new Hono<AppBindings>()
       ...(result.title !== undefined && { title: result.title }),
     });
   })
-  // Get branches for a session's repository
   .get('/:sessionId/branches', async (c) => {
     const sessionId = c.req.param('sessionId');
     const { sessionManager, worktreeService, userRepository } = c.get('appContext');
@@ -207,15 +206,15 @@ const sessions = new Hono<AppBindings>()
       throw new NotFoundError('Session');
     }
 
-    // Issue #870 / CodeRabbit review on PR #874: multi-user mode must run
-    // the git invocations as the session's effective spawn user (the OS user
-    // that owns the worktree), not as the authenticated viewer. For shared
-    // sessions the spawn user is the shared account; using the viewer's
-    // identity would reintroduce dubious-ownership / missing-credential
-    // failures and silently fall back to empty branches. `resolveSpawnUsername`
-    // mirrors the resolution `SessionManager` uses when launching the
-    // session's PTY workers and falls back to the server username when the
-    // session has no `createdBy` or the lookup fails.
+    // Multi-user mode must run the git invocations as the session's
+    // effective spawn user (the OS user that owns the worktree), not as the
+    // authenticated viewer. For shared sessions the spawn user is the shared
+    // account; using the viewer's identity would reintroduce
+    // dubious-ownership / missing-credential failures and silently fall back
+    // to empty branches. `resolveSpawnUsername` mirrors the resolution
+    // `SessionManager` uses when launching the session's PTY workers and
+    // falls back to the server username when the session has no `createdBy`
+    // or the lookup fails.
     const spawnUsername = await resolveSpawnUsername(session.createdBy, userRepository);
     const branches = await worktreeService.listBranches(session.locationPath, spawnUsername);
     return c.json(branches);
@@ -237,7 +236,6 @@ const sessions = new Hono<AppBindings>()
     const commits = await getBranchCommits(baseRef, session.locationPath);
     return c.json({ commits });
   })
-  // Get PR link for a session (worktree sessions only)
   .get('/:sessionId/pr-link', async (c) => {
     const sessionId = c.req.param('sessionId');
     const { sessionManager } = c.get('appContext');
@@ -256,9 +254,9 @@ const sessions = new Hono<AppBindings>()
     const orgRepo = await getOrgRepoFromPath(session.locationPath);
 
     const { fetchPullRequestUrl } = c.get('appContext');
-    // Issue #885: thread the authenticated OS username so multi-user mode
-    // runs `gh pr view` as the requesting user (with that user's per-user
-    // gh auth token). In single-user mode `runAsUser` bypasses elevation.
+    // Thread the authenticated OS username so multi-user mode runs
+    // `gh pr view` as the requesting user (with that user's per-user gh auth
+    // token). In single-user mode `runAsUser` bypasses elevation.
     const prUrl = await fetchPullRequestUrl(branchName, session.locationPath, authUser.username);
 
     return c.json({

@@ -12,7 +12,6 @@ import { MessageContentProcessor } from './message-content-processor'
 export class PTYOperationExecutor {
   /**
    * Inject message content and execute submit operation separately.
-   * This is the correct pattern to prevent Issue #660 class of bugs.
    *
    * @param content - Message content to send (data)
    * @param ptyWrite - Function to write to PTY

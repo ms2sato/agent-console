@@ -42,7 +42,7 @@ export interface AddRepositoryFormProps {
  *    pre-existing register-existing-path flow). Unchanged behaviour.
  *
  * Default tab is "Clone from URL" since the clone flow eliminates the
- * host-side `git clone` step in multi-user setups (Issue #834).
+ * host-side `git clone` step in multi-user setups.
  */
 export function AddRepositoryForm({
   isPending,

@@ -73,7 +73,6 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
   // escaped) and works uniformly under elevation. When no prompt is provided,
   // the placeholder is replaced with an empty shell-escaped string, which
   // allows starting agents interactively without a pre-filled prompt.
-  // See Issue #851.
   if (command.includes('{{prompt}}')) {
     command = command.replace(/\{\{prompt\}\}/g, shellEscape(prompt ?? ''));
   }

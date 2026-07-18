@@ -22,8 +22,7 @@ interface SessionMetadataSuggestionRequest {
    * with the requesting user's PATH and per-user auth credentials via the
    * `runAsUser` privilege-elevation helper. In single-user mode `runAsUser`
    * bypasses elevation regardless of this value; pass the authenticated
-   * username (auth middleware always provides one). Mirrors the Issue #835 /
-   * PR #842 pattern in `repository-description-generator.ts`. Issue #856.
+   * username (auth middleware always provides one).
    */
   requestUser: string | null;
 }
@@ -135,14 +134,12 @@ export async function suggestSessionMetadata(
 
     // Route through the privilege-elevation helper so multi-user mode runs the
     // agent's headless command (e.g. `claude -p ...`) as the requesting user --
-    // i.e. with that user's PATH and per-user auth credentials. After Issue
-    // #851 / PR #852 the prompt is embedded directly into `command` via
-    // shellEscape; `templateEnv` carries only template-level env (typically
-    // none for headlessTemplate), plus we add TERM=dumb to suppress
-    // interactive settings.
+    // i.e. with that user's PATH and per-user auth credentials. The prompt is
+    // embedded directly into `command` via shellEscape; `templateEnv` carries
+    // only template-level env (typically none for headlessTemplate), plus we
+    // add TERM=dumb to suppress interactive settings.
     // In single-user mode (or when requestUser equals the server user) the
     // helper bypasses sudo and spawns directly, preserving prior behavior.
-    // Issue #856 (mirrors Issue #835 / PR #842 for repository-description-generator).
     const { stdout, stderr, exitCode, timedOut } = await runAsUser({
       username: requestUser,
       command,

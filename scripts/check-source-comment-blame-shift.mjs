@@ -33,18 +33,15 @@
  *
  * Allowlist strategy:
  *
- * The KNOWN_VIOLATIONS set below is the inventory of pre-existing
- * violations at the time this detector landed. The cleanup of those
- * violations is tracked as a separate work stream in Issue 898 — that
- * track removes references from source comments and migrates the
- * narrative into PR descriptions / git log. This detector exists only
- * to gate NEW growth: any violation whose key is NOT in KNOWN_VIOLATIONS
- * fails the check.
- *
- * Maintenance rule: when fixing a pre-existing violation in an Issue 898
- * cleanup PR, REMOVE its entry from KNOWN_VIOLATIONS in the same PR. The
- * key format is `file:line:col:pattern-name` (a stable string). Keep the
- * set sorted to make reviews and merges painless.
+ * KNOWN_VIOLATIONS started as the inventory of pre-existing violations at
+ * the time this detector landed, gated by a cleanup work stream (Issue
+ * 898). That cleanup is complete and the repository has zero violations,
+ * so KNOWN_VIOLATIONS is now empty: any violation found by this detector
+ * fails the check immediately. If a future pre-existing violation needs
+ * to be absorbed temporarily (e.g. a large migration), add entries back
+ * using the `file:line:col:pattern-name` key format and document a
+ * cleanup track per `.claude/rules/workflow.md`'s allowlist-baseline
+ * template.
  *
  * Usage:
  *   bun scripts/check-source-comment-blame-shift.mjs
@@ -530,187 +527,10 @@ export async function runCheck({ cwd = process.cwd(), files, allowlist = KNOWN_V
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN_VIOLATIONS — pre-existing violations baked in at the time this
-// detector landed. See the file header for the maintenance rule.
-// Track for cleanup: Issue 898.
+// KNOWN_VIOLATIONS — see the file header for the allowlist strategy.
 // Key format: `file:line:col:pattern-name`.
 // ---------------------------------------------------------------------------
-export const KNOWN_VIOLATIONS = new Set([
-  'packages/client/src/components/repositories/AddRepositoryForm.tsx:45:53:issue-ref',
-  'packages/client/src/lib/api.ts:301:54:issue-ref',
-  'packages/client/src/lib/api.ts:323:54:issue-ref',
-  'packages/server/src/app-context.ts:143:17:issue-ref',
-  'packages/server/src/app-context.ts:174:34:issue-ref',
-  'packages/server/src/app-context.ts:181:34:issue-ref',
-  'packages/server/src/app-context.ts:188:27:issue-ref',
-  'packages/server/src/app-context.ts:199:45:issue-ref',
-  'packages/server/src/app-context.ts:520:53:issue-ref',
-  'packages/server/src/app-context.ts:724:55:issue-ref',
-  'packages/server/src/app-context.ts:823:52:issue-ref',
-  'packages/server/src/database/connection.ts:1302:45:issue-ref',
-  'packages/server/src/database/connection.ts:1312:48:issue-ref',
-  'packages/server/src/jobs/handlers.ts:122:6:issue-ref',
-  'packages/server/src/jobs/handlers.ts:123:41:issue-ref',
-  'packages/server/src/jobs/handlers.ts:123:54:pr-ref',
-  'packages/server/src/jobs/handlers.ts:126:44:issue-ref',
-  'packages/server/src/jobs/handlers.ts:128:53:pr-ref',
-  'packages/server/src/lib/config.ts:52:12:issue-ref',
-  'packages/server/src/lib/config.ts:53:46:issue-ref',
-  'packages/server/src/lib/config.ts:53:59:pr-ref',
-  'packages/server/src/lib/git.ts:9:4:issue-ref',
-  'packages/server/src/lib/git.ts:45:35:issue-ref',
-  'packages/server/src/lib/git.ts:309:42:issue-ref',
-  'packages/server/src/lib/git.ts:392:22:issue-ref',
-  'packages/server/src/lib/server-config.ts:130:44:issue-ref',
-  'packages/server/src/lib/template.ts:76:10:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:218:7:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:218:58:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:218:71:pr-ref',
-  'packages/server/src/mcp/mcp-server.ts:223:33:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:232:33:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:546:59:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:790:12:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:790:25:pr-ref',
-  'packages/server/src/mcp/mcp-server.ts:795:38:pr-ref',
-  'packages/server/src/mcp/mcp-server.ts:835:14:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:835:34:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:835:47:pr-ref',
-  'packages/server/src/mcp/mcp-server.ts:901:15:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:1056:25:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:1057:43:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:1062:45:pr-ref',
-  'packages/server/src/mcp/mcp-server.ts:1263:37:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:1268:42:pr-ref',
-  'packages/server/src/mcp/mcp-server.ts:1412:32:issue-ref',
-  'packages/server/src/mcp/mcp-server.ts:1418:13:pr-ref',
-  'packages/server/src/routes/repositories.ts:54:42:issue-ref',
-  'packages/server/src/routes/repositories.ts:86:58:issue-ref',
-  'packages/server/src/routes/repositories.ts:189:8:issue-ref',
-  'packages/server/src/routes/repositories.ts:191:71:pr-ref',
-  'packages/server/src/routes/repositories.ts:192:42:pr-ref',
-  'packages/server/src/routes/repositories.ts:242:23:issue-ref',
-  'packages/server/src/routes/repositories.ts:276:10:issue-ref',
-  'packages/server/src/routes/repositories.ts:304:8:issue-ref',
-  'packages/server/src/routes/repositories.ts:325:10:issue-ref',
-  'packages/server/src/routes/sessions.ts:210:8:issue-ref',
-  'packages/server/src/routes/sessions.ts:210:42:pr-ref',
-  'packages/server/src/routes/sessions.ts:259:8:issue-ref',
-  'packages/server/src/routes/workers.ts:31:40:issue-ref',
-  'packages/server/src/routes/workers.ts:60:35:issue-ref',
-  'packages/server/src/routes/workers.ts:366:8:issue-ref',
-  'packages/server/src/routes/workers.ts:366:44:pr-ref',
-  'packages/server/src/routes/workers.ts:407:8:issue-ref',
-  'packages/server/src/routes/workers.ts:407:44:pr-ref',
-  'packages/server/src/routes/workers.ts:426:42:issue-ref',
-  'packages/server/src/routes/worktrees.ts:98:16:bare-ref',
-  'packages/server/src/routes/worktrees.ts:98:32:issue-ref',
-  'packages/server/src/routes/worktrees.ts:98:45:pr-ref',
-  'packages/server/src/routes/worktrees.ts:153:20:issue-ref',
-  'packages/server/src/routes/worktrees.ts:322:41:issue-ref',
-  'packages/server/src/routes/worktrees.ts:324:65:issue-ref',
-  'packages/server/src/services/branch-watcher-service.ts:152:35:issue-ref',
-  'packages/server/src/services/conditional-wakeup-manager.ts:62:48:pr-ref',
-  'packages/server/src/services/conditional-wakeup-manager.ts:98:31:issue-ref',
-  'packages/server/src/services/conditional-wakeup-manager.ts:240:61:issue-ref',
-  'packages/server/src/services/elevation-args.ts:10:19:issue-ref',
-  'packages/server/src/services/elevation-args.ts:14:48:pr-ref',
-  'packages/server/src/services/elevation-args.ts:49:32:pr-ref',
-  'packages/server/src/services/elevation-args.ts:146:48:pr-ref',
-  'packages/server/src/services/git-diff-service.ts:112:47:issue-ref',
-  'packages/server/src/services/github-cli.ts:12:17:pr-ref',
-  'packages/server/src/services/github-issue-service.ts:5:16:issue-ref',
-  'packages/server/src/services/github-issue-service.ts:9:33:pr-ref',
-  'packages/server/src/services/github-issue-service.ts:9:43:pr-ref',
-  'packages/server/src/services/github-issue-service.ts:67:32:pr-ref',
-  'packages/server/src/services/github-pr-service.ts:6:4:issue-ref',
-  'packages/server/src/services/github-pr-service.ts:14:39:pr-ref',
-  'packages/server/src/services/github-pr-service.ts:14:69:pr-ref',
-  'packages/server/src/services/interactive-process-manager.ts:95:31:issue-ref',
-  'packages/server/src/services/interactive-process-manager.ts:211:46:issue-ref',
-  'packages/server/src/services/privilege-elevation.ts:5:28:issue-ref',
-  'packages/server/src/services/privilege-elevation.ts:340:56:issue-ref',
-  'packages/server/src/services/pty-message-injection-service.ts:30:10:issue-ref',
-  'packages/server/src/services/pty-message-injection-service.ts:34:10:issue-ref',
-  'packages/server/src/services/pty-operation-executor.ts:15:45:issue-ref',
-  'packages/server/src/services/repository-clone-service.ts:2:43:issue-ref',
-  'packages/server/src/services/repository-clone-service.ts:57:14:pr-ref',
-  'packages/server/src/services/repository-clone-service.ts:238:49:issue-ref',
-  'packages/server/src/services/repository-clone-service.ts:387:17:pr-ref',
-  'packages/server/src/services/repository-clone-service.ts:575:48:issue-ref',
-  'packages/server/src/services/repository-clone-service.ts:624:27:pr-ref',
-  'packages/server/src/services/repository-manager.ts:32:60:issue-ref',
-  'packages/server/src/services/repository-manager.ts:36:5:issue-ref',
-  'packages/server/src/services/repository-manager.ts:36:18:pr-ref',
-  'packages/server/src/services/repository-manager.ts:211:8:issue-ref',
-  'packages/server/src/services/repository-manager.ts:213:41:issue-ref',
-  'packages/server/src/services/repository-manager.ts:222:20:issue-ref',
-  'packages/server/src/services/repository-manager.ts:255:44:issue-ref',
-  'packages/server/src/services/repository-manager.ts:313:13:pr-ref',
-  'packages/server/src/services/repository-manager.ts:451:62:issue-ref',
-  'packages/server/src/services/repository-manager.ts:452:6:pr-ref',
-  'packages/server/src/services/repository-manager.ts:453:38:issue-ref',
-  'packages/server/src/services/repository-manager.ts:547:9:issue-ref',
-  'packages/server/src/services/resolve-spawn-username.ts:54:17:pr-ref',
-  'packages/server/src/services/session-manager.ts:557:76:issue-ref',
-  'packages/server/src/services/session-manager.ts:994:209:issue-ref',
-  'packages/server/src/services/session-metadata-service.ts:147:20:issue-ref',
-  'packages/server/src/services/session-metadata-service.ts:192:25:issue-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:25:66:issue-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:26:6:pr-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:26:64:issue-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:139:8:bare-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:139:15:pr-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:145:8:issue-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:145:28:issue-ref',
-  'packages/server/src/services/session-metadata-suggester.ts:145:41:pr-ref',
-  'packages/server/src/services/worker-lifecycle-manager.ts:234:10:issue-ref',
-  'packages/server/src/services/worker-lifecycle-manager.ts:557:31:issue-ref',
-  'packages/server/src/services/worker-manager.ts:128:6:issue-ref',
-  'packages/server/src/services/worker-manager.ts:153:53:issue-ref',
-  'packages/server/src/services/worker-manager.ts:360:15:issue-ref',
-  'packages/server/src/services/worker-manager.ts:402:8:issue-ref',
-  'packages/server/src/services/worker-manager.ts:598:8:issue-ref',
-  'packages/server/src/services/worktree-creation-service.ts:31:25:issue-ref',
-  'packages/server/src/services/worktree-creation-service.ts:32:8:bare-ref',
-  'packages/server/src/services/worktree-creation-service.ts:32:15:pr-ref',
-  'packages/server/src/services/worktree-creation-service.ts:67:63:issue-ref',
-  'packages/server/src/services/worktree-creation-service.ts:108:48:issue-ref',
-  'packages/server/src/services/worktree-deletion-service.ts:210:12:issue-ref',
-  'packages/server/src/services/worktree-deletion-service.ts:268:35:issue-ref',
-  'packages/server/src/services/worktree-deletion-service.ts:387:29:issue-ref',
-  'packages/server/src/services/worktree-service.ts:20:33:issue-ref',
-  'packages/server/src/services/worktree-service.ts:94:32:issue-ref',
-  'packages/server/src/services/worktree-service.ts:107:63:issue-ref',
-  'packages/server/src/services/worktree-service.ts:157:5:issue-ref',
-  'packages/server/src/services/worktree-service.ts:188:41:issue-ref',
-  'packages/server/src/services/worktree-service.ts:297:7:issue-ref',
-  'packages/server/src/services/worktree-service.ts:462:22:issue-ref',
-  'packages/server/src/services/worktree-service.ts:535:64:issue-ref',
-  'packages/server/src/services/worktree-service.ts:624:24:issue-ref',
-  'packages/server/src/services/worktree-service.ts:677:54:issue-ref',
-  'packages/server/src/services/worktree-service.ts:735:7:issue-ref',
-  'packages/server/src/services/worktree-service.ts:735:52:issue-ref',
-  'packages/server/src/services/worktree-service.ts:735:65:pr-ref',
-  'packages/server/src/services/worktree-service.ts:913:26:issue-ref',
-  'packages/server/src/services/worktree-service.ts:953:45:issue-ref',
-  'packages/server/src/services/worktree-service.ts:1062:27:issue-ref',
-  'packages/server/src/services/worktree-service.ts:1108:25:issue-ref',
-  'packages/server/src/websocket/git-diff-handler.ts:14:6:issue-ref',
-  'packages/server/src/websocket/git-diff-handler.ts:40:6:issue-ref',
-  'packages/server/src/websocket/git-diff-handler.ts:61:50:issue-ref',
-  'packages/server/src/websocket/routes.ts:809:16:issue-ref',
-  'packages/server/src/websocket/routes.ts:809:52:pr-ref',
-  'packages/shared/src/schemas/repository.ts:17:31:issue-ref',
-  'packages/shared/src/schemas/repository.ts:18:14:pr-ref',
-  'packages/shared/src/schemas/repository.ts:49:32:issue-ref',
-  'packages/shared/src/schemas/repository.ts:59:51:issue-ref',
-  'packages/shared/src/schemas/repository.ts:112:45:issue-ref',
-  'packages/shared/src/schemas/repository.ts:149:55:issue-ref',
-  'packages/shared/src/types/job.ts:91:34:issue-ref',
-  'packages/shared/src/types/job.ts:91:47:pr-ref',
-  'packages/shared/src/types/job.ts:96:4:issue-ref',
-  'packages/shared/src/types/message-contracts.ts:4:13:issue-ref',
-]);
+export const KNOWN_VIOLATIONS = new Set();
 
 // ---------------------------------------------------------------------------
 // CLI wrapper

@@ -28,10 +28,10 @@ async function rollbackWorktree(
 ): Promise<void> {
   try {
     // Thread `requestUsername` through so the rollback also elevates in
-    // multi-user mode (Issue #882). The create path itself elevates per
-    // #838 / PR #843, so leaving the rollback un-elevated would silently
-    // re-introduce the same Permission-denied symptom against a worktree
-    // the server user does not own.
+    // multi-user mode. The create path itself elevates, so leaving the
+    // rollback un-elevated would silently re-introduce the same
+    // Permission-denied symptom against a worktree the server user does
+    // not own.
     await worktreeService.removeWorktree(repoPath, worktreePath, true, requestUsername);
   } catch (cleanupErr) {
     logger.warn(
@@ -64,7 +64,7 @@ export interface CreateWorktreeParams {
    * OS username of the user who requested this worktree (typically
    * `authUser.username` from the route handler). Threaded down to
    * `WorktreeService.createWorktree` -> `runAsUser` so multi-user mode
-   * creates the worktree files owned by the requesting user (Issue #838).
+   * creates the worktree files owned by the requesting user.
    * `null` / `undefined` -> no elevation (single-user mode, or any path that
    * has no authenticated user context).
    */
@@ -105,7 +105,7 @@ export async function createWorktreeWithSession(
   // filesystem side effects. Surfaces failures like `dubious ownership`,
   // missing remote, or corrupt `.git/` with the underlying git stderr so
   // operators see the real cause instead of a misleading post-create
-  // "could not be found in the list" message (Issue #854).
+  // "could not be found in the list" message.
   try {
     await worktreeService.verifyRepoAccessible(repoPath);
   } catch (probeErr) {

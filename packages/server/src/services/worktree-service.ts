@@ -17,11 +17,12 @@ import {
   type WorktreeRemovalRunner,
 } from '../lib/git.js';
 // listLocalBranches, listRemoteBranches, getDefaultBranch, refreshDefaultBranch
-// are thin pass-throughs after Issue #870: lib/git.ts now accepts requestUser
-// directly so multi-user mode runs git as the worktree-owning user (picking
-// up that user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
+// are thin pass-throughs: lib/git.ts accepts requestUser directly so
+// multi-user mode runs git as the worktree-owning user (picking up that
+// user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
+import { isErrnoException } from '../lib/type-guards.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import {
   runAsUser,
@@ -91,8 +92,7 @@ const WORKTREE_ADD_TIMEOUT_MS = 120000;
 /**
  * Timeout for `git worktree remove` (and the fallback `rm -rf` / `git
  * worktree prune` shell invocations) that route through `runAsUser` when
- * the worktree is user-owned (Issue #882). Same wall-clock budget as the
- * add path.
+ * the worktree is user-owned. Same wall-clock budget as the add path.
  */
 const WORKTREE_REMOVE_TIMEOUT_MS = 120000;
 
@@ -104,8 +104,8 @@ const SAFE_DIRECTORY_BOOTSTRAP_TIMEOUT_MS = 10000;
 
 /**
  * Timeout for each template file materialization step (one `mkdir -p` or
- * `cat > <dst>` invocation) when the worktree is user-owned (Issue #838
- * elevated branch). Local fs only, short content -- 10s is generous.
+ * `cat > <dst>` invocation) when the worktree is user-owned (elevated
+ * branch). Local fs only, short content -- 10s is generous.
  */
 const TEMPLATE_MATERIALIZE_TIMEOUT_MS = 10000;
 
@@ -153,9 +153,9 @@ async function findTemplatesDir(repoPath: string, orgRepo: string): Promise<stri
 
 /**
  * Sink for template file materialization. Production uses a sink that
- * routes writes through `runAsUser` when the worktree is user-owned
- * (Issue #838) so template files land owned by the requesting user
- * rather than the server process. Tests use the in-process sink that
+ * routes writes through `runAsUser` when the worktree is user-owned so
+ * template files land owned by the requesting user rather than the
+ * server process. Tests use the in-process sink that
  * writes via `fsPromises` directly.
  */
 interface TemplateFileSink {
@@ -185,7 +185,7 @@ const directFsSink: TemplateFileSink = {
  * `<AGENT_CONSOLE_HOME>/repositories/<org>/<repo>/templates/`). Only the
  * writer side is potentially elevated, via the injected `sink`, so that
  * template files in a user-owned worktree end up owned by the requesting
- * user rather than the server process (Issue #838).
+ * user rather than the server process.
  */
 async function copyTemplateFiles(
   templatesDir: string,
@@ -293,8 +293,7 @@ export class WorktreeService {
    *
    * Used as a pre-create probe by `createWorktreeWithSession` so failures
    * such as `dubious ownership`, corrupt `.git/`, or missing remote surface
-   * as actionable errors before any filesystem side effect is performed
-   * (Issue #854).
+   * as actionable errors before any filesystem side effect is performed.
    *
    * @throws GitError when the underlying `git worktree list` fails.
    */
@@ -459,7 +458,7 @@ export class WorktreeService {
    * `git worktree add` is invoked via `runAsUser` so the resulting worktree
    * files are owned by the requesting user. This eliminates the
    * `dubious ownership` error users hit when running git commands inside the
-   * worktree's PTY (Issue #838 / umbrella #837).
+   * worktree's PTY.
    *
    * In `AUTH_MODE=none` or when `requestUsername` is null/undefined, the call
    * still routes through `runAsUser` (which bypasses elevation in that case),
@@ -532,8 +531,8 @@ export class WorktreeService {
         'Worktree created',
       );
 
-      // Copy template files. When the worktree is user-owned (Issue #838
-      // elevated branch), template files must also be materialized as the
+      // Copy template files. When the worktree is user-owned (elevated
+      // branch), template files must also be materialized as the
       // requesting user so the ownership of the entire worktree subtree is
       // consistent. The sink wraps `runAsUser` for that case; the
       // non-elevated branch uses direct fs writes (server-owned worktree
@@ -621,7 +620,6 @@ export class WorktreeService {
    * not already present. Required because the source repo is owned by the
    * server user (`agentconsole`), so `git worktree add` running as the
    * requesting user would otherwise hit `fatal: detected dubious ownership`.
-   * Mitigation A from Issue #838.
    *
    * Idempotent — checks `git config --get-all safe.directory` first and only
    * adds the entry when this exact `repoPath` is missing. Failure is logged
@@ -674,8 +672,8 @@ export class WorktreeService {
   /**
    * Build a template-file sink that materializes directories and files as
    * the requesting user via `runAsUser`. Used by `copyTemplateFiles` so
-   * that template entries in a user-owned worktree (Issue #838 elevated
-   * branch) inherit the same ownership as the worktree itself.
+   * that template entries in a user-owned worktree (elevated branch)
+   * inherit the same ownership as the worktree itself.
    *
    * The reader side (template content + variable substitution) stays
    * in-process; only the writer side is elevated. Files are materialized
@@ -731,8 +729,8 @@ export class WorktreeService {
    * any force-fallback `rm -rf` / `git worktree prune`) is invoked via
    * `runAsUser` so the operations execute as the worktree-owning user. This
    * fixes the `Permission denied` failure mode hit when the server user
-   * (`agentconsole`) tries to delete files owned by a delegated user
-   * (Issue #882, mirrors the create-side fix from Issue #838 / PR #843).
+   * (`agentconsole`) tries to delete files owned by a delegated user,
+   * mirroring the create-side fix.
    *
    * In `AUTH_MODE=none` or when `requestUsername` is null/undefined, the call
    * keeps the historical direct `gitRemoveWorktree` path, preserving the
@@ -760,7 +758,7 @@ export class WorktreeService {
         const stat = await fsPromises.stat(repoPath);
         repoExists = stat.isDirectory();
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        const code = isErrnoException(error) ? error.code : undefined;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           repoExists = false;
         } else {
@@ -806,7 +804,7 @@ export class WorktreeService {
           );
         }
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        const code = isErrnoException(error) ? error.code : undefined;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           effectiveForce = true;
         } else if (
@@ -910,7 +908,7 @@ export class WorktreeService {
    * - `fs.rm` with `force: true` — no-op if the directory is already gone.
    * - `worktreeRepository.deleteByPath` — no-op if the row is already gone.
    *
-   * In multi-user mode (Issue #882) the worktree directory is owned by the
+   * In multi-user mode the worktree directory is owned by the
    * requesting user, so the server-process `fsPromises.rm` would fail with
    * `EACCES`. When `requestUsername` is provided and elevation engages, the
    * removal is routed through `runAsUser` (`rm -rf -- <path>`) so it executes
@@ -950,9 +948,9 @@ export class WorktreeService {
    * user's PATH, `~/.gitconfig`, and SSH_AUTH_SOCK from their login shell
    * via `sudo -i`. The server's own SSH_AUTH_SOCK is intentionally NOT
    * forwarded: the server runs as a system user (`agentconsole`) which has
-   * no useful agent socket of its own. See Issue #870 for the user-facing
-   * symptom (the "Could not check remote status" banner / dubious
-   * ownership errors).
+   * no useful agent socket of its own. Without this, the user-facing
+   * symptom is the "Could not check remote status" banner / dubious
+   * ownership errors.
    *
    * Preserves the existing swallow contract: any overall failure returns
    * `{ local: [], remote: [], defaultBranch: null }` so the UI can render a
@@ -1059,7 +1057,7 @@ export class WorktreeService {
    * Also supports arithmetic expressions like {{WORKTREE_NUM + 3000}}
    *
    * In `AUTH_MODE=multi-user` with a `requestUsername` that differs from the
-   * server-process user (Issue #883), the command is routed through
+   * server-process user, the command is routed through
    * `runAsUser` so the hook executes as the worktree-owning user. This is
    * required because the worktree directory and its credentials (gh, ssh)
    * are owned by the requesting user; running the hook as the server user
@@ -1105,7 +1103,7 @@ export class WorktreeService {
 
     logger.info({ worktreePath, command: substitutedCommand }, 'Executing hook command');
 
-    // Elevated branch (Issue #883): route through runAsUser so the hook runs
+    // Elevated branch: route through runAsUser so the hook runs
     // as the worktree-owning user. Only engaged when AUTH_MODE=multi-user AND
     // requestUsername differs from the server-process user — otherwise the
     // historical direct-spawn path below is preserved verbatim (including

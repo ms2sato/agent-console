@@ -27,11 +27,11 @@ export class PtyMessageInjectionService {
    * a final Enter are queued with delays so TUI agents can process each
    * input sequentially.
    *
-   * See Issue #660: previously this converted \r?\n to \r, which caused any
-   * embedded newline to be interpreted as submit and split a single message
-   * into multiple submissions.
+   * Previously this converted \r?\n to \r, which caused any embedded newline
+   * to be interpreted as submit and split a single message into multiple
+   * submissions.
    *
-   * See Issue #792: when `isAsking` is true the agent is parked at an interactive
+   * When `isAsking` is true the agent is parked at an interactive
    * prompt (the "asking" activity state). Modern Claude Code CLIs drop text typed
    * while such a prompt is open — the bare submit CR then confirms the default
    * option instead of delivering the message. To handle this we send an ESC first

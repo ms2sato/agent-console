@@ -16,6 +16,7 @@ import { AgentDefinitionSchema } from '@agent-console/shared';
 export const PersistedAgentDefinitionSchema = v.object(AgentDefinitionSchema.entries);
 import { getConfigDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
+import { isErrnoException } from '../lib/type-guards.js';
 
 const logger = createLogger('persistence-service');
 
@@ -221,7 +222,7 @@ async function safeRead<T>(filePath: string, defaultValue: T): Promise<T> {
     const content = await fsPromises.readFile(filePath, 'utf-8');
     return JSON.parse(content);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+    if (!(isErrnoException(error) && error.code === 'ENOENT')) {
       logger.error({ err: error, filePath }, 'Failed to read file');
     }
   }

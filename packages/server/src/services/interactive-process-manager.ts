@@ -92,7 +92,7 @@ export class InteractiveProcessManager {
      * `AUTH_MODE=multi-user` and differing from the server process user,
      * the underlying spawn is elevated via `sudo`. Plumbed in by the
      * `run_process` MCP tool, which resolves it from the calling
-     * session's `createdBy` (Issue #879).
+     * session's `createdBy`.
      */
     requestUser?: string | null;
   }): Promise<InteractiveProcessInfo> {
@@ -208,9 +208,9 @@ export class InteractiveProcessManager {
       // In `pty` mode, echo response content to the worker PTY (newlines
       // normalized to LF so they remain soft newlines, no Enter yet). The
       // Enter (\r) will be sent by writePtyNotification when process output
-      // settles and onOutput is called. See Issue #660 — converting \n to
-      // \r here previously caused multi-line responses to be submitted as
-      // multiple messages. In `message` mode the brief PTY notification is
+      // settles and onOutput is called. Converting \n to \r here previously
+      // caused multi-line responses to be submitted as multiple messages.
+      // In `message` mode the brief PTY notification is
       // emitted by the onResponse consumer, so PTY echo is skipped here.
       if (this.ptyMessageInjector && stored.info.outputMode === 'pty') {
         this.ptyMessageInjector.writePtyData(

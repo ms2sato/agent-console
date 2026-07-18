@@ -554,7 +554,7 @@ export class SessionManager {
 
     // Inject message parts into target worker's PTY. When the target is parked at
     // an interactive prompt (asking state), the injection service sends ESC first
-    // to cancel it so the text is delivered as a normal composer message (Issue #792).
+    // to cancel it so the text is delivered as a normal composer message.
     const isAsking = this.getWorkerActivityState(sessionId, toWorkerId) === 'asking';
     const injected = this.ptyMessageInjectionService.injectMessage(sessionId, toWorkerId, content, filePaths, isAsking);
     if (!injected) return null;
@@ -991,7 +991,7 @@ export class SessionManager {
     return this.workerLifecycleManager.writeWorkerInput(sessionId, workerId, data);
   }
 
-  /** Inject content into a worker's PTY as submitted input (CR conversion + delayed Enter; sends ESC first to cancel an active interactive prompt when the worker is in the asking state — see injectMessage / Issue #792). */
+  /** Inject content into a worker's PTY as submitted input (CR conversion + delayed Enter; sends ESC first to cancel an active interactive prompt when the worker is in the asking state). */
   injectPtyMessage(sessionId: string, workerId: string, content: string): boolean {
     const isAsking = this.getWorkerActivityState(sessionId, workerId) === 'asking';
     return this.ptyMessageInjectionService.injectMessage(sessionId, workerId, content, undefined, isAsking);

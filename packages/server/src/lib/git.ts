@@ -6,9 +6,9 @@
  * - Consistent async API
  * - Non-blocking I/O
  *
- * Issue #869 / #870: Many exported helpers accept an optional `requestUser`
- * trailing argument. When non-null, the invocation is routed via
- * `runAsUser` (see `../services/privilege-elevation.js`) so that, in
+ * Many exported helpers accept an optional `requestUser` trailing argument.
+ * When non-null, the invocation is routed via `runAsUser` (see
+ * `../services/privilege-elevation.js`) so that, in
  * multi-user mode, git executes as the requesting OS user — picking up
  * that user's PATH, gitconfig, and SSH_AUTH_SOCK from their login shell
  * via `sudo -i`. When `requestUser` is null/undefined (the default), the
@@ -20,6 +20,7 @@ import {
   type RunAsUserOpts,
   type RunAsUserResult,
 } from '../services/privilege-elevation.js';
+import { isErrnoException } from './type-guards.js';
 
 /** Default timeout for local git operations (30 seconds) */
 const DEFAULT_GIT_TIMEOUT_MS = 30000;
@@ -42,7 +43,7 @@ export class GitError extends Error {
 }
 
 // ============================================================
-// Privilege-elevation test seam (Issue #869 / #870)
+// Privilege-elevation test seam
 // ============================================================
 
 type RunAsUserFn = (opts: RunAsUserOpts) => Promise<RunAsUserResult>;
@@ -160,7 +161,6 @@ async function gitExec(
     return applyTrim(result.stdout, trimOutput);
   }
 
-  // Direct-spawn path (unchanged from pre-Issue-#869 behaviour).
   const proc = Bun.spawn(['git', ...args], {
     cwd,
     stdout: 'pipe',
@@ -306,9 +306,9 @@ export async function getRemoteUrl(cwd: string): Promise<string | null> {
 /**
  * List local branches.
  *
- * @param requestUser - See {@link git}. Issue #870: enables multi-user mode
- *   to run as the worktree-owning user (picks up that user's gitconfig,
- *   avoiding `dubious ownership` on user-owned repos).
+ * @param requestUser - See {@link git}. Enables multi-user mode to run as
+ *   the worktree-owning user (picks up that user's gitconfig, avoiding
+ *   `dubious ownership` on user-owned repos).
  */
 export async function listLocalBranches(
   cwd: string,
@@ -389,7 +389,7 @@ export async function getDefaultBranch(
  * invocation here. When `requestUser` is non-null, it runs via `runAsUser`
  * so it executes as that user — picking up their SSH_AUTH_SOCK from the
  * login shell (sudo -i) so git-over-SSH authenticates against
- * private remotes. (Issue #870.)
+ * private remotes.
  *
  * @param requestUser - See {@link listLocalBranches}.
  * @returns The updated default branch name
@@ -526,7 +526,7 @@ export async function removeWorktree(
         // ENOENT/ENOTDIR on the spawn itself (cwd vanished): surface as a
         // non-stale result so the helper falls through to its throw branch
         // on the remove call, or is silently swallowed on the prune call.
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        const code = isErrnoException(error) ? error.code : undefined;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           return { exitCode: -1, stderr: `spawn ${code}`, timedOut: false };
         }
