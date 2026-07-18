@@ -51,17 +51,6 @@ export async function resolveSpawnUsername(
  *   helper's own null-bypass short-circuits elevation downstream
  *   (`shouldElevateForUser` returns `false` on null/undefined).
  *
- * Extracted in PR #889 to deduplicate three inline blocks in
- * `mcp/mcp-server.ts` (`delegate_to_worktree`, `run_process`,
- * `create_conditional_wakeup`) per
- * `.claude/rules/elevation-helpers.md` "One-PR multi-callsite" trigger
- * applied at the file boundary (mcp-server.ts itself is the consolidating
- * context). All three callers preserved their `createdBy` log payload via
- * the merged `{ createdBy, ...context }` shape; the
- * `toolName`-distinguished warning replaces the prior tool-specific
- * wording (the structured `toolName` field carries the disambiguation,
- * the message body no longer has to).
- *
  * Resolution paths:
  * 1. createdBy is undefined → null (silent — caller intentionally has no
  *    owner; elevation is correctly bypassed downstream)

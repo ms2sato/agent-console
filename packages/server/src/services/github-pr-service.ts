@@ -3,7 +3,7 @@
  *
  * Provides functionality to fetch PR information for branches using the GitHub CLI (gh).
  *
- * Issue #885: gh invocations are routed through the `runGh` thin runner
+ * gh invocations are routed through the `runGh` thin runner
  * (`services/github-cli.ts`) which composes `runAsUser` per
  * `.claude/rules/elevation-helpers.md` so multi-user mode
  * (AUTH_MODE=multi-user) runs `gh pr view` / `gh pr list` as the requesting
@@ -11,8 +11,6 @@
  * server-process user (agentconsole). In single-user mode (or when
  * `requestUsername` equals the server-process user), the underlying
  * `runAsUser` bypasses sudo and spawns directly, preserving prior behavior.
- * Mirrors the pattern established by PR #842 (description gen) and PR #859
- * (session-metadata suggester).
  */
 import { runGh } from './github-cli.js';
 

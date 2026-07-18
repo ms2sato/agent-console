@@ -109,7 +109,7 @@ async function resolveDefaultForkPoint(repoPath: string, requestUser: string | n
  * @param repoPath - Path to the git repository
  * @param requestUser - OS username to run git as (null = no elevation). In
  *   multi-user mode this is the worktree-owning user so git does not refuse
- *   with "dubious ownership in repository". (Issue #869.)
+ *   with "dubious ownership in repository".
  * @returns A base spec string (never null)
  */
 export async function computeDefaultBaseSpec(repoPath: string, requestUser: string | null): Promise<string> {

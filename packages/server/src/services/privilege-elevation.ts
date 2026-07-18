@@ -2,10 +2,6 @@
  * Privilege-elevation helper for server-side operations that must run as the
  * requesting user (multi-user mode).
  *
- * Foundation for umbrella Issue #837. Consumer migrations are tracked
- * independently in #834 (clone), #835 (description generation), and #838
- * (worktree creation).
- *
  * Semantics:
  * - `AUTH_MODE === 'multi-user'` AND `username` is set AND `username` differs
  *   from the server-process user -> elevate via `sudo -u <user>
@@ -337,9 +333,7 @@ export async function runAsUser(
  * Layer-correctness helper: encapsulates the canonical `rm -rf -- <path>`
  * elevated-removal pattern that consumers (worktree deletion, partial-clone
  * cleanup, hook teardown, ...) would otherwise inline. Mirrors how
- * `lib/git.ts` encapsulates git command construction (Issue #882 dogfood
- * feedback from the owner: code placement matters even when behaviour is
- * identical).
+ * `lib/git.ts` encapsulates git command construction.
  *
  * Semantics:
  * - `null` / `undefined` / single-user-mode username bypasses elevation via

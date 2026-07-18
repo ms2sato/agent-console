@@ -11,10 +11,9 @@ const log = createLogger('git-diff-handler');
 
 export interface GitDiffHandlerDependencies {
   /**
-   * Issue #869 / #870: each dep that runs git accepts `requestUser` so
-   * multi-user mode can elevate git to the worktree-owning user. Pass
-   * `null` when no elevation is needed; the underlying helpers bypass
-   * elevation in that case.
+   * Each dep that runs git accepts `requestUser` so multi-user mode can
+   * elevate git to the worktree-owning user. Pass `null` when no elevation
+   * is needed; the underlying helpers bypass elevation in that case.
    */
   getDiffData: (repoPath: string, baseCommit: string, requestUser: string | null, targetRef?: GitDiffTarget) => Promise<GitDiffData>;
   resolveRef: (ref: string, repoPath: string, requestUser: string | null) => Promise<string | null>;
@@ -37,9 +36,9 @@ interface ConnectionState {
   baseSpec: string;
   targetRef: GitDiffTarget;
   /**
-   * Issue #869: OS username captured at WS connection time, threaded into
-   * every git invocation so multi-user mode runs git as the worktree owner.
-   * `null` in single-user / no-elevation contexts.
+   * OS username captured at WS connection time, threaded into every git
+   * invocation so multi-user mode runs git as the worktree owner. `null`
+   * in single-user / no-elevation contexts.
    */
   requestUser: string | null;
 }
@@ -58,8 +57,8 @@ export function createGitDiffHandlers(deps: GitDiffHandlerDependencies) {
    * Send diff data to the client.
    *
    * The base *spec* is re-resolved to a concrete commit hash on every call, so
-   * the diff base tracks the moving fork point (Issue #800). If the spec cannot
-   * be resolved, an error is surfaced instead of a silent empty diff.
+   * the diff base tracks the moving fork point. If the spec cannot be
+   * resolved, an error is surfaced instead of a silent empty diff.
    *
    * Returns `true` when diff data was sent, `false` when an error was surfaced
    * (resolution failed or getDiffData threw). Callers that mutate

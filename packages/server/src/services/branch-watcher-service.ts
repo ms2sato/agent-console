@@ -149,7 +149,7 @@ export class BranchWatcherService {
     // Git updates HEAD via atomic rename (HEAD.lock -> HEAD), which detaches
     // the original inode. fs.watch on a file is bound to the inode, so it
     // would miss updates after the first rename. Directory watchers persist
-    // across file replacements. (Issue #708)
+    // across file replacements.
     const headDir = path.dirname(headFilePath);
     const headBasename = path.basename(headFilePath);
 

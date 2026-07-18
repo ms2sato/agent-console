@@ -1299,7 +1299,7 @@ export async function migrateToV20(database: Kysely<Database>): Promise<void> {
 
 /**
  * Migration v21: migrate git-diff workers' frozen base_commit hash to the
- * `DEFAULT_FORK_POINT_SPEC` sentinel spec (Issue #800).
+ * `DEFAULT_FORK_POINT_SPEC` sentinel spec.
  *
  * Previously each git-diff worker froze a resolved merge-base hash in
  * `base_commit`. The new model persists a base *spec* that is re-resolved on
@@ -1309,7 +1309,7 @@ export async function migrateToV20(database: Kysely<Database>): Promise<void> {
  *
  * Limitation: a user-pinned explicit base cannot be distinguished from an
  * auto-frozen merge-base at the DB layer, so user-pinned bases are also reset
- * to the default spec. This is acceptable per Issue #800.
+ * to the default spec. This is an accepted trade-off.
  *
  * Idempotent: re-applying the UPDATE is a no-op once rows already hold the
  * sentinel.

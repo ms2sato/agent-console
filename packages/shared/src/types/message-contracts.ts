@@ -1,7 +1,7 @@
 /**
  * Message Content Semantic Contracts
  *
- * Prevents Issue #660 class of bugs by enforcing clear separation between:
+ * Enforces clear separation between:
  * - Message content (data to preserve)
  * - Terminal operations (actions to execute)
  *

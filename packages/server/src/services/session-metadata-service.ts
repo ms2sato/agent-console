@@ -144,8 +144,8 @@ export class SessionMetadataService {
     }
 
     // Git-diff workers persist a branch-agnostic base *spec* that re-resolves on
-    // every diff (Issue #800), so a branch sync does NOT require recomputing or
-    // freezing a base hash here. Leave each worker's spec unchanged.
+    // every diff, so a branch sync does NOT require recomputing or freezing a
+    // base hash here. Leave each worker's spec unchanged.
     const toSave = { ...metadata, worktreeId: newBranch };
     await this.deps.sessionRepository.save(toSave);
 
@@ -189,9 +189,8 @@ export class SessionMetadataService {
       }
 
       // Git-diff workers persist a branch-agnostic base *spec* that re-resolves
-      // on every diff (Issue #800), so a branch rename does NOT require
-      // recomputing or freezing a base hash here. Leave each worker's spec
-      // unchanged.
+      // on every diff, so a branch rename does NOT require recomputing or
+      // freezing a base hash here. Leave each worker's spec unchanged.
       updatedWorktreeId = updates.branch;
       result.branch = updates.branch;
     }

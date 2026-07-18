@@ -9,12 +9,6 @@
  * remains strict (returns underlying `RunAsUserResult` unchanged) and
  * domain-level runners that add caller semantics live at the consumer layer.
  *
- * Extracted in PR #892 after `github-issue-service.ts:runGhApi` and
- * `github-pr-service.ts:findOpenPullRequest` converged on the same
- * `runAsUser` + timedOut/exitCode/throw construction (the
- * two-PR-convergence trigger in `elevation-helpers.md`'s "When to extract"
- * section, satisfied here by a single PR converging two services).
- *
  * `fetchPullRequestUrl`'s swallow-to-null behavior is the caller's semantics,
  * NOT the runner's: that function wraps `runGh` in `try { ... } catch { return null; }`.
  * Do NOT add a null-swallow variant here — strict-thin-wrapper composes

@@ -59,7 +59,7 @@ interface StoredWakeup {
    * or same-as-server-user) bypasses elevation -- single-user behaviour
    * preserved. Resolved once at `createWakeup` time from the calling
    * session's `createdBy`. Mirrors the `requestUser` field plumbed into
-   * `InteractiveProcessManager.runProcess` by PR #880.
+   * `InteractiveProcessManager.runProcess`.
    */
   requestUsername?: string | null;
 }
@@ -95,7 +95,7 @@ export class ConditionalWakeupManager {
      * OS username to run `conditionScript` as. Treated identically when
      * `null` / `undefined` -- no elevation. Plumbed in by the MCP
      * `create_conditional_wakeup` tool, which resolves it from the calling
-     * session's `createdBy` (Issue #886).
+     * session's `createdBy`.
      */
     requestUsername?: string | null;
   }): ConditionalWakeupInfo {
@@ -237,7 +237,7 @@ export class ConditionalWakeupManager {
       }
 
       // Route the condition-script spawn through `spawnAsUser` so multi-user
-      // mode elevates the child to the requesting OS user (Issue #886). When
+      // mode elevates the child to the requesting OS user. When
       // `requestUsername` is null/undefined or `AUTH_MODE !== 'multi-user'`,
       // the helper bypasses elevation and spawns `sh -c <script>` directly.
       const { subprocess, stdin } = this.spawnAsUserFn({
