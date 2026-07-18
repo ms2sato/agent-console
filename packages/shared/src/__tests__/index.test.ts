@@ -107,6 +107,22 @@ describe('shared index exports', () => {
     expect(mod.AGENT_KINDS).toEqual(['terminal', 'embedded']);
   });
 
+  it('should re-export AGENT_OPERATIONS as the single-writer cross-surface operation enum', async () => {
+    const mod = await import('../index.js');
+
+    // AGENT_OPERATIONS is the single writer consumed by the UI / MCP /
+    // embedded-visible exposure tables (packages/shared/src/types/agent-operations.ts)
+    // -- verify the runtime constant is actually re-exported through the
+    // barrel, not just the type-only AgentOperation/SurfaceExposure.
+    expect(mod.AGENT_OPERATIONS).toEqual([
+      'listAgents',
+      'resolveAgent',
+      'createSessionWithAgent',
+      'addWorkerToSession',
+      'manageDefinitions',
+    ]);
+  });
+
   it('should export ConditionalWakeupInfo type', async () => {
     const mod = await import('../index.js');
 

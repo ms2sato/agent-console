@@ -28,6 +28,14 @@ The stored configuration for an AI agent, including command templates and activi
 **Implemented (Issue #1160 PR-A).** A stateless, policy-free composite (`packages/server/src/services/agent-directory.ts`) over the `terminal` and `embedded` [AgentSurface](#agentsurface) registries. Provides `listAll()` (used by the MCP `list_agents` tool) and `resolve({ agentId?, agentName? })` (used by `delegate_to_worktree`'s agent resolver, absorbing the short-term two-registry facade from PR #1165 verbatim — same terminal-first-by-id precedence and ambiguity error messages). Owns no lifecycle, no caching, no CRUD; suggestion policy and default-agent policy stay at callers, following the same strict-thin-wrapper discipline as [`privilege-elevation.ts`](../.claude/rules/elevation-helpers.md). Does NOT merge [AgentDefinition](#agentdefinition) and [EmbeddedAgentDefinition](#embeddedagentdefinition) — the two registries remain separate data models with separate id namespaces; `AgentDirectory` only unifies what their consumers can *query*.
 - **See:** [Agent Surface design](design/agent-surface.md)
 
+### AgentOperation
+**Implemented (Issue #1160 PR-D).** The discriminator naming a cross-surface action performable against "an agent" (`listAgents`, `resolveAgent`, `createSessionWithAgent`, `addWorkerToSession`, `manageDefinitions`). Single writer: the `AGENT_OPERATIONS` constant in [agent-operations.ts](../packages/shared/src/types/agent-operations.ts). Distinct from [AgentKind](#agentkind): `AgentKind` tags which registry an agent belongs to; `AgentOperation` names what a consumer surface (UI / MCP / embedded-visible) can do to an agent. Each surface owns an exposure table typed `satisfies Record<AgentOperation, SurfaceExposure>`, so adding a new operation is a compile error in every table until it records an explicit exposed/not-exposed decision.
+- **See:** [Agent Surface design](design/agent-surface.md) Mechanism 3
+
+### SurfaceExposure
+**Implemented (Issue #1160 PR-D).** The value type of an exposure-table entry: `{ exposed: true; via: string } | { exposed: false; reason: string }`. `via` names a human-locatable entry point (a component, a page, an MCP tool name); `reason` is the rationale for an intentional omission. Defined alongside [AgentOperation](#agentoperation) in `agent-operations.ts`.
+- **See:** [Agent Surface design](design/agent-surface.md) Mechanism 3
+
 ### Repository
 A registered Git repository available for session creation. Code reference: `repositoryId` (UUID).
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)
