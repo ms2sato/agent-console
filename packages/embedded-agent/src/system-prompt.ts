@@ -18,6 +18,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { truncateToBytes } from './truncate.js';
 import { resolveConfinedPath } from './tools/path-confinement.js';
+import { isErrnoException } from './type-guards.js';
 
 export const INSTRUCTION_PER_FILE_CAP_BYTES = 16 * 1024;
 export const INSTRUCTION_AGGREGATE_CAP_BYTES = 48 * 1024;
@@ -103,7 +104,7 @@ async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
     const content = await Bun.file(filePath).text();
     return { ok: true, content };
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+    const code = (isErrnoException(err) ? err.code : undefined) ?? 'UNKNOWN';
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, code, message };
   }
@@ -123,7 +124,7 @@ async function findGitRoot(startDir: string): Promise<string | null> {
         return current;
       }
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      if (!(isErrnoException(err) && err.code === 'ENOENT')) {
         // Unexpected error (e.g. EACCES) inspecting this ancestor's .git --
         // treat as "not the root here" and keep climbing rather than failing
         // discovery entirely.

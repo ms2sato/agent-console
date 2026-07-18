@@ -31,6 +31,17 @@ describe('PersistenceService', () => {
       expect(repos).toEqual([]);
     });
 
+    it('should return default value (not throw) on a non-ENOENT read failure', async () => {
+      // A directory in place of the expected file makes the read fail with
+      // EISDIR, not ENOENT, exercising the "log and fall through to default"
+      // branch rather than the "silently missing" branch.
+      fs.mkdirSync(path.join(TEST_CONFIG_DIR, 'repositories.json'), { recursive: true });
+      const service = await getPersistenceService();
+
+      const repos = await service.loadRepositories();
+      expect(repos).toEqual([]);
+    });
+
     it('should save and load repositories', async () => {
       const service = await getPersistenceService();
 

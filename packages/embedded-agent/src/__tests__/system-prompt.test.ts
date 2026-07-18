@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, spyOn } from 'bun:test';
+import * as fsPromises from 'node:fs/promises';
 import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -186,6 +187,39 @@ describe('loadInstructions — chain discovery (b)', () => {
     const leafIdx = result.segments.findIndex((s) => s.content === 'LEAF_MARKER');
     expect(rootIdx).toBe(0);
     expect(leafIdx).toBe(1);
+  });
+});
+
+describe('loadInstructions — git-root discovery tolerates non-ENOENT stat errors while climbing (b2)', () => {
+  it('keeps climbing past a directory whose .git stat rejects with EACCES, and still finds the real root', async () => {
+    const root = await makeTempDir();
+    await mkdir(join(root, '.git'));
+    await writeFile(join(root, 'AGENTS.md'), 'ROOT_MARKER');
+    const leaf = join(root, 'sub');
+    await mkdir(leaf);
+
+    const leafGitPath = join(leaf, '.git');
+    const originalStat = fsPromises.stat;
+    const statSpy = spyOn(fsPromises, 'stat').mockImplementation(((...args: Parameters<typeof fsPromises.stat>) => {
+      if (args[0] === leafGitPath) {
+        return Promise.reject(Object.assign(new Error('EACCES: permission denied, stat ' + leafGitPath), { code: 'EACCES' }));
+      }
+      return (originalStat as (...a: unknown[]) => ReturnType<typeof fsPromises.stat>)(...args);
+    }) as typeof fsPromises.stat);
+
+    try {
+      const result = await loadInstructions({
+        cwd: leaf,
+        xdgConfigHome: await isolatedXdgConfigHome(),
+      });
+
+      // Discovery reaches the real root above the EACCES'd directory instead
+      // of stopping (or throwing) at the inaccessible `.git` stat.
+      const origins = result.segments.map((s) => s.origin);
+      expect(origins).toContain(join(root, 'AGENTS.md'));
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 });
 

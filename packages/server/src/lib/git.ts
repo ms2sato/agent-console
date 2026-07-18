@@ -20,6 +20,7 @@ import {
   type RunAsUserOpts,
   type RunAsUserResult,
 } from '../services/privilege-elevation.js';
+import { isErrnoException } from './type-guards.js';
 
 /** Default timeout for local git operations (30 seconds) */
 const DEFAULT_GIT_TIMEOUT_MS = 30000;
@@ -526,7 +527,7 @@ export async function removeWorktree(
         // ENOENT/ENOTDIR on the spawn itself (cwd vanished): surface as a
         // non-stale result so the helper falls through to its throw branch
         // on the remove call, or is silently swallowed on the prune call.
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        const code = isErrnoException(error) ? error.code : undefined;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           return { exitCode: -1, stderr: `spawn ${code}`, timedOut: false };
         }

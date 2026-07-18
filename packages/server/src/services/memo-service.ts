@@ -11,6 +11,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { createLogger } from '../lib/logger.js';
+import { isErrnoException } from '../lib/type-guards.js';
 
 const logger = createLogger('memo-service');
 
@@ -66,7 +67,7 @@ export class MemoService {
     try {
       return await fs.readFile(filePath, 'utf-8');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      if (isErrnoException(err) && err.code === 'ENOENT') {
         return null;
       }
       throw err;

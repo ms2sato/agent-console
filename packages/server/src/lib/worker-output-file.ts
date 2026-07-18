@@ -18,6 +18,7 @@ import { promisify } from 'node:util';
 import { SessionDataPathResolver } from './session-data-path-resolver.js';
 import { serverConfig } from './server-config.js';
 import { createLogger } from './logger.js';
+import { isErrnoException } from './type-guards.js';
 import {
   type WorkerOutputManifest,
   type SegmentMeta,
@@ -320,7 +321,7 @@ export class WorkerOutputFileManager {
     try {
       liveSize = (await fs.stat(filePath)).size;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      if (!(isErrnoException(error) && error.code === 'ENOENT')) throw error;
       liveSize = 0;
     }
 
@@ -356,7 +357,7 @@ export class WorkerOutputFileManager {
     try {
       entries = await fs.readdir(dir);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      if (isErrnoException(error) && error.code === 'ENOENT') return;
       throw error;
     }
 
@@ -365,7 +366,7 @@ export class WorkerOutputFileManager {
     for (const entry of entries) {
       if (re.test(entry) && !referenced.has(entry)) {
         await fs.unlink(path.join(dir, entry)).catch((err) => {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          if (!(isErrnoException(err) && err.code === 'ENOENT')) {
             logger.warn({ dir, entry, err }, 'Failed to delete orphan segment file');
           }
         });
@@ -543,7 +544,7 @@ export class WorkerOutputFileManager {
         const existingContent = new TextDecoder('utf-8').decode(decompressed);
         await fs.writeFile(filePath, existingContent + dataToWrite, 'utf-8');
         await fs.unlink(actualFile.path).catch((err) => {
-          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          if (!(isErrnoException(err) && err.code === 'ENOENT')) {
             logger.warn({ sessionId, workerId, path: actualFile.path, err }, 'Failed to delete legacy compressed file during migration');
           }
         });
@@ -661,7 +662,7 @@ export class WorkerOutputFileManager {
   private async deleteSegmentFiles(dir: string, segments: SegmentMeta[]): Promise<void> {
     for (const seg of segments) {
       await fs.unlink(path.join(dir, seg.file)).catch((err) => {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if (!(isErrnoException(err) && err.code === 'ENOENT')) {
           logger.warn({ dir, file: seg.file, err }, 'Failed to delete pruned segment file');
         }
       });
@@ -921,7 +922,7 @@ export class WorkerOutputFileManager {
       try {
         segBuffer = await this.getDecompressedSegment(key, seg, segPath);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        if (isErrnoException(error) && error.code === 'ENOENT') {
           // Manifest references a segment whose file is absent (crash window
           // between retention's file-delete and manifest-rewrite, or a prune
           // racing the read). Availability is filesystem-driven → unavailable.
@@ -1156,7 +1157,7 @@ export class WorkerOutputFileManager {
 
       await this.deleteContentFiles(dir, sessionId, workerId, resolver, manifest);
       await fs.unlink(manifestPath).catch((err) => {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if (!(isErrnoException(err) && err.code === 'ENOENT')) {
           logger.warn({ sessionId, workerId, manifestPath, err }, 'Failed to delete manifest during worker deletion');
         }
       });
@@ -1183,7 +1184,7 @@ export class WorkerOutputFileManager {
 
     const unlinkIgnore = async (p: string): Promise<void> => {
       await fs.unlink(p).catch((err) => {
-        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        if (!(isErrnoException(err) && err.code === 'ENOENT')) {
           logger.warn({ sessionId, workerId, path: p, err }, 'Failed to delete output content file');
         }
       });
@@ -1200,7 +1201,7 @@ export class WorkerOutputFileManager {
         if (re.test(entry)) segFiles.add(entry);
       }
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      if (!(isErrnoException(err) && err.code === 'ENOENT')) {
         logger.warn({ dir, err }, 'Failed to scan segment files for deletion');
       }
     }
@@ -1245,7 +1246,7 @@ export class WorkerOutputFileManager {
       await fs.rm(sessionDir, { recursive: true, force: true });
       logger.debug({ sessionId }, 'Deleted session output directory');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      if (!(isErrnoException(error) && error.code === 'ENOENT')) {
         logger.error({ sessionId, err: error }, 'Failed to delete session output directory');
       }
     }
