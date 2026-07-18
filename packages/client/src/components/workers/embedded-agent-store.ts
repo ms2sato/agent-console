@@ -511,14 +511,28 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       case 'error':
         this.handleError(message.message, message.code);
         break;
-      case 'restore-info':
+      case 'restore-info': {
         // Transcript Restore (#1123). Dual-delivered by the server (fast-path
         // push + every bootstrap re-delivery for the incarnation's lifetime)
         // -- acceptEpoch is the cross-incarnation staleness guard, exactly
-        // like `history`/`output`.
-        if (!this.acceptEpoch(message.epoch)) break;
-        this.applyRestoreInfo(message.messageCount, message.repairedToolCallIds);
+        // like `history`/`output`. Unlike `history`/`output`, this message
+        // carries its own payload that must survive a NEWER-epoch reset:
+        // acceptEpoch returning false covers two different cases (stale
+        // epoch, dropped without side effects; or newer epoch, which
+        // synchronously ran beginEpochReset and set this.epoch = epoch
+        // before returning). Applying against whatever epoch we ended up on
+        // -- rather than bailing out on any `false` return -- means this
+        // message's data is used immediately in the newer-epoch case instead
+        // of being discarded on the bet that a later bootstrap redelivery
+        // will resend it on this same connection (it won't; redelivery only
+        // fires on a fresh WS connection's onOpen). A genuinely stale epoch
+        // never updates this.epoch, so it is still correctly dropped here.
+        this.acceptEpoch(message.epoch);
+        if (this.epoch === message.epoch) {
+          this.applyRestoreInfo(message.messageCount, message.repairedToolCallIds);
+        }
         break;
+      }
       // 'history-range': no UI trigger requests older ranges for embedded-agent
       // in v1 (no scroll-up paging over chat history); silently ignored if a
       // stray response ever arrives.

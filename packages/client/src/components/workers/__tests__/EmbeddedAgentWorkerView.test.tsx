@@ -143,8 +143,8 @@ describe('EmbeddedAgentWorkerView', () => {
     });
     await flush();
 
-    // The persistent amber notice text ("Conversation resets...") stays --
-    // only the removed per-view status row's exact labels are asserted absent.
+    // The persistent amber notice text ("Conversation is restored...") stays
+    // -- only the removed per-view status row's exact labels are asserted absent.
     expect(screen.queryByText('Connecting...')).toBeNull();
     expect(screen.queryByText('Connected')).toBeNull();
     expect(screen.queryByText('Disconnected')).toBeNull();
@@ -160,20 +160,18 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.queryByText('Working...')).toBeNull();
   });
 
-  it('always renders the persistent reset-on-restart note', () => {
+  it('always renders the persistent transcript-restore note', () => {
     renderView({ sessionId: 's1', workerId: 'w1' });
 
     expect(
-      screen.getByText(/Conversation resets when this worker or the server restarts/i),
+      screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
     ).toBeTruthy();
   });
 
   it('always renders the experimental-agent notice', () => {
     renderView({ sessionId: 's1c', workerId: 'w1c' });
 
-    expect(
-      screen.getByText('This is an experimental Embedded Agent. Restart resets the conversation.'),
-    ).toBeTruthy();
+    expect(screen.getByText('This is an experimental Embedded Agent.')).toBeTruthy();
   });
 
   it('mounts MessagePanel with an accessible name for the message input', () => {

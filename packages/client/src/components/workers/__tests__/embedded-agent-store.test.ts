@@ -1329,16 +1329,14 @@ describe('embedded-agent-store', () => {
       ).toHaveLength(1);
 
       // A genuine epoch bump (worker restarted server-side) triggers
-      // resetChatState via beginEpochReset -- the triggering message itself
-      // is dropped by acceptEpoch's contract (returns false), so entries
-      // must be empty and the repair-rendered guard must be cleared.
+      // resetChatState via beginEpochReset. Unlike a stale-epoch message,
+      // this SAME message is the new epoch's first evidence -- it must be
+      // applied against the freshly-reset state immediately, in a single
+      // call, rather than being discarded on the assumption a later
+      // bootstrap redelivery will resend it on this same connection (it
+      // won't -- redelivery only happens on a fresh WS connection's onOpen).
       ws!.simulateMessage(restoreInfoMessage(2, 5, ['call-1']));
       await flush();
-      expect(instance.getSnapshot().entries).toHaveLength(0);
-
-      // The new incarnation's bootstrap re-delivery of restore-info for the
-      // NEW epoch must re-render the note against the freshly-reset state.
-      ws!.simulateMessage(restoreInfoMessage(2, 5, ['call-1']));
 
       const repairEntries = instance.getSnapshot().entries.filter((e) => e.kind === 'restore-repair');
       expect(repairEntries).toHaveLength(1);
