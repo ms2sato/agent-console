@@ -14,12 +14,15 @@ Per-sprint retros repeatedly surface rule/skill additions to close *design* gaps
 
 ## 2. Architect responsibilities
 
-The Architect owns:
+The Architect **owns the quality of implementation artifacts**. From an Issue's AC through delivered code, the Architect is the accountable role for "does this correctly and appropriately solve the problem." Concretely:
 
+- **Acceptance Criteria drafting** — writing the AC for every Issue that will be delegated. Because delegate workers run on a lower-tier model (see §10), the AC is **prescriptive**: it names the specific files to touch, the interface shape to preserve or change, the invariants to hold, the tests to add, and the failure modes to avoid. "Behavior-only" AC is insufficient; include implementation guidance whenever the correct approach is non-obvious to a mid-tier worker.
+- **Implementation code appropriateness review** — post-delegation, review whether the delivered code actually satisfies the AC and whether the code is appropriate as code (structure, naming, invariants, sibling-site consistency, error handling shape). The Orchestrator handles behavior verification (tests / CI / dogfood); the Architect handles code appropriateness.
 - **Design review** — PR-level spec/architecture check when the change is spec-shaped or crosses design boundaries
-- **Spec drafting** — writing / refining design docs, AC definition, trade-off analysis
+- **Spec drafting** — writing / refining design docs (`docs/design/**`), trade-off analysis
 - **Multi-round audit** — per-round verdict (clean / clean-with-followups / changes-requested) on complex PRs, especially those with 3+ CR findings or spec-derivation risk
 - **Cross-domain design consultation** — when a change would touch multiple design docs / packages / architectural-invariants
+- **Direct implementation-support channel** — workers may consult the Architect directly during implementation when uncertain (see §6). The Architect is expected to answer without routing back through the Orchestrator.
 - **Design-discipline rule authorship** — rules whose home is design-review (e.g., symmetry check, execution-result-as-contract) are drafted by the Architect and reviewed by the Orchestrator before landing
 
 The Architect does NOT own:
@@ -27,7 +30,8 @@ The Architect does NOT own:
 - Delegation / dispatch (Orchestrator)
 - Merge authority (Orchestrator, subject to owner)
 - Retro execution, rule maintenance sweeps, cross-project knowledge share (Orchestrator)
-- First-responder for delegate questions (Orchestrator)
+- Behavior verification / test execution / CI monitoring / dogfood (Orchestrator)
+- First-responder for non-technical / procedural questions (Orchestrator)
 
 ## 3. Boundary with Orchestrator (gray zone resolution)
 
@@ -38,11 +42,14 @@ Practical split:
 | Concern | Owner |
 |---|---|
 | Prioritization | Orchestrator |
-| Issue creation with AC | Orchestrator drafts, Architect reviews spec-shaped ACs |
-| Delegation prompt authoring | Orchestrator |
-| First-responder for delegate questions | Orchestrator |
-| Work-report review | Orchestrator |
-| Acceptance check | Orchestrator (invokes Architect for design-shaped concerns only) |
+| Issue creation (title / body / scope) | Orchestrator |
+| **Acceptance Criteria authoring** | **Architect** (prescriptive, implementation-guidance included) |
+| Delegation prompt assembly | Orchestrator (uses AC drafted by Architect) |
+| First-responder for procedural / non-technical delegate questions | Orchestrator |
+| **First-responder for implementation-uncertainty delegate questions** | **Architect** (worker may push direct) |
+| Behavior verification / test / CI / dogfood | Orchestrator |
+| **Implementation code appropriateness review** | **Architect** |
+| Acceptance check (final gate before merge) | Orchestrator (combines behavior + Architect verdict) |
 | Merge | Orchestrator (subject to owner authority thresholds) |
 | Multi-round audit on complex PRs | **Architect** |
 | Spec drafting / design doc | **Architect** |
@@ -53,8 +60,12 @@ Practical split:
 
 ## 4. When to consult the Architect
 
-The Orchestrator invokes the Architect for:
+### 4a. Orchestrator → Architect (routine consultation)
 
+The Orchestrator pushes to the Architect for:
+
+- **Every Issue AC drafting** — before delegation, ask the Architect to write the prescriptive AC (this is the default flow, not an exception)
+- **Every delivered PR** — request code appropriateness review after the delegate reports implementation-complete but before Orchestrator's acceptance check finalizes
 - **Spec / design doc changes** — any PR that adds or substantially modifies `docs/design/**`
 - **Cross-package refactors** — changes that touch `packages/shared/*` types plus one or more consumer packages simultaneously
 - **New agent kind / worker kind / execution surface** — anything that triggers `pre-pr-completeness.md` Q11
@@ -62,12 +73,26 @@ The Orchestrator invokes the Architect for:
 - **Complex PR audit** — multi-round PRs (3+ commits driven by review feedback, or 5+ CR findings)
 - **Design-discipline rule proposals** — retro items in the "design discipline" family
 
-The Orchestrator does NOT invoke the Architect for:
+The Orchestrator does NOT push to the Architect for:
 
-- Straight bug fixes with narrow scope (Orchestrator handles alone)
-- Test-only additions
-- Doc typo fixes
-- Retro / rule maintenance items that are operational tips (Orchestrator drafts alone)
+- Doc typo fixes / language-check-only edits
+- Retro / rule maintenance items that are pure operational tips (Orchestrator drafts alone; if the item is design-shaped, the Architect drafts it per §2)
+- Trivial mechanical batches where the AC is a 1-line "remove all occurrences of X" and code review is `git diff | wc -l`-sized
+
+### 4b. Worker → Architect (direct implementation-support channel)
+
+Delegate workers **may consult the Architect directly** — bypassing the Orchestrator — when they encounter implementation uncertainty during a task. Typical cases:
+
+- Ambiguity in the AC that only the AC author can resolve
+- A code-shape decision (which of two structurally equivalent approaches to take)
+- Discovery that the AC's prescribed implementation collides with a constraint the AC author did not know about
+- A sibling-site consistency question ("this function has a nearby analogue — should I follow it or diverge?")
+
+The worker uses `send_session_message` (or equivalent) to push the question to the Architect session. The Architect responds without routing back through the Orchestrator. The Orchestrator is informed via the worker's next work report (and via the memo, if the exchange changed the AC or design meaningfully).
+
+This channel exists because the AC drafting is prescriptive but not exhaustive; implementation surface always exceeds spec. Rather than force the worker to guess and ship a wrong implementation, the direct channel lets the accountable role (Architect) close the loop in one hop.
+
+The Orchestrator does NOT need to gate or approve these worker-initiated consultations — they are default-allowed. If they become excessive (Architect saturation), the Orchestrator addresses that as a workload issue in a subsequent retro, not by blocking the channel.
 
 ## 5. Instantiation: one Architect session per repository (Model A)
 
@@ -85,18 +110,36 @@ Instantiation mechanism:
 
 ## 6. Hand-off protocol
 
-The Architect is **idle-until-explicit-push**. The Architect session does not act unless the Orchestrator sends an explicit message (via `send_session_message` or equivalent). This is not a bug — it is the design.
+The Architect is **idle-until-explicit-push** and **does not observe ambient state**. The Architect session does not act unless someone (Orchestrator or delegate worker) sends an explicit message (via `send_session_message` or equivalent). It also does not watch CI status, PR review state, dogfood observations, sprint progress, or any repository-level signal that has not been pushed to it. All context is delivered by the pusher.
 
-Consequence for the Orchestrator:
-- After dispatching design work to the Architect, verify the push landed (a message file was written) before moving on
+Consequence for the pushing side:
+- After dispatching work to the Architect, verify the push landed (a message file was written) before moving on
 - Do not assume "the Architect will notice" — the Architect notices what is pushed, nothing else
-- Long-running architect audits still need Orchestrator-side timer / progress tracking
+- **Package the necessary context into the push**: the Architect cannot check CI, cannot query PR status, cannot observe merge conflicts, cannot see whether dogfood ran. Include those signals in the message body when they affect the requested judgment. Typical context to include when requesting a code appropriateness review: PR number, AC reference, CI verdict (green / red with details), behavior verification result (tests / dogfood outcome), any Orchestrator concerns, links to prior audit rounds if this is a re-audit.
+- Long-running architect audits still need push-side timer / progress tracking
 
-Multi-round audit flow:
-1. Orchestrator pushes PR + audit request to Architect
-2. Architect returns verdict (clean / clean-with-followups / changes-requested)
-3. If changes-requested: Orchestrator relays to delegate, delegate fixes, Orchestrator re-pushes to Architect for next round
-4. Merge only after Architect verdict is `clean` or `clean-with-followups` AND Orchestrator's own acceptance check passes
+### AC drafting flow (Orchestrator → Architect → Orchestrator)
+
+1. Orchestrator identifies an Issue to delegate, prepares scope / context
+2. Orchestrator pushes to Architect: "Draft AC for Issue #NNN, context: ..."
+3. Architect returns the AC (prescriptive: files, interfaces, invariants, tests, failure modes, implementation guidance)
+4. Orchestrator posts the AC to the Issue body and delegates
+
+### Implementation-support flow (Worker → Architect → Worker)
+
+1. Delegate worker hits implementation uncertainty
+2. Worker pushes directly to Architect: "Working on #NNN, uncertain about X. Options A / B / details ..."
+3. Architect responds directly to worker with the decision
+4. Worker proceeds; the exchange is summarized in the worker's next report to Orchestrator
+
+### Code appropriateness review flow (Orchestrator → Architect → Orchestrator)
+
+1. Delegate worker reports implementation-complete (all tests green, PR pushed)
+2. Orchestrator runs behavior verification (CI status, dogfood if applicable)
+3. Orchestrator pushes to Architect: "Review PR #NNN for code appropriateness against AC #NNN"
+4. Architect returns verdict (see §2): `CLEAN` / `CLEAN-WITH-FOLLOWUPS` / `CHANGES-REQUESTED`
+5. If `CHANGES-REQUESTED`: Orchestrator relays to delegate, delegate fixes, Orchestrator re-pushes to Architect for next round
+6. Merge only after Architect verdict is `CLEAN` or `CLEAN-WITH-FOLLOWUPS` AND Orchestrator's own acceptance check (behavior side) passes
 
 ## 7. Migration from the embedded-agent architect
 

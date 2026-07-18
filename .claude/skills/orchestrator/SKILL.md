@@ -98,7 +98,14 @@ Execute these two steps in order before any other work:
 
 ## When to consult the Architect
 
-Push a consultation to the Architect (via `send_session_message`) when a change matches any of:
+The Architect owns the quality of implementation artifacts (AC drafting → code appropriateness review). You handle behavior verification (tests / CI / dogfood) and delegation; the Architect handles design correctness and code appropriateness. See [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §2–§4 for the full split.
+
+### Routine pushes (default flow, not exceptions)
+
+- **AC drafting for every delegated Issue** — before delegating, push the Issue's scope and context to the Architect and ask for the prescriptive AC. The Architect writes the AC (files / interfaces / invariants / tests / failure modes / implementation guidance); you post it to the Issue body and delegate.
+- **Code appropriateness review for every delivered PR** — after the worker reports implementation-complete and your behavior verification (CI green, dogfood if applicable) passes, push the PR for code appropriateness review. The Architect returns a verdict.
+
+### Additional triggers
 
 - Spec / design doc changes — any PR that adds or substantially modifies `docs/design/**`
 - Cross-package refactors — changes that touch `packages/shared/*` types plus one or more consumer packages
@@ -107,9 +114,35 @@ Push a consultation to the Architect (via `send_session_message`) when a change 
 - Complex PR audit — multi-round PRs (3+ commits driven by review feedback, or 5+ CR findings)
 - Design-discipline rule proposals — retro items in the "design discipline" family
 
-Do NOT push straight bug fixes, test-only additions, doc typos, or operational-tip rule updates — handle those alone. Full triggers and rationale in [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §4.
+### When NOT to push
 
-The Architect returns one of three verdicts per audit: `CLEAN`, `CLEAN-WITH-FOLLOWUPS` (with the follow-up Issue list), or `CHANGES-REQUESTED` (with concrete items). Merge only after a `CLEAN` or `CLEAN-WITH-FOLLOWUPS` verdict AND your own acceptance check passes.
+- Doc typo fixes / language-check-only edits
+- Retro / rule maintenance items that are pure operational tips (draft alone; if the item is design-shaped, the Architect drafts it per §2)
+- Trivial mechanical batches where the AC is a 1-line "remove all occurrences of X"
+
+### Push discipline: package the context
+
+The Architect **does not observe ambient state** — no CI checks, no PR status polling, no dogfood observation, no sprint progress tracking. When you push a review request, include everything the Architect needs to judge:
+
+- PR number + branch
+- AC reference (link to Issue or paste AC)
+- CI verdict (green with checks all passing, or red with failure details)
+- Behavior verification result (tests pass, dogfood outcome if applicable)
+- Any concerns you noticed during behavior verification
+- Links to prior audit rounds if this is a re-audit
+
+### Verdict shape
+
+The Architect returns one of three verdicts:
+- `CLEAN` — merge after your acceptance check passes
+- `CLEAN-WITH-FOLLOWUPS` — merge; file the enumerated follow-up Issues before or after merge as noted
+- `CHANGES-REQUESTED` — relay concrete items to the delegate worker; after fixes, re-push to the Architect for the next round. Do not merge until a `CLEAN` or `CLEAN-WITH-FOLLOWUPS` verdict lands.
+
+### Worker → Architect direct channel
+
+Delegate workers **may consult the Architect directly** (bypassing you) during implementation when they hit uncertainty (ambiguous AC, code-shape decisions, sibling-site consistency questions, constraint collisions). This is default-allowed; you do not gate or approve these exchanges. The worker summarizes any AC/design change from the exchange in their next report to you.
+
+If direct-channel volume becomes excessive (Architect saturation), treat it as a workload / AC-quality signal in the next retro — not as a channel to block.
 
 ## Core Responsibilities
 

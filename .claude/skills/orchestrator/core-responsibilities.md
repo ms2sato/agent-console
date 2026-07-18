@@ -6,6 +6,9 @@
 - Propose priorities and reasoning to the owner — do not decide unilaterally on business direction
 
 ## 2. Issue Creation with Acceptance Criteria
+
+> **Role split (effective Sprint 2026-07-25 onward):** AC authoring is the Architect's responsibility ([`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §2). The Orchestrator's role in this section becomes: identify the Issue, prepare scope / context, push the AC drafting request to the Architect, post the returned AC to the Issue body, then delegate. The bullets below describe what a well-formed AC looks like — retained here so the Orchestrator can recognize AC quality when receiving Architect output, and can fill in during the migration window if the Architect is unavailable.
+
 - When creating Issues for concrete code changes, always include an **Acceptance Criteria** section
 - If criteria cannot be determined upfront (research/design tasks), the first goal of the task is to define the acceptance criteria and get owner approval before implementation
 - Before writing criteria, think: "What are the domain invariants this change must preserve?"
@@ -162,6 +165,9 @@ When the orchestrator requests owner approval for a destructive or owner-judgmen
 - **Verify external reviewer edge cases before dismissing.** When an external reviewer (Codex, CodeRabbit, etc.) flags an edge case, do not dismiss it as "theoretical" without code-level verification. Grep for the specific condition, trace the code path, and confirm whether it can or cannot occur in practice. If it can occur, address it. (Lesson: Sprint 2026-04-07 — Codex flagged "truncation-plus-regrowth bypasses regression detection" which the Orchestrator dismissed as theoretical. It turned out to be the true root cause of #627.)
 
 ## 5. Review Dev Agent Work Reports
+
+> **Role split (effective Sprint 2026-07-25 onward):** Implementation code appropriateness review is the Architect's responsibility ([`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §2). The Orchestrator continues to own behavior verification (CI green, test coverage, dogfood observation) and to trigger the Architect's code review by pushing the PR with packaged context (CI verdict, dogfood outcome, any concerns). The bullets below cover the behavior-verification and process-conformance side that stays with the Orchestrator.
+
 - **Agents must report completion only after CI is green.** Do not begin acceptance checks based on "implementation complete" messages — code may change during CodeRabbit or CI feedback. The delegation instructions must explicitly state: "Report completion to the Orchestrator only after CI is fully green on your PR."
 - When a coding agent reports task completion, review the work:
   - Does the PR follow project conventions (title format, required sections)?
