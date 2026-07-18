@@ -22,6 +22,9 @@ import { SystemCapabilitiesService } from '@agent-console/server/src/services/sy
 // Import mock-fs-helper to add test paths
 import { setupMemfs } from '@agent-console/server/src/__tests__/utils/mock-fs-helper';
 
+// Import shared mock SystemCapabilitiesService factory
+import { createMockSystemCapabilities } from '@agent-console/server/src/__tests__/utils/mock-system-capabilities-helper';
+
 // Import client API functions
 import { openInVSCode, openPath } from '@agent-console/client/src/lib/api';
 
@@ -56,21 +59,6 @@ function setupSpawnMock() {
   }) as typeof Bun.spawn;
 }
 
-/**
- * Create mock system capabilities with VS Code enabled/disabled.
- */
-function createMockSystemCapabilities(vscodeAvailable: boolean = true): SystemCapabilitiesService {
-  const mockCapabilities = new SystemCapabilitiesService();
-  // Manually set capabilities to avoid running 'which' command
-  Reflect.set(mockCapabilities, 'capabilities', {
-    vscode: vscodeAvailable,
-    vscodeOpenMode: 'local-spawn',
-    vscodeRemoteHost: null,
-  });
-  Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? 'code' : null);
-  return mockCapabilities;
-}
-
 describe('Client-Server Boundary: System API', () => {
   let app: Hono;
   let bridge: ReturnType<typeof createFetchBridge>;
@@ -94,7 +82,7 @@ describe('Client-Server Boundary: System API', () => {
     process.env.AGENT_CONSOLE_HOME = '/test/config';
 
     // Create system capabilities and pass to app via AppContext
-    systemCapabilities = createMockSystemCapabilities(true);
+    systemCapabilities = createMockSystemCapabilities({ vscode: true });
 
     // Create test app with all routes, passing systemCapabilities via AppContext
     app = await createTestApp({ systemCapabilities });
@@ -128,7 +116,7 @@ describe('Client-Server Boundary: System API', () => {
 
     it('should return error when VS Code is not available', async () => {
       // Recreate app with VS Code disabled
-      const noVscodeCapabilities = createMockSystemCapabilities(false);
+      const noVscodeCapabilities = createMockSystemCapabilities({ vscode: false });
       app = await createTestApp({ systemCapabilities: noVscodeCapabilities });
       bridge.restore();
       bridge = createFetchBridge(app);

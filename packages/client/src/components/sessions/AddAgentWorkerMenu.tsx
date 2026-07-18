@@ -1,7 +1,7 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
-import { useAgents } from '../AgentSelector';
-import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
+import { useAgentDirectory } from '../../hooks/useAgentDirectory';
+import { AGENT_KIND_PRESENTATION } from '../agents';
 import type { AddAgentWorkerParams } from './hooks/useTabManagement';
 
 interface AddAgentWorkerMenuProps {
@@ -29,8 +29,15 @@ interface AddAgentWorkerMenuProps {
  */
 export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMenuProps) {
   const [open, setOpen] = useState(false);
-  const { agents, isLoading: agentsLoading } = useAgents();
-  const { embeddedAgents, isLoading: embeddedLoading } = useEmbeddedAgents();
+  const { entries, isLoading } = useAgentDirectory();
+  const agents = useMemo(
+    () => entries.filter((entry) => entry.kind === 'terminal').map((entry) => entry.agent),
+    [entries]
+  );
+  const embeddedAgents = useMemo(
+    () => entries.filter((entry) => entry.kind === 'embedded').map((entry) => entry.agent),
+    [entries]
+  );
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -59,7 +66,6 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
     await onSelectShell();
   };
 
-  const isLoading = agentsLoading || embeddedLoading;
   const isEmpty = !isLoading && agents.length === 0 && embeddedAgents.length === 0;
 
   return (
@@ -102,8 +108,8 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
               className="w-full flex items-center justify-between px-3 py-2 text-sm text-left text-gray-200 hover:bg-slate-700"
             >
               <span className="truncate">{agent.name}</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 shrink-0 ml-2">
-                Terminal
+              <span className={`${AGENT_KIND_PRESENTATION.terminal.badgeClassName} shrink-0 ml-2`}>
+                {AGENT_KIND_PRESENTATION.terminal.badgeLabel}
               </span>
             </button>
           ))}
@@ -116,12 +122,12 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
               className="w-full flex items-center justify-between px-3 py-2 text-sm text-left text-gray-200 hover:bg-slate-700"
             >
               <span className="truncate">{embeddedAgent.name}</span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/40 text-purple-300 shrink-0 ml-2">
-                Embedded · Experimental
+              <span className={`${AGENT_KIND_PRESENTATION.embedded.badgeClassName} shrink-0 ml-2`}>
+                {AGENT_KIND_PRESENTATION.embedded.badgeLabel}
               </span>
             </button>
           ))}
-          {!embeddedLoading && embeddedAgents.length === 0 && (
+          {!isLoading && embeddedAgents.length === 0 && (
             <div className="border-t border-slate-700 px-3 py-2 text-xs text-gray-500">
               No embedded agents are registered yet.{' '}
               <Link

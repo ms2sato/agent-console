@@ -6,16 +6,16 @@
  * code in tests (logic duplication anti-pattern).
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
-import type { Session, Worker } from '@agent-console/shared';
+import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import {
   extractRestartableSession,
   findAgentWorker,
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState } from '../SessionPage';
+import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId } from '../SessionPage';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
-import type { UseTabManagementResult, AddAgentWorkerParams } from '../hooks/useTabManagement';
+import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
 
 // Test helpers
@@ -99,6 +99,49 @@ describe('findAgentWorker', () => {
     // Boundary: [].find(...) is undefined. A session that reaches restart with no
     // workers must not crash — the caller surfaces "no agent worker" instead.
     expect(findAgentWorker([])).toBeUndefined();
+  });
+});
+
+describe('resolveShouldStripScrollback', () => {
+  const agents: AgentDefinition[] = [
+    { id: 'strip-agent', stripScrollbackClear: true } as AgentDefinition,
+    { id: 'plain-agent', stripScrollbackClear: false } as AgentDefinition,
+  ];
+
+  it('returns true when the active tab is an agent worker whose agent has stripScrollbackClear enabled', () => {
+    const workers: Worker[] = [
+      { id: 'agent-1', type: 'agent', name: 'A', agentId: 'strip-agent', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'agent-1', agents)).toBe(true);
+  });
+
+  it('returns false when the active tab is an agent worker whose agent has stripScrollbackClear disabled', () => {
+    const workers: Worker[] = [
+      { id: 'agent-1', type: 'agent', name: 'A', agentId: 'plain-agent', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'agent-1', agents)).toBe(false);
+  });
+
+  it('returns false when the active tab is a terminal (non-agent) worker', () => {
+    const workers: Worker[] = [
+      { id: 'terminal-1', type: 'terminal', name: 'Terminal', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'terminal-1', agents)).toBe(false);
+  });
+
+  it('returns false when activeTabId is null (vacuous boundary)', () => {
+    expect(resolveShouldStripScrollback([], null, agents)).toBe(false);
+  });
+
+  it('returns false when the agent is not found in the fetched agents list (e.g. still loading)', () => {
+    const workers: Worker[] = [
+      { id: 'agent-1', type: 'agent', name: 'A', agentId: 'unknown-agent', createdAt: new Date().toISOString(), activated: true },
+    ] as Worker[];
+
+    expect(resolveShouldStripScrollback(workers, 'agent-1', agents)).toBe(false);
   });
 });
 
@@ -457,6 +500,78 @@ describe('embedded-agent tab bar wiring (Phase 3, Issue #1021)', () => {
       updateTabsFromSession: () => {},
     };
     expect(typeof result.addAgentTab).toBe('function');
+  });
+});
+
+describe('resolveActiveEmbeddedAgentId (Context Handoff Phase A, Issue #1122)', () => {
+  // SessionPage.tsx's active-tab render branch passes this value as
+  // EmbeddedAgentWorkerView's `embeddedAgentId` prop -- see
+  // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI.
+  // Pinning the derivation here (mirroring the `activeAgentId` pattern one
+  // level up: `activeWorker?.type === 'agent' ? activeWorker.agentId :
+  // undefined`) verifies the resolved id is exactly the active tab's
+  // worker's `embeddedAgentId`, not any other worker's.
+  it('resolves the embeddedAgentId when the active tab worker is embedded-agent type', () => {
+    const embeddedWorker: Worker = {
+      id: 'embedded-worker-1',
+      type: 'embedded-agent',
+      name: 'Local GPT',
+      embeddedAgentId: 'embedded-agent-1',
+      activated: true,
+      createdAt: new Date().toISOString(),
+    };
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+      embeddedWorker,
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, 'embedded-worker-1')).toBe('embedded-agent-1');
+  });
+
+  it('returns undefined when the active tab worker is not embedded-agent type', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, 'agent-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId does not match any worker', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, 'nonexistent-tab')).toBeUndefined();
+  });
+
+  it('returns undefined for an empty worker list (vacuous boundary)', () => {
+    expect(resolveActiveEmbeddedAgentId([], 'embedded-worker-1')).toBeUndefined();
+  });
+
+  it('returns undefined when activeTabId is null', () => {
+    const workers: Worker[] = [
+      { id: 'agent-worker-1', type: 'agent', name: 'Claude Code', agentId: 'claude-code', createdAt: new Date().toISOString(), activated: true },
+    ];
+
+    expect(resolveActiveEmbeddedAgentId(workers, null)).toBeUndefined();
+  });
+});
+
+describe('primary agent tab close-button wiring (Issue #1134)', () => {
+  // Pins the primaryAgentTabId computation SessionPage.tsx's tab bar JSX
+  // relies on: the first 'agent'-type tab in array order stays fixed
+  // (non-closeable); any later 'agent'-type tab (added via the picker) is
+  // closeable. See tabAppearance.ts's isCloseableTabType for the full contract.
+  it('only the first agent-type tab in array order is treated as primary', () => {
+    const tabs: Tab[] = [
+      { id: 'agent-1', workerType: 'agent', name: 'Claude Code' },
+      { id: 'terminal-1', workerType: 'terminal', name: 'Shell' },
+      { id: 'agent-2', workerType: 'agent', name: 'Claude Code 2' },
+    ];
+    const primaryAgentTabId = tabs.find(t => t.workerType === 'agent')?.id;
+
+    expect(isCloseableTabType('agent', tabs[0].id === primaryAgentTabId)).toBe(false);
+    expect(isCloseableTabType('agent', tabs[2].id === primaryAgentTabId)).toBe(true);
   });
 });
 

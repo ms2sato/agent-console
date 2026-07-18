@@ -36,12 +36,20 @@ describe('isCloseableTabType', () => {
     expect(isCloseableTabType('embedded-agent')).toBe(true);
   });
 
-  it('agent tabs are fixed (not closeable)', () => {
+  it('agent tabs are fixed (not closeable) by default', () => {
     expect(isCloseableTabType('agent')).toBe(false);
   });
 
   it('git-diff tabs are fixed (not closeable)', () => {
     expect(isCloseableTabType('git-diff')).toBe(false);
+  });
+
+  it('non-primary agent tabs (picker-added) are closeable', () => {
+    expect(isCloseableTabType('agent', false)).toBe(true);
+  });
+
+  it('primary agent tabs are not closeable when explicitly marked', () => {
+    expect(isCloseableTabType('agent', true)).toBe(false);
   });
 });
 

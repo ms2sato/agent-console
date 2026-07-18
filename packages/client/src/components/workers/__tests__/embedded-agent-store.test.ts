@@ -214,6 +214,103 @@ describe('embedded-agent-store', () => {
     expect(thinkingEntry).toMatchObject({ text: 'thinking...', streaming: false });
   });
 
+  it('folds context-usage into snapshot.contextUsage without creating a chat entry', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3f', 'w3f');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 4200, estimated: false });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    expect(instance.getSnapshot().contextUsage).toEqual({ promptTokens: 4200, estimated: false });
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+  });
+
+  it('folds context-handoff into a context-handoff chat entry and clears handoffInFlight', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3g', 'w3g');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.triggerHandoff();
+    expect(instance.getSnapshot().handoffInFlight).toBe(true);
+
+    const data = ndjson({ v: 1, type: 'context-handoff', distillation: 'summary of the conversation so far' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const snapshot = instance.getSnapshot();
+    expect(snapshot.handoffInFlight).toBe(false);
+    expect(snapshot.entries).toHaveLength(1);
+    expect(snapshot.entries[0]).toMatchObject({
+      kind: 'context-handoff',
+      distillation: 'summary of the conversation so far',
+    });
+  });
+
+  it('clears handoffInFlight on a turn-error observed while a handoff is in flight (failed handoff)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3h', 'w3h');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.triggerHandoff();
+    expect(instance.getSnapshot().handoffInFlight).toBe(true);
+
+    const data = ndjson({ v: 1, type: 'turn-error', turnId: 'synthetic-1', message: 'Context handoff failed: boom' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+  });
+
+  it('does not touch handoffInFlight on a turn-error observed while no handoff is in flight', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3i', 'w3i');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+
+    const data = ndjson({ v: 1, type: 'turn-error', turnId: 't1', message: 'boom' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+  });
+
+  it('clears handoffInFlight on an immediate server admission error (WS `error` message, distinct from a turn-error NDJSON event)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3j', 'w3j');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.triggerHandoff();
+    expect(instance.getSnapshot().handoffInFlight).toBe(true);
+
+    // The server rejects `embedded-handoff` synchronously (e.g. a turn was
+    // already in progress) via a WS `error` message, not a `turn-error`
+    // NDJSON row -- see websocket/routes.ts's `embedded-handoff` handler.
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'error', message: 'turn in progress', code: 'TURN_IN_PROGRESS' }),
+    );
+    await flush();
+
+    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+  });
+
+  it('does not touch handoffInFlight on a WS `error` message observed while no handoff is in flight', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3k', 'w3k');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+
+    ws!.simulateMessage(
+      JSON.stringify({ type: 'error', message: 'turn in progress', code: 'TURN_IN_PROGRESS' }),
+    );
+    await flush();
+
+    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+  });
+
   it('pairs a tool-result with its tool-call by callId, including error styling data', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s4', 'w4');
     const ws = MockWebSocket.getLastInstance();
@@ -399,12 +496,18 @@ describe('embedded-agent-store', () => {
     // surface as an unhandled rejection.
     instance.sendUserMessage('hello agent').catch(() => {});
 
-    const sent = lastSentMessages(ws!);
-    expect(sent).toContainEqual({ type: 'embedded-user-message', text: 'hello agent' });
+    const sent = (
+      lastSentMessages(ws!) as { type: string; text?: string; clientMessageId?: string }[]
+    ).find((m) => m.type === 'embedded-user-message')!;
+    expect(sent.text).toBe('hello agent');
+    // Issue #1117: a per-send correlation id, generated client-side, so the
+    // server's echo can be matched back to THIS specific send.
+    expect(typeof sent.clientMessageId).toBe('string');
+    expect(sent.clientMessageId?.length).toBeGreaterThan(0);
   });
 
   describe('sendUserMessage confirmation (#1024: preserve draft on reject)', () => {
-    it('resolves once the server echoes the message back as a user-message event', async () => {
+    it('resolves once the server echoes the message back as a user-message event carrying the SAME clientMessageId (correlated, not "any echo")', async () => {
       const instance = getOrCreateEmbeddedAgentWorker('s30', 'w30');
       const ws = MockWebSocket.getLastInstance();
       ws!.simulateOpen();
@@ -418,7 +521,18 @@ describe('embedded-agent-store', () => {
       // Not yet confirmed -- the server hasn't echoed the message back.
       expect(settled).toBe(false);
 
-      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello agent' });
+      const sentClientMessageId = (
+        lastSentMessages(ws!) as { type: string; clientMessageId?: string }[]
+      ).find((m) => m.type === 'embedded-user-message')?.clientMessageId;
+      expect(sentClientMessageId).toBeTruthy();
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text: 'hello agent',
+        clientMessageId: sentClientMessageId,
+      });
       ws!.simulateMessage(outputMessage(data, data.length));
 
       await expect(sendPromise).resolves.toBeUndefined();
@@ -472,7 +586,17 @@ describe('embedded-agent-store', () => {
 
       await expect(first).rejects.toThrow();
 
-      const data = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second' });
+      const sentMessages = lastSentMessages(ws!) as { clientMessageId?: string }[];
+      const secondClientMessageId = sentMessages[sentMessages.length - 1]?.clientMessageId;
+      expect(secondClientMessageId).toBeTruthy();
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u2',
+        text: 'second',
+        clientMessageId: secondClientMessageId,
+      });
       ws!.simulateMessage(outputMessage(data, data.length));
 
       await expect(second).resolves.toBeUndefined();
@@ -542,6 +666,10 @@ describe('embedded-agent-store', () => {
       firstWs!.simulateOpen();
 
       const sendPromise = instance.sendUserMessage('hello agent');
+      const sentClientMessageId = (
+        lastSentMessages(firstWs!) as { type: string; clientMessageId?: string }[]
+      ).find((m) => m.type === 'embedded-user-message')?.clientMessageId;
+      expect(sentClientMessageId).toBeTruthy();
 
       // The write DID reach the server before the connection dropped -- the
       // reconnect's history reply replays it back.
@@ -549,10 +677,110 @@ describe('embedded-agent-store', () => {
       const secondWs = MockWebSocket.getLastInstance();
       secondWs!.simulateOpen();
 
-      const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello agent' });
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text: 'hello agent',
+        clientMessageId: sentClientMessageId,
+      });
       secondWs!.simulateMessage(historyMessage(data, data.length, 0, 1));
 
       await expect(sendPromise).resolves.toBeUndefined();
+    });
+
+    it('does NOT resolve the pending send on a user-message echo carrying a DIFFERENT clientMessageId (multi-client false-confirm regression, Issue #1117); the echo still folds as an entry, and the pending later settles via the existing history-fold-reject path', async () => {
+      // Simulates the exact bug: the SAME embedded-agent worker open in two
+      // tabs/clients both send concurrently. Another client's send is
+      // accepted and echoed first -- that echo must NOT resolve THIS
+      // client's still-pending send (it isn't the confirmation for OUR
+      // send), even though pre-#1117 code resolved on ANY user-message echo
+      // regardless of correlation id.
+      const instance = getOrCreateEmbeddedAgentWorker('s37c', 'w37c');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const sendPromise = instance.sendUserMessage('hello from tab A');
+      let settled = false;
+      let rejected = false;
+      sendPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          rejected = true;
+        },
+      );
+
+      // Another client's (tab B's) send is accepted and echoed back first,
+      // with a DIFFERENT clientMessageId.
+      const otherClientEcho = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u-other',
+        text: 'hello from tab B',
+        clientMessageId: 'some-other-clients-uuid',
+      });
+      ws!.simulateMessage(outputMessage(otherClientEcho, otherClientEcho.length));
+      await flush();
+
+      // The other client's message still folds as an ordinary chat entry...
+      const entries = instance.getSnapshot().entries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'hello from tab B' });
+      // ...but it must NOT have resolved (nor rejected) our pending send.
+      expect(settled).toBe(false);
+      expect(rejected).toBe(false);
+
+      // The pending send eventually settles via the EXISTING history-fold-reject
+      // path (a same-epoch reconnect whose history reply carries no confirming
+      // echo for OUR clientMessageId) -- unchanged by this Issue, reused here
+      // only to observe that the pending slot is still live (not already
+      // resolved by the mismatched echo above).
+      instance.restart();
+      const secondWs = MockWebSocket.getLastInstance();
+      secondWs!.simulateOpen();
+      secondWs!.simulateMessage(historyMessage('', 0, 0, 1));
+
+      await expect(sendPromise).rejects.toThrow();
+    });
+
+    it('does NOT resolve the pending send on a user-message echo with NO clientMessageId field at all (replayed pre-#1117 history row / legacy echo)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s37d', 'w37d');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const sendPromise = instance.sendUserMessage('hello agent');
+      let settled = false;
+      let rejected = false;
+      sendPromise.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          rejected = true;
+        },
+      );
+
+      // A legacy-shaped echo -- no clientMessageId field at all (e.g. a
+      // replayed history row persisted before this field existed).
+      const legacyEcho = ndjson({ v: 1, type: 'user-message', id: 'u-legacy', text: 'legacy row' });
+      ws!.simulateMessage(outputMessage(legacyEcho, legacyEcho.length));
+      await flush();
+
+      const entries = instance.getSnapshot().entries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'legacy row' });
+      expect(settled).toBe(false);
+      expect(rejected).toBe(false);
+
+      // Confirm the pending slot is still live via the existing reject path.
+      instance.restart();
+      const secondWs = MockWebSocket.getLastInstance();
+      secondWs!.simulateOpen();
+      secondWs!.simulateMessage(historyMessage('', 0, 0, 1));
+
+      await expect(sendPromise).rejects.toThrow();
     });
   });
 
@@ -565,6 +793,45 @@ describe('embedded-agent-store', () => {
 
     const sent = lastSentMessages(ws!);
     expect(sent).toContainEqual({ type: 'embedded-cancel' });
+  });
+
+  it('triggerHandoff serializes embedded-handoff and sets handoffInFlight', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s15b', 'w15b');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.triggerHandoff();
+
+    const sent = lastSentMessages(ws!);
+    expect(sent).toContainEqual({ type: 'embedded-handoff' });
+    expect(instance.getSnapshot().handoffInFlight).toBe(true);
+  });
+
+  it('triggerHandoff is admission-atomic: calling it twice in quick succession only sends embedded-handoff once', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s15c', 'w15c');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    instance.triggerHandoff();
+    instance.triggerHandoff();
+
+    const handoffSends = lastSentMessages(ws!).filter(
+      (m) => (m as { type: string }).type === 'embedded-handoff',
+    );
+    expect(handoffSends).toHaveLength(1);
+    expect(instance.getSnapshot().handoffInFlight).toBe(true);
+  });
+
+  it('triggerHandoff does not latch handoffInFlight when the underlying socket write fails (not connected)', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s15d', 'w15d');
+    // Deliberately do NOT open the socket -- `send()` returns false while
+    // `readyState !== OPEN`, mirroring a synchronous send failure.
+    const ws = MockWebSocket.getLastInstance();
+
+    instance.triggerHandoff();
+
+    expect(ws!.send).not.toHaveBeenCalled();
+    expect(instance.getSnapshot().handoffInFlight).toBe(false);
   });
 
   it('restart forces a fresh WebSocket connection', () => {
@@ -624,6 +891,71 @@ describe('embedded-agent-store', () => {
     expect(entriesAfterSecond).toHaveLength(2);
     expect(entriesAfterSecond[0]).toMatchObject({ kind: 'user-message', text: 'first' });
     expect(entriesAfterSecond[1]).toMatchObject({ kind: 'user-message', text: 'second' });
+  });
+
+  it('resets accumulated entries when the server prunes and returns a startOffset different from what was requested, while the epoch stays the SAME (architect audit follow-up #1114)', async () => {
+    // Complements the plain-resume test above (same epoch, startOffset ===
+    // requestedFromOffset -> no reset) and the epoch-bump tests below
+    // (epoch differs -> reset via beginEpochReset/acceptEpoch). This is the
+    // third, previously-uncovered branch: the epoch is unchanged (no server
+    // restart) but the history response's startOffset does not match what
+    // was requested -- e.g. the server pruned its buffer and can only serve
+    // from a different offset. applyBytes's `isFresh` check must still
+    // treat this as a fresh load and reset chat state, entirely outside the
+    // epoch-bump machinery (acceptEpoch short-circuits to true for
+    // `epoch === this.epoch` and never calls beginEpochReset here).
+    const instance = getOrCreateEmbeddedAgentWorker('s17d', 'w17d');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+
+    const initialData = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'first' });
+    ws1!.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+    await flush();
+    const entriesAfterFirst = instance.getSnapshot().entries;
+    expect(entriesAfterFirst).toHaveLength(1);
+    const firstEntryRef = entriesAfterFirst[0];
+
+    // Plain reconnect (no epoch bump): lastOffset carries over, so the
+    // client requests fromOffset: initialData.length.
+    instance.restart();
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2!.simulateOpen();
+    expect(lastSentMessages(ws2!)).toContainEqual({
+      type: 'request-history',
+      fromOffset: initialData.length,
+    });
+
+    // The server responds with the SAME epoch (no restart) but pruned its
+    // buffer, so it cannot resume from the requested offset and instead
+    // sends a fresh payload starting at 0.
+    const prunedData = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second (post-prune)' });
+    ws2!.simulateMessage(historyMessage(prunedData, prunedData.length, 0, 1));
+    await flush();
+
+    const entriesAfterPrune = instance.getSnapshot().entries;
+    // Fresh reset: the old entry's reference must NOT survive -- the new
+    // array is entirely rebuilt from the pruned payload, not appended to
+    // the prior accumulation.
+    expect(entriesAfterPrune).toHaveLength(1);
+    expect(entriesAfterPrune[0]).not.toBe(firstEntryRef);
+    expect(entriesAfterPrune[0]).toMatchObject({ kind: 'user-message', text: 'second (post-prune)' });
+
+    // The reset went through applyBytes's isFresh branch, NOT
+    // beginEpochReset's epoch-bump path: no second request-history was sent
+    // on ws2 (beginEpochReset would issue one), and the resync-queue
+    // machinery was never armed, so a subsequent live `output` for the same
+    // epoch folds immediately instead of being queued.
+    expect(
+      lastSentMessages(ws2!).filter((m) => (m as { type: string }).type === 'request-history'),
+    ).toHaveLength(1);
+
+    const liveData = ndjson({ v: 1, type: 'user-message', id: 'u3', text: 'third (live)' });
+    ws2!.simulateMessage(outputMessage(liveData, prunedData.length + liveData.length, 1));
+    await flush();
+    const entriesAfterLive = instance.getSnapshot().entries;
+    expect(entriesAfterLive).toHaveLength(2);
+    expect(entriesAfterLive[1]).toMatchObject({ kind: 'user-message', text: 'third (live)' });
   });
 
   it('resets accumulated entries on an epoch bump (worker restarted server-side)', async () => {
@@ -827,6 +1159,50 @@ describe('embedded-agent-store', () => {
     const finalEntries = instance.getSnapshot().entries;
     expect(finalEntries).toHaveLength(2);
     expect(finalEntries[1]).toMatchObject({ kind: 'user-message', text: 'after failure' });
+  });
+
+  it('resolves a pending send whose confirming echo is still queued when the epoch-2 history response lands (#1120: flush-before-reject ordering)', async () => {
+    // Edge-of-edge race from the #1120 architect audit: a send is issued
+    // while an epoch resync is outstanding, and its confirming echo arrives
+    // as live output DURING the resync -- so it lands in the resync queue,
+    // not folded yet. If the history response that completes the resync
+    // rejects the pending send BEFORE flushing that queue, the reject fires
+    // even though the very next step would have resolved it via the queued
+    // echo.
+    const { instance, ws } = connectAndBumpEpoch('s21', 'w21');
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+
+    const sendPromise = instance.sendUserMessage('hello agent');
+    const sentClientMessageId = (
+      lastSentMessages(ws) as { type: string; clientMessageId?: string }[]
+    ).find((m) => m.type === 'embedded-user-message')?.clientMessageId;
+    expect(sentClientMessageId).toBeTruthy();
+
+    // The confirming echo arrives as live output for the new epoch while
+    // still resyncing -- queued, not folded yet (resolvePendingSend has NOT
+    // run at this point).
+    const echoData = ndjson({
+      v: 1,
+      type: 'user-message',
+      id: 'echo',
+      text: 'hello agent',
+      clientMessageId: sentClientMessageId,
+    });
+    ws.simulateMessage(outputMessage(echoData, 50, 2));
+    await flush();
+    expect(instance.getSnapshot().entries).toHaveLength(0); // queued, not folded
+
+    // The epoch-2 history response lands, at an offset strictly BEFORE the
+    // queued echo's offset (so the echo is not covered/dropped by the flush
+    // -- it is genuinely newer and gets folded), and its own payload does
+    // not itself contain a confirming user-message (empty).
+    ws.simulateMessage(historyMessage('', 20, 0, 2));
+
+    await expect(sendPromise).resolves.toBeUndefined();
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'user-message', text: 'hello agent' });
   });
 
   it('disposes and re-subscribes to app-ws session-deleted', () => {

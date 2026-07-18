@@ -4,6 +4,7 @@ import {
   EmbeddedAgentDefinitionSchema,
   CreateEmbeddedAgentRequestSchema,
   UpdateEmbeddedAgentRequestSchema,
+  EmbeddedAgentHandoffConfigSchema,
   EmbeddedAgentCommandSchema,
   EmbeddedAgentEventSchema,
   EmbeddedAgentServerEventSchema,
@@ -163,6 +164,46 @@ describe('EmbeddedAgentDefinitionSchema', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('accepts a positive integer contextWindowTokens', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      contextWindowTokens: 128000,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a definition with contextWindowTokens absent', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, validDefinition);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.contextWindowTokens).toBeUndefined();
+    }
+  });
+
+  it('rejects a non-integer contextWindowTokens', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      contextWindowTokens: 128000.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a contextWindowTokens of 0', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      contextWindowTokens: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a negative contextWindowTokens', () => {
+    const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+      ...validDefinition,
+      contextWindowTokens: -1,
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('CreateEmbeddedAgentRequestSchema', () => {
@@ -225,6 +266,131 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
       instructions: ['docs/local-note.md'],
     });
     expect(result.success).toBe(true);
+  });
+
+  it('accepts a positive integer contextWindowTokens', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      contextWindowTokens: 32000,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a create request with contextWindowTokens absent', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.contextWindowTokens).toBeUndefined();
+    }
+  });
+
+  it('rejects a non-integer contextWindowTokens', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      contextWindowTokens: 1.5,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-positive contextWindowTokens', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      contextWindowTokens: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a valid handoff config', () => {
+    const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
+      name: 'New Agent',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      handoff: { softRatio: 0.7, hardRatio: 0.9, auto: true },
+    });
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('EmbeddedAgentHandoffConfigSchema', () => {
+  it('accepts a fully-populated config', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, {
+      softRatio: 0.7,
+      hardRatio: 0.9,
+      auto: true,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts an empty object (all fields optional)', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, {});
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a config with only softRatio set', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.5 });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a config with only hardRatio set', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { hardRatio: 0.85 });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts a config with only auto set', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { auto: false });
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts boundary ratio values 0 and 1', () => {
+    const zero = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0, hardRatio: 0 });
+    expect(zero.success).toBe(true);
+    const one = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 1, hardRatio: 1 });
+    expect(one.success).toBe(true);
+  });
+
+  it('rejects an inverted pair where softRatio > hardRatio', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.9, hardRatio: 0.5 });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts softRatio === hardRatio (boundary, not inverted)', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.75, hardRatio: 0.75 });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a softRatio below 0', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: -0.1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a softRatio above 1', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 1.1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a hardRatio below 0', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { hardRatio: -0.1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a hardRatio above 1', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { hardRatio: 1.1 });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-boolean auto', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { auto: 'yes' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown key (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.5, unexpectedField: 'leaked' });
+    expect(result.success).toBe(false);
   });
 });
 
@@ -302,6 +468,73 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
     });
     expect(result.success).toBe(true);
   });
+
+  it('accepts contextWindowTokens: null (clear to default)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      contextWindowTokens: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.contextWindowTokens).toBeNull();
+    }
+  });
+
+  it('accepts contextWindowTokens absent (no change)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.contextWindowTokens).toBeUndefined();
+    }
+  });
+
+  it('accepts a valid contextWindowTokens replacement', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      contextWindowTokens: 64000,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a non-positive contextWindowTokens replacement', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      contextWindowTokens: 0,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts handoff: null (clear to default)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      handoff: null,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.handoff).toBeNull();
+    }
+  });
+
+  it('accepts handoff absent (no change)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.handoff).toBeUndefined();
+    }
+  });
+
+  it('accepts a whole-object handoff replacement with only some sub-fields set', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      handoff: { softRatio: 0.6 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.handoff).toEqual({ softRatio: 0.6 });
+    }
+  });
+
+  it('rejects a handoff replacement with an out-of-range sub-field', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      handoff: { hardRatio: 1.5 },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('EmbeddedAgentCommandSchema', () => {
@@ -319,7 +552,18 @@ describe('EmbeddedAgentCommandSchema', () => {
       v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' }).success
     ).toBe(true);
     expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'cancel' }).success).toBe(true);
+    expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'handoff' }).success).toBe(true);
     expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'shutdown' }).success).toBe(true);
+  });
+
+  it('rejects a handoff command with an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'handoff', reason: 'manual' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a handoff command missing v', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, { type: 'handoff' });
+    expect(result.success).toBe(false);
   });
 
   it('rejects a version other than 1', () => {
@@ -419,10 +663,89 @@ describe('EmbeddedAgentEventSchema', () => {
       { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' },
       { v: 1, type: 'turn-error', turnId: 't1', message: 'boom' },
       { v: 1, type: 'fatal', message: 'dead' },
+      { v: 1, type: 'context-usage', promptTokens: 1234, estimated: false },
+      { v: 1, type: 'context-handoff', distillation: 'summary text' },
     ];
     for (const event of events) {
       expect(v.safeParse(EmbeddedAgentEventSchema, event).success).toBe(true);
     }
+  });
+
+  it('accepts a standalone context-usage event', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 1234,
+      estimated: false,
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a context-usage event missing estimated', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 1234,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a context-usage event with an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 1234,
+      estimated: false,
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a context-usage event with a negative promptTokens', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-usage',
+      promptTokens: -1,
+      estimated: false,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a context-usage event with a fractional promptTokens', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 12.5,
+      estimated: false,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a standalone context-handoff event', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-handoff',
+      distillation: 'summary text',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a context-handoff event missing distillation', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-handoff',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a context-handoff event with an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'context-handoff',
+      distillation: 'summary text',
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
   });
 
   it('accepts a standalone assistant-thinking-delta event', () => {
@@ -467,6 +790,45 @@ describe('EmbeddedAgentServerEventSchema', () => {
     const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'exited', code: null });
     expect(result.success).toBe(true);
   });
+
+  it('parses a user-message event with the optional clientMessageId field', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'hi',
+      clientMessageId: 'client-generated-uuid',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({
+        v: 1,
+        type: 'user-message',
+        id: 'm1',
+        text: 'hi',
+        clientMessageId: 'client-generated-uuid',
+      });
+    }
+  });
+
+  it('parses a user-message event WITHOUT clientMessageId (replay of files persisted before this field existed)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('clientMessageId' in result.output).toBe(false);
+    }
+  });
+
+  it('rejects a non-string clientMessageId', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'hi',
+      clientMessageId: 42,
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('EmbeddedAgentStreamEventSchema', () => {
@@ -479,6 +841,21 @@ describe('EmbeddedAgentStreamEventSchema', () => {
       v.safeParse(EmbeddedAgentStreamEventSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' }).success
     ).toBe(true);
     expect(v.safeParse(EmbeddedAgentStreamEventSchema, { v: 1, type: 'exited', code: null }).success).toBe(true);
+  });
+
+  it('parses context-usage and context-handoff events', () => {
+    expect(
+      v.safeParse(EmbeddedAgentStreamEventSchema, {
+        v: 1,
+        type: 'context-usage',
+        promptTokens: 1234,
+        estimated: true,
+      }).success
+    ).toBe(true);
+    expect(
+      v.safeParse(EmbeddedAgentStreamEventSchema, { v: 1, type: 'context-handoff', distillation: 'summary text' })
+        .success
+    ).toBe(true);
   });
 
   it('rejects an unknown event type', () => {

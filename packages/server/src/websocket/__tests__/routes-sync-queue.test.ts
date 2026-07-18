@@ -30,6 +30,7 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import { setupWebSocketRoutes, broadcastToApp } from '../routes.js';
 import { WebSocketConnectionRegistry } from '../connection-registry.js';
 import type { AppContext } from '../../app-context.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -98,6 +99,7 @@ describe('App WebSocket sync-queue handling', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: makeRepositoryLookup(() => 'test-repo'),
       repositoryEnvLookup: makeRepositoryEnvLookup({

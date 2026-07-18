@@ -42,7 +42,7 @@ describe('migration v23 (embedded_agents.enabled_tools)', () => {
     // chain and the final version is the current latest.
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(26);
+    expect(versionRes.rows[0]?.user_version).toBe(27);
   });
 
   it('adds the enabled_tools column to embedded_agents, nullable with no default', async () => {

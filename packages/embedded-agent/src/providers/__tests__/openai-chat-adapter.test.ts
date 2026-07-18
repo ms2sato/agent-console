@@ -309,6 +309,153 @@ describe('OpenAIChatAdapter — request body', () => {
     );
     expect(withoutKey!.get('authorization')).toBeNull();
   });
+
+  it('sends stream_options: { include_usage: true } so the provider emits a final usage chunk', async () => {
+    let capturedBody: unknown = null;
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async (_url, init) => {
+        capturedBody = JSON.parse(String(init?.body));
+        return mockResponse({ body: streamFromChunks(['data: [DONE]\n\n']) });
+      },
+    });
+
+    await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    expect(capturedBody).toMatchObject({ stream_options: { include_usage: true } });
+  });
+});
+
+describe('OpenAIChatAdapter — token usage (Context Handoff Phase A)', () => {
+  it('reads usage from the FINAL chunk even though its choices array is empty', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({
+      type: 'done',
+      finishReason: null,
+      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+    });
+  });
+
+  it('keeps the LATEST non-null usage value seen across the stream', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":50,"completion_tokens":5,"total_tokens":55}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1) as {
+      usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+    };
+    expect(done.usage).toEqual({ promptTokens: 50, completionTokens: 5, totalTokens: 55 });
+  });
+
+  it('yields undefined usage on done when the provider never sends a usage field', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({ type: 'done', finishReason: 'stop', usage: undefined });
+  });
+
+  it('treats an explicit usage: null chunk the same as absent usage', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}],"usage":null}\n\n' +
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({ type: 'done', finishReason: 'stop', usage: undefined });
+  });
+
+  it('rejects a malformed usage chunk with a negative prompt_tokens, falling back to undefined', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":-5,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({ type: 'done', finishReason: null, usage: undefined });
+  });
+
+  it('rejects a malformed usage chunk with a non-integer prompt_tokens, falling back to undefined', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":10.5,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({ type: 'done', finishReason: null, usage: undefined });
+  });
+
+  it('still accepts a well-formed usage chunk (regression)', async () => {
+    const sse =
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12}}\n\n' +
+      'data: [DONE]\n\n';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ body: streamFromChunks([sse]) }),
+    });
+
+    const events = await collect(
+      adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+    );
+    const done = events.at(-1);
+    expect(done).toEqual({
+      type: 'done',
+      finishReason: null,
+      usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+    });
+  });
 });
 
 describe('OpenAIChatAdapter — HTTP errors', () => {
@@ -329,6 +476,59 @@ describe('OpenAIChatAdapter — HTTP errors', () => {
     expect((caught as ProviderError).status).toBe(429);
     expect((caught as ProviderError).retryAfterMs).toBe(2000);
     expect((caught as ProviderError).retryable).toBe(true);
+  });
+
+  it('parses an HTTP-date retry-after header in the future into a positive retryAfterMs', async () => {
+    const future = new Date(Date.now() + 5000).toUTCString();
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 429, headers: { 'retry-after': future } }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const retryAfterMs = (caught as ProviderError).retryAfterMs;
+    expect(retryAfterMs).toBeGreaterThan(0);
+    expect(retryAfterMs).toBeLessThanOrEqual(5000);
+  });
+
+  it('clamps an HTTP-date retry-after header in the past to 0', async () => {
+    const past = new Date(Date.now() - 5000).toUTCString();
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 429, headers: { 'retry-after': past } }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as ProviderError).retryAfterMs).toBe(0);
+  });
+
+  it('ignores an invalid retry-after header', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({ status: 429, headers: { 'retry-after': 'not-a-valid-value' } }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as ProviderError).retryAfterMs).toBeUndefined();
   });
 
   it('marks 5xx retryable and 4xx non-retryable', async () => {

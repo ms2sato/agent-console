@@ -23,6 +23,7 @@ import { AgentManager } from '../agent-manager.js';
 import { SqliteAgentRepository } from '../../repositories/sqlite-agent-repository.js';
 import { JobQueue } from '../../jobs/index.js';
 import { SingleUserMode } from '../user-mode.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -88,6 +89,7 @@ describe('Worker History File Initialization', () => {
       pathExists: mockPathExists,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),

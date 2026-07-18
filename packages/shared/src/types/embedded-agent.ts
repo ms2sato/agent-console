@@ -24,7 +24,15 @@
 export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write', 'Edit'] as const;
 export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
 
-/** Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF. */
+/**
+ * Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF.
+ *
+ * Note that a definition that has ever been through the Add/Edit form persists
+ * `enabledTools` as an explicit array (never leaves it `undefined`) — so a
+ * change to this default does NOT propagate to already-edited definitions.
+ * Only definitions that have never been saved through the form (still
+ * `undefined` at the DB level) pick up a change here.
+ */
 export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolName[] = [
   'Read',
   'Glob',
@@ -48,6 +56,8 @@ export interface EmbeddedAgentDefinition {
   // session's locationPath via resolveConfinedPath before being read into the
   // system prompt — see docs/design/embedded-agent-worker.md "AGENTS.md loader"
   instructions?: string[];
+  contextWindowTokens?: number;  // Context Handoff (Phase A); operator-declared model context window, denominator for the usage ratio
+  handoff?: { softRatio?: number; hardRatio?: number; auto?: boolean }; // Context Handoff (Phase A); auto is accepted/persisted but NOT read until Phase B
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;
@@ -73,6 +83,7 @@ export type EmbeddedAgentCommand =
     }
   | { v: 1; type: 'user-message'; id: string; text: string }
   | { v: 1; type: 'cancel' }
+  | { v: 1; type: 'handoff' }  // Context Handoff (Phase A); manual trigger
   | { v: 1; type: 'shutdown' };
 
 /**
@@ -89,7 +100,9 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'tool-call'; turnId: string; callId: string; name: string; args: unknown }
   | { v: 1; type: 'tool-result'; turnId: string; callId: string; ok: boolean; result: string }
   | { v: 1; type: 'turn-error'; turnId: string; message: string }
-  | { v: 1; type: 'fatal'; message: string };
+  | { v: 1; type: 'fatal'; message: string }
+  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean }  // Context Handoff (Phase A); emitted after every turn/handoff attempt that produced a usable value
+  | { v: 1; type: 'context-handoff'; distillation: string };  // Context Handoff (Phase A); persisted marker, emitted immediately before the atomic conversation reset
 
 /**
  * Events the SERVER (not the loop) appends into the persisted stream so the
@@ -99,7 +112,20 @@ export type EmbeddedAgentEvent =
  * from replayed history.
  */
 export type EmbeddedAgentServerEvent =
-  | { v: 1; type: 'user-message'; id: string; text: string }
+  | {
+      v: 1;
+      type: 'user-message';
+      id: string;
+      text: string;
+      // Client-generated correlation id, echoed verbatim when the client
+      // supplied one on the originating `embedded-user-message`. Separate
+      // from the server-assigned `id` (which feeds the client entry key,
+      // `user-${id}`) so a client-supplied value can never collide with or
+      // pollute that key -- see docs/design/embedded-agent-worker.md. Absent
+      // for server-originated sends (e.g. the initial prompt delivery),
+      // which have no client to correlate with.
+      clientMessageId?: string;
+    }
   | { v: 1; type: 'exited'; code: number | null };
 
 /**

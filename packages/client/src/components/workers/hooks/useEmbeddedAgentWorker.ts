@@ -4,6 +4,7 @@ import {
   getOrCreateEmbeddedAgentWorker,
   type EmbeddedAgentChatEntry,
   type EmbeddedAgentConnectionStatus,
+  type EmbeddedAgentContextUsage,
 } from '../embedded-agent-store.js';
 import type { WorkerErrorCode } from '@agent-console/shared';
 
@@ -18,11 +19,14 @@ interface UseEmbeddedAgentWorkerReturn {
   activityState: AgentActivityState;
   workerError: { message: string; code?: WorkerErrorCode } | null;
   loadingHistory: boolean;
+  contextUsage: EmbeddedAgentContextUsage | null;
+  handoffInFlight: boolean;
   sendUserMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restart: () => void;
   retry: () => void;
   dismissError: () => void;
+  triggerHandoff: () => void;
 }
 
 /**
@@ -71,16 +75,23 @@ export function useEmbeddedAgentWorker(
     getOrCreateEmbeddedAgentWorker(sessionId, workerId).dismissError();
   }, [sessionId, workerId]);
 
+  const triggerHandoff = useCallback(() => {
+    getOrCreateEmbeddedAgentWorker(sessionId, workerId).triggerHandoff();
+  }, [sessionId, workerId]);
+
   return {
     status: snapshot.status,
     entries: snapshot.entries,
     activityState: snapshot.activityState,
     workerError: snapshot.workerError,
     loadingHistory: snapshot.loadingHistory,
+    contextUsage: snapshot.contextUsage,
+    handoffInFlight: snapshot.handoffInFlight,
     sendUserMessage,
     cancel,
     restart,
     retry,
     dismissError,
+    triggerHandoff,
   };
 }

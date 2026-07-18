@@ -39,7 +39,7 @@ describe('migration v25 (embedded_agents.instructions)', () => {
   it('advances the schema version to 25', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(26);
+    expect(versionRes.rows[0]?.user_version).toBe(27);
   });
 
   it('adds the instructions column to embedded_agents, nullable with no default', async () => {

@@ -62,6 +62,10 @@ interface OpenAIStreamChunk {
     };
     finish_reason?: string | null;
   }>;
+  // Sent with `stream_options: { include_usage: true }` on the FINAL chunk of
+  // the stream, which per the OpenAI streaming contract carries an EMPTY
+  // `choices` array. Top-level on the chunk, not nested under `choices`.
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
 }
 
 function toOpenAITools(tools: ToolDefinition[]): unknown[] {
@@ -71,12 +75,21 @@ function toOpenAITools(tools: ToolDefinition[]): unknown[] {
   }));
 }
 
-/** Parse a `retry-after` header (delta-seconds only; HTTP-date is ignored). */
+/**
+ * Parse a `retry-after` header. Supports both forms allowed by RFC 9110
+ * § 10.2.3: delta-seconds (`"120"`) and HTTP-date (`"Wed, 21 Oct 2026
+ * 07:28:00 GMT"`).
+ */
 function parseRetryAfterMs(header: string | null): number | undefined {
   if (header === null) return undefined;
-  const seconds = Number(header.trim());
+  const trimmed = header.trim();
+  const seconds = Number(trimmed);
   if (Number.isFinite(seconds) && seconds >= 0) {
     return Math.round(seconds * 1000);
+  }
+  const date = new Date(trimmed);
+  if (!Number.isNaN(date.getTime())) {
+    return Math.max(0, date.getTime() - Date.now());
   }
   return undefined;
 }
@@ -142,6 +155,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
         model: req.model,
         messages: req.messages,
         stream: true,
+        stream_options: { include_usage: true },
       };
       // Omit `tools` entirely when the list is empty (some providers reject `[]`).
       if (req.tools.length > 0) {
@@ -172,6 +186,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       const parser = new SseParser();
       const toolCalls = new Map<number, AccumulatedToolCall>();
       let finishReason: string | null = null;
+      let capturedUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null = null;
       const decoder = new TextDecoder();
       const reader = res.body.getReader();
 
@@ -188,6 +203,26 @@ export class OpenAIChatAdapter implements ProviderAdapter {
           }
           if (sseLine.kind === 'ignore') continue;
           const chunk = sseLine.json as OpenAIStreamChunk;
+          // Read usage BEFORE the choice-presence guard below: the final
+          // usage-bearing chunk has an EMPTY `choices` array per the OpenAI
+          // streaming contract, so the early-continue would otherwise skip it.
+          // The SSE payload is untrusted JSON -- validate the shape (integer,
+          // non-negative counters) before accepting it, so a malformed
+          // compatible-provider response falls through to the chars/4
+          // estimated fallback instead of corrupting context accounting.
+          const usage = chunk.usage;
+          if (
+            usage !== null &&
+            usage !== undefined &&
+            Number.isSafeInteger(usage.prompt_tokens) &&
+            usage.prompt_tokens >= 0 &&
+            Number.isSafeInteger(usage.completion_tokens) &&
+            usage.completion_tokens >= 0 &&
+            Number.isSafeInteger(usage.total_tokens) &&
+            usage.total_tokens >= 0
+          ) {
+            capturedUsage = usage;
+          }
           const choice = chunk.choices?.[0];
           if (choice === undefined) continue;
 
@@ -224,7 +259,18 @@ export class OpenAIChatAdapter implements ProviderAdapter {
         const [, call] = entry;
         yield { type: 'tool-call', callId: call.id, name: call.name, argsJson: call.args };
       }
-      yield { type: 'done', finishReason };
+      yield {
+        type: 'done',
+        finishReason,
+        usage:
+          capturedUsage !== null
+            ? {
+                promptTokens: capturedUsage.prompt_tokens,
+                completionTokens: capturedUsage.completion_tokens,
+                totalTokens: capturedUsage.total_tokens,
+              }
+            : undefined,
+      };
     } catch (err) {
       if (abort.reason === 'idle-timeout' || abort.reason === 'total-timeout') {
         throw new ProviderError(`provider ${abort.reason} exceeded`, { retryable: true });

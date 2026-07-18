@@ -26,6 +26,7 @@ import { SingleUserMode } from '../../services/user-mode.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { setupWebSocketRoutes, EMBEDDED_USER_MESSAGE_MAX_BYTES } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -82,6 +83,8 @@ function makeFakeSpawn(): {
   captured: SpawnAsUserOpts[];
   stdinWrites: string[];
   simulateExit: (code: number) => void;
+  /** Set before opening a connection to make the NEXT spawn throw instead of succeeding. */
+  throwOnNextSpawn: Error | null;
 } {
   const captured: SpawnAsUserOpts[] = [];
   const stdinWrites: string[] = [];
@@ -120,12 +123,30 @@ function makeFakeSpawn(): {
     kill: () => {},
   };
 
+  const state = { throwOnNextSpawn: null as Error | null };
+
   const fn: SpawnAsUserFn = (opts) => {
+    if (state.throwOnNextSpawn) {
+      const err = state.throwOnNextSpawn;
+      state.throwOnNextSpawn = null;
+      throw err;
+    }
     captured.push(opts);
     return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
   };
 
-  return { fn, captured, stdinWrites, simulateExit };
+  return {
+    fn,
+    captured,
+    stdinWrites,
+    simulateExit,
+    get throwOnNextSpawn() {
+      return state.throwOnNextSpawn;
+    },
+    set throwOnNextSpawn(err: Error | null) {
+      state.throwOnNextSpawn = err;
+    },
+  };
 }
 
 async function waitFor(cond: () => boolean, timeoutMs = 1000): Promise<void> {
@@ -177,6 +198,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
       jobQueue: testJobQueue,
       agentManager,
       embeddedAgentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
@@ -306,12 +328,41 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     const errorMsg = JSON.parse(mockWs.sentMessages[0]);
     expect(errorMsg.type).toBe('error');
     expect(errorMsg.code).toBe('ACTIVATION_FAILED');
-    expect(typeof errorMsg.message).toBe('string');
-    expect(errorMsg.message.length).toBeGreaterThan(0);
+    // Allowlisted (developer-authored) reason: the real descriptive message
+    // is forwarded verbatim, not replaced with the generic fallback.
+    expect(errorMsg.message).toContain('Embedded agent definition not found');
+    expect(errorMsg.message).toContain(definition.id);
 
     // Critical: the socket must stay open (architect pre-directive #2).
     expect(mockWs.closeCalls.length).toBe(0);
     // No spawn should have happened.
+    expect(fake.captured.length).toBe(0);
+  });
+
+  it('replaces a NON-allowlisted activation failure with a generic message, without leaking the raw error', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    // Inject a raw, "sensitive-looking" error at the spawn step (a downstream,
+    // unbounded-content failure -- NOT an EmbeddedAgentActivationError), the
+    // same seam a filesystem/provider-key error would hit in production.
+    fake.throwOnNextSpawn = new Error('spawn EACCES: /home/alice/.ssh/id_rsa permission denied');
+
+    const { mockWs } = openConnection(sessionId, workerId);
+
+    await waitFor(() => mockWs.sentMessages.length > 0);
+
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('ACTIVATION_FAILED');
+    expect(errorMsg.message).toBe(
+      'Embedded-agent activation failed. Contact an administrator if this persists.',
+    );
+    expect(errorMsg.message).not.toContain('id_rsa');
+    expect(errorMsg.message).not.toContain('EACCES');
+
+    // Socket stays open per the same activation-failure contract.
+    expect(mockWs.closeCalls.length).toBe(0);
+    // The throwing spawn call is consumed (not recorded as a successful
+    // capture), and no further spawn was attempted.
     expect(fake.captured.length).toBe(0);
   });
 
@@ -320,13 +371,22 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     const { handlers, mockWs } = openConnection(sessionId, workerId);
     await waitFor(() => fake.captured.length === 1);
 
-    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-user-message', text: 'hello loop' }) }, mockWs);
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello loop', clientMessageId: 'cid-1' }) },
+      mockWs,
+    );
 
     await waitFor(() => fake.stdinWrites.length >= 2);
     const userMessageCommand = JSON.parse(fake.stdinWrites[1]);
     expect(userMessageCommand.type).toBe('user-message');
     expect(userMessageCommand.text).toBe('hello loop');
     expect(mockWs.closeCalls.length).toBe(0);
+
+    // Regression guard for the "loop protocol zero change" invariant: the
+    // client's clientMessageId must never leak into the stdin command sent
+    // to the subprocess, even though it's carried on the persisted/broadcast
+    // server event.
+    expect(userMessageCommand).not.toHaveProperty('clientMessageId');
   });
 
   it('rejects a malformed embedded-user-message (non-string text) with an error instead of silently dropping it', async () => {
@@ -345,6 +405,73 @@ describe('Worker WebSocket: embedded-agent branch', () => {
 
     // Never reached the loop's stdin.
     expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('rejects a malformed embedded-user-message (non-string clientMessageId) with an error instead of silently dropping it', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello', clientMessageId: 42 }) },
+      mockWs,
+    );
+
+    expect(mockWs.sentMessages.length).toBe(1);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('UNSUPPORTED_OPERATION');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Never reached the loop's stdin.
+    expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('rejects an embedded-user-message with an over-length clientMessageId with an error instead of silently dropping it', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    const overLongId = 'a'.repeat(65);
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello', clientMessageId: overLongId }) },
+      mockWs,
+    );
+
+    expect(mockWs.sentMessages.length).toBe(1);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('UNSUPPORTED_OPERATION');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Never reached the loop's stdin.
+    expect(fake.stdinWrites.length).toBe(1); // only the init command
+  });
+
+  it('echoes a valid clientMessageId verbatim in the broadcast user-message event', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage(
+      { data: JSON.stringify({ type: 'embedded-user-message', text: 'hello loop', clientMessageId: 'cid-42' }) },
+      mockWs,
+    );
+
+    await waitFor(() =>
+      mockWs.sentMessages
+        .map((m) => JSON.parse(m))
+        .some((m) => m.type === 'output' && JSON.parse(m.data.trimEnd()).type === 'user-message'),
+    );
+    const outputMsg = mockWs.sentMessages
+      .map((m) => JSON.parse(m))
+      .find((m) => m.type === 'output' && JSON.parse(m.data.trimEnd()).type === 'user-message');
+    const persistedEvent = JSON.parse(outputMsg.data.trimEnd());
+    expect(persistedEvent.text).toBe('hello loop');
+    expect(persistedEvent.clientMessageId).toBe('cid-42');
   });
 
   it('rejects an oversized embedded-user-message with MESSAGE_TOO_LARGE instead of forwarding it', async () => {
@@ -430,6 +557,95 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     await waitFor(() => fake.stdinWrites.length >= 2);
     const cancelCommand = JSON.parse(fake.stdinWrites[1]);
     expect(cancelCommand.type).toBe('cancel');
+    expect(mockWs.closeCalls.length).toBe(0);
+  });
+
+  it('forwards embedded-handoff to the loop stdin (Context Handoff Phase A)', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+
+    await waitFor(() => fake.stdinWrites.length >= 2);
+    const handoffCommand = JSON.parse(fake.stdinWrites[1]);
+    expect(handoffCommand).toEqual({ v: 1, type: 'handoff' });
+    expect(mockWs.closeCalls.length).toBe(0);
+  });
+
+  it('rejects embedded-handoff with ACTIVATION_FAILED when the worker never activated (NOT_ACTIVATED code mapping)', async () => {
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      sessionOwnerUserId,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: sessionOwnerUserId },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    await embeddedAgentManager.deleteEmbeddedAgent(definition.id);
+
+    const { handlers, mockWs } = openConnection(session.id, worker!.id);
+    await waitFor(() => mockWs.sentMessages.length > 0);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+
+    await waitFor(() => mockWs.sentMessages.length > 0);
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('ACTIVATION_FAILED');
+    expect(mockWs.closeCalls.length).toBe(0);
+  });
+
+  it('rejects embedded-handoff with TURN_IN_PROGRESS while a turn is already active', async () => {
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    // Synchronous admission (before any await), so two back-to-back
+    // onMessage calls reliably serialize: the first sets turnActive=true
+    // before the second call's admission runs -- mirrors the
+    // embedded-user-message TURN_IN_PROGRESS test above.
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+    handlers.onMessage({ data: JSON.stringify({ type: 'embedded-handoff' }) }, mockWs);
+
+    await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).code === 'TURN_IN_PROGRESS'));
+    const errorMsg = mockWs.sentMessages.map((m) => JSON.parse(m)).find((m) => m.code === 'TURN_IN_PROGRESS');
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.message).toBe('turn in progress');
+    expect(mockWs.closeCalls.length).toBe(0);
+
+    // Only the first handoff should have reached the loop's stdin.
+    await waitFor(() => fake.stdinWrites.length >= 2);
+    expect(fake.stdinWrites.length).toBe(2); // init + first handoff
+  });
+
+  it('serves request-history for an embedded-agent worker with the shared history-response shape', async () => {
+    // request-history is handled by shared isStreamWorker machinery before
+    // the embedded-agent worker-type branch (routes.ts), so this test guards
+    // that routes-layer coverage exists for the embedded-agent shape too --
+    // the PTY-focused routes-history.test.ts only exercises PTY workers.
+    const { sessionId, workerId } = await createEmbeddedAgentSession();
+    const { handlers, mockWs } = openConnection(sessionId, workerId);
+    await waitFor(() => fake.captured.length === 1);
+    mockWs.sentMessages.length = 0;
+
+    handlers.onMessage({ data: JSON.stringify({ type: 'request-history' }) }, mockWs);
+
+    await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).type === 'history'));
+    const historyMsg = mockWs.sentMessages.map((m) => JSON.parse(m)).find((m) => m.type === 'history');
+    expect(historyMsg).toMatchObject({
+      type: 'history',
+      data: expect.any(String),
+      offset: expect.any(Number),
+      startOffset: expect.any(Number),
+      epoch: expect.any(Number),
+    });
     expect(mockWs.closeCalls.length).toBe(0);
   });
 

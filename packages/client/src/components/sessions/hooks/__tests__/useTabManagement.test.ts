@@ -514,6 +514,53 @@ describe('useTabManagement', () => {
       expect(result.current.tabs).toHaveLength(1);
     });
 
+    it('closeTab deletes a second (non-primary) agent worker and removes tab (Issue #1134)', async () => {
+      const workers = [
+        createAgentWorker('agent-1'),
+        createTerminalWorker('terminal-1'),
+        createAgentWorker('agent-2', 'Claude Code 2'),
+      ];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      expect(result.current.tabs).toHaveLength(3);
+
+      await act(async () => {
+        await result.current.closeTab('agent-2');
+      });
+
+      const deleteCalls = findFetchCalls(/\/sessions\/session-1\/workers\/agent-2$/);
+      expect(deleteCalls).toHaveLength(1);
+      expect(result.current.tabs).toHaveLength(2);
+      expect(result.current.tabs.map(t => t.id)).toEqual(['agent-1', 'terminal-1']);
+    });
+
+    it('does not close the primary agent tab even when a second agent worker exists (Issue #1134)', async () => {
+      const workers = [
+        createAgentWorker('agent-1'),
+        createTerminalWorker('terminal-1'),
+        createAgentWorker('agent-2', 'Claude Code 2'),
+      ];
+      const options = createDefaultOptions({
+        activeSession: { workers },
+        urlWorkerId: 'agent-1',
+      });
+
+      const { result } = renderHook(() => useTabManagement(options));
+
+      await act(async () => {
+        await result.current.closeTab('agent-1');
+      });
+
+      const deleteCalls = findFetchCalls(/\/workers\//);
+      expect(deleteCalls).toHaveLength(0);
+      expect(result.current.tabs).toHaveLength(3);
+    });
+
     it('closeTab deletes an embedded-agent worker and removes tab', async () => {
       const workers = [createAgentWorker('agent-1'), createEmbeddedAgentWorker('embedded-1')];
       const options = createDefaultOptions({

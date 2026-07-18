@@ -19,6 +19,7 @@ import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.
 import { SessionManager } from '../../services/session-manager.js';
 import { JsonSessionRepository } from '../../repositories/index.js';
 import { TEST_AUTH_USER } from '../../__tests__/test-utils.js';
+import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -68,6 +69,7 @@ describe('Sessions API - Pause/Resume', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
@@ -366,6 +368,7 @@ describe('Sessions API - POST /api/sessions (repository_not_found)', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
       // Repository lookup never resolves any id — every worktree-session create
       // must therefore fail fast with RepositoryNotFoundError.
       repositoryLookup: { getRepositorySlug: () => undefined },
@@ -563,6 +566,7 @@ describe('Sessions API - GET /api/sessions/:id (orphaned visibility)', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
@@ -696,6 +700,7 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
+      mcpTokenRegistry: new McpTokenRegistry(),
       repositoryLookup: { getRepositorySlug: () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),

@@ -2,6 +2,8 @@ import {
   type EmbeddedAgentDefinition,
   type CreateEmbeddedAgentRequest,
   type UpdateEmbeddedAgentRequest,
+  type AgentDirectoryEntry,
+  type AgentSurface,
 } from '@agent-console/shared';
 import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
@@ -21,7 +23,9 @@ export interface EmbeddedAgentLifecycleCallbacks {
  * repository. Modeled on AgentManager, but with no built-in/default definition:
  * the registry starts empty and every definition is user-created.
  */
-export class EmbeddedAgentManager {
+export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
+  readonly kind = 'embedded' as const;
+
   private embeddedAgents: Map<string, EmbeddedAgentDefinition> = new Map();
   private lifecycleCallbacks: EmbeddedAgentLifecycleCallbacks | null = null;
   private repository: EmbeddedAgentRepository;
@@ -78,6 +82,23 @@ export class EmbeddedAgentManager {
     return this.embeddedAgents.get(id);
   }
 
+  // ---------- AgentSurface<'embedded'> ----------
+
+  list(): Extract<AgentDirectoryEntry, { kind: 'embedded' }>[] {
+    return this.getAllEmbeddedAgents().map((agent) => ({ kind: 'embedded' as const, agent }));
+  }
+
+  get(id: string): Extract<AgentDirectoryEntry, { kind: 'embedded' }> | undefined {
+    const agent = this.getEmbeddedAgent(id);
+    return agent ? { kind: 'embedded', agent } : undefined;
+  }
+
+  findByName(name: string): Extract<AgentDirectoryEntry, { kind: 'embedded' }>[] {
+    return this.getAllEmbeddedAgents()
+      .filter((a) => a.name === name)
+      .map((agent) => ({ kind: 'embedded' as const, agent }));
+  }
+
   /**
    * Create a new embedded-agent definition.
    * `createdBy` is set from the authenticated user parameter, never from the
@@ -99,6 +120,8 @@ export class EmbeddedAgentManager {
       maxToolIterations: request.maxToolIterations,
       enabledTools: request.enabledTools,
       instructions: request.instructions,
+      contextWindowTokens: request.contextWindowTokens,
+      handoff: request.handoff,
       createdBy,
       createdAt: now,
       updatedAt: now,
@@ -156,6 +179,11 @@ export class EmbeddedAgentManager {
         request.enabledTools === null ? undefined : (request.enabledTools ?? existing.enabledTools),
       instructions:
         request.instructions === null ? undefined : (request.instructions ?? existing.instructions),
+      contextWindowTokens:
+        request.contextWindowTokens === null
+          ? undefined
+          : (request.contextWindowTokens ?? existing.contextWindowTokens),
+      handoff: request.handoff === null ? undefined : (request.handoff ?? existing.handoff),
       createdBy: existing.createdBy,
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),

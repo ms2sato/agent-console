@@ -224,6 +224,14 @@ export interface EmbeddedAgentsTable {
   enabled_tools: string | null;
   /** JSON-serialized array of opt-in instruction-file paths (null = none configured) */
   instructions: string | null;
+  /** Operator-declared model context window in tokens (Context Handoff Phase A); null = no denominator, ratio/threshold UI disabled */
+  context_window_tokens: number | null;
+  /** Soft handoff threshold ratio 0..1 (Context Handoff Phase A); null = use the 0.75 default downstream */
+  handoff_soft_ratio: number | null;
+  /** Hard handoff threshold ratio 0..1 (Context Handoff Phase A); null = use the 0.90 default downstream */
+  handoff_hard_ratio: number | null;
+  /** Phase B auto-fire flag (Context Handoff Phase A schema landed early; NOT read by any Phase A code path) */
+  handoff_auto: number | null;
   /** User UUID (from users table) of the creator */
   created_by: string;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */

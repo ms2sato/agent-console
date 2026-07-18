@@ -34,6 +34,7 @@ import { RepositoryManager } from '@agent-console/server/src/services/repository
 import { createMcpApp, type McpDependencies } from '@agent-console/server/src/mcp/mcp-server';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
+import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 
 const TEST_CONFIG_DIR = '/test/config';
 const TEST_REPO_PATH = '/test/repo';
@@ -146,6 +147,7 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
     });
 

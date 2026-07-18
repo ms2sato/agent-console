@@ -12,7 +12,7 @@ mock.module('open', () => ({
 
 // Import mock-fs-helper to set up memfs mocks
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
-import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
+import { createMockSystemCapabilities } from '../../__tests__/utils/mock-system-capabilities-helper.js';
 
 // Track Bun.spawn calls for VS Code
 const spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
@@ -75,14 +75,12 @@ describe('System API - open-in-vscode', () => {
     const suffix = `?v=${++importCounter}`;
 
     // Set up mock system capabilities
-    const mockCapabilities = new SystemCapabilitiesService();
-    // Manually set capabilities to avoid running which command
-    Reflect.set(mockCapabilities, 'capabilities', {
+    const mockCapabilities = createMockSystemCapabilities({
       vscode: vscodeAvailable,
-      vscodeOpenMode: options.vscodeOpenMode ?? 'local-spawn',
-      vscodeRemoteHost: options.vscodeRemoteHost ?? null,
+      vscodeOpenMode: options.vscodeOpenMode,
+      vscodeRemoteHost: options.vscodeRemoteHost,
+      vscodeCommand: vscodeAvailable ? vscodeCommand : null,
     });
-    Reflect.set(mockCapabilities, 'vscodeCommand', vscodeAvailable ? vscodeCommand : null);
     const { system } = await import(`../system.js${suffix}`);
     const { onApiError } = await import(`../../lib/error-handler.js${suffix}`);
 

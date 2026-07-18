@@ -64,6 +64,24 @@ describe('MobileSidebarDrawer', () => {
       expect(dialog!.className).toContain('-translate-x-full');
       expect(dialog!.className).not.toContain('translate-x-0');
     });
+
+    it('should make the drawer wrapper a bounded-height flex container so children can be stretched to fill it (Issue #1170)', () => {
+      // The drawer wrapper is `h-full` but must also establish a flex
+      // column context so its child (the sidebar `<aside>`) is stretched to
+      // fill the drawer's bounded height. Without `flex flex-col`, the
+      // aside grows with its content on mobile and long session lists get
+      // cut off with no way to scroll to the overflow.
+      render(
+        <MobileSidebarDrawer open={true} onClose={() => {}}>
+          <div>Content</div>
+        </MobileSidebarDrawer>
+      );
+      const dialog = screen.getByRole('dialog');
+      const classList = dialog.className.split(' ');
+      expect(classList).toContain('flex');
+      expect(classList).toContain('flex-col');
+      expect(classList).toContain('h-full');
+    });
   });
 
   describe('Interactions', () => {

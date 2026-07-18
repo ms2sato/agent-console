@@ -73,6 +73,13 @@ describe('globTool', () => {
     expect(result.result).toBe('pattern is required and must be a string');
   });
 
+  it('rejects a non-string path argument', async () => {
+    const result = await globTool.execute({ pattern: '*.ts', path: 42 }, { locationPath });
+
+    expect(result.ok).toBe(false);
+    expect(result.result).toBe('path must be a string');
+  });
+
   it('returns {ok:false, result:"aborted"} without completing the scan when the signal is already aborted', async () => {
     for (let i = 0; i < 20; i++) {
       await touch(path.join(locationPath, `f${i}.ts`));

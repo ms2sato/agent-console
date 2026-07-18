@@ -23,12 +23,16 @@ export function getTabDotColor(workerType: Worker['type']): string {
 
 /**
  * Worker types whose tab renders a close ("x") button: opt-in workers a user
- * added to a running session and can remove again. `agent` and `git-diff`
- * are fixed tabs (auto-created with the session) and are never closeable --
- * see `useTabManagement.ts`'s `closeTab` guard for the server-side mirror of
- * this rule.
+ * added to a running session and can remove again. `git-diff` is a fixed tab
+ * (auto-created with the session) and is never closeable -- see
+ * `useTabManagement.ts`'s `closeTab` guard for the server-side mirror of
+ * this rule. `agent` tabs are closeable EXCEPT for the session's primary
+ * agent worker (the one auto-created at session creation) -- callers pass
+ * `isPrimaryAgent` to distinguish that worker from any additional `agent`
+ * tabs added later via the picker.
  */
-export function isCloseableTabType(workerType: Worker['type']): boolean {
+export function isCloseableTabType(workerType: Worker['type'], isPrimaryAgent = true): boolean {
+  if (workerType === 'agent') return !isPrimaryAgent;
   return workerType === 'terminal' || workerType === 'embedded-agent';
 }
 

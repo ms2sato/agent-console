@@ -526,10 +526,44 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     max_tool_iterations: def.maxToolIterations ?? null,
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
     instructions: def.instructions !== undefined ? JSON.stringify(def.instructions) : null,
+    context_window_tokens: def.contextWindowTokens ?? null,
+    handoff_soft_ratio: def.handoff?.softRatio ?? null,
+    handoff_hard_ratio: def.handoff?.hardRatio ?? null,
+    handoff_auto: def.handoff?.auto !== undefined ? (def.handoff.auto ? 1 : 0) : null,
     created_by: def.createdBy,
     created_at: def.createdAt,
     updated_at: def.updatedAt,
   };
+}
+
+/**
+ * Parse a nullable JSON-array-string embedded-agent column (`enabled_tools`,
+ * `instructions`) into a typed array. This is the only boundary where DB
+ * content becomes a typed policy value, so both failure modes are guarded
+ * and treated the same as a NULL column (warn + fall back to `undefined`):
+ * the string not being valid JSON at all, and the JSON parsing successfully
+ * to a non-array value (e.g. `'"foo"'` or `'{}'`) that would otherwise
+ * silently misbehave when a caller iterates it as an array.
+ */
+function parseEmbeddedAgentJsonArrayColumn<T>(
+  value: string | null,
+  embeddedAgentId: string,
+  fieldName: 'enabled_tools' | 'instructions'
+): T[] | undefined {
+  if (value === null) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) {
+      logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
+      return undefined;
+    }
+    return parsed as T[];
+  } catch {
+    logger.warn({ embeddedAgentId }, `Failed to parse ${fieldName}, ignoring`);
+    return undefined;
+  }
 }
 
 /**
@@ -540,6 +574,31 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
  * @returns The EmbeddedAgentDefinition object
  */
 export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentDefinition {
+  // enabledTools / instructions: NULL in DB is the "follow the default" (or
+  // "no instructions") signal. Once a definition is edited via the Add/Edit
+  // form, it is written as an explicit array (per the Q1 design decision) —
+  // this pins the enabled set to the values shown at edit time. Future
+  // default changes do NOT propagate to edited definitions.
+  const enabledTools = parseEmbeddedAgentJsonArrayColumn<EmbeddedAgentToolName>(
+    row.enabled_tools,
+    row.id,
+    'enabled_tools'
+  );
+  const instructions = parseEmbeddedAgentJsonArrayColumn<string>(row.instructions, row.id, 'instructions');
+
+  // `handoff` is reconstructed conditionally: unlike `provider` (required,
+  // always rebuilt), an all-null triple must yield `undefined`, not `{}`, so
+  // an unconfigured definition round-trips to "no handoff config" exactly as
+  // it was written.
+  const handoff =
+    row.handoff_soft_ratio !== null || row.handoff_hard_ratio !== null || row.handoff_auto !== null
+      ? {
+          softRatio: row.handoff_soft_ratio ?? undefined,
+          hardRatio: row.handoff_hard_ratio ?? undefined,
+          auto: row.handoff_auto !== null ? row.handoff_auto === 1 : undefined,
+        }
+      : undefined;
+
   return {
     id: row.id,
     name: row.name,
@@ -551,9 +610,10 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
     },
     systemPrompt: row.system_prompt ?? undefined,
     maxToolIterations: row.max_tool_iterations ?? undefined,
-    enabledTools:
-      row.enabled_tools !== null ? (JSON.parse(row.enabled_tools) as EmbeddedAgentToolName[]) : undefined,
-    instructions: row.instructions !== null ? (JSON.parse(row.instructions) as string[]) : undefined,
+    enabledTools,
+    instructions,
+    contextWindowTokens: row.context_window_tokens ?? undefined,
+    handoff,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

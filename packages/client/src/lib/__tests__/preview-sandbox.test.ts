@@ -105,3 +105,102 @@ describe('buildPreviewDocument', () => {
     expect(doc).toContain('<meta charset="utf-8">');
   });
 });
+
+describe('mXSS regression corpus', () => {
+  // These vectors probe namespace-mixing (SVG/MathML) and RAWTEXT/comment
+  // edge cases -- the parsing shapes that mutation-XSS (mXSS) research
+  // targets. Each assertion re-parses the sanitizer's OWN first-pass output
+  // (simulating the real second parse that happens when PreviewPanel's
+  // iframe loads the wrapped document from its blob: URL) and checks for
+  // survivors, not just "no crash" -- this is the polarity check, not a
+  // weak string match.
+  //
+  // Scope note: this corpus intentionally only covers vectors whose safety
+  // does NOT depend on HTML5 foreign-content/RAWTEXT/adoption-agency parser
+  // edge cases -- i.e. cases where the dangerous construct becomes a real,
+  // unambiguous DOM node/attribute on the FIRST parse in any conforming
+  // engine, so the sanitizer's namespace-agnostic tree walk (querySelectorAll
+  // by tag name, generic attribute iteration) is what's actually being
+  // exercised. Vectors that rely on a browser engine's *specific* foreign-
+  // content parsing behavior (namespace-confusion mutation vectors such as
+  // the classic cure53 `<form><math><mtext></form><form><mglyph><style>...`
+  // shape) are deliberately NOT encoded here: this repo's test environment
+  // (happy-dom, see `packages/client/src/test/setup.ts`) does not
+  // faithfully reproduce Chromium's HTML5 tree-construction algorithm for
+  // these edge cases (confirmed empirically -- happy-dom silently drops
+  // content in several of these shapes that real Chromium preserves, and
+  // vice versa). A bun:test assertion built on those vectors would pin
+  // happy-dom's parser, not Chromium's, which would misrepresent what's
+  // actually being verified. Those vectors are instead empirically verified
+  // against real Chromium (Chrome DevTools MCP) and recorded as evidence in
+  // the PR body for Issue #1106, with the known non-neutralized case
+  // tracked in Issue #1162. A real-browser test runner is a prerequisite
+  // for automating that class of vector; see #1162.
+  function assertFullyNeutralizedAcrossReparse(vector: string) {
+    const firstPass = sanitizePreviewFragment(vector);
+    // Re-parse the sanitizer's own output, simulating the iframe's real
+    // second parse of the blob: URL document.
+    const reparsed = new DOMParser().parseFromString(firstPass, 'text/html');
+    const hasScript = reparsed.querySelectorAll('script').length > 0;
+    const hasOnAttr = Array.from(reparsed.querySelectorAll('*')).some((el) =>
+      Array.from(el.attributes).some((attr) => attr.name.toLowerCase().startsWith('on')),
+    );
+    expect(hasScript).toBe(false);
+    expect(hasOnAttr).toBe(false);
+  }
+
+  it('neutralizes an on* attribute on a MathML element (namespace-agnostic attribute removal)', () => {
+    assertFullyNeutralizedAcrossReparse('<math><mi onclick="alert(1)">x</mi></math>');
+  });
+
+  it('neutralizes a <script> element nested inside MathML (namespace-agnostic tag removal)', () => {
+    assertFullyNeutralizedAcrossReparse('<math><mtext><script>alert(1)</script></mtext></math>');
+  });
+
+  it('neutralizes an on* attribute directly on <noscript>', () => {
+    assertFullyNeutralizedAcrossReparse('<noscript onclick="alert(1)">text</noscript>');
+  });
+
+  it('neutralizes a <script> element whose content uses an HTML-comment decoy (legacy "hide from old browsers" trick reused as an evasion attempt)', () => {
+    assertFullyNeutralizedAcrossReparse('<script><!--alert(1)--></script>');
+  });
+
+  it('neutralizes a javascript: URL on xlink:href nested inside <svg><a>, case-varied', () => {
+    assertFullyNeutralizedAcrossReparse('<svg><a xlink:href="JavaScript:alert(1)"><text>click</text></a></svg>');
+  });
+
+  it(
+    'containment invariant (Issue #1162): the CSP applied to every preview document is exact and ' +
+      'unweakened regardless of sanitizer input -- this is what actually contains a known, currently ' +
+      'unresolved sanitizer gap (a parser-quirk-dependent mXSS shape verified empirically against real ' +
+      'Chromium; see Issue #1162 and the PR body for the vector and the empirical evidence). This test ' +
+      'intentionally does NOT assert anything about sanitizer output for that vector -- doing so would ' +
+      'go red the moment a future sanitizer improvement neutralizes it, punishing progress. It asserts ' +
+      'the containment property instead: buildPreviewDocument always emits the exact, unweakened CSP ' +
+      'string, correctly scoped inside <head> before <body>, regardless of what the sanitizer did or did ' +
+      'not neutralize. (The second engine-independent containment layer, the iframe\'s sandbox="" attribute ' +
+      'with no allow-scripts token, is set in PreviewPanel.tsx and is covered by PreviewPanel.test.tsx\'s ' +
+      'existing sandbox="" assertion -- not re-tested here since this file only covers preview-sandbox.ts\'s ' +
+      'own exports.)',
+    () => {
+      // Representative of the known-gap shape (Issue #1162) -- its exact
+      // sanitizer output is irrelevant to this assertion; see comment above.
+      const knownGapVector = '<form><math><mtext></form><form><mglyph><style></math><img src=1 onerror=alert(1)>';
+      const sanitized = sanitizePreviewFragment(knownGapVector);
+      const doc = buildPreviewDocument(sanitized);
+
+      const cspMetaTags = Array.from(
+        doc.matchAll(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]*)">/gi),
+      );
+      expect(cspMetaTags).toHaveLength(1);
+      expect(cspMetaTags[0][1]).toBe(PREVIEW_CSP);
+
+      const headIndex = doc.indexOf('<head>');
+      const cspIndex = doc.indexOf('<meta http-equiv="Content-Security-Policy"');
+      const bodyIndex = doc.indexOf('<body>');
+      expect(headIndex).toBeGreaterThanOrEqual(0);
+      expect(cspIndex).toBeGreaterThan(headIndex);
+      expect(bodyIndex).toBeGreaterThan(cspIndex);
+    },
+  );
+});

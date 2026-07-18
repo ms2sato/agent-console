@@ -21,10 +21,10 @@ import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBa
 import { getNextTabIndex } from './tabKeyboardNavigation';
 import { extractRestartableSession, executeWorkerRestart } from './workerRestart';
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
-import type { Session, Worker } from '@agent-console/shared';
+import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { MemoPanel } from './MemoPanel';
-import { useAgents } from '../AgentSelector';
+import { useAgents } from '../../hooks/useAgents';
 import { logger } from '../../lib/logger';
 
 export { sessionToPageState } from './hooks/useSessionPageState';
@@ -38,6 +38,22 @@ function getBranchName(session: Session): string {
 // Get repository ID from session (for worktree sessions)
 function getRepositoryId(session: Session): string {
   return session.type === 'worktree' ? session.repositoryId : '';
+}
+
+/**
+ * Resolve the `embeddedAgentId` prop passed to `EmbeddedAgentWorkerView` for
+ * the active tab's worker -- undefined when the active worker isn't an
+ * embedded-agent type. Extracted (mirroring `sessionToPageState`'s export
+ * above) so this Context Handoff (Phase A) wiring -- see
+ * docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI -- is
+ * testable without a full SessionPage render.
+ */
+export function resolveActiveEmbeddedAgentId(
+  workers: Worker[],
+  activeTabId: string | null,
+): string | undefined {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.embeddedAgentId : undefined;
 }
 
 // Error fallback UI for worker tabs
@@ -69,6 +85,26 @@ function WorkerErrorFallback({ error, workerType, workerName, onRetry }: WorkerE
 export interface SessionPageProps {
   sessionId: string;
   workerId?: string;  // Optional - if not provided, will redirect to default worker
+}
+
+/**
+ * Resolves whether the active tab's terminal agent has `stripScrollbackClear`
+ * enabled. Returns false when the active tab isn't a terminal-agent worker
+ * (embedded-agent / terminal-shell workers have no `AgentDefinition` entry
+ * and never match), or when its agent isn't found in the fetched agents
+ * list (e.g. still loading).
+ *
+ * @internal Exported for testing
+ */
+export function resolveShouldStripScrollback(
+  workers: Worker[],
+  activeTabId: string | null,
+  agents: AgentDefinition[]
+): boolean {
+  const activeWorker = workers.find((w) => w.id === activeTabId);
+  const activeAgentId = activeWorker?.type === 'agent' ? activeWorker.agentId : undefined;
+  const activeAgent = activeAgentId ? agents.find((a) => a.id === activeAgentId) : undefined;
+  return activeAgent?.stripScrollbackClear ?? false;
 }
 
 export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPageProps) {
@@ -422,14 +458,16 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   const activeTab = tabs.find(t => t.id === activeTabId);
 
-  // Determine if active worker's agent has stripScrollbackClear enabled
-  const activeWorker = session.workers.find(w => w.id === activeTabId);
-  const activeAgentId = activeWorker?.type === 'agent' ? activeWorker.agentId : undefined;
-  const activeAgent = activeAgentId ? agents.find(a => a.id === activeAgentId) : undefined;
-  const shouldStripScrollback = activeAgent?.stripScrollbackClear ?? false;
+  const shouldStripScrollback = resolveShouldStripScrollback(session.workers, activeTabId, agents);
+  // Context Handoff (Phase A): resolved so EmbeddedAgentWorkerView can look up
+  // the definition's contextWindowTokens/handoff -- see
+  // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI.
+  const activeEmbeddedAgentId = resolveActiveEmbeddedAgentId(session.workers, activeTabId);
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
+
+  const primaryAgentTabId = tabs.find(t => t.workerType === 'agent')?.id;
 
   const tabButtons = tabs.map(tab => (
     <button
@@ -452,7 +490,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         <span className={`inline-block w-2 h-2 rounded-full ${getTabDotColor(tab.workerType)}`} aria-hidden="true" />
       )}
       {tab.name}
-      {isCloseableTabType(tab.workerType) && (
+      {isCloseableTabType(tab.workerType, tab.id === primaryAgentTabId) && (
         <button
           type="button"
           aria-label="Close tab"
@@ -493,6 +531,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
           <EmbeddedAgentWorkerView
             sessionId={sessionId}
             workerId={activeTab.id}
+            embeddedAgentId={activeEmbeddedAgentId}
             onStatusChange={handleStatusChange}
           />
         ) : activeTab.workerType === 'git-diff' ? (

@@ -313,6 +313,68 @@ describe('hook shell-script coverage (Issue #733)', () => {
   });
 });
 
+describe('tsx source ↔ .ts sibling test (Issue #1049)', () => {
+  it('reports no gap when a .tsx source has a .ts sibling test in __tests__ (positive)', () => {
+    // A JSX-free pure-logic test naturally lives as `.ts` even though its
+    // source is `.tsx` — sibling matching is basename/dir based and does
+    // not require the extensions to match.
+    const { testCoverage } = findTestFiles([
+      'packages/client/src/components/foo/Bar.tsx',
+      'packages/client/src/components/foo/__tests__/Bar.test.ts',
+    ]);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].hasTest).toBe(true);
+    expect(testCoverage[0].needsCoverage).toBe(true);
+  });
+
+  it('reports no gap when a .tsx source has a .ts sibling test in the same dir (positive)', () => {
+    const { testCoverage } = findTestFiles([
+      'packages/client/src/components/foo/Bar.tsx',
+      'packages/client/src/components/foo/Bar.test.ts',
+    ]);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].hasTest).toBe(true);
+  });
+
+  it('flags a gap when a .tsx source has no sibling test at all (negative)', () => {
+    const { testCoverage } = findTestFiles(['packages/client/src/components/foo/Bar.tsx']);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].hasTest).toBe(false);
+  });
+
+  it('suggests both .tsx and .ts as candidate paths for a .tsx source missing coverage', () => {
+    const { testCoverage } = findTestFiles(['packages/client/src/components/foo/Bar.tsx']);
+    expect(testCoverage[0].expectedTestPath).toBe(
+      'packages/client/src/components/foo/__tests__/Bar.test.tsx',
+    );
+    expect(testCoverage[0].alternateTestPath).toBe(
+      'packages/client/src/components/foo/__tests__/Bar.test.ts',
+    );
+  });
+
+  it('does not suggest an alternate path for a .ts source (reverse case out of scope)', () => {
+    const { testCoverage } = findTestFiles(['packages/server/src/services/foo.ts']);
+    expect(testCoverage[0].alternateTestPath).toBeNull();
+  });
+
+  it('does not credit a .tsx source from a same-named .ts test in an unrelated directory (dir must still match)', () => {
+    const { testCoverage } = findTestFiles([
+      'packages/client/src/components/foo/Bar.tsx',
+      'packages/client/src/components/other/Bar.test.ts',
+    ]);
+    expect(testCoverage[0].hasTest).toBe(false);
+  });
+
+  it('recognises the real SessionPage.tsx + SessionPage.test.ts pairing that motivated Issue #1049', () => {
+    const { testCoverage } = findTestFiles([
+      'packages/client/src/components/sessions/SessionPage.tsx',
+      'packages/client/src/components/sessions/__tests__/SessionPage.test.ts',
+    ]);
+    expect(testCoverage).toHaveLength(1);
+    expect(testCoverage[0].hasTest).toBe(true);
+  });
+});
+
 describe('runLanguageCheck', () => {
   function makeFixtureRoot({ withScript = true, withFixture } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'lang-helper-'));

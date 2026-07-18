@@ -27,6 +27,7 @@ import { AgentManager } from '@agent-console/server/src/services/agent-manager';
 import { SqliteAgentRepository } from '@agent-console/server/src/repositories/sqlite-agent-repository';
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
+import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
 import type { WorkerServerMessage } from '@agent-console/shared';
 import { WORKER_SERVER_MESSAGE_TYPES } from '@agent-console/shared';
 
@@ -59,6 +60,7 @@ describe('Client-Server Boundary: worker history startOffset + epoch', () => {
       sessionRepository,
       jobQueue,
       agentManager,
+      mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
     });
   });

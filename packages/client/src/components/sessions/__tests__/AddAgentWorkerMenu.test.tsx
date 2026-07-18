@@ -3,6 +3,7 @@ import { screen, cleanup, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
+import { AGENT_KIND_PRESENTATION } from '../../agents';
 
 const originalFetch = globalThis.fetch;
 
@@ -73,8 +74,53 @@ describe('AddAgentWorkerMenu', () => {
       expect(screen.getByText('Claude Code')).toBeTruthy();
       expect(screen.getByText('Ollama qwen3')).toBeTruthy();
     });
-    expect(screen.getByText('Terminal')).toBeTruthy();
-    expect(screen.getByText('Embedded · Experimental')).toBeTruthy();
+    const terminalBadge = screen.getByText('Terminal');
+    expect(terminalBadge).toBeTruthy();
+    // Regression guard: fails if this badge ever reverts to inline classes
+    // instead of reading from the single-writer AGENT_KIND_PRESENTATION
+    // table (packages/client/src/components/agents/agentKindPresentation.ts).
+    expect(terminalBadge.className).toContain(AGENT_KIND_PRESENTATION.terminal.badgeClassName);
+
+    const embeddedBadge = screen.getByText('Embedded · Experimental');
+    expect(embeddedBadge).toBeTruthy();
+    expect(embeddedBadge.className).toContain(AGENT_KIND_PRESENTATION.embedded.badgeClassName);
+  });
+
+  it('preserves item order: Shell, then terminal entries, then embedded entries (useAgentDirectory merge order)', async () => {
+    agentsResponse = {
+      agents: [{ id: 'claude-code', name: 'Claude Code', isBuiltIn: true }],
+    };
+    embeddedAgentsResponse = {
+      embeddedAgents: [
+        {
+          id: 'embedded-1',
+          name: 'Ollama qwen3',
+          provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3' },
+          createdBy: 'user-1',
+          createdAt: '',
+          updatedAt: '',
+        },
+      ],
+    };
+
+    await renderWithRouter(
+      <AddAgentWorkerMenu onSelect={async () => {}} onSelectShell={async () => {}} />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Add agent worker' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Ollama qwen3')).toBeTruthy();
+    });
+
+    const menu = screen.getByRole('menu');
+    const menuItems = within(menu).getAllByRole('menuitem');
+    const shellIndex = menuItems.findIndex((item) => item.textContent?.includes('Shell'));
+    const terminalIndex = menuItems.findIndex((item) => item.textContent?.includes('Claude Code'));
+    const embeddedIndex = menuItems.findIndex((item) => item.textContent?.includes('Ollama qwen3'));
+    expect(shellIndex).toBe(0);
+    expect(terminalIndex).toBeGreaterThan(shellIndex);
+    expect(embeddedIndex).toBeGreaterThan(terminalIndex);
   });
 
   it('empty embedded registry still shows terminal agents plus a link to create one', async () => {

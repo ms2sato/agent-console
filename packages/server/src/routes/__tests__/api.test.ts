@@ -7,27 +7,8 @@ import type { MessageTemplateRepository } from '../../repositories/message-templ
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
-import { SystemCapabilitiesService } from '../../services/system-capabilities-service.js';
 import { serverConfig } from '../../lib/server-config.js';
-
-/**
- * Minimal SystemCapabilitiesService mock that returns no detected capabilities.
- *
- * Constructs a real instance and seeds its private state via Reflect so we
- * avoid running the underlying `which` shell-out. Mirrors the pattern used in
- * `__tests__/system.test.ts`. Returning a real instance also lets the test
- * stay structurally honest without `as unknown as` casts.
- */
-function createMockSystemCapabilities(): SystemCapabilitiesService {
-  const service = new SystemCapabilitiesService();
-  Reflect.set(service, 'capabilities', {
-    vscode: false,
-    vscodeOpenMode: 'local-spawn',
-    vscodeRemoteHost: null,
-  });
-  Reflect.set(service, 'vscodeCommand', null);
-  return service;
-}
+import { createMockSystemCapabilities } from '../../__tests__/utils/mock-system-capabilities-helper.js';
 
 describe('API route mounting', () => {
   let app: Hono<AppBindings>;
