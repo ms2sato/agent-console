@@ -248,6 +248,30 @@ describe('reconstructConversation — invariant violations (4f fallback trigger)
     ];
     expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
   });
+
+  it('throws RestoreReconstructionError on an orphan tool-result with no owning tool-call in the window (R1, #1202 rotation-truncated window)', () => {
+    // Simulates a window that starts mid-turn because the owning tool-call
+    // (and its assistant-message) got archived out by a rotation, per the
+    // known #1202 limitation (restore only reads the LIVE output window).
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'orphan', ok: true, result: 'done' },
+    ];
+    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+  });
+
+  it('throws RestoreReconstructionError on an orphan tool-result appearing in-window AFTER a context-handoff boundary', () => {
+    // Unrelated content before the handoff marker is correctly ignored (4b
+    // already excludes it); the orphan tool-result inside the post-handoff
+    // window must still trip the guard.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'before handoff' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'reply1' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'discarded', name: 'run', args: {} },
+      { v: 1, type: 'context-handoff', distillation: 'summary text' },
+      { v: 1, type: 'tool-result', turnId: 't2', callId: 'orphan', ok: true, result: 'done' },
+    ];
+    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+  });
 });
 
 describe('reconstructConversation — wire-faithful tool_calls.arguments reconstruction', () => {

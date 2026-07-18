@@ -103,6 +103,7 @@ function findLastContextHandoffIndex(events: EmbeddedAgentStreamEvent[]): number
  */
 function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEvent[]): void {
   let current: Extract<ChatMessage, { role: 'assistant' }> | null = null;
+  const knownToolCallIds = new Set<string>();
 
   for (const event of events) {
     switch (event.type) {
@@ -131,9 +132,24 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
           },
         };
         current.tool_calls = [...(current.tool_calls ?? []), toolCall];
+        knownToolCallIds.add(event.callId);
         break;
       }
       case 'tool-result':
+        // A rotated-out restore window can start mid-turn, e.g. a lone
+        // tool-result whose owning tool-call was archived out (restore only
+        // reads the live output window, never archived segments). Without
+        // this guard, an orphan tool-result silently produces a
+        // structurally-invalid request (a tool-role message with no
+        // preceding assistant tool_calls entry introducing that id) that the
+        // provider rejects on every subsequent turn -- wedging the worker
+        // instead of routing through the safe v1-reset fallback that every
+        // other invariant violation already gets.
+        if (!knownToolCallIds.has(event.callId)) {
+          throw new RestoreReconstructionError(
+            `tool-result event (callId=${event.callId}) with no owning tool-call in the restore window`,
+          );
+        }
         conversation.push({ role: 'tool', tool_call_id: event.callId, content: event.result });
         break;
       case 'assistant-delta':
