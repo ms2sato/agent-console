@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { resolveTargets, type TargetResolverDependencies } from '../resolve-targets.js';
 import { GitError } from '../../../lib/git.js';
 import type { InboundSystemEvent, Repository } from '@agent-console/shared';
@@ -22,9 +22,22 @@ function createEvent(metadata: Partial<InboundSystemEvent['metadata']> = {}): In
   } as InboundSystemEvent;
 }
 
-const defaultRepository = buildPersistedRepository({ id: 'repo-1', path: '/path/to/repo' });
+// Rebuilt per test (not a shared module-level const) so no test can accidentally leak state into another via this reference.
+function createDefaultRepository(): Repository {
+  return buildPersistedRepository({ id: 'repo-1', path: '/path/to/repo' });
+}
 
 describe('resolveTargets', () => {
+  let defaultRepository: Repository;
+
+  beforeEach(() => {
+    defaultRepository = createDefaultRepository();
+  });
+
+  afterEach(() => {
+    mock.restore();
+  });
+
   it('matches repository names case-insensitively', async () => {
     const session = buildWorktreeSession({ id: 'session-1', repositoryId: 'repo-1', worktreeId: 'main' });
     const deps: TargetResolverDependencies = {
