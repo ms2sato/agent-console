@@ -91,6 +91,29 @@ function readKernelPtyCount(): number {
   return parsed;
 }
 
+/**
+ * Prove countPtmxFds() can actually detect a live ptmx fd before trusting it
+ * for the regression assertions below. If the counting mechanism itself is
+ * broken (sh missing, /proc unreadable, readlink absent), before/after would
+ * both silently read 0 and the assertions below would vacuously pass without
+ * verifying anything (Issue #1200).
+ */
+async function selfCheck(baseline: number): Promise<void> {
+  const pty = bunTerminalProvider.spawn('sleep', ['5'], {});
+  const exited = new Promise<void>((resolve) => {
+    pty.onExit(() => resolve());
+  });
+  const count = countPtmxFds();
+  pty.kill('SIGTERM');
+  await exited;
+  if (!(count > baseline)) {
+    console.error(
+      `Self-check failed: countPtmxFds() reported ${count} with a live PTY held open (baseline=${baseline}) -- counting infrastructure is broken, cannot verify`,
+    );
+    process.exit(2);
+  }
+}
+
 async function runCycle(retained: PtyInstance[]): Promise<void> {
   const pty = bunTerminalProvider.spawn('sleep', ['3'], {});
   retained.push(pty);
@@ -119,6 +142,8 @@ async function waitUntil<T>(read: () => T, isDone: (value: T) => boolean, timeou
 
 const beforeFds = countPtmxFds();
 const beforeKernelCount = readKernelPtyCount();
+
+await selfCheck(beforeFds);
 
 // Retained for the assertion's lifetime -- see file header. Without this, an
 // unreachable adapter can be GC-finalized mid-run, masking a regression.
