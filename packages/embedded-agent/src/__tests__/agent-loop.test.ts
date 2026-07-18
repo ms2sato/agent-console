@@ -100,6 +100,7 @@ function makeLoop(
     onSleep?: (loopRef: { current: AgentLoop | null }) => void;
     reassembleSystemPrompt?: () => Promise<string>;
     loadHandoffPrompt?: () => Promise<string>;
+    restoredConversation?: ChatMessage[];
   } = {},
 ): Harness {
   const events: EmbeddedAgentEvent[] = [];
@@ -123,6 +124,7 @@ function makeLoop(
     },
     reassembleSystemPrompt: opts.reassembleSystemPrompt ?? (async () => 'sys'),
     loadHandoffPrompt: opts.loadHandoffPrompt ?? (async () => 'DISTILL_PROMPT'),
+    restoredConversation: opts.restoredConversation,
   };
   const loop = new AgentLoop(deps);
   loopRef.current = loop;
@@ -577,5 +579,66 @@ describe('AgentLoop — context-usage accounting (Token accounting, Context Hand
     expect(usageEvents).toHaveLength(1);
     expect(usageEvents[0]).toEqual({ v: 1, type: 'context-usage', promptTokens: 150, estimated: false });
     expect(h.events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+  });
+});
+
+describe('AgentLoop — Transcript Restore (#1123) restoredConversation seeding', () => {
+  it('seeds this.conversation from deps.restoredConversation when provided, instead of a fresh system-prompt-only seed', async () => {
+    const restoredConversation: ChatMessage[] = [
+      { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
+      { role: 'user', content: 'earlier question' },
+      { role: 'assistant', content: 'earlier answer' },
+    ];
+    // AgentLoop's constructor assigns `this.conversation = deps.restoredConversation`
+    // by reference (no defensive copy), so `restoredConversation` itself gets
+    // mutated by subsequent `.push()` calls during the turn. Snapshot the
+    // expected shape BEFORE driving the turn.
+    const expectedSeed = [...restoredConversation];
+    const h = makeLoop([textResponse('new answer')], { restoredConversation });
+    await h.loop.runTurn('t1', 'follow-up');
+
+    const sentMessages = h.adapter.capturedMessages[0];
+    // The restored history is present verbatim, followed by the new user turn.
+    expect(sentMessages).toEqual([...expectedSeed, { role: 'user', content: 'follow-up' }]);
+    // Regression guard: the fresh-seed shape (system prompt only) is NOT used
+    // when a restoredConversation is supplied.
+    expect(sentMessages[0]).not.toEqual({ role: 'system', content: 'sys' });
+  });
+
+  it('seeds [{role:"system", content: systemPrompt}] when restoredConversation is absent (default v1 behavior, unchanged)', async () => {
+    const h = makeLoop([textResponse('answer')]);
+    await h.loop.runTurn('t1', 'hi');
+
+    const sentMessages = h.adapter.capturedMessages[0];
+    expect(sentMessages).toEqual([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'hi' },
+    ]);
+  });
+});
+
+describe('AgentLoop — pushSyntheticToolError extraction regression', () => {
+  it('fillPendingToolResponses still produces the exact {role:"tool", tool_call_id, content: "Error: ..."} shape after the extraction to tool-call-repair.js', async () => {
+    const loopRef: { current: AgentLoop | null } = { current: null };
+    const executor = new StubExecutor({ ok: true, result: 'ignored' }, () =>
+      loopRef.current?.cancel(),
+    );
+    const h = makeLoop([toolCallResponse('c1', 'do_thing', '{"x":1}'), textResponse('second turn')], {
+      executor,
+    });
+    loopRef.current = h.loop;
+
+    await h.loop.runTurn('t1', 'first');
+    await h.loop.runTurn('t2', 'second');
+
+    const secondTurnMessages = h.adapter.capturedMessages[1];
+    const syntheticEntry = secondTurnMessages.find(
+      (m) => m.role === 'tool' && m.tool_call_id === 'c1',
+    );
+    expect(syntheticEntry).toEqual({
+      role: 'tool',
+      tool_call_id: 'c1',
+      content: 'Error: tool call canceled',
+    });
   });
 });

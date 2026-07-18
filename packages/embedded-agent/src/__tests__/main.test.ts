@@ -263,6 +263,55 @@ describe('runLoop — instructions threading into the system prompt (Wave 5-4)',
   });
 });
 
+describe('runLoop — restoredConversation threading (Transcript Restore #1123)', () => {
+  it('threads init.restoredConversation into the constructed AgentLoop, seeding the first provider request from it', async () => {
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand({
+        restoredConversation: [
+          { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
+          { role: 'user', content: 'earlier question' },
+          { role: 'assistant', content: 'earlier answer' },
+        ],
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedMessagesCalls).toHaveLength(1);
+    // NOTE: CapturingAdapter stores `req.messages` by reference (not a
+    // snapshot), and that reference is AgentLoop's own `this.conversation`
+    // array -- so by the time this assertion runs (after the turn has fully
+    // completed), the array also carries the assistant reply appended after
+    // the request was sent.
+    expect(adapter.capturedMessagesCalls[0]).toEqual([
+      { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
+      { role: 'user', content: 'earlier question' },
+      { role: 'assistant', content: 'earlier answer' },
+      { role: 'user', content: 'follow-up' },
+      { role: 'assistant', content: 'hi' },
+    ]);
+  });
+
+  it('seeds a fresh system-prompt-only conversation when restoredConversation is absent (default v1 behavior, unchanged)', async () => {
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedMessagesCalls).toHaveLength(1);
+    const [systemMessage, secondMessage] = adapter.capturedMessagesCalls[0];
+    expect(systemMessage.role).toBe('system');
+    expect(secondMessage).toEqual({ role: 'user', content: 'hello' });
+  });
+});
+
 describe('main subprocess — init-first enforcement', () => {
   it('exits 2 when a user-message arrives before init', async () => {
     const proc = Bun.spawn(['bun', mainPath], {
