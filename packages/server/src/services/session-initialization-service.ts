@@ -10,6 +10,7 @@ import { JOB_TYPES } from '../jobs/index.js';
 import { getConfigDir } from '../lib/config.js';
 import { isProcessAlive, processKill } from '../lib/process-utils.js';
 import { createLogger } from '../lib/logger.js';
+import { isErrnoException } from '../lib/type-guards.js';
 
 const logger = createLogger('session-initialization');
 
@@ -140,9 +141,8 @@ export class SessionInitializationService {
         try {
           entries = await fsPromises.readdir(dir);
         } catch (err) {
-          const e = err as NodeJS.ErrnoException;
-          if (e.code === 'ENOENT') continue;
-          logger.warn({ dir, err: e }, 'Failed to read fragmentation-report directory');
+          if (isErrnoException(err) && err.code === 'ENOENT') continue;
+          logger.warn({ dir, err }, 'Failed to read fragmentation-report directory');
           continue;
         }
         for (const sid of entries) {

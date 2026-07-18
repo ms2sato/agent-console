@@ -12,6 +12,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { truncateToBytes } from './truncate.js';
+import { isErrnoException } from './type-guards.js';
 
 /** Same cap/behavior as INSTRUCTION_PER_FILE_CAP_BYTES in system-prompt.ts. */
 const HANDOFF_PROMPT_CAP_BYTES = 16 * 1024;
@@ -50,7 +51,7 @@ async function tryReadTextFile(filePath: string): Promise<ReadTextResult> {
     const content = await Bun.file(filePath).text();
     return { ok: true, content };
   } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+    const code = (isErrnoException(err) ? err.code : undefined) ?? 'UNKNOWN';
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, code, message };
   }

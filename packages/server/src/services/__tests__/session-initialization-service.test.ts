@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
+import * as fsPromises from 'fs/promises';
 import type { Kysely } from 'kysely';
 import type { PersistedSession } from '../persistence-service.js';
 import type { SessionRepository, SessionUpdateFields } from '../../repositories/index.js';
@@ -327,6 +328,22 @@ describe('SessionInitializationService', () => {
       const { service } = createService({ sessions: [] });
       const autoResumeIds = await service.initialize();
       expect(autoResumeIds).toEqual([]);
+    });
+
+    it('should not throw when the fragmentation-report directory scan fails with a non-ENOENT error', async () => {
+      // The one-time fragmentation report is best-effort and must never
+      // surface a scan failure to the caller of initialize() — it logs a
+      // warn and continues, regardless of the error's errno code.
+      const readdirSpy = spyOn(fsPromises, 'readdir').mockRejectedValue(
+        Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+      );
+      try {
+        const { service } = createService({ sessions: [] });
+        const autoResumeIds = await service.initialize();
+        expect(autoResumeIds).toEqual([]);
+      } finally {
+        readdirSpy.mockRestore();
+      }
     });
   });
 

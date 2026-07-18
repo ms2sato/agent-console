@@ -22,6 +22,7 @@ import {
 // up that user's PATH, gitconfig, and SSH_AUTH_SOCK via sudo -i).
 import { createLogger } from '../lib/logger.js';
 import { substituteVariables } from '../lib/template-variables.js';
+import { isErrnoException } from '../lib/type-guards.js';
 import { getCleanChildProcessEnv } from './env-filter.js';
 import {
   runAsUser,
@@ -760,7 +761,7 @@ export class WorktreeService {
         const stat = await fsPromises.stat(repoPath);
         repoExists = stat.isDirectory();
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        const code = isErrnoException(error) ? error.code : undefined;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           repoExists = false;
         } else {
@@ -806,7 +807,7 @@ export class WorktreeService {
           );
         }
       } catch (error) {
-        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        const code = isErrnoException(error) ? error.code : undefined;
         if (code === 'ENOENT' || code === 'ENOTDIR') {
           effectiveForce = true;
         } else if (

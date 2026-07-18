@@ -76,6 +76,15 @@ describe('MemoService', () => {
       const content = await service.readMemo('nonexistent', quickResolver);
       expect(content).toBeNull();
     });
+
+    it('should propagate non-ENOENT errors instead of returning null', async () => {
+      // A directory in place of the expected file makes the read fail with
+      // EISDIR, not ENOENT, exercising the "rethrow" branch rather than the
+      // "missing memo" branch.
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/memos/is-a-dir.md`, { recursive: true });
+
+      await expect(service.readMemo('is-a-dir', quickResolver)).rejects.toThrow();
+    });
   });
 
   describe('deleteMemo', () => {
