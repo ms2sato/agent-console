@@ -1,7 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import { Link } from '@tanstack/react-router';
-import { useAgents } from '../../hooks/useAgents';
-import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
+import { useAgentDirectory } from '../../hooks/useAgentDirectory';
 import { AGENT_KIND_PRESENTATION } from '../agents';
 import type { AddAgentWorkerParams } from './hooks/useTabManagement';
 
@@ -30,8 +29,15 @@ interface AddAgentWorkerMenuProps {
  */
 export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMenuProps) {
   const [open, setOpen] = useState(false);
-  const { agents, isLoading: agentsLoading } = useAgents();
-  const { embeddedAgents, isLoading: embeddedLoading } = useEmbeddedAgents();
+  const { entries, isLoading } = useAgentDirectory();
+  const agents = useMemo(
+    () => entries.filter((entry) => entry.kind === 'terminal').map((entry) => entry.agent),
+    [entries]
+  );
+  const embeddedAgents = useMemo(
+    () => entries.filter((entry) => entry.kind === 'embedded').map((entry) => entry.agent),
+    [entries]
+  );
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -60,7 +66,6 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
     await onSelectShell();
   };
 
-  const isLoading = agentsLoading || embeddedLoading;
   const isEmpty = !isLoading && agents.length === 0 && embeddedAgents.length === 0;
 
   return (
@@ -122,7 +127,7 @@ export function AddAgentWorkerMenu({ onSelect, onSelectShell }: AddAgentWorkerMe
               </span>
             </button>
           ))}
-          {!embeddedLoading && embeddedAgents.length === 0 && (
+          {!isLoading && embeddedAgents.length === 0 && (
             <div className="border-t border-slate-700 px-3 py-2 text-xs text-gray-500">
               No embedded agents are registered yet.{' '}
               <Link
