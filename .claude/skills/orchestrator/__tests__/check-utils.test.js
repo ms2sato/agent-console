@@ -461,21 +461,18 @@ describe('isCommentOnlyDiff (Issue #1189)', () => {
     expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(true);
   });
 
-  it('returns true for a pure block-comment (JSDoc) change, including continuation lines', () => {
+  it('returns true for a pure block-comment (JSDoc) change with the opener confirmed in the same hunk', () => {
     const diff = [
       'diff --git a/foo.ts b/foo.ts',
       '--- a/foo.ts',
       '+++ b/foo.ts',
-      '@@ -5,4 +4,0 @@',
-      '- * Foundation for umbrella Issue #837. Consumer migrations are tracked',
-      '- * independently in #834 (clone), #835 (description generation), and #838',
-      '- * (worktree creation).',
-      '- *',
-      '@@ -340,3 +336 @@ export async function runAsUser(',
+      '@@ -336,5 +336 @@ export async function runAsUser(',
+      '-/**',
       '- * `lib/git.ts` encapsulates git command construction (Issue #882 dogfood',
       '- * feedback from the owner: code placement matters even when behaviour is',
       '- * identical).',
-      '+ * `lib/git.ts` encapsulates git command construction.',
+      '- */',
+      '+/** `lib/git.ts` encapsulates git command construction. */',
     ].join('\n');
     expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(true);
   });
@@ -587,6 +584,53 @@ describe('isCommentOnlyDiff (Issue #1189)', () => {
     const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -50 +50 @@', '-continuation of a block comment', '+revised continuation'].join('\n');
     expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
   });
+
+  // Regression tests for CodeRabbit findings on PR #1192 (Issue #1189).
+
+  it('does not exempt a changed `++counter;` expression that renders as a `+++`-prefixed diff line', () => {
+    // With no leading whitespace, `++counter;` becomes the diff line
+    // "+++counter;" — indistinguishable from a `+++ b/file` header by a
+    // naive prefix check. Must still be parsed as real code once inside a
+    // hunk, even though every OTHER changed line here is a comment.
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -10 +10,2 @@',
+      '-// old note',
+      '+// old note, plus a side-effect now',
+      '+++counter;',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
+  });
+
+  it('does not exempt a `.sh` file whose shebang line changes, even though it starts with `#`', () => {
+    const diff = ['--- a/foo.sh', '+++ b/foo.sh', '@@ -1 +1 @@', '-#!/bin/sh', '+#!/bin/bash'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.sh')).toBe(false);
+  });
+
+  it('does not exempt a bare `*`-prefixed line with no confirmed block opener in the hunk (e.g. a multiplication continuation)', () => {
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -3 +3 @@', '-  * 2;', '+  * 3;'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
+  });
+
+  it('does not exempt a single-line block comment followed by real code on the same line', () => {
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -1 +1 @@', '-// old note', '+/* note */ changedCall();'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
+  });
+
+  it('does not exempt a multi-line block comment whose close line is followed by real code', () => {
+    const diff = [
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -1,2 +1,2 @@',
+      '-/* old',
+      '- note */',
+      '+/* new',
+      '+ note */ changedCall();',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
+  });
 });
 
 describe('isCommentOnlyFileDiff (git integration)', () => {
@@ -608,11 +652,13 @@ describe('isCommentOnlyFileDiff (git integration)', () => {
     try {
       writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // old note\n  return a + b;\n}\n');
       commit(root, 'initial');
-      execSync('git branch -m main', { cwd: root }); // no-op if already main; keeps name stable
       writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // new note\n  return a + b;\n}\n');
       commit(root, 'comment tweak');
 
-      const result = spawnGitDiffCheck(root, 'foo.ts');
+      // No `process.chdir()` here — passing `root` as the explicit `cwd`
+      // argument keeps this test isolated from other test files running
+      // concurrently in the same bun process.
+      const result = isCommentOnlyFileDiff('foo.ts', 'HEAD~1', root);
       expect(result).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -627,20 +673,10 @@ describe('isCommentOnlyFileDiff (git integration)', () => {
       writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  return a + b + 1;\n}\n');
       commit(root, 'logic change');
 
-      const result = spawnGitDiffCheck(root, 'foo.ts');
+      const result = isCommentOnlyFileDiff('foo.ts', 'HEAD~1', root);
       expect(result).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
-
-  function spawnGitDiffCheck(cwd, filePath) {
-    const originalCwd = process.cwd();
-    process.chdir(cwd);
-    try {
-      return isCommentOnlyFileDiff(filePath, 'HEAD~1');
-    } finally {
-      process.chdir(originalCwd);
-    }
-  }
 });

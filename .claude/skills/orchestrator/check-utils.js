@@ -240,11 +240,28 @@ function fileExtension(filePath) {
  *
  * Block-comment state is tracked per side (added `+` vs removed `-` are two
  * different file versions) and resets at each hunk boundary (`@@ ... @@`).
- * `--unified=0` hunks carry no surrounding context, so a block comment that
- * opens outside a hunk cannot be reliably detected from the diff alone;
- * treating such a line as non-comment is the safe, fail-closed default —
- * the worst case is a comment-only file still being required to have a
- * sibling test, never the reverse.
+ * A bare `*`-prefixed (or otherwise block-body-shaped) line is only ever
+ * treated as comment content when a `/*` opener was already confirmed
+ * earlier in the SAME hunk — `--unified=0` hunks carry no surrounding
+ * context, so a block comment that opens outside the hunk cannot be
+ * reliably detected from the diff alone, and a bare line could just as
+ * well be real code (e.g. a multiplication continuation or a generator
+ * method). Treating an unconfirmed line as non-comment is the safe,
+ * fail-closed default — the worst case is a comment-only file still being
+ * required to have a sibling test, never the reverse. For the same reason,
+ * a block-comment close marker followed by non-whitespace on the same line
+ * is treated as real code, not a comment-only close.
+ *
+ * File-level diff metadata (`diff --git`, `index`, `--- a/file`,
+ * `+++ b/file`) is only ever skipped while it appears BEFORE the first
+ * `@@` hunk marker — content lines after that point are always parsed,
+ * even when they happen to start with `+++`/`---` (e.g. a changed
+ * `++counter;` / `--counter;` expression renders as `+++counter;` /
+ * `---counter;`).
+ *
+ * For `.sh` files, a changed shebang line (`#!...`) is never exempted even
+ * though it starts with `#` — changing the interpreter is a behavioral
+ * change, not a comment edit.
  *
  * Returns false (not comment-only) for files with no changed lines and for
  * extensions with no known comment syntax.
@@ -256,17 +273,22 @@ export function isCommentOnlyDiff(diffText, filePath) {
 
   const supportsBlockComments = BLOCK_COMMENT_EXTS.has(ext);
 
+  let insideHunk = false;
   let inBlockAdded = false;
   let inBlockRemoved = false;
   let sawChangedLine = false;
 
   for (const rawLine of diffText.split('\n')) {
-    if (rawLine.startsWith('+++') || rawLine.startsWith('---')) continue;
     if (rawLine.startsWith('@@')) {
+      insideHunk = true;
       inBlockAdded = false;
       inBlockRemoved = false;
       continue;
     }
+    // Lines before the first hunk marker are file-level diff metadata, not
+    // content — skip them here rather than via a `+++`/`---` prefix check,
+    // which would also (wrongly) swallow a changed `++x;` / `--x;` line.
+    if (!insideHunk) continue;
 
     let sign;
     let content;
@@ -284,26 +306,37 @@ export function isCommentOnlyDiff(diffText, filePath) {
     const trimmed = content.trim();
     if (trimmed.length === 0) continue;
 
+    if (ext === '.sh' && trimmed.startsWith('#!')) return false;
+
     const inBlock = sign === '+' ? inBlockAdded : inBlockRemoved;
 
     if (inBlock) {
-      if (supportsBlockComments && trimmed.includes('*/')) {
-        if (sign === '+') inBlockAdded = false;
-        else inBlockRemoved = false;
-      }
+      const closeIdx = trimmed.indexOf('*/');
+      if (closeIdx === -1) continue; // still inside the block; whole line is comment body
+      const after = trimmed.slice(closeIdx + 2).trim();
+      if (after.length > 0) return false; // real code follows the block close
+      if (sign === '+') inBlockAdded = false;
+      else inBlockRemoved = false;
       continue;
     }
 
     if (trimmed.startsWith(lineCommentPrefix)) continue;
 
-    if (supportsBlockComments && (trimmed.startsWith('/*') || trimmed.startsWith('*'))) {
-      if (trimmed.startsWith('/*') && !trimmed.includes('*/')) {
+    if (supportsBlockComments && trimmed.startsWith('/*')) {
+      const closeIdx = trimmed.indexOf('*/', 2);
+      if (closeIdx === -1) {
         if (sign === '+') inBlockAdded = true;
         else inBlockRemoved = true;
+        continue;
       }
+      const after = trimmed.slice(closeIdx + 2).trim();
+      if (after.length > 0) return false; // real code follows the block close
       continue;
     }
 
+    // Not blank, not a confirmed comment-open/continuation/close line:
+    // real code (this also fail-closes a bare `*` line with no confirmed
+    // opener in this hunk).
     return false;
   }
 
@@ -315,10 +348,15 @@ export function isCommentOnlyDiff(diffText, filePath) {
  * `git diff --unified=0 <baseBranch>...HEAD -- <file>` and evaluates the
  * result. Returns false (safe default: require coverage) on any git error
  * or when the file has no diff against baseBranch.
+ *
+ * `cwd` defaults to the process's own working directory; tests pass an
+ * explicit repo path instead of mutating the shared `process.cwd()` (which
+ * would leak across concurrently-running test files in the same process).
  */
-export function isCommentOnlyFileDiff(filePath, baseBranch = process.env.BASE_BRANCH || 'origin/main') {
+export function isCommentOnlyFileDiff(filePath, baseBranch = process.env.BASE_BRANCH || 'origin/main', cwd = process.cwd()) {
   const result = spawnSync('git', ['diff', '--unified=0', `${baseBranch}...HEAD`, '--', filePath], {
     encoding: 'utf-8',
+    cwd,
   });
   if (result.error || result.status !== 0) return false;
   return isCommentOnlyDiff(result.stdout || '', filePath);
