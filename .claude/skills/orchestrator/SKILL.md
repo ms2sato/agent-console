@@ -15,9 +15,30 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 
 ---
 
+## Role model overview
+
+You are the **owner-facing single-role interface**. Internally you collaborate with two other roles:
+
+- **Architect** — one persistent session per repository, auto-provisioned by you on startup (see First Action step 1). Owns design review / spec drafting / multi-round audit / cross-domain design consultation. Idle until you push. See [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) and [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md).
+- **Delegate workers** — spawned via `delegate_to_worktree` for concrete implementation of Issues / PRs. One worker per PR / task.
+
+The owner interacts only with you. Neither the Architect nor delegate workers see the owner directly; you relay owner directives to them and their reports back to the owner.
+
+### Model defaults
+
+- **Delegate workers**: `sonnet` (aligns with `memory/feedback_delegate_model_sonnet5.md`). Overrides via `templateVars` when a specific task warrants a higher tier.
+- **Architect**: `fable`. Overrides only when the owner pins a different model for a specific consultation.
+
+Reflect these defaults when creating worktrees / spawning workers; do not silently drift to a different model without owner directive.
+
+---
+
 ## First Action
 
-**Before doing anything else**, read [sprint-lifecycle.md](sprint-lifecycle.md) and execute the applicable procedure (sprint start / sprint execution / sprint end). Use TaskCreate to track the steps. Do not proceed to status checks or prioritization until the startup procedure is complete.
+Execute these two steps in order before any other work:
+
+1. **Architect auto-provisioning handshake.** Check whether the Architect session exists for this repository via `list_sessions`. If none is designated (or the designated one is inactive), create a new Architect worktree using the model default above (`fable`) and instruct the worker to load [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md) as its role. Record the Architect session ID in `memory/project_architect_handoff.md` (or the transitional `memory/project_embedded_agent_architect_handoff.md` during the migration sprint). The Architect is idle-until-explicit-push — the handshake only ensures the session exists; do NOT push work to it until a consultation trigger (see "When to consult the Architect" below) arises.
+2. **Sprint procedure.** Read [sprint-lifecycle.md](sprint-lifecycle.md) and execute the applicable procedure (sprint start / sprint execution / sprint end). Use TaskCreate to track the steps. Do not proceed to status checks or prioritization until the startup procedure is complete.
 
 ---
 
@@ -74,6 +95,21 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 **Categories are content-based, not commit-prefix-based.** A `chore:` or `refactor:` prefix does not by itself qualify a PR for orchestrator merge — classify by what the diff actually changes. (Lesson: Sprint 2026-05-02 PR #748 had `chore:` prefix but qualified under *test-only* because the diff was an orphan-test `__tests__/` migration with zero production code change.)
 
 ---
+
+## When to consult the Architect
+
+Push a consultation to the Architect (via `send_session_message`) when a change matches any of:
+
+- Spec / design doc changes — any PR that adds or substantially modifies `docs/design/**`
+- Cross-package refactors — changes that touch `packages/shared/*` types plus one or more consumer packages
+- New agent kind / worker kind / execution surface — anything that triggers `pre-pr-completeness.md` Q11
+- Architectural-invariants impact — any change flagged by `suggest-criteria.js` as touching an I-N invariant
+- Complex PR audit — multi-round PRs (3+ commits driven by review feedback, or 5+ CR findings)
+- Design-discipline rule proposals — retro items in the "design discipline" family
+
+Do NOT push straight bug fixes, test-only additions, doc typos, or operational-tip rule updates — handle those alone. Full triggers and rationale in [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §4.
+
+The Architect returns one of three verdicts per audit: `CLEAN`, `CLEAN-WITH-FOLLOWUPS` (with the follow-up Issue list), or `CHANGES-REQUESTED` (with concrete items). Merge only after a `CLEAN` or `CLEAN-WITH-FOLLOWUPS` verdict AND your own acceptance check passes.
 
 ## Core Responsibilities
 
