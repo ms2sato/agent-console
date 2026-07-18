@@ -102,6 +102,18 @@ function printIntegrationTestCoverage(integrationTestNeeds) {
   }
 }
 
+/**
+ * Select the coverage-check verdict line. Pure function so the
+ * comment-only-exemption wording (Issue #1189) can be unit tested without
+ * driving `run()`'s `process.exit()` side effect.
+ */
+export function formatCoverageVerdict({ hasUnitGaps, gapsCount, hasIntegrationGap, hasCommentOnlyExemptions }) {
+  if (hasUnitGaps) return `**${gapsCount} production file(s) missing test coverage.**`;
+  if (hasIntegrationGap) return '**Integration test gap detected — review recommended.** ⚠';
+  if (hasCommentOnlyExemptions) return '**All test coverage requirements are satisfied (comment-only changes exempted).** ✅';
+  return '**All production files have corresponding tests.** ✅';
+}
+
 // --- Main ---
 
 function run(changedFiles) {
@@ -110,10 +122,11 @@ function run(changedFiles) {
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
 
   const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
+  const commentOnlyExempted = testCoverage.filter(tc => tc.isCommentOnly);
   const hasUnitGaps = filesNeedingCoverage.some(tc => !tc.hasTest);
   const hasIntegrationGap = integrationTestNeeds && !integrationTestNeeds.hasIntegrationTestInPr;
 
-  if (filesNeedingCoverage.length === 0 && !integrationTestNeeds) {
+  if (filesNeedingCoverage.length === 0 && commentOnlyExempted.length === 0 && !integrationTestNeeds) {
     console.log('## Test Coverage Check\n');
     console.log('No production files matching coverage patterns were changed.\n');
   } else {
@@ -130,6 +143,14 @@ function run(changedFiles) {
       console.log();
     }
 
+    if (commentOnlyExempted.length > 0) {
+      console.log(`### Exempted — comment-only diff (${commentOnlyExempted.length})\n`);
+      for (const { file } of commentOnlyExempted) {
+        console.log(`- ➖ \`${file}\` — all changed lines are comments/blank`);
+      }
+      console.log();
+    }
+
     if (gaps.length > 0) {
       console.log(`### Missing Tests (${gaps.length})\n`);
       for (const { file, expectedTestPath, alternateTestPath } of gaps) {
@@ -141,13 +162,12 @@ function run(changedFiles) {
 
     printIntegrationTestCoverage(integrationTestNeeds);
 
-    if (hasUnitGaps) {
-      console.log(`**${gaps.length} production file(s) missing test coverage.**`);
-    } else if (hasIntegrationGap) {
-      console.log('**Integration test gap detected — review recommended.** ⚠');
-    } else {
-      console.log('**All production files have corresponding tests.** ✅');
-    }
+    console.log(formatCoverageVerdict({
+      hasUnitGaps,
+      gapsCount: gaps.length,
+      hasIntegrationGap,
+      hasCommentOnlyExemptions: commentOnlyExempted.length > 0,
+    }));
   }
 
   // Rule/Skill duplication invariant — runs on every preflight because drift
