@@ -131,6 +131,22 @@ describe.skipIf(process.platform !== 'linux')('bunTerminalProvider ptmx fd leak 
     // See the sibling test above for why this force-collect is needed.
     Bun.gc(true);
     const baseline = countPtmxFds();
+
+    // Self-check: prove countPtmxFds() can actually detect a live ptmx fd
+    // before trusting it for the regression assertion below. If the
+    // counting mechanism itself is broken (sh missing, /proc unreadable,
+    // readlink absent), before/after would both silently read 0 and the
+    // assertion below would vacuously pass without verifying anything
+    // (Issue #1200).
+    const selfCheckPty = bunTerminalProvider.spawn('sleep', ['5'], {});
+    const selfCheckExited = waitForExit(selfCheckPty);
+    const selfCheckCount = countPtmxFds();
+    selfCheckPty.kill('SIGTERM');
+    await selfCheckExited;
+    if (!(selfCheckCount > baseline)) {
+      throw new Error('countPtmxFds() self-check failed — infrastructure broken, cannot verify');
+    }
+
     const retained: PtyInstance[] = [];
 
     for (let i = 0; i < SPAWN_COUNT; i++) {
