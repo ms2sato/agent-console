@@ -1,6 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as path from 'path';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
-import { vol } from 'memfs';
+import { vol, fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 
@@ -339,6 +340,106 @@ describe('WorkerOutputFileManager', () => {
       // File should not exist since we deleted before flush
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', quickResolver);
       expect(vol.existsSync(filePath)).toBe(false);
+    });
+  });
+
+  describe('resetWorkerOutput sidecar preservation (Transcript Restore #1123)', () => {
+    function sidecarPath(sessionId: string, workerId: string): string {
+      const filePath = manager.getOutputFilePath(sessionId, workerId, quickResolver);
+      return path.join(path.dirname(filePath), `${workerId}.restore-failed.log`);
+    }
+
+    it('renames the live file content to <workerId>.restore-failed.log when preserveToSidecar is true', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar`, { recursive: true });
+      vol.writeFileSync(filePath, 'pre-reset conversation bytes');
+
+      await manager.resetWorkerOutput('session-sidecar', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      const sidecar = sidecarPath('session-sidecar', 'worker-1');
+      expect(vol.existsSync(sidecar)).toBe(true);
+      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('pre-reset conversation bytes');
+
+      // The reset itself still completed: live file exists and is empty.
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+
+    it('overwrites the sidecar on a second consecutive restore failure (single-slot, not accumulating)', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-2', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-2`, { recursive: true });
+      vol.writeFileSync(filePath, 'first generation bytes');
+
+      await manager.resetWorkerOutput('session-sidecar-2', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      // Second generation writes new content, then fails restore again.
+      vol.writeFileSync(filePath, 'second generation bytes');
+      await manager.resetWorkerOutput('session-sidecar-2', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      const sidecar = sidecarPath('session-sidecar-2', 'worker-1');
+      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('second generation bytes');
+    });
+
+    it('does not include a dropped pending flush in the sidecar, and leaves the live file empty post-reset', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-pending', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-pending`, { recursive: true });
+      vol.writeFileSync(filePath, 'flushed bytes');
+
+      // Queue a pending flush that has NOT been written to the live file yet.
+      manager.bufferOutput('session-sidecar-pending', 'worker-1', 'not-yet-flushed', quickResolver);
+
+      await manager.resetWorkerOutput('session-sidecar-pending', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      const sidecar = sidecarPath('session-sidecar-pending', 'worker-1');
+      // Only the already-flushed bytes made it into the sidecar; the pending
+      // buffer was dropped inside the same lock, per the documented
+      // "not yet flushed... accepted limitation" caveat.
+      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('flushed bytes');
+      expect(vol.readFileSync(sidecar, 'utf-8')).not.toContain('not-yet-flushed');
+
+      // The dropped pending buffer must not resurface after the reset.
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+
+    it('does not throw and still completes the reset when the sidecar rename fails', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-fail', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-fail`, { recursive: true });
+      vol.writeFileSync(filePath, 'bytes that fail to preserve');
+
+      const renameSpy = spyOn(memfs.promises, 'rename').mockRejectedValueOnce(new Error('rename boom'));
+
+      await expect(
+        manager.resetWorkerOutput('session-sidecar-fail', 'worker-1', quickResolver, {
+          preserveToSidecar: true,
+        }),
+      ).resolves.toEqual(expect.any(Number));
+
+      renameSpy.mockRestore();
+
+      // Reset still completed (best-effort, non-blocking preservation).
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+
+    it('creates no sidecar file when resetWorkerOutput is called without opts (existing callers unaffected)', async () => {
+      const filePath = manager.getOutputFilePath('session-no-opts', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-no-opts`, { recursive: true });
+      vol.writeFileSync(filePath, 'byte-identical-to-before');
+
+      await manager.resetWorkerOutput('session-no-opts', 'worker-1', quickResolver);
+
+      const sidecar = sidecarPath('session-no-opts', 'worker-1');
+      expect(vol.existsSync(sidecar)).toBe(false);
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
     });
   });
 

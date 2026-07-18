@@ -25,6 +25,8 @@ export interface WorkerCallbacks {
   onData: (data: string, offset: number, epoch: number) => void;
   onExit: (exitCode: number, signal: string | null, reason?: ExitReason) => void;
   onActivityChange?: (state: AgentActivityState) => void;
+  /** Transcript Restore (#1123) fast-path push -- see EmbeddedAgentWorkerService. Embedded-agent workers only. */
+  onRestoreInfo?: (info: { messageCount: number; repairedToolCallIds: string[] }) => void;
 }
 
 /**

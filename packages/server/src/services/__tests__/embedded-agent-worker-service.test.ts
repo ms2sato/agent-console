@@ -169,6 +169,7 @@ interface Recorder {
   onData: ReturnType<typeof mock>;
   onExit: ReturnType<typeof mock>;
   onActivityChange: ReturnType<typeof mock>;
+  onRestoreInfo: ReturnType<typeof mock>;
 }
 
 interface Harness {
@@ -182,6 +183,8 @@ interface Harness {
   revokeByWorker: ReturnType<typeof mock>;
   resetWorkerOutput: ReturnType<typeof mock>;
   bufferOutput: ReturnType<typeof mock>;
+  getCurrentOffset: ReturnType<typeof mock>;
+  readHistoryWithOffset: ReturnType<typeof mock>;
   loadProviderKeyFn: ReturnType<typeof mock>;
   persistSession: ReturnType<typeof mock>;
   globalActivity: ReturnType<typeof mock>;
@@ -204,6 +207,15 @@ function setup(opts?: {
   initialPromptDelivered?: boolean;
   /** Issue #1068: worker.deliverInitialPromptOnActivation, false by default. */
   deliverInitialPromptOnActivation?: boolean;
+  /**
+   * Transcript Restore (#1123): current absolute offset BEFORE this
+   * activation. Defaults to 0, i.e. every EXISTING test (written before
+   * restore existed) takes the "first-ever activation" branch and continues
+   * to exercise the byte-identical v1 reset path.
+   */
+  currentOffset?: number;
+  /** Transcript Restore (#1123): the persisted stream `readHistoryWithOffset` returns when currentOffset > 0. */
+  readHistoryWithOffsetResult?: { data: string };
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -224,6 +236,13 @@ function setup(opts?: {
   const revokeByWorker = mock(() => {});
   const resetWorkerOutput = mock(async () => NEW_EPOCH);
   const bufferOutput = mock(() => {});
+  const getCurrentOffset = mock(async () => opts?.currentOffset ?? 0);
+  const readHistoryWithOffset = mock(async () => ({
+    data: opts?.readHistoryWithOffsetResult?.data ?? '',
+    offset: 0,
+    startOffset: 0,
+    epoch: 0,
+  }));
   const loadProviderKeyFn =
     opts?.loadProviderKeyFn ?? mock(async () => API_KEY);
   const persistSession = mock(async () => {});
@@ -234,11 +253,13 @@ function setup(opts?: {
     onData: mock(() => {}),
     onExit: mock(() => {}),
     onActivityChange: mock(() => {}),
+    onRestoreInfo: mock(() => {}),
   };
   worker.connectionCallbacks.set('conn-1', {
     onData: recorder.onData as unknown as (data: string, offset: number, epoch: number) => void,
     onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: 'managed' | 'unexpected') => void,
     onActivityChange: recorder.onActivityChange as unknown as (state: 'active' | 'idle' | 'asking' | 'unknown') => void,
+    onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { messageCount: number; repairedToolCallIds: string[] }) => void,
   });
 
   const service = new EmbeddedAgentWorkerService({
@@ -251,6 +272,8 @@ function setup(opts?: {
     workerOutputFileManager: {
       resetWorkerOutput: resetWorkerOutput as never,
       bufferOutput: bufferOutput as never,
+      getCurrentOffset: getCurrentOffset as never,
+      readHistoryWithOffset: readHistoryWithOffset as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: loadProviderKeyFn as never,
@@ -273,6 +296,8 @@ function setup(opts?: {
     revokeByWorker,
     resetWorkerOutput,
     bufferOutput,
+    getCurrentOffset,
+    readHistoryWithOffset,
     loadProviderKeyFn,
     persistSession,
     globalActivity,
@@ -508,6 +533,123 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     const resolvedEntry = match![1];
     expect(resolvedEntry.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);
     expect(await Bun.file(resolvedEntry).exists()).toBe(true);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
+  const VALID_RESTORABLE_STREAM = [
+    JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
+    JSON.stringify({ v: 1, type: 'assistant-message', turnId: 't1', text: 'hello back' }),
+  ].join('\n');
+
+  it('does NOT reset the output stream and forwards a matching restoredConversation when restore succeeds', async () => {
+    const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+    const epochBefore = h.worker.epoch;
+    const offsetBefore = h.worker.outputOffset;
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).not.toHaveBeenCalled();
+    expect(h.worker.epoch).toBe(epochBefore);
+    expect(h.worker.outputOffset).toBe(offsetBefore);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(Array.isArray(first.restoredConversation)).toBe(true);
+    expect(first.restoredConversation[0]).toEqual({ role: 'system', content: expect.any(String) });
+    expect(first.restoredConversation).toContainEqual({ role: 'user', content: 'hi there' });
+    expect(first.restoredConversation).toContainEqual({ role: 'assistant', content: 'hello back' });
+  });
+
+  it('resets the output stream with preserveToSidecar and omits restoredConversation when restore fails', async () => {
+    const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: '{not valid json' } });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).toHaveBeenCalledWith(
+      h.sessionId,
+      h.workerId,
+      expect.anything(),
+      { preserveToSidecar: true },
+    );
+    expect(h.worker.epoch).toBe(NEW_EPOCH);
+    expect(h.worker.outputOffset).toBe(0);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('restoredConversation' in first).toBe(false);
+  });
+
+  it('performs the byte-identical v1 reset (no restore attempt) on a first-ever activation (currentOffset 0)', async () => {
+    const h = setup({ currentOffset: 0 });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.readHistoryWithOffset).not.toHaveBeenCalled();
+    expect(h.resetWorkerOutput).toHaveBeenCalledWith(h.sessionId, h.workerId, expect.anything());
+    expect(h.resetWorkerOutput.mock.calls[0]!.length).toBe(3); // no opts argument at all
+    expect(h.worker.epoch).toBe(NEW_EPOCH);
+    expect(h.worker.outputOffset).toBe(0);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('restoredConversation' in first).toBe(false);
+  });
+
+  describe('getRestoreInfo', () => {
+    it('returns the current epoch + restore result after a successful restore', async () => {
+      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const info = h.service.getRestoreInfo(h.workerId);
+      expect(info).not.toBeNull();
+      expect(info!.epoch).toBe(h.worker.epoch);
+      expect(info!.messageCount).toBe(3); // system + user + assistant
+      expect(info!.repairedToolCallIds).toEqual([]);
+    });
+
+    it('returns null after a restore failure', async () => {
+      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+
+    it('returns null after a first-ever activation (nothing to restore)', async () => {
+      const h = setup({ currentOffset: 0 });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+
+    it('returns null for a worker that was never activated', () => {
+      const h = setup();
+      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+  });
+
+  describe('fast-path push (onRestoreInfo)', () => {
+    it('invokes onRestoreInfo on already-attached connections when restore succeeds', async () => {
+      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({ messageCount: 3, repairedToolCallIds: [] });
+    });
+
+    it('does NOT invoke onRestoreInfo when restore fails', async () => {
+      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: '{not valid json' } });
+
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke onRestoreInfo on a first-ever activation', async () => {
+      const h = setup({ currentOffset: 0 });
+
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
+    });
   });
 });
 

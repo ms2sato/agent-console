@@ -121,6 +121,26 @@ describe('useEmbeddedAgentWorker', () => {
     expect(result.current.contextUsage).toEqual({ promptTokens: 1234, estimated: true });
   });
 
+  it('exposes restoring/restoredMessageCount from the store, updated by a restore-info WS message (#1123)', () => {
+    const { result } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's4d', workerId: 'w4d' }));
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    expect(result.current.restoring).toBe(false);
+    expect(result.current.restoredMessageCount).toBeNull();
+
+    act(() => {
+      ws?.simulateMessage(
+        JSON.stringify({ type: 'restore-info', epoch: 1, messageCount: 5, repairedToolCallIds: [] }),
+      );
+    });
+
+    expect(result.current.restoring).toBe(true);
+    expect(result.current.restoredMessageCount).toBe(5);
+  });
+
   it('acquire/release keeps the underlying store instance alive across a remount (ref counting)', () => {
     const { unmount } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's5', workerId: 'w5' }));
     const instance = getOrCreateEmbeddedAgentWorker('s5', 'w5');

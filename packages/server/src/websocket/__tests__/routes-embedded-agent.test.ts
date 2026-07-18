@@ -11,6 +11,7 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../../database/c
 import { JobQueue } from '../../jobs/job-queue.js';
 import { registerJobHandlers } from '../../jobs/handlers.js';
 import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
+import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { createSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SessionManager } from '../../services/session-manager.js';
@@ -167,6 +168,13 @@ describe('Worker WebSocket: embedded-agent branch', () => {
   // sessions.created_by has a FK to users(id) (migration v19) -- a real user
   // row is required before creating a session with createdBy set.
   let sessionOwnerUserId: string;
+  // Transcript Restore (#1123): a dedicated manager instance (distinct from
+  // the one handed to registerJobHandlers) so tests can pre-seed a worker's
+  // persisted output file BEFORE the first WS connection, simulating "a
+  // prior incarnation's transcript already on disk" without needing the
+  // single-shot fake spawn to support a second real activation cycle.
+  let workerOutputFileManager: WorkerOutputFileManager;
+  const quickOutputResolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
 
   beforeEach(async () => {
     await closeDatabase();
@@ -189,6 +197,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
 
     testJobQueue = new JobQueue(getDatabase());
     registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+    workerOutputFileManager = new WorkerOutputFileManager();
     const sessionRepository = await createSessionRepository();
     const agentManager = await AgentManager.create(new SqliteAgentRepository(getDatabase()));
     embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(getDatabase()));
@@ -208,6 +217,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
       // Test seam: avoids spawning a real `bun` subprocess for the loop while
       // exercising the real EmbeddedAgentWorkerService activation/dispatch path.
       spawnAsUserFn: fake.fn,
+      workerOutputFileManager,
     });
     const repositoryRepository = new SqliteRepositoryRepository(getDatabase());
     const repositoryManager = await RepositoryManager.create({ repository: repositoryRepository, jobQueue: testJobQueue });
@@ -743,5 +753,70 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     expect(fake.stdinWrites.length).toBe(1);
     // No re-spawn happened.
     expect(fake.captured.length).toBe(1);
+  });
+
+  describe('Transcript Restore (#1123)', () => {
+    async function seedRestorableOutput(sessionId: string, workerId: string): Promise<void> {
+      const ndjson = [
+        JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'prior message' }),
+        JSON.stringify({ v: 1, type: 'assistant-message', turnId: 't1', text: 'prior reply' }),
+      ]
+        .map((line) => `${line}\n`)
+        .join('');
+      workerOutputFileManager.bufferOutput(sessionId, workerId, ndjson, quickOutputResolver);
+      await workerOutputFileManager.flushAll();
+    }
+
+    it('pushes restore-info over the wire on the connection that triggers a successful restore', async () => {
+      const { sessionId, workerId } = await createEmbeddedAgentSession();
+      await seedRestorableOutput(sessionId, workerId);
+
+      const { mockWs } = openConnection(sessionId, workerId);
+      await waitFor(() => fake.captured.length === 1);
+
+      // Restore succeeded: the init command carries a restoredConversation.
+      const initCommand = JSON.parse(fake.stdinWrites[0]);
+      expect(Array.isArray(initCommand.restoredConversation)).toBe(true);
+      expect(initCommand.restoredConversation).toContainEqual({ role: 'user', content: 'prior message' });
+      expect(initCommand.restoredConversation).toContainEqual({ role: 'assistant', content: 'prior reply' });
+
+      await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).type === 'restore-info'));
+      const restoreInfoMsg = mockWs.sentMessages.map((m) => JSON.parse(m)).find((m) => m.type === 'restore-info');
+      expect(restoreInfoMsg.messageCount).toBe(3); // system + user + assistant
+      expect(restoreInfoMsg.repairedToolCallIds).toEqual([]);
+      expect(typeof restoreInfoMsg.epoch).toBe('number');
+    });
+
+    it('re-delivers restore-info as bootstrap to a SECOND connection to the same already-activated worker', async () => {
+      const { sessionId, workerId } = await createEmbeddedAgentSession();
+      await seedRestorableOutput(sessionId, workerId);
+
+      const first = openConnection(sessionId, workerId);
+      await waitFor(() => fake.captured.length === 1);
+      await waitFor(() => first.mockWs.sentMessages.some((m) => JSON.parse(m).type === 'restore-info'));
+
+      const second = openConnection(sessionId, workerId);
+      await waitFor(() => second.mockWs.sentMessages.some((m) => JSON.parse(m).type === 'restore-info'));
+
+      // No re-activation (no second spawn) -- the second connection's
+      // restore-info comes from bootstrap re-delivery, not a new restore.
+      expect(fake.captured.length).toBe(1);
+      const secondRestoreInfo = second.mockWs.sentMessages
+        .map((m) => JSON.parse(m))
+        .find((m) => m.type === 'restore-info');
+      expect(secondRestoreInfo.messageCount).toBe(3);
+    });
+
+    it('does NOT push restore-info when there is nothing to restore (first-ever activation)', async () => {
+      const { sessionId, workerId } = await createEmbeddedAgentSession();
+
+      const { mockWs } = openConnection(sessionId, workerId);
+      await waitFor(() => fake.captured.length === 1);
+      await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).type === 'activity'));
+
+      expect(mockWs.sentMessages.map((m) => JSON.parse(m)).some((m) => m.type === 'restore-info')).toBe(false);
+      const initCommand = JSON.parse(fake.stdinWrites[0]);
+      expect('restoredConversation' in initCommand).toBe(false);
+    });
   });
 });

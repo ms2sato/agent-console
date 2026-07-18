@@ -38,6 +38,10 @@ function outputMessage(data: string, offset: number, epoch = 1) {
   return JSON.stringify({ type: 'output', data, offset, epoch });
 }
 
+function restoreInfoMessage(epoch: number, messageCount: number, repairedToolCallIds: string[] = []) {
+  return JSON.stringify({ type: 'restore-info', epoch, messageCount, repairedToolCallIds });
+}
+
 function ndjson(...events: Record<string, unknown>[]): string {
   return events.map((e) => JSON.stringify(e)).join('\n') + '\n';
 }
@@ -1255,6 +1259,113 @@ describe('embedded-agent-store', () => {
     const a = getOrCreateEmbeddedAgentWorker('same', 'worker');
     const b = getOrCreateEmbeddedAgentWorker('same', 'worker');
     expect(a).toBe(b);
+  });
+
+  describe('Transcript Restore (#1123)', () => {
+    it('sets restoring/restoredMessageCount on a restore-info message received before any ready event', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r1', 'w1');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      ws!.simulateMessage(restoreInfoMessage(1, 5, []));
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.restoring).toBe(true);
+      expect(snapshot.restoredMessageCount).toBe(5);
+    });
+
+    it('clears restoring back to false once a ready event is folded from history/output', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r2', 'w2');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      ws!.simulateMessage(restoreInfoMessage(1, 5, []));
+      expect(instance.getSnapshot().restoring).toBe(true);
+
+      const readyData = ndjson({ v: 1, type: 'ready' });
+      ws!.simulateMessage(historyMessage(readyData, readyData.length, 0, 1));
+      await flush();
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.restoring).toBe(false);
+      // messageCount is not required to be cleared on `ready` -- it stays at
+      // its last-known value from the most recently accepted restore-info.
+      expect(snapshot.restoredMessageCount).toBe(5);
+    });
+
+    it('pushes exactly one restore-repair entry when repairedToolCallIds is non-empty', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r3', 'w3');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      ws!.simulateMessage(restoreInfoMessage(1, 5, ['call-1', 'call-2']));
+
+      const entries = instance.getSnapshot().entries;
+      const repairEntries = entries.filter((e) => e.kind === 'restore-repair');
+      expect(repairEntries).toHaveLength(1);
+      expect(repairEntries[0]).toMatchObject({ kind: 'restore-repair', toolCallIds: ['call-1', 'call-2'] });
+    });
+
+    it('does not push a duplicate restore-repair entry when the same restore-info is re-delivered without a reset in between (bootstrap re-delivery on a plain reconnect)', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r4', 'w4');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      ws!.simulateMessage(restoreInfoMessage(1, 5, ['call-1']));
+      ws!.simulateMessage(restoreInfoMessage(1, 5, ['call-1']));
+
+      const repairEntries = instance.getSnapshot().entries.filter((e) => e.kind === 'restore-repair');
+      expect(repairEntries).toHaveLength(1);
+    });
+
+    it('re-renders the restore-repair entry after a fresh reconnect that wiped entries (resetChatState fired)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r5', 'w5');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      ws!.simulateMessage(restoreInfoMessage(1, 5, ['call-1']));
+      expect(
+        instance.getSnapshot().entries.filter((e) => e.kind === 'restore-repair'),
+      ).toHaveLength(1);
+
+      // A genuine epoch bump (worker restarted server-side) triggers
+      // resetChatState via beginEpochReset -- the triggering message itself
+      // is dropped by acceptEpoch's contract (returns false), so entries
+      // must be empty and the repair-rendered guard must be cleared.
+      ws!.simulateMessage(restoreInfoMessage(2, 5, ['call-1']));
+      await flush();
+      expect(instance.getSnapshot().entries).toHaveLength(0);
+
+      // The new incarnation's bootstrap re-delivery of restore-info for the
+      // NEW epoch must re-render the note against the freshly-reset state.
+      ws!.simulateMessage(restoreInfoMessage(2, 5, ['call-1']));
+
+      const repairEntries = instance.getSnapshot().entries.filter((e) => e.kind === 'restore-repair');
+      expect(repairEntries).toHaveLength(1);
+    });
+
+    it('drops a restore-info from a stale/superseded epoch without affecting restoring or entries', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r6', 'w6');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      // Establish epoch 2 as current via a genuine bump.
+      ws!.simulateMessage(restoreInfoMessage(1, 3, []));
+      ws!.simulateMessage(restoreInfoMessage(2, 3, []));
+      ws!.simulateMessage(restoreInfoMessage(2, 7, ['call-9']));
+
+      const beforeSnapshot = instance.getSnapshot();
+      expect(beforeSnapshot.restoredMessageCount).toBe(7);
+
+      // A stale, smaller epoch (a slow-arriving fast-path push racing a
+      // subsequent restart) must be dropped entirely by acceptEpoch.
+      ws!.simulateMessage(restoreInfoMessage(1, 999, ['stale-call']));
+
+      const afterSnapshot = instance.getSnapshot();
+      expect(afterSnapshot.restoredMessageCount).toBe(7);
+      expect(afterSnapshot.restoring).toBe(beforeSnapshot.restoring);
+      expect(afterSnapshot.entries).toEqual(beforeSnapshot.entries);
+    });
   });
 });
 

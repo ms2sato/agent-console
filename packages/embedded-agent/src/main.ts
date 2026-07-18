@@ -210,6 +210,7 @@ async function initializeLoop(
     emit: (event) => io.writeEvent(event),
     systemPrompt,
     maxToolIterations: init.maxToolIterations,
+    restoredConversation: init.restoredConversation,
     reassembleSystemPrompt: async () => {
       const reloadedInstructions = await factories.loadInstructions({
         cwd: init.context.cwd,

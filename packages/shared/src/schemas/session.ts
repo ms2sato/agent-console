@@ -140,6 +140,23 @@ export const UpdateSessionRequestSchema = v.strictObject({
  */
 export const DeleteSessionRequestSchema = v.strictObject({});
 
+/**
+ * Standalone schema for the `restore-info` WorkerServerMessage variant
+ * (Transcript Restore, #1123). `WorkerServerMessage` as a whole has no
+ * existing valibot union to extend (server sends raw typed literals; the
+ * client does an unchecked `as WorkerServerMessage` cast) -- building a
+ * full 8-variant union schema is out of scope here. This schema exists
+ * so an integration test can catch server/client field-shape drift for
+ * this specific new field per pre-pr-completeness.md Q10, without
+ * retrofitting runtime validation onto the unrelated existing variants.
+ */
+export const RestoreInfoMessageSchema = v.strictObject({
+  type: v.literal('restore-info'),
+  epoch: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  messageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  repairedToolCallIds: v.array(v.string()),
+});
+
 // Inferred types from schemas
 export type CreateWorktreeSessionRequest = v.InferOutput<typeof CreateWorktreeSessionRequestSchema>;
 export type CreateQuickSessionRequest = v.InferOutput<typeof CreateQuickSessionRequestSchema>;

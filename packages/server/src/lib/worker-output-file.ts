@@ -1065,7 +1065,12 @@ export class WorkerOutputFileManager {
    * genuinely restarts at 0 under a new generation. Runs inside the domain so it
    * is atomic with respect to in-flight flushes.
    */
-  async resetWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<number> {
+  async resetWorkerOutput(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    opts?: { preserveToSidecar?: boolean },
+  ): Promise<number> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
       // Drop any pending flush without writing it, and the cached segment (the
@@ -1093,6 +1098,22 @@ export class WorkerOutputFileManager {
 
       try {
         await fs.mkdir(dir, { recursive: true });
+
+        if (opts?.preserveToSidecar) {
+          const sidecarPath = path.join(dir, `${workerId}.restore-failed.log`);
+          try {
+            await fs.rename(filePath, sidecarPath);
+          } catch (err) {
+            // Best-effort, never blocking -- proceed with the reset regardless
+            // (Transcript Restore's "Failure invariant (restore)": "preserve
+            // when possible, never let preservation block or replace the
+            // reset").
+            logger.warn(
+              { sessionId, workerId, err },
+              'Failed to preserve restore-failed sidecar (best-effort, proceeding with reset)',
+            );
+          }
+        }
 
         // Delete existing content: live file, legacy compressed, and all segments.
         await this.deleteContentFiles(dir, sessionId, workerId, resolver, oldManifest);

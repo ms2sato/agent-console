@@ -114,6 +114,8 @@ export function EmbeddedAgentWorkerView({
     workerError,
     contextUsage,
     handoffInFlight,
+    restoring,
+    restoredMessageCount,
     sendUserMessage,
     cancel,
     restart,
@@ -238,6 +240,17 @@ export function EmbeddedAgentWorkerView({
               Dismiss
             </button>
           )}
+        </div>
+      )}
+
+      {restoring && restoredMessageCount !== null && (
+        <div className="px-4 py-2 bg-slate-800/60 border-b border-slate-700 text-gray-400 text-xs shrink-0 flex items-center gap-2">
+          <span
+            className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle"
+            aria-hidden="true"
+          />
+          Restoring conversation from {restoredMessageCount} previous message
+          {restoredMessageCount === 1 ? '' : 's'}...
         </div>
       )}
 
@@ -590,6 +603,19 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
             </summary>
             <div className="mt-2 min-w-0 whitespace-pre-wrap text-xs text-gray-300 [overflow-wrap:anywhere]">
               {entry.distillation}
+            </div>
+          </details>
+        </div>
+      );
+    case 'restore-repair':
+      return (
+        <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          <details>
+            <summary className="cursor-pointer text-xs text-gray-400">
+              — Some tool calls were interrupted by a restart and marked as errors —
+            </summary>
+            <div className="mt-2 min-w-0 text-xs text-gray-300">
+              {entry.toolCallIds.length} tool call{entry.toolCallIds.length === 1 ? '' : 's'} affected.
             </div>
           </details>
         </div>

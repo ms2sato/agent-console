@@ -25,6 +25,31 @@ export const EMBEDDED_AGENT_TOOL_NAMES = ['Read', 'Glob', 'Grep', 'Bash', 'Write
 export type EmbeddedAgentToolName = (typeof EMBEDDED_AGENT_TOOL_NAMES)[number];
 
 /**
+ * Wire-shape for one tool call inside a restored assistant message.
+ * Structurally identical to embedded-agent's own internal `ToolCall`
+ * (packages/embedded-agent/src/providers/types.ts) -- duplicated here
+ * because the wire-protocol type boundary (shared) must not depend on a
+ * provider-internal package (embedded-agent depends on shared, never the
+ * reverse).
+ */
+export interface EmbeddedAgentRestoredToolCall {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+/**
+ * Wire-shape for the `init` command's `restoredConversation` field
+ * (Transcript Restore, #1123). Structurally identical to embedded-agent's
+ * internal `ChatMessage` union -- see EmbeddedAgentRestoredToolCall doc.
+ */
+export type EmbeddedAgentRestoredMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; content: string; tool_calls?: EmbeddedAgentRestoredToolCall[] }
+  | { role: 'tool'; tool_call_id: string; content: string };
+
+/**
  * Default when a definition's `enabledTools` is absent: read-only tools ON, Bash OFF.
  *
  * Note that a definition that has ever been through the Add/Edit form persists
@@ -80,6 +105,7 @@ export type EmbeddedAgentCommand =
       enabledTools?: EmbeddedAgentToolName[];
       instructions?: string[];
       maxToolIterations: number;
+      restoredConversation?: EmbeddedAgentRestoredMessage[]; // Transcript Restore (#1123); absent = fresh conversation (today's v1 behavior)
     }
   | { v: 1; type: 'user-message'; id: string; text: string }
   | { v: 1; type: 'cancel' }

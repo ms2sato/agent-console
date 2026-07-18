@@ -1927,4 +1927,65 @@ describe('EmbeddedAgentWorkerView', () => {
       });
     });
   });
+
+  describe('Transcript Restore (#1123)', () => {
+    it('renders a restore-repair note (closed by default) when restore-info carries repairedToolCallIds', async () => {
+      renderView({ sessionId: 's-restore-1', workerId: 'w-restore-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: ['call-1', 'call-2'],
+          }),
+        );
+      });
+      await flush();
+
+      const summary = screen.getByText(
+        '— Some tool calls were interrupted by a restart and marked as errors —',
+      );
+      const details = summary.closest('details') as HTMLDetailsElement;
+      expect(details).toBeTruthy();
+      expect(details.open).toBe(false);
+      expect(screen.getByText('2 tool calls affected.')).toBeTruthy();
+    });
+
+    it('shows the "Restoring conversation..." banner while restoring is true, and hides it once cleared', async () => {
+      renderView({ sessionId: 's-restore-2', workerId: 'w-restore-2' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'restore-info', epoch: 1, messageCount: 5, repairedToolCallIds: [] }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByText('Restoring conversation from 5 previous messages...')).toBeTruthy();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'ready' });
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }),
+        );
+      });
+      await flush();
+
+      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
+    });
+  });
 });
