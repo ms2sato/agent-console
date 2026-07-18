@@ -900,6 +900,36 @@ describe('CreateWorktreeForm', () => {
       expect(localStorage.getItem('undefined')).toBeNull();
       expect(localStorage.getItem('null')).toBeNull();
     });
+
+    describe('register()-bound field restore (Issue #1187)', () => {
+      const draftKey = 'register-bound-restore-draft-key';
+
+      beforeEach(() => {
+        localStorage.removeItem(draftKey);
+      });
+
+      afterEach(() => {
+        localStorage.removeItem(draftKey);
+      });
+
+      it('should restore a register()-bound sessionTitle value from localStorage on mount', async () => {
+        localStorage.setItem(draftKey, JSON.stringify({ sessionTitle: 'Restored Title' }));
+
+        renderCreateWorktreeForm({ draftKey });
+
+        // Wait for agents to load
+        await waitFor(() => {
+          expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+        });
+
+        // The regression-guarding assertion: the sessionTitle input (a
+        // register()-bound field) must reflect the restored draft value.
+        await waitFor(() => {
+          const titleInput = screen.getByPlaceholderText('Session title') as HTMLInputElement;
+          expect(titleInput.value).toBe('Restored Title');
+        });
+      });
+    });
   });
 
   describe('StrictMode double-invoke draft-restore race (Issue #1077)', () => {
