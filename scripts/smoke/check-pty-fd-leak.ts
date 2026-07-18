@@ -4,8 +4,12 @@
  *
  * `bunTerminalProvider` (the default `PTY_PROVIDER`, see
  * `serverConfig.PTY_PROVIDER`) wraps `Bun.spawn({ terminal: ... })`. The
- * returned `Bun.Terminal` handle owns the PTY master fd (`/dev/ptmx`) and is
- * never released by GC -- only an explicit `Bun.Terminal.close()` call
+ * returned `Bun.Terminal` handle owns the PTY master fd (`/dev/ptmx`). Bun's
+ * native binding appears to have a GC finalizer that CAN release the fd once
+ * the JS wrapper becomes unreachable, but production `InternalPtyWorker.pty`
+ * objects stay reachable (referenced via session/worker maps) for a
+ * worker's whole lifetime, so incidental GC is not a reliable release path
+ * -- only an explicit `Bun.Terminal.close()` call deterministically
  * reclaims it. `BunTerminalPtyAdapter.dispose()` is the production fix,
  * wired into the adapter's `subprocess.exited`-triggered `fireExit()` and
  * called as a backstop from `WorkerManager.detachPty`.
@@ -13,7 +17,8 @@
  * This script imports `bunTerminalProvider` directly from production source
  * (no reimplementation) and runs a real spawn/kill cycle against the actual
  * OS repeatedly, observing both:
- *   - `/proc/self/fd` ptmx-fd count in THIS process
+ *   - this process's own ptmx-fd count (`/proc/<pid>/fd`, counted via a
+ *     spawned child process reading `/proc` -- see `countPtmxFds()`)
  *   - `/proc/sys/kernel/pty/nr` -- the kernel-wide allocated-pty counter,
  *     which independently corroborates the per-process fd count (a leak
  *     that somehow bypassed our fd count would still show up here, since
@@ -55,7 +60,7 @@
  *   2  bad usage / cannot run (e.g. not on Linux -- /proc is unavailable)
  */
 
-import { readdirSync, readlinkSync, readFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { bunTerminalProvider, type PtyInstance } from '../../packages/server/src/lib/pty-provider.js';
 
 if (process.platform !== 'linux') {
@@ -65,16 +70,15 @@ if (process.platform !== 'linux') {
 
 const CYCLE_COUNT = 100;
 
-function countPtmxFds(): number {
-  let count = 0;
-  for (const entry of readdirSync('/proc/self/fd')) {
-    try {
-      if (readlinkSync(`/proc/self/fd/${entry}`) === '/dev/ptmx') count++;
-    } catch {
-      // fd closed between readdir and readlink; ignore.
-    }
-  }
-  return count;
+// Counts via a spawned child process reading `/proc/<pid>/fd` (a same-user
+// child can read its parent's fd table, the same mechanism `lsof` relies on
+// for same-user processes without root). `Bun.spawnSync` is a native Bun API
+// unaffected by any `node:fs` mocking elsewhere in the process.
+function countPtmxFds(pid: number = process.pid): number {
+  const script = `for fd in /proc/${pid}/fd/*; do readlink "$fd" 2>/dev/null; done | grep -c '^/dev/ptmx$'`;
+  const result = Bun.spawnSync(['sh', '-c', script]);
+  const parsed = Number.parseInt(result.stdout.toString().trim(), 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function readKernelPtyCount(): number {
@@ -139,7 +143,7 @@ const expect = (cond: boolean, label: string, detail?: string) => {
 };
 
 console.log(`==> ran ${CYCLE_COUNT} spawn/kill cycles via bunTerminalProvider`);
-console.log('==> ptmx fd count (this process, /proc/self/fd)');
+console.log('==> ptmx fd count (this process, via /proc/<pid>/fd)');
 expect(
   afterFds <= beforeFds,
   `ptmx fd count non-increasing (before=${beforeFds}, after=${afterFds})`,
@@ -150,7 +154,7 @@ console.log('==> kernel pty counter (/proc/sys/kernel/pty/nr)');
 expect(
   afterKernelCount <= beforeKernelCount,
   `kernel pty counter non-increasing (before=${beforeKernelCount}, after=${afterKernelCount})`,
-  `before=${beforeKernelCount} after=${afterKernelCount}`,
+  `before=${beforeKernelCount} after=${afterKernelCount} -- if other processes are actively spawning PTYs on this host, this system-wide counter can rise independently of this script's own leak-freedom -- check for concurrent PTY activity before concluding this is a regression`,
 );
 
 console.log();

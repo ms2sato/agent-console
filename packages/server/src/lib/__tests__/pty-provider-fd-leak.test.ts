@@ -12,7 +12,7 @@
  * mock's `beforeEach`/`afterEach` (kept in a separate file to guarantee
  * that).
  *
- * Linux-only: relies on `/proc/self/fd` + `/dev/ptmx`, unavailable on darwin.
+ * Linux-only: relies on `/proc/<pid>/fd` + `/dev/ptmx`, unavailable on darwin.
  *
  * IMPORTANT -- strong references are retained deliberately. Bun's native
  * `Bun.Terminal` binding appears to release the fd via a GC finalizer once
@@ -39,36 +39,41 @@
  * references held), so the bounded wait absorbs only the real completion
  * lag, not a missing fix.
  *
- * Full-suite caveat: counting ptmx fds requires `node:fs`'s `readdirSync` /
- * `readlinkSync` in-process (there is no way to inspect THIS process's own
- * open fds from a spawned child). Several other test files in this package
- * call `mock.module('node:fs', ...)` (memfs) at import time, which is
- * process-global and irreversible in bun:test (see
- * `.claude/rules/testing.md` "Module-Level Mocking" anti-pattern and
- * `workers-upload-dir-real-fs.test.ts` for the same constraint applied to a
- * different real-fs contract). When memfs is active, `/proc/self/fd` is not
- * populated, so this suite skips itself with a note rather than failing
- * against the in-memory simulation. Run this file alone to exercise the real
- * assertions:
+ * memfs-immunity: several other test files in this package call
+ * `mock.module('node:fs', ...)` (memfs) at import time, which is
+ * process-global and irreversible for the remainder of the `bun:test`
+ * process (see `.claude/rules/testing.md` "Module-Level Mocking"
+ * anti-pattern and `workers-upload-dir-real-fs.test.ts` for the same
+ * constraint applied to a different real-fs contract). An earlier version of
+ * this file counted ptmx fds via in-process `node:fs` calls
+ * (`readdirSync`/`readlinkSync`), which meant the assertions silently no-op'd
+ * under `bun run test` once memfs was active. `countPtmxFds()` now spawns a
+ * child process (`Bun.spawnSync`, a native Bun API unaffected by
+ * `mock.module('node:fs', ...)`) that reads `/proc/<pid>/fd` directly from
+ * the OS -- a same-user child process can read its parent's `/proc/<pid>/fd`
+ * entries (the same mechanism that lets `lsof` inspect another process
+ * owned by the same user without root). This makes the assertions run for
+ * real regardless of which other test files ran first in the same process.
  *
- *   bun test packages/server/src/lib/__tests__/pty-provider-fd-leak.test.ts
+ * cross-test GC noise: fixing the above surfaced a second, narrower issue --
+ * each `it()` block below force-collects (`Bun.gc(true)`) before capturing
+ * its baseline, to flush any already-unreachable `Bun.Terminal` garbage left
+ * over from OTHER test files' real PTY spawns in this same process. Without
+ * it, that unrelated garbage could get finalized during THIS test's polling
+ * window and mask a real regression here (a full-suite run produced a false
+ * pass on the kill()-path test with `dispose()` disabled, while the same
+ * test failed correctly when run in isolation). See each test body for the
+ * inline rationale.
  */
 import { describe, it, expect } from 'bun:test';
-import { readdirSync, readlinkSync } from 'node:fs';
 import { bunTerminalProvider, type PtyInstance } from '../pty-provider.js';
-import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
 import type { IExitEvent } from 'bun-pty';
 
-function countPtmxFds(): number {
-  let count = 0;
-  for (const entry of readdirSync('/proc/self/fd')) {
-    try {
-      if (readlinkSync(`/proc/self/fd/${entry}`) === '/dev/ptmx') count++;
-    } catch {
-      // fd closed between readdir and readlink; ignore.
-    }
-  }
-  return count;
+function countPtmxFds(pid: number = process.pid): number {
+  const script = `for fd in /proc/${pid}/fd/*; do readlink "$fd" 2>/dev/null; done | grep -c '^/dev/ptmx$'`;
+  const result = Bun.spawnSync(['sh', '-c', script]);
+  const parsed = Number.parseInt(result.stdout.toString().trim(), 10);
+  return Number.isNaN(parsed) ? 0 : parsed;
 }
 
 function waitForExit(pty: PtyInstance): Promise<IExitEvent> {
@@ -96,13 +101,16 @@ describe.skipIf(process.platform !== 'linux')('bunTerminalProvider ptmx fd leak 
   const SPAWN_COUNT = 10;
 
   it('natural exit: ptmx fd count returns to baseline after N short-lived spawns', async () => {
-    if (await isMemfsActive()) {
-      console.log(
-        '[skip] memfs is active in this process; /proc/self/fd is not populated. Run this file alone (`bun test pty-provider-fd-leak.test.ts`) to exercise the real assertion.',
-      );
-      return;
-    }
-
+    // Force-collect any already-unreachable Bun.Terminal objects left over
+    // from OTHER test files' PTY spawns in this same bun:test process before
+    // taking the baseline. Without this, incidental GC of unrelated tests'
+    // garbage during this test's polling window can mask a real regression
+    // (confirmed: with `dispose()` disabled, a full-suite run produced a
+    // false pass on this test's sibling below, while an isolated-file run of
+    // the same test correctly failed) -- a cross-test variant of the
+    // GC-masking problem the `retained` array already guards against within
+    // a single test.
+    Bun.gc(true);
     const baseline = countPtmxFds();
     // Retained for the assertion's lifetime -- see file header. Without this,
     // GC can finalize a spawned-and-out-of-scope adapter and release its fd
@@ -120,13 +128,8 @@ describe.skipIf(process.platform !== 'linux')('bunTerminalProvider ptmx fd leak 
   });
 
   it('kill() path: ptmx fd count returns to baseline after N kill()-then-exit cycles', async () => {
-    if (await isMemfsActive()) {
-      console.log(
-        '[skip] memfs is active in this process; /proc/self/fd is not populated. Run this file alone (`bun test pty-provider-fd-leak.test.ts`) to exercise the real assertion.',
-      );
-      return;
-    }
-
+    // See the sibling test above for why this force-collect is needed.
+    Bun.gc(true);
     const baseline = countPtmxFds();
     const retained: PtyInstance[] = [];
 
