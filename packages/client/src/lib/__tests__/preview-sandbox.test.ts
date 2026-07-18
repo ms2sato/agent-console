@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { PREVIEW_CSP, sanitizePreviewFragment, buildPreviewDocument } from '../preview-sandbox';
+import { NEUTRALIZED_VECTORS, KNOWN_GAP_VECTOR } from '../__fixtures__/preview-sandbox-corpus';
 
 describe('sanitizePreviewFragment', () => {
   it('removes <script> elements', () => {
@@ -134,8 +135,9 @@ describe('mXSS regression corpus', () => {
   // actually being verified. Those vectors are instead empirically verified
   // against real Chromium (Chrome DevTools MCP) and recorded as evidence in
   // the PR body for Issue #1106, with the known non-neutralized case
-  // tracked in Issue #1162. A real-browser test runner is a prerequisite
-  // for automating that class of vector; see #1162.
+  // tracked in Issue #1162. Automated regression coverage for that class of
+  // vector (real-browser parsing behavior) lives in
+  // scripts/run-preview-sandbox-browser-check.mjs, not in this bun:test file.
   function assertFullyNeutralizedAcrossReparse(vector: string) {
     const firstPass = sanitizePreviewFragment(vector);
     // Re-parse the sanitizer's own output, simulating the iframe's real
@@ -149,25 +151,14 @@ describe('mXSS regression corpus', () => {
     expect(hasOnAttr).toBe(false);
   }
 
-  it('neutralizes an on* attribute on a MathML element (namespace-agnostic attribute removal)', () => {
-    assertFullyNeutralizedAcrossReparse('<math><mi onclick="alert(1)">x</mi></math>');
-  });
-
-  it('neutralizes a <script> element nested inside MathML (namespace-agnostic tag removal)', () => {
-    assertFullyNeutralizedAcrossReparse('<math><mtext><script>alert(1)</script></mtext></math>');
-  });
-
-  it('neutralizes an on* attribute directly on <noscript>', () => {
-    assertFullyNeutralizedAcrossReparse('<noscript onclick="alert(1)">text</noscript>');
-  });
-
-  it('neutralizes a <script> element whose content uses an HTML-comment decoy (legacy "hide from old browsers" trick reused as an evasion attempt)', () => {
-    assertFullyNeutralizedAcrossReparse('<script><!--alert(1)--></script>');
-  });
-
-  it('neutralizes a javascript: URL on xlink:href nested inside <svg><a>, case-varied', () => {
-    assertFullyNeutralizedAcrossReparse('<svg><a xlink:href="JavaScript:alert(1)"><text>click</text></a></svg>');
-  });
+  // Vectors are sourced from the shared corpus fixture (../__fixtures__/preview-sandbox-corpus.ts),
+  // which is also consumed by scripts/run-preview-sandbox-browser-check.mjs (real Chromium) --
+  // see Issue #1162. Do not inline vectors here; add new ones to the fixture instead.
+  for (const { name, vector } of NEUTRALIZED_VECTORS) {
+    it(`neutralizes: ${name}`, () => {
+      assertFullyNeutralizedAcrossReparse(vector);
+    });
+  }
 
   it(
     'containment invariant (Issue #1162): the CSP applied to every preview document is exact and ' +
@@ -185,8 +176,8 @@ describe('mXSS regression corpus', () => {
     () => {
       // Representative of the known-gap shape (Issue #1162) -- its exact
       // sanitizer output is irrelevant to this assertion; see comment above.
-      const knownGapVector = '<form><math><mtext></form><form><mglyph><style></math><img src=1 onerror=alert(1)>';
-      const sanitized = sanitizePreviewFragment(knownGapVector);
+      // Sourced from the shared corpus fixture (see the import at top of file).
+      const sanitized = sanitizePreviewFragment(KNOWN_GAP_VECTOR.vector);
       const doc = buildPreviewDocument(sanitized);
 
       const cspMetaTags = Array.from(

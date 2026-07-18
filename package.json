@@ -18,6 +18,7 @@
     "test:scripts": "bun test scripts/ ./.claude/hooks/__tests__/ ./.claude/skills/*/__tests__/",
     "test:coverage": "bun run --filter '*' test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
+    "check:preview-sandbox-browser": "bun scripts/run-preview-sandbox-browser-check.mjs",
     "hooks:install": "bun scripts/install-hooks.mjs",
     "preinstall": "bun scripts/check-bun-version.mjs",
     "postinstall": "bun scripts/install-hooks.mjs || echo 'hooks:install skipped (likely no git or non-interactive env)'",
@@ -38,6 +39,7 @@
     "dependency-cruiser": "^17.3.10",
     "knip": "^6.4.1",
     "madge": "^8.0.0",
+    "playwright-core": "^1.61.1",
     "typescript": "^5.7.2"
   },
   "dependencies": {}
