@@ -86,7 +86,7 @@ describe('AddAgentWorkerMenu', () => {
     expect(embeddedBadge.className).toContain(AGENT_KIND_PRESENTATION.embedded.badgeClassName);
   });
 
-  it('renders terminal entries before embedded entries (useAgentDirectory merge order)', async () => {
+  it('preserves item order: Shell, then terminal entries, then embedded entries (useAgentDirectory merge order)', async () => {
     agentsResponse = {
       agents: [{ id: 'claude-code', name: 'Claude Code', isBuiltIn: true }],
     };
@@ -115,11 +115,12 @@ describe('AddAgentWorkerMenu', () => {
 
     const menu = screen.getByRole('menu');
     const menuItems = within(menu).getAllByRole('menuitem');
+    const shellIndex = menuItems.findIndex((item) => item.textContent?.includes('Shell'));
     const terminalIndex = menuItems.findIndex((item) => item.textContent?.includes('Claude Code'));
     const embeddedIndex = menuItems.findIndex((item) => item.textContent?.includes('Ollama qwen3'));
-    expect(terminalIndex).toBeGreaterThan(-1);
-    expect(embeddedIndex).toBeGreaterThan(-1);
-    expect(terminalIndex).toBeLessThan(embeddedIndex);
+    expect(shellIndex).toBe(0);
+    expect(terminalIndex).toBeGreaterThan(shellIndex);
+    expect(embeddedIndex).toBeGreaterThan(terminalIndex);
   });
 
   it('empty embedded registry still shows terminal agents plus a link to create one', async () => {
