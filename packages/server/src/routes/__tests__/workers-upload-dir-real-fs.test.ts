@@ -58,6 +58,7 @@ import { describe, it, expect } from 'bun:test';
 import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { __TESTING__ } from '../workers.js';
+import { isMemfsActive } from '../../__tests__/utils/memfs-detection.js';
 
 const SUPPORTS_SETGID_CONTRACT =
   process.platform === 'linux' && typeof process.geteuid === 'function';
@@ -83,21 +84,6 @@ async function spawnCheck(argv: string[]): Promise<SpawnResult> {
   ]);
   const exitCode = await proc.exited;
   return { exitCode, stdout, stderr };
-}
-
-/**
- * Detect whether `fs/promises` has been swapped for memfs by an earlier
- * test file. Sentinel: `/proc` exists on every Linux real fs but is not
- * populated in the memfs volume.
- */
-async function isMemfsActive(): Promise<boolean> {
-  try {
-    const fsp = await import('fs/promises');
-    await fsp.lstat('/proc');
-    return false;
-  } catch {
-    return true;
-  }
 }
 
 describe('Upload directory real-fs contract (#830 regression)', () => {

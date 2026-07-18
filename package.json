@@ -19,6 +19,7 @@
     "test:coverage": "bun run --filter '*' test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
     "check:preview-sandbox-browser": "bun scripts/run-preview-sandbox-browser-check.mjs",
+    "check:pty-fd-leak": "bun scripts/smoke/check-pty-fd-leak.ts",
     "hooks:install": "bun scripts/install-hooks.mjs",
     "preinstall": "bun scripts/check-bun-version.mjs",
     "postinstall": "bun scripts/install-hooks.mjs || echo 'hooks:install skipped (likely no git or non-interactive env)'",

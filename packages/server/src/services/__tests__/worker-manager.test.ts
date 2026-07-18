@@ -860,6 +860,19 @@ describe('WorkerManager', () => {
       workerManager.detachPty(worker);
       expect(worker.pty).toBeNull();
     });
+
+    it('should call dispose() on the pty before detaching (Issue #1196)', async () => {
+      const worker = createTestTerminalWorker();
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+
+      expect(mockPty.disposed).toBe(false);
+
+      workerManager.detachPty(worker);
+
+      expect(mockPty.disposed).toBe(true);
+      expect(worker.pty).toBeNull();
+    });
   });
 
   // ========== Activity State Detection ==========

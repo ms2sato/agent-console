@@ -1,4 +1,7 @@
 import type { IPty, IDisposable, IExitEvent } from 'bun-pty';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('pty-provider');
 
 /**
  * PTY spawn options (subset of bun-pty options)
@@ -12,9 +15,13 @@ export interface PtySpawnOptions {
 }
 
 /**
- * PTY instance interface matching bun-pty's IPty
+ * PTY instance interface matching bun-pty's IPty, extended with an optional
+ * `dispose()` for providers that hold OS resources beyond the IPty contract
+ * (e.g. `BunTerminalPtyAdapter`'s Bun.Terminal master-fd handle). Optional so
+ * `bunPtyProvider`'s native Terminal (which has no such method) still
+ * structurally satisfies this type.
  */
-export type PtyInstance = IPty;
+export type PtyInstance = IPty & { dispose?(): void };
 
 /**
  * PTY provider interface for dependency injection.
@@ -30,7 +37,9 @@ export interface PtyProvider {
 }
 
 /**
- * Default PtyProvider implementation using bun-pty.
+ * PtyProvider implementation using bun-pty (native shared library).
+ * This is a legacy/opt-in alternative to the default {@link bunTerminalProvider} --
+ * select it via `PTY_PROVIDER=bun-pty` (see `serverConfig.PTY_PROVIDER`).
  * Uses lazy initialization to defer native library loading until first spawn() call.
  * This allows the module to be imported in test environments without loading native code.
  *
@@ -98,6 +107,11 @@ class BunTerminalPtyAdapter implements IPty {
    * microtask both target the same listener. Set true on the first fire.
    */
   private exitFired = false;
+  /**
+   * Guards `dispose()` against double-close of the underlying Bun.Terminal.
+   * `dispose()` is called from multiple lifetime endpoints (see its JSDoc).
+   */
+  private disposed = false;
 
   constructor(args: {
     subprocess: Bun.Subprocess;
@@ -122,6 +136,7 @@ class BunTerminalPtyAdapter implements IPty {
   }
 
   private fireExit(exitCode: number): void {
+    this.dispose();
     if (this.exitFired) return;
     const listener = this.exitListener;
     if (!listener) return;
@@ -133,6 +148,24 @@ class BunTerminalPtyAdapter implements IPty {
       // POSIX signal name (e.g. 'SIGTERM') or null.
       signal: signal ?? undefined,
     });
+  }
+
+  /**
+   * Idempotent release of the underlying Bun.Terminal (the ptmx master-fd
+   * owner). Safe to call multiple times and from multiple lifetime endpoints
+   * — the constructor's subprocess.exited chain (primary owner, covers both
+   * natural exit and kill()-then-exit) and worker-manager's detachPty
+   * (backstop, covers the kill-timeout give-up path where exit was never
+   * confirmed).
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    try {
+      this.terminal.close();
+    } catch (err) {
+      logger.warn({ pid: this.pid, err }, 'Failed to close Bun.Terminal; ptmx fd may leak');
+    }
   }
 
   get process(): string {
@@ -266,9 +299,9 @@ export const bunTerminalProvider: PtyProvider = {
 export type PtyProviderName = 'bun-pty' | 'bun-terminal';
 
 /**
- * Resolve the configured `PtyProvider`. Defaults to {@link bunPtyProvider}
- * for backward compatibility. Set `PTY_PROVIDER=bun-terminal` to use
- * {@link bunTerminalProvider}.
+ * Resolve the configured `PtyProvider`. `serverConfig.PTY_PROVIDER` defaults
+ * to `'bun-terminal'` ({@link bunTerminalProvider}); set `PTY_PROVIDER=bun-pty`
+ * to opt into the legacy native-library implementation ({@link bunPtyProvider}).
  */
 export function getPtyProvider(name: PtyProviderName): PtyProvider {
   switch (name) {
