@@ -86,12 +86,17 @@ export interface EmbeddedAgentSnapshot {
    */
   handoffInFlight: boolean;
   /**
-   * Transcript Restore (#1123). Derived, not a persisted state machine:
-   * true once a `restore-info` message has been accepted for the CURRENT
-   * epoch AND the loop's `ready` event has not yet been observed in the
-   * replayed/live stream for that epoch. Always false when no restore
-   * happened for this worker's current incarnation (e.g. a first-ever
-   * activation never sends `restore-info` at all).
+   * Transcript Restore (#1123 / #1205). Server-authoritative: mirrors the
+   * `completed` field of the most recently accepted `restore-info` message
+   * for the current epoch (`restoring = completed === false`). A successful
+   * restore does NOT mint a new epoch (only a restore FAILURE does), so this
+   * can no longer be derived client-side from a local "have we folded the
+   * new incarnation's `ready` event yet" flag -- the server sends a second,
+   * `completed: true` `restore-info` push the moment the new incarnation's
+   * `ready` event is observed server-side, and that push is what flips this
+   * back to false. Always false when no restore happened for this worker's
+   * current incarnation (e.g. a first-ever activation never sends
+   * `restore-info` at all).
    */
   restoring: boolean;
   /**
@@ -217,8 +222,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private toolCallIndexByCallId = new Map<string, number>();
   private entryKeyCounter = 0;
 
-  // Transcript Restore (#1123) bookkeeping.
-  private readyObservedThisEpoch = false;
+  // Transcript Restore (#1123 / #1205) bookkeeping.
   private restoreRepairRenderedThisLoad = false;
 
   // Memory management (parity with terminal-store, minus the LRU cap -- the
@@ -529,7 +533,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // never updates this.epoch, so it is still correctly dropped here.
         this.acceptEpoch(message.epoch);
         if (this.epoch === message.epoch) {
-          this.applyRestoreInfo(message.messageCount, message.repairedToolCallIds);
+          this.applyRestoreInfo(message.messageCount, message.repairedToolCallIds, message.completed);
         }
         break;
       }
@@ -594,10 +598,12 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.openAssistantIndexByTurnId.clear();
     this.openThinkingIndexByTurnId.clear();
     this.toolCallIndexByCallId.clear();
-    // Transcript Restore (#1123): a fresh load re-derives `restoring` from
-    // whatever `restore-info` (re-)arrives afterward, and allows a
-    // redelivered restore-repair note to re-render against the wiped list.
-    this.readyObservedThisEpoch = false;
+    // Transcript Restore (#1123 / #1205): a fresh load re-derives `restoring`
+    // from whatever `restore-info` (re-)arrives afterward -- `restoring` is
+    // driven entirely by the next accepted restore-info's `completed` field
+    // (see `applyRestoreInfo`), so the reset here is just the initial value
+    // pending that message. Also allows a redelivered restore-repair note to
+    // re-render against the wiped list.
     this.restoreRepairRenderedThisLoad = false;
     this.patch({ entries: [], restoring: false, restoredMessageCount: null });
   }
@@ -625,14 +631,15 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       if (line.length === 0) continue;
       if (this.foldLine(line)) changed = true;
     }
-    // Transcript Restore (#1123): `restoring` only ever transitions
-    // true -> false within a fold pass, driven by a `ready` event folded
-    // just above flipping `readyObservedThisEpoch` mid-loop.
-    const restoring = this.readyObservedThisEpoch ? false : this.snapshot.restoring;
+    // Transcript Restore (#1123 / #1205): `restoring` is no longer derived
+    // from folding `ready` here -- it is driven exclusively by the
+    // `restore-info` message handler's `completed` field (see
+    // `applyRestoreInfo`), since a successful restore does not mint a new
+    // epoch and a `ready` fold can race `restore-info` in either order.
     if (changed || isFresh) {
-      this.patch({ loadingHistory: false, entries: [...this.snapshot.entries], restoring });
+      this.patch({ loadingHistory: false, entries: [...this.snapshot.entries] });
     } else {
-      this.patch({ loadingHistory: false, restoring });
+      this.patch({ loadingHistory: false });
     }
     // A `history` response that lands while an epoch resync is outstanding
     // completes that resync: replay whatever output arrived and was queued
@@ -660,19 +667,28 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   }
 
   /**
-   * Transcript Restore (#1123): apply a `restore-info` message (fast-path
-   * push or bootstrap re-delivery -- both call this the same way; the
-   * caller has already passed it through acceptEpoch). Idempotent about
+   * Transcript Restore (#1123 / #1205): apply a `restore-info` message
+   * (fast-path push or bootstrap re-delivery -- both call this the same way;
+   * the caller has already passed it through acceptEpoch). `restoring` is a
+   * direct, unconditional function of THIS message's `completed` field --
+   * server-authoritative, no local flag consulted -- because a successful
+   * restore does not mint a new epoch and the new incarnation's `ready`
+   * event can fold before or after `restore-info` arrives depending on the
+   * race (see the `restoring` snapshot doc comment). Idempotent about
    * re-delivery: `restoreRepairRenderedThisLoad` guards against pushing a
    * duplicate `restore-repair` entry on every reconnect during the same
    * incarnation, but IS reset by `resetChatState()` so a fresh reconnect
    * that wipes `entries` correctly re-renders it from the redelivered data.
    */
-  private applyRestoreInfo(messageCount: number, repairedToolCallIds: string[]): void {
-    const patch: Partial<EmbeddedAgentSnapshot> = { restoredMessageCount: messageCount };
-    if (!this.readyObservedThisEpoch) {
-      patch.restoring = true;
-    }
+  private applyRestoreInfo(
+    messageCount: number,
+    repairedToolCallIds: string[],
+    completed: boolean,
+  ): void {
+    const patch: Partial<EmbeddedAgentSnapshot> = {
+      restoredMessageCount: messageCount,
+      restoring: completed === false,
+    };
     if (repairedToolCallIds.length > 0 && !this.restoreRepairRenderedThisLoad) {
       this.restoreRepairRenderedThisLoad = true;
       this.pushEntry({
@@ -730,10 +746,13 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   private foldEvent(event: EmbeddedAgentStreamEvent): boolean {
     switch (event.type) {
       case 'ready':
-        // No rendering; init handshake completed. Also the "restoring"
-        // derived-state's other half (Transcript Restore #1123) -- see
-        // applyBytes's post-fold restoring recompute below.
-        this.readyObservedThisEpoch = true;
+        // No rendering; init handshake completed. `restoring` is NOT
+        // derived from this event (#1205) -- it is driven exclusively by
+        // the `restore-info` message's `completed` field, since a
+        // successful restore does not mint a new epoch and this event can
+        // fold before or after `restore-info` arrives depending on the
+        // race. Recognized-but-not-rendered, not an unknown type: no
+        // warning.
         return false;
       case 'state':
         // Activity is driven by the separate WorkerServerMessage {type:

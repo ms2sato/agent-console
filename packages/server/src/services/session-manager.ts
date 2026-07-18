@@ -595,7 +595,7 @@ export class SessionManager {
   getEmbeddedAgentRestoreInfo(
     _sessionId: string,
     workerId: string,
-  ): { epoch: number; messageCount: number; repairedToolCallIds: string[] } | null {
+  ): { epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null {
     return this.embeddedAgentWorkerService.getRestoreInfo(workerId);
   }
 

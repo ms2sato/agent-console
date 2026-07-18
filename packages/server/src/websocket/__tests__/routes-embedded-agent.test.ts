@@ -785,6 +785,9 @@ describe('Worker WebSocket: embedded-agent branch', () => {
       expect(restoreInfoMsg.messageCount).toBe(3); // system + user + assistant
       expect(restoreInfoMsg.repairedToolCallIds).toEqual([]);
       expect(typeof restoreInfoMsg.epoch).toBe('number');
+      // Issue #1205: the loop's `ready` event is not simulated in this test,
+      // so the pushed restore-info reflects the fast-path (pre-ready) state.
+      expect(restoreInfoMsg.completed).toBe(false);
     });
 
     it('re-delivers restore-info as bootstrap to a SECOND connection to the same already-activated worker', async () => {
@@ -805,6 +808,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
         .map((m) => JSON.parse(m))
         .find((m) => m.type === 'restore-info');
       expect(secondRestoreInfo.messageCount).toBe(3);
+      expect(secondRestoreInfo.completed).toBe(false);
     });
 
     it('does NOT push restore-info when there is nothing to restore (first-ever activation)', async () => {

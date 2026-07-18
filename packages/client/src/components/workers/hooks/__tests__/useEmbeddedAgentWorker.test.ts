@@ -133,7 +133,13 @@ describe('useEmbeddedAgentWorker', () => {
 
     act(() => {
       ws?.simulateMessage(
-        JSON.stringify({ type: 'restore-info', epoch: 1, messageCount: 5, repairedToolCallIds: [] }),
+        JSON.stringify({
+          type: 'restore-info',
+          epoch: 1,
+          messageCount: 5,
+          repairedToolCallIds: [],
+          completed: false,
+        }),
       );
     });
 

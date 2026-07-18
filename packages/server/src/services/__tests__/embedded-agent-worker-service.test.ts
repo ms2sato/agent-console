@@ -271,7 +271,7 @@ function setup(opts?: {
     onData: recorder.onData as unknown as (data: string, offset: number, epoch: number) => void,
     onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: 'managed' | 'unexpected') => void,
     onActivityChange: recorder.onActivityChange as unknown as (state: 'active' | 'idle' | 'asking' | 'unknown') => void,
-    onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { messageCount: number; repairedToolCallIds: string[] }) => void,
+    onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { messageCount: number; repairedToolCallIds: string[]; completed: boolean }) => void,
   });
 
   const service = new EmbeddedAgentWorkerService({
@@ -672,6 +672,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       expect(info!.epoch).toBe(h.worker.epoch);
       expect(info!.messageCount).toBe(3); // system + user + assistant
       expect(info!.repairedToolCallIds).toEqual([]);
+      expect(info!.completed).toBe(false);
     });
 
     it('returns null after a restore failure', async () => {
@@ -695,13 +696,17 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   });
 
   describe('fast-path push (onRestoreInfo)', () => {
-    it('invokes onRestoreInfo on already-attached connections when restore succeeds', async () => {
+    it('invokes onRestoreInfo on already-attached connections when restore succeeds, with completed: false (Issue #1205)', async () => {
       const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
 
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
-      expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({ messageCount: 3, repairedToolCallIds: [] });
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({
+        messageCount: 3,
+        repairedToolCallIds: [],
+        completed: false,
+      });
     });
 
     it('does NOT invoke onRestoreInfo when restore fails', async () => {
@@ -718,6 +723,46 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('restore completion on ready (Issue #1205)', () => {
+    it('flips getRestoreInfo().completed to true and re-pushes onRestoreInfo exactly once when the loop reports ready', async () => {
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      // (a) immediately after a successful restore, completed is false.
+      expect(h.service.getRestoreInfo(h.workerId)?.completed).toBe(false);
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
+
+      // (b) once the loop's `ready` event is processed, completed flips true
+      // and the connection is poked again.
+      h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+      await waitFor(() => h.service.getRestoreInfo(h.workerId)?.completed === true);
+
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(2);
+      expect(h.recorder.onRestoreInfo).toHaveBeenNthCalledWith(2, {
+        messageCount: 3,
+        repairedToolCallIds: [],
+        completed: true,
+      });
+
+      // (c) a duplicate `ready` is a safe no-op -- no further push.
+      h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+      await waitFor(() => appendedLines(h.bufferOutput).filter((l) => l === '{"v":1,"type":"ready"}').length === 2);
+
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(2);
+    });
+
+    it('does NOT invoke onRestoreInfo on ready when there was nothing to restore (first-ever activation)', async () => {
+      const h = setup({ everActivated: false });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+      await waitFor(() => appendedLines(h.bufferOutput).includes('{"v":1,"type":"ready"}'));
+
+      expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
+      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
     });
   });
 });
