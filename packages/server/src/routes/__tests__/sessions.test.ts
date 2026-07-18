@@ -469,6 +469,7 @@ describe('Sessions API - POST /api/sessions (embeddedAgentId pre-validation)', (
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,
       },
+      mcpTokenRegistry: new McpTokenRegistry(),
     });
 
     app = new Hono<AppBindings>();
