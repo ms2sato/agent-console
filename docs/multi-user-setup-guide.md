@@ -1108,6 +1108,45 @@ Passing the current process user as `<target-user>` runs in a degenerate
 same-user mode where `spawnAsUser` bypasses elevation — this still exercises
 the full Bash tool-call round trip except the actual OS-boundary crossing.
 
+### PTY master fd leak check
+
+Run after every deploy that touches `packages/server/src/lib/pty-provider.ts`
+or `packages/server/src/services/worker-manager.ts`'s `detachPty` (unlike the
+other smokes above, this one is not privilege-elevation-specific -- it
+verifies a resource-lifecycle contract of the default `bunTerminalProvider`):
+
+```bash
+bun run check:pty-fd-leak
+```
+
+What it verifies: `bunTerminalProvider` wraps `Bun.spawn({ terminal: ... })`,
+whose returned `Bun.Terminal` handle owns the PTY master fd (`/dev/ptmx`).
+Bun's native binding appears to release the fd via a GC finalizer once the
+`Bun.Terminal` wrapper becomes unreachable, but production `InternalPtyWorker`
+objects stay reachable (referenced via session/worker maps) for the life of
+the worker, so incidental GC is not a reliable release path -- only an
+explicit `Bun.Terminal.close()` call deterministically releases it.
+`BunTerminalPtyAdapter.dispose()` performs that release and is wired into
+both the adapter's own
+`subprocess.exited`-triggered exit path and `WorkerManager.detachPty` (a
+backstop for the case where a killed PTY's exit was never confirmed within
+the kill timeout). The smoke runs 100 spawn/kill cycles through the
+production `bunTerminalProvider` and asserts that both the process's own
+ptmx-fd count (`/proc/self/fd`) and the kernel-wide allocated-pty counter
+(`/proc/sys/kernel/pty/nr`) are flat (non-increasing) across the run,
+confirming the master fd is actually released rather than merely
+believed-released. See Issue #1196.
+
+Exit codes: `0` all assertions passed, `1` an assertion failed (a leak was
+observed), `2` bad usage / cannot run (non-Linux; the check depends on
+`/proc`).
+
+This smoke is scoped to `bunTerminalProvider` (the default `PTY_PROVIDER`).
+The legacy native `bunPtyProvider` (`PTY_PROVIDER=bun-pty`) has a
+similar-shaped leak on natural process exit, but rather than a standalone
+fix, `bun-pty` itself is slated for full removal (Issue #828), which deletes
+the leaky code path entirely -- out of scope here.
+
 ## Local Multi-User Dev Mode
 
 `scripts/dev-multiuser.sh` (also runnable as `bun run dev:multiuser`) starts

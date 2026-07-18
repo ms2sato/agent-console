@@ -958,10 +958,21 @@ export class WorkerManager {
   }
 
   /**
-   * Detach a PTY worker's PTY reference (set to null).
-   * Used after killing the PTY to ensure persisted worker PIDs are saved as null.
+   * Detach a PTY worker's PTY reference (set to null) and dispose the
+   * underlying PTY resource. Used after killing the PTY to ensure persisted
+   * worker PIDs are saved as null.
+   *
+   * `dispose()` is a backstop here, not the primary release path: for
+   * `BunTerminalPtyAdapter`, `dispose()` already ran as part of the adapter's
+   * own `subprocess.exited`-triggered `fireExit()` on the common paths (both
+   * unexpected exit and managed kill followed by confirmed exit), so this
+   * call is typically a no-op idempotent re-check. It matters for the
+   * kill-timeout give-up path in `killWorker`, where the PTY did not confirm
+   * exit before the timeout elapsed -- calling `dispose()` there forcibly
+   * releases the Bun.Terminal master fd instead of leaking it.
    */
   detachPty(worker: InternalPtyWorker): void {
+    worker.pty?.dispose?.();
     worker.pty = null;
   }
 

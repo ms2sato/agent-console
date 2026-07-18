@@ -20,6 +20,8 @@ export class MockPty {
   private dataCallback: ((data: string) => void) | null = null;
   private exitCallback: ((event: { exitCode: number; signal?: number }) => void) | null = null;
   killed = false;
+  /** Set true when dispose() is called. Mirrors PtyInstance's optional dispose(). */
+  disposed = false;
   writtenData: string[] = [];
   currentCols = 120;
   currentRows = 30;
@@ -76,6 +78,11 @@ export class MockPty {
         }
       });
     }
+  }
+
+  /** Mirrors PtyInstance's optional dispose() so detachPty wiring is assertable. */
+  dispose() {
+    this.disposed = true;
   }
 
   // Test helpers - simulate PTY events

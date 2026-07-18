@@ -40,6 +40,10 @@ When modifying production files matching these patterns, corresponding test file
 
 PRs touching `packages/client/src/lib/preview-sandbox.ts`, `packages/client/src/lib/__fixtures__/preview-sandbox-corpus.ts`, or `packages/client/src/components/workers/PreviewPanel.tsx` must run `bun run check:preview-sandbox-browser` locally before pushing. This runs `scripts/run-preview-sandbox-browser-check.mjs`, which re-verifies the mXSS regression corpus against a real Chromium browser — `bun:test`'s happy-dom environment does not reproduce Chromium's HTML5 parsing edge cases (see `.claude/rules/os-environment-coupling.md`). This check is a real-browser regression gate, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
 
+## Additional Verification: PTY Master FD Leak Check
+
+PRs touching `packages/server/src/lib/pty-provider.ts` or `packages/server/src/services/worker-manager.ts`'s `detachPty` must run `bun run check:pty-fd-leak` locally before pushing. This runs `scripts/smoke/check-pty-fd-leak.ts`, which drives 100 real spawn/kill cycles through the production `bunTerminalProvider` and asserts that the process's ptmx-fd count (`/proc/self/fd`) and the kernel-wide allocated-pty counter (`/proc/sys/kernel/pty/nr`) stay flat — confirming `BunTerminalPtyAdapter.dispose()` actually releases the `Bun.Terminal` master-fd handle deterministically, rather than relying on the object becoming unreachable and incidentally GC-finalized (unsound in production, where `InternalPtyWorker.pty` stays reachable via session/worker maps for the life of the worker) (see Issue #1196). This check is a real-fd regression gate, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
+
 ## Before Creating a PR
 
 Run the coverage check to verify all production files have corresponding tests:

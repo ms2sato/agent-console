@@ -304,5 +304,43 @@ describe('pty-provider', () => {
       const _check: PtyProvider = bunTerminalProvider;
       expect(typeof _check.spawn).toBe('function');
     });
+
+    describe('BunTerminalPtyAdapter dispose (Issue #1196)', () => {
+      it('closes the underlying Bun.Terminal exactly once when subprocess.exited resolves', async () => {
+        bunTerminalProvider.spawn('sh', [], {});
+
+        mockSubprocess._resolveExited(0);
+        await mockSubprocess.exited;
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mockTerminal.close).toHaveBeenCalledTimes(1);
+      });
+
+      it('manual dispose() before exit, followed by exit resolving, closes exactly once total', async () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+
+        // dispose() is public on BunTerminalPtyAdapter, but not part of the
+        // bun-pty IPty surface -- PtyInstance widens it as optional.
+        pty.dispose?.();
+        expect(mockTerminal.close).toHaveBeenCalledTimes(1);
+
+        mockSubprocess._resolveExited(0);
+        await mockSubprocess.exited;
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(mockTerminal.close).toHaveBeenCalledTimes(1);
+      });
+
+      it('dispose() called twice in a row closes the terminal exactly once', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+
+        pty.dispose?.();
+        pty.dispose?.();
+
+        expect(mockTerminal.close).toHaveBeenCalledTimes(1);
+      });
+    });
   });
 });
