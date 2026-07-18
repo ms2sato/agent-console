@@ -144,4 +144,43 @@ describe('loadHandoffPrompt — unreadable-but-existing file falls through', () 
       warnSpy.mockRestore();
     }
   });
+
+  it('warn-logs and falls through to global when the repo read rejects with a non-errno-shaped error (no code property)', async () => {
+    // Exercises tryReadTextFile's isErrnoException guard on a rejection that
+    // is NOT errno-shaped at all (a plain Error, no `code`): the code must
+    // fall back to 'UNKNOWN', which is treated as "exists but unreadable"
+    // (not ENOENT) and so still warn-logs and falls through, same as EACCES.
+    const cwd = await makeTempDir();
+    await mkdir(join(cwd, '.agent-console'), { recursive: true });
+    const repoPath = join(cwd, '.agent-console', 'handoff-prompt.md');
+
+    const xdgConfigHome = await makeTempDir();
+    const globalDir = join(xdgConfigHome, 'agent-console');
+    await mkdir(globalDir, { recursive: true });
+    await writeFile(join(globalDir, 'handoff-prompt.md'), 'GLOBAL_FALLBACK');
+
+    const originalBunFile = Bun.file.bind(Bun);
+    const fileSpy = spyOn(Bun, 'file').mockImplementation((filePath: unknown, ...rest: unknown[]) => {
+      if (filePath === repoPath) {
+        return { text: () => Promise.reject(new Error('boom, no code property here')) } as ReturnType<
+          typeof Bun.file
+        >;
+      }
+      return (originalBunFile as (...args: unknown[]) => ReturnType<typeof Bun.file>)(
+        filePath,
+        ...rest,
+      );
+    });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadHandoffPrompt({ cwd, xdgConfigHome });
+
+      expect(result).toEqual({ content: 'GLOBAL_FALLBACK', origin: 'global' });
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes(repoPath))).toBe(true);
+    } finally {
+      fileSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
 });

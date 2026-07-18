@@ -5,9 +5,12 @@
  * Mirrors `packages/server/src/lib/type-guards.ts`. Duplicated (rather than
  * imported) because `packages/server` depends on `@agent-console/embedded-agent`
  * (see `packages/server/package.json`), so the reverse import direction would
- * be circular. `packages/embedded-agent` does not depend on `@agent-console/shared`
- * beyond types, so this small structural helper is kept local instead of
- * promoting it to the shared package for a single call site.
+ * be circular. Promoting this to `@agent-console/shared` was considered instead,
+ * but the `NodeJS.ErrnoException` return type would leak the `NodeJS` namespace
+ * into `shared`'s `.d.ts`, which the client package also consumes — undesirable
+ * for a type only meaningful on the Node/Bun side. If a third consumer needs
+ * this guard, revisit promoting a structural variant (`err is { code?: string }`,
+ * no `NodeJS` namespace dependency) to `shared` instead of duplicating again.
  */
 
 /**
