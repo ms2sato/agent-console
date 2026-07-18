@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { Hono } from 'hono';
 import { onApiError } from '../../lib/error-handler.js';
 import { api } from '../api.js';
@@ -411,6 +411,105 @@ describe('Sessions API - POST /api/sessions (repository_not_found)', () => {
     // Message must mention the missing repository so operators can diagnose.
     expect(body.error).toContain('Repository not found');
     expect(body.error).toContain('unknown-repo-id');
+
+    // No row may have been persisted as a side-effect.
+    const persisted = await sessionManager.getSessionRepository().findAll();
+    expect(persisted).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// POST /api/sessions — embeddedAgentId pre-validation (Issue #1060)
+// ===========================================================================
+//
+// Mirrors POST /api/repositories/:id/worktrees' pre-validation (see
+// worktrees.test.ts "Issue #1038 embedded-agent selection"): a dangling
+// embeddedAgentId must be rejected with a 400 before any async side effect
+// (session creation) runs.
+describe('Sessions API - POST /api/sessions (embeddedAgentId pre-validation)', () => {
+  let app: Hono<AppBindings>;
+  let sessionManager: SessionManager;
+  let testJobQueue: JobQueue;
+
+  beforeEach(async () => {
+    await closeDatabase();
+
+    setupMemfs({
+      [`${TEST_CONFIG_DIR}/.keep`]: '',
+      ['/test/path/.keep']: '',
+    });
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
+
+    await initializeDatabase(':memory:');
+
+    testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
+    registerJobHandlers(testJobQueue, new WorkerOutputFileManager());
+
+    resetProcessMock();
+    mockProcess.markAlive(process.pid);
+
+    ptyFactory.reset();
+
+    const db = getDatabase();
+    const agentMgr = await AgentManager.create(new SqliteAgentRepository(db));
+
+    const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
+
+    sessionManager = await SessionManager.create({
+      userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+      pathExists: async () => true,
+      sessionRepository,
+      jobQueue: testJobQueue,
+      agentManager: agentMgr,
+      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryEnvLookup: {
+        getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
+        getWorktreeIndexNumber: async () => 0,
+      },
+    });
+
+    app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', asAppContext({
+        sessionManager,
+        embeddedAgentManager: {
+          getEmbeddedAgent: mock(() => undefined),
+        } as unknown as Parameters<typeof asAppContext>[0]['embeddedAgentManager'],
+      }));
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/api', api);
+  });
+
+  afterEach(async () => {
+    await testJobQueue.stop();
+    await closeDatabase();
+    cleanupMemfs();
+    resetProcessMock();
+  });
+
+  it('returns 400 when embeddedAgentId references an unknown embedded agent', async () => {
+    const createSessionSpy = spyOn(sessionManager, 'createSession');
+
+    const res = await app.request('/api/sessions', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        type: 'quick',
+        locationPath: '/test/path',
+        embeddedAgentId: 'dangling-embedded-agent',
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('Embedded agent not found: dangling-embedded-agent');
+
+    // The pre-validation must short-circuit before sessionManager.createSession
+    // is ever invoked -- no async side effect (session insertion, worker
+    // creation) may have run.
+    expect(createSessionSpy).not.toHaveBeenCalled();
 
     // No row may have been persisted as a side-effect.
     const persisted = await sessionManager.getSessionRepository().findAll();
