@@ -127,8 +127,8 @@ export function CreateWorktreeForm({
         // shouldUnregister: true, reset(merged, { keepDefaultValues: true })
         // does not reliably populate react-hook-form's internal _formValues
         // for register()-bound fields (e.g. sessionTitle) -- reproducible
-        // independent of React StrictMode (Issue #1187). setValue is the
-        // mechanism already proven correct here for the non-register()-bound
+        // independent of React StrictMode. setValue is the mechanism already
+        // proven correct here for the non-register()-bound
         // agentId/embeddedAgentId fields, so it is used uniformly for every
         // draft key.
         for (const key of Object.keys(draft) as Array<keyof CreateWorktreeFormData>) {
