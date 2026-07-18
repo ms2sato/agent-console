@@ -5,6 +5,7 @@ import {
   CreateWorktreeSessionRequestSchema,
   CreateQuickSessionRequestSchema,
   UpdateSessionRequestSchema,
+  RestoreInfoMessageSchema,
 } from '../session';
 
 describe('CreateWorktreeSessionRequestSchema', () => {
@@ -543,6 +544,87 @@ describe('UpdateSessionRequestSchema', () => {
       branch: 'feature/test',
     });
     // The schema is a strictObject: unknown keys are rejected, not stripped.
+    expect(result.success).toBe(false);
+  });
+});
+
+describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
+  it('accepts a valid restore-info message', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 42,
+      messageCount: 5,
+      repairedToolCallIds: ['call-1', 'call-2'],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({
+        type: 'restore-info',
+        epoch: 42,
+        messageCount: 5,
+        repairedToolCallIds: ['call-1', 'call-2'],
+      });
+    }
+  });
+
+  it('accepts an empty repairedToolCallIds array (no repair needed)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 1,
+      messageCount: 0,
+      repairedToolCallIds: [],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a wrong literal type', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'history',
+      epoch: 1,
+      messageCount: 0,
+      repairedToolCallIds: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a negative epoch', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: -1,
+      messageCount: 0,
+      repairedToolCallIds: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a fractional messageCount', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 1,
+      messageCount: 1.5,
+      repairedToolCallIds: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-string entry in repairedToolCallIds', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 1,
+      messageCount: 1,
+      repairedToolCallIds: [42],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown field (strictObject)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 1,
+      messageCount: 0,
+      repairedToolCallIds: [],
+      unexpectedField: 'leaked',
+    });
     expect(result.success).toBe(false);
   });
 });

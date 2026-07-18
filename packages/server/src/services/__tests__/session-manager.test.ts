@@ -742,6 +742,13 @@ describe('SessionManager', () => {
       await expect(manager.deactivateEmbeddedAgentWorker(sessionId, workerId)).resolves.toBeUndefined();
     });
 
+    it('getEmbeddedAgentRestoreInfo returns null for a never-activated worker (facade delegation, Transcript Restore #1123)', async () => {
+      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      expect(manager.getEmbeddedAgentRestoreInfo(sessionId, workerId)).toBeNull();
+    });
+
     it('activateEmbeddedAgentWorker rejects when the definition was deleted after creation', async () => {
       const defs = new Map([['stub-def', STUB_DEF]]);
       const manager = await createManagerWithEmbedded(defs);

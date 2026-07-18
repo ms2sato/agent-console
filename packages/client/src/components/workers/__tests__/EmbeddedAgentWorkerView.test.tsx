@@ -143,8 +143,8 @@ describe('EmbeddedAgentWorkerView', () => {
     });
     await flush();
 
-    // The persistent amber notice text ("Conversation resets...") stays --
-    // only the removed per-view status row's exact labels are asserted absent.
+    // The persistent amber notice text ("Conversation is restored...") stays
+    // -- only the removed per-view status row's exact labels are asserted absent.
     expect(screen.queryByText('Connecting...')).toBeNull();
     expect(screen.queryByText('Connected')).toBeNull();
     expect(screen.queryByText('Disconnected')).toBeNull();
@@ -160,20 +160,18 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.queryByText('Working...')).toBeNull();
   });
 
-  it('always renders the persistent reset-on-restart note', () => {
+  it('always renders the persistent transcript-restore note', () => {
     renderView({ sessionId: 's1', workerId: 'w1' });
 
     expect(
-      screen.getByText(/Conversation resets when this worker or the server restarts/i),
+      screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
     ).toBeTruthy();
   });
 
   it('always renders the experimental-agent notice', () => {
     renderView({ sessionId: 's1c', workerId: 'w1c' });
 
-    expect(
-      screen.getByText('This is an experimental Embedded Agent. Restart resets the conversation.'),
-    ).toBeTruthy();
+    expect(screen.getByText('This is an experimental Embedded Agent.')).toBeTruthy();
   });
 
   it('mounts MessagePanel with an accessible name for the message input', () => {
@@ -1925,6 +1923,67 @@ describe('EmbeddedAgentWorkerView', () => {
 
         expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
       });
+    });
+  });
+
+  describe('Transcript Restore (#1123)', () => {
+    it('renders a restore-repair note (closed by default) when restore-info carries repairedToolCallIds', async () => {
+      renderView({ sessionId: 's-restore-1', workerId: 'w-restore-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: ['call-1', 'call-2'],
+          }),
+        );
+      });
+      await flush();
+
+      const summary = screen.getByText(
+        '— Some tool calls were interrupted by a restart and marked as errors —',
+      );
+      const details = summary.closest('details') as HTMLDetailsElement;
+      expect(details).toBeTruthy();
+      expect(details.open).toBe(false);
+      expect(screen.getByText('2 tool calls affected.')).toBeTruthy();
+    });
+
+    it('shows the "Restoring conversation..." banner while restoring is true, and hides it once cleared', async () => {
+      renderView({ sessionId: 's-restore-2', workerId: 'w-restore-2' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'restore-info', epoch: 1, messageCount: 5, repairedToolCallIds: [] }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByText('Restoring conversation from 5 previous messages...')).toBeTruthy();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'ready' });
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }),
+        );
+      });
+      await flush();
+
+      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
     });
   });
 });

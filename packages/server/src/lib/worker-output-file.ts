@@ -851,6 +851,31 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Whether a worker has ever been activated, i.e. whether a manifest has
+   * ever been written for it. Distinguishes "manifest missing" (`ENOENT` --
+   * genuinely first-ever activation, nothing to restore) from any OTHER stat
+   * failure (permission error, filesystem corruption, etc.), which is treated
+   * CONSERVATIVELY as "yes, assume activated" so the caller routes through
+   * the restore-attempt path instead of taking a destructive
+   * first-activation shortcut. Used by EmbeddedAgentWorkerService.runActivation
+   * (Transcript Restore, #1123) to decide between the two branches -- see
+   * docs/design/embedded-agent-worker.md "Transcript Restore".
+   *
+   * Read-only existence check: does not join the per-worker serialization
+   * domain (no interaction with pending-flush/segment-cache state).
+   */
+  async hasEverBeenActivated(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<boolean> {
+    const manifestPath = this.getManifestPath(sessionId, workerId, resolver);
+    try {
+      await fs.stat(manifestPath);
+      return true;
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') return false;
+      return true;
+    }
+  }
+
+  /**
    * Serve a backwards history range: the bytes ending at (strictly before)
    * absolute `beforeOffset`, clamped to ONE storage unit (a single archived
    * segment or the live window) and to `min(maxBytes, rangeMaxBytes)` (§5.1/§5.2).
@@ -1065,7 +1090,12 @@ export class WorkerOutputFileManager {
    * genuinely restarts at 0 under a new generation. Runs inside the domain so it
    * is atomic with respect to in-flight flushes.
    */
-  async resetWorkerOutput(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<number> {
+  async resetWorkerOutput(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    opts?: { preserveToSidecar?: boolean },
+  ): Promise<number> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
       // Drop any pending flush without writing it, and the cached segment (the
@@ -1093,6 +1123,22 @@ export class WorkerOutputFileManager {
 
       try {
         await fs.mkdir(dir, { recursive: true });
+
+        if (opts?.preserveToSidecar) {
+          const sidecarPath = path.join(dir, `${workerId}.restore-failed.log`);
+          try {
+            await fs.rename(filePath, sidecarPath);
+          } catch (err) {
+            // Best-effort, never blocking -- proceed with the reset regardless
+            // (Transcript Restore's "Failure invariant (restore)": "preserve
+            // when possible, never let preservation block or replace the
+            // reset").
+            logger.warn(
+              { sessionId, workerId, err },
+              'Failed to preserve restore-failed sidecar (best-effort, proceeding with reset)',
+            );
+          }
+        }
 
         // Delete existing content: live file, legacy compressed, and all segments.
         await this.deleteContentFiles(dir, sessionId, workerId, resolver, oldManifest);

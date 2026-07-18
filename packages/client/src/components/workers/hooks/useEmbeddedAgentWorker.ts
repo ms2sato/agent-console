@@ -21,6 +21,10 @@ interface UseEmbeddedAgentWorkerReturn {
   loadingHistory: boolean;
   contextUsage: EmbeddedAgentContextUsage | null;
   handoffInFlight: boolean;
+  /** Transcript Restore (#1123). See `EmbeddedAgentSnapshot.restoring` doc comment. */
+  restoring: boolean;
+  /** Transcript Restore (#1123). See `EmbeddedAgentSnapshot.restoredMessageCount` doc comment. */
+  restoredMessageCount: number | null;
   sendUserMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restart: () => void;
@@ -87,6 +91,8 @@ export function useEmbeddedAgentWorker(
     loadingHistory: snapshot.loadingHistory,
     contextUsage: snapshot.contextUsage,
     handoffInFlight: snapshot.handoffInFlight,
+    restoring: snapshot.restoring,
+    restoredMessageCount: snapshot.restoredMessageCount,
     sendUserMessage,
     cancel,
     restart,

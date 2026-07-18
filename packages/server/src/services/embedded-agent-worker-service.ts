@@ -23,9 +23,12 @@ import {
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
   type EmbeddedAgentServerEvent,
+  type EmbeddedAgentRestoredMessage,
   type AgentActivityState,
   type ExitReason,
 } from '@agent-console/shared';
+import { loadInstructions, assembleSystemPrompt } from '@agent-console/embedded-agent/src/system-prompt.js';
+import { reconstructConversation, RestoreReconstructionError } from '@agent-console/embedded-agent/src/restore.js';
 import type { InternalSession } from './internal-types.js';
 import type { InternalEmbeddedAgentWorker } from './worker-types.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
@@ -164,7 +167,10 @@ export interface EmbeddedAgentWorkerServiceDeps {
   getEmbeddedAgent: (id: string) => EmbeddedAgentDefinition | undefined;
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
   mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
-  workerOutputFileManager: Pick<WorkerOutputFileManager, 'resetWorkerOutput' | 'bufferOutput'>;
+  workerOutputFileManager: Pick<
+    WorkerOutputFileManager,
+    'resetWorkerOutput' | 'bufferOutput' | 'readHistoryWithOffset' | 'hasEverBeenActivated'
+  >;
   /** MCP Streamable-HTTP base URL delivered to the loop in the init message. */
   getMcpBaseUrl: () => string;
   /** Test seam for the provider-key loader. */
@@ -199,6 +205,8 @@ interface Runtime {
   streamsDone: Promise<void>;
   /** Resolves after the exit observer finished all cleanup (append/revoke/persist/fire). */
   exitSettled: Promise<void>;
+  /** Transcript Restore (#1123): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null when restore did not fire (first-ever activation or restore failure). */
+  restoreInfo: { messageCount: number; repairedToolCallIds: string[] } | null;
 }
 
 type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
@@ -248,6 +256,20 @@ export class EmbeddedAgentWorkerService {
     });
     this.activations.set(workerId, p);
     return p;
+  }
+
+  /**
+   * Transcript Restore (#1123) bootstrap re-delivery: the current
+   * incarnation's restore result (if any), combined with the worker's
+   * current epoch (unchanged since restore success never mints a new one).
+   * Called by routes.ts for EVERY new WS connection during the incarnation,
+   * not just the one that triggered activation -- see
+   * docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
+   */
+  getRestoreInfo(workerId: string): { epoch: number; messageCount: number; repairedToolCallIds: string[] } | null {
+    const runtime = this.runtimes.get(workerId);
+    if (!runtime || runtime.restoreInfo === null) return null;
+    return { epoch: runtime.ctx.worker.epoch, ...runtime.restoreInfo };
   }
 
   /**
@@ -311,15 +333,90 @@ export class EmbeddedAgentWorkerService {
     // never runs when the subprocess failed to spawn or was never observed.
     let spawned: PipedSubprocess | null = null;
     try {
-      // Step 4: reset the output stream (every activation is restart-semantics in v1).
+      // Step 4: attempt restore before resetting (Transcript Restore, #1123),
+      // unless this is the worker's first-ever activation (nothing to
+      // restore). `hasEverBeenActivated` (not getCurrentOffset) is the
+      // first-ever-activation check because getCurrentOffset conflates
+      // "manifest never created" (genuinely nothing to restore) with "manifest
+      // read failed for some other reason" (both return 0) -- a transient I/O
+      // error on an EXISTING worker with real transcript history would
+      // otherwise take the destructive first-activation branch below WITHOUT
+      // sidecar preservation. hasEverBeenActivated distinguishes ENOENT
+      // (genuinely first-ever) from any other stat failure (conservatively
+      // routed through the restore-attempt branch, which re-hits the same
+      // underlying error and correctly falls into the failure-with-sidecar
+      // path instead).
       const resolver = this.deps.getPathResolver(session);
-      const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(
+      let restoredConversation: EmbeddedAgentRestoredMessage[] | undefined;
+      let restoreInfo: { messageCount: number; repairedToolCallIds: string[] } | null = null;
+      const restoreContext = {
         sessionId,
         workerId,
-        resolver,
-      );
-      worker.epoch = newEpoch;
-      worker.outputOffset = 0;
+        ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
+        cwd: session.locationPath,
+      };
+      const everActivated = await this.deps.workerOutputFileManager.hasEverBeenActivated(sessionId, workerId, resolver);
+      if (!everActivated) {
+        // First-ever activation: nothing to restore, proceed with today's v1 reset unconditionally.
+        const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
+        worker.epoch = newEpoch;
+        worker.outputOffset = 0;
+      } else {
+        try {
+          const {
+            data: streamText,
+            offset: currentOffset,
+            epoch: currentEpoch,
+          } = await this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver);
+          if (streamText.trim() === '') {
+            throw new Error('Persisted stream read returned empty despite a non-zero current offset (read failure)');
+          }
+          const instructions = await loadInstructions({ cwd: session.locationPath, instructionsList: definition.instructions });
+          const systemPrompt = assembleSystemPrompt({
+            context: restoreContext,
+            instructions,
+            definitionSystemPrompt: definition.systemPrompt,
+          });
+          const outcome = reconstructConversation(streamText, systemPrompt);
+          restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
+          restoreInfo = { messageCount: outcome.conversation.length, repairedToolCallIds: outcome.repairedToolCallIds };
+          // 4e: success -- skip resetWorkerOutput entirely. No new epoch, no
+          // truncate. But the in-memory worker object may be stale relative to
+          // the on-disk manifest (e.g. freshly reconstructed by WorkerManager
+          // after a server restart, with default epoch/outputOffset values
+          // independent of the manifest's actual current generation), so it
+          // must be explicitly synced to the manifest's real current
+          // coordinates here rather than assumed already correct.
+          worker.epoch = currentEpoch;
+          worker.outputOffset = currentOffset;
+        } catch (err) {
+          const isKnownRestoreFailure = err instanceof RestoreReconstructionError;
+          logger.warn(
+            { sessionId, workerId, err, knownRestoreFailure: isKnownRestoreFailure },
+            'Transcript restore failed; falling back to v1 reset (preserving pre-reset log to sidecar)',
+          );
+          const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver, {
+            preserveToSidecar: true,
+          });
+          worker.epoch = newEpoch;
+          worker.outputOffset = 0;
+        }
+      }
+
+      // Transcript Restore (#1123) fast-path push: broadcast to any
+      // currently-attached connections BEFORE the subprocess spawns. This
+      // reaches zero listeners in the common case (the triggering
+      // connection's own callbacks aren't attached until after activate()
+      // resolves) -- bootstrap re-delivery (getRestoreInfo, consumed by
+      // routes.ts) is the authoritative path; this is a best-effort UX win
+      // for OTHER already-open tabs watching this worker.
+      if (restoreInfo !== null) {
+        const info = restoreInfo;
+        const snapshot = Array.from(worker.connectionCallbacks.values());
+        for (const cb of snapshot) {
+          cb.onRestoreInfo?.(info);
+        }
+      }
 
       // Step 5: spawn as the requesting OS user. The command carries NO secrets
       // (token / provider key travel only in the stdin init line) and NO env.
@@ -345,16 +442,12 @@ export class EmbeddedAgentWorkerService {
           model: definition.provider.model,
           ...(apiKey !== undefined ? { apiKey } : {}),
         },
-        context: {
-          sessionId,
-          workerId,
-          ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
-          cwd: session.locationPath,
-        },
+        context: restoreContext,
         ...(definition.systemPrompt !== undefined ? { systemPrompt: definition.systemPrompt } : {}),
         ...(definition.enabledTools !== undefined ? { enabledTools: definition.enabledTools } : {}),
         ...(definition.instructions !== undefined ? { instructions: definition.instructions } : {}),
         maxToolIterations: definition.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS,
+        ...(restoredConversation !== undefined ? { restoredConversation } : {}),
       };
       this.writeCommand(stdin, initCommand);
 
@@ -366,6 +459,7 @@ export class EmbeddedAgentWorkerService {
         consecutiveParseFailures: 0,
         streamsDone: Promise.resolve(),
         exitSettled: Promise.resolve(),
+        restoreInfo,
       };
       this.runtimes.set(workerId, runtime);
 

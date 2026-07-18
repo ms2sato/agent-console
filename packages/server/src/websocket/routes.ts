@@ -665,6 +665,14 @@ export async function setupWebSocketRoutes(
           onActivityChange: (state: AgentActivityState) => {
             sender?.send({ type: 'activity', state });
           },
+          // Transcript Restore (#1123) fast-path push -- see
+          // EmbeddedAgentWorkerService. Reads the current epoch at send-time
+          // (via getEmbeddedAgentRestoreInfo) rather than trusting the
+          // callback's own info, so a stale epoch can never be sent.
+          onRestoreInfo: () => {
+            const info = sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
+            if (info) sender?.send({ type: 'restore-info', ...info });
+          },
         });
 
         // Store connection metadata for cleanup in onClose/onError
@@ -693,6 +701,17 @@ export async function setupWebSocketRoutes(
           const activityState = sessionManager.getWorkerActivityState(sessionId, workerId);
           if (activityState) {
             sender?.send({ type: 'activity', state: activityState });
+          }
+        }
+
+        // Transcript Restore (#1123) bootstrap re-delivery: authoritative
+        // path, fires for EVERY connection during the incarnation's
+        // lifetime (not just the one that triggered activation) -- see
+        // docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
+        if (workerType === 'embedded-agent' && !connectionClosed) {
+          const restoreInfo = sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
+          if (restoreInfo) {
+            sender?.send({ type: 'restore-info', ...restoreInfo });
           }
         }
 

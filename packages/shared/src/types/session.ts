@@ -173,6 +173,7 @@ export const WORKER_SERVER_MESSAGE_TYPES = {
   // (terminal-history-paging.md §3.2).
   'server-restarted': 7,
   'history-range': 8,
+  'restore-info': 9,
 } as const;
 
 export type WorkerServerMessageType = keyof typeof WORKER_SERVER_MESSAGE_TYPES;
@@ -216,7 +217,18 @@ export type WorkerServerMessage =
       hasMore: boolean;
       epoch: number;
     }
-  | { type: 'server-restarted'; serverPid: number };  // Server was restarted, client should invalidate cache
+  | { type: 'server-restarted'; serverPid: number }  // Server was restarted, client should invalidate cache
+  // Transcript Restore (#1123). Sent ONLY when an activation's restore
+  // succeeded (never on restore failure / first-ever activation — silent
+  // v1-parity degradation in both those cases). Dual delivery: (a) a
+  // fast-path push to currently-attached connections right after
+  // reconstitution completes (before the subprocess spawns), and (b)
+  // bootstrap re-delivery to EVERY new connection for the lifetime of the
+  // incarnation (alongside its initial `history` response) -- see
+  // docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
+  // `epoch` is a cross-incarnation staleness guard: the client feeds it
+  // through the same acceptEpoch gate `history`/`output` already use.
+  | { type: 'restore-info'; epoch: number; messageCount: number; repairedToolCallIds: string[] };
 
 export interface WorkerActivityInfo {
   sessionId: string;

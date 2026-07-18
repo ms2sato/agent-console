@@ -62,6 +62,7 @@ export {
   CreateSessionRequestSchema,
   UpdateSessionRequestSchema,
   DeleteSessionRequestSchema,
+  RestoreInfoMessageSchema,
   branchNamePattern,
   branchNameErrorMessage,
   type CreateWorktreeSessionRequest,

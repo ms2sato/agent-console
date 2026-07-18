@@ -263,6 +263,99 @@ describe('runLoop — instructions threading into the system prompt (Wave 5-4)',
   });
 });
 
+describe('runLoop — restoredConversation threading (Transcript Restore #1123)', () => {
+  it('threads init.restoredConversation into the constructed AgentLoop, seeding the first provider request from it (system-prompt content is R2-overridden -- see the dedicated R2 test below)', async () => {
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand({
+        restoredConversation: [
+          { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
+          { role: 'user', content: 'earlier question' },
+          { role: 'assistant', content: 'earlier answer' },
+        ],
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedMessagesCalls).toHaveLength(1);
+    // NOTE: CapturingAdapter stores `req.messages` by reference (not a
+    // snapshot), and that reference is AgentLoop's own `this.conversation`
+    // array -- so by the time this assertion runs (after the turn has fully
+    // completed), the array also carries the assistant reply appended after
+    // the request was sent.
+    //
+    // R2 (architect audit, #1123): the loop now OVERRIDES the restored
+    // conversation's system-prompt content with its own freshly-assembled
+    // one (see `main.ts:initializeLoop`), so 'RESTORED_SYSTEM_PROMPT' does
+    // NOT survive verbatim here -- this test's scope is threading the
+    // REMAINING (non-system) restored messages plus the follow-up turn; the
+    // system-prompt override itself is covered by the R2 test below.
+    const [systemMessage, ...restMessages] = adapter.capturedMessagesCalls[0];
+    expect(systemMessage.role).toBe('system');
+    expect(systemMessage.content).not.toBe('RESTORED_SYSTEM_PROMPT');
+    expect(restMessages).toEqual([
+      { role: 'user', content: 'earlier question' },
+      { role: 'assistant', content: 'earlier answer' },
+      { role: 'user', content: 'follow-up' },
+      { role: 'assistant', content: 'hi' },
+    ]);
+  });
+
+  it('seeds a fresh system-prompt-only conversation when restoredConversation is absent (default v1 behavior, unchanged)', async () => {
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createAdapter: () => adapter });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedMessagesCalls).toHaveLength(1);
+    const [systemMessage, secondMessage] = adapter.capturedMessagesCalls[0];
+    expect(systemMessage.role).toBe('system');
+    expect(secondMessage).toEqual({ role: 'user', content: 'hello' });
+  });
+
+  it('overrides the restored conversation\'s system-prompt content with the loop\'s own correctly-permissioned reassembly (R2, multi-user Q9 blind spot)', async () => {
+    // The server-side reconstruction (EmbeddedAgentWorkerService.runActivation)
+    // reads instructions AS THE SERVER PROCESS'S OWN OS USER, which can
+    // silently degrade in multi-user mode (worktree not readable by that
+    // user). The loop runs as the REQUESTING user and computes its own
+    // systemPrompt via loadInstructions/assembleSystemPrompt -- that value
+    // must win over whatever the server placed at restoredConversation[0].
+    const adapter = new CapturingAdapter();
+    const { io } = makeIo([
+      initCommand({
+        restoredConversation: [
+          { role: 'system', content: 'STALE_SERVER_PROMPT' },
+          { role: 'user', content: 'earlier question' },
+          { role: 'assistant', content: 'earlier answer' },
+        ],
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({
+      createAdapter: () => adapter,
+      loadInstructions: async () => ({
+        segments: [{ origin: '/tmp/instructions/AGENTS.md', content: 'LOOP_SIDE_INSTRUCTION_MARKER' }],
+      }),
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(adapter.capturedMessagesCalls).toHaveLength(1);
+    const [systemMessage, secondMessage] = adapter.capturedMessagesCalls[0];
+    expect(systemMessage.role).toBe('system');
+    expect(systemMessage.content).not.toContain('STALE_SERVER_PROMPT');
+    expect(systemMessage.content).toContain('LOOP_SIDE_INSTRUCTION_MARKER');
+    expect(secondMessage).toEqual({ role: 'user', content: 'earlier question' });
+  });
+});
+
 describe('main subprocess — init-first enforcement', () => {
   it('exits 2 when a user-message arrives before init', async () => {
     const proc = Bun.spawn(['bun', mainPath], {

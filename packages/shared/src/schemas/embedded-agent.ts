@@ -26,6 +26,28 @@ const EnabledToolsSchema = v.pipe(
  */
 const InstructionsListSchema = v.array(v.pipe(v.string(), v.minLength(1)));
 
+/**
+ * Transcript Restore (#1123) wire-shape schemas, mirroring
+ * `EmbeddedAgentRestoredToolCall` / `EmbeddedAgentRestoredMessage` in
+ * types/embedded-agent.ts.
+ */
+const EmbeddedAgentRestoredToolCallSchema = v.strictObject({
+  id: v.string(),
+  type: v.literal('function'),
+  function: v.strictObject({ name: v.string(), arguments: v.string() }),
+});
+
+const EmbeddedAgentRestoredMessageSchema = v.union([
+  v.strictObject({ role: v.literal('system'), content: v.string() }),
+  v.strictObject({ role: v.literal('user'), content: v.string() }),
+  v.strictObject({
+    role: v.literal('assistant'),
+    content: v.string(),
+    tool_calls: v.optional(v.array(EmbeddedAgentRestoredToolCallSchema)),
+  }),
+  v.strictObject({ role: v.literal('tool'), tool_call_id: v.string(), content: v.string() }),
+]);
+
 export const EmbeddedAgentProviderSchema = v.strictObject({
   baseUrl: v.pipe(v.string(), v.url()),
   model: v.pipe(v.string(), v.minLength(1)),
@@ -127,6 +149,7 @@ export const EmbeddedAgentCommandSchema = v.union([
     enabledTools: v.optional(EnabledToolsSchema),
     instructions: v.optional(InstructionsListSchema),
     maxToolIterations: v.number(),
+    restoredConversation: v.optional(v.array(EmbeddedAgentRestoredMessageSchema)),
   }),
   v.strictObject({
     v: v.literal(1),

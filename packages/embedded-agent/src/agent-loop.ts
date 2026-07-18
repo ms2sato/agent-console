@@ -19,6 +19,8 @@ import {
   type ToolDefinition,
 } from './providers/types.js';
 import { truncateToBytes } from './truncate.js';
+import { buildHandoffSeedMessages } from './conversation-seed.js';
+import { pushSyntheticToolError } from './tool-call-repair.js';
 
 const TOOL_RESULT_MAX_BYTES = 16384;
 /**
@@ -45,6 +47,8 @@ export interface AgentLoopDeps {
   reassembleSystemPrompt: () => Promise<string>;
   /** Context Handoff (Phase A): loads the (possibly operator-overridden) distillation prompt. */
   loadHandoffPrompt: () => Promise<string>;
+  /** Transcript Restore (#1123): seeds this.conversation directly from a server-reconstructed array, skipping the fresh [{role:'system',...}] seed. Absent = today's v1 fresh-conversation behavior. */
+  restoredConversation?: ChatMessage[];
 }
 
 interface ProviderToolCall {
@@ -128,7 +132,7 @@ export class AgentLoop {
     this.deps = deps;
     this.retryDelaysMs = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     this.sleep = deps.sleep ?? defaultSleep;
-    this.conversation = [{ role: 'system', content: deps.systemPrompt }];
+    this.conversation = deps.restoredConversation ?? [{ role: 'system', content: deps.systemPrompt }];
   }
 
   /** Abort the in-flight turn, if any. No-op when no turn is active. */
@@ -271,11 +275,7 @@ export class AgentLoop {
   ): void {
     for (const call of toolCalls) {
       if (responded.has(call.callId)) continue;
-      this.conversation.push({
-        role: 'tool',
-        tool_call_id: call.callId,
-        content: `Error: ${reason}`,
-      });
+      pushSyntheticToolError(this.conversation, call.callId, reason);
       responded.add(call.callId);
     }
   }
@@ -466,13 +466,7 @@ export class AgentLoop {
       // marker persisted while the old conversation is still intact.
       this.deps.emit({ v: 1, type: 'context-handoff', distillation });
 
-      const seedText = `This conversation continues from a previous one. Prior context summary: ${distillation}`;
-      this.conversation.splice(
-        0,
-        this.conversation.length,
-        { role: 'system', content: newSystemPrompt },
-        { role: 'user', content: seedText },
-      );
+      this.conversation.splice(0, this.conversation.length, ...buildHandoffSeedMessages(newSystemPrompt, distillation));
 
       this.emitContextUsageIfKnown({
         promptTokens: estimateTokensFromChars(this.conversation),

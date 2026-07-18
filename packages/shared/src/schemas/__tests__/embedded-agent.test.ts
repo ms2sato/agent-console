@@ -648,6 +648,98 @@ describe('EmbeddedAgentCommandSchema', () => {
       expect(result.output.instructions).toBeUndefined();
     }
   });
+
+  describe('restoredConversation (Transcript Restore #1123)', () => {
+    const baseInit = {
+      v: 1,
+      type: 'init',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+
+    it('parses an init command without restoredConversation (absent, not required)', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, baseInit);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init') {
+        expect(result.output.restoredConversation).toBeUndefined();
+      }
+    });
+
+    it('parses a restoredConversation covering all four message roles', () => {
+      const init = {
+        ...baseInit,
+        restoredConversation: [
+          { role: 'system', content: 'You are helpful.' },
+          { role: 'user', content: 'hi' },
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              { id: 'call-1', type: 'function', function: { name: 'run', arguments: '{}' } },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'call-1', content: 'result' },
+        ],
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init') {
+        expect(result.output.restoredConversation).toHaveLength(4);
+      }
+    });
+
+    it('parses an assistant message without tool_calls (optional)', () => {
+      const init = {
+        ...baseInit,
+        restoredConversation: [{ role: 'assistant', content: 'hello' }],
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a restoredConversation entry with an unknown role', () => {
+      const init = {
+        ...baseInit,
+        restoredConversation: [{ role: 'developer', content: 'x' }],
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a tool message missing tool_call_id', () => {
+      const init = {
+        ...baseInit,
+        restoredConversation: [{ role: 'tool', content: 'result' }],
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a tool_calls entry with an unknown field (strictObject)', () => {
+      const init = {
+        ...baseInit,
+        restoredConversation: [
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [
+              { id: 'call-1', type: 'function', function: { name: 'run', arguments: '{}' }, extra: 'leak' },
+            ],
+          },
+        ],
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts an empty restoredConversation array', () => {
+      const init = { ...baseInit, restoredConversation: [] };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+    });
+  });
 });
 
 describe('EmbeddedAgentEventSchema', () => {

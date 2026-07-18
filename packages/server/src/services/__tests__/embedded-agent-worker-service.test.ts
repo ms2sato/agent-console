@@ -169,6 +169,7 @@ interface Recorder {
   onData: ReturnType<typeof mock>;
   onExit: ReturnType<typeof mock>;
   onActivityChange: ReturnType<typeof mock>;
+  onRestoreInfo: ReturnType<typeof mock>;
 }
 
 interface Harness {
@@ -182,6 +183,8 @@ interface Harness {
   revokeByWorker: ReturnType<typeof mock>;
   resetWorkerOutput: ReturnType<typeof mock>;
   bufferOutput: ReturnType<typeof mock>;
+  hasEverBeenActivated: ReturnType<typeof mock>;
+  readHistoryWithOffset: ReturnType<typeof mock>;
   loadProviderKeyFn: ReturnType<typeof mock>;
   persistSession: ReturnType<typeof mock>;
   globalActivity: ReturnType<typeof mock>;
@@ -204,6 +207,20 @@ function setup(opts?: {
   initialPromptDelivered?: boolean;
   /** Issue #1068: worker.deliverInitialPromptOnActivation, false by default. */
   deliverInitialPromptOnActivation?: boolean;
+  /**
+   * Transcript Restore (#1123): whether the worker has ever been activated
+   * BEFORE this activation. Defaults to false, i.e. every EXISTING test
+   * (written before restore existed) takes the "first-ever activation"
+   * branch and continues to exercise the byte-identical v1 reset path.
+   */
+  everActivated?: boolean;
+  /** Transcript Restore (#1123): the persisted stream `readHistoryWithOffset` returns when everActivated is true. */
+  readHistoryWithOffsetResult?: { data: string; offset?: number; epoch?: number };
+  /** CodeRabbit re-review Finding 1: stale pre-activation in-memory epoch/outputOffset to seed the worker with, so a restore-success test can assert they get replaced. */
+  staleEpoch?: number;
+  staleOutputOffset?: number;
+  /** Transcript Restore (#1123): readHistoryWithOffset rejects instead of resolving (simulates a persistent I/O error on an existing worker). */
+  readHistoryWithOffsetThrows?: boolean;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -213,6 +230,8 @@ function setup(opts?: {
     embeddedAgentId: 'def-1',
     deliverInitialPromptOnActivation: opts?.deliverInitialPromptOnActivation ?? false,
   });
+  if (opts?.staleEpoch !== undefined) worker.epoch = opts.staleEpoch;
+  if (opts?.staleOutputOffset !== undefined) worker.outputOffset = opts.staleOutputOffset;
   const session = buildInternalWorktreeSession([worker], {
     createdBy,
     initialPrompt: opts?.initialPrompt,
@@ -224,6 +243,18 @@ function setup(opts?: {
   const revokeByWorker = mock(() => {});
   const resetWorkerOutput = mock(async () => NEW_EPOCH);
   const bufferOutput = mock(() => {});
+  const hasEverBeenActivated = mock(async () => opts?.everActivated ?? false);
+  const readHistoryWithOffset = mock(async () => {
+    if (opts?.readHistoryWithOffsetThrows) {
+      throw new Error('persisted stream read boom');
+    }
+    return {
+      data: opts?.readHistoryWithOffsetResult?.data ?? '',
+      offset: opts?.readHistoryWithOffsetResult?.offset ?? 0,
+      startOffset: 0,
+      epoch: opts?.readHistoryWithOffsetResult?.epoch ?? 0,
+    };
+  });
   const loadProviderKeyFn =
     opts?.loadProviderKeyFn ?? mock(async () => API_KEY);
   const persistSession = mock(async () => {});
@@ -234,11 +265,13 @@ function setup(opts?: {
     onData: mock(() => {}),
     onExit: mock(() => {}),
     onActivityChange: mock(() => {}),
+    onRestoreInfo: mock(() => {}),
   };
   worker.connectionCallbacks.set('conn-1', {
     onData: recorder.onData as unknown as (data: string, offset: number, epoch: number) => void,
     onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: 'managed' | 'unexpected') => void,
     onActivityChange: recorder.onActivityChange as unknown as (state: 'active' | 'idle' | 'asking' | 'unknown') => void,
+    onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { messageCount: number; repairedToolCallIds: string[] }) => void,
   });
 
   const service = new EmbeddedAgentWorkerService({
@@ -251,6 +284,8 @@ function setup(opts?: {
     workerOutputFileManager: {
       resetWorkerOutput: resetWorkerOutput as never,
       bufferOutput: bufferOutput as never,
+      hasEverBeenActivated: hasEverBeenActivated as never,
+      readHistoryWithOffset: readHistoryWithOffset as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: loadProviderKeyFn as never,
@@ -273,6 +308,8 @@ function setup(opts?: {
     revokeByWorker,
     resetWorkerOutput,
     bufferOutput,
+    hasEverBeenActivated,
+    readHistoryWithOffset,
     loadProviderKeyFn,
     persistSession,
     globalActivity,
@@ -508,6 +545,180 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     const resolvedEntry = match![1];
     expect(resolvedEntry.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);
     expect(await Bun.file(resolvedEntry).exists()).toBe(true);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
+  const VALID_RESTORABLE_STREAM = [
+    JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
+    JSON.stringify({ v: 1, type: 'assistant-message', turnId: 't1', text: 'hello back' }),
+  ].join('\n');
+
+  it('does NOT reset the output stream and forwards a matching restoredConversation when restore succeeds', async () => {
+    const epochBefore = 1_700_000_000_000;
+    const offsetBefore = 999;
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM, offset: offsetBefore, epoch: epochBefore },
+      staleEpoch: epochBefore,
+      staleOutputOffset: offsetBefore,
+    });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).not.toHaveBeenCalled();
+    // The manifest's current coordinates already agree with the pre-activation
+    // in-memory worker here (the common case: no server restart occurred), so
+    // the post-restore sync (Finding 1) leaves epoch/outputOffset unchanged --
+    // this test still proves "no reset" without conflating it with the sync
+    // behavior, which the next test isolates.
+    expect(h.worker.epoch).toBe(epochBefore);
+    expect(h.worker.outputOffset).toBe(offsetBefore);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(Array.isArray(first.restoredConversation)).toBe(true);
+    expect(first.restoredConversation[0]).toEqual({ role: 'system', content: expect.any(String) });
+    expect(first.restoredConversation).toContainEqual({ role: 'user', content: 'hi there' });
+    expect(first.restoredConversation).toContainEqual({ role: 'assistant', content: 'hello back' });
+  });
+
+  it('syncs worker.epoch/outputOffset to the manifest current coordinates on restore success, replacing stale in-memory values (CodeRabbit re-review Finding 1)', async () => {
+    // Simulates a freshly-reconstructed in-memory worker (e.g. after a server
+    // restart -- WorkerManager.initializeEmbeddedAgentWorker is a pure
+    // in-memory factory with no filesystem I/O, so it cannot know the real
+    // on-disk manifest's current epoch/offset) that is STALE relative to the
+    // manifest's actual current generation.
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM, offset: 12345, epoch: 5 },
+      staleEpoch: 1,
+      staleOutputOffset: 0,
+    });
+    expect(h.worker.epoch).toBe(1);
+    expect(h.worker.outputOffset).toBe(0);
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).not.toHaveBeenCalled();
+    // The stale pre-activation values must be REPLACED by the manifest's
+    // actual current coordinates, not left stale.
+    expect(h.worker.epoch).toBe(5);
+    expect(h.worker.outputOffset).toBe(12345);
+  });
+
+  it('resets the output stream with preserveToSidecar and omits restoredConversation when restore fails', async () => {
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).toHaveBeenCalledWith(
+      h.sessionId,
+      h.workerId,
+      expect.anything(),
+      { preserveToSidecar: true },
+    );
+    expect(h.worker.epoch).toBe(NEW_EPOCH);
+    expect(h.worker.outputOffset).toBe(0);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('restoredConversation' in first).toBe(false);
+  });
+
+  it('performs the byte-identical v1 reset (no restore attempt) on a first-ever activation (hasEverBeenActivated=false)', async () => {
+    const h = setup({ everActivated: false });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.readHistoryWithOffset).not.toHaveBeenCalled();
+    expect(h.resetWorkerOutput).toHaveBeenCalledWith(h.sessionId, h.workerId, expect.anything());
+    expect(h.resetWorkerOutput.mock.calls[0]!.length).toBe(3); // no opts argument at all
+    expect(h.worker.epoch).toBe(NEW_EPOCH);
+    expect(h.worker.outputOffset).toBe(0);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('restoredConversation' in first).toBe(false);
+  });
+
+  it('routes a persistent I/O error on an EXISTING worker through the failure-with-sidecar path, NOT the destructive first-activation shortcut (CodeRabbit CRITICAL)', async () => {
+    // hasEverBeenActivated's real implementation is conservative on a
+    // non-ENOENT stat failure: it reports `true` (assume activated) rather
+    // than throwing, so this DI mock returns `true` too -- exercising the
+    // caller-side contract that the injected hasEverBeenActivated never
+    // throws. The restore attempt then hits the SAME underlying persistent
+    // I/O failure via readHistoryWithOffset and correctly falls into the
+    // sidecar-preserving reset branch instead of the destructive
+    // "nothing to restore" shortcut.
+    const h = setup({ everActivated: true, readHistoryWithOffsetThrows: true });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).toHaveBeenCalledWith(
+      h.sessionId,
+      h.workerId,
+      expect.anything(),
+      { preserveToSidecar: true },
+    );
+    expect(h.worker.epoch).toBe(NEW_EPOCH);
+    expect(h.worker.outputOffset).toBe(0);
+  });
+
+  describe('getRestoreInfo', () => {
+    it('returns the current epoch + restore result after a successful restore', async () => {
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const info = h.service.getRestoreInfo(h.workerId);
+      expect(info).not.toBeNull();
+      expect(info!.epoch).toBe(h.worker.epoch);
+      expect(info!.messageCount).toBe(3); // system + user + assistant
+      expect(info!.repairedToolCallIds).toEqual([]);
+    });
+
+    it('returns null after a restore failure', async () => {
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+
+    it('returns null after a first-ever activation (nothing to restore)', async () => {
+      const h = setup({ everActivated: false });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+
+    it('returns null for a worker that was never activated', () => {
+      const h = setup();
+      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+  });
+
+  describe('fast-path push (onRestoreInfo)', () => {
+    it('invokes onRestoreInfo on already-attached connections when restore succeeds', async () => {
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({ messageCount: 3, repairedToolCallIds: [] });
+    });
+
+    it('does NOT invoke onRestoreInfo when restore fails', async () => {
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke onRestoreInfo on a first-ever activation', async () => {
+      const h = setup({ everActivated: false });
+
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
+    });
   });
 });
 

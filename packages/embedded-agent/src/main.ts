@@ -202,6 +202,22 @@ async function initializeLoop(
     apiKey: init.provider.apiKey,
   });
 
+  let restoredConversation = init.restoredConversation;
+  if (restoredConversation && restoredConversation.length > 0) {
+    const [first, ...rest] = restoredConversation;
+    if (first.role === 'system') {
+      // The server-side restore reconstruction reads AGENTS.md/instructions
+      // AS THE SERVER PROCESS'S OWN OS USER, which silently degrades in
+      // multi-user mode (worktree not readable by that user). The loop runs
+      // as the REQUESTING user and already computed a
+      // correctly-permissioned `systemPrompt` above -- use it instead of the
+      // server's placeholder, for both restore shapes (fresh system-prompt
+      // seed and the context-handoff seed pair both start with a system
+      // message at index 0).
+      restoredConversation = [{ ...first, content: systemPrompt }, ...rest];
+    }
+  }
+
   const loop = new AgentLoop({
     adapter,
     model: init.provider.model,
@@ -210,6 +226,7 @@ async function initializeLoop(
     emit: (event) => io.writeEvent(event),
     systemPrompt,
     maxToolIterations: init.maxToolIterations,
+    restoredConversation,
     reassembleSystemPrompt: async () => {
       const reloadedInstructions = await factories.loadInstructions({
         cwd: init.context.cwd,

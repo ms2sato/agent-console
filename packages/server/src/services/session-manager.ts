@@ -587,6 +587,19 @@ export class SessionManager {
   }
 
   /**
+   * Transcript Restore (#1123) bootstrap re-delivery lookup: the current
+   * incarnation's restore result (epoch + message count + repaired tool-call
+   * ids), or null when restore did not fire (first-ever activation or
+   * restore failure). See EmbeddedAgentWorkerService.getRestoreInfo.
+   */
+  getEmbeddedAgentRestoreInfo(
+    _sessionId: string,
+    workerId: string,
+  ): { epoch: number; messageCount: number; repairedToolCallIds: string[] } | null {
+    return this.embeddedAgentWorkerService.getRestoreInfo(workerId);
+  }
+
+  /**
    * Forward a user message to an embedded-agent worker's loop. Rejects with
    * `turn in progress` when a turn is already active (v1 does not queue).
    */

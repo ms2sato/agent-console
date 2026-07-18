@@ -1,8 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import * as path from 'path';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
-import { vol } from 'memfs';
+import { vol, fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
+import { buildInternalEmbeddedAgentWorker } from '../../__tests__/utils/build-test-data.js';
 
 // Test-specific config values for worker output file tests
 // Note: These are used directly in the tests that need smaller values
@@ -258,6 +260,61 @@ describe('WorkerOutputFileManager', () => {
     });
   });
 
+  describe('hasEverBeenActivated (Transcript Restore #1123)', () => {
+    it('returns false when no manifest exists (genuinely first-ever activation)', async () => {
+      const result = await manager.hasEverBeenActivated('session-never', 'worker-1', quickResolver);
+      expect(result).toBe(false);
+    });
+
+    it('returns true when a manifest exists', async () => {
+      // initializeWorkerOutput writes the manifest sidecar (worker-1.segments.json).
+      await manager.initializeWorkerOutput('session-existing', 'worker-1', quickResolver);
+
+      const result = await manager.hasEverBeenActivated('session-existing', 'worker-1', quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('returns false for a brand-new embedded-agent worker constructed the same way production does, before any activation-triggered I/O (CodeRabbit re-review Finding 2 verification)', async () => {
+      // CodeRabbit's re-review claimed "manifest existence does not prove
+      // prior activation; initialization itself creates the manifest, so
+      // newly created workers are incorrectly classified as previously
+      // activated". For embedded-agent workers specifically this does not
+      // apply: worker construction (mirrored here via the same builder shape
+      // as WorkerManager.initializeEmbeddedAgentWorker -- a pure in-memory
+      // factory with no filesystem I/O) never calls
+      // initializeWorkerOutput/resetWorkerOutput, so no manifest exists yet.
+      // This test constructs such a worker WITHOUT calling activate() /
+      // runActivation() / initializeWorkerOutput / resetWorkerOutput, then
+      // asserts hasEverBeenActivated is false -- disproving the finding for
+      // this call site (embedded-agent-worker-service.ts's restore branch).
+      const worker = buildInternalEmbeddedAgentWorker({ id: 'worker-fresh-embedded' });
+      const sessionId = 'session-fresh-embedded';
+
+      const result = await manager.hasEverBeenActivated(sessionId, worker.id, quickResolver);
+
+      expect(result).toBe(false);
+    });
+
+    it('conservatively returns true when the manifest stat fails with a non-ENOENT error', async () => {
+      // A genuine non-ENOENT stat failure, produced without module-level
+      // spying (worker-output-file.ts imports `fs/promises` via `import *
+      // as fs`, whose CJS-interop namespace snapshots property values at
+      // import time -- a later `spyOn(memfs.promises, 'stat')` mutation is
+      // invisible to that frozen reference). Instead, create a FILE at the
+      // path a DIRECTORY component is expected: traversing through it to
+      // reach the manifest path throws a real `ENOTDIR`, exercising the
+      // "any other error" branch with the exact error shape a real
+      // filesystem would produce.
+      const sessionDirPath = path.join(TEST_CONFIG_DIR, '_quick', 'outputs', 'session-notdir');
+      vol.mkdirSync(path.dirname(sessionDirPath), { recursive: true });
+      vol.writeFileSync(sessionDirPath, 'this is a file, not a directory');
+
+      const result = await manager.hasEverBeenActivated('session-notdir', 'worker-1', quickResolver);
+
+      expect(result).toBe(true);
+    });
+  });
+
   describe('file size limit and truncation', () => {
     it('should truncate file when exceeding max size', async () => {
       // Max size is 1024 bytes, flush threshold is 256 bytes
@@ -339,6 +396,106 @@ describe('WorkerOutputFileManager', () => {
       // File should not exist since we deleted before flush
       const filePath = manager.getOutputFilePath('session-1', 'worker-1', quickResolver);
       expect(vol.existsSync(filePath)).toBe(false);
+    });
+  });
+
+  describe('resetWorkerOutput sidecar preservation (Transcript Restore #1123)', () => {
+    function sidecarPath(sessionId: string, workerId: string): string {
+      const filePath = manager.getOutputFilePath(sessionId, workerId, quickResolver);
+      return path.join(path.dirname(filePath), `${workerId}.restore-failed.log`);
+    }
+
+    it('renames the live file content to <workerId>.restore-failed.log when preserveToSidecar is true', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar`, { recursive: true });
+      vol.writeFileSync(filePath, 'pre-reset conversation bytes');
+
+      await manager.resetWorkerOutput('session-sidecar', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      const sidecar = sidecarPath('session-sidecar', 'worker-1');
+      expect(vol.existsSync(sidecar)).toBe(true);
+      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('pre-reset conversation bytes');
+
+      // The reset itself still completed: live file exists and is empty.
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+
+    it('overwrites the sidecar on a second consecutive restore failure (single-slot, not accumulating)', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-2', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-2`, { recursive: true });
+      vol.writeFileSync(filePath, 'first generation bytes');
+
+      await manager.resetWorkerOutput('session-sidecar-2', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      // Second generation writes new content, then fails restore again.
+      vol.writeFileSync(filePath, 'second generation bytes');
+      await manager.resetWorkerOutput('session-sidecar-2', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      const sidecar = sidecarPath('session-sidecar-2', 'worker-1');
+      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('second generation bytes');
+    });
+
+    it('does not include a dropped pending flush in the sidecar, and leaves the live file empty post-reset', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-pending', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-pending`, { recursive: true });
+      vol.writeFileSync(filePath, 'flushed bytes');
+
+      // Queue a pending flush that has NOT been written to the live file yet.
+      manager.bufferOutput('session-sidecar-pending', 'worker-1', 'not-yet-flushed', quickResolver);
+
+      await manager.resetWorkerOutput('session-sidecar-pending', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+      });
+
+      const sidecar = sidecarPath('session-sidecar-pending', 'worker-1');
+      // Only the already-flushed bytes made it into the sidecar; the pending
+      // buffer was dropped inside the same lock, per the documented
+      // "not yet flushed... accepted limitation" caveat.
+      expect(vol.readFileSync(sidecar, 'utf-8')).toBe('flushed bytes');
+      expect(vol.readFileSync(sidecar, 'utf-8')).not.toContain('not-yet-flushed');
+
+      // The dropped pending buffer must not resurface after the reset.
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+
+    it('does not throw and still completes the reset when the sidecar rename fails', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-fail', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-fail`, { recursive: true });
+      vol.writeFileSync(filePath, 'bytes that fail to preserve');
+
+      const renameSpy = spyOn(memfs.promises, 'rename').mockRejectedValueOnce(new Error('rename boom'));
+
+      await expect(
+        manager.resetWorkerOutput('session-sidecar-fail', 'worker-1', quickResolver, {
+          preserveToSidecar: true,
+        }),
+      ).resolves.toEqual(expect.any(Number));
+
+      renameSpy.mockRestore();
+
+      // Reset still completed (best-effort, non-blocking preservation).
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+
+    it('creates no sidecar file when resetWorkerOutput is called without opts (existing callers unaffected)', async () => {
+      const filePath = manager.getOutputFilePath('session-no-opts', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-no-opts`, { recursive: true });
+      vol.writeFileSync(filePath, 'byte-identical-to-before');
+
+      await manager.resetWorkerOutput('session-no-opts', 'worker-1', quickResolver);
+
+      const sidecar = sidecarPath('session-no-opts', 'worker-1');
+      expect(vol.existsSync(sidecar)).toBe(false);
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
     });
   });
 
