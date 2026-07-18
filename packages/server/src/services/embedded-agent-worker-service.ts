@@ -363,11 +363,11 @@ export class EmbeddedAgentWorkerService {
         worker.outputOffset = 0;
       } else {
         try {
-          const { data: streamText } = await this.deps.workerOutputFileManager.readHistoryWithOffset(
-            sessionId,
-            workerId,
-            resolver,
-          );
+          const {
+            data: streamText,
+            offset: currentOffset,
+            epoch: currentEpoch,
+          } = await this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver);
           if (streamText.trim() === '') {
             throw new Error('Persisted stream read returned empty despite a non-zero current offset (read failure)');
           }
@@ -381,8 +381,14 @@ export class EmbeddedAgentWorkerService {
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
           restoreInfo = { messageCount: outcome.conversation.length, repairedToolCallIds: outcome.repairedToolCallIds };
           // 4e: success -- skip resetWorkerOutput entirely. No new epoch, no
-          // truncate; worker.epoch / worker.outputOffset stay exactly as they
-          // already are (nothing was reset).
+          // truncate. But the in-memory worker object may be stale relative to
+          // the on-disk manifest (e.g. freshly reconstructed by WorkerManager
+          // after a server restart, with default epoch/outputOffset values
+          // independent of the manifest's actual current generation), so it
+          // must be explicitly synced to the manifest's real current
+          // coordinates here rather than assumed already correct.
+          worker.epoch = currentEpoch;
+          worker.outputOffset = currentOffset;
         } catch (err) {
           const isKnownRestoreFailure = err instanceof RestoreReconstructionError;
           logger.warn(

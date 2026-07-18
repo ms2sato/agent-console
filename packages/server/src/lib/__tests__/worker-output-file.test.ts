@@ -4,6 +4,7 @@ import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.j
 import { vol, fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
+import { buildInternalEmbeddedAgentWorker } from '../../__tests__/utils/build-test-data.js';
 
 // Test-specific config values for worker output file tests
 // Note: These are used directly in the tests that need smaller values
@@ -271,6 +272,27 @@ describe('WorkerOutputFileManager', () => {
 
       const result = await manager.hasEverBeenActivated('session-existing', 'worker-1', quickResolver);
       expect(result).toBe(true);
+    });
+
+    it('returns false for a brand-new embedded-agent worker constructed the same way production does, before any activation-triggered I/O (CodeRabbit re-review Finding 2 verification)', async () => {
+      // CodeRabbit's re-review claimed "manifest existence does not prove
+      // prior activation; initialization itself creates the manifest, so
+      // newly created workers are incorrectly classified as previously
+      // activated". For embedded-agent workers specifically this does not
+      // apply: worker construction (mirrored here via the same builder shape
+      // as WorkerManager.initializeEmbeddedAgentWorker -- a pure in-memory
+      // factory with no filesystem I/O) never calls
+      // initializeWorkerOutput/resetWorkerOutput, so no manifest exists yet.
+      // This test constructs such a worker WITHOUT calling activate() /
+      // runActivation() / initializeWorkerOutput / resetWorkerOutput, then
+      // asserts hasEverBeenActivated is false -- disproving the finding for
+      // this call site (embedded-agent-worker-service.ts's restore branch).
+      const worker = buildInternalEmbeddedAgentWorker({ id: 'worker-fresh-embedded' });
+      const sessionId = 'session-fresh-embedded';
+
+      const result = await manager.hasEverBeenActivated(sessionId, worker.id, quickResolver);
+
+      expect(result).toBe(false);
     });
 
     it('conservatively returns true when the manifest stat fails with a non-ENOENT error', async () => {

@@ -215,7 +215,10 @@ function setup(opts?: {
    */
   everActivated?: boolean;
   /** Transcript Restore (#1123): the persisted stream `readHistoryWithOffset` returns when everActivated is true. */
-  readHistoryWithOffsetResult?: { data: string };
+  readHistoryWithOffsetResult?: { data: string; offset?: number; epoch?: number };
+  /** CodeRabbit re-review Finding 1: stale pre-activation in-memory epoch/outputOffset to seed the worker with, so a restore-success test can assert they get replaced. */
+  staleEpoch?: number;
+  staleOutputOffset?: number;
   /** Transcript Restore (#1123): readHistoryWithOffset rejects instead of resolving (simulates a persistent I/O error on an existing worker). */
   readHistoryWithOffsetThrows?: boolean;
 }): Harness {
@@ -227,6 +230,8 @@ function setup(opts?: {
     embeddedAgentId: 'def-1',
     deliverInitialPromptOnActivation: opts?.deliverInitialPromptOnActivation ?? false,
   });
+  if (opts?.staleEpoch !== undefined) worker.epoch = opts.staleEpoch;
+  if (opts?.staleOutputOffset !== undefined) worker.outputOffset = opts.staleOutputOffset;
   const session = buildInternalWorktreeSession([worker], {
     createdBy,
     initialPrompt: opts?.initialPrompt,
@@ -245,9 +250,9 @@ function setup(opts?: {
     }
     return {
       data: opts?.readHistoryWithOffsetResult?.data ?? '',
-      offset: 0,
+      offset: opts?.readHistoryWithOffsetResult?.offset ?? 0,
       startOffset: 0,
-      epoch: 0,
+      epoch: opts?.readHistoryWithOffsetResult?.epoch ?? 0,
     };
   });
   const loadProviderKeyFn =
@@ -550,13 +555,23 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   ].join('\n');
 
   it('does NOT reset the output stream and forwards a matching restoredConversation when restore succeeds', async () => {
-    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
-    const epochBefore = h.worker.epoch;
-    const offsetBefore = h.worker.outputOffset;
+    const epochBefore = 1_700_000_000_000;
+    const offsetBefore = 999;
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM, offset: offsetBefore, epoch: epochBefore },
+      staleEpoch: epochBefore,
+      staleOutputOffset: offsetBefore,
+    });
 
     await h.service.activate(h.sessionId, h.workerId);
 
     expect(h.resetWorkerOutput).not.toHaveBeenCalled();
+    // The manifest's current coordinates already agree with the pre-activation
+    // in-memory worker here (the common case: no server restart occurred), so
+    // the post-restore sync (Finding 1) leaves epoch/outputOffset unchanged --
+    // this test still proves "no reset" without conflating it with the sync
+    // behavior, which the next test isolates.
     expect(h.worker.epoch).toBe(epochBefore);
     expect(h.worker.outputOffset).toBe(offsetBefore);
 
@@ -565,6 +580,30 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     expect(first.restoredConversation[0]).toEqual({ role: 'system', content: expect.any(String) });
     expect(first.restoredConversation).toContainEqual({ role: 'user', content: 'hi there' });
     expect(first.restoredConversation).toContainEqual({ role: 'assistant', content: 'hello back' });
+  });
+
+  it('syncs worker.epoch/outputOffset to the manifest current coordinates on restore success, replacing stale in-memory values (CodeRabbit re-review Finding 1)', async () => {
+    // Simulates a freshly-reconstructed in-memory worker (e.g. after a server
+    // restart -- WorkerManager.initializeEmbeddedAgentWorker is a pure
+    // in-memory factory with no filesystem I/O, so it cannot know the real
+    // on-disk manifest's current epoch/offset) that is STALE relative to the
+    // manifest's actual current generation.
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM, offset: 12345, epoch: 5 },
+      staleEpoch: 1,
+      staleOutputOffset: 0,
+    });
+    expect(h.worker.epoch).toBe(1);
+    expect(h.worker.outputOffset).toBe(0);
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).not.toHaveBeenCalled();
+    // The stale pre-activation values must be REPLACED by the manifest's
+    // actual current coordinates, not left stale.
+    expect(h.worker.epoch).toBe(5);
+    expect(h.worker.outputOffset).toBe(12345);
   });
 
   it('resets the output stream with preserveToSidecar and omits restoredConversation when restore fails', async () => {
