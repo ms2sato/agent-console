@@ -5,6 +5,7 @@ import {
   runAsUser,
   rmRecursiveAsUser,
   writeUserOwnedSecretFile,
+  killAsUser,
   spawnAsUser,
   buildSpawnArgs,
   buildInnerCommand,
@@ -1006,6 +1007,133 @@ describe('privilege-elevation', () => {
       );
       expect(result.exitCode).toBe(0);
       expect(result.timedOut).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // killAsUser (strict thin wrapper, Issue #1197 Part A)
+  // ============================================================
+  describe('killAsUser', () => {
+    it('null username bypasses elevation (forwards null straight to runAsUser)', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      const result = await killAsUser(1234, 'SIGTERM', null, {
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].username).toBeNull();
+      expect(result.exitCode).toBe(0);
+    });
+
+    it('elevated path: SIGTERM command strips the SIG prefix and cwd is "/"', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await killAsUser(4321, 'SIGTERM', 'alice', {
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured.length).toBe(1);
+      expect(captured[0].username).toBe('alice');
+      expect(captured[0].cwd).toBe('/');
+      expect(captured[0].command).toBe('kill -s TERM -- 4321');
+    });
+
+    it('elevated path: SIGKILL command strips the SIG prefix', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await killAsUser(4321, 'SIGKILL', 'alice', {
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured[0].command).toBe('kill -s KILL -- 4321');
+    });
+
+    it('rejects pid 0 synchronously without ever calling runAsUserImpl', async () => {
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUserImpl should never be called for an invalid pid');
+      };
+
+      await expect(
+        killAsUser(0, 'SIGTERM', 'alice', { runAsUserImpl: fakeRunAsUser }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a negative pid synchronously without ever calling runAsUserImpl', async () => {
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUserImpl should never be called for an invalid pid');
+      };
+
+      await expect(
+        killAsUser(-1, 'SIGTERM', 'alice', { runAsUserImpl: fakeRunAsUser }),
+      ).rejects.toThrow();
+    });
+
+    it('rejects a non-integer pid synchronously without ever calling runAsUserImpl', async () => {
+      const fakeRunAsUser: typeof runAsUser = async () => {
+        throw new Error('runAsUserImpl should never be called for an invalid pid');
+      };
+
+      await expect(
+        killAsUser(1.5, 'SIGTERM', 'alice', { runAsUserImpl: fakeRunAsUser }),
+      ).rejects.toThrow();
+    });
+
+    it('forwards timeoutMs to runAsUser when provided', async () => {
+      const captured: RunAsUserOpts[] = [];
+      const fakeRunAsUser: typeof runAsUser = async (opts) => {
+        captured.push(opts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+
+      await killAsUser(999, 'SIGTERM', 'alice', {
+        timeoutMs: 54321,
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(captured[0].timeoutMs).toBe(54321);
+    });
+
+    it('returns the underlying RunAsUserResult unchanged (no ESRCH/EPERM interpretation)', async () => {
+      const fakeRunAsUser: typeof runAsUser = async () => ({
+        stdout: 'OUT',
+        stderr: 'kill: (999) - No such process',
+        exitCode: 1,
+        timedOut: false,
+      });
+
+      const result: RunAsUserResult = await killAsUser(999, 'SIGTERM', 'alice', {
+        runAsUserImpl: fakeRunAsUser,
+      });
+
+      expect(result).toEqual({
+        stdout: 'OUT',
+        stderr: 'kill: (999) - No such process',
+        exitCode: 1,
+        timedOut: false,
+      });
+    });
+
+    it('uses the module runAsUser when no runAsUserImpl is injected (default branch)', async () => {
+      // Smoke-test the default -- null bypass routes straight through to a
+      // real `sh -c 'kill -s TERM -- <huge nonsense pid>'` invocation. A
+      // real kill on a pid that (almost certainly) does not exist reports a
+      // non-zero exit but must not throw.
+      const result = await killAsUser(2_000_000_000, 'SIGTERM', null);
+      expect(result.timedOut).toBe(false);
+      expect(typeof result.exitCode).toBe('number');
     });
   });
 

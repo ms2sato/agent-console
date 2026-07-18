@@ -368,6 +368,55 @@ export async function rmRecursiveAsUser(
 }
 
 /**
+ * Send `signal` to `pid` as the requesting user.
+ *
+ * Layer-correctness helper: encapsulates the canonical `kill -s <SIG> --
+ * <pid>` elevated-signal pattern for consumers that need to terminate a
+ * process owned by a different OS user (e.g. multi-user orphan-worker
+ * cleanup, where the worker's PID was spawned via `resolveSpawnUsername` and
+ * the server process cannot signal it directly -- `process.kill(pid, sig)`
+ * raises `EPERM` for a cross-user PID).
+ *
+ * Semantics:
+ * - `null` / `undefined` / single-user-mode username bypasses elevation via
+ *   {@link runAsUser}'s own short-circuit.
+ * - Pins outer cwd to `/`, mirroring {@link rmRecursiveAsUser} -- the target
+ *   process's cwd is irrelevant to signalling it, and pinning avoids any
+ *   EACCES from an unreadable inherited cwd.
+ * - Does NOT interpret the kill's outcome (`ESRCH`, already-dead, etc.) --
+ *   returns the underlying {@link RunAsUserResult} unchanged so callers
+ *   branch on `exitCode` themselves, exactly like {@link rmRecursiveAsUser}.
+ *   This is deliberate: whether a non-zero exit means "already dead, fine"
+ *   or "genuinely failed to kill" is the caller's semantics, not this
+ *   primitive's.
+ * - `pid` is validated as a positive integer before being interpolated into
+ *   the shell command. Unlike string paths there is no `shellEscape` step
+ *   for a bare numeric argument, so this check is the injection-safety
+ *   equivalent for this argument -- a non-integer or non-positive value
+ *   never reaches the shell string.
+ *
+ * `runAsUserImpl` is an optional injection point mirroring
+ * {@link rmRecursiveAsUser}'s DI seam for test-correctness.
+ */
+export async function killAsUser(
+  pid: number,
+  signal: 'SIGTERM' | 'SIGKILL',
+  username: string | null | undefined,
+  opts: { timeoutMs?: number; runAsUserImpl?: typeof runAsUser } = {},
+): Promise<RunAsUserResult> {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`killAsUser: pid must be a positive integer, got ${pid}`);
+  }
+  const impl = opts.runAsUserImpl ?? runAsUser;
+  return impl({
+    username,
+    command: `kill -s ${signal.replace(/^SIG/, '')} -- ${pid}`,
+    cwd: '/',
+    timeoutMs: opts.timeoutMs,
+  });
+}
+
+/**
  * Write `content` to `filePath` as `username`, creating the containing
  * directory if necessary, with the file forced to mode 0600 regardless of the
  * ambient umask.

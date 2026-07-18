@@ -11,6 +11,7 @@ import { getConfigDir } from '../lib/config.js';
 import { isProcessAlive, processKill } from '../lib/process-utils.js';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';
+import { killAsUser, shouldElevateForUser } from './privilege-elevation.js';
 
 const logger = createLogger('session-initialization');
 
@@ -36,6 +37,13 @@ interface SessionInitializationDeps {
   /** Pure base-dir computation. Used by the orphan detector — throws on invalid metadata. */
   baseDirForPersistedSession: PersistedSessionBaseDirFactory;
   getServerPid: () => number;
+  /**
+   * Resolves the OS user that owns a session's worker PIDs, so
+   * `killOrphanWorkers` can elevate via `killAsUser` when the workers were
+   * spawned under a different OS user than the server process (multi-user
+   * mode).
+   */
+  resolveSpawnUsername: (createdBy?: string) => Promise<string>;
 }
 
 export class SessionInitializationService {
@@ -224,7 +232,7 @@ export class SessionInitializationService {
       }
 
       // Kill any orphan worker processes first
-      killedWorkerCount += SessionInitializationService.killOrphanWorkers(session);
+      killedWorkerCount += await SessionInitializationService.killOrphanWorkers(session, this.deps.resolveSpawnUsername);
 
       // Save with serverPid=null but pausedAt=undefined to indicate auto-resume target
       const { pausedAt: _removed, ...sessionWithoutPausedAt } = session;
@@ -314,7 +322,7 @@ export class SessionInitializationService {
       orphanSessions.push(session);
 
       // Kill all workers in this session (only PTY workers have pid)
-      killedCount += SessionInitializationService.killOrphanWorkers(session);
+      killedCount += await SessionInitializationService.killOrphanWorkers(session, this.deps.resolveSpawnUsername);
     }
 
     // Remove orphan sessions from persistence and delete output files
@@ -350,30 +358,72 @@ export class SessionInitializationService {
 
   /**
    * Kill orphan worker processes for a session.
+   *
+   * Resolves the session's spawn username ONCE (all workers in a session
+   * share the same spawn user) and elevates via `killAsUser` when that
+   * resolves to a different OS user than the server process (multi-user
+   * mode) -- otherwise `process.kill` cannot signal the worker (`EPERM`) and
+   * the orphan is silently left running. Non-elevated sessions keep the
+   * original `processKill` path verbatim.
+   *
    * Returns the number of workers successfully killed.
    */
-  static killOrphanWorkers(session: PersistedSession): number {
+  static async killOrphanWorkers(
+    session: PersistedSession,
+    resolveSpawnUsername: (createdBy?: string) => Promise<string>,
+    opts: { killAsUserImpl?: typeof killAsUser } = {},
+  ): Promise<number> {
+    const killAsUserFn = opts.killAsUserImpl ?? killAsUser;
     let killedCount = 0;
+
+    const username = await resolveSpawnUsername(session.createdBy);
+    const elevated = shouldElevateForUser(username);
+
+    // createdBy was set but resolution fell back to the server process user
+    // (legacy/unresolvable createdBy) -- only worth a warn in multi-user
+    // mode, where a non-elevated kill on a cross-user PID would fail.
+    if (session.createdBy !== undefined && !elevated && process.env.AUTH_MODE === 'multi-user') {
+      logger.warn(
+        { sessionId: session.id, createdBy: session.createdBy },
+        'killOrphanWorkers: session.createdBy did not resolve to an elevated user; killing worker processes as the server process user',
+      );
+    }
+
     for (const worker of session.workers) {
       // Skip git-diff workers (no process) and workers with no pid (not yet activated)
       if (worker.type === 'git-diff' || worker.pid === null) continue;
+      const pid = worker.pid;
 
-      if (isProcessAlive(worker.pid)) {
-        try {
-          processKill(worker.pid, 'SIGTERM');
-          logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
-          killedCount++;
-        } catch (error) {
-          logger.error({ pid: worker.pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
-          // Try SIGKILL as fallback for stubborn processes
-          try {
-            processKill(worker.pid, 'SIGKILL');
-            logger.info({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
-            killedCount++;
-          } catch {
-            // Process may have exited between checks, log but continue
-            logger.warn({ pid: worker.pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
+      if (!isProcessAlive(pid)) continue;
+
+      try {
+        if (elevated) {
+          const result = await killAsUserFn(pid, 'SIGTERM', username);
+          if (result.exitCode !== 0) {
+            throw new Error(`killAsUser SIGTERM failed (exitCode=${result.exitCode}): ${result.stderr}`);
           }
+        } else {
+          processKill(pid, 'SIGTERM');
+        }
+        logger.info({ pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker process');
+        killedCount++;
+      } catch (error) {
+        logger.error({ pid, workerId: worker.id, sessionId: session.id, err: error }, 'Failed to kill orphan worker with SIGTERM');
+        // Try SIGKILL as fallback for stubborn processes
+        try {
+          if (elevated) {
+            const result = await killAsUserFn(pid, 'SIGKILL', username);
+            if (result.exitCode !== 0) {
+              throw new Error(`killAsUser SIGKILL failed (exitCode=${result.exitCode}): ${result.stderr}`);
+            }
+          } else {
+            processKill(pid, 'SIGKILL');
+          }
+          logger.info({ pid, workerId: worker.id, sessionId: session.id }, 'Killed orphan worker with SIGKILL');
+          killedCount++;
+        } catch {
+          // Process may have exited between checks, log but continue
+          logger.warn({ pid, workerId: worker.id, sessionId: session.id }, 'Failed to kill orphan worker (process may have already exited)');
         }
       }
     }
