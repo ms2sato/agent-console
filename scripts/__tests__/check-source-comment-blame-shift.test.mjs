@@ -450,9 +450,9 @@ describe('findDefaultFiles — scan glob', () => {
 });
 
 describe('KNOWN_VIOLATIONS — baseline integrity', () => {
-  it('is a non-empty Set (pre-existing violations were baked in)', () => {
+  it('is a Set (empty after the Issue #898 cleanup removed all baseline violations)', () => {
     expect(KNOWN_VIOLATIONS).toBeInstanceOf(Set);
-    expect(KNOWN_VIOLATIONS.size).toBeGreaterThan(0);
+    expect(KNOWN_VIOLATIONS.size).toBe(0);
   });
 
   it('entries follow the `file:line:col:pattern` key shape', () => {
@@ -461,7 +461,7 @@ describe('KNOWN_VIOLATIONS — baseline integrity', () => {
     }
   });
 
-  it('against the live tree, the script exits 0 (all current violations are allowlisted)', () => {
+  it('against the live tree, the script exits 0 (zero violations remain repo-wide)', () => {
     const result = spawnSync('bun', [SCRIPT_PATH], {
       cwd: REPO_ROOT,
       encoding: 'utf-8',
