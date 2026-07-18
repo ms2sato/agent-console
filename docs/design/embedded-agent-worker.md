@@ -70,7 +70,7 @@ Three implementation shapes were compared for "an agent that owns its LLM loop":
 Two decisions were made alongside the candidate choice:
 
 1. **Issue #878 (verified MCP caller identity) is IN SCOPE for this direction, not deferred.** This is what tips the comparison to (b): once #878 closes the self-asserted-identity gap, (b) can reuse MCP for app-operation tools with the same identity guarantees (a) would have had to build from scratch. See [Multi-user identity & privilege](#multi-user-identity--privilege).
-2. **Restart-resume (conversation survives a server restart) is DEFERRED to a post-v1 fast-follow.** Under (b), a server restart already kills and re-spawns the worker process exactly like today's PTY-backed terminal workers do -- so "no resume in v1" is *parity* with the existing model, not a regression. (It would have been a hard requirement under (a), whose entire loop state lives in server memory.) v1 ships the embedded-agent UX (structured events, provider freedom) without transcript persistence; persisting the conversation transcript across the hard mid-turn / mid-tool-call restore case becomes an explicit fast-follow.
+2. **Restart-resume (conversation survives a server restart) is DEFERRED to a post-v1 fast-follow.** Under (b), a server restart already kills and re-spawns the worker process exactly like today's PTY-backed terminal workers do -- so "no resume in v1" is *parity* with the existing model, not a regression. (It would have been a hard requirement under (a), whose entire loop state lives in server memory.) v1 ships the embedded-agent UX (structured events, provider freedom) without transcript persistence; persisting the conversation transcript across the hard mid-turn / mid-tool-call restore case becomes an explicit fast-follow. **Update (Issue #1123, owner directive 2026-07-15):** this deferral has since been un-deferred as a formal policy change -- not a re-litigation of the reasoning above, which remains accurate design history for why v1 shipped without restore. See [Transcript Restore](#transcript-restore).
 
 **Worker-type behavior inconsistency to surface in v1 (docs + UI).** Today's terminal AgentWorker resumes its conversation across a restart by re-invoking the underlying CLI with its continue flag (e.g. Claude Code's `-c`; see `session-worker-design.md`'s `agentId` note). The new embedded agent worker type has no equivalent in v1 -- a restart starts a fresh conversation. This inconsistency between worker types must be stated plainly in the v1 design doc and in the UI (e.g. a visible "conversation resets on restart" indicator for this worker type), not left implicit.
 
@@ -805,6 +805,99 @@ Attaches to `EmbeddedAgentWorkerView` (v1 spec, [UI](#ui) above) as new siblings
 - **Integration (`packages/integration/src/`):** the Q10 wire-boundary test extended to cover `context-usage` and `context-handoff` round-tripping through `EmbeddedAgentStreamEventSchema`, and `EmbeddedAgentDefinition`'s `contextWindowTokens`/`handoff` fields round-tripping through the REST CRUD + registry-broadcast path.
 - **Browser QA (mandatory, gated true-path per `workflow.md` §5):** the bar's three color bands and hover tooltip; a soft-threshold banner appearing on crossing and not reappearing until dismissed-then-re-crossed; a full manual handoff (banner CTA -> `Handing off…` -> transcript divider with expandable distillation -> bar visibly drops).
 
+## Transcript Restore
+
+**Status:** design-first, Stage a (this section is the entire deliverable of Stage a) -- specification only, Issue [#1123](https://github.com/ms2sato/agent-console/issues/1123). No production code changes accompany this section. Stage b (implementation, a separate PR) follows once the embedded-agent architect reviews this section clean. This is the post-v1 fast-follow named in [Post-v1 fast-follows](#post-v1-fast-follows) item 1 and the [Design Decisions](#design-decisions) point 2 deferral.
+
+**Policy status -- un-defer, not re-litigation.** [Design Decisions](#design-decisions) point 2 deferred "restart-resume" to a post-v1 fast-follow on the reasoning that v1's reset-on-restart was *parity* with the terminal worker's PTY-loss behavior, not a regression. Owner directive (2026-07-15) reverses that deferral as a **formal policy change**: full conversation restore across worker/server restart becomes the default target for the embedded agent worker, closing the UX gap against the terminal worker's `-c` continuation ([Design Decisions](#design-decisions) "Worker-type behavior inconsistency"). This section is the first specification of that reversal. It does not re-open or re-argue point 2's original reasoning -- that reasoning remains accurate design history for why v1 shipped without restore; the un-defer is authorized new scope layered on top of it, not a correction of it.
+
+### Definition
+
+**Restore** = reconstitution of the LLM-facing `conversation` array (the message list sent to the provider) from the worker's persisted NDJSON output log, performed at activation, in place of v1's unconditional fresh-epoch-and-truncate reset ([Server-side management](#server-side-management-embeddedagentworkerservice) step 4). Restore reconstructs only that array -- the loop's other in-memory state (turn counters, the per-turn `AbortController`, etc.) always starts fresh, whether or not restore succeeds.
+
+### Tier scope: Tier B adopted, Tier C mid-turn repair in the same scope
+
+Using the tiers Issue #1123 introduced:
+
+| Tier | Scope | This spec |
+|---|---|---|
+| A | Full restore; no context-window judgement; provider rejects with 400 on overflow | Baseline every restore performs |
+| B | Tier A + context-usage threshold detection, steering the user toward [Context Handoff](#context-handoff) before overflow | **Adopted** |
+| C | Tier B + mid-turn / mid-tool-call synthetic repair | **Adopted, same scope as Tier B, not a separately-gated follow-up** |
+
+Tier C is in scope alongside Tier B because it is not a new mechanism -- it is a second call site for the [Mid-turn Repair](#mid-turn-repair) logic already shipped for the runtime-abort case ([The loop's turn cycle](#the-loops-turn-cycle) "Mid-turn abort repair (mandatory)"). Shipping Tier B without Tier C would leave every restart that happens to land mid-tool-call permanently unrecoverable: the malformed tail (an assistant `tool_calls` entry with no matching tool-role response) does not heal itself, so every subsequent activation replays the same malformed tail and the provider rejects it every time -- a correctness gap, not an incremental nice-to-have, so it is not deferred.
+
+### Runtime abort-repair vs. restore-time repair: parts cross-reference
+
+Required by AC 2: the historically most common bug source in this codebase is a "machinery partially ported" defect -- one call site's mechanism copied without every part of its contract. This table is the audit surface for stage b: every row must have an entry in both columns, or the gap is a bug, not a design choice.
+
+| # | Part | Runtime abort-repair (existing, [The loop's turn cycle](#the-loops-turn-cycle)) | Restore-time repair (new, this section) |
+|---|---|---|---|
+| 1 | Trigger | `cancel` command, or the re-ask cap exceeded, during an in-flight `runTurn` | Activation-time replay of the persisted NDJSON stream, before the loop accepts its first command |
+| 2 | Detection scope | The CURRENT turn's tool calls in the live, in-memory `this.conversation` | Every `tool-call` event in the restore window ([Context-handoff boundary](#context-handoff-boundary)) with no matching `tool-result` event in the log |
+| 3 | Detection surface | In-process array indices / object references | Log-derived event pairing (parse `tool-call`/`tool-result` pairs by `callId`) -- a different data source, same predicate ("was this `tool_call_id` ever answered?") |
+| 4 | Synthetic message content | Fixed reason, e.g. `Error: canceled` | Restart-specific reason, e.g. `Error: worker restarted before this tool call completed` -- surfaced verbatim in this section's "Repair transparency" UI note below; text differs, insertion mechanism does not |
+| 5 | Insertion target | `this.conversation` (live, in-process, about to be handed to the next provider call) | The reconstructed array built by the restore routine, before it is handed to the loop via the `init` command's `restoredConversation` field |
+| 6 | Timing | Synchronously, inside `runTurn`'s abort branch, before `turn-error` is emitted | Synchronously, inside the restore routine, before activation reports success and before the loop accepts its first `user-message` |
+| 7 | Wire persistence of the repair itself | NOT emitted as a wire event -- a pure in-memory fix, invisible in the persisted log | Also not a new wire event -- the repair is re-derived from the raw log on every restore attempt (idempotent by construction: replaying the same log always reconstructs the same repaired array), so nothing needs to be durably marked |
+| 8 | Downstream state transition | `turn-error` -> `emitIdle()` (`turnActive` clears; the live turn is reported as failed) | No `turn-error` -- there is no live turn to fail. The repaired array is simply the conversation the loop starts with; the client's signal is this section's "Repair transparency" UI note, not an error event |
+
+Row 7 is the property to watch under audit: because restore reconstructs from the raw log every time (never a cached/pre-computed repair), a corrupted or hand-edited log always re-derives the same result from its current bytes -- there is no separate "repair record" that could drift from the log it was derived from.
+
+### Restore trigger & activation flow
+
+Extends [Server-side management](#server-side-management-embeddedagentworkerservice) step 4 ("Reset the output stream"). Step 4 becomes conditional:
+
+4. **Attempt restore before resetting**, unless this is the worker's first-ever activation (empty persisted output file -- nothing to restore, proceed with today's v1 reset unconditionally):
+   - **4a.** Read the persisted NDJSON stream (the same file [Persistence and DB changes](#persistence-and-db-changes-workers-table) already maintains).
+   - **4b.** Locate the restore window: the tail of the stream strictly after the most recent `context-handoff` event, or the whole stream if none exists -- see [Context-handoff boundary](#context-handoff-boundary).
+   - **4c.** Replay that window into a `ChatMessage[]` array using the same message-shape rules `runTurn` already builds from live events: `user-message` -> `{role:'user'}`; a `tool-call`/`tool-result` pair -> the owning assistant message's `tool_calls` entry plus a matching `{role:'tool'}` message; a terminal `assistant-message` -> `{role:'assistant', tool_calls?}`. `assistant-delta` / `assistant-thinking-delta` / `state` / `context-usage` / `ready` / `exited` events are replay-only noise and contribute nothing to the array (reasoning/thinking content is never part of the conversation array even live -- see [The loop's turn cycle](#the-loops-turn-cycle) -- so restore does not reconstruct it either).
+   - **4d.** Apply [Mid-turn Repair](#mid-turn-repair) (Tier C) to the reconstructed array.
+   - **4e.** On success: skip `resetWorkerOutput` entirely -- do not truncate, do not mint a fresh epoch (this mirrors `activateAgentWorkerPty`'s `revived: true` epoch-preserving branch, which v1 explicitly avoided per the restart-resume deferral and which this fast-follow now adopts for embedded-agent workers too). Pass the reconstructed array as a new `init` field, `restoredConversation` (below), so the loop seeds `this.conversation` before accepting any command.
+   - **4f.** On failure at any step (unparseable stream, a reconstruction invariant violated, an I/O error): fall back to today's v1 activation behavior exactly -- see [Failure invariant](#failure-invariant-restore).
+
+New optional `init` field, extending [Stdio protocol](#stdio-protocol-v1) (no other command or event shape changes):
+
+```ts
+| { v: 1; type: 'init';
+    ...
+    restoredConversation?: ChatMessage[]; }  // Transcript Restore (#1123); absent = fresh conversation (today's v1 behavior)
+```
+
+No new persisted/wire EVENT type is introduced -- consistent with the Issue's own expectation of no new events: restore is pure reconstitution from the existing `EmbeddedAgentStreamEvent` union already on disk, plus one new optional command field to hand the result to the loop.
+
+### Context-handoff boundary
+
+[Context Handoff (Phase A)](#context-handoff-phase-a)'s `context-handoff` marker event is deliberately persisted into the same stream a restore replays -- already called out in [Post-v1 fast-follows](#post-v1-fast-follows) item 1. Restore treats the most recent `context-handoff` event as a hard cut: reconstruction starts from that event, using its `distillation` field to rebuild the exact seed pair a live handoff would have produced -- `[{role:'system', content: <reassembled post-handoff system prompt>}, {role:'user', content: 'This conversation continues from a previous one. Prior context summary: <distillation>'}]` (the identical seed shape [Context Handoff (Phase A)](#context-handoff-phase-a)'s `AgentLoop.handoff()` steps 10-11 construct live) -- plus every event after it. Events before the boundary are never replayed into the conversation array: a handoff is a deliberate, intentional discard of prior context (per the owner directives in [Context Handoff (Phase A)](#context-handoff-phase-a): "the old context is not needed once distilled"), and restore must not silently resurrect what a handoff already discarded. This is the "restore does not cross the handoff boundary" requirement from AC 3.
+
+When no `context-handoff` event exists anywhere in the stream, the boundary is the start of the stream: reconstruction reassembles the original activation-time system prompt the same way ([Context Handoff (Phase A)](#context-handoff-phase-a) step 8's `reassembleSystemPrompt`), since AGENTS.md/CLAUDE.md content may have changed since the worker's original activation.
+
+### Failure invariant (restore)
+
+Restore failure must never corrupt or destroy the persisted log, and must always degrade to a behavior already proven safe: today's v1 reset-and-empty-conversation activation, unchanged.
+
+- Every restore step (read, parse, replay, repair) is wrapped so a thrown error at any point aborts the restore attempt without partial mutation of the output file or the worker record -- restore only *reads* the log; nothing about the read path writes to it.
+- The fallback path is byte-identical to v1's unconditional activation step 4 today: `resetWorkerOutput` (fresh epoch + truncate). The Archive Segment machinery, unchanged by this fast-follow, has already preserved the pre-truncation bytes as an archive segment before the truncate runs -- exactly as it does for every v1 activation today, restore or no restore.
+- The client-visible behavior on fallback is exactly v1's existing "conversation resets on restart" notice ([UI](#ui)) -- restore failure is not a new user-facing error state, it is silent degradation to the documented v1 baseline.
+
+### UI
+
+- **Restoring state.** Between activation start and the loop's `ready` event (or the fallback reset completing), the view shows a loading state: `Restoring conversation from N previous messages...`, where N is the reconstructed array's length -- known server-side before the subprocess is even spawned, since the server builds `restoredConversation` itself in step 4e above.
+- Sending a new user message is blocked while restore/activation is in flight, via the same admission-gate shape [Server-side management](#server-side-management-embeddedagentworkerservice)'s `sendUserMessage` already uses for "turn in progress" -- extended to also cover "activation/restore in progress".
+- **Repair transparency.** When [Mid-turn Repair](#mid-turn-repair) fires during restore (Tier C), the client shows a non-blocking, non-dismissable-until-acknowledged note: `Some tool calls were interrupted by a restart and marked as errors` (per Issue #1123's UI note) -- rendered as a new `EmbeddedAgentChatEntry` kind, `{ kind: 'restore-repair'; toolCallIds: string[] }`, using the same closed-by-default `<details>`/`<summary>` disclosure pattern the `context-handoff` divider already uses ([WebSocket & client protocol](#websocket--client-protocol)).
+
+### Testing (design-time polarity signal -- AC 5)
+
+Implementation and the test itself land in stage b; this subsection fixes the test's *shape* now so stage b does not need to re-derive it.
+
+**Polarity test: provider 400 on an unresponded `tool_call_id`.**
+
+- **Fixture:** a persisted NDJSON log fragment ending in a `tool-call` event with no matching `tool-result` (simulating a crash between tool-call emission and tool execution completing -- the exact Tier C scenario).
+- **Fake provider:** a stub `ProviderAdapter` that enforces the real OpenAI-Chat-Completions constraint -- it rejects any request whose `messages` array contains an assistant message with `tool_calls` not immediately followed, for every one of those `tool_call_id`s, by a matching `tool`-role message. This reproduces real provider behavior in a unit test without a live API.
+- **Direction 1 (repair NOT applied -- must fail):** replay the fixture WITHOUT step 4d ([Mid-turn Repair](#mid-turn-repair)) applied, then drive one turn against the fake provider. Assert the fake provider rejects and the turn surfaces as `turn-error`. This is the reproduction of the bug this design fixes.
+- **Direction 2 (repair applied -- must pass):** the same fixture, WITH step 4d applied. Assert the fake provider accepts the request (the synthetic tool-role message closes every `tool_call_id`) and the turn proceeds normally.
+- The audited property: *a restored conversation with a dangling `tool_call_id` never reaches the provider unrepaired.* Per `workflow.md`'s TDD polarity discipline, stage b's implementation PR must include this test, verified in both directions (stash-the-fix-and-confirm-fail, restore-and-confirm-pass) -- see [Testing plan](#testing-plan) for the sibling precedent (`handoff()`'s failure-invariant polarity test, [Context Handoff (Phase A)](#context-handoff-phase-a) "Testing").
+
 ## Error handling & edge cases
 
 | Case | Behavior |
@@ -857,7 +950,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 
 ## Post-v1 fast-follows
 
-1. **Transcript persistence / restart-resume** (the deferred Design Decision): persist conversation state so re-activation can restore instead of reset; must solve the mid-turn / mid-tool-call restore case. Context Handoff (Phase A)'s `context-handoff` marker event is deliberately persisted into the same NDJSON stream a future restore would replay, so a handoff boundary within a worker's lifetime is already representable when this fast-follow is designed — it does not need its own retrofit.
+1. **Transcript persistence / restart-resume** — **un-deferred (Issue #1123, owner directive 2026-07-15); specified in [Transcript Restore](#transcript-restore).** This section's spec (Stage a) is design-only; the implementation (Stage b) is a separate PR. Context Handoff (Phase A)'s `context-handoff` marker event is deliberately persisted into the same NDJSON stream restore replays, so a handoff boundary within a worker's lifetime is already representable — it did not need its own retrofit, per the [Context-handoff boundary](#context-handoff-boundary) subsection.
 2. `asking` activity state (loop-side heuristics or model-declared).
 3. Inbound `send_session_message` → `user-message` routing for embedded-agent workers (extend `canReceiveSessionMessages`).
 4. Non-native tool-calling: text-parse fallback, constrained decoding (llama.cpp / vLLM structured output).
@@ -880,6 +973,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 - Issue [#1107](https://github.com/ms2sato/agent-console/issues/1107) -- restoring the multi-user `enforce` default (reverted to `warn` in Sprint 2026-07-16); tracks the `headersHelper` functional dogfood step re-scoped out of the #1004 Completion checklist.
 - Issues [#1042](https://github.com/ms2sato/agent-console/issues/1042) (FF-1a), [#1043](https://github.com/ms2sato/agent-console/issues/1043) (FF-1b), [#1044](https://github.com/ms2sato/agent-console/issues/1044) (FF-1c), [#1045](https://github.com/ms2sato/agent-console/issues/1045) (FF-2) -- [Built-in tools](#built-in-tools-fast-follow) fast-follow series.
 - Issue [#1122](https://github.com/ms2sato/agent-console/issues/1122) -- Context Handoff Phase A, designed in [Context Handoff (Phase A)](#context-handoff-phase-a); Phase B (auto-fire + script override) is a separate Issue to be filed after Phase A dogfood.
+- Issue [#1123](https://github.com/ms2sato/agent-console/issues/1123) -- Transcript Restore across worker/server restart, designed (Stage a, spec-only) in [Transcript Restore](#transcript-restore); Stage b (implementation) is a separate PR.
 - MCP server implementation: `packages/server/src/mcp/mcp-server.ts`.
 - Elevation primitives: `packages/server/src/services/privilege-elevation.ts`.
 - Subprocess-management precedent: `packages/server/src/services/interactive-process-manager.ts` (volatile by design; this design combines its mechanics with worker persistence).
