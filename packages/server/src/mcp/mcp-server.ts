@@ -213,24 +213,21 @@ export interface McpDependencies {
   /**
    * User repository used by `delegate_to_worktree` to resolve the parent
    * session's `createdBy` (a user UUID) to its OS `username`, which is then
-   * threaded down to `createWorktreeWithSession` as `requestUsername` so that
-   * `git worktree add` runs as the requesting user in multi-user mode
-   * (Issue #844, extending the REST path established by Issue #838 / PR #843).
+   * threaded down to `createWorktreeWithSession` as `requestUsername` so
+   * that `git worktree add` runs as the requesting user in multi-user mode.
    */
   userRepository: UserRepository;
   broadcastToApp: (msg: AppServerMessage) => void;
   /**
-   * Fetch PR URL for a branch. Issue #885: 3rd arg is `requestUsername`,
-   * threaded by the MCP caller resolving `session.createdBy` -> `username`.
+   * Fetch PR URL for a branch. 3rd arg is `requestUsername`, threaded by
+   * the MCP caller resolving `session.createdBy` -> `username`.
    */
   fetchPullRequestUrl: (
     branch: string,
     cwd: string,
     requestUsername: string | null,
   ) => Promise<string | null>;
-  /**
-   * Find open PR for a branch. Issue #885: see `fetchPullRequestUrl`.
-   */
+  /** Find open PR for a branch; `requestUsername` threading mirrors `fetchPullRequestUrl`. */
   findOpenPullRequest: (
     branch: string,
     cwd: string,
@@ -543,7 +540,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         // 3. Validate sender session (defense-in-depth against agents that pass
-        //    a stale or hallucinated fromSessionId — see Issue #690).
+        //    a stale or hallucinated fromSessionId).
         //    The agent is expected to source this from AGENT_CONSOLE_SESSION_ID,
         //    but LLM-driven tool calls have been observed substituting an unrelated
         //    session id intermittently. Rejecting unknown senders fails fast so
@@ -786,13 +783,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         // Resolve parent's createdBy (a users.id UUID) to its OS username
         // so the suggestion call and `git worktree add` both run as the
-        // requesting user in multi-user mode (Issues #844, #876, extending
-        // Issue #838 / PR #843 from REST to MCP). When `parentCreatedBy`
-        // is unset, or the UUID does not resolve (legacy / orphan
-        // sessions), `requestUsername` is null and `runAsUser` bypasses
-        // elevation — current behaviour preserved. Resolution shared with
-        // `run_process` / `create_conditional_wakeup` via
-        // `resolveRequestUsername` (PR #889, per
+        // requesting user in multi-user mode. When `parentCreatedBy` is
+        // unset, or the UUID does not resolve (legacy / orphan sessions),
+        // `requestUsername` is null and `runAsUser` bypasses elevation —
+        // current behaviour preserved. Resolution shared with `run_process`
+        // / `create_conditional_wakeup` via `resolveRequestUsername` (see
         // `.claude/rules/elevation-helpers.md`).
         const requestUsername = await resolveRequestUsername(
           parentCreatedBy,
@@ -832,7 +827,6 @@ export function createMcpApp(deps: McpDependencies): Hono {
           // resolved parent OS username threaded into `git worktree add`
           // below, so in multi-user mode it picks up the user's per-user
           // Claude auth instead of running as the server process user.
-          // Issue #876 (mirrors Issue #856 / PR #859 for the REST path).
           const suggestion = await suggestSessionMetadata({
             prompt: prompt.trim(),
             repositoryPath: repo.path,
@@ -897,9 +891,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           );
           // Rollback the created worktree since the session no longer exists.
           // Thread the same `requestUsername` resolved above so the rollback
-          // also runs as the worktree-owning user in multi-user mode
-          // (Issue #882). Otherwise the rollback would hit the same
-          // Permission-denied failure mode this issue was filed to fix.
+          // also runs as the worktree-owning user in multi-user mode —
+          // otherwise it would hit the same Permission-denied failure mode.
           try {
             await worktreeService.removeWorktree(repo.path, result.worktree!.path, true, requestUsername);
           } catch (cleanupErr) {
@@ -1053,13 +1046,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
         // 2. Resolve the session's `createdBy` (a users.id UUID) to its OS
         //    username so multiple elevation points run as the worktree-owning
         //    user in multi-user mode: (a) `git worktree remove` + fallback
-        //    `rm -rf` (Issue #882), and (b) `findOpenPullRequest`'s
-        //    `gh pr list` open-PR check (Issue #885). When `createdBy` is
-        //    unset or the UUID does not resolve (legacy / orphan sessions),
-        //    `requestUsername` is null and `runAsUser` bypasses elevation —
-        //    current behaviour preserved. Resolution shared with
-        //    `delegate_to_worktree` / `run_process` / `create_conditional_wakeup`
-        //    via `resolveRequestUsername` (PR #889, per
+        //    `rm -rf`, and (b) `findOpenPullRequest`'s `gh pr list` open-PR
+        //    check. When `createdBy` is unset or the UUID does not resolve
+        //    (legacy / orphan sessions), `requestUsername` is null and
+        //    `runAsUser` bypasses elevation — current behaviour preserved.
+        //    Resolution shared with `delegate_to_worktree` / `run_process` /
+        //    `create_conditional_wakeup` via `resolveRequestUsername` (see
         //    `.claude/rules/elevation-helpers.md`). The MCP caller-auth
         //    binding is enforced above via `checkCallerOwnsSession`
         //    (docs/design/embedded-agent-worker.md § "MCP caller identity").
@@ -1260,13 +1252,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         // Resolve the session's createdBy (a users.id UUID) to its OS
         // `username` so the condition-script process runs as the requesting
-        // user in multi-user mode (Issue #886). When `createdBy` is unset
-        // or the UUID does not resolve (legacy / orphan sessions),
-        // `requestUsername` is null and the underlying `spawnAsUser`
-        // bypasses elevation -- single-user behaviour preserved.
-        // Resolution shared with `run_process` / `delegate_to_worktree`
-        // via `resolveRequestUsername` (PR #889, per
-        // `.claude/rules/elevation-helpers.md`).
+        // user in multi-user mode. When `createdBy` is unset or the UUID
+        // does not resolve (legacy / orphan sessions), `requestUsername` is
+        // null and the underlying `spawnAsUser` bypasses elevation --
+        // single-user behaviour preserved. Resolution shared with
+        // `run_process` / `delegate_to_worktree` via `resolveRequestUsername`
+        // (see `.claude/rules/elevation-helpers.md`).
         const requestUsername = await resolveRequestUsername(
           session.createdBy,
           userRepository,
@@ -1408,14 +1399,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (authError) return errorResult(authError.error);
 
         // Resolve the session's createdBy (a users.id UUID) to its OS
-        // `username` so the spawned process runs as the requesting user
-        // in multi-user mode (Issue #879). When `createdBy` is unset or
-        // the UUID does not resolve (legacy / orphan sessions),
-        // `requestUsername` is null and the underlying `spawnAsUser`
-        // bypasses elevation -- single-user behaviour preserved.
-        // Resolution shared with `delegate_to_worktree` /
-        // `create_conditional_wakeup` via `resolveRequestUsername`
-        // (PR #889, per `.claude/rules/elevation-helpers.md`).
+        // `username` so the spawned process runs as the requesting user in
+        // multi-user mode. When `createdBy` is unset or the UUID does not
+        // resolve (legacy / orphan sessions), `requestUsername` is null and
+        // the underlying `spawnAsUser` bypasses elevation -- single-user
+        // behaviour preserved. Resolution shared with `delegate_to_worktree`
+        // / `create_conditional_wakeup` via `resolveRequestUsername`
+        // (see `.claude/rules/elevation-helpers.md`).
         const requestUsername = await resolveRequestUsername(
           session.createdBy,
           userRepository,

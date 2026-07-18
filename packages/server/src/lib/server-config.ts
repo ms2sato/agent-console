@@ -127,9 +127,9 @@ export const serverConfig = {
    * - 'bun-terminal' (default): use `Bun.spawn({ terminal: ... })` (Bun >= 1.3.5).
    * - 'bun-pty': use the bun-pty native shared library.
    *
-   * See docs in `lib/pty-provider.ts` and Issue #824 for the migration
-   * evaluation. Stage 2 flips the default to 'bun-terminal'; 'bun-pty'
-   * remains selectable as a rollback escape hatch until Stage 3 retires it.
+   * See docs in `lib/pty-provider.ts` for the migration evaluation. Stage 2
+   * flips the default to 'bun-terminal'; 'bun-pty' remains selectable as a
+   * rollback escape hatch until Stage 3 retires it.
    */
   PTY_PROVIDER: (() => {
     const value = process.env.PTY_PROVIDER ?? 'bun-terminal';

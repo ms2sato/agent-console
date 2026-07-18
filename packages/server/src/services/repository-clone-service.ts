@@ -1,5 +1,5 @@
 /**
- * Clone-and-register repository service (Issue #834).
+ * Clone-and-register repository service.
  *
  * Performs `git clone` via `runAsUser` (so multi-user mode clones as the
  * requesting OS user with that user's SSH agent / git credential helpers
@@ -53,8 +53,7 @@ const DEFAULT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
  * How long to keep a terminal (succeeded / failed) job's state in memory
  * before evicting it. Long enough to let a polling client observe the
  * terminal state at least a few times; short enough that a long-lived server
- * + many invalid clone attempts cannot grow the map unbounded. Per CodeRabbit
- * review on PR #862.
+ * + many invalid clone attempts cannot grow the map unbounded.
  */
 const TERMINAL_JOB_TTL_MS = 10 * 60 * 1000;
 
@@ -235,8 +234,8 @@ export function deriveNameFromUrl(url: string): string | null {
 
 /**
  * Classify a `git clone` stderr (or timeout flag) into a structured
- * {@link CloneErrorCode}. Pattern list mirrors Issue #834 Failure modes; new
- * codes are added here as we observe further real-world failure shapes.
+ * {@link CloneErrorCode}. New codes are added here as we observe further
+ * real-world failure shapes.
  *
  * @internal Exported for testing.
  */
@@ -383,10 +382,10 @@ export class RepositoryCloneService {
    * `fsPromises.mkdir(targetDir, { recursive: false })`. POSIX `mkdir(2)`
    * guarantees that exactly one of N concurrent same-target requests
    * succeeds; the rest receive `EEXIST` and are surfaced as
-   * `CloneNameConflictError`. This closes the TOCTOU window CodeRabbit
-   * flagged on PR #862 against the prior lstat-only check. The reservation
-   * lives until the job's terminal-state cleanup (success: leave the dir
-   * alone; failure: rm the dir so the name is reusable).
+   * `CloneNameConflictError`. This closes the TOCTOU window a lstat-only
+   * check would leave open. The reservation lives until the job's
+   * terminal-state cleanup (success: leave the dir alone; failure: rm the
+   * dir so the name is reusable).
    */
   async enqueueClone(request: CloneRepositoryRequest): Promise<string> {
     const url = request.url.trim();
@@ -572,7 +571,7 @@ export class RepositoryCloneService {
    * multi-user mode is active the rm runs as that user (so it can remove the
    * user-owned partial tree without EACCES); otherwise it runs as the server
    * process. `runAsUserImpl: this.runAsUser` routes the call through the
-   * service's test-seam so mocks capture it. (Issue #887)
+   * service's test-seam so mocks capture it.
    */
   private async cleanupPartialClone(
     targetDir: string,
@@ -620,8 +619,8 @@ export class RepositoryCloneService {
 
   /**
    * Schedule eviction of a terminal job from the in-memory map after the
-   * configured TTL. Replaces any prior timer for the same job. Per
-   * CodeRabbit review on PR #862 (unbounded-growth guard).
+   * configured TTL (unbounded-growth guard). Replaces any prior timer for
+   * the same job.
    */
   private scheduleTerminalEviction(jobId: string): void {
     const existing = this.evictTimers.get(jobId);

@@ -2,11 +2,10 @@
  * GitHub Issue Service
  *
  * Provides functionality to fetch GitHub issue details via the GitHub CLI
- * (`gh api`). Issue #885: gh invocations are routed through the `runGh`
- * thin runner (which composes `runAsUser` per `.claude/rules/elevation-helpers.md`)
- * so multi-user mode (AUTH_MODE=multi-user) runs `gh api` as the requesting
- * OS user (with that user's per-user gh auth token) instead of the
- * server-process user. Mirrors PR #842 / PR #859.
+ * (`gh api`). Invocations are routed through the `runGh` thin runner (which
+ * composes `runAsUser` per `.claude/rules/elevation-helpers.md`) so multi-user
+ * mode (AUTH_MODE=multi-user) runs `gh api` as the requesting OS user (with
+ * that user's per-user gh auth token) instead of the server-process user.
  */
 import type { GitHubIssueSummary } from '@agent-console/shared';
 import { getRemoteUrl, parseOrgRepo } from '../lib/git.js';
@@ -64,9 +63,8 @@ export function parseIssueReference(reference: string, defaultOrgRepo?: string):
 async function resolveDefaultOrgRepo(repoPath: string): Promise<string> {
   // getRemoteUrl is a pure path-anchored parse of `git remote get-url origin`
   // and does not require elevation (server user can read git config in the
-  // worktree directory). When PR #881 added the `requestUser` parameter to
-  // git helpers it left this call site at the default (no elevation), which
-  // matches the historical behavior; preserve that here.
+  // worktree directory); this call site intentionally stays at the default
+  // (no elevation).
   const remoteUrl = await getRemoteUrl(repoPath);
   if (!remoteUrl) {
     throw new Error('Repository does not have a git remote');

@@ -14,8 +14,7 @@ export const CreateRepositoryRequestSchema = v.strictObject({
 });
 
 /**
- * Accepted clone URL shapes (Issue #834 Validation, tightened per CodeRabbit
- * review on PR #862):
+ * Accepted clone URL shapes:
  *   - `https://...` (TLS only; cleartext http:// is rejected to avoid
  *     credential-bearing clones over an unsecured channel)
  *   - `git://...`
@@ -46,7 +45,7 @@ const cloneUrlPattern =
 const cloneUrlDisallowedPattern = /[\s\x00-\x1F\x7F;&|`$<>()[\]{}'"\\]/;
 
 /**
- * Repository name validation (Issue #834 Validation):
+ * Repository name validation:
  * - 1-100 chars of `[A-Za-z0-9._-]`
  * - Cannot start with `-` (so it is never mistaken for a CLI flag)
  * - Cannot be `.` or `..`
@@ -56,7 +55,7 @@ const cloneUrlDisallowedPattern = /[\s\x00-\x1F\x7F;&|`$<>()[\]{}'"\\]/;
 const repoNamePattern = /^[A-Za-z0-9_.][A-Za-z0-9._-]{0,99}$/;
 
 /**
- * Schema for cloning + registering a repository (Issue #834).
+ * Schema for cloning + registering a repository.
  *
  * Validates at request boundary so the URL / name never reach a subprocess
  * spawn unless they pass the documented shape.
@@ -109,7 +108,7 @@ export type CloneJobStatus = (typeof CLONE_JOB_STATUS)[keyof typeof CLONE_JOB_ST
 
 /**
  * Structured failure codes the server emits so the client can render an
- * actionable message in the user's locale (Issue #834 Failure modes).
+ * actionable message in the user's locale.
  *
  * Each code maps to a documented operator-resolvable cause; `unknown` is the
  * catch-all when stderr does not match any known substring.
@@ -146,7 +145,7 @@ export interface CloneJobError {
 }
 
 /**
- * Response shape for `POST /api/repositories/clone` (Issue #834). The repo is
+ * Response shape for `POST /api/repositories/clone`. The repo is
  * cloned asynchronously; the client polls `GET /api/repositories/clone/:jobId`
  * for the final status and the new `repositoryId`.
  */

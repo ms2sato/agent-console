@@ -125,7 +125,7 @@ export interface GitDiffWorkerInitParams {
   locationPath: string;
   baseCommit?: string;
   /**
-   * Issue #869: OS username to run git as during the initial
+   * OS username to run git as during the initial
    * `computeDefaultBaseSpec` call. In multi-user mode this is the
    * worktree-owning user (resolved from the session's `createdBy`), so git
    * does not refuse with "dubious ownership in repository". Pass `null` in
@@ -150,7 +150,7 @@ export interface AgentActivationParams extends WorkerContext {
    * (server restart, hibernation, pause/resume) while the persisted output
    * file remained on disk. When true, `outputOffset` is seeded from the
    * current file size so subsequent `output` events keep the file-absolute
-   * semantic the client's IndexedDB cache expects (Issue #769).
+   * semantic the client's IndexedDB cache expects.
    * Set false for fresh worker creation and for `restartWorker` (which
    * truncates the file to zero before activation).
    */
@@ -357,7 +357,7 @@ export class WorkerManager {
    * The worker stores a base *spec* (intent), not a frozen commit hash. The
    * spec is re-resolved to a concrete hash on every diff computation, so the
    * diff base tracks the moving fork point as the branch absorbs upstream
-   * commits (Issue #800).
+   * commits.
    */
   async initializeGitDiffWorker(params: GitDiffWorkerInitParams): Promise<InternalGitDiffWorker> {
     const { id, name, createdAt, locationPath, baseCommit, requestUser } = params;
@@ -399,7 +399,7 @@ export class WorkerManager {
 
     const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, context } = params;
 
-    // Issue #769: align outputOffset with file-absolute semantic on revived
+    // Align outputOffset with file-absolute semantic on revived
     // activation. Must run BEFORE PTY spawn so the very first onData chunk
     // advances from the seeded value, not from 0.
     if (params.revived) {
@@ -595,7 +595,7 @@ export class WorkerManager {
 
     const { sessionId, locationPath, repositoryEnvVars } = params;
 
-    // Issue #769: align outputOffset with file-absolute semantic on revived
+    // Align outputOffset with file-absolute semantic on revived
     // activation. See activateAgentWorkerPty for the full rationale.
     if (params.revived) {
       worker.outputOffset = await this.workerOutputFileManager.getCurrentOffset(

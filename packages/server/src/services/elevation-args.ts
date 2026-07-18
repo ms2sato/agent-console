@@ -7,11 +7,11 @@
  * No I/O. No side effects. Pure function from input shape to argv + inner
  * shell command string.
  *
- * Design choice (Issue #866): the elevated user's natural login env (set by
+ * Design choice: the elevated user's natural login env (set by
  * `sudo -i`'s shell init: PATH / HOME / USER / SHELL / LOGNAME / LANG / ...)
  * is the source of truth for those vars. We do NOT inherit bun server's env;
  * doing so would override the elevated user's natural env and break PATH
- * lookup, HOME-relative config loading, etc. (PR #864's regression).
+ * lookup, HOME-relative config loading, etc.
  *
  * The only env vars we inject across the privilege boundary are the ones
  * sudo strips AND login shell init does not restore -- empirically just the
@@ -46,9 +46,8 @@ const COLOR_ENV: Readonly<Record<string, string>> = Object.freeze({
  * presentation, not to security-critical resolution.
  *
  * Mirrors `PROTECTED_ENV_VARS` in `env-filter.ts` minus the color trinity.
- * CodeRabbit Major finding on PR #867 surfaced the gap that the previous
- * "additionalEnvVars wins" rule was too permissive at the privilege
- * boundary.
+ * The previous "additionalEnvVars wins" rule was too permissive at the
+ * privilege boundary.
  */
 const PRIVILEGE_BOUNDARY_PROTECTED: readonly string[] = Object.freeze([
   // Security-sensitive: library injection
@@ -143,7 +142,7 @@ export function buildElevationArgs(input: ElevationArgsInput): ElevationArgs {
   // Strip privilege-boundary-protected vars from additionalEnvVars BEFORE
   // merging. This prevents a malicious / careless repository config from
   // overriding the elevated user's PATH, HOME, LD_PRELOAD, etc. via per-spawn
-  // env. CodeRabbit Security/Major finding on PR #867.
+  // env.
   const filteredAdditional = stripPrivilegeBoundaryProtected(input.additionalEnvVars);
   const combined: Record<string, string> = {
     ...COLOR_ENV,

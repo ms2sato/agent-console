@@ -88,12 +88,11 @@ export interface CleanupWorkerOutputPayload {
  *
  * `requestUsername` carries the OS username of the operator who triggered the
  * unregister. In `AUTH_MODE=multi-user` the worktree subtree under `repoDir`
- * is owned by individual users (Issue #838 / PR #843), so a recursive `rm` as
- * the server process fails with `EACCES` on the first user-owned descendant.
- * When set (and elevation actually applies), the handler routes the removal
- * through `runAsUser` so the user-owned subtree is removable. `null` (or
+ * is owned by individual users, so a recursive `rm` as the server process
+ * fails with `EACCES` on the first user-owned descendant. When set (and
+ * elevation actually applies), the handler routes the removal through
+ * `runAsUser` so the user-owned subtree is removable. `null` (or
  * single-user / same-user) preserves the historical direct `fs.rm` path.
- * Issue #884.
  */
 export interface CleanupRepositoryPayload {
   repoDir: string;

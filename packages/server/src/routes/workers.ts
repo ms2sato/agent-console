@@ -22,13 +22,13 @@ const logger = createLogger('api:workers');
 // Upload directory is per-uid under the OS temp directory so that:
 //   1. Different users on the same host (e.g. Model B service user `agentconsole`
 //      vs. an interactive dev user) do not collide on a single host-wide
-//      `/tmp/agent-console-uploads` (the original EACCES symptom of issue #821).
+//      `/tmp/agent-console-uploads` (the original EACCES symptom).
 //   2. Uploads remain transient: /tmp is reaped by the OS (systemd-tmpfiles,
 //      tmpwatch, reboot), so abandoned upload buffers do not accumulate. The
 //      server has no read-completion signal for `injectMessage`, so a
 //      persistent location (e.g. AGENT_CONSOLE_HOME) would leak disk over time.
 //
-// Mode and group depend on AUTH_MODE (Issue #830):
+// Mode and group depend on AUTH_MODE:
 //   - AUTH_MODE=none (single-user): mode 0700, owner-only. Prevents other
 //     users on the same host from reading buffered file contents.
 //   - AUTH_MODE=multi-user: mode 2750 (setgid + group-rx), owner = service
@@ -38,7 +38,7 @@ const logger = createLogger('api:workers');
 //     per-user PTY (running as the logged-in user, who is also a member of
 //     the shared group) traverse into the buffer to read attachments.
 //
-// Setgid is applied via an explicit chmod(1) AFTER mkdir (#830 follow-up):
+// Setgid is applied via an explicit chmod(1) AFTER mkdir:
 //   - Bun 1.3.10 strips the special bits (setgid 0o2000 / setuid 0o4000 /
 //     sticky 0o1000) in its JS layer BEFORE the syscall, for both
 //     `fs.mkdir({ mode })` and `fs.chmod(dir, mode)`. Verified by strace:
@@ -57,7 +57,7 @@ const logger = createLogger('api:workers');
 //     `workers-upload-dir-real-fs.test.ts` kernel-level probe will flag
 //     the change and the in-process chmod step can replace the shell-out.
 //
-// No in-process readiness cache (Issue #830): the directory is re-verified
+// No in-process readiness cache: the directory is re-verified
 // on every upload so that if /tmp is reaped by systemd-tmpfiles during a
 // long-running server's uptime, the next upload recreates the directory.
 // `mkdir(..., { recursive: true })` is a cheap idempotent no-op when the
@@ -118,7 +118,7 @@ async function applyModeViaSpawnChmod(dir: string, mode: number): Promise<void> 
 async function ensureUploadDir(): Promise<string> {
   const dir = resolveUploadDir();
   const contract = resolveUploadDirContract();
-  // TOCTOU defense (security review HIGH, #821 follow-up): POSIX mkdir is a
+  // TOCTOU defense: POSIX mkdir is a
   // no-op when the target already exists, so a pre-created symlink or a
   // wider-mode dir would silently slip past `mkdir(..., { mode })`. After
   // mkdir, lstat the path (no symlink follow) and reject anything that does
@@ -130,7 +130,7 @@ async function ensureUploadDir(): Promise<string> {
     // symlink target's mode before we ever reject the symlink. Lstat
     // first, confirm symlink / dir / owner / gid, THEN re-apply setgid
     // via chmod (which is now operating on a path we have just
-    // verified). CodeRabbit #831-review TOCTOU finding.
+    // verified).
     let st = await lstat(dir);
     if (st.isSymbolicLink()) {
       throw new Error(`Upload directory is a symlink: ${dir}`);
@@ -363,11 +363,11 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('Worker is not a git-diff worker');
     }
 
-    // Issue #869 / CodeRabbit lesson from PR #874: multi-user mode must run
-    // git as the session's effective spawn user (the OS user that owns the
-    // worktree), NOT the authenticated viewer. For shared sessions the spawn
-    // user is the shared account — using the viewer's identity would
-    // reintroduce dubious-ownership errors on user-owned worktrees.
+    // Multi-user mode must run git as the session's effective spawn user
+    // (the OS user that owns the worktree), NOT the authenticated viewer.
+    // For shared sessions the spawn user is the shared account — using the
+    // viewer's identity would reintroduce dubious-ownership errors on
+    // user-owned worktrees.
     const spawnUsername = await resolveSpawnUsername(session.createdBy, userRepository);
 
     const { resolveBaseSpec, getDiffData } = await import('../services/git-diff-service.js');
@@ -379,7 +379,6 @@ const workers = new Hono<AppBindings>()
 
     return c.json(diffData);
   })
-  // Get diff for a specific file
   .get('/:sessionId/workers/:workerId/diff/file', async (c) => {
     const sessionId = c.req.param('sessionId');
     const workerId = c.req.param('workerId');
@@ -404,9 +403,8 @@ const workers = new Hono<AppBindings>()
       throw new ValidationError('Worker is not a git-diff worker');
     }
 
-    // Issue #869 / CodeRabbit lesson from PR #874: see GET /diff above for
-    // the shared-session correctness reason. Resolve the spawn user from
-    // session.createdBy, not the viewer.
+    // See GET /diff above for the shared-session correctness reason.
+    // Resolve the spawn user from session.createdBy, not the viewer.
     const spawnUsername = await resolveSpawnUsername(session.createdBy, userRepository);
 
     const { resolveBaseSpec, getFileDiff } = await import('../services/git-diff-service.js');
@@ -423,8 +421,8 @@ export { workers };
 
 /**
  * @internal Exported for the real-fs regression test in
- * `workers-upload-dir-real-fs.test.ts` (Issue #830 follow-up). Production
- * callers should never reach for these; they go through the route handler.
+ * `workers-upload-dir-real-fs.test.ts`. Production callers should never
+ * reach for these; they go through the route handler.
  */
 export const __TESTING__ = {
   ensureUploadDir,

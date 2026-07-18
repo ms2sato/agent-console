@@ -804,16 +804,14 @@ export async function setupWebSocketRoutes(
             return;
           }
 
-          // Handle git-diff workers differently
           if (worker.type === 'git-diff') {
-            // Issue #869 / CodeRabbit lesson from PR #874: resolve the
-            // session's effective spawn user (the worktree-owning OS user),
-            // NOT the authenticated viewer. For shared sessions the spawn
-            // user is the shared account; using the viewer's identity would
-            // reintroduce dubious-ownership errors on user-owned worktrees.
-            // The auth guard (`wsAuthGuard`) above guarantees the viewer is
-            // authenticated; the username threaded to git is the worktree
-            // owner's, not the viewer's.
+            // Resolve the session's effective spawn user (the
+            // worktree-owning OS user), NOT the authenticated viewer. For
+            // shared sessions the spawn user is the shared account; using
+            // the viewer's identity would reintroduce dubious-ownership
+            // errors on user-owned worktrees. The auth guard (`wsAuthGuard`)
+            // above guarantees the viewer is authenticated; the username
+            // threaded to git is the worktree owner's, not the viewer's.
             (async () => {
               const spawnUsername = await resolveSpawnUsername(
                 session.createdBy,
@@ -1237,9 +1235,9 @@ export async function setupWebSocketRoutes(
               default:
                 // Includes input/resize/image and any other unrecognized
                 // type: every non-supported message is explicitly rejected
-                // here rather than falling through to PTY handling below
-                // (CodeRabbit MAJOR: `image` was reachable that way before
-                // this branch was made terminal).
+                // here rather than falling through to PTY handling below —
+                // `image` was reachable that way before this branch was
+                // made terminal.
                 sendWorkerError(
                   ws,
                   `embedded-agent workers do not support "${String(parsedObj.type)}" messages`,

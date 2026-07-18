@@ -231,7 +231,7 @@ export class WorkerLifecycleManager {
       });
     } else {
       // git-diff worker (async initialization for base commit calculation).
-      // Issue #869: resolve the worktree-owning OS username so the initial
+      // Resolve the worktree-owning OS username so the initial
       // `computeDefaultBaseSpec` git invocation runs as that user in
       // multi-user mode (avoiding "dubious ownership in repository").
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
@@ -554,7 +554,7 @@ export class WorkerLifecycleManager {
   /**
    * Re-push git-diff workers' diff after a branch rename.
    *
-   * In the spec-based model (Issue #800) the persisted base *spec* is
+   * In the spec-based model the persisted base *spec* is
    * branch-agnostic and re-resolves to the moving fork point on every diff, so
    * a branch rename does NOT require freezing a new base hash. We keep each
    * worker's `baseCommit` spec unchanged and fire `onDiffBaseCommitChanged`
