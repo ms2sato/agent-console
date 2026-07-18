@@ -1,4 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { StrictMode } from 'react';
 import { render, screen, waitFor, act, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -69,6 +70,38 @@ function renderCreateWorktreeForm(props: Partial<React.ComponentProps<typeof Cre
       <TestWrapper>
         <CreateWorktreeForm {...mergedProps} />
       </TestWrapper>
+    ),
+    props: mergedProps,
+  };
+}
+
+/**
+ * Same as `renderCreateWorktreeForm`, but wrapped in `React.StrictMode`, matching
+ * production (`main.tsx` wraps the entire app in `<StrictMode>`). This distinction
+ * matters for the draft-restore race regression test below (Issue #1077):
+ * StrictMode's dev-mode double-invoke of effects (mount -> simulated unmount ->
+ * mount again, with no React render in between) is what actually reproduces the
+ * real-browser bug where a stale render-synced dirtyFields ref caused the
+ * simulated-unmount cleanup to clobber a just-restored draft with `{}`.
+ * `renderCreateWorktreeForm` (no StrictMode) cannot reproduce that failure mode.
+ */
+function renderCreateWorktreeFormStrict(props: Partial<React.ComponentProps<typeof CreateWorktreeForm>> = {}) {
+  const defaultProps = {
+    repositoryId: 'repo-1',
+    defaultBranch: 'main',
+    onSubmit: mock(() => Promise.resolve()),
+    onCancel: mock(() => {}),
+  };
+
+  const mergedProps = { ...defaultProps, ...props };
+
+  return {
+    ...render(
+      <StrictMode>
+        <TestWrapper>
+          <CreateWorktreeForm {...mergedProps} />
+        </TestWrapper>
+      </StrictMode>
     ),
     props: mergedProps,
   };
@@ -866,6 +899,53 @@ describe('CreateWorktreeForm', () => {
       // draftKey is falsy and accidentally stringified).
       expect(localStorage.getItem('undefined')).toBeNull();
       expect(localStorage.getItem('null')).toBeNull();
+    });
+  });
+
+  describe('StrictMode double-invoke draft-restore race (Issue #1077)', () => {
+    const draftKey = 'strictmode-draft-key';
+
+    beforeEach(() => {
+      localStorage.removeItem(draftKey);
+    });
+
+    afterEach(() => {
+      localStorage.removeItem(draftKey);
+    });
+
+    // Note: `embeddedAgentId` is used here rather than `sessionTitle` (a
+    // register()-bound field). Investigation while writing this test found
+    // that restoring a register()-bound field's value via this form's
+    // `reset(merged, { keepDefaultValues: true })` call does not actually
+    // land in react-hook-form's internal `_formValues` when the form is also
+    // configured with `shouldUnregister: true` (a separate, pre-existing RHF
+    // interaction, reproducible with or without the Issue #1077 fix and
+    // without StrictMode at all -- see PR discussion). That gap makes
+    // `sessionTitle` unusable as a regression guard for *this* bug: its
+    // localStorage value never becomes the restored draft value either way,
+    // so an assertion on it would not polarity-flip. `embeddedAgentId` is
+    // restored via an explicit `setValue(..., { shouldDirty: true })` call
+    // (not `reset()`), which is unaffected by that quirk and does polarity-
+    // flip on the StrictMode double-invoke race this test targets.
+    it('should not clobber a restored draft in localStorage when effects double-invoke under StrictMode', async () => {
+      localStorage.setItem(draftKey, JSON.stringify({ embeddedAgentId: 'embedded-1' }));
+
+      renderCreateWorktreeFormStrict({ draftKey });
+
+      // Wait for agents to load
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      // The regression-guarding assertion: localStorage must still hold the
+      // restored draft, not be clobbered to "{}" by the save-effect's
+      // StrictMode-simulated-unmount cleanup reading a stale dirty-fields ref.
+      await waitFor(() => {
+        const saved = localStorage.getItem(draftKey);
+        expect(saved).not.toBeNull();
+        const parsed = JSON.parse(saved!);
+        expect(parsed.embeddedAgentId).toBe('embedded-1');
+      });
     });
   });
 
