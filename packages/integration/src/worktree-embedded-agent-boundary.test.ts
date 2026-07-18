@@ -211,6 +211,16 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
   });
 
   it('a dangling embeddedAgentId (no persisted definition) fails worktree creation with a rollback', async () => {
+    // Baseline: no worktree registered for this repo yet. `listWorktrees`
+    // merges `git worktree list --porcelain` (mocked empty by default, see
+    // resetGitMocks) with the DB's own records, surfacing any DB row whose
+    // path git doesn't know about as `(orphaned)`. This makes it a reliable
+    // proxy for "does a worktree DB record still exist" across the
+    // create -> rollback round trip below, without needing to know the
+    // randomly-suffixed worktree directory name up front.
+    const worktreesBefore = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
+    expect(worktreesBefore).toHaveLength(0);
+
     const result = await createWorktreeWithSession(
       {
         repoPath: TEST_REPO_PATH,
@@ -229,5 +239,27 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
     expect(result.session).toBeUndefined();
     expect(result.error).toContain('Embedded agent definition not found');
     expect(result.error).toContain('nonexistent-embedded-agent-id');
+
+    // Rollback assertion 1: the worktree created before the failure (git
+    // worktree add succeeded; the failure happened later, at session
+    // creation) must have been removed. `worktree-creation-service.ts`'s
+    // catch block calls `worktreeService.removeWorktree(..., force=true)`,
+    // which deletes the worktree's DB row. No row surviving means no
+    // orphaned worktree directory is left registered.
+    const worktreesAfter = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
+    expect(worktreesAfter).toHaveLength(0);
+
+    // Rollback assertion 2: no ghost session survives (Issue #1060 --
+    // SessionManager.createSession now rolls back its own partial state
+    // when the initial worker's createWorker call fails).
+    expect(sessionManager.getAllSessions()).toHaveLength(0);
+    const persistedSessions = await sessionManager.getSessionRepository().findAll();
+    expect(persistedSessions).toHaveLength(0);
+
+    // No separate "orphaned git-diff worker" check is needed: a git-diff
+    // worker's presence is tracked via its entry in a session's `workers`
+    // map, and its file watcher is stopped through that same entry
+    // (deleteSession iterates session.workers to call stopWatching), so the
+    // "no ghost session" assertion above already covers it.
   });
 });

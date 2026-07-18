@@ -751,7 +751,13 @@ export class SessionManager {
     const initialWorkerParams: CreateWorkerParams = request.embeddedAgentId
       ? { type: 'embedded-agent', embeddedAgentId: request.embeddedAgentId }
       : { type: 'agent', agentId: request.agentId ?? CLAUDE_CODE_AGENT_ID };
-    await Promise.all([
+
+    // Use allSettled (not all) so BOTH worker-creation calls are guaranteed
+    // to have settled before we decide whether to roll back. With
+    // Promise.all, a rejection propagates immediately while the other call
+    // may still be in flight, racing a rollback against a persistSession
+    // call that would resurrect the deleted session's DB row.
+    const [initialResult, diffResult] = await Promise.allSettled([
       this.createWorker(
         id,
         initialWorkerParams,
@@ -764,6 +770,23 @@ export class SessionManager {
         name: 'Diff',
       }),
     ]);
+
+    const failure = [initialResult, diffResult].find(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    );
+    if (failure) {
+      logger.warn(
+        { sessionId: id, err: failure.reason },
+        'Initial worker creation failed; rolling back session',
+      );
+      await this.deleteSession(id).catch((cleanupErr) => {
+        logger.error(
+          { sessionId: id, err: cleanupErr },
+          'Failed to roll back session after initial worker creation failure',
+        );
+      });
+      throw failure.reason;
+    }
 
     logger.info({ sessionId: id, type: internalSession.type }, 'Session created');
 

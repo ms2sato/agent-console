@@ -65,8 +65,17 @@ const sessions = new Hono<AppBindings>()
       throw new ValidationError(validation.error || 'Invalid path');
     }
 
-    const { sessionManager, sharedAccountRegistry } = c.get('appContext');
+    const { sessionManager, sharedAccountRegistry, agentDirectory } = c.get('appContext');
     const authUser = c.get('authUser');
+
+    // Validate the embedded agent exists before returning accepted (fail
+    // fast for invalid config, mirrors POST /:id/worktrees).
+    if (body.embeddedAgentId) {
+      const embeddedAgent = agentDirectory.get('embedded', body.embeddedAgentId)?.agent;
+      if (!embeddedAgent) {
+        throw new ValidationError(`Embedded agent not found: ${body.embeddedAgentId}`);
+      }
+    }
 
     // Determine session ownership. For shared sessions, createdBy is the
     // shared account (PTY spawn identity) and initiatedBy is the

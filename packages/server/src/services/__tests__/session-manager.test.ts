@@ -535,6 +535,28 @@ describe('SessionManager', () => {
       expect((agentWorker as Worker & { agentId: string }).agentId).toBe(customAgent.id);
       expect(session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
     });
+
+    it('rolls back the session when the initial worker creation fails (Issue #1060)', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      // 'dangling-nonexistent-id' is not STUB_EMBEDDED_DEF.id, so
+      // WorkerLifecycleManager.createWorker rejects with ValidationError.
+      await expect(
+        manager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          embeddedAgentId: 'dangling-nonexistent-id',
+        }),
+      ).rejects.toThrow('Embedded agent definition not found');
+
+      // No ghost session survives in memory.
+      expect(manager.getAllSessions()).toHaveLength(0);
+
+      // No orphaned persisted row (from the session itself or the
+      // concurrently-created git-diff worker's persistSession call).
+      const persisted = await manager.getSessionRepository().findAll();
+      expect(persisted).toHaveLength(0);
+    });
   });
 
   describe('createWorker', () => {
