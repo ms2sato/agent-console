@@ -943,20 +943,15 @@ describe('CreateWorktreeForm', () => {
       localStorage.removeItem(draftKey);
     });
 
-    // Note: `embeddedAgentId` is used here rather than `sessionTitle` (a
-    // register()-bound field). Investigation while writing this test found
-    // that restoring a register()-bound field's value via this form's
-    // `reset(merged, { keepDefaultValues: true })` call does not actually
-    // land in react-hook-form's internal `_formValues` when the form is also
-    // configured with `shouldUnregister: true` (a separate, pre-existing RHF
-    // interaction, reproducible with or without the Issue #1077 fix and
-    // without StrictMode at all -- see PR discussion). That gap makes
-    // `sessionTitle` unusable as a regression guard for *this* bug: its
-    // localStorage value never becomes the restored draft value either way,
-    // so an assertion on it would not polarity-flip. `embeddedAgentId` is
-    // restored via an explicit `setValue(..., { shouldDirty: true })` call
-    // (not `reset()`), which is unaffected by that quirk and does polarity-
-    // flip on the StrictMode double-invoke race this test targets.
+    // Note: `embeddedAgentId` is used here rather than `sessionTitle`, even
+    // though both are now restored correctly on mount. `embeddedAgentId` is
+    // restored via an explicit `setValue(..., { shouldDirty: true })` call,
+    // which is unaffected by React's StrictMode double-invoke timing and
+    // does polarity-flip on the race this test targets. This test's purpose
+    // is the StrictMode double-invoke race specifically, not draft-restore
+    // correctness in general (that is covered separately by the
+    // `register()-bound field restore` tests above), so `embeddedAgentId`
+    // remains the guard field here.
     it('should not clobber a restored draft in localStorage when effects double-invoke under StrictMode', async () => {
       localStorage.setItem(draftKey, JSON.stringify({ embeddedAgentId: 'embedded-1' }));
 
