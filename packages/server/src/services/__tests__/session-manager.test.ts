@@ -742,11 +742,20 @@ describe('SessionManager', () => {
       await expect(manager.deactivateEmbeddedAgentWorker(sessionId, workerId)).resolves.toBeUndefined();
     });
 
-    it('getEmbeddedAgentRestoreInfo returns null for a never-activated worker (facade delegation, Transcript Restore #1123)', async () => {
+    it('getEmbeddedAgentRestoreInfo returns null for a never-activated worker (facade delegation, Transcript Restore #1123 / #1205)', async () => {
       const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
       const { sessionId, workerId } = await createEmbeddedWorker(manager);
 
-      expect(manager.getEmbeddedAgentRestoreInfo(sessionId, workerId)).toBeNull();
+      const info = manager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
+      expect(info).toBeNull();
+
+      // Facade's return type annotation widened to include `completed: boolean`
+      // (#1205) -- a compile-time guard so a future narrowing of this
+      // annotation (dropping the field) fails typecheck here rather than only
+      // surfacing downstream where a caller actually reads `.completed`.
+      const _typeGuard: { epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null =
+        info;
+      void _typeGuard;
     });
 
     it('activateEmbeddedAgentWorker rejects when the definition was deleted after creation', async () => {

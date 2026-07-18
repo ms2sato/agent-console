@@ -155,6 +155,7 @@ export const RestoreInfoMessageSchema = v.strictObject({
   epoch: v.pipe(v.number(), v.integer(), v.minValue(0)),
   messageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
   repairedToolCallIds: v.array(v.string()),
+  completed: v.boolean(),
 });
 
 // Inferred types from schemas

@@ -205,8 +205,8 @@ interface Runtime {
   streamsDone: Promise<void>;
   /** Resolves after the exit observer finished all cleanup (append/revoke/persist/fire). */
   exitSettled: Promise<void>;
-  /** Transcript Restore (#1123): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null when restore did not fire (first-ever activation or restore failure). */
-  restoreInfo: { messageCount: number; repairedToolCallIds: string[] } | null;
+  /** Transcript Restore (#1123): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null when restore did not fire (first-ever activation or restore failure). `completed` starts false (restore succeeded but the new incarnation hasn't reported `ready` yet) and flips true once the loop's `ready` event fires (#1205) -- this is what lets the client distinguish "still restoring" from "restore delivered, incarnation ready" across an epoch-stable restore. */
+  restoreInfo: { messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null;
 }
 
 type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
@@ -266,7 +266,9 @@ export class EmbeddedAgentWorkerService {
    * not just the one that triggered activation -- see
    * docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
    */
-  getRestoreInfo(workerId: string): { epoch: number; messageCount: number; repairedToolCallIds: string[] } | null {
+  getRestoreInfo(
+    workerId: string,
+  ): { epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null {
     const runtime = this.runtimes.get(workerId);
     if (!runtime || runtime.restoreInfo === null) return null;
     return { epoch: runtime.ctx.worker.epoch, ...runtime.restoreInfo };
@@ -348,7 +350,7 @@ export class EmbeddedAgentWorkerService {
       // path instead).
       const resolver = this.deps.getPathResolver(session);
       let restoredConversation: EmbeddedAgentRestoredMessage[] | undefined;
-      let restoreInfo: { messageCount: number; repairedToolCallIds: string[] } | null = null;
+      let restoreInfo: { messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null = null;
       const restoreContext = {
         sessionId,
         workerId,
@@ -379,7 +381,14 @@ export class EmbeddedAgentWorkerService {
           });
           const outcome = reconstructConversation(streamText, systemPrompt);
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
-          restoreInfo = { messageCount: outcome.conversation.length, repairedToolCallIds: outcome.repairedToolCallIds };
+          // `completed: false` -- the new incarnation's `ready` event hasn't
+          // fired yet at this point in runActivation; handleLoopLine flips it
+          // to true (and re-pushes) once `ready` arrives (#1205).
+          restoreInfo = {
+            messageCount: outcome.conversation.length,
+            repairedToolCallIds: outcome.repairedToolCallIds,
+            completed: false,
+          };
           // 4e: success -- skip resetWorkerOutput entirely. No new epoch, no
           // truncate. But the in-memory worker object may be stale relative to
           // the on-disk manifest (e.g. freshly reconstructed by WorkerManager
@@ -411,11 +420,7 @@ export class EmbeddedAgentWorkerService {
       // routes.ts) is the authoritative path; this is a best-effort UX win
       // for OTHER already-open tabs watching this worker.
       if (restoreInfo !== null) {
-        const info = restoreInfo;
-        const snapshot = Array.from(worker.connectionCallbacks.values());
-        for (const cb of snapshot) {
-          cb.onRestoreInfo?.(info);
-        }
+        this.pushRestoreInfoToConnections(worker, restoreInfo);
       }
 
       // Step 5: spawn as the requesting OS user. The command carries NO secrets
@@ -741,6 +746,25 @@ export class EmbeddedAgentWorkerService {
     this.appendLine(ctx, JSON.stringify(event));
   }
 
+  /**
+   * Transcript Restore (#1123 / #1205): poke every currently-attached
+   * connection's `onRestoreInfo` callback. Shared by the fast-path push
+   * (right after a successful restore, before the subprocess spawns) and the
+   * completion push (once the new incarnation's `ready` event fires) --
+   * `cb.onRestoreInfo` re-derives its payload from `getRestoreInfo()` at send
+   * time (see routes.ts), so the argument passed here only needs to satisfy
+   * the callback's declared parameter type.
+   */
+  private pushRestoreInfoToConnections(
+    worker: InternalEmbeddedAgentWorker,
+    info: { messageCount: number; repairedToolCallIds: string[]; completed: boolean },
+  ): void {
+    const snapshot = Array.from(worker.connectionCallbacks.values());
+    for (const cb of snapshot) {
+      cb.onRestoreInfo?.(info);
+    }
+  }
+
   /** Fire activity-change side channels (per-connection + global). */
   private broadcastActivity(ctx: StreamContext, state: AgentActivityState): void {
     const snapshot = Array.from(ctx.worker.connectionCallbacks.values());
@@ -852,6 +876,17 @@ export class EmbeddedAgentWorkerService {
     // message, exactly once, right after the loop reports readiness.
     if (event.type === 'ready') {
       await this.maybeDeliverInitialPrompt(ctx);
+
+      // Transcript Restore completion (#1205): a successful restore leaves
+      // the epoch unchanged, so the client can't tell "still restoring" from
+      // "restore delivered, new incarnation ready" from epoch alone. Flip
+      // `completed` and re-push once this incarnation is actually ready.
+      // Guarded on `completed === false` so a duplicate `ready` (should never
+      // happen, but the guard makes it a safe no-op) doesn't double-push.
+      if (runtime.restoreInfo !== null && runtime.restoreInfo.completed === false) {
+        runtime.restoreInfo = { ...runtime.restoreInfo, completed: true };
+        this.pushRestoreInfoToConnections(ctx.worker, runtime.restoreInfo);
+      }
     }
   }
 

@@ -555,6 +555,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       epoch: 42,
       messageCount: 5,
       repairedToolCallIds: ['call-1', 'call-2'],
+      completed: true,
     });
     expect(result.success).toBe(true);
     if (result.success) {
@@ -563,6 +564,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
         epoch: 42,
         messageCount: 5,
         repairedToolCallIds: ['call-1', 'call-2'],
+        completed: true,
       });
     }
   });
@@ -573,6 +575,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       epoch: 1,
       messageCount: 0,
       repairedToolCallIds: [],
+      completed: false,
     });
     expect(result.success).toBe(true);
   });
@@ -583,6 +586,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       epoch: 1,
       messageCount: 0,
       repairedToolCallIds: [],
+      completed: false,
     });
     expect(result.success).toBe(false);
   });
@@ -593,6 +597,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       epoch: -1,
       messageCount: 0,
       repairedToolCallIds: [],
+      completed: false,
     });
     expect(result.success).toBe(false);
   });
@@ -603,6 +608,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       epoch: 1,
       messageCount: 1.5,
       repairedToolCallIds: [],
+      completed: false,
     });
     expect(result.success).toBe(false);
   });
@@ -613,6 +619,28 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       epoch: 1,
       messageCount: 1,
       repairedToolCallIds: [42],
+      completed: false,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a missing completed field (strictObject requires it)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 1,
+      messageCount: 0,
+      repairedToolCallIds: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-boolean completed field', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 1,
+      messageCount: 0,
+      repairedToolCallIds: [],
+      completed: 'true',
     });
     expect(result.success).toBe(false);
   });
@@ -623,6 +651,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       epoch: 1,
       messageCount: 0,
       repairedToolCallIds: [],
+      completed: false,
       unexpectedField: 'leaked',
     });
     expect(result.success).toBe(false);

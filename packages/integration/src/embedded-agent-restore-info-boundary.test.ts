@@ -22,6 +22,15 @@
  * first activation persists a transcript, the second activation (after a
  * graceful deactivate) restores it.
  *
+ * Also covers the `completed` field (Issue #1205) added to `restore-info`:
+ * a real second-activation restore cycle must observe `completed: false`
+ * immediately after `activateEmbeddedAgentWorker()` resolves (the new
+ * incarnation's loop subprocess has not yet reported `ready`), then
+ * `completed: true` once the real subprocess's `ready` event has actually
+ * been observed server-side -- exercising the exact server-authoritative
+ * signal the client's `restoring` derivation now depends on entirely, over
+ * a real subprocess rather than a simulated WS frame.
+ *
  * Spec: docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
@@ -143,7 +152,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
   });
 
   it(
-    'a real restore cycle produces a getRestoreInfo() value that parses via RestoreInfoMessageSchema, for BOTH the triggering connection and a re-delivery lookup',
+    'a real restore cycle produces a getRestoreInfo() value that parses via RestoreInfoMessageSchema, for BOTH the triggering connection and a re-delivery lookup, and completed flips false -> true once the real subprocess reports ready (#1205)',
     async () => {
       stubServer = Bun.serve({
         port: 0,
@@ -253,6 +262,23 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
         throw new Error('Timed out waiting for idle-after-assistant');
       };
 
+      // A successful restore does NOT truncate the persisted log (4e), so the
+      // FIRST activation's `ready` event is still present in the full
+      // history once the second activation runs -- waiting for "any `ready`
+      // event" would false-positive on that stale row immediately. This
+      // must wait for a NEW `ready` beyond whatever count was already
+      // present, exactly the incarnation-vs-epoch distinction Issue #1205 is
+      // about (see `readyCountBefore` at the call site).
+      const waitForReadyCountAbove = async (minCount: number, deadlineMs: number): Promise<void> => {
+        const deadline = Date.now() + deadlineMs;
+        while (Date.now() < deadline) {
+          const events = await readEvents();
+          if (events.filter((e) => e.type === 'ready').length > minCount) return;
+          await delay(200);
+        }
+        throw new Error('Timed out waiting for a new ready event');
+      };
+
       // --- First activation: nothing to restore yet, sends one message, then deactivates. ---
       await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
       expect(ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId)).toBeNull();
@@ -265,7 +291,17 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
 
       // --- Second activation: the persisted transcript from the first
       // incarnation is now non-empty, so restore fires for real. ---
+      const readyCountBefore = (await readEvents()).filter((e) => e.type === 'ready').length;
       await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+
+      // Issue #1205: immediately after activation resolves, the new
+      // incarnation's loop subprocess has not yet had a chance to report
+      // `ready` over stdout (that is a genuinely later, async stdout event) --
+      // `completed` must be `false` at this point over a REAL subprocess, not
+      // just in the store's simulated-WS unit tests.
+      const infoBeforeReady = ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
+      expect(infoBeforeReady).not.toBeNull();
+      expect(infoBeforeReady?.completed).toBe(false);
 
       const info = ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
       expect(info).not.toBeNull();
@@ -280,6 +316,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       expect(parsed.output.messageCount).toBeGreaterThan(0);
       expect(parsed.output.repairedToolCallIds).toEqual([]);
       expect(typeof parsed.output.epoch).toBe('number');
+      expect(parsed.output.completed).toBe(false);
 
       // --- Bootstrap re-delivery equivalent: a SECOND lookup (as a second WS
       // connection's onOpen would perform) returns the SAME restorable shape,
@@ -292,6 +329,26 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       if (parsedAgain.success) {
         expect(parsedAgain.output.messageCount).toBe(parsed.output.messageCount);
         expect(parsedAgain.output.epoch).toBe(parsed.output.epoch);
+        expect(parsedAgain.output.completed).toBe(false);
+      }
+
+      // Issue #1205: once the new incarnation's loop subprocess actually
+      // reports `ready` (a real stdout event from a real subprocess), the
+      // server must flip `completed` to `true` and this must be visible via
+      // BOTH the fast-path-equivalent lookup and a fresh bootstrap-equivalent
+      // lookup -- the exact server-authoritative signal the client's
+      // `restoring` derivation depends on entirely (Issue #1205).
+      await waitForReadyCountAbove(readyCountBefore, 30_000);
+
+      const infoAfterReady = ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
+      expect(infoAfterReady).not.toBeNull();
+      expect(infoAfterReady?.completed).toBe(true);
+      expect(infoAfterReady?.epoch).toBe(parsed.output.epoch);
+      const wirePayloadReady = JSON.parse(JSON.stringify({ type: 'restore-info', ...infoAfterReady }));
+      const parsedReady = v.safeParse(RestoreInfoMessageSchema, wirePayloadReady);
+      expect(parsedReady.success).toBe(true);
+      if (parsedReady.success) {
+        expect(parsedReady.output.completed).toBe(true);
       }
     },
     60_000,

@@ -228,7 +228,7 @@ export type WorkerServerMessage =
   // docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
   // `epoch` is a cross-incarnation staleness guard: the client feeds it
   // through the same acceptEpoch gate `history`/`output` already use.
-  | { type: 'restore-info'; epoch: number; messageCount: number; repairedToolCallIds: string[] };
+  | { type: 'restore-info'; epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean };
 
 export interface WorkerActivityInfo {
   sessionId: string;

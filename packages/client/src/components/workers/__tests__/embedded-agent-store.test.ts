@@ -38,8 +38,13 @@ function outputMessage(data: string, offset: number, epoch = 1) {
   return JSON.stringify({ type: 'output', data, offset, epoch });
 }
 
-function restoreInfoMessage(epoch: number, messageCount: number, repairedToolCallIds: string[] = []) {
-  return JSON.stringify({ type: 'restore-info', epoch, messageCount, repairedToolCallIds });
+function restoreInfoMessage(
+  epoch: number,
+  messageCount: number,
+  repairedToolCallIds: string[] = [],
+  completed = false,
+) {
+  return JSON.stringify({ type: 'restore-info', epoch, messageCount, repairedToolCallIds, completed });
 }
 
 function ndjson(...events: Record<string, unknown>[]): string {
@@ -1274,23 +1279,52 @@ describe('embedded-agent-store', () => {
       expect(snapshot.restoredMessageCount).toBe(5);
     });
 
-    it('clears restoring back to false once a ready event is folded from history/output', async () => {
+    it('clears restoring back to false when a completed:true restore-info push arrives (server-authoritative, #1205)', () => {
       const instance = getOrCreateEmbeddedAgentWorker('r2', 'w2');
       const ws = MockWebSocket.getLastInstance();
       ws!.simulateOpen();
 
-      ws!.simulateMessage(restoreInfoMessage(1, 5, []));
+      ws!.simulateMessage(restoreInfoMessage(1, 5, [], false));
       expect(instance.getSnapshot().restoring).toBe(true);
+
+      // The server sends a FRESH restore-info push with completed: true the
+      // moment the new incarnation's `ready` event is observed server-side.
+      // A successful restore does not mint a new epoch, so this arrives on
+      // the SAME epoch.
+      ws!.simulateMessage(restoreInfoMessage(1, 5, [], true));
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.restoring).toBe(false);
+      // messageCount is not required to be cleared on completion -- it stays
+      // at its last-known value from the most recently accepted restore-info.
+      expect(snapshot.restoredMessageCount).toBe(5);
+    });
+
+    it('shows restoring even when a ready event for the same epoch was already folded before restore-info arrives (Issue #1205 real WS-frame-order regression)', async () => {
+      // Reproduces the exact race captured from a real reconnect-after-crash:
+      // a successful restore does NOT mint a new epoch, so a `ready` event
+      // folded via history/output (e.g. this tab was live through a prior
+      // incarnation, or history replayed `ready` before restore-info for the
+      // SAME epoch arrived) must NOT suppress the restoring banner for a
+      // restore-info that arrives afterward for that same epoch. Under the
+      // old client-local `readyObservedThisEpoch` derivation this case was
+      // structurally broken: `readyObservedThisEpoch` was already `true` by
+      // the time `applyRestoreInfo`'s guard ran, so `restoring` was never
+      // set. The fix reads `restoring` directly off the message's own
+      // `completed` field, ignoring any prior `ready` fold.
+      const instance = getOrCreateEmbeddedAgentWorker('r8', 'w8');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
 
       const readyData = ndjson({ v: 1, type: 'ready' });
       ws!.simulateMessage(historyMessage(readyData, readyData.length, 0, 1));
       await flush();
 
-      const snapshot = instance.getSnapshot();
-      expect(snapshot.restoring).toBe(false);
-      // messageCount is not required to be cleared on `ready` -- it stays at
-      // its last-known value from the most recently accepted restore-info.
-      expect(snapshot.restoredMessageCount).toBe(5);
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], false));
+      expect(instance.getSnapshot().restoring).toBe(true);
+
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], true));
+      expect(instance.getSnapshot().restoring).toBe(false);
     });
 
     it('pushes exactly one restore-repair entry when repairedToolCallIds is non-empty', () => {

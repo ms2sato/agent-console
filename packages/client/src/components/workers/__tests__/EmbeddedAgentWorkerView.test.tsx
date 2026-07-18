@@ -1940,6 +1940,7 @@ describe('EmbeddedAgentWorkerView', () => {
             epoch: 1,
             messageCount: 5,
             repairedToolCallIds: ['call-1', 'call-2'],
+            completed: false,
           }),
         );
       });
@@ -1954,7 +1955,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('2 tool calls affected.')).toBeTruthy();
     });
 
-    it('shows the "Restoring conversation..." banner while restoring is true, and hides it once cleared', async () => {
+    it('shows the "Restoring conversation..." banner while restoring is true, and hides it once a completed:true restore-info push arrives (#1205)', async () => {
       renderView({ sessionId: 's-restore-2', workerId: 'w-restore-2' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -1966,17 +1967,34 @@ describe('EmbeddedAgentWorkerView', () => {
 
       act(() => {
         ws?.simulateMessage(
-          JSON.stringify({ type: 'restore-info', epoch: 1, messageCount: 5, repairedToolCallIds: [] }),
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: false,
+          }),
         );
       });
       await flush();
 
       expect(screen.getByText('Restoring conversation from 5 previous messages...')).toBeTruthy();
 
+      // Server-authoritative (#1205): the banner clears on a FRESH restore-info
+      // push carrying completed: true (sent the moment the new incarnation's
+      // `ready` event is observed server-side), not merely from a `ready`
+      // event folding client-side -- a successful restore does not mint a
+      // new epoch, and a `ready` fold can race `restore-info` in either
+      // order, so it must not drive `restoring` on its own.
       act(() => {
-        const data = ndjson({ v: 1, type: 'ready' });
         ws?.simulateMessage(
-          JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }),
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
         );
       });
       await flush();
