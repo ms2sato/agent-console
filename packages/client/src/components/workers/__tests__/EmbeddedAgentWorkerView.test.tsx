@@ -1732,7 +1732,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
     });
 
-    it('a banner CTA click sends embedded-handoff and shows "Handing off…"; the transcript divider appears on context-handoff and clears the in-flight label', async () => {
+    it('a banner CTA click sends embedded-handoff; the transcript divider appears on context-handoff', async () => {
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
       const user = userEvent.setup();
       renderView({ sessionId: 's-ctx-5', workerId: 'w-ctx-5', embeddedAgentId: 'ea-1' });
@@ -1752,7 +1752,6 @@ describe('EmbeddedAgentWorkerView', () => {
 
       const sent = decodeSentMessages(ws!.send.mock.calls);
       expect(sent).toContainEqual({ type: 'embedded-handoff' });
-      expect(screen.getByText('Handing off…')).toBeTruthy();
 
       act(() => {
         const data = ndjson({ v: 1, type: 'context-handoff', distillation: 'the distilled summary text' });
@@ -1760,7 +1759,6 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.queryByText('Handing off…')).toBeNull();
       const summary = screen.getByText('— Context handoff: conversation restarted from summary —');
       const details = summary.closest('details') as HTMLDetailsElement;
       expect(details).toBeTruthy();
@@ -1805,36 +1803,36 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(handoffSends).toHaveLength(1);
     });
 
-    it('renders an always-reachable "Start handoff" button that sends embedded-handoff and disables itself while in flight', async () => {
-      const user = userEvent.setup();
+    it('does not render an always-visible "Start handoff" chrome button (removed per owner UX critique)', async () => {
       renderView({ sessionId: 's-ctx-6', workerId: 'w-ctx-6' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
       });
+      await flush();
 
-      const button = screen.getByRole('button', { name: 'Start handoff' }) as HTMLButtonElement;
-      expect(button.disabled).toBe(false);
-
-      await user.click(button);
-
-      const sent = decodeSentMessages(ws!.send.mock.calls);
-      expect(sent).toContainEqual({ type: 'embedded-handoff' });
-      expect((screen.getByRole('button', { name: 'Start handoff' }) as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.queryByRole('button', { name: 'Start handoff' })).toBeNull();
     });
 
     it('blocks Send (morphs to Cancel) while a handoff is in flight, mirroring an active turn', async () => {
-      renderView({ sessionId: 's-ctx-7', workerId: 'w-ctx-7' });
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      renderView({ sessionId: 's-ctx-7', workerId: 'w-ctx-7', embeddedAgentId: 'ea-1' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
       });
 
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
       expect(screen.queryByText('Cancel')).toBeNull();
 
-      const button = screen.getByRole('button', { name: 'Start handoff' });
+      const banner = screen.getByRole('button', { name: 'Handoff now' });
       await act(async () => {
-        fireEvent.click(button);
+        fireEvent.click(banner);
       });
 
       expect(screen.queryByText('Send')).toBeNull();

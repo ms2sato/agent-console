@@ -267,12 +267,11 @@ export function EmbeddedAgentWorkerView({
         )}
       </div>
 
-      {/* Context Handoff (Phase A) chrome: usage bar, threshold banners, and
-          the always-reachable manual handoff CTA -- siblings inserted
-          between the transcript and MessagePanel, never inside MessagePanel
-          (shared with PTY workers, stays worker-type-agnostic). See
-          docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
-          UI. */}
+      {/* Context Handoff (Phase A) chrome: usage bar and threshold banners --
+          siblings inserted between the transcript and MessagePanel, never
+          inside MessagePanel (shared with PTY workers, stays
+          worker-type-agnostic). See docs/design/embedded-agent-worker.md
+          "Context Handoff (Phase A)" § UI. */}
       <ContextUsageBar
         contextWindowTokens={contextWindowTokens}
         contextUsage={contextUsage}
@@ -329,25 +328,6 @@ export function EmbeddedAgentWorkerView({
           </div>
         </div>
       )}
-
-      <div className="px-4 py-1 bg-slate-800/40 border-b border-slate-800 flex items-center justify-end gap-3 text-xs text-gray-500 shrink-0">
-        {handoffInFlight && (
-          <span className="flex items-center gap-1.5">
-            Handing off…
-            <span
-              className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle"
-              aria-hidden="true"
-            />
-          </span>
-        )}
-        <button
-          onClick={triggerHandoff}
-          disabled={handoffInFlight || isTurnActive}
-          className="text-xs px-2 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          Start handoff
-        </button>
-      </div>
 
       <MessagePanel
         sessionId={sessionId}
