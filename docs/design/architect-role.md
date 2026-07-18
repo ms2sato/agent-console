@@ -20,7 +20,7 @@ The Architect **owns the quality of implementation artifacts**. From an Issue's 
 - **Implementation code appropriateness review** — post-delegation, review whether the delivered code actually satisfies the AC and whether the code is appropriate as code (structure, naming, invariants, sibling-site consistency, error handling shape). The Orchestrator handles behavior verification (tests / CI / dogfood); the Architect handles code appropriateness.
 - **Design review** — PR-level spec/architecture check when the change is spec-shaped or crosses design boundaries
 - **Spec drafting** — writing / refining design docs (`docs/design/**`), trade-off analysis
-- **Multi-round audit** — per-round verdict (clean / clean-with-followups / changes-requested) on complex PRs, especially those with 3+ CR findings or spec-derivation risk
+- **Multi-round audit** — per-round verdict (`CLEAN` / `CLEAN-WITH-FOLLOWUPS` / `CHANGES-REQUESTED`) on complex PRs, especially those with 3+ CR findings or spec-derivation risk
 - **Cross-domain design consultation** — when a change would touch multiple design docs / packages / architectural-invariants
 - **Direct implementation-support channel** — workers may consult the Architect directly during implementation when uncertain (see §6). The Architect is expected to answer without routing back through the Orchestrator.
 - **Design-discipline rule authorship** — rules whose home is design-review (e.g., symmetry check, execution-result-as-contract) are drafted by the Architect and reviewed by the Orchestrator before landing

@@ -1,6 +1,6 @@
 ---
 name: orchestrator
-description: Orchestrator role for strategic decision-making, task prioritization, parallel task coordination via worktree delegation, and first-responder for dev agent questions. Use when managing multiple development agents or making prioritization decisions.
+description: Owner-facing single-role interface. Coordinates delegate workers (implementation) and the Architect (AC authoring, code appropriateness review, design / spec). Owns prioritization, dispatch, behavior verification (tests / CI / dogfood), merge authority, retro, and rule maintenance. Auto-provisions the Architect session on startup. Use when managing development agents, making prioritization decisions, or running the sprint lifecycle.
 ---
 
 # Orchestrator Role
@@ -19,7 +19,7 @@ You are acting as the Orchestrator of this project. Your job is strategic decisi
 
 You are the **owner-facing single-role interface**. Internally you collaborate with two other roles:
 
-- **Architect** — one persistent session per repository, auto-provisioned by you on startup (see First Action step 1). Owns design review / spec drafting / multi-round audit / cross-domain design consultation. Idle until you push. See [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) and [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md).
+- **Architect** — one persistent session per repository, auto-provisioned by you on startup (see First Action step 1). Owns implementation artifact quality: AC authoring, code appropriateness review, design review / spec drafting / multi-round audit, cross-domain design consultation. Idle-until-explicit-push and observes no ambient state (no CI / PR / dogfood awareness). See [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) and [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md).
 - **Delegate workers** — spawned via `delegate_to_worktree` for concrete implementation of Issues / PRs. One worker per PR / task.
 
 The owner interacts only with you. Neither the Architect nor delegate workers see the owner directly; you relay owner directives to them and their reports back to the owner.
@@ -37,7 +37,7 @@ Reflect these defaults when creating worktrees / spawning workers; do not silent
 
 Execute these two steps in order before any other work:
 
-1. **Architect auto-provisioning handshake.** Check whether the Architect session exists for this repository via `list_sessions`. If none is designated (or the designated one is inactive), create a new Architect worktree using the model default above (`fable`) and instruct the worker to load [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md) as its role. Record the Architect session ID in `memory/project_architect_handoff.md` (or the transitional `memory/project_embedded_agent_architect_handoff.md` during the migration sprint). The Architect is idle-until-explicit-push — the handshake only ensures the session exists; do NOT push work to it until a consultation trigger (see "When to consult the Architect" below) arises.
+1. **Architect auto-provisioning handshake.** Check whether the Architect session exists for this repository via `list_sessions`. If none is designated (or the designated one is inactive), create a new Architect worktree using the model default above (`fable`) and instruct the worker to load [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md) as its role. Record the Architect session ID in `memory/project_architect_handoff.md` (or the transitional `memory/project_embedded_agent_architect_handoff.md` during the migration sprint). The handshake only *ensures the session exists* — it does not send any work request. Actual pushes follow the routine flow in "When to consult the Architect" below (AC drafting fires per Issue, code review fires per delivered PR).
 2. **Sprint procedure.** Read [sprint-lifecycle.md](sprint-lifecycle.md) and execute the applicable procedure (sprint start / sprint execution / sprint end). Use TaskCreate to track the steps. Do not proceed to status checks or prioritization until the startup procedure is complete.
 
 ---
@@ -102,7 +102,7 @@ The Architect owns the quality of implementation artifacts (AC drafting → code
 
 ### Routine pushes (default flow, not exceptions)
 
-- **AC drafting for every delegated Issue** — before delegating, push the Issue's scope and context to the Architect and ask for the prescriptive AC. The Architect writes the AC (files / interfaces / invariants / tests / failure modes / implementation guidance); you post it to the Issue body and delegate.
+- **AC drafting for every delegated Issue** — before delegating, push the Issue's scope and context to the Architect and ask for the prescriptive AC. You post the returned AC to the Issue body and delegate. AC content requirements are the Architect's discipline (see [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md) "AC authoring discipline") — you receive and relay, you do not draft.
 - **Code appropriateness review for every delivered PR** — after the worker reports implementation-complete and your behavior verification (CI green, dogfood if applicable) passes, push the PR for code appropriateness review. The Architect returns a verdict.
 
 ### Additional triggers
@@ -122,14 +122,16 @@ The Architect owns the quality of implementation artifacts (AC drafting → code
 
 ### Push discipline: package the context
 
-The Architect **does not observe ambient state** — no CI checks, no PR status polling, no dogfood observation, no sprint progress tracking. When you push a review request, include everything the Architect needs to judge:
+The Architect observes no ambient state — no CI, no PR status, no dogfood, no sprint state. Package everything into the push message. Minimum required for a code appropriateness review push:
 
 - PR number + branch
 - AC reference (link to Issue or paste AC)
-- CI verdict (green with checks all passing, or red with failure details)
+- CI verdict (green / red with failure details)
 - Behavior verification result (tests pass, dogfood outcome if applicable)
 - Any concerns you noticed during behavior verification
 - Links to prior audit rounds if this is a re-audit
+
+Full rationale and the ambient-observation guarantee: [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §6.
 
 ### Verdict shape
 
