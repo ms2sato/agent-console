@@ -110,10 +110,11 @@ function run(changedFiles) {
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
 
   const filesNeedingCoverage = testCoverage.filter(tc => tc.needsCoverage);
+  const commentOnlyExempted = testCoverage.filter(tc => tc.isCommentOnly);
   const hasUnitGaps = filesNeedingCoverage.some(tc => !tc.hasTest);
   const hasIntegrationGap = integrationTestNeeds && !integrationTestNeeds.hasIntegrationTestInPr;
 
-  if (filesNeedingCoverage.length === 0 && !integrationTestNeeds) {
+  if (filesNeedingCoverage.length === 0 && commentOnlyExempted.length === 0 && !integrationTestNeeds) {
     console.log('## Test Coverage Check\n');
     console.log('No production files matching coverage patterns were changed.\n');
   } else {
@@ -126,6 +127,14 @@ function run(changedFiles) {
       console.log(`### Covered (${covered.length})\n`);
       for (const { file } of covered) {
         console.log(`- ✅ \`${file}\``);
+      }
+      console.log();
+    }
+
+    if (commentOnlyExempted.length > 0) {
+      console.log(`### Exempted — comment-only diff (${commentOnlyExempted.length})\n`);
+      for (const { file } of commentOnlyExempted) {
+        console.log(`- ➖ \`${file}\` — all changed lines are comments/blank`);
       }
       console.log();
     }

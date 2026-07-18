@@ -209,6 +209,121 @@ export function requiresTestCoverage(filePath) {
   return true;
 }
 
+// --- Comment-only diff detection ---
+
+// Language comment syntax by extension. Extensions not listed here default
+// to "not comment-only" (opt-in later per file type, per Issue #1189
+// non-goals) rather than guessing at an unfamiliar comment syntax.
+const LINE_COMMENT_PREFIX_BY_EXT = {
+  '.ts': '//',
+  '.tsx': '//',
+  '.js': '//',
+  '.jsx': '//',
+  '.mjs': '//',
+  '.cjs': '//',
+  '.sh': '#',
+};
+
+// Extensions whose language also supports C-style block comments (/* ... */
+// and JSDoc-style `*`-prefixed continuation lines).
+const BLOCK_COMMENT_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
+
+function fileExtension(filePath) {
+  const match = filePath.match(/\.[a-zA-Z0-9]+$/);
+  return match ? match[0] : '';
+}
+
+/**
+ * Determine whether a unified diff (as produced by `git diff --unified=0`)
+ * for a single file consists entirely of comment and/or blank line changes,
+ * for the given file's language.
+ *
+ * Block-comment state is tracked per side (added `+` vs removed `-` are two
+ * different file versions) and resets at each hunk boundary (`@@ ... @@`).
+ * `--unified=0` hunks carry no surrounding context, so a block comment that
+ * opens outside a hunk cannot be reliably detected from the diff alone;
+ * treating such a line as non-comment is the safe, fail-closed default —
+ * the worst case is a comment-only file still being required to have a
+ * sibling test, never the reverse.
+ *
+ * Returns false (not comment-only) for files with no changed lines and for
+ * extensions with no known comment syntax.
+ */
+export function isCommentOnlyDiff(diffText, filePath) {
+  const ext = fileExtension(filePath);
+  const lineCommentPrefix = LINE_COMMENT_PREFIX_BY_EXT[ext];
+  if (!lineCommentPrefix) return false;
+
+  const supportsBlockComments = BLOCK_COMMENT_EXTS.has(ext);
+
+  let inBlockAdded = false;
+  let inBlockRemoved = false;
+  let sawChangedLine = false;
+
+  for (const rawLine of diffText.split('\n')) {
+    if (rawLine.startsWith('+++') || rawLine.startsWith('---')) continue;
+    if (rawLine.startsWith('@@')) {
+      inBlockAdded = false;
+      inBlockRemoved = false;
+      continue;
+    }
+
+    let sign;
+    let content;
+    if (rawLine.startsWith('+')) {
+      sign = '+';
+      content = rawLine.slice(1);
+    } else if (rawLine.startsWith('-')) {
+      sign = '-';
+      content = rawLine.slice(1);
+    } else {
+      continue;
+    }
+
+    sawChangedLine = true;
+    const trimmed = content.trim();
+    if (trimmed.length === 0) continue;
+
+    const inBlock = sign === '+' ? inBlockAdded : inBlockRemoved;
+
+    if (inBlock) {
+      if (supportsBlockComments && trimmed.includes('*/')) {
+        if (sign === '+') inBlockAdded = false;
+        else inBlockRemoved = false;
+      }
+      continue;
+    }
+
+    if (trimmed.startsWith(lineCommentPrefix)) continue;
+
+    if (supportsBlockComments && (trimmed.startsWith('/*') || trimmed.startsWith('*'))) {
+      if (trimmed.startsWith('/*') && !trimmed.includes('*/')) {
+        if (sign === '+') inBlockAdded = true;
+        else inBlockRemoved = true;
+      }
+      continue;
+    }
+
+    return false;
+  }
+
+  return sawChangedLine;
+}
+
+/**
+ * Filesystem/git wrapper around `isCommentOnlyDiff`: runs
+ * `git diff --unified=0 <baseBranch>...HEAD -- <file>` and evaluates the
+ * result. Returns false (safe default: require coverage) on any git error
+ * or when the file has no diff against baseBranch.
+ */
+export function isCommentOnlyFileDiff(filePath, baseBranch = process.env.BASE_BRANCH || 'origin/main') {
+  const result = spawnSync('git', ['diff', '--unified=0', `${baseBranch}...HEAD`, '--', filePath], {
+    encoding: 'utf-8',
+  });
+  if (result.error || result.status !== 0) return false;
+  return isCommentOnlyDiff(result.stdout || '', filePath);
+}
+
 export function findTestFiles(changedFiles) {
   const testFiles = [];
   const productionFiles = [];
@@ -237,11 +352,15 @@ export function findTestFiles(changedFiles) {
       return tfDir === dir || tfDir === dir + '/__tests__';
     });
 
-    const needsCoverage = requiresTestCoverage(prodFile);
+    // A file that otherwise needs coverage is exempted when its actual diff
+    // hunks are comment-only/blank — no behavior changed, so a sibling test
+    // would be tautological (Issue #1189).
+    const isCommentOnly = requiresTestCoverage(prodFile) && isCommentOnlyFileDiff(prodFile);
+    const needsCoverage = requiresTestCoverage(prodFile) && !isCommentOnly;
     const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + expectedTestExt(ext);
     const altExt = alternateTestExt(ext);
     const alternateTestPath = altExt ? dir + '/__tests__/' + fileName + '.test' + altExt : null;
-    testCoverage.push({ file: prodFile, hasTest, expectedTestPath, alternateTestPath, needsCoverage });
+    testCoverage.push({ file: prodFile, hasTest, expectedTestPath, alternateTestPath, needsCoverage, isCommentOnly });
   }
 
   return { testFiles, productionFiles, testCoverage };

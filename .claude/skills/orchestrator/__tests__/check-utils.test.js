@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { readFileSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -7,6 +8,8 @@ import {
   requiresTestCoverage,
   runLanguageCheck,
   findTestFiles,
+  isCommentOnlyDiff,
+  isCommentOnlyFileDiff,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -442,4 +445,202 @@ describe('runLanguageCheck', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+});
+
+describe('isCommentOnlyDiff (Issue #1189)', () => {
+  it('returns true for a pure single-line `//` comment change', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      'index abc..def 100644',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -10 +10 @@',
+      "-  // old note (Issue #1)",
+      '+  // new note',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(true);
+  });
+
+  it('returns true for a pure block-comment (JSDoc) change, including continuation lines', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -5,4 +4,0 @@',
+      '- * Foundation for umbrella Issue #837. Consumer migrations are tracked',
+      '- * independently in #834 (clone), #835 (description generation), and #838',
+      '- * (worktree creation).',
+      '- *',
+      '@@ -340,3 +336 @@ export async function runAsUser(',
+      '- * `lib/git.ts` encapsulates git command construction (Issue #882 dogfood',
+      '- * feedback from the owner: code placement matters even when behaviour is',
+      '- * identical).',
+      '+ * `lib/git.ts` encapsulates git command construction.',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(true);
+  });
+
+  it('returns true for a block comment opened and closed within the same hunk', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -1,3 +1,3 @@',
+      '-/* old rationale',
+      '- * spanning lines */',
+      '+/* new rationale',
+      '+ * spanning lines, revised */',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(true);
+  });
+
+  it('returns false for a mixed diff (comment change + real code change)', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -10,2 +10,2 @@',
+      '-  // old note',
+      '-  return a + b;',
+      '+  // new note',
+      '+  return a + b + 1;',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
+  });
+
+  it('returns true for a blank-line-only diff', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -10,2 +10,2 @@',
+      '-',
+      '-   ',
+      '+',
+      '+   ',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(true);
+  });
+
+  it('returns true for a deletion-only diff where every removed line is a comment', () => {
+    const diff = [
+      'diff --git a/foo.ts b/foo.ts',
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -60,6 +59,0 @@',
+      '-/**',
+      '- * Register all job handlers with the job queue.',
+      '- * @param jobQueue The JobQueue instance to register handlers with',
+      '- */',
+      '-// A trailing single-line note',
+      '-',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(true);
+  });
+
+  it('returns true for a `.sh` file with only `#` comment changes', () => {
+    const diff = [
+      'diff --git a/foo.sh b/foo.sh',
+      '--- a/foo.sh',
+      '+++ b/foo.sh',
+      '@@ -3 +3 @@',
+      '-# old explanation (Issue #1)',
+      '+# new explanation',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.sh')).toBe(true);
+  });
+
+  it('returns false for a `.sh` file with a real code change', () => {
+    const diff = [
+      'diff --git a/foo.sh b/foo.sh',
+      '--- a/foo.sh',
+      '+++ b/foo.sh',
+      '@@ -3 +3 @@',
+      '-echo "old"',
+      '+echo "new"',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.sh')).toBe(false);
+  });
+
+  it('returns true for `.tsx` and `.js`/`.mjs` extensions with comment-only changes', () => {
+    const tsxDiff = ['--- a/foo.tsx', '+++ b/foo.tsx', '@@ -1 +1 @@', '-// old', '+// new'].join('\n');
+    const jsDiff = ['--- a/foo.js', '+++ b/foo.js', '@@ -1 +1 @@', '-// old', '+// new'].join('\n');
+    const mjsDiff = ['--- a/foo.mjs', '+++ b/foo.mjs', '@@ -1 +1 @@', '-// old', '+// new'].join('\n');
+    expect(isCommentOnlyDiff(tsxDiff, 'foo.tsx')).toBe(true);
+    expect(isCommentOnlyDiff(jsDiff, 'foo.js')).toBe(true);
+    expect(isCommentOnlyDiff(mjsDiff, 'foo.mjs')).toBe(true);
+  });
+
+  it('returns false for an unsupported extension (opt-in later)', () => {
+    const diff = ['--- a/foo.py', '+++ b/foo.py', '@@ -1 +1 @@', '-# old', '+# new'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.py')).toBe(false);
+  });
+
+  it('returns false when there are no changed lines at all', () => {
+    expect(isCommentOnlyDiff('', 'foo.ts')).toBe(false);
+  });
+
+  it('treats a block comment opened outside the hunk as non-comment (fail-closed default)', () => {
+    // No preceding `/*` in this hunk's own text — the diff alone cannot
+    // confirm this line is inside a block comment that opened earlier in
+    // unchanged context, so it is conservatively NOT treated as comment-only.
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -50 +50 @@', '-continuation of a block comment', '+revised continuation'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
+  });
+});
+
+describe('isCommentOnlyFileDiff (git integration)', () => {
+  function makeTempGitRepo() {
+    const root = mkdtempSync(join(tmpdir(), 'comment-only-repo-'));
+    execSync('git init -q -b main', { cwd: root });
+    execSync('git config user.email test@example.com', { cwd: root });
+    execSync('git config user.name Test', { cwd: root });
+    return root;
+  }
+
+  function commit(root, message) {
+    execSync('git add -A', { cwd: root });
+    execSync(`git commit -q -m "${message}"`, { cwd: root });
+  }
+
+  it('returns true when a real commit on a branch changes only a comment', () => {
+    const root = makeTempGitRepo();
+    try {
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // old note\n  return a + b;\n}\n');
+      commit(root, 'initial');
+      execSync('git branch -m main', { cwd: root }); // no-op if already main; keeps name stable
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // new note\n  return a + b;\n}\n');
+      commit(root, 'comment tweak');
+
+      const result = spawnGitDiffCheck(root, 'foo.ts');
+      expect(result).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns false when a real commit changes production logic', () => {
+    const root = makeTempGitRepo();
+    try {
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  return a + b;\n}\n');
+      commit(root, 'initial');
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  return a + b + 1;\n}\n');
+      commit(root, 'logic change');
+
+      const result = spawnGitDiffCheck(root, 'foo.ts');
+      expect(result).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  function spawnGitDiffCheck(cwd, filePath) {
+    const originalCwd = process.cwd();
+    process.chdir(cwd);
+    try {
+      return isCommentOnlyFileDiff(filePath, 'HEAD~1');
+    } finally {
+      process.chdir(originalCwd);
+    }
+  }
 });
