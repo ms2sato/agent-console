@@ -71,7 +71,6 @@ export function CreateWorktreeForm({
     setError,
     watch,
     setValue,
-    reset,
     control,
     formState: { errors },
   } = useForm<CreateWorktreeFormData>({
@@ -124,23 +123,23 @@ export function CreateWorktreeForm({
       const saved = localStorage.getItem(draftKey);
       if (saved) {
         const draft = JSON.parse(saved) as Partial<CreateWorktreeFormData>;
-        // getValues() returns initial defaults (form just mounted).
-        // The draft overwrites them with previously saved user input.
-        reset({ ...getValues(), ...draft }, { keepDefaultValues: true });
-        // agentId/embeddedAgentId are never register()-bound (custom select, driven by
-        // watch/setValue), so reset()'s keepDefaultValues silently discards them; restore explicitly.
-        if ('agentId' in draft) {
-          setValue('agentId', draft.agentId, { shouldDirty: true });
-        }
-        if ('embeddedAgentId' in draft) {
-          setValue('embeddedAgentId', draft.embeddedAgentId, { shouldDirty: true });
+        // Restore every saved key via setValue rather than reset(): with
+        // shouldUnregister: true, reset(merged, { keepDefaultValues: true })
+        // does not reliably populate react-hook-form's internal _formValues
+        // for register()-bound fields (e.g. sessionTitle) -- reproducible
+        // independent of React StrictMode. setValue is the mechanism already
+        // proven correct here for the non-register()-bound
+        // agentId/embeddedAgentId fields, so it is used uniformly for every
+        // draft key.
+        for (const key of Object.keys(draft) as Array<keyof CreateWorktreeFormData>) {
+          setValue(key, draft[key] as never, { shouldDirty: true });
         }
       }
     } catch {
       // Ignore corrupted drafts
     }
-    // reset, getValues and setValue are stable refs from react-hook-form
-  }, [draftKey, reset, getValues, setValue, prefillValues]);
+    // setValue is a stable ref from react-hook-form
+  }, [draftKey, setValue, prefillValues]);
 
 
 
