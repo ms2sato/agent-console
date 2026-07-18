@@ -259,6 +259,40 @@ describe('WorkerOutputFileManager', () => {
     });
   });
 
+  describe('hasEverBeenActivated (Transcript Restore #1123)', () => {
+    it('returns false when no manifest exists (genuinely first-ever activation)', async () => {
+      const result = await manager.hasEverBeenActivated('session-never', 'worker-1', quickResolver);
+      expect(result).toBe(false);
+    });
+
+    it('returns true when a manifest exists', async () => {
+      // initializeWorkerOutput writes the manifest sidecar (worker-1.segments.json).
+      await manager.initializeWorkerOutput('session-existing', 'worker-1', quickResolver);
+
+      const result = await manager.hasEverBeenActivated('session-existing', 'worker-1', quickResolver);
+      expect(result).toBe(true);
+    });
+
+    it('conservatively returns true when the manifest stat fails with a non-ENOENT error', async () => {
+      // A genuine non-ENOENT stat failure, produced without module-level
+      // spying (worker-output-file.ts imports `fs/promises` via `import *
+      // as fs`, whose CJS-interop namespace snapshots property values at
+      // import time -- a later `spyOn(memfs.promises, 'stat')` mutation is
+      // invisible to that frozen reference). Instead, create a FILE at the
+      // path a DIRECTORY component is expected: traversing through it to
+      // reach the manifest path throws a real `ENOTDIR`, exercising the
+      // "any other error" branch with the exact error shape a real
+      // filesystem would produce.
+      const sessionDirPath = path.join(TEST_CONFIG_DIR, '_quick', 'outputs', 'session-notdir');
+      vol.mkdirSync(path.dirname(sessionDirPath), { recursive: true });
+      vol.writeFileSync(sessionDirPath, 'this is a file, not a directory');
+
+      const result = await manager.hasEverBeenActivated('session-notdir', 'worker-1', quickResolver);
+
+      expect(result).toBe(true);
+    });
+  });
+
   describe('file size limit and truncation', () => {
     it('should truncate file when exceeding max size', async () => {
       // Max size is 1024 bytes, flush threshold is 256 bytes

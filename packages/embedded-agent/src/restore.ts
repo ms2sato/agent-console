@@ -59,10 +59,9 @@ export function reconstructConversation(streamText: string, systemPrompt: string
   }
 
   replayWindow(conversation, windowEvents);
+  const repairResult = repairDanglingToolCalls(conversation);
 
-  const repairedToolCallIds = repairDanglingToolCalls(conversation);
-
-  return { conversation, repairedToolCallIds };
+  return { conversation: repairResult.conversation, repairedToolCallIds: repairResult.repairedToolCallIds };
 }
 
 function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {
@@ -158,20 +157,33 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
   }
 }
 
-/** 4d: Tier C mid-turn repair, applied to the fully reconstructed array. */
-function repairDanglingToolCalls(conversation: ChatMessage[]): string[] {
+/**
+ * 4d: Tier C mid-turn repair, applied to the fully reconstructed array.
+ * Returns a NEW array (does not mutate `conversation` in place) with a
+ * synthetic repair inserted immediately after each assistant message that
+ * has a dangling tool_call_id -- positioned there (not appended to the tail
+ * of the whole array) so repeated restores across multiple turns cannot
+ * place a repair AFTER a later turn's messages, which would violate the
+ * provider's structural contract (every tool_call_id must be answered
+ * before the NEXT assistant message, not merely "somewhere in the array").
+ */
+function repairDanglingToolCalls(conversation: ChatMessage[]): { conversation: ChatMessage[]; repairedToolCallIds: string[] } {
   const responded = new Set<string>();
-  const allIds: string[] = [];
   for (const msg of conversation) {
+    if (msg.role === 'tool') responded.add(msg.tool_call_id);
+  }
+  const repaired: string[] = [];
+  const result: ChatMessage[] = [];
+  for (const msg of conversation) {
+    result.push(msg);
     if (msg.role === 'assistant' && msg.tool_calls) {
-      for (const tc of msg.tool_calls) allIds.push(tc.id);
-    } else if (msg.role === 'tool') {
-      responded.add(msg.tool_call_id);
+      for (const tc of msg.tool_calls) {
+        if (!responded.has(tc.id)) {
+          pushSyntheticToolError(result, tc.id, RESTORE_REPAIR_REASON);
+          repaired.push(tc.id);
+        }
+      }
     }
   }
-  const dangling = allIds.filter((id) => !responded.has(id));
-  for (const id of dangling) {
-    pushSyntheticToolError(conversation, id, RESTORE_REPAIR_REASON);
-  }
-  return dangling;
+  return { conversation: result, repairedToolCallIds: repaired };
 }

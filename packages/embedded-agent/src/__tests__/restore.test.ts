@@ -1,11 +1,36 @@
 import { describe, it, expect } from 'bun:test';
 import type { EmbeddedAgentStreamEvent } from '@agent-console/shared';
+import type { ChatMessage } from '../providers/types.js';
 import { reconstructConversation, RestoreReconstructionError, RESTORE_REPAIR_REASON } from '../restore.js';
 
 const SYSTEM_PROMPT = 'You are a helpful assistant.';
 
 function linesOf(events: EmbeddedAgentStreamEvent[]): string {
   return events.map((e) => JSON.stringify(e)).join('\n');
+}
+
+/**
+ * Every assistant message with `tool_calls` is answered by an IMMEDIATELY
+ * -following contiguous run of `{role:'tool'}` messages -- before the next
+ * assistant/user message. Stricter than "answered somewhere later in the
+ * array": the OpenAI Chat Completions "response group" contract requires
+ * every tool_call_id to be closed before the NEXT assistant message, not
+ * merely at some later point.
+ */
+function toolCallsAnsweredImmediately(messages: ChatMessage[]): boolean {
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== 'assistant' || !msg.tool_calls || msg.tool_calls.length === 0) continue;
+    const expectedIds = new Set(msg.tool_calls.map((tc) => tc.id));
+    let j = i + 1;
+    while (j < messages.length && messages[j].role === 'tool') {
+      const toolMsg = messages[j] as Extract<ChatMessage, { role: 'tool' }>;
+      expectedIds.delete(toolMsg.tool_call_id);
+      j++;
+    }
+    if (expectedIds.size > 0) return false;
+  }
+  return true;
 }
 
 describe('reconstructConversation — 4c total classification', () => {
@@ -141,6 +166,39 @@ describe('reconstructConversation — Tier C mid-turn repair (4d)', () => {
     const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
 
     expect(outcome.repairedToolCallIds).toEqual(['c1', 'c2']);
+  });
+
+  it('positions a repeated-restore repair immediately after its owning turn, not after a LATER completed turn (CodeRabbit MAJOR)', () => {
+    // Simulates the on-disk log shape a REPEATED restore replays: Turn 1's
+    // dangling tool-call is never healed on disk (repairs are in-memory
+    // only, never persisted back to the log per the design), so Turn 2's
+    // complete events are appended after it in the SAME raw log. A naive
+    // "append repairs to the tail of the whole array" implementation would
+    // place Turn 1's synthetic repair AFTER Turn 2's assistant message,
+    // violating the provider's structural contract.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'turn1 msg' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'turn1 reply' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: {} },
+      { v: 1, type: 'user-message', id: 'm2', text: 'turn2 msg' },
+      { v: 1, type: 'assistant-message', turnId: 't2', text: 'turn2 reply' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.repairedToolCallIds).toEqual(['c1']);
+
+    const turn2UserIndex = outcome.conversation.findIndex(
+      (m) => m.role === 'user' && m.content === 'turn2 msg',
+    );
+    const repairIndex = outcome.conversation.findIndex(
+      (m) => m.role === 'tool' && m.tool_call_id === 'c1',
+    );
+    expect(turn2UserIndex).toBeGreaterThan(-1);
+    expect(repairIndex).toBeGreaterThan(-1);
+    expect(repairIndex).toBeLessThan(turn2UserIndex);
+
+    expect(toolCallsAnsweredImmediately(outcome.conversation)).toBe(true);
   });
 
   it('does not repair a tool-call whose tool-result is present (no-repair-needed)', () => {

@@ -183,7 +183,7 @@ interface Harness {
   revokeByWorker: ReturnType<typeof mock>;
   resetWorkerOutput: ReturnType<typeof mock>;
   bufferOutput: ReturnType<typeof mock>;
-  getCurrentOffset: ReturnType<typeof mock>;
+  hasEverBeenActivated: ReturnType<typeof mock>;
   readHistoryWithOffset: ReturnType<typeof mock>;
   loadProviderKeyFn: ReturnType<typeof mock>;
   persistSession: ReturnType<typeof mock>;
@@ -208,14 +208,16 @@ function setup(opts?: {
   /** Issue #1068: worker.deliverInitialPromptOnActivation, false by default. */
   deliverInitialPromptOnActivation?: boolean;
   /**
-   * Transcript Restore (#1123): current absolute offset BEFORE this
-   * activation. Defaults to 0, i.e. every EXISTING test (written before
-   * restore existed) takes the "first-ever activation" branch and continues
-   * to exercise the byte-identical v1 reset path.
+   * Transcript Restore (#1123): whether the worker has ever been activated
+   * BEFORE this activation. Defaults to false, i.e. every EXISTING test
+   * (written before restore existed) takes the "first-ever activation"
+   * branch and continues to exercise the byte-identical v1 reset path.
    */
-  currentOffset?: number;
-  /** Transcript Restore (#1123): the persisted stream `readHistoryWithOffset` returns when currentOffset > 0. */
+  everActivated?: boolean;
+  /** Transcript Restore (#1123): the persisted stream `readHistoryWithOffset` returns when everActivated is true. */
   readHistoryWithOffsetResult?: { data: string };
+  /** Transcript Restore (#1123): readHistoryWithOffset rejects instead of resolving (simulates a persistent I/O error on an existing worker). */
+  readHistoryWithOffsetThrows?: boolean;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -236,13 +238,18 @@ function setup(opts?: {
   const revokeByWorker = mock(() => {});
   const resetWorkerOutput = mock(async () => NEW_EPOCH);
   const bufferOutput = mock(() => {});
-  const getCurrentOffset = mock(async () => opts?.currentOffset ?? 0);
-  const readHistoryWithOffset = mock(async () => ({
-    data: opts?.readHistoryWithOffsetResult?.data ?? '',
-    offset: 0,
-    startOffset: 0,
-    epoch: 0,
-  }));
+  const hasEverBeenActivated = mock(async () => opts?.everActivated ?? false);
+  const readHistoryWithOffset = mock(async () => {
+    if (opts?.readHistoryWithOffsetThrows) {
+      throw new Error('persisted stream read boom');
+    }
+    return {
+      data: opts?.readHistoryWithOffsetResult?.data ?? '',
+      offset: 0,
+      startOffset: 0,
+      epoch: 0,
+    };
+  });
   const loadProviderKeyFn =
     opts?.loadProviderKeyFn ?? mock(async () => API_KEY);
   const persistSession = mock(async () => {});
@@ -272,7 +279,7 @@ function setup(opts?: {
     workerOutputFileManager: {
       resetWorkerOutput: resetWorkerOutput as never,
       bufferOutput: bufferOutput as never,
-      getCurrentOffset: getCurrentOffset as never,
+      hasEverBeenActivated: hasEverBeenActivated as never,
       readHistoryWithOffset: readHistoryWithOffset as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
@@ -296,7 +303,7 @@ function setup(opts?: {
     revokeByWorker,
     resetWorkerOutput,
     bufferOutput,
-    getCurrentOffset,
+    hasEverBeenActivated,
     readHistoryWithOffset,
     loadProviderKeyFn,
     persistSession,
@@ -543,7 +550,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   ].join('\n');
 
   it('does NOT reset the output stream and forwards a matching restoredConversation when restore succeeds', async () => {
-    const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
     const epochBefore = h.worker.epoch;
     const offsetBefore = h.worker.outputOffset;
 
@@ -561,7 +568,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   });
 
   it('resets the output stream with preserveToSidecar and omits restoredConversation when restore fails', async () => {
-    const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: '{not valid json' } });
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
 
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -578,8 +585,8 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     expect('restoredConversation' in first).toBe(false);
   });
 
-  it('performs the byte-identical v1 reset (no restore attempt) on a first-ever activation (currentOffset 0)', async () => {
-    const h = setup({ currentOffset: 0 });
+  it('performs the byte-identical v1 reset (no restore attempt) on a first-ever activation (hasEverBeenActivated=false)', async () => {
+    const h = setup({ everActivated: false });
 
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -593,9 +600,32 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     expect('restoredConversation' in first).toBe(false);
   });
 
+  it('routes a persistent I/O error on an EXISTING worker through the failure-with-sidecar path, NOT the destructive first-activation shortcut (CodeRabbit CRITICAL)', async () => {
+    // hasEverBeenActivated's real implementation is conservative on a
+    // non-ENOENT stat failure: it reports `true` (assume activated) rather
+    // than throwing, so this DI mock returns `true` too -- exercising the
+    // caller-side contract that the injected hasEverBeenActivated never
+    // throws. The restore attempt then hits the SAME underlying persistent
+    // I/O failure via readHistoryWithOffset and correctly falls into the
+    // sidecar-preserving reset branch instead of the destructive
+    // "nothing to restore" shortcut.
+    const h = setup({ everActivated: true, readHistoryWithOffsetThrows: true });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.resetWorkerOutput).toHaveBeenCalledWith(
+      h.sessionId,
+      h.workerId,
+      expect.anything(),
+      { preserveToSidecar: true },
+    );
+    expect(h.worker.epoch).toBe(NEW_EPOCH);
+    expect(h.worker.outputOffset).toBe(0);
+  });
+
   describe('getRestoreInfo', () => {
     it('returns the current epoch + restore result after a successful restore', async () => {
-      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
       await h.service.activate(h.sessionId, h.workerId);
 
       const info = h.service.getRestoreInfo(h.workerId);
@@ -606,14 +636,14 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     });
 
     it('returns null after a restore failure', async () => {
-      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
     });
 
     it('returns null after a first-ever activation (nothing to restore)', async () => {
-      const h = setup({ currentOffset: 0 });
+      const h = setup({ everActivated: false });
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
@@ -627,7 +657,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
 
   describe('fast-path push (onRestoreInfo)', () => {
     it('invokes onRestoreInfo on already-attached connections when restore succeeds', async () => {
-      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
 
       await h.service.activate(h.sessionId, h.workerId);
 
@@ -636,7 +666,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     });
 
     it('does NOT invoke onRestoreInfo when restore fails', async () => {
-      const h = setup({ currentOffset: 500, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
 
       await h.service.activate(h.sessionId, h.workerId);
 
@@ -644,7 +674,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     });
 
     it('does NOT invoke onRestoreInfo on a first-ever activation', async () => {
-      const h = setup({ currentOffset: 0 });
+      const h = setup({ everActivated: false });
 
       await h.service.activate(h.sessionId, h.workerId);
 

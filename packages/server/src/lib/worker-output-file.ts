@@ -851,6 +851,31 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Whether a worker has ever been activated, i.e. whether a manifest has
+   * ever been written for it. Distinguishes "manifest missing" (`ENOENT` --
+   * genuinely first-ever activation, nothing to restore) from any OTHER stat
+   * failure (permission error, filesystem corruption, etc.), which is treated
+   * CONSERVATIVELY as "yes, assume activated" so the caller routes through
+   * the restore-attempt path instead of taking a destructive
+   * first-activation shortcut. Used by EmbeddedAgentWorkerService.runActivation
+   * (Transcript Restore, #1123) to decide between the two branches -- see
+   * docs/design/embedded-agent-worker.md "Transcript Restore".
+   *
+   * Read-only existence check: does not join the per-worker serialization
+   * domain (no interaction with pending-flush/segment-cache state).
+   */
+  async hasEverBeenActivated(sessionId: string, workerId: string, resolver: SessionDataPathResolver): Promise<boolean> {
+    const manifestPath = this.getManifestPath(sessionId, workerId, resolver);
+    try {
+      await fs.stat(manifestPath);
+      return true;
+    } catch (error) {
+      if (isErrnoException(error) && error.code === 'ENOENT') return false;
+      return true;
+    }
+  }
+
+  /**
    * Serve a backwards history range: the bytes ending at (strictly before)
    * absolute `beforeOffset`, clamped to ONE storage unit (a single archived
    * segment or the live window) and to `min(maxBytes, rangeMaxBytes)` (§5.1/§5.2).

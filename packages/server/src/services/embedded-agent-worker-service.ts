@@ -169,7 +169,7 @@ export interface EmbeddedAgentWorkerServiceDeps {
   mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
   workerOutputFileManager: Pick<
     WorkerOutputFileManager,
-    'resetWorkerOutput' | 'bufferOutput' | 'readHistoryWithOffset' | 'getCurrentOffset'
+    'resetWorkerOutput' | 'bufferOutput' | 'readHistoryWithOffset' | 'hasEverBeenActivated'
   >;
   /** MCP Streamable-HTTP base URL delivered to the loop in the init message. */
   getMcpBaseUrl: () => string;
@@ -335,11 +335,17 @@ export class EmbeddedAgentWorkerService {
     try {
       // Step 4: attempt restore before resetting (Transcript Restore, #1123),
       // unless this is the worker's first-ever activation (nothing to
-      // restore). `getCurrentOffset` (not readHistoryWithOffset) is the
-      // first-ever-activation check because an empty `readHistoryWithOffset`
-      // result is ALSO what a genuine I/O read failure returns -- using
-      // getCurrentOffset avoids conflating "nothing to restore" with "restore
-      // should fail with sidecar preservation".
+      // restore). `hasEverBeenActivated` (not getCurrentOffset) is the
+      // first-ever-activation check because getCurrentOffset conflates
+      // "manifest never created" (genuinely nothing to restore) with "manifest
+      // read failed for some other reason" (both return 0) -- a transient I/O
+      // error on an EXISTING worker with real transcript history would
+      // otherwise take the destructive first-activation branch below WITHOUT
+      // sidecar preservation. hasEverBeenActivated distinguishes ENOENT
+      // (genuinely first-ever) from any other stat failure (conservatively
+      // routed through the restore-attempt branch, which re-hits the same
+      // underlying error and correctly falls into the failure-with-sidecar
+      // path instead).
       const resolver = this.deps.getPathResolver(session);
       let restoredConversation: EmbeddedAgentRestoredMessage[] | undefined;
       let restoreInfo: { messageCount: number; repairedToolCallIds: string[] } | null = null;
@@ -349,8 +355,8 @@ export class EmbeddedAgentWorkerService {
         ...(session.type === 'worktree' ? { repositoryId: session.repositoryId } : {}),
         cwd: session.locationPath,
       };
-      const currentOffset = await this.deps.workerOutputFileManager.getCurrentOffset(sessionId, workerId, resolver);
-      if (currentOffset === 0) {
+      const everActivated = await this.deps.workerOutputFileManager.hasEverBeenActivated(sessionId, workerId, resolver);
+      if (!everActivated) {
         // First-ever activation: nothing to restore, proceed with today's v1 reset unconditionally.
         const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
         worker.epoch = newEpoch;
