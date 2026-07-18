@@ -8,7 +8,7 @@
  *   - `scripts/run-preview-sandbox-browser-check.mjs` (real Chromium via
  *     Playwright) -- exercises the same vectors against a real browser
  *     engine, plus the production `<iframe sandbox="">` containment
- *     composition. See Issue #1162.
+ *     composition.
  *
  * This file holds only vector data (test fixtures), not sanitizer logic or
  * assertions -- each consumer owns its own assertion shape.
@@ -55,12 +55,12 @@ export const NEUTRALIZED_VECTORS: CorpusVector[] = [
 ];
 
 /**
- * Known, currently-unresolved parser-quirk-dependent mXSS gap (Issue #1162):
- * the classic cure53 adoption-agency-triggering shape. Survives the
- * sanitizer's first `DOMParser` pass as inert RAWTEXT content inside
- * `<style>`, then reconstitutes a real `<img onerror>` element on re-parse in
- * engines that implement the HTML5 foreign-content/adoption-agency algorithm
- * (confirmed in real Chromium; happy-dom does not reproduce this -- see
+ * Known, currently-unresolved parser-quirk-dependent mXSS gap: the classic
+ * cure53 adoption-agency-triggering shape. Survives the sanitizer's first
+ * `DOMParser` pass as inert RAWTEXT content inside `<style>`, then
+ * reconstitutes a real `<img onerror>` element on re-parse in engines that
+ * implement the HTML5 foreign-content/adoption-agency algorithm (confirmed
+ * in real Chromium; happy-dom does not reproduce this -- see
  * `../__tests__/preview-sandbox.test.ts`). Production containment (the
  * `<iframe sandbox="">` + CSP composition in `PreviewPanel.tsx`) holds
  * regardless of this sanitizer-level gap -- verified by the real-Chromium
@@ -68,12 +68,13 @@ export const NEUTRALIZED_VECTORS: CorpusVector[] = [
  *
  * NOT included in `NEUTRALIZED_VECTORS`: this vector's sanitizer-level
  * neutralization is a known, tracked non-goal for now (deferred tokenizer /
- * allowlist redesign, see Issue #1106 / #1162). Consumers must treat any
- * "does this survive sanitize -> re-parse" assertion on this vector as
- * informational, not a blocking regression gate -- asserting it as a hard
- * failure would go red the moment a future sanitizer improvement neutralizes
- * it, punishing progress (see the containment-invariant test in
- * `../__tests__/preview-sandbox.test.ts` for the established rationale).
+ * allowlist redesign; see the tracking issue referenced in this vector's
+ * `name` field below). Consumers must treat any "does this survive sanitize
+ * -> re-parse" assertion on this vector as informational, not a blocking
+ * regression gate -- asserting it as a hard failure would go red the moment
+ * a future sanitizer improvement neutralizes it, punishing progress (see the
+ * containment-invariant test in `../__tests__/preview-sandbox.test.ts` for
+ * the established rationale).
  */
 export const KNOWN_GAP_VECTOR: CorpusVector = {
   name: 'cure53 adoption-agency shape (Issue #1162, known gap, containment-only)',
