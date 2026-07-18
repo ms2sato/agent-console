@@ -18,6 +18,18 @@
  *     `killAsUser` call against the first one -- proving the helper signals
  *     exactly the targeted PID (`kill -s <SIG> -- <pid>`), not something
  *     broader like a name-based `pkill`.
+ *   - Every subprocess-facing phase is bounded so a stalled sudo/NSS/
+ *     login-shell chain on the target host surfaces as a clear timeout
+ *     rather than hanging the deploy: the tracked-PID stdout read has a
+ *     deadline (with reader cancellation on expiry), and both `killAsUser`
+ *     calls pass an explicit `timeoutMs` (the underlying `runAsUser` sets NO
+ *     timer at all when this is omitted). Any phase timing out exits with
+ *     code 2 (environment problem), distinct from an assertion failure.
+ *   - Cleanup verification: `killAsUser` resolves normally on a non-zero
+ *     exit code or a timeout (it does not reject), so the best-effort
+ *     cleanup pass inspects the result's `timedOut`/`exitCode` explicitly
+ *     and re-checks actual PID survival afterward -- a process left behind
+ *     by cleanup is recorded as a failure, not silently swallowed.
  *
  * What this smoke does NOT exercise:
  *   - `killAsUser`'s SIGTERM -> SIGKILL fallback orchestration -- that
@@ -53,7 +65,10 @@
  * Exit codes:
  *   0  all assertions passed
  *   1  one or more assertions failed (system is wrong)
- *   2  bad usage / cannot run (missing target user, spawn launch failure)
+ *   2  bad usage / cannot run (missing target user, spawn launch failure,
+ *      or any phase (PID read, an elevated kill call) exceeding its bounded
+ *      deadline -- treated as an environment problem, not a system-under-
+ *      test assertion failure)
  *
  * Sync contract: `spawnAsUser` and `killAsUser` are imported directly from
  * `packages/server/src/services/privilege-elevation.ts` -- the exact
@@ -84,6 +99,26 @@ process.env.AUTH_MODE = 'multi-user';
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import { spawnAsUser, killAsUser } from '../../packages/server/src/services/privilege-elevation.js';
+
+/**
+ * `killAsUser` sets no timer at all when `timeoutMs` is omitted (`runAsUser`
+ * only starts a timeout `setTimeout` when the caller passes one). Without an
+ * explicit bound, a stalled sudo/NSS/login-shell chain on the target host
+ * would hang this smoke's `await` indefinitely instead of surfacing as a
+ * clear probe failure.
+ */
+const KILL_AS_USER_TIMEOUT_MS = 10_000;
+
+/** Deadline for reading the tracked PID's first stdout line. */
+const PID_READ_TIMEOUT_MS = 15_000;
+
+/**
+ * Distinguishes "a phase of this probe hung past its deadline" from a normal
+ * assertion failure. Caught at the top level and mapped to exit code 2
+ * (probe-cannot-run / environment problem), not exit code 1 (assertion
+ * failed) -- per this script's own documented exit-code convention.
+ */
+class ProbeTimeoutError extends Error {}
 
 const failures: string[] = [];
 let passes = 0;
@@ -138,12 +173,47 @@ async function spawnTrackedSleep(username: string, seconds: number): Promise<num
   const reader = subprocess.stdout.getReader();
   const decoder = new TextDecoder();
   let buffered = '';
-  while (!buffered.includes('\n')) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffered += decoder.decode(value, { stream: true });
+  const deadline = Date.now() + PID_READ_TIMEOUT_MS;
+  try {
+    while (!buffered.includes('\n')) {
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        throw new ProbeTimeoutError(
+          `reading tracked PID line timed out after ${PID_READ_TIMEOUT_MS}ms (stalled sudo/NSS/login-shell path?)`,
+        );
+      }
+      let timer: ReturnType<typeof setTimeout>;
+      const readOrTimeout = Promise.race([
+        reader.read(),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new ProbeTimeoutError(`reader.read() timed out after ${remainingMs}ms`)),
+            remainingMs,
+          );
+        }),
+      ]);
+      let readResult: ReadableStreamReadResult<Uint8Array>;
+      try {
+        readResult = await readOrTimeout;
+      } finally {
+        clearTimeout(timer!);
+      }
+      const { value, done } = readResult;
+      if (done) break;
+      buffered += decoder.decode(value, { stream: true });
+    }
+  } catch (err) {
+    // Release the stalled read so the underlying subprocess pipe doesn't
+    // keep this probe's event loop alive after we've already given up.
+    await reader.cancel('PID read deadline exceeded').catch(() => {});
+    throw err;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Best-effort: cancel() above may have already settled the lock.
+    }
   }
-  reader.releaseLock();
 
   const firstLine = buffered.split('\n')[0]?.trim();
   const pid = firstLine ? Number(firstLine) : NaN;
@@ -166,6 +236,7 @@ async function main(): Promise<void> {
 
   let targetPid: number | undefined;
   let controlPid: number | undefined;
+  let timedOut = false;
 
   try {
     console.log(`==> spawning tracked target sleep as '${targetUsername}' (elevated: ${!degenerate})`);
@@ -181,7 +252,10 @@ async function main(): Promise<void> {
     expect(procAlive(controlPid), 'control pid is alive before killAsUser', `pid=${controlPid}`);
 
     console.log(`==> killAsUser(${targetPid}, 'SIGTERM', '${targetUsername}')`);
-    const result = await killAsUser(targetPid, 'SIGTERM', targetUsername);
+    const result = await killAsUser(targetPid, 'SIGTERM', targetUsername, { timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+    if (result.timedOut) {
+      throw new ProbeTimeoutError(`killAsUser SIGTERM timed out after ${KILL_AS_USER_TIMEOUT_MS}ms`);
+    }
     expect(result.exitCode === 0, 'killAsUser SIGTERM exitCode === 0', `got exitCode=${result.exitCode} stderr=${result.stderr}`);
 
     console.log('==> waiting for target pid to exit (bounded poll, up to 5s)');
@@ -191,22 +265,48 @@ async function main(): Promise<void> {
     console.log('==> negative assertion: control pid must still be alive (killAsUser targeted only the intended pid)');
     expect(procAlive(controlPid), 'control pid is still alive after killAsUser on the target pid', `pid=${controlPid}`);
   } catch (err) {
-    console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
-    failures.push('unexpected exception during smoke run');
+    if (err instanceof ProbeTimeoutError) {
+      timedOut = true;
+      console.error('PROBE TIMEOUT:', err.message);
+    } else {
+      console.error('PROBE ERROR:', err instanceof Error ? (err.stack ?? err.message) : String(err));
+      failures.push('unexpected exception during smoke run');
+    }
   } finally {
-    console.log('==> cleanup (best-effort SIGKILL of any surviving tracked pids)');
+    console.log('==> cleanup (best-effort SIGKILL of any surviving tracked pids, verified)');
     for (const pid of [targetPid, controlPid]) {
       if (pid === undefined) continue;
       if (!procAlive(pid)) continue;
+      // `killAsUser` resolves normally even on a non-zero exit code or a
+      // timeout (see privilege-elevation.ts docs) -- it does NOT reject the
+      // promise in either case. A bare try/catch around the call therefore
+      // cannot detect most cleanup failures; the result's `timedOut` /
+      // `exitCode` must be inspected explicitly, and actual PID survival
+      // must be re-checked afterward rather than assumed from a clean call.
       try {
-        await killAsUser(pid, 'SIGKILL', targetUsername);
+        const cleanupResult = await killAsUser(pid, 'SIGKILL', targetUsername, { timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+        if (cleanupResult.timedOut || cleanupResult.exitCode !== 0) {
+          console.warn(
+            `  cleanup: killAsUser SIGKILL non-success for pid=${pid}` +
+              ` (timedOut=${cleanupResult.timedOut}, exitCode=${cleanupResult.exitCode}, stderr=${cleanupResult.stderr})`,
+          );
+        }
       } catch (err) {
-        console.warn(`  cleanup: killAsUser SIGKILL failed for pid=${pid} (best-effort):`, err);
+        console.warn(`  cleanup: killAsUser SIGKILL threw for pid=${pid} (best-effort):`, err);
       }
+      const goneAfterCleanup = await waitUntilGone(pid, 3_000);
+      // Silent success is not acceptable here: a tracked process surviving
+      // best-effort cleanup is itself a real finding (dogfood no-leftover
+      // discipline), not something to swallow.
+      expect(goneAfterCleanup, `cleanup left no surviving process for pid=${pid}`, `pid=${pid} still present in /proc after SIGKILL + wait`);
     }
   }
 
   console.log();
+  if (timedOut) {
+    console.error('PROBE TIMED OUT: a phase of this smoke exceeded its deadline (environment problem, not an assertion failure)');
+    process.exit(2);
+  }
   if (failures.length > 0) {
     console.error(`FAILED: ${failures.length} assertion(s) failed`);
     process.exit(1);
@@ -216,6 +316,10 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  if (err instanceof ProbeTimeoutError) {
+    console.error('PROBE TIMEOUT (uncaught):', err.message);
+    process.exit(2);
+  }
   console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
   process.exit(2);
 });

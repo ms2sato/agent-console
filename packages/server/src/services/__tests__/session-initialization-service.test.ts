@@ -449,6 +449,75 @@ describe('SessionInitializationService', () => {
         expect(mockProcess.wasKilled(3001)).toBe(false);
       });
 
+      it('forwards an explicit timeoutMs to killAsUser (CodeRabbit R1-a: runAsUser sets no timer without it)', async () => {
+        mockProcess.markAlive(3005);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3005 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const capturedOpts: Array<Parameters<typeof killAsUser>[3]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (_pid, _signal, _username, opts) => {
+          capturedOpts.push(opts);
+          return okResult({ exitCode: 0 });
+        };
+
+        await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(capturedOpts.length).toBe(1);
+        expect(capturedOpts[0]?.timeoutMs).toBeGreaterThan(0);
+        expect(typeof capturedOpts[0]?.timeoutMs).toBe('number');
+      });
+
+      it('treats a timed-out elevated SIGTERM as a failure and escalates to SIGKILL (timedOut polarity)', async () => {
+        // exitCode is 0 here specifically to prove the timedOut check is
+        // NOT redundant with the exitCode!==0 check -- a naive
+        // implementation that only checked exitCode would treat this
+        // (timedOut:true, exitCode:0) result as success and never escalate.
+        mockProcess.markAlive(3006);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3006 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const calls: Array<[number, string]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (pid, signal) => {
+          calls.push([pid, signal]);
+          if (signal === 'SIGTERM') {
+            return okResult({ exitCode: 0, timedOut: true });
+          }
+          return okResult({ exitCode: 0, timedOut: false });
+        };
+
+        const count = await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(count).toBe(1);
+        expect(calls).toEqual([
+          [3006, 'SIGTERM'],
+          [3006, 'SIGKILL'],
+        ]);
+      });
+
       it('falls back to elevated SIGKILL when the elevated SIGTERM attempt fails', async () => {
         mockProcess.markAlive(3002);
 

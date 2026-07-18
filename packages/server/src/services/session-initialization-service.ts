@@ -15,6 +15,15 @@ import { killAsUser, shouldElevateForUser } from './privilege-elevation.js';
 
 const logger = createLogger('session-initialization');
 
+/**
+ * `runAsUser` (which `killAsUser` composes) sets no timer at all when
+ * `timeoutMs` is omitted -- an elevated kill whose underlying `sudo`/NSS/
+ * login-shell chain hangs would otherwise block server startup
+ * indefinitely. 10s is generous for a `kill -s <SIG> -- <pid>` one-shot
+ * command while still bounding the worst case.
+ */
+const KILL_AS_USER_TIMEOUT_MS = 10_000;
+
 /** Callback to check if a session is already loaded in memory. */
 type SessionInMemoryChecker = (id: string) => boolean;
 
@@ -398,7 +407,10 @@ export class SessionInitializationService {
 
       try {
         if (elevated) {
-          const result = await killAsUserFn(pid, 'SIGTERM', username);
+          const result = await killAsUserFn(pid, 'SIGTERM', username, { timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+          if (result.timedOut) {
+            throw new Error(`killAsUser SIGTERM timed out after ${KILL_AS_USER_TIMEOUT_MS}ms`);
+          }
           if (result.exitCode !== 0) {
             throw new Error(`killAsUser SIGTERM failed (exitCode=${result.exitCode}): ${result.stderr}`);
           }
@@ -412,7 +424,10 @@ export class SessionInitializationService {
         // Try SIGKILL as fallback for stubborn processes
         try {
           if (elevated) {
-            const result = await killAsUserFn(pid, 'SIGKILL', username);
+            const result = await killAsUserFn(pid, 'SIGKILL', username, { timeoutMs: KILL_AS_USER_TIMEOUT_MS });
+            if (result.timedOut) {
+              throw new Error(`killAsUser SIGKILL timed out after ${KILL_AS_USER_TIMEOUT_MS}ms`);
+            }
             if (result.exitCode !== 0) {
               throw new Error(`killAsUser SIGKILL failed (exitCode=${result.exitCode}): ${result.stderr}`);
             }
