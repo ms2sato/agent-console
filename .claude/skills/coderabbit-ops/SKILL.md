@@ -40,7 +40,7 @@ GitHub surfaces CodeRabbit info in three distinct layers that are easy to confus
 | **Review state** | `gh pr view <N> --json reviewDecision` | `APPROVED` (or empty under the rate-limit fallback in `troubleshooting.md`) |
 | **Inline comments** | `gh api repos/<owner>/<repo>/pulls/<N>/comments` | Resolved or addressed if actionable |
 
-An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception: under the rate-limit fallback in `troubleshooting.md`, an empty state may persist; in that exception path, follow the fallback's verification steps before merge.)
+An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception 1: under the rate-limit fallback in `troubleshooting.md`, an empty state may persist; in that exception path, follow the fallback's verification steps before merge. Exception 2: a completed walkthrough with 0 actionable inline comments can also leave `reviewDecision` empty — CodeRabbit does not always submit a formal review event when it finds nothing to flag. See "the walkthrough-exists rubric" in `troubleshooting.md` before assuming "not yet reviewed" from an empty field alone.)
 
 **Docs-only PR carve-out (by configuration).** `.coderabbit.yaml` sets `reviews.auto_review.ignore_title_keywords: ["docs:"]`, so PRs titled with the conventional `docs:` prefix are skipped by auto-review ON PURPOSE (quota preservation — docs-only PRs were rate-limiting code PRs during PR-dense sprints). For such PRs an empty `reviewDecision` with no bot activity is the EXPECTED state, not a wait condition: verify the diff is genuinely docs-only (no production code), then treat layer 2 as N/A. When a docs PR warrants a bot pass anyway (e.g. a large design doc), trigger one manually with an `@coderabbitai review` comment — the manual path is unaffected by the title skip. Note the file also carries the review profile (`chill`) previously configured in the web UI, because a repo config file takes precedence over UI settings.
 
@@ -51,7 +51,10 @@ An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not
 For the following situations, see [`troubleshooting.md`](troubleshooting.md):
 
 - **Local CLI rate-limited** (typically 48-min wait window) → Rate-limit fallback (CLI side)
+- **Local CLI won't run at all — is it rate-limited or a headless-worktree auth failure?** → Headless auth-fail vs rate-limit
 - **CLI clean, bot finds Major issues anyway** → CLI vs bot independent depth
 - **GitHub bot unresponsive after rate-limit warning** → abandon-and-proceed policy
+- **GitHub bot replies "Review finished... does not re-review already reviewed commits" after a retrigger** → the "Review finished" quirk
 - **Both local CLI and GitHub bot simultaneously rate-limited** → PR Merge Authority disposition
+- **Local CLI headless auth-fail AND GitHub bot rate-limited/quirked at the same time** → Architect + Orchestrator dual-clean disposition
 - **CodeRabbit `CHANGES_REQUESTED` resolution** → see [`.claude/skills/orchestrator/core-responsibilities.md`](../orchestrator/core-responsibilities.md) §6
