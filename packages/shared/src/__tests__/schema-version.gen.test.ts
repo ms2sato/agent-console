@@ -66,6 +66,44 @@ describe('SCHEMA_VERSION', () => {
     // mutate -> probe -> restore sequence is synchronous (writeFileSync +
     // spawnSync), so no other test can observe the transient edit and the
     // finally block restores the exact original bytes.
+    //
+    // The perturbation must be non-comment content: the generator now
+    // normalizes comments out of the hash input (see
+    // scripts/schema-source-normalize.mjs), so a bare appended comment would
+    // no longer move the version — that is the intended behavior this test
+    // must not contradict. A harmless top-level export exercises the
+    // "the file's actual code participates in the hash" property instead.
+    const schemaFile = path.join(SCHEMAS_DIR, 'embedded-agent.ts');
+    const original = fs.readFileSync(schemaFile);
+
+    const baseline = printVersion();
+    expect(baseline).toBe(SCHEMA_VERSION);
+
+    let mutated: string;
+    try {
+      fs.writeFileSync(
+        schemaFile,
+        Buffer.concat([
+          original,
+          Buffer.from('\nexport const __schemaVersionSensitivityProbe = 1;\n'),
+        ]),
+      );
+      mutated = printVersion();
+    } finally {
+      fs.writeFileSync(schemaFile, original);
+    }
+
+    // A change inside the hashed set must move the version.
+    expect(mutated).not.toBe(baseline);
+    // Restoring the file yields the original version again (no residue).
+    expect(printVersion()).toBe(baseline);
+  });
+
+  it('is NOT sensitive to a comment-only perturbation of embedded-agent.ts', () => {
+    // The complement of the test above: appending a bare comment must NOT
+    // change the version, proving the normalization documented in
+    // scripts/schema-source-normalize.mjs is actually wired into
+    // computeVersion() end-to-end against a real schema file.
     const schemaFile = path.join(SCHEMAS_DIR, 'embedded-agent.ts');
     const original = fs.readFileSync(schemaFile);
 
@@ -83,9 +121,7 @@ describe('SCHEMA_VERSION', () => {
       fs.writeFileSync(schemaFile, original);
     }
 
-    // A change inside the hashed set must move the version.
-    expect(mutated).not.toBe(baseline);
-    // Restoring the file yields the original version again (no residue).
+    expect(mutated).toBe(baseline);
     expect(printVersion()).toBe(baseline);
   });
 });

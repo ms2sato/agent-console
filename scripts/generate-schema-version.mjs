@@ -19,6 +19,8 @@ import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+import { normalizeSchemaSource } from './schema-source-normalize.mjs';
+
 // Resolve everything relative to this script's location, NOT the caller's cwd,
 // so the output is identical regardless of where the script is invoked from.
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -34,27 +36,45 @@ const OUTPUT_FILE = path.join(REPO_ROOT, 'packages', 'shared', 'src', 'schema-ve
 /**
  * Collect the wire-schema files (sorted by filename) that participate in the
  * content hash.
+ * @param {string} [schemasDir] defaults to the real wire-schema directory;
+ *   overridable for tests exercising `computeVersion` against a scratch
+ *   fixture directory.
  * @returns {string[]} absolute file paths, sorted
  */
-function collectSchemaFiles() {
-  return readdirSync(SCHEMAS_DIR, { withFileTypes: true })
+export function collectSchemaFiles(schemasDir = SCHEMAS_DIR) {
+  return readdirSync(schemasDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
     .map((entry) => entry.name)
     .sort()
-    .map((name) => path.join(SCHEMAS_DIR, name));
+    .map((name) => path.join(schemasDir, name));
 }
 
 /**
  * Compute the schema version: sha256 over the concatenation of
- * `<relative-path>\n<file-content>` for each schema file, first 16 hex chars.
+ * `<relative-path>\n<normalized-file-content>` for each schema file, first
+ * 16 hex chars.
+ *
+ * Each file's content is normalized via `normalizeSchemaSource` before
+ * hashing, so comment-only and whitespace-only edits do not change the
+ * version (see scripts/schema-source-normalize.mjs). If a file fails to
+ * parse, normalization is skipped for that file and its raw, unmodified
+ * bytes are hashed instead — a fail-closed fallback: the worst case is an
+ * unnecessary version bump, never a silently-skipped semantic change.
+ * @param {string} [schemasDir] see `collectSchemaFiles`.
  * @returns {string}
  */
-function computeVersion() {
+export function computeVersion(schemasDir = SCHEMAS_DIR) {
   const hash = createHash('sha256');
-  for (const file of collectSchemaFiles()) {
+  for (const file of collectSchemaFiles(schemasDir)) {
     const relPath = path.relative(REPO_ROOT, file).split(path.sep).join('/');
     const content = readFileSync(file, 'utf8');
-    hash.update(`${relPath}\n${content}`);
+    let hashedContent;
+    try {
+      hashedContent = normalizeSchemaSource(content);
+    } catch {
+      hashedContent = content;
+    }
+    hash.update(`${relPath}\n${hashedContent}`);
   }
   return hash.digest('hex').slice(0, 16);
 }
@@ -82,29 +102,44 @@ function readCommitted() {
   }
 }
 
-const args = new Set(process.argv.slice(2));
-const version = computeVersion();
-const expected = renderOutput(version);
+/**
+ * CLI entry point. Not invoked on import — only when this module is run
+ * directly (`node scripts/generate-schema-version.mjs ...`) — so tests can
+ * import `computeVersion` / `collectSchemaFiles` without triggering a write
+ * to OUTPUT_FILE as a side effect.
+ */
+function main() {
+  const args = new Set(process.argv.slice(2));
+  const version = computeVersion();
+  const expected = renderOutput(version);
 
-if (args.has('--check')) {
-  const committed = readCommitted();
-  if (committed !== expected) {
-    console.error(
-      `schema-version.gen.ts is stale. Run: node scripts/generate-schema-version.mjs`,
-    );
-    process.exit(1);
+  if (args.has('--check')) {
+    const committed = readCommitted();
+    if (committed !== expected) {
+      console.error(
+        `schema-version.gen.ts is stale. Run: node scripts/generate-schema-version.mjs`,
+      );
+      process.exit(1);
+    }
+    console.log(version);
+    process.exit(0);
+  }
+
+  if (args.has('--print')) {
+    console.log(version);
+    process.exit(0);
+  }
+
+  // Write mode: idempotent (skip the write when the content is unchanged).
+  if (readCommitted() !== expected) {
+    writeFileSync(OUTPUT_FILE, expected);
   }
   console.log(version);
-  process.exit(0);
 }
 
-if (args.has('--print')) {
-  console.log(version);
-  process.exit(0);
+const isMainModule =
+  import.meta.url === `file://${process.argv[1]}` ||
+  process.argv[1]?.endsWith('generate-schema-version.mjs');
+if (isMainModule) {
+  main();
 }
-
-// Write mode: idempotent (skip the write when the content is unchanged).
-if (readCommitted() !== expected) {
-  writeFileSync(OUTPUT_FILE, expected);
-}
-console.log(version);
