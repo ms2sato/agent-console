@@ -16,7 +16,7 @@ import type { PersistedSession } from '../services/persistence-service.js';
  *
  * Every implementation of SessionRepository.update() must handle every field
  * in this interface. Adding a field here without updating each implementation
- * causes a silent no-op on backends that were not updated (see Issue #1210).
+ * causes a silent no-op on backends that were not updated.
  */
 export interface SessionUpdateFields {
   serverPid?: number | null;
