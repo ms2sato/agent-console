@@ -28,6 +28,9 @@ export default defineConfig({
         target: `ws://127.0.0.1:${serverPort}`,
         ws: true,
         configure: (proxy) => {
+          proxy.on('proxyReqWs', (_proxyReq, req) => {
+            console.log('[vite proxy /ws] upgrade dispatched:', req?.url);
+          });
           proxy.on('error', (err) => {
             console.error('[vite proxy /ws] error:', err);
           });
