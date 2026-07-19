@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { PersistedSession } from '../../services/persistence-service.js';
+import type { SessionUpdateFields } from '../session-repository.js';
 import { JsonSessionRepository } from '../json-session-repository.js';
 import {
   setupTestConfigDir,
@@ -220,6 +221,196 @@ describe('JsonSessionRepository', () => {
 
       expect(sessions.length).toBe(1);
       expect(sessions[0].id).toBe('healthy-paused');
+    });
+  });
+
+  describe('update', () => {
+    it('should return false when session does not exist', async () => {
+      const testSessions = [buildPersistedQuickSession({ id: 'session-1' })];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const result = await repository.update('non-existent', { title: 'New Title' });
+
+      expect(result).toBe(false);
+    });
+
+    it('should return false when file does not exist', async () => {
+      const result = await repository.update('any-id', { title: 'New Title' });
+
+      expect(result).toBe(false);
+    });
+
+    it('should persist recoveryState, orphanedAt, and orphanedReason (Issue #1210)', async () => {
+      // These three fields were silently dropped by update() — the write
+      // reported success but the JSON file never reflected the change.
+      const testSessions = [
+        buildPersistedQuickSession({ id: 'session-1', locationPath: '/some/path' }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const result = await repository.update('session-1', {
+        recoveryState: 'orphaned',
+        orphanedAt: 1700000000000,
+        orphanedReason: 'path_resolution_failed',
+      });
+
+      expect(result).toBe(true);
+
+      const reloaded = await repository.findById('session-1');
+      expect(reloaded?.recoveryState).toBe('orphaned');
+      expect(reloaded?.orphanedAt).toBe(1700000000000);
+      expect(reloaded?.orphanedReason).toBe('path_resolution_failed');
+    });
+
+    it('should clear orphanedAt and orphanedReason when explicitly set to null', async () => {
+      const testSessions = [
+        buildPersistedWorktreeSession({
+          id: 'session-1',
+          recoveryState: 'orphaned',
+          orphanedAt: 1700000000000,
+          orphanedReason: 'path_resolution_failed',
+        }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      await repository.update('session-1', {
+        recoveryState: 'healthy',
+        orphanedAt: null,
+        orphanedReason: null,
+      });
+
+      const reloaded = await repository.findById('session-1');
+      expect(reloaded?.recoveryState).toBe('healthy');
+      expect(reloaded?.orphanedAt).toBeUndefined();
+      expect(reloaded?.orphanedReason).toBeUndefined();
+    });
+
+    it('should not modify recoveryState/orphanedAt/orphanedReason when not provided', async () => {
+      const testSessions = [
+        buildPersistedWorktreeSession({
+          id: 'session-1',
+          recoveryState: 'orphaned',
+          orphanedAt: 1700000000000,
+          orphanedReason: 'path_resolution_failed',
+        }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      await repository.update('session-1', { title: 'New Title' });
+
+      const reloaded = await repository.findById('session-1');
+      expect(reloaded?.title).toBe('New Title');
+      expect(reloaded?.recoveryState).toBe('orphaned');
+      expect(reloaded?.orphanedAt).toBe(1700000000000);
+      expect(reloaded?.orphanedReason).toBe('path_resolution_failed');
+    });
+
+    it('should update pre-existing supported fields (non-regression)', async () => {
+      const testSessions = [
+        buildPersistedWorktreeSession({
+          id: 'session-1',
+          title: 'Original Title',
+          initialPrompt: 'Original Prompt',
+          locationPath: '/original/path',
+          serverPid: 1000,
+          worktreeId: 'main',
+          pausedAt: undefined,
+        }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const result = await repository.update('session-1', {
+        serverPid: null,
+        title: 'Updated Title',
+        initialPrompt: 'Updated Prompt',
+        locationPath: '/updated/path',
+        worktreeId: 'feature-branch',
+        pausedAt: '2024-01-01T00:00:00.000Z',
+      });
+
+      expect(result).toBe(true);
+      const reloaded = await repository.findById('session-1');
+      expect(reloaded?.serverPid).toBeUndefined();
+      expect(reloaded?.title).toBe('Updated Title');
+      expect(reloaded?.initialPrompt).toBe('Updated Prompt');
+      expect(reloaded?.locationPath).toBe('/updated/path');
+      expect(reloaded?.pausedAt).toBe('2024-01-01T00:00:00.000Z');
+      if (reloaded?.type === 'worktree') {
+        expect(reloaded.worktreeId).toBe('feature-branch');
+      }
+    });
+
+    it('should not set worktreeId on a quick session', async () => {
+      const testSessions = [buildPersistedQuickSession({ id: 'session-1' })];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      await repository.update('session-1', { worktreeId: 'ignored' });
+
+      const reloaded = await repository.findById('session-1');
+      expect(reloaded && 'worktreeId' in reloaded).toBe(false);
+    });
+
+    it('should reproduce the detectOrphans() write shape end-to-end via re-read', async () => {
+      // Mirrors the exact update() call shape used by
+      // SessionInitializationService.detectOrphans() in
+      // session-initialization-service.ts, so a regression in the allowlist
+      // used by that production call site is caught here too.
+      const testSessions = [
+        buildPersistedWorktreeSession({
+          id: 'orphan-candidate',
+          locationPath: '/some/path',
+          serverPid: undefined,
+        }),
+      ];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const now = 1700000000000;
+      const result = await repository.update('orphan-candidate', {
+        recoveryState: 'orphaned',
+        orphanedAt: now,
+        orphanedReason: 'path_resolution_failed',
+      });
+      expect(result).toBe(true);
+
+      // Re-read from a fresh findAll() call (new file read), not the same
+      // in-memory reference, to confirm the write actually landed on disk.
+      const all = await repository.findAll();
+      const persisted = all.find((s) => s.id === 'orphan-candidate');
+      expect(persisted).toBeDefined();
+      expect(persisted?.recoveryState).toBe('orphaned');
+      expect(persisted?.orphanedAt).toBe(now);
+      expect(persisted?.orphanedReason).toBe('path_resolution_failed');
+    });
+
+    it('should persist every field declared in SessionUpdateFields (compile-enforced full coverage)', async () => {
+      // `satisfies Required<SessionUpdateFields>` forces this fixture to name
+      // every field in the interface. Adding a field to SessionUpdateFields
+      // without adding it here is a TS compile error — a structural guard
+      // (not just review discipline) against a future field silently
+      // landing in one backend's update() allowlist but not another's.
+      const FULL_UPDATE = {
+        serverPid: 424242,
+        title: 'Full Update Title',
+        initialPrompt: 'Full Update Prompt',
+        locationPath: '/full/update/path',
+        worktreeId: 'full-update-worktree',
+        pausedAt: '2025-01-01T00:00:00.000Z',
+        recoveryState: 'orphaned',
+        orphanedAt: 1700000000000,
+        orphanedReason: 'full_update_test',
+      } satisfies Required<SessionUpdateFields>;
+
+      const testSessions = [buildPersistedWorktreeSession({ id: 'full-coverage-session' })];
+      fs.writeFileSync(sessionsFilePath, JSON.stringify(testSessions, null, 2));
+
+      const result = await repository.update('full-coverage-session', FULL_UPDATE);
+      expect(result).toBe(true);
+
+      const reloaded = await repository.findById('full-coverage-session');
+      expect(reloaded).not.toBeNull();
+      for (const [key, value] of Object.entries(FULL_UPDATE)) {
+        expect((reloaded as unknown as Record<string, unknown>)[key]).toBe(value);
+      }
     });
   });
 

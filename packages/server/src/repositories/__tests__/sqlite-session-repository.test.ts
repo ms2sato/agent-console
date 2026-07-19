@@ -4,6 +4,7 @@ import { BunSqliteDialect } from 'kysely-bun-sqlite';
 import { Database as BunDatabase } from 'bun:sqlite';
 import { SqliteSessionRepository } from '../sqlite-session-repository.js';
 import type { Database } from '../../database/schema.js';
+import type { SessionUpdateFields } from '../session-repository.js';
 import {
   buildPersistedQuickSession,
   buildPersistedWorktreeSession,
@@ -1150,6 +1151,37 @@ describe('SqliteSessionRepository', () => {
       });
 
       expect(result).toBe(false);
+    });
+
+    it('should persist every field declared in SessionUpdateFields (compile-enforced full coverage)', async () => {
+      // `satisfies Required<SessionUpdateFields>` forces this fixture to name
+      // every field in the interface. Adding a field to SessionUpdateFields
+      // without adding it here is a TS compile error — a structural guard
+      // (not just review discipline) against a future field silently
+      // landing in one backend's update() allowlist but not another's.
+      const FULL_UPDATE = {
+        serverPid: 424242,
+        title: 'Full Update Title',
+        initialPrompt: 'Full Update Prompt',
+        locationPath: '/full/update/path',
+        worktreeId: 'full-update-worktree',
+        pausedAt: '2025-01-01T00:00:00.000Z',
+        recoveryState: 'orphaned',
+        orphanedAt: 1700000000000,
+        orphanedReason: 'full_update_test',
+      } satisfies Required<SessionUpdateFields>;
+
+      const session = buildPersistedWorktreeSession({ id: 'full-coverage-session' });
+      await repository.save(session);
+
+      const result = await repository.update('full-coverage-session', FULL_UPDATE);
+      expect(result).toBe(true);
+
+      const reloaded = await repository.findById('full-coverage-session');
+      expect(reloaded).not.toBeNull();
+      for (const [key, value] of Object.entries(FULL_UPDATE)) {
+        expect((reloaded as unknown as Record<string, unknown>)[key]).toBe(value);
+      }
     });
   });
 

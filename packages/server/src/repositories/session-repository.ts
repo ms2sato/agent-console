@@ -9,6 +9,17 @@ import type { PersistedSession } from '../services/persistence-service.js';
  * - initialPrompt: Update initial prompt
  * - locationPath: Update session location path
  * - worktreeId: Update worktree ID (only valid for worktree sessions)
+ * - pausedAt: Update paused timestamp
+ * - recoveryState: Update session recovery state
+ * - orphanedAt: Update orphaned timestamp
+ * - orphanedReason: Update orphaned reason code
+ *
+ * Every implementation of SessionRepository.update() must handle every field
+ * in this interface. Each repository's test suite includes a fixture typed
+ * `satisfies Required<SessionUpdateFields>` that fails to compile when a
+ * field is added here without also updating the fixture — a structural
+ * guard (not just this comment) against a field silently landing in one
+ * backend's update() but not another's.
  */
 export interface SessionUpdateFields {
   serverPid?: number | null;
