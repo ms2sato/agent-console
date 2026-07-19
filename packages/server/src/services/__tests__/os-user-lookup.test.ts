@@ -39,4 +39,15 @@ describe('lookupOsUser', () => {
     const result: OsUserInfo | null = await lookupOsUser(fakeUsername);
     expect(result).toBeNull();
   });
+
+  // Explicit contract check backing the "never rejects" claim documented on
+  // `LookupOsUserFn`'s JSDoc (Issue #1034): the built-in implementation
+  // resolves (never rejects) even for a username that resolves to no OS
+  // account. Callers accepting an injectable `LookupOsUserFn` must not
+  // assume this holds for OTHER implementations -- see that type's JSDoc.
+  it.skipIf(!isSupported)('resolves rather than rejects, even for an unknown user', async () => {
+    const fakeUsername = `nonexistent-user-${crypto.randomBytes(8).toString('hex')}-zzz`;
+
+    await expect(lookupOsUser(fakeUsername)).resolves.toBeNull();
+  });
 });

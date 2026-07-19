@@ -71,7 +71,23 @@ export class SharedAccountRegistry {
       return new SharedAccountRegistry([]);
     }
 
-    const osInfo = await lookup(username);
+    let osInfo: Awaited<ReturnType<LookupOsUserFn>>;
+    try {
+      osInfo = await lookup(username);
+    } catch (err) {
+      // lookup is an injectable LookupOsUserFn seam; the built-in
+      // implementation never rejects, but an injected implementation is not
+      // contractually guaranteed not to throw (see os-user-lookup.ts's
+      // LookupOsUserFn JSDoc). Distinguish this from the "genuinely
+      // unresolved" case below with a distinct message + `cause` so an
+      // operator does not mistake a transient OS/exec error for a missing
+      // account.
+      throw new Error(
+        `shared account: OS lookup for username '${username}' failed unexpectedly (see cause); ` +
+          `this may indicate a transient OS/exec error rather than a missing account.`,
+        { cause: err },
+      );
+    }
     if (!osInfo) {
       throw new Error(
         `shared account: configured username '${username}' does not resolve to an OS account. ` +

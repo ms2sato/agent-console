@@ -158,4 +158,61 @@ describe('SharedAccountRegistry', () => {
       expect(userCount.count).toBe(0);
     });
   });
+
+  describe('lookup implementation throws (OS/exec error)', () => {
+    it('wraps the error with a distinguishing message and preserves the cause', async () => {
+      const userRepository = new SqliteUserRepository(db);
+      const underlyingError = new Error('getent: command not found');
+      const lookup: LookupOsUserFn = async () => {
+        throw underlyingError;
+      };
+
+      await expect(
+        SharedAccountRegistry.create({
+          username: 'shared-user',
+          userRepository,
+          lookupOsUser: lookup,
+        }),
+      ).rejects.toThrow(/failed unexpectedly/);
+
+      try {
+        await SharedAccountRegistry.create({
+          username: 'shared-user',
+          userRepository,
+          lookupOsUser: lookup,
+        });
+        throw new Error('expected SharedAccountRegistry.create to reject');
+      } catch (err) {
+        expect(err).toBeInstanceOf(Error);
+        if (!(err instanceof Error)) return;
+        expect(err.message).not.toMatch(/does not resolve/);
+        expect(err.cause).toBeInstanceOf(Error);
+        if (!(err.cause instanceof Error)) return;
+        expect(err.cause.message).toBe('getent: command not found');
+      }
+    });
+
+    it('does not create a users row when the lookup throws', async () => {
+      const userRepository = new SqliteUserRepository(db);
+      const lookup: LookupOsUserFn = async () => {
+        throw new Error('getent: command not found');
+      };
+
+      try {
+        await SharedAccountRegistry.create({
+          username: 'shared-user',
+          userRepository,
+          lookupOsUser: lookup,
+        });
+      } catch {
+        // expected
+      }
+
+      const userCount = await db
+        .selectFrom('users')
+        .select(db.fn.count<number>('id').as('count'))
+        .executeTakeFirstOrThrow();
+      expect(userCount.count).toBe(0);
+    });
+  });
 });
