@@ -183,9 +183,12 @@ describe('SharedAccountRegistry', () => {
         });
         throw new Error('expected SharedAccountRegistry.create to reject');
       } catch (err) {
-        expect((err as Error).message).not.toMatch(/does not resolve/);
-        expect((err as Error).cause).toBeInstanceOf(Error);
-        expect(((err as Error).cause as Error).message).toBe('getent: command not found');
+        expect(err).toBeInstanceOf(Error);
+        if (!(err instanceof Error)) return;
+        expect(err.message).not.toMatch(/does not resolve/);
+        expect(err.cause).toBeInstanceOf(Error);
+        if (!(err.cause instanceof Error)) return;
+        expect(err.cause.message).toBe('getent: command not found');
       }
     });
 
