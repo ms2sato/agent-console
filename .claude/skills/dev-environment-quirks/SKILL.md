@@ -26,6 +26,7 @@ Operational facts that differ from the host-side scripts:
 - **It does NOT exercise host OS quirks.** sudoers drift, PAM config, PATH/login-shell issues on the real host still need `dev-multiuser.sh` or the production instance.
 - **Coexists with the verification stack** (`docker/docker-compose.verification.yml`, host port 8080 — which on the dogfood host is also the production port, so give the verification stack a different `PORT` when production is running).
 - Logs / restart / shell: `docker compose -f docker/docker-compose.yml logs --tail 100 -f`, `... restart agent-console-dev`, `... exec -u agentconsole agent-console-dev sh`.
+- **Known limitation: the vite `/ws` proxy is currently unreliable in this stack** (Issue #1211 — the Dashboard can hang forever on "Loading sessions..." with no client-side error). Root cause is unresolved as of this writing (ruled out: `changeOrigin`, IPv6/DNS fallback asymmetry, vite's upgrade-dispatch registration, a Bun 1.3.8→1.3.10 bump). For WS-dependent QA, prefer `scripts/dev-multiuser.sh` or `docker/docker-compose.verification.yml` until #1211 is resolved.
 
 ## Multi-user dev: source propagation is rsync, not live
 
