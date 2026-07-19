@@ -20,12 +20,36 @@ export interface OsUserInfo {
 /**
  * Function shape for `lookupOsUser`. Exposed so consumers can inject a stub
  * in tests without monkey-patching `Bun.spawn`.
+ *
+ * Throw semantics are intentionally NOT part of this type's contract:
+ * `Promise<OsUserInfo | null>` cannot structurally forbid rejection, so
+ * nothing stops an injected implementation (a test stub, or a hypothetical
+ * future real implementation) from throwing, even though the built-in
+ * `lookupOsUser` below never does. Do not assume "never throws" just because
+ * the default implementation happens to hold that property.
+ *
+ * Each caller that accepts an injectable `LookupOsUserFn` MUST make an
+ * explicit decision about how to handle a rejection:
+ * - `worker-manager.ts` (`activateAgentWorkerPty`) folds a throw into its
+ *   existing "skip MCP token mint, don't fail activation" non-fatal path.
+ * - `shared-account-registry.ts` (`SharedAccountRegistry.create`) keeps its
+ *   fail-fast-at-startup behavior but wraps the error with a message that
+ *   distinguishes "OS lookup failed unexpectedly" from "account genuinely
+ *   missing".
+ * - `user-mode.ts` calls the concrete `lookupOsUser` function directly (not
+ *   through this injectable type), so it is exempt: `lookupOsUser` is
+ *   contractually never-throwing, and there is no DI seam through which a
+ *   throwing implementation could be substituted.
  */
 export type LookupOsUserFn = (username: string) => Promise<OsUserInfo | null>;
 
 /**
  * Look up the OS user (uid + home directory) for the given username.
  * Returns null when the user does not exist or the platform is unsupported.
+ * Never rejects: all internal failure modes (unsupported platform, `dscl` /
+ * `id` / `getent` failures) are caught and folded into a `null` result. This
+ * is a property of THIS implementation, not something the `LookupOsUserFn`
+ * type enforces for other implementations -- see that type's JSDoc.
  */
 export async function lookupOsUser(username: string): Promise<OsUserInfo | null> {
   const platform = os.platform();

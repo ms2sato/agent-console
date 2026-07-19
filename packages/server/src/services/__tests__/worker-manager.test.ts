@@ -1660,6 +1660,36 @@ describe('WorkerManager', () => {
       expect(worker.pty).not.toBeNull();
     });
 
+    it('multi-user + lookupOsUserFn throwing: skips minting without crashing activation', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const registry = createFakeMcpTokenRegistry();
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({
+        mcpTokenRegistry: registry,
+        lookupOsUserFn: async () => {
+          throw new Error('boom: lookup implementation misbehaved');
+        },
+        runAsUserImpl,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'mcp-agent-6',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'alice',
+        createdByUserId: 'user-uuid-1',
+      });
+
+      expect(registry.mint).not.toHaveBeenCalled();
+      expect(worker.mcpToken).toBeNull();
+      expect(worker.pty).not.toBeNull();
+    });
+
     describe('cleanup on kill / exit', () => {
       async function activateWithToken(id: string): Promise<{
         wm: WorkerManager;

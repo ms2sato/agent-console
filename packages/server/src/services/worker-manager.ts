@@ -484,7 +484,20 @@ export class WorkerManager {
           'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)',
         );
       } else if (this.mcpTokenRegistry) {
-        const osUser = await this.lookupOsUserFn(params.username);
+        // lookupOsUserFn is an injectable seam (LookupOsUserFn); the built-in
+        // implementation never rejects, but an injected implementation (test
+        // stub, future variant) is not contractually guaranteed not to throw
+        // -- see os-user-lookup.ts's LookupOsUserFn JSDoc. Fold a throw into
+        // the same "skip mint, don't fail activation" path as a null result,
+        // distinguished by `logger.error` (implementation misbehaved) vs the
+        // `logger.warn` below (genuinely unresolved).
+        const osUser = await this.lookupOsUserFn(params.username).catch((err: unknown) => {
+          logger.error(
+            { workerId: worker.id, username: params.username, err },
+            'lookupOsUserFn threw unexpectedly during MCP token mint; skipping mint',
+          );
+          return null;
+        });
         if (!osUser) {
           logger.warn(
             { workerId: worker.id, username: params.username },
