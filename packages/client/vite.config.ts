@@ -21,12 +21,26 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: `http://localhost:${serverPort}`,
+        target: `http://127.0.0.1:${serverPort}`,
         changeOrigin: true,
       },
       '/ws': {
-        target: `ws://localhost:${serverPort}`,
+        target: `ws://127.0.0.1:${serverPort}`,
         ws: true,
+        configure: (proxy) => {
+          proxy.on('proxyReqWs', (_proxyReq, req) => {
+            console.log('[vite proxy /ws] upgrade dispatched:', req?.url);
+          });
+          proxy.on('error', (err) => {
+            console.error('[vite proxy /ws] error:', err);
+          });
+          proxy.on('open', () => {
+            console.log('[vite proxy /ws] upstream socket open');
+          });
+          proxy.on('close', () => {
+            console.log('[vite proxy /ws] proxy close event');
+          });
+        },
       },
     },
   },
