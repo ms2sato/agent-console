@@ -185,6 +185,11 @@ describe('checkCallerOwnsSession', () => {
     expect(checkCallerOwnsSession(null, claimed, 'warn', ctx, { logger })).toBeNull();
     expect(calls).toHaveLength(1);
     expect(calls[0].message).toContain('AGENT_CONSOLE_MCP_AUTH=warn');
+    expect(calls[0].message).toContain('without bearer token');
+    expect(calls[0].payload).toEqual({
+      toolName: 'run_process',
+      claimedSessionId: 'session-a',
+    });
   });
 
   it('caller=null + enforce → error', () => {
