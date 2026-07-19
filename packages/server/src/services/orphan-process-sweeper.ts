@@ -1,5 +1,5 @@
 /**
- * Tree-wide orphan-process sweep by SESSION_ID env marker (Issue #1197 Part B).
+ * Tree-wide orphan-process sweep by SESSION_ID env marker.
  *
  * `SessionInitializationService.killOrphanWorkers` only kills processes
  * tracked via a session's persisted `worker.pid` -- the direct PTY wrapper

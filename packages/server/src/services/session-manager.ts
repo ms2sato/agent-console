@@ -146,8 +146,8 @@ interface SessionManagerOptions {
    */
   spawnAsUserFn?: SpawnAsUserFn;
   /**
-   * Test seam for the SESSION_ID marker orphan-process sweep (Issue #1197
-   * Part B). Defaults to the real `sweepOrphanProcesses`. Threaded through
+   * Test seam for the SESSION_ID marker orphan-process sweep. Defaults to
+   * the real `sweepOrphanProcesses`. Threaded through
    * to `SessionInitializationService`, mirroring `spawnAsUserFn` above --
    * unlike `killOrphanWorkers`'s non-elevated fallback (a cheap in-process
    * `process.kill`), `sweepOrphanProcesses` always spawns a real subprocess

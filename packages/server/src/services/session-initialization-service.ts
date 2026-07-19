@@ -26,8 +26,8 @@ const logger = createLogger('session-initialization');
 const KILL_AS_USER_TIMEOUT_MS = 10_000;
 
 /**
- * Generous bound for the SESSION_ID marker sweep script (Issue #1197 Part
- * B). Unlike a single `kill -s <SIG> -- <pid>` command, the sweep script
+ * Generous bound for the SESSION_ID marker sweep script. Unlike a single
+ * `kill -s <SIG> -- <pid>` command, the sweep script
  * scans every numeric `/proc` entry, waits out a grace period (default
  * 2s), then polls (up to ~1s) for the SIGKILL escalation to land -- so it
  * needs materially more headroom than `KILL_AS_USER_TIMEOUT_MS`.
@@ -64,8 +64,8 @@ interface SessionInitializationDeps {
    */
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
   /**
-   * Optional injection point for the SESSION_ID marker sweep (Issue #1197
-   * Part B). Defaults to the real `sweepOrphanProcesses` when omitted.
+   * Optional injection point for the SESSION_ID marker sweep. Defaults to
+   * the real `sweepOrphanProcesses` when omitted.
    * Threaded through to `sweepSessionProcesses`'s own `sweepImpl` opt --
    * exposed at the deps level (rather than only reachable via the static
    * method's own opts) because `initializeSessions` / `cleanupOrphanProcesses`
@@ -77,8 +77,8 @@ interface SessionInitializationDeps {
 }
 
 /**
- * Startup-only scope note (Issue #1197 Part B): `sweepSessionProcesses` is
- * invoked from `initializeSessions` / `cleanupOrphanProcesses` ONLY --
+ * Startup-only scope note: `sweepSessionProcesses` is invoked from
+ * `initializeSessions` / `cleanupOrphanProcesses` ONLY --
  * i.e. only at server-startup orphan recovery, alongside the existing
  * `killOrphanWorkers` calls. It is deliberately NOT wired into
  * `deleteSession`-time cleanup or `shutdownAppContext`: both of those
@@ -280,10 +280,10 @@ export class SessionInitializationService {
       killedWorkerCount += await SessionInitializationService.killOrphanWorkers(session, this.deps.resolveSpawnUsername);
 
       // Broader net: sweep any SESSION_ID-marked descendant processes that
-      // were never tracked as a `worker.pid` (Issue #1197 Part B). Runs
-      // unconditionally for every session reaching this point, regardless
-      // of whether killOrphanWorkers found anything -- that is the whole
-      // point of the sweep.
+      // were never tracked as a `worker.pid`. Runs unconditionally for
+      // every session reaching this point, regardless of whether
+      // killOrphanWorkers found anything -- that is the whole point of the
+      // sweep.
       sweptProcessCount += await SessionInitializationService.sweepSessionProcesses(
         session,
         this.deps.resolveSpawnUsername,
@@ -383,8 +383,8 @@ export class SessionInitializationService {
       killedCount += await SessionInitializationService.killOrphanWorkers(session, this.deps.resolveSpawnUsername);
 
       // Broader net: sweep any SESSION_ID-marked descendant processes that
-      // were never tracked as a `worker.pid` (Issue #1197 Part B). Runs
-      // unconditionally for every orphan session reaching this point.
+      // were never tracked as a `worker.pid`. Runs unconditionally for
+      // every orphan session reaching this point.
       sweptProcessCount += await SessionInitializationService.sweepSessionProcesses(
         session,
         this.deps.resolveSpawnUsername,
