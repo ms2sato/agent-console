@@ -1108,6 +1108,53 @@ Passing the current process user as `<target-user>` runs in a degenerate
 same-user mode where `spawnAsUser` bypasses elevation — this still exercises
 the full Bash tool-call round trip except the actual OS-boundary crossing.
 
+### Elevated orphan-worker kill check
+
+Run after every deploy that touches
+`packages/server/src/services/privilege-elevation.ts`'s `killAsUser` or
+`SessionInitializationService.killOrphanWorkers` (Issue #1197 Part A). Prior
+to this helper, a server restart could not actually terminate an orphaned
+worker PID that was spawned as a different OS user in multi-user mode —
+`process.kill` raises `EPERM` for a cross-user PID, and (before the
+companion `isProcessAlive` fix) that `EPERM` was misread as "already dead",
+so the orphan was silently left running forever:
+
+```bash
+sudo -u agentconsole bun scripts/smoke/check-kill-as-user.ts <target-user>
+```
+
+What it verifies (against the **real** machine — real `sudo`, real target
+process):
+
+- `spawnAsUser` launches a real, long-lived `sleep` as `<target-user>`, and
+  the smoke captures that process's own PID (not the outer `sudo`/`sh`
+  wrapper PID `subprocess.pid` would report when elevated).
+- `killAsUser` sends a real elevated `SIGTERM` to that PID and the process
+  actually terminates (polled via `/proc/<pid>` existence, bounded to 5s).
+- Negative: a second, unrelated `sleep` process spawned as the same target
+  user survives the `killAsUser` call against the first one — proof the
+  helper signals exactly the targeted PID (`kill -s <SIG> -- <pid>`), not
+  something broader like a name-based `pkill`.
+
+This smoke does NOT exercise `killAsUser`'s SIGTERM → SIGKILL fallback
+orchestration (that lives in the caller,
+`SessionInitializationService.killOrphanWorkers`, and is covered by unit
+tests with an injected fake) or `isProcessAlive`'s ESRCH/EPERM distinction
+(covered by `packages/server/src/lib/__tests__/process-utils.test.ts`,
+which spies on `process.kill` directly and needs no second OS user).
+
+Exit codes: `0` all assertions passed, `1` an assertion failed (the system
+is wrong), `2` bad usage or the smoke could not run (missing target-user
+argument, spawn-launch failure).
+
+Passing the current process user as `<target-user>` runs in a degenerate
+same-user mode where `spawnAsUser` / `killAsUser` bypass elevation — this
+still exercises the full mechanism (spawn, PID capture, kill, negative
+assertion) except the actual `sudo` OS-user-boundary crossing. Unlike the
+smokes above, this degenerate mode does not require `AUTH_MODE=multi-user`
+to be meaningful — the elevation bypass is evaluated independently of it,
+based solely on whether `<target-user>` equals the server-process user.
+
 ### PTY master fd leak check
 
 Run after every deploy that touches `packages/server/src/lib/pty-provider.ts`

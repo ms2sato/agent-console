@@ -375,6 +375,7 @@ export class SessionManager {
       getPathResolverForPersistedSession: (persisted) => this.getPathResolverForPersistedSession(persisted),
       baseDirForPersistedSession: (persisted) => this.baseDirForPersistedSession(persisted),
       getServerPid,
+      resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
     });
 
     this.sessionDeletionService = new SessionDeletionService({

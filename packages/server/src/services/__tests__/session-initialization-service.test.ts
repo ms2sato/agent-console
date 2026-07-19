@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import * as fsPromises from 'fs/promises';
+import * as os from 'node:os';
 import type { Kysely } from 'kysely';
 import type { PersistedSession } from '../persistence-service.js';
 import type { SessionRepository, SessionUpdateFields } from '../../repositories/index.js';
@@ -12,12 +13,22 @@ import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js
 import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { SessionInitializationService } from '../session-initialization-service.js';
+import type { killAsUser, RunAsUserResult } from '../privilege-elevation.js';
 import {
   buildPersistedQuickSession,
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
 } from '../../__tests__/utils/build-test-data.js';
+
+// Guaranteed to differ from the test runner's own OS username, so
+// `shouldElevateForUser` resolves to true whenever AUTH_MODE=multi-user is
+// forced on in the elevated-path describe blocks below.
+const ELEVATED_TEST_USERNAME = `not-${os.userInfo().username}`;
+
+function okResult(overrides: Partial<RunAsUserResult> = {}): RunAsUserResult {
+  return { stdout: '', stderr: '', exitCode: 0, timedOut: false, ...overrides };
+}
 
 const TEST_SERVER_PID = 99999;
 
@@ -77,11 +88,20 @@ describe('SessionInitializationService', () => {
     resetProcessMock();
   });
 
+  // Default same-user resolver: `AUTH_MODE` is never set to 'multi-user' in
+  // this describe block's ambient environment, so `shouldElevateForUser`
+  // resolves to false regardless of the resolved username — these existing
+  // tests exercise the non-elevated `processKill` path via `mockProcess`,
+  // unchanged from before the elevation wiring.
+  const defaultResolveSpawnUsername = async (createdBy?: string): Promise<string> =>
+    createdBy ?? 'test-server-user';
+
   function createService(options: {
     sessions: PersistedSession[];
     pathExists?: (path: string) => Promise<boolean>;
     inMemorySessionIds?: Set<string>;
     jobQueue?: JobQueue | null;
+    resolveSpawnUsername?: (createdBy?: string) => Promise<string>;
   }) {
     const sessionRepository = createMockSessionRepository(options.sessions);
     const workerOutputFileManager = createMockWorkerOutputFileManager();
@@ -97,6 +117,7 @@ describe('SessionInitializationService', () => {
       getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
       baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
+      resolveSpawnUsername: options.resolveSpawnUsername ?? defaultResolveSpawnUsername,
     });
 
     return { service, sessionRepository, workerOutputFileManager, jobQueue };
@@ -258,7 +279,7 @@ describe('SessionInitializationService', () => {
   });
 
   describe('killOrphanWorkers (static)', () => {
-    it('should kill alive worker processes and return count', () => {
+    it('should kill alive worker processes and return count', async () => {
       mockProcess.markAlive(1001);
       mockProcess.markAlive(1002);
 
@@ -272,13 +293,13 @@ describe('SessionInitializationService', () => {
         serverPid: 999,
       });
 
-      const count = SessionInitializationService.killOrphanWorkers(session);
+      const count = await SessionInitializationService.killOrphanWorkers(session, defaultResolveSpawnUsername);
       expect(count).toBe(2);
       expect(mockProcess.wasKilled(1001)).toBe(true);
       expect(mockProcess.wasKilled(1002)).toBe(true);
     });
 
-    it('should skip git-diff workers', () => {
+    it('should skip git-diff workers', async () => {
       const session = buildPersistedQuickSession({
         id: 'session-1',
         locationPath: '/some/path',
@@ -288,11 +309,11 @@ describe('SessionInitializationService', () => {
         serverPid: 999,
       });
 
-      const count = SessionInitializationService.killOrphanWorkers(session);
+      const count = await SessionInitializationService.killOrphanWorkers(session, defaultResolveSpawnUsername);
       expect(count).toBe(0);
     });
 
-    it('should skip workers with no pid', () => {
+    it('should skip workers with no pid', async () => {
       const session = buildPersistedQuickSession({
         id: 'session-1',
         locationPath: '/some/path',
@@ -302,11 +323,11 @@ describe('SessionInitializationService', () => {
         serverPid: 999,
       });
 
-      const count = SessionInitializationService.killOrphanWorkers(session);
+      const count = await SessionInitializationService.killOrphanWorkers(session, defaultResolveSpawnUsername);
       expect(count).toBe(0);
     });
 
-    it('should skip workers whose process is already dead', () => {
+    it('should skip workers whose process is already dead', async () => {
       // pid 2001 is not marked alive
       const session = buildPersistedQuickSession({
         id: 'session-1',
@@ -317,9 +338,330 @@ describe('SessionInitializationService', () => {
         serverPid: 999,
       });
 
-      const count = SessionInitializationService.killOrphanWorkers(session);
+      const count = await SessionInitializationService.killOrphanWorkers(session, defaultResolveSpawnUsername);
       expect(count).toBe(0);
       expect(mockProcess.wasKilled(2001)).toBe(false);
+    });
+
+    it('should return 0 for a session with no workers, without consulting killAsUser (non-elevated)', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/some/path',
+        workers: [],
+        serverPid: 999,
+      });
+
+      const calls: Array<[number, string, string | null | undefined]> = [];
+      const fakeKillAsUser: typeof killAsUser = async (pid, signal, username) => {
+        calls.push([pid, signal, username]);
+        return okResult();
+      };
+
+      const count = await SessionInitializationService.killOrphanWorkers(
+        session,
+        defaultResolveSpawnUsername,
+        { killAsUserImpl: fakeKillAsUser },
+      );
+      expect(count).toBe(0);
+      expect(calls).toEqual([]);
+    });
+
+    // ============================================================
+    // Elevated (multi-user) path — Issue #1197 Part A
+    // ============================================================
+    describe('elevated (multi-user mode)', () => {
+      let originalAuthMode: string | undefined;
+
+      beforeEach(() => {
+        originalAuthMode = process.env.AUTH_MODE;
+        process.env.AUTH_MODE = 'multi-user';
+      });
+
+      afterEach(() => {
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      });
+
+      function elevatedResolver(): (createdBy?: string) => Promise<string> {
+        return async () => ELEVATED_TEST_USERNAME;
+      }
+
+      it('returns 0 for a session with no workers, and never calls killAsUser', async () => {
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const calls: Array<[number, string, string | null | undefined]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (pid, signal, username) => {
+          calls.push([pid, signal, username]);
+          return okResult();
+        };
+
+        const count = await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+        expect(count).toBe(0);
+        expect(calls).toEqual([]);
+      });
+
+      it('kills via a single elevated SIGTERM when killAsUser succeeds on the first attempt', async () => {
+        // isProcessAlive is the mocked process-utils version -- a pid the
+        // mock hasn't otherwise touched would read "dead" under the OLD
+        // isProcessAlive semantics for a real EPERM (cross-user) case; here
+        // markAlive stands in for "isProcessAlive now correctly reports
+        // alive", so the pid actually reaches the kill attempt.
+        mockProcess.markAlive(3001);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3001 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const calls: Array<[number, string, string | null | undefined]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (pid, signal, username) => {
+          calls.push([pid, signal, username]);
+          return okResult({ exitCode: 0 });
+        };
+
+        const count = await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(count).toBe(1);
+        expect(calls).toEqual([[3001, 'SIGTERM', ELEVATED_TEST_USERNAME]]);
+        // Non-elevated processKill must NOT have been used for this pid.
+        expect(mockProcess.wasKilled(3001)).toBe(false);
+      });
+
+      it('forwards an explicit timeoutMs to killAsUser (CodeRabbit R1-a: runAsUser sets no timer without it)', async () => {
+        mockProcess.markAlive(3005);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3005 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const capturedOpts: Array<Parameters<typeof killAsUser>[3]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (_pid, _signal, _username, opts) => {
+          capturedOpts.push(opts);
+          return okResult({ exitCode: 0 });
+        };
+
+        await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(capturedOpts.length).toBe(1);
+        expect(capturedOpts[0]?.timeoutMs).toBeGreaterThan(0);
+        expect(typeof capturedOpts[0]?.timeoutMs).toBe('number');
+      });
+
+      it('treats a timed-out elevated SIGTERM as a failure and escalates to SIGKILL (timedOut polarity)', async () => {
+        // exitCode is 0 here specifically to prove the timedOut check is
+        // NOT redundant with the exitCode!==0 check -- a naive
+        // implementation that only checked exitCode would treat this
+        // (timedOut:true, exitCode:0) result as success and never escalate.
+        mockProcess.markAlive(3006);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3006 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const calls: Array<[number, string]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (pid, signal) => {
+          calls.push([pid, signal]);
+          if (signal === 'SIGTERM') {
+            return okResult({ exitCode: 0, timedOut: true });
+          }
+          return okResult({ exitCode: 0, timedOut: false });
+        };
+
+        const count = await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(count).toBe(1);
+        expect(calls).toEqual([
+          [3006, 'SIGTERM'],
+          [3006, 'SIGKILL'],
+        ]);
+      });
+
+      it('falls back to elevated SIGKILL when the elevated SIGTERM attempt fails', async () => {
+        mockProcess.markAlive(3002);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3002 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const calls: Array<[number, string, string | null | undefined]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (pid, signal, username) => {
+          calls.push([pid, signal, username]);
+          if (signal === 'SIGTERM') {
+            return okResult({ exitCode: 1, stderr: 'kill: permission denied' });
+          }
+          return okResult({ exitCode: 0 });
+        };
+
+        const count = await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(count).toBe(1);
+        expect(calls).toEqual([
+          [3002, 'SIGTERM', ELEVATED_TEST_USERNAME],
+          [3002, 'SIGKILL', ELEVATED_TEST_USERNAME],
+        ]);
+      });
+
+      it('tolerates a pid that already died between the isProcessAlive scan and the kill attempt (both elevated attempts fail)', async () => {
+        // Simulates "process not found" reported by kill itself (e.g. the
+        // pid exited in the window between the isProcessAlive check and the
+        // kill invocation) -- both SIGTERM and SIGKILL report non-zero.
+        mockProcess.markAlive(3003);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3003 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const fakeKillAsUser: typeof killAsUser = async () =>
+          okResult({ exitCode: 1, stderr: 'kill: No such process' });
+
+        let thrown: unknown;
+        let count = -1;
+        try {
+          count = await SessionInitializationService.killOrphanWorkers(
+            session,
+            elevatedResolver(),
+            { killAsUserImpl: fakeKillAsUser },
+          );
+        } catch (err) {
+          thrown = err;
+        }
+
+        expect(thrown).toBeUndefined();
+        expect(count).toBe(0);
+      });
+
+      it('mixed set: one already-dead (never attempted), one succeeds on first SIGTERM, one falls back to SIGKILL — count reflects only the 2 actually killed, no exception propagates', async () => {
+        // pid 4001 is never marked alive -> isProcessAlive() false -> skipped.
+        mockProcess.markAlive(4002);
+        mockProcess.markAlive(4003);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Dead', agentId: 'claude-code', pid: 4001 }),
+            buildPersistedAgentWorker({ id: 'w2', name: 'Succeeds', agentId: 'claude-code', pid: 4002 }),
+            buildPersistedAgentWorker({ id: 'w3', name: 'Fallback', agentId: 'claude-code', pid: 4003 }),
+          ],
+          serverPid: 999,
+          createdBy: 'user-1',
+        });
+
+        const calls: Array<[number, string]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (pid, signal) => {
+          calls.push([pid, signal]);
+          if (pid === 4003 && signal === 'SIGTERM') {
+            return okResult({ exitCode: 1, stderr: 'kill: permission denied' });
+          }
+          return okResult({ exitCode: 0 });
+        };
+
+        const count = await SessionInitializationService.killOrphanWorkers(
+          session,
+          elevatedResolver(),
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(count).toBe(2);
+        expect(calls).toEqual([
+          [4002, 'SIGTERM'],
+          [4003, 'SIGTERM'],
+          [4003, 'SIGKILL'],
+        ]);
+        // pid 4001 (already dead) must never have reached killAsUser.
+        expect(calls.some(([pid]) => pid === 4001)).toBe(false);
+      });
+
+      it('falls back to non-elevated processKill (and does not call killAsUser) when createdBy does not resolve to an elevated user', async () => {
+        mockProcess.markAlive(3004);
+
+        const session = buildPersistedQuickSession({
+          id: 'session-1',
+          locationPath: '/some/path',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', name: 'Agent', agentId: 'claude-code', pid: 3004 }),
+          ],
+          serverPid: 999,
+          // createdBy is set, but the injected resolver falls back to the
+          // server's own username (legacy / unresolvable createdBy case).
+          createdBy: 'unresolvable-user-id',
+        });
+
+        const calls: Array<[number, string, string | null | undefined]> = [];
+        const fakeKillAsUser: typeof killAsUser = async (pid, signal, username) => {
+          calls.push([pid, signal, username]);
+          return okResult();
+        };
+
+        const serverUsername = os.userInfo().username;
+        const count = await SessionInitializationService.killOrphanWorkers(
+          session,
+          async () => serverUsername, // resolver "fell back" to the server user
+          { killAsUserImpl: fakeKillAsUser },
+        );
+
+        expect(count).toBe(1);
+        expect(calls).toEqual([]);
+        expect(mockProcess.wasKilled(3004)).toBe(true);
+      });
     });
   });
 
@@ -449,6 +791,7 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       getPathResolverForPersistedSession: () => new SessionDataPathResolver('/test/config/_quick'),
       baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
+      resolveSpawnUsername: async (createdBy) => createdBy ?? 'test-server-user',
     });
 
     return { service };
@@ -527,6 +870,7 @@ describe('SessionInitializationService integration (real DB → mapper → servi
           return '/test/config/_quick';
         },
         getServerPid: () => TEST_SERVER_PID,
+        resolveSpawnUsername: async (createdBy) => createdBy ?? 'test-server-user',
       });
       return { service };
     }

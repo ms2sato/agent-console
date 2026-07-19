@@ -4601,6 +4601,112 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('resolveSpawnUsername wiring for orphan cleanup (Issue #1197 Part A)', () => {
+    // Verifies the SessionManager-level plumbing this PR adds:
+    // SessionInitializationService now receives `resolveSpawnUsername:
+    // (createdBy) => resolveSpawnUsername(createdBy, this.userRepository)`,
+    // so an injected userRepository must be reachable from
+    // killOrphanWorkers's resolution of session.createdBy during
+    // restart-triggered orphan cleanup.
+    //
+    // Isolation from the auto-resume confound: SessionPauseResumeService's
+    // own auto-resume path (session-pause-resume-service.ts:259)
+    // independently resolves the same createdBy through the same shared
+    // `this.userRepository`, but ONLY for sessions that reach
+    // `autoResumeSessionIds`. A session persisted with `recoveryState:
+    // 'orphaned'` is preserved-but-never-auto-resumed by
+    // `initializeSessions()` (it `continue`s before touching
+    // killOrphanWorkers or the auto-resume list at all -- see
+    // session-initialization-service.ts's early recoveryState check), and
+    // since it is also never loaded into `this.sessions`, it is picked up by
+    // the LATER `cleanupOrphanProcesses()` pass instead (dead serverPid +
+    // not in-memory -- no comparison to the new server's own pid is
+    // involved), which is the ONLY caller of
+    // `resolveSpawnUsername(session.createdBy)` for this session. This
+    // isolates the assertion to precisely the SessionInitializationService
+    // wiring this PR adds, with no auto-resume confound.
+    it('resolves session.createdBy via the injected userRepository during restart-triggered orphan cleanup', async () => {
+      const findByIdCalls: string[] = [];
+      const stubUserRepo: UserRepository = {
+        async upsertByOsUid(): Promise<AuthUser> {
+          throw new Error('upsertByOsUid not used by this test');
+        },
+        async findById(id: string): Promise<AuthUser | null> {
+          findByIdCalls.push(id);
+          if (id === 'user-alice-uuid') {
+            return { id, username: 'alice', homeDir: '/home/alice' };
+          }
+          return null;
+        },
+      };
+
+      const module1 = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module1.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        userRepository: stubUserRepo,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'user-alice-uuid' },
+      );
+
+      // Force this session into the preserved-but-never-auto-resumed
+      // recoveryState so restart routes it through cleanupOrphanProcesses()
+      // only (see the isolation note above), not through
+      // SessionPauseResumeService's independent resolver call.
+      //
+      // NOTE: this test's SessionManager uses the default JsonSessionRepository
+      // (no `sessionRepository` option is passed anywhere in this file), whose
+      // `update()` does NOT support the recoveryState/orphanedAt/orphanedReason
+      // fields (see json-session-repository.ts -- only SqliteSessionRepository's
+      // update() handles them). `update()` here would return `true` while
+      // silently no-op'ing those fields. Use `findById` + `save()` (a full
+      // record replace, which JsonSessionRepository does support) instead.
+      const persistedSession = await manager.getSessionRepository().findById(session.id);
+      if (!persistedSession) throw new Error('session must exist immediately after createSession');
+      await manager.getSessionRepository().save({
+        ...persistedSession,
+        recoveryState: 'orphaned',
+        orphanedAt: 0,
+        orphanedReason: 'test-forced-orphan-for-wiring-isolation',
+      });
+
+      // createSession's own worker activation already resolves createdBy via
+      // the worker-lifecycle-manager wiring (session-manager.ts:283/332), so
+      // findByIdCalls may already contain 'user-alice-uuid' at this point.
+      // Checkpoint here so the assertion below isolates the call made by the
+      // RESTART-triggered orphan-cleanup path specifically.
+      const callsBeforeRestart = findByIdCalls.length;
+
+      // Simulate server restart with the SAME stub userRepository injected.
+      // cleanupOrphanProcesses() -> killOrphanWorkers() calls
+      // resolveSpawnUsername(session.createdBy) once for this session, which
+      // must route through this repository.
+      mockProcess.markDead(process.pid);
+      const module2 = await import(`../session-manager.js?v=${++importCounter}`);
+      await module2.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        userRepository: stubUserRepo,
+      });
+
+      const callsDuringRestart = findByIdCalls.slice(callsBeforeRestart);
+      expect(callsDuringRestart).toEqual(['user-alice-uuid']);
+    });
+  });
+
   describe('setProcessCleanupCallback', () => {
     it('should accept a cleanup callback without error', async () => {
       const sm = await getSessionManager();
