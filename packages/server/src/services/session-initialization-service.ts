@@ -12,6 +12,7 @@ import { isProcessAlive, processKill } from '../lib/process-utils.js';
 import { createLogger } from '../lib/logger.js';
 import { isErrnoException } from '../lib/type-guards.js';
 import { killAsUser, shouldElevateForUser } from './privilege-elevation.js';
+import { sweepOrphanProcesses } from './orphan-process-sweeper.js';
 
 const logger = createLogger('session-initialization');
 
@@ -23,6 +24,15 @@ const logger = createLogger('session-initialization');
  * command while still bounding the worst case.
  */
 const KILL_AS_USER_TIMEOUT_MS = 10_000;
+
+/**
+ * Generous bound for the SESSION_ID marker sweep script (Issue #1197 Part
+ * B). Unlike a single `kill -s <SIG> -- <pid>` command, the sweep script
+ * scans every numeric `/proc` entry, waits out a grace period (default
+ * 2s), then polls (up to ~1s) for the SIGKILL escalation to land -- so it
+ * needs materially more headroom than `KILL_AS_USER_TIMEOUT_MS`.
+ */
+const SWEEP_ORPHAN_PROCESSES_TIMEOUT_MS = 20_000;
 
 /** Callback to check if a session is already loaded in memory. */
 type SessionInMemoryChecker = (id: string) => boolean;
@@ -53,8 +63,33 @@ interface SessionInitializationDeps {
    * mode).
    */
   resolveSpawnUsername: (createdBy?: string) => Promise<string>;
+  /**
+   * Optional injection point for the SESSION_ID marker sweep (Issue #1197
+   * Part B). Defaults to the real `sweepOrphanProcesses` when omitted.
+   * Threaded through to `sweepSessionProcesses`'s own `sweepImpl` opt --
+   * exposed at the deps level (rather than only reachable via the static
+   * method's own opts) because `initializeSessions` / `cleanupOrphanProcesses`
+   * call `sweepSessionProcesses` through the instance, not directly, so
+   * tests exercising those instance methods need a seam here to avoid
+   * spawning real elevated-shell subprocesses.
+   */
+  sweepOrphanProcessesImpl?: typeof sweepOrphanProcesses;
 }
 
+/**
+ * Startup-only scope note (Issue #1197 Part B): `sweepSessionProcesses` is
+ * invoked from `initializeSessions` / `cleanupOrphanProcesses` ONLY --
+ * i.e. only at server-startup orphan recovery, alongside the existing
+ * `killOrphanWorkers` calls. It is deliberately NOT wired into
+ * `deleteSession`-time cleanup or `shutdownAppContext`: both of those
+ * paths already know precisely which pids/workers they are tearing down
+ * (no discovery problem to solve), and running a tree-wide `/proc` scan on
+ * every session delete or server shutdown would add elevated-shell latency
+ * to hot paths for no corresponding benefit. The marker sweep exists to
+ * catch processes that a normal (non-crash) teardown never loses track of
+ * in the first place -- it is a startup recovery mechanism, not a
+ * steady-state cleanup mechanism.
+ */
 export class SessionInitializationService {
   constructor(private readonly deps: SessionInitializationDeps) {}
 
@@ -199,6 +234,7 @@ export class SessionInitializationService {
     const orphanSessions: PersistedSession[] = [];
     const autoResumeSessionIds: string[] = [];
     let killedWorkerCount = 0;
+    let sweptProcessCount = 0;
     let pathNotFoundCount = 0;
 
     for (const session of persistedSessions) {
@@ -242,6 +278,17 @@ export class SessionInitializationService {
 
       // Kill any orphan worker processes first
       killedWorkerCount += await SessionInitializationService.killOrphanWorkers(session, this.deps.resolveSpawnUsername);
+
+      // Broader net: sweep any SESSION_ID-marked descendant processes that
+      // were never tracked as a `worker.pid` (Issue #1197 Part B). Runs
+      // unconditionally for every session reaching this point, regardless
+      // of whether killOrphanWorkers found anything -- that is the whole
+      // point of the sweep.
+      sweptProcessCount += await SessionInitializationService.sweepSessionProcesses(
+        session,
+        this.deps.resolveSpawnUsername,
+        { sweepImpl: this.deps.sweepOrphanProcessesImpl },
+      );
 
       // Save with serverPid=null but pausedAt=undefined to indicate auto-resume target
       const { pausedAt: _removed, ...sessionWithoutPausedAt } = session;
@@ -290,6 +337,7 @@ export class SessionInitializationService {
     logger.info({
       autoResumeSessions: autoResumeSessionIds.length,
       killedWorkerProcesses: killedWorkerCount,
+      sweptOrphanProcesses: sweptProcessCount,
       removedOrphanSessions: pathNotFoundCount,
       serverPid: currentServerPid,
     }, 'Initialized sessions from persistence');
@@ -306,6 +354,7 @@ export class SessionInitializationService {
     const persistedSessions = await this.deps.sessionRepository.findAll();
     const currentServerPid = this.deps.getServerPid();
     let killedCount = 0;
+    let sweptProcessCount = 0;
     let preservedCount = 0;
     const orphanSessions: PersistedSession[] = [];
 
@@ -332,6 +381,15 @@ export class SessionInitializationService {
 
       // Kill all workers in this session (only PTY workers have pid)
       killedCount += await SessionInitializationService.killOrphanWorkers(session, this.deps.resolveSpawnUsername);
+
+      // Broader net: sweep any SESSION_ID-marked descendant processes that
+      // were never tracked as a `worker.pid` (Issue #1197 Part B). Runs
+      // unconditionally for every orphan session reaching this point.
+      sweptProcessCount += await SessionInitializationService.sweepSessionProcesses(
+        session,
+        this.deps.resolveSpawnUsername,
+        { sweepImpl: this.deps.sweepOrphanProcessesImpl },
+      );
     }
 
     // Remove orphan sessions from persistence and delete output files
@@ -359,6 +417,7 @@ export class SessionInitializationService {
 
     logger.info({
       killedProcesses: killedCount,
+      sweptOrphanProcesses: sweptProcessCount,
       removedSessions: orphanSessions.length,
       preservedSessions: preservedCount,
       serverPid: currentServerPid,
@@ -443,5 +502,65 @@ export class SessionInitializationService {
       }
     }
     return killedCount;
+  }
+
+  /**
+   * Sweep any SESSION_ID-marked processes for a session, tree-wide -- not
+   * limited to the pids tracked as `worker.pid` (that narrower path is
+   * `killOrphanWorkers`, called immediately before this at both call
+   * sites). See `orphan-process-sweeper.ts`'s module docs for the full
+   * rationale and the scope-boundary note at the top of this file for why
+   * this is startup-only.
+   *
+   * Resolves the session's spawn username the same way `killOrphanWorkers`
+   * does (all workers in a session share the same spawn user) and always
+   * calls `sweepImpl` with that resolved username -- `sweepOrphanProcesses`
+   * / `runAsUser` handle the non-elevated bypass themselves when the
+   * resolved username equals the server-process user.
+   *
+   * Best-effort: never throws. A non-success result (non-zero exit code or
+   * a timeout) or a thrown error from `sweepImpl` is logged as a warn and
+   * treated as "swept 0" -- this sweep is a broader net layered on top of
+   * the already-tested `killOrphanWorkers` path, not the primary cleanup
+   * mechanism, so a failure here must not abort session initialization.
+   *
+   * @returns The number of processes actually swept (0 on any failure).
+   */
+  static async sweepSessionProcesses(
+    session: PersistedSession,
+    resolveSpawnUsername: (createdBy?: string) => Promise<string>,
+    opts: { sweepImpl?: typeof sweepOrphanProcesses } = {},
+  ): Promise<number> {
+    const sweep = opts.sweepImpl ?? sweepOrphanProcesses;
+    const username = await resolveSpawnUsername(session.createdBy);
+
+    try {
+      const result = await sweep(session.id, username, { timeoutMs: SWEEP_ORPHAN_PROCESSES_TIMEOUT_MS });
+      if (result.raw.timedOut || result.raw.exitCode !== 0) {
+        logger.warn(
+          {
+            sessionId: session.id,
+            exitCode: result.raw.exitCode,
+            timedOut: result.raw.timedOut,
+            stderr: result.raw.stderr,
+          },
+          'sweepSessionProcesses: sweep script reported a non-success result (best-effort, continuing)',
+        );
+        return 0;
+      }
+      if (result.killedCount > 0) {
+        logger.info(
+          { sessionId: session.id, killedCount: result.killedCount },
+          'sweepSessionProcesses: swept marker-tagged orphan processes not tracked by killOrphanWorkers',
+        );
+      }
+      return result.killedCount;
+    } catch (error) {
+      logger.warn(
+        { sessionId: session.id, err: error },
+        'sweepSessionProcesses: sweep threw (best-effort, continuing)',
+      );
+      return 0;
+    }
   }
 }

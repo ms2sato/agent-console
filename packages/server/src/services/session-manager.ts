@@ -27,6 +27,7 @@ import {
   type TriggerHandoffResult,
 } from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn } from './privilege-elevation.js';
+import type { sweepOrphanProcesses } from './orphan-process-sweeper.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
@@ -144,6 +145,16 @@ interface SessionManagerOptions {
    * `EmbeddedAgentWorkerService` test seam.
    */
   spawnAsUserFn?: SpawnAsUserFn;
+  /**
+   * Test seam for the SESSION_ID marker orphan-process sweep (Issue #1197
+   * Part B). Defaults to the real `sweepOrphanProcesses`. Threaded through
+   * to `SessionInitializationService`, mirroring `spawnAsUserFn` above --
+   * unlike `killOrphanWorkers`'s non-elevated fallback (a cheap in-process
+   * `process.kill`), `sweepOrphanProcesses` always spawns a real subprocess
+   * regardless of `AUTH_MODE`, so tests exercising restart-triggered orphan
+   * cleanup that want to avoid that real spawn should inject a fake here.
+   */
+  sweepOrphanProcessesImpl?: typeof sweepOrphanProcesses;
   /** User repository for resolving createdBy → username for PTY spawning */
   userRepository?: UserRepository;
   notificationManager?: NotificationManager | null;
@@ -376,6 +387,7 @@ export class SessionManager {
       baseDirForPersistedSession: (persisted) => this.baseDirForPersistedSession(persisted),
       getServerPid,
       resolveSpawnUsername: (createdBy) => resolveSpawnUsername(createdBy, this.userRepository),
+      sweepOrphanProcessesImpl: options.sweepOrphanProcessesImpl,
     });
 
     this.sessionDeletionService = new SessionDeletionService({

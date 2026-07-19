@@ -14,6 +14,7 @@ import { InvalidSessionDataScopeError } from '../../lib/session-data-path.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { SessionInitializationService } from '../session-initialization-service.js';
 import type { killAsUser, RunAsUserResult } from '../privilege-elevation.js';
+import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import {
   buildPersistedQuickSession,
   buildPersistedAgentWorker,
@@ -29,6 +30,18 @@ const ELEVATED_TEST_USERNAME = `not-${os.userInfo().username}`;
 function okResult(overrides: Partial<RunAsUserResult> = {}): RunAsUserResult {
   return { stdout: '', stderr: '', exitCode: 0, timedOut: false, ...overrides };
 }
+
+// The real `sweepOrphanProcesses` spawns a real elevated-shell subprocess
+// that scans /proc. Tests exercising `initialize()` / `initializeSessions()`
+// / `cleanupOrphanProcesses()` do not want that side effect by default (it
+// would slow down and pollute otherwise-fast, isolated unit tests) --
+// `createService()` and the integration-describe factories below default to
+// this no-op fake unless a test explicitly overrides `sweepOrphanProcessesImpl`
+// to assert on the wiring itself.
+const noopSweepOrphanProcessesImpl: typeof sweepOrphanProcesses = async () => ({
+  killedCount: 0,
+  raw: okResult(),
+});
 
 const TEST_SERVER_PID = 99999;
 
@@ -102,6 +115,7 @@ describe('SessionInitializationService', () => {
     inMemorySessionIds?: Set<string>;
     jobQueue?: JobQueue | null;
     resolveSpawnUsername?: (createdBy?: string) => Promise<string>;
+    sweepOrphanProcessesImpl?: typeof sweepOrphanProcesses;
   }) {
     const sessionRepository = createMockSessionRepository(options.sessions);
     const workerOutputFileManager = createMockWorkerOutputFileManager();
@@ -118,6 +132,7 @@ describe('SessionInitializationService', () => {
       baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
       resolveSpawnUsername: options.resolveSpawnUsername ?? defaultResolveSpawnUsername,
+      sweepOrphanProcessesImpl: options.sweepOrphanProcessesImpl ?? noopSweepOrphanProcessesImpl,
     });
 
     return { service, sessionRepository, workerOutputFileManager, jobQueue };
@@ -665,6 +680,291 @@ describe('SessionInitializationService', () => {
     });
   });
 
+  // ============================================================
+  // sweepSessionProcesses (static) — Issue #1197 Part B
+  // ============================================================
+  describe('sweepSessionProcesses (static)', () => {
+    it('resolves the spawn username and calls sweepImpl with (session.id, resolvedUsername)', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/some/path',
+        createdBy: 'user-1',
+      });
+
+      const calls: Array<[string, string | null | undefined]> = [];
+      const fakeSweep: typeof sweepOrphanProcesses = async (
+        sessionId,
+        username,
+      ) => {
+        calls.push([sessionId, username]);
+        return { killedCount: 0, raw: okResult() };
+      };
+
+      const count = await SessionInitializationService.sweepSessionProcesses(
+        session,
+        async (createdBy) => createdBy ?? 'server-user',
+        { sweepImpl: fakeSweep },
+      );
+
+      expect(count).toBe(0);
+      expect(calls).toEqual([['session-1', 'user-1']]);
+    });
+
+    it('returns killedCount from a successful sweep', async () => {
+      const session = buildPersistedQuickSession({ id: 'session-1', locationPath: '/some/path' });
+      const fakeSweep: typeof sweepOrphanProcesses = async () => ({
+        killedCount: 3,
+        raw: okResult(),
+      });
+
+      const count = await SessionInitializationService.sweepSessionProcesses(
+        session,
+        async () => 'user',
+        { sweepImpl: fakeSweep },
+      );
+
+      expect(count).toBe(3);
+    });
+
+    it('returns 0 and does not throw when the sweep reports a non-zero exit code', async () => {
+      const session = buildPersistedQuickSession({ id: 'session-1', locationPath: '/some/path' });
+      const fakeSweep: typeof sweepOrphanProcesses = async () => ({
+        killedCount: 0,
+        raw: okResult({ exitCode: 1, stderr: 'boom' }),
+      });
+
+      let thrown: unknown;
+      let count = -1;
+      try {
+        count = await SessionInitializationService.sweepSessionProcesses(
+          session,
+          async () => 'user',
+          { sweepImpl: fakeSweep },
+        );
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeUndefined();
+      expect(count).toBe(0);
+    });
+
+    it('returns 0 and does not throw when the sweep times out (timedOut takes precedence over a non-zero killedCount)', async () => {
+      const session = buildPersistedQuickSession({ id: 'session-1', locationPath: '/some/path' });
+      // killedCount:5 alongside timedOut:true is intentionally
+      // contradictory-looking input -- proves the timedOut check is
+      // consulted rather than blindly trusting a parsed killedCount,
+      // mirroring killOrphanWorkers's analogous timedOut-polarity test.
+      const fakeSweep: typeof sweepOrphanProcesses = async () => ({
+        killedCount: 5,
+        raw: okResult({ timedOut: true, exitCode: 0 }),
+      });
+
+      const count = await SessionInitializationService.sweepSessionProcesses(
+        session,
+        async () => 'user',
+        { sweepImpl: fakeSweep },
+      );
+
+      expect(count).toBe(0);
+    });
+
+    it('returns 0 and does not throw when sweepImpl itself throws', async () => {
+      const session = buildPersistedQuickSession({ id: 'session-1', locationPath: '/some/path' });
+      const fakeSweep: typeof sweepOrphanProcesses = async () => {
+        throw new Error('spawn failed');
+      };
+
+      let thrown: unknown;
+      let count = -1;
+      try {
+        count = await SessionInitializationService.sweepSessionProcesses(
+          session,
+          async () => 'user',
+          { sweepImpl: fakeSweep },
+        );
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeUndefined();
+      expect(count).toBe(0);
+    });
+
+    it('defaults to the real sweepOrphanProcesses when sweepImpl is not provided', async () => {
+      // Sanity check that the default wiring (opts.sweepImpl ?? sweepOrphanProcesses)
+      // is actually in place -- exercised with a username equal to the
+      // server-process user so `shouldElevateForUser` bypasses elevation and
+      // this stays a fast, local `sh -c` invocation with no real orphan
+      // candidates (a fresh random sessionId matches nothing in /proc).
+      const session = buildPersistedQuickSession({
+        id: `sweep-default-${Date.now()}`,
+        locationPath: '/some/path',
+      });
+
+      const count = await SessionInitializationService.sweepSessionProcesses(
+        session,
+        async () => os.userInfo().username,
+      );
+
+      expect(count).toBe(0);
+    });
+  });
+
+  // ============================================================
+  // sweepSessionProcesses wiring at the initializeSessions /
+  // cleanupOrphanProcesses call sites — Issue #1197 Part B
+  // ============================================================
+  describe('sweepSessionProcesses wiring (via initialize)', () => {
+    it('calls sweepImpl once for a session with a dead serverPid (initializeSessions path)', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/some/path',
+        serverPid: 12345,
+        createdBy: 'user-1',
+      });
+      // serverPid 12345 is dead (not marked alive)
+
+      const calls: Array<[string, string | null | undefined]> = [];
+      const fakeSweep: typeof sweepOrphanProcesses = async (
+        sessionId,
+        username,
+      ) => {
+        calls.push([sessionId, username]);
+        return { killedCount: 0, raw: okResult() };
+      };
+
+      const { service } = createService({ sessions: [session], sweepOrphanProcessesImpl: fakeSweep });
+      await service.initialize();
+
+      expect(calls).toEqual([['session-1', 'user-1']]);
+    });
+
+    it('calls sweepImpl once for an orphan session with a dead serverPid (cleanupOrphanProcesses path)', async () => {
+      const orphanSession: PersistedSession = {
+        id: 'orphan-1',
+        type: 'worktree',
+        locationPath: '/some/path',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        serverPid: 88888, // dead pid (not marked alive)
+        pausedAt: '2024-01-01T01:00:00.000Z', // paused -> preserved by initializeSessions
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        createdBy: 'user-2',
+      };
+
+      const calls: Array<[string, string | null | undefined]> = [];
+      const fakeSweep: typeof sweepOrphanProcesses = async (
+        sessionId,
+        username,
+      ) => {
+        calls.push([sessionId, username]);
+        return { killedCount: 0, raw: okResult() };
+      };
+
+      const { service } = createService({ sessions: [orphanSession], sweepOrphanProcessesImpl: fakeSweep });
+      await service.initialize();
+
+      expect(calls).toEqual([['orphan-1', 'user-2']]);
+    });
+
+    it('boundary: an empty session list results in zero sweepImpl calls', async () => {
+      const calls: unknown[] = [];
+      const fakeSweep: typeof sweepOrphanProcesses = async (...args) => {
+        calls.push(args);
+        return { killedCount: 0, raw: okResult() };
+      };
+
+      const { service } = createService({ sessions: [], sweepOrphanProcessesImpl: fakeSweep });
+      await service.initialize();
+
+      expect(calls).toEqual([]);
+    });
+
+    it('boundary: sessions that never reach the orphan-worker-kill branch (live server, paused) result in zero sweepImpl calls', async () => {
+      const liveSession = buildPersistedQuickSession({
+        id: 'live-session',
+        locationPath: '/some/path',
+        serverPid: 55555,
+      });
+      mockProcess.markAlive(55555);
+
+      const pausedSession = buildPersistedQuickSession({
+        id: 'paused-session',
+        locationPath: '/some/path',
+        serverPid: null,
+        pausedAt: '2024-01-01T01:00:00.000Z',
+      });
+
+      const calls: unknown[] = [];
+      const fakeSweep: typeof sweepOrphanProcesses = async (...args) => {
+        calls.push(args);
+        return { killedCount: 0, raw: okResult() };
+      };
+
+      const { service } = createService({
+        sessions: [liveSession, pausedSession],
+        sweepOrphanProcessesImpl: fakeSweep,
+      });
+      await service.initialize();
+
+      expect(calls).toEqual([]);
+    });
+
+    it('a non-zero-exit sweep result does not throw and does not abort session initialization', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/some/path',
+        serverPid: 12345,
+      });
+
+      const fakeSweep: typeof sweepOrphanProcesses = async () => ({
+        killedCount: 0,
+        raw: okResult({ exitCode: 1, stderr: 'sweep failed' }),
+      });
+
+      const { service } = createService({ sessions: [session], sweepOrphanProcessesImpl: fakeSweep });
+
+      let thrown: unknown;
+      let autoResumeIds: string[] = [];
+      try {
+        autoResumeIds = await service.initialize();
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeUndefined();
+      expect(autoResumeIds).toContain('session-1');
+    });
+
+    it('a timed-out sweep result does not throw and does not abort session initialization', async () => {
+      const session = buildPersistedQuickSession({
+        id: 'session-1',
+        locationPath: '/some/path',
+        serverPid: 12345,
+      });
+
+      const fakeSweep: typeof sweepOrphanProcesses = async () => ({
+        killedCount: 0,
+        raw: okResult({ timedOut: true, exitCode: 137 }),
+      });
+
+      const { service } = createService({ sessions: [session], sweepOrphanProcessesImpl: fakeSweep });
+
+      let thrown: unknown;
+      let autoResumeIds: string[] = [];
+      try {
+        autoResumeIds = await service.initialize();
+      } catch (err) {
+        thrown = err;
+      }
+
+      expect(thrown).toBeUndefined();
+      expect(autoResumeIds).toContain('session-1');
+    });
+  });
+
   describe('initialize with empty data', () => {
     it('should handle empty session list without errors and return empty array', async () => {
       const { service } = createService({ sessions: [] });
@@ -792,6 +1092,7 @@ describe('SessionInitializationService integration (real DB → mapper → servi
       baseDirForPersistedSession: () => '/test/config/_quick',
       getServerPid: () => TEST_SERVER_PID,
       resolveSpawnUsername: async (createdBy) => createdBy ?? 'test-server-user',
+      sweepOrphanProcessesImpl: noopSweepOrphanProcessesImpl,
     });
 
     return { service };
@@ -871,6 +1172,7 @@ describe('SessionInitializationService integration (real DB → mapper → servi
         },
         getServerPid: () => TEST_SERVER_PID,
         resolveSpawnUsername: async (createdBy) => createdBy ?? 'test-server-user',
+      sweepOrphanProcessesImpl: noopSweepOrphanProcessesImpl,
       });
       return { service };
     }
