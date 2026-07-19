@@ -121,6 +121,15 @@ export class JsonSessionRepository implements SessionRepository {
     if (updates.pausedAt !== undefined) {
       updated.pausedAt = updates.pausedAt ?? undefined;
     }
+    if (updates.recoveryState !== undefined) {
+      updated.recoveryState = updates.recoveryState;
+    }
+    if (updates.orphanedAt !== undefined) {
+      updated.orphanedAt = updates.orphanedAt ?? undefined;
+    }
+    if (updates.orphanedReason !== undefined) {
+      updated.orphanedReason = updates.orphanedReason ?? undefined;
+    }
 
     sessions[index] = updated;
     await atomicWrite(this.filePath, JSON.stringify(sessions, null, 2));

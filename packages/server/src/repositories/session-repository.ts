@@ -9,6 +9,14 @@ import type { PersistedSession } from '../services/persistence-service.js';
  * - initialPrompt: Update initial prompt
  * - locationPath: Update session location path
  * - worktreeId: Update worktree ID (only valid for worktree sessions)
+ * - pausedAt: Update paused timestamp
+ * - recoveryState: Update session recovery state
+ * - orphanedAt: Update orphaned timestamp
+ * - orphanedReason: Update orphaned reason code
+ *
+ * Every implementation of SessionRepository.update() must handle every field
+ * in this interface. Adding a field here without updating each implementation
+ * causes a silent no-op on backends that were not updated (see Issue #1210).
  */
 export interface SessionUpdateFields {
   serverPid?: number | null;
