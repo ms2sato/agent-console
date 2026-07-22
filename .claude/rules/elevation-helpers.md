@@ -132,6 +132,26 @@ The reciprocal cost of preserving two branches is a small per-caller `if (should
 - Any caller currently doing `Bun.spawn(['sh','-c', cmd], { env: getCleanChildProcessEnv() })` (or analogous env-shape transformation) that is about to gain a multi-user elevation path. Check `getCleanChildProcessEnv` usage in `packages/server/src/`.
 - Any caller doing pre-spawn arg sanitization (path normalization, secret stripping, etc.) where the sanitization is not encoded in the spawn primitive.
 
+### Multi-line elevated commands: deliver via stdin, not argv
+
+When `runAsUser`'s elevated branch runs (`shouldElevateForUser` true), the argv it constructs is `['sudo', '-u', <user>, --preserve-env=..., '-i', 'sh', '-c', <innerCommand>]`. The target user's login shell (invoked via `-i` with trailing arguments) reconstructs its own command line by joining those trailing arguments with spaces before re-parsing them -- this collapses any literal newline characters embedded inside `innerCommand` into plain whitespace. A multi-statement shell script that relies on newlines as statement separators (e.g. a `for ... do ... done` loop written across multiple lines) breaks with a syntax error once every line lands on one collapsed line (observed on a real host: `sh: 1: Syntax error: "do" unexpected`). The non-elevated branch (`['sh', '-c', command]`, executed directly via `execve`, no intermediate login-shell re-join) does not have this problem -- the bug is specific to the elevated path.
+
+**Rule**: a `command` string passed to `runAsUser` / `spawnAsUser` must stay single-line whenever the caller cannot guarantee it will only ever run non-elevated. If the actual payload is a multi-line script, keep `command` fixed to the single-line `'sh -s'` (POSIX `sh`'s "read the script from stdin" invocation) and deliver the script's bytes via `opts.stdin` instead of embedding them in `command`. `opts.stdin` travels as a separate pipe, never touches argv, and is therefore immune to the elevated login shell's argv-join.
+
+```ts
+// Wrong: a multi-line command breaks once elevated (newlines collapse).
+await runAsUser({ username, command: multiLineScript, cwd: '/' });
+
+// Right: single-line command, script delivered over stdin.
+await runAsUser({ username, command: 'sh -s', stdin: multiLineScript, cwd: '/' });
+```
+
+This is safe for the non-elevated (or bypassed-elevation, e.g. `username` equals the server-process user) branch too -- `sh -c "sh -s"` with the script piped on stdin behaves identically to running the script directly, just through one extra layer of `sh`. No branching is needed between elevated and non-elevated cases; always use the `command: 'sh -s'` + `stdin: <script>` shape once the payload is multi-line.
+
+**Worked example**: `packages/server/src/services/orphan-process-sweeper.ts`'s `sweepOrphanProcesses` composes a multi-line POSIX `sh` script (`buildSweepScript`) to scan+match+kill orphan processes in one elevated invocation. The Issue #1197 Part B owner smoke on a real multi-user host caught the argv-join collapsing the script's `for` loop; the fix switched `command` from the raw multi-line script to `'sh -s'` with the script delivered via `stdin`, with no change to the script's own content.
+
+**Proactive audit candidates** (the bug shape, not current sites): any future caller that composes a multi-statement shell script (more than a single `cmd1 && cmd2` chain) and passes it directly as `command` to `runAsUser` / `spawnAsUser`. Single-line `command` strings (the overwhelming majority of existing call sites: `rm -rf --`, `kill -s`, `gh ...`, `git ...`) are unaffected and need no change.
+
 ## How this rule is expected to evolve
 
 As the helper family grows (`chmodAsUser`, `lstatAsUser`, etc. are plausible future additions when fs operations on cross-user paths come up), the naming pattern (`<verb>AsUser`) and the strict-thin-wrapper contract self-extend. This rule's body should not need to change; the glossary entry's enumeration of helpers should be updated in the same PR that adds the new primitive.
@@ -149,6 +169,7 @@ If a consumer surfaces a recurring need for semantic layering (e.g. "every calle
   - [PR #881](https://github.com/ms2sato/agent-console/pull/881) (Issues #869 / #870) — `lib/git.ts` consolidation; `gitExec`-routed helpers accept `requestUser`.
   - [PR #877](https://github.com/ms2sato/agent-console/pull/877) (Issue #876) — `delegate_to_worktree` resolves `parentSession.createdBy → osUsername`, hoist pattern.
   - [PR #880](https://github.com/ms2sato/agent-console/pull/880) (Issue #879) — `run_process` elevated via `spawnAsUser`.
+  - [PR #1219](https://github.com/ms2sato/agent-console/pull/1219) (Issue #1197 Part B) — `orphan-process-sweeper.ts`'s multi-line sweep script; discovered and fixed the argv-join-collapses-newlines bug this rule's "Multi-line elevated commands" subsection documents.
 - **Related Issues** (multi-PR convergence drivers):
   - [#871](https://github.com/ms2sato/agent-console/issues/871) — unregister-repository error surfacing (separate identity audit).
   - [#878](https://github.com/ms2sato/agent-console/issues/878) — MCP auth-boundary (caller-claimed `sessionId` verification); explicit out-of-scope for elevation PRs, addressed horizontally.

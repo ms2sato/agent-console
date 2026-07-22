@@ -19,7 +19,11 @@
  * This module composes a single POSIX `sh` script that does scan + match +
  * kill in one invocation and hands it to `runAsUser` so the whole thing
  * executes as the resolved session owner, mirroring the elevation semantics
- * of `killAsUser` / `rmRecursiveAsUser`.
+ * of `killAsUser` / `rmRecursiveAsUser`. The script is delivered over
+ * `runAsUser`'s stdin channel (`command: 'sh -s'`), not embedded in the
+ * elevated command line -- see `sweepOrphanProcesses`'s inline comment and
+ * `.claude/rules/elevation-helpers.md` "Multi-line elevated commands" for
+ * why.
  *
  * Strict-thin-wrapper contract (`.claude/rules/elevation-helpers.md`):
  * `sweepOrphanProcesses` does not throw on a non-zero exit code or a
@@ -189,9 +193,21 @@ export async function sweepOrphanProcesses(
   const killGraceMs = opts.killGraceMs ?? DEFAULT_KILL_GRACE_MS;
   const script = buildSweepScript(sessionId, { killGraceMs });
 
+  // The elevated `sudo -u <user> --preserve-env=... -i sh -c <innerCommand>`
+  // path re-joins its trailing argv into a single command line for the
+  // target login shell -- a multi-line `command` string embedded directly
+  // in argv gets its internal newlines collapsed, breaking multi-statement
+  // shell constructs (e.g. `for ... do ... done` loses the newline that
+  // separates `do` from the previous statement, producing a syntax error).
+  // Deliver the (multi-line) sweep script over stdin instead: `command` is
+  // the single-line `sh -s` (reads its script from stdin), which is immune
+  // to the argv-join because it never contains an embedded newline itself.
+  // See ".claude/rules/elevation-helpers.md" "Multi-line elevated commands"
+  // for the general pattern this establishes.
   const raw = await impl({
     username,
-    command: script,
+    command: 'sh -s',
+    stdin: script,
     cwd: '/',
     timeoutMs: opts.timeoutMs,
     env: opts.procRootOverride ? { SWEEP_PROC_ROOT: opts.procRootOverride } : undefined,

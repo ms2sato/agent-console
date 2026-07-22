@@ -106,6 +106,31 @@ describe('sweepOrphanProcesses (unit, injected runAsUserImpl fake)', () => {
     expect(calls[0]?.timeoutMs).toBe(12345);
   });
 
+  it('delivers the multi-line sweep script via stdin, with command fixed to the single-line "sh -s" (never embeds the script in argv/command)', async () => {
+    // Regression test: the elevated `sudo -u <user> --preserve-env=... -i sh
+    // -c <command>` path re-joins its trailing argv into a single command
+    // line for the target login shell, collapsing embedded newlines in a
+    // multi-line `command` string -- this broke `for ... do ... done` on a
+    // real dogfood host (observed: `sh: 1: Syntax error: "do" unexpected`).
+    // `command` must therefore stay single-line ("sh -s", which reads its
+    // script from stdin); the actual multi-line script travels over
+    // `stdin`, a channel immune to the argv-join.
+    const calls: Array<Parameters<typeof runAsUser>[0]> = [];
+    const fake: typeof runAsUser = async (opts) => {
+      calls.push(opts);
+      return okResult({ stdout: 'SWEPT=0\n' });
+    };
+
+    await sweepOrphanProcesses('sess-1', 'target-user', {
+      runAsUserImpl: fake,
+      killGraceMs: 2000,
+    });
+
+    expect(calls[0]?.command).toBe('sh -s');
+    expect(calls[0]?.command).not.toContain('\n');
+    expect(calls[0]?.stdin).toBe(buildSweepScript('sess-1', { killGraceMs: 2000 }));
+  });
+
   it('forwards procRootOverride as a SWEEP_PROC_ROOT env var', async () => {
     const calls: Array<Parameters<typeof runAsUser>[0]> = [];
     const fake: typeof runAsUser = async (opts) => {
