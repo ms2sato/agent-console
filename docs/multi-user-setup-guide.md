@@ -266,6 +266,27 @@ sudo -u agentconsole bun run build
 
 > **Note**: `sudo -u agentconsole` runs the command as the service user. Since the service user has `/usr/sbin/nologin` as its shell, you may need to use `sudo -u agentconsole -s /bin/sh -c '...'` or `sudo -u agentconsole bash -c '...'` for multi-command sequences.
 
+**Copy the bun binary to a globally-reachable path (Issue #1221).** The
+embedded-agent worker spawns `bun <entry>` inside an elevated, non-interactive
+login shell (`sudo -u <target-user> -i sh -c '...'`). On Ubuntu that inner
+shell is dash, which does not source `.bashrc` — a user-local
+`~/.bun/bin/bun` install is therefore NOT resolvable by bare command name
+inside that shell (see
+[`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)).
+Copy — not symlink — the service user's own bun binary to `/usr/local/bin/bun`
+so every elevation-target user can reach it. Copying from the service user's
+own bun (rather than an operator's) keeps it in sync with the version the
+server process itself runs:
+
+```bash
+sudo install -m 0755 /home/agentconsole/.bun/bin/bun /usr/local/bin/bun
+```
+
+Re-run this step whenever you `bun upgrade` the service user's bun install,
+so the copy does not drift out of version sync with the server process.
+`scripts/setup-multiuser-for-ubuntu.sh` performs this copy automatically on
+every invocation.
+
 ### Step 4: Configure the Service (Linux)
 
 Create a systemd unit file so the server starts automatically and restarts on failure.
@@ -292,7 +313,9 @@ Adjust the four placeholder values for your environment:
 
 > `NODE_ENV=production` is set unconditionally by the template and enables the
 > web UI. The auth cookie's `Secure` attribute is controlled separately by
-> `AUTH_COOKIE_SECURE` above.
+> `AUTH_COOKIE_SECURE` above. `EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun` is
+> also set unconditionally by the template — it must match the destination
+> path used for the bun-binary copy step above.
 
 > **Note**: A separate per-user systemd template
 > (`scripts/agent-console.service.template`) exists for single-user
@@ -493,6 +516,7 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 | `PTY_PROVIDER` | _(unset; server default `bun-terminal`)_ | Override for the PTY backend. Valid values: `bun-terminal` (default; the `Bun.spawn({ terminal: ... })` provider, Bun ≥ 1.3.5) or `bun-pty` (the bun-pty native shared library). Stage 2 (Issue [#827](https://github.com/ms2sato/agent-console/issues/827)) flipped the compiled default to `bun-terminal`; `bun-pty` remains selectable for one release as a rollback escape hatch, with Stage 3 (Issue [#828](https://github.com/ms2sato/agent-console/issues/828)) removing it. The backend migration was evaluated under Issue [#824](https://github.com/ms2sato/agent-console/issues/824). The bootstrap script exposes this as `--pty-provider <name>` (or env `AGENT_CONSOLE_PTY_PROVIDER`); when unset, the rendered systemd unit omits the entry entirely so the server falls back to its compiled default. Invalid values are rejected at bootstrap time before any system state is touched. |
 | `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling: `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16; see Issue #1107 for the enforce-by-default restoration path). See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
+| `EMBEDDED_AGENT_BUN_PATH` | `bun` | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Default `bun` resolves via PATH, correct for single-user/dev where the spawned process shares the server's shell environment. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this automatically. |
 
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
@@ -1057,10 +1081,19 @@ What it verifies:
   `/proc/<pid>/cmdline` or `/proc/<pid>/environ` of the elevated subprocess,
   with an "actually executed" guard so a silently-skipped check (process
   already exited, `/proc` unreadable) reports as a failure, not a pass.
+- (Issue #1221) When `EMBEDDED_AGENT_BUN_PATH` is configured as an absolute
+  path, the version reported by `${EMBEDDED_AGENT_BUN_PATH} --version` matches
+  the running server process's own bun version — guarding against the
+  embedded-agent subprocess drifting to a different bun binary than the
+  server (see the follow-up Issue referenced from PR #1221's fix for the
+  structural version-alignment gap this points at).
 
 Exit codes: `0` all assertions passed, `1` an assertion failed (the system is
 wrong), `2` bad usage or the smoke could not run (missing target-user
-argument, target user unknown, spawn-launch failure).
+argument, target user unknown, spawn-launch failure, or — new in Issue #1221 —
+`EMBEDDED_AGENT_BUN_PATH` configured to an absolute path that does not exist
+on disk, meaning the bun-binary copy step from the setup guide/script has not
+been applied yet).
 
 Passing the current process user as `<target-user>` runs in a degenerate
 same-user mode where `spawnAsUser` bypasses elevation (target equals the
