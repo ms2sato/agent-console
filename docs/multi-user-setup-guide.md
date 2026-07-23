@@ -1188,6 +1188,61 @@ smokes above, this degenerate mode does not require `AUTH_MODE=multi-user`
 to be meaningful — the elevation bypass is evaluated independently of it,
 based solely on whether `<target-user>` equals the server-process user.
 
+### SESSION_ID marker orphan-process sweep
+
+Run after every deploy that touches
+`packages/server/src/services/orphan-process-sweeper.ts` or
+`SessionInitializationService.sweepSessionProcesses` (Issue #1197 Part B).
+`killOrphanWorkers` (Part A, checked above) only kills processes tracked via
+a session's persisted `worker.pid` — the direct PTY wrapper process. A
+worker's detached descendant processes (a `bun run dev` child, an MCP
+subprocess, ...) are never in that PID set and leak forever across server
+restarts. Every worker process already carries
+`AGENT_CONSOLE_SESSION_ID=<sessionId>` in its environment, inherited by
+every descendant; the sweep scans `/proc/[pid]/environ` for that marker,
+tree-wide, and kills anything matching regardless of whether it was ever
+tracked as a `worker.pid`:
+
+```bash
+sudo -u agentconsole bun scripts/smoke/check-orphan-sweep.ts <target-user>
+```
+
+What it verifies (against the **real** machine — real `sudo`, real
+`/proc/<pid>/environ` read permissions, real target processes):
+
+- `spawnAsUser` launches a real, long-lived `sleep` as `<target-user>` with
+  `AGENT_CONSOLE_SESSION_ID=<generated-session-id>` set in its environment
+  (the same marker every real worker process carries in production).
+- `sweepOrphanProcesses` runs the marker-scan-and-kill script AS
+  `<target-user>` — a real cross-user `/proc/<pid>/environ` read, which the
+  server process itself cannot do directly — and actually terminates the
+  marked process (polled via `/proc/<pid>` existence, bounded to 8s).
+- Negative: a second, real process spawned as the same target user WITHOUT
+  the marker survives the sweep — proof the sweep matches on the exact
+  `SESSION_ID` record, not a broader name-based or substring match.
+
+This smoke's distinct value versus Part A's `check-kill-as-user.ts` is
+proving the marker-based **discovery** mechanism works end-to-end against
+real `sudo` / real `/proc` read permissions — Part A never reads `environ`,
+it only signals an already-known pid. This smoke does NOT exercise the
+TERM → SIGKILL escalation path for a marked process that ignores SIGTERM
+(covered by the real-process tests in
+`packages/server/src/services/__tests__/orphan-process-sweeper.test.ts`,
+which drive the sweep script directly via `Bun.spawn`, same-user, no
+elevation needed to exercise the script's own grace/escalation logic) or
+`SessionInitializationService.sweepSessionProcesses`'s best-effort
+wrapping (covered by unit tests with an injected fake).
+
+Exit codes: `0` all assertions passed, `1` an assertion failed (the system
+is wrong), `2` bad usage or the smoke could not run (missing target-user
+argument, spawn-launch failure, or a bounded phase exceeding its deadline).
+
+Passing the current process user as `<target-user>` runs in a degenerate
+same-user mode where `spawnAsUser` / `sweepOrphanProcesses` bypass
+elevation — this still exercises the full mechanism (spawn, marker match,
+kill, negative assertion) except the actual `sudo` OS-user-boundary
+crossing and the cross-user `/proc/<pid>/environ` read permission.
+
 ### PTY master fd leak check
 
 Run after every deploy that touches `packages/server/src/lib/pty-provider.ts`
