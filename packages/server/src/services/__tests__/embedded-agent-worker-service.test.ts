@@ -201,6 +201,8 @@ function setup(opts?: {
   sigtermTimeoutMs?: number;
   /** Omit the entryPath override so the service resolves its real default. */
   omitEntryPath?: boolean;
+  /** Issue #1221: test seam override for the configured bun binary path. */
+  embeddedAgentBunPathOverride?: string;
   /** Issue #1068: session.initialPrompt, undefined by default (no delivery). */
   initialPrompt?: string;
   /** Issue #1068: session.initialPromptDelivered, undefined by default. */
@@ -291,6 +293,7 @@ function setup(opts?: {
     loadProviderKeyFn: loadProviderKeyFn as never,
     spawnAsUserFn: opts?.spawnAsUserFnOverride ?? fake.fn,
     ...(opts?.omitEntryPath ? {} : { entryPath: ENTRY_PATH }),
+    embeddedAgentBunPath: opts?.embeddedAgentBunPathOverride,
     getGlobalActivityCallback: () => globalActivity as never,
     getGlobalWorkerExitCallback: () => globalExit as never,
     shutdownGraceMs: opts?.shutdownGraceMs,
@@ -338,7 +341,7 @@ describe('EmbeddedAgentWorkerService.activate', () => {
 
     expect(h.fake.captured.length).toBe(1);
     const opts = h.fake.captured[0];
-    expect(opts.command).toBe(`bun '${ENTRY_PATH}'`);
+    expect(opts.command).toBe(`'bun' '${ENTRY_PATH}'`);
     // Negative assertions: no secrets in the command line.
     expect(opts.command).not.toContain(TOKEN);
     expect(opts.command).not.toContain(API_KEY);
@@ -347,6 +350,15 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     expect(opts.env).toBeUndefined();
     expect(opts.cwd).toBe('/test/worktree');
     expect(opts.username).toBe(USERNAME);
+  });
+
+  it('pins a configured EMBEDDED_AGENT_BUN_PATH override into the elevated argv verbatim (Issue #1221)', async () => {
+    const h = setup({ embeddedAgentBunPathOverride: '/usr/local/bin/bun' });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.fake.captured.length).toBe(1);
+    const opts = h.fake.captured[0];
+    expect(opts.command).toBe(`'/usr/local/bin/bun' '${ENTRY_PATH}'`);
   });
 
   it('writes a valid init command as the first stdin line carrying secrets + context', async () => {
@@ -540,7 +552,7 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await h.service.activate(h.sessionId, h.workerId);
 
     const command = h.fake.captured[0].command;
-    const match = /^bun '(.+)'$/.exec(command);
+    const match = /^'bun' '(.+)'$/.exec(command);
     expect(match).not.toBeNull();
     const resolvedEntry = match![1];
     expect(resolvedEntry.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);
