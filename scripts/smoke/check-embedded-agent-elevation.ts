@@ -21,9 +21,12 @@
  *     second OS user, using the configured `EMBEDDED_AGENT_BUN_PATH` (Issue
  *     #1221 -- resolving `bun` by bare PATH-only name inside a non-interactive,
  *     non-bash elevated shell does not find a user-local `~/.bun/bin/bun`).
- *   - When `EMBEDDED_AGENT_BUN_PATH` is set to an absolute path, its
- *     `--version` output is compared against the server-process's own bun
- *     runtime version to catch binary drift (Issue #1221 follow-up).
+ *   - The configured `EMBEDDED_AGENT_BUN_PATH` (or default `'bun'`) binary's
+ *     `--version` output is compared against the ACTUAL systemd server
+ *     binary at the conventional `${service_home}/.bun/bin/bun` path (per
+ *     `render_systemd_unit()` in `scripts/setup-multiuser-for-ubuntu.sh`) --
+ *     not the runtime that happens to launch this smoke script itself -- to
+ *     catch binary drift (Issue #1221 follow-up).
  *   - The loop's init handshake completing end-to-end against a REAL `/mcp`
  *     Streamable-HTTP endpoint, with `AGENT_CONSOLE_MCP_AUTH` left UNSET so
  *     `resolveMcpAuthMode` resolves it to `enforce` via the real Phase 4
@@ -257,7 +260,8 @@ async function main(): Promise<void> {
     );
 
     // --- Assertion 2 (Issue #1221 follow-up): configured EMBEDDED_AGENT_BUN_PATH
-    // bun --version matches the server-process bun version. Guards against the
+    // bun --version matches the ACTUAL systemd server binary's version (see the
+    // detailed comment further below, at the comparison itself). Guards against the
     // embedded-agent subprocess running a stale/different bun binary than the
     // server itself once EMBEDDED_AGENT_BUN_PATH is configured as an absolute
     // path separate from whatever `bun` PATH-resolves to for this process. ---
@@ -289,15 +293,39 @@ async function main(): Promise<void> {
       process.exit(2);
     }
     const configuredVersion = versionResult.stdout.toString().trim();
-    // `process.versions.bun` is this very script's own Bun runtime version --
-    // this smoke always runs under `bun`, the same runtime the server process
-    // runs under, so no redundant subprocess spawn is needed to obtain it.
-    const serverVersion = process.versions.bun;
-    console.log(`  configured (${configuredBunCmd}): ${configuredVersion}`);
-    console.log(`  server process:                ${serverVersion}`);
+    // Compare against the ACTUAL systemd server binary, per the
+    // `render_systemd_unit()` convention in
+    // scripts/setup-multiuser-for-ubuntu.sh (`ExecStart = ${service_home}/.bun/bin/bun`)
+    // -- NOT `process.versions.bun` (the runtime that happened to launch THIS
+    // smoke script). Those two are only guaranteed equal when the smoke is
+    // invoked through the exact same binary the server's systemd unit uses;
+    // an operator running the smoke via a DIFFERENT bun (e.g. a stale
+    // /usr/local/bin/bun copy left over from before a `bun upgrade` on the
+    // service user's own install) would have both sides of the comparison
+    // silently drawn from the wrong pair, false-passing a real version drift
+    // (CodeRabbit MAJOR, PR #1223). Reading the conventional path directly
+    // sidesteps that ambiguity -- it still assumes the smoke runs AS the
+    // server/service user itself (already a documented Requirement above),
+    // so `os.homedir()` resolves to the service user's home.
+    const serverBunPath = path.join(os.homedir(), '.bun', 'bin', 'bun');
+    let serverVersionResult: ReturnType<typeof Bun.spawnSync>;
+    try {
+      serverVersionResult = Bun.spawnSync([serverBunPath, '--version']);
+    } catch (err) {
+      console.error(
+        `Could not execute '${serverBunPath} --version' (${err instanceof Error ? err.message : String(err)}) -- ` +
+          'this smoke expects the server bun install at the conventional location used by ' +
+          "scripts/setup-multiuser-for-ubuntu.sh's rendered systemd unit ExecStart. Run this smoke as the " +
+          'server/service user itself (see Requirements above).',
+      );
+      process.exit(2);
+    }
+    const serverVersion = serverVersionResult.stdout.toString().trim();
+    console.log(`  configured (${configuredBunCmd}):   ${configuredVersion}`);
+    console.log(`  server (${serverBunPath}): ${serverVersion}`);
     expect(
       configuredVersion === serverVersion,
-      'configured EMBEDDED_AGENT_BUN_PATH bun --version matches the server-process bun version (no version drift, see Issue #1221 follow-up)',
+      'configured EMBEDDED_AGENT_BUN_PATH bun --version matches the actual systemd server binary version (no version drift, see Issue #1221 follow-up)',
       `configured='${configuredVersion}' server='${serverVersion}'`,
     );
 

@@ -1081,12 +1081,21 @@ What it verifies:
   `/proc/<pid>/cmdline` or `/proc/<pid>/environ` of the elevated subprocess,
   with an "actually executed" guard so a silently-skipped check (process
   already exited, `/proc` unreadable) reports as a failure, not a pass.
-- (Issue #1221) When `EMBEDDED_AGENT_BUN_PATH` is configured as an absolute
-  path, the version reported by `${EMBEDDED_AGENT_BUN_PATH} --version` matches
-  the running server process's own bun version — guarding against the
-  embedded-agent subprocess drifting to a different bun binary than the
-  server (see the follow-up Issue referenced from PR #1221's fix for the
-  structural version-alignment gap this points at).
+- (Issue #1221) The version reported by `${EMBEDDED_AGENT_BUN_PATH:-bun}
+  --version` matches the version of the **actual systemd server binary** —
+  read directly from the conventional `${service_home}/.bun/bin/bun` path
+  (the same path `render_systemd_unit()` in
+  `scripts/setup-multiuser-for-ubuntu.sh` renders into `ExecStart`), not the
+  runtime that happens to launch the smoke script itself. Comparing against
+  the smoke's own launching runtime would be unreliable: an operator
+  invoking the smoke through a different bun (e.g. a stale
+  `/usr/local/bin/bun` copy left over from before a `bun upgrade` on the
+  service user's own install) could make both sides of a naive comparison
+  match coincidentally and mask a real drift. This assertion assumes the
+  smoke runs as the server/service user itself, per the Requirements above.
+  Guards against the embedded-agent subprocess drifting to a different bun
+  binary than the server (see the follow-up Issue referenced from PR #1221's
+  fix for the structural version-alignment gap this points at).
 
 Exit codes: `0` all assertions passed, `1` an assertion failed (the system is
 wrong), `2` bad usage or the smoke could not run (missing target-user
