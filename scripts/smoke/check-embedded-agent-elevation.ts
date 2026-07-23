@@ -79,7 +79,10 @@
  *   2  bad usage / cannot run (missing target user, launch failure; also
  *      fired by the EMBEDDED_AGENT_BUN_PATH probe-cannot-run guard below when
  *      an absolute EMBEDDED_AGENT_BUN_PATH is configured but not present on
- *      disk -- the multi-user setup script's bun-copy step was not applied)
+ *      disk -- the multi-user setup script's bun-copy step was not applied --
+ *      and, symmetrically, when the default 'bun' (bare-name, PATH-resolved)
+ *      cannot be resolved at all, e.g. under a real `sudo` invocation whose
+ *      secure_path excludes a user-local ~/.bun/bin)
  *
  * Sync contract: entry-path resolution is imported directly from
  * `resolveEmbeddedAgentEntryPath` (packages/server/src/services/
@@ -260,7 +263,31 @@ async function main(): Promise<void> {
     // path separate from whatever `bun` PATH-resolves to for this process. ---
     console.log('==> configured bun-path version check');
     const configuredBunCmd = process.env.EMBEDDED_AGENT_BUN_PATH || 'bun';
-    const versionResult = Bun.spawnSync([configuredBunCmd, '--version']);
+    let versionResult: ReturnType<typeof Bun.spawnSync>;
+    try {
+      versionResult = Bun.spawnSync([configuredBunCmd, '--version']);
+    } catch (err) {
+      // Bun.spawnSync throws synchronously (rather than returning a non-zero
+      // exit code) when the executable cannot be resolved via PATH at all.
+      // This is the same probe-cannot-run condition the absolute-path guard
+      // above exists for, just reached via the default 'bun' (bare-name,
+      // PATH-resolved) branch instead of a configured absolute path: e.g.
+      // under a real `sudo` invocation, the elevated child's PATH is sudo's
+      // own secure_path, which does not include a user-local ~/.bun/bin --
+      // so 'bun' is unresolvable until the multi-user setup script's
+      // bun-copy step has provisioned /usr/local/bin/bun AND
+      // EMBEDDED_AGENT_BUN_PATH has been set to point at it. Not a real
+      // assertion failure; the environment simply isn't ready to run this
+      // smoke meaningfully yet.
+      console.error(
+        `Could not execute '${configuredBunCmd} --version' (${err instanceof Error ? err.message : String(err)}) -- ` +
+          'this smoke cannot run meaningfully without a resolvable bun binary. If EMBEDDED_AGENT_BUN_PATH is unset, ' +
+          "the elevated shell's PATH (e.g. sudo's secure_path) may not include a user-local bun install; run " +
+          'scripts/setup-multiuser-for-ubuntu.sh to provision /usr/local/bin/bun and set EMBEDDED_AGENT_BUN_PATH ' +
+          'accordingly, then re-run this smoke.',
+      );
+      process.exit(2);
+    }
     const configuredVersion = versionResult.stdout.toString().trim();
     // `process.versions.bun` is this very script's own Bun runtime version --
     // this smoke always runs under `bun`, the same runtime the server process
