@@ -21,6 +21,7 @@ import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
 import type { SpawnAsUserFn } from '../privilege-elevation.js';
+import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
 // Test config directory
@@ -4621,10 +4622,18 @@ describe('SessionManager', () => {
     // since it is also never loaded into `this.sessions`, it is picked up by
     // the LATER `cleanupOrphanProcesses()` pass instead (dead serverPid +
     // not in-memory -- no comparison to the new server's own pid is
-    // involved), which is the ONLY caller of
+    // involved), which is the ONLY code path calling
     // `resolveSpawnUsername(session.createdBy)` for this session. This
     // isolates the assertion to precisely the SessionInitializationService
     // wiring this PR adds, with no auto-resume confound.
+    //
+    // Issue #1197 Part B added a second, independent caller at the exact
+    // same call site: `sweepSessionProcesses` (the SESSION_ID marker sweep)
+    // also resolves `session.createdBy` via the same injected
+    // `resolveSpawnUsername`, immediately after `killOrphanWorkers` does.
+    // Both helpers resolve independently rather than sharing one resolved
+    // value, so this test now expects the SAME username resolved TWICE
+    // during restart-triggered orphan cleanup for this one session.
     it('resolves session.createdBy via the injected userRepository during restart-triggered orphan cleanup', async () => {
       const findByIdCalls: string[] = [];
       const stubUserRepo: UserRepository = {
@@ -4640,6 +4649,16 @@ describe('SessionManager', () => {
         },
       };
 
+      // This test's purpose is exclusively to verify resolveSpawnUsername's
+      // call count/args, not the sweep's own behavior -- inject a no-op fake
+      // so it doesn't also spawn a real subprocess (`sweepOrphanProcesses`
+      // always spawns one regardless of AUTH_MODE, unlike killOrphanWorkers's
+      // cheap in-process non-elevated fallback).
+      const noopSweepOrphanProcessesImpl: typeof sweepOrphanProcesses = async () => ({
+        killedCount: 0,
+        raw: { stdout: '', stderr: '', exitCode: 0, timedOut: false },
+      });
+
       const module1 = await import(`../session-manager.js?v=${++importCounter}`);
       const manager = await module1.SessionManager.create({
         userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
@@ -4650,6 +4669,7 @@ describe('SessionManager', () => {
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         userRepository: stubUserRepo,
+        sweepOrphanProcessesImpl: noopSweepOrphanProcessesImpl,
       });
 
       const session = await manager.createSession(
@@ -4686,9 +4706,10 @@ describe('SessionManager', () => {
       const callsBeforeRestart = findByIdCalls.length;
 
       // Simulate server restart with the SAME stub userRepository injected.
-      // cleanupOrphanProcesses() -> killOrphanWorkers() calls
-      // resolveSpawnUsername(session.createdBy) once for this session, which
-      // must route through this repository.
+      // cleanupOrphanProcesses() calls resolveSpawnUsername(session.createdBy)
+      // TWICE for this session -- once via killOrphanWorkers, once via
+      // sweepSessionProcesses (Issue #1197 Part B) -- both of which must
+      // route through this repository.
       mockProcess.markDead(process.pid);
       const module2 = await import(`../session-manager.js?v=${++importCounter}`);
       await module2.SessionManager.create({
@@ -4700,10 +4721,11 @@ describe('SessionManager', () => {
         repositoryLookup: defaultRepositoryLookup,
         repositoryEnvLookup: defaultRepositoryEnvLookup,
         userRepository: stubUserRepo,
+        sweepOrphanProcessesImpl: noopSweepOrphanProcessesImpl,
       });
 
       const callsDuringRestart = findByIdCalls.slice(callsBeforeRestart);
-      expect(callsDuringRestart).toEqual(['user-alice-uuid']);
+      expect(callsDuringRestart).toEqual(['user-alice-uuid', 'user-alice-uuid']);
     });
   });
 
