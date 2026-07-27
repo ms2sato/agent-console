@@ -48,3 +48,68 @@ jobs:
         working-directory: packages/integration
         run: bun test --preload ./src/setup.ts src/
         continue-on-error: true
+
+      - name: Experiment 4 -- pairwise bisection (each candidate + target)
+        working-directory: packages/integration
+        continue-on-error: true
+        run: |
+          set +e
+          CANDIDATES=(
+            embedded-agent-restore-info-boundary.test.ts
+            embedded-agent-client-message-id-boundary.test.ts
+            message-template-boundary.test.ts
+            embedded-agent-worker-boundary.test.ts
+            worker-history-offset-boundary.test.ts
+            interactive-process-boundary.test.ts
+            session-sync-embedded-agent-activity-boundary.test.ts
+            schema-version-boundary.test.ts
+            conditional-wakeup-boundary.test.ts
+            worker-history-range-boundary.test.ts
+            create-agent-worker-boundary.test.ts
+            worktree-embedded-agent-boundary.test.ts
+            review-queue-boundary.test.ts
+          )
+          for f in "${CANDIDATES[@]}"; do
+            echo "=== pairing: $f + system-api-boundary.test.ts ==="
+            bun test --preload ./src/setup.ts "src/$f" src/system-api-boundary.test.ts > /tmp/pair-out.txt 2>&1
+            if grep -q "unref is not a function" /tmp/pair-out.txt; then
+              echo "REPRODUCED with: $f"
+            else
+              echo "clean with: $f"
+            fi
+            tail -5 /tmp/pair-out.txt
+          done
+
+      - name: Experiment 5 -- accumulating prefix bisection (in original readdir order)
+        working-directory: packages/integration
+        continue-on-error: true
+        run: |
+          set +e
+          PREFIX=(
+            embedded-agent-restore-info-boundary.test.ts
+            embedded-agent-client-message-id-boundary.test.ts
+            message-template-boundary.test.ts
+            embedded-agent-worker-boundary.test.ts
+            worker-history-offset-boundary.test.ts
+            interactive-process-boundary.test.ts
+            session-sync-embedded-agent-activity-boundary.test.ts
+            schema-version-boundary.test.ts
+            conditional-wakeup-boundary.test.ts
+            worker-history-range-boundary.test.ts
+            create-agent-worker-boundary.test.ts
+            worktree-embedded-agent-boundary.test.ts
+            review-queue-boundary.test.ts
+          )
+          ACC=()
+          for f in "${PREFIX[@]}"; do
+            ACC+=("src/$f")
+            echo "=== prefix through: $f (${#ACC[@]} files) + target ==="
+            bun test --preload ./src/setup.ts "${ACC[@]}" src/system-api-boundary.test.ts > /tmp/prefix-out.txt 2>&1
+            if grep -q "unref is not a function" /tmp/prefix-out.txt; then
+              echo "REPRODUCED at prefix ending with: $f"
+              tail -15 /tmp/prefix-out.txt
+              break
+            else
+              echo "clean through: $f"
+            fi
+          done
