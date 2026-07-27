@@ -2,8 +2,8 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, fireEvent, waitFor, act, cleanup, render } from '@testing-library/react';
 import { createRootRoute, createRouter, createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createContext, useContext } from 'react';
 import { SessionSettings } from '../SessionSettings';
+import { WorktreeDeletionTasksContext } from '../../contexts/root-contexts';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 
 // Helper to create mock Response
@@ -23,9 +23,6 @@ const prLinkResponse = createMockResponse({
   branchName: 'test-branch',
   orgRepo: 'org/repo',
 });
-
-// Mock the WorktreeDeletionTasksContext
-const MockWorktreeDeletionTasksContext = createContext<UseWorktreeDeletionTasksReturn | null>(null);
 
 // Create mock deletion tasks context
 function createMockDeletionTasks(): UseWorktreeDeletionTasksReturn {
@@ -58,13 +55,17 @@ async function renderWithRouterAndContext(
     },
   });
 
-  // Mock the import of __root to use our mock context
-  // We need to replace the actual context with our mock
+  // Provide the deletion tasks context via the REAL WorktreeDeletionTasksContext
+  // (re-exported by routes/__root) instead of a `mock.module`-replaced module --
+  // mock.module is process-global in bun:test and would poison every other test
+  // file that real-imports routes/__root in the same process (testing.md
+  // Anti-Pattern #2). SessionSettings renders DeleteWorktreeDialog, which calls
+  // useWorktreeDeletionTasksContext() and requires a Provider ancestor.
   const rootRoute = createRootRoute({
     component: () => (
-      <MockWorktreeDeletionTasksContext.Provider value={deletionTasks}>
+      <WorktreeDeletionTasksContext.Provider value={deletionTasks}>
         {ui}
-      </MockWorktreeDeletionTasksContext.Provider>
+      </WorktreeDeletionTasksContext.Provider>
     ),
   });
   const memoryHistory = createMemoryHistory({
@@ -88,23 +89,6 @@ async function renderWithRouterAndContext(
   );
   return { ...result, router, queryClient };
 }
-
-// mock.module replaces the entire module permanently in bun:test.
-// The mock must:
-// 1. Export WorktreeDeletionTasksContext so other test files can wrap with Provider
-// 2. Have useWorktreeDeletionTasksContext read from the context via useContext,
-//    so Provider-wrapped tests get the provided value (not always empty tasks)
-// 3. Fall back to default mock when no Provider is present (for SessionSettings tests)
-mock.module('../../routes/__root', () => ({
-  useWorktreeDeletionTasksContext: () => {
-    const context = useContext(MockWorktreeDeletionTasksContext);
-    if (!context) {
-      return createMockDeletionTasks();
-    }
-    return context;
-  },
-  WorktreeDeletionTasksContext: MockWorktreeDeletionTasksContext,
-}));
 
 describe('SessionSettings', () => {
   let originalFetch: typeof fetch;
