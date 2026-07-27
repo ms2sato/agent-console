@@ -14,6 +14,7 @@ import {
   createTestApp,
   setupTestEnvironment,
   cleanupTestEnvironment,
+  mockOpen,
 } from '@agent-console/server/src/__tests__/test-utils';
 
 // Import system capabilities service class
@@ -35,7 +36,15 @@ import { createFetchBridge, findRequest } from './test-utils';
 const spawnCalls: Array<{ args: string[]; options: Record<string, unknown> }> = [];
 const originalBunSpawn = Bun.spawn;
 
-// Mock Bun.spawn for VS Code launch
+// Mock Bun.spawn for VS Code launch. Only openInVSCode's tests call
+// setupSpawnMock() (see its own nested beforeEach below) -- Bun's
+// node:child_process compat shim delegates to the global Bun.spawn
+// internally, so leaving this fake active during openPath's tests (which
+// exercise the real 'open' package, itself using node:child_process) makes
+// any node:child_process.spawn() call in that window construct a
+// ChildProcess whose handle is this shape-incompatible plain object,
+// throwing "this.#handle.unref is not a function" the moment internal
+// setup calls unref() on it.
 function setupSpawnMock() {
   (Bun as { spawn: typeof Bun.spawn }).spawn = ((
     args: string[],
@@ -67,7 +76,6 @@ describe('Client-Server Boundary: System API', () => {
   beforeEach(async () => {
     // Reset spawn tracking
     spawnCalls.length = 0;
-    setupSpawnMock();
 
     // Set up test environment (memfs, database, etc.)
     await setupTestEnvironment();
@@ -98,6 +106,10 @@ describe('Client-Server Boundary: System API', () => {
   });
 
   describe('openInVSCode', () => {
+    beforeEach(() => {
+      setupSpawnMock();
+    });
+
     it('should call the correct endpoint /api/system/open-in-vscode', async () => {
       // Call the client API function
       await openInVSCode('/test/worktree-dir');
@@ -152,6 +164,10 @@ describe('Client-Server Boundary: System API', () => {
       expect(request!.url).toBe('/api/system/open');
       expect(request!.method).toBe('POST');
       expect(request!.body).toEqual({ path: '/test/worktree-dir' });
+
+      // Verify the server called the mocked `open` package with the
+      // directory path unchanged (not exercising the real OS launcher).
+      expect(mockOpen).toHaveBeenCalledWith('/test/worktree-dir');
     });
 
     it('should return error when path does not exist', async () => {
@@ -161,6 +177,9 @@ describe('Client-Server Boundary: System API', () => {
       const request = findRequest(bridge.capturedRequests, 'POST', '/api/system/open');
       expect(request).toBeDefined();
       expect(request!.body).toEqual({ path: '/non-existent/path' });
+
+      // stat() throws ENOENT before the route ever reaches open().
+      expect(mockOpen).not.toHaveBeenCalled();
     });
 
     it('should handle file path (opens containing directory)', async () => {
@@ -171,6 +190,11 @@ describe('Client-Server Boundary: System API', () => {
       const request = findRequest(bridge.capturedRequests, 'POST', '/api/system/open');
       expect(request).toBeDefined();
       expect(request!.body).toEqual({ path: '/test/some-file.txt' });
+
+      // For a file path, the server must resolve to the containing
+      // directory before calling `open` -- this is the argument-shape
+      // coverage a mock/spy on `open` must preserve.
+      expect(mockOpen).toHaveBeenCalledWith('/test');
     });
   });
 });
