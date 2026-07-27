@@ -66,3 +66,9 @@ jobs:
         continue-on-error: true
         run: |
           bun test --preload ./src/setup.ts src/__debug-1225-real-subprocess-only.test.ts src/system-api-boundary.test.ts
+
+      - name: Mechanism isolation C -- Bun.spawn + kill + exited only (matches EmbeddedAgentWorkerService's actual API)
+        working-directory: packages/integration
+        continue-on-error: true
+        run: |
+          bun test --preload ./src/setup.ts src/__debug-1225-bun-spawn-kill-only.test.ts src/system-api-boundary.test.ts
