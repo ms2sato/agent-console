@@ -169,6 +169,25 @@ export const serverConfig = {
     const raw = process.env.VSCODE_REMOTE_HOST?.trim();
     return raw || undefined;
   })(),
+  /**
+   * Absolute path (or bare command name) used to invoke `bun` when spawning
+   * the embedded-agent loop subprocess as a (possibly elevated, cross-user)
+   * OS process. Defaults to the bare command name 'bun', which resolves via
+   * PATH in single-user / dev setups where the server and the spawned
+   * subprocess share the same shell environment.
+   *
+   * In multi-user mode, the subprocess runs inside an elevated login shell
+   * (`sudo -u <user> -i sh -c '...'`) whose non-interactive, non-bash `sh`
+   * (dash on Ubuntu) does not source `.bashrc` -- a user-local `~/.bun/bin/bun`
+   * install is therefore NOT resolvable by bare name inside that shell. Set
+   * this to an absolute path (e.g. '/usr/local/bin/bun') reachable by every
+   * elevation target user; `scripts/setup-multiuser-for-ubuntu.sh` provisions
+   * this path and configures the systemd unit's Environment= accordingly.
+   *
+   * See .claude/rules/os-environment-coupling.md for the general principle:
+   * elevated commands must not resolve binaries by PATH-only name.
+   */
+  EMBEDDED_AGENT_BUN_PATH: process.env.EMBEDDED_AGENT_BUN_PATH || 'bun',
 } as const;
 
 /**

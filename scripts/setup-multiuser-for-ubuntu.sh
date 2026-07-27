@@ -19,9 +19,14 @@
 #      the same owner / group / mode so operators can clone shared source
 #      repos into a known, group-writable location (Issue #833).
 #   6. Clone (or rsync) the application into the service user's home;
-#      `bun install --production`.
+#      `bun install --production`. Then copy the service user's bun binary to
+#      /usr/local/bin/bun (mode 0755) so the embedded-agent worker's elevated
+#      subprocess can resolve it without relying on PATH (Issue #1221) -- runs
+#      on every invocation, so re-running this script after `bun upgrade`
+#      refreshes the copy.
 #   7. Render the systemd unit from scripts/agent-console-multiuser.service.template
-#      with UMask=0002, AUTH_MODE=multi-user, AGENT_CONSOLE_HOME=<data-root>.
+#      with UMask=0002, AUTH_MODE=multi-user, AGENT_CONSOLE_HOME=<data-root>,
+#      EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun.
 #   8. `systemctl daemon-reload && systemctl enable --now agent-console`.
 #
 # Idempotency: a second invocation with the same parameters is a no-op
@@ -510,7 +515,8 @@ fi
 APP_DIR="$SERVICE_HOME/agent-console"
 if [ -d "$APP_DIR/.git" ] || [ -f "$APP_DIR/package.json" ]; then
   echo "    application already present at $APP_DIR; skipping clone"
-  echo "    (run 'cd $APP_DIR && git pull && bun install --production' to update)"
+  echo "    (run 'cd $APP_DIR && git pull && bun install --production' to update;"
+  echo "     re-running this script afterward refreshes the embedded-agent bun copy)"
 else
   if [ -n "$REPO_SOURCE" ]; then
     # Local checkout or explicit URL.
@@ -537,6 +543,41 @@ else
       run sudo -u "$SERVICE_USER" -- bash -lc "cd '$APP_DIR' && bun install --production"
     fi
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Step 6b — embedded-agent bun binary copy (Issue #1221)
+# ---------------------------------------------------------------------------
+#
+# The embedded-agent worker spawns `bun <entry>` inside an elevated,
+# non-interactive login shell (`sudo -u <target-user> -i sh -c '...'`). On
+# Ubuntu that inner shell is dash, which does not source `.bashrc` -- a
+# user-local `~/.bun/bin/bun` install is therefore NOT resolvable by bare
+# command name inside that shell (see .claude/rules/os-environment-coupling.md).
+# The server passes an absolute path via EMBEDDED_AGENT_BUN_PATH instead (see
+# the Environment= line in the rendered systemd unit).
+#
+# Copy (not symlink) the SAME bun binary the service user's own systemd unit
+# executes, to a location every elevation-target user can traverse.
+# Symlinking into the service user's HOME does not work: that HOME is
+# typically mode 0700, so a symlink target under it is unreachable by other
+# users even though the link itself resolves. Copying from the service
+# user's own bun (rather than e.g. the operator's) avoids version drift
+# between the server process and the embedded-agent subprocess (Issue #1199
+# lesson). Runs on EVERY invocation (not just first install) so re-running
+# this script after `bun upgrade` on the service user's account refreshes the
+# copy -- see docs/multi-user-setup-guide.md for the upgrade procedure.
+heading "Step 6b — embedded-agent bun binary"
+EMBEDDED_AGENT_BUN_PATH_DEST="/usr/local/bin/bun"
+SERVICE_BUN_PATH="$SERVICE_HOME/.bun/bin/bun"
+if [ "$DRY_RUN" -eq 1 ]; then
+  echo "    --dry-run: would copy $SERVICE_BUN_PATH -> $EMBEDDED_AGENT_BUN_PATH_DEST (mode 0755)"
+elif [ -f "$SERVICE_BUN_PATH" ]; then
+  run install -m 0755 "$SERVICE_BUN_PATH" "$EMBEDDED_AGENT_BUN_PATH_DEST"
+else
+  echo "    warning: $SERVICE_BUN_PATH not found; skipping copy to $EMBEDDED_AGENT_BUN_PATH_DEST" >&2
+  echo "    (embedded-agent workers will fail with a PATH-resolution error under" >&2
+  echo "     elevation until this is fixed manually -- see Issue #1221)" >&2
 fi
 
 # ---------------------------------------------------------------------------

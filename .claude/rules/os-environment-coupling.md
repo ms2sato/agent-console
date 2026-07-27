@@ -2,7 +2,7 @@
 
 When code depends on OS-level mechanisms — `sudo`, file ownership / mode / setgid, login shell init, PAM, ACL, group membership, systemd unit env, sudoers config — unit tests on the developer's machine cannot establish correctness. Distro / sudoers / shell-init / kernel variations produce real failure modes that look identical to "works on my machine" from the inside.
 
-This rule captures two complementary disciplines that arose from concrete pain in Sprint 2026-06-23 → 2026-06-25 (the multi-user direct-path delivery). Both are always-on for the listed triggers; both are cheap when applied up-front and expensive when discovered post-merge.
+This rule captures three complementary disciplines. The first two arose from concrete pain in Sprint 2026-06-23 → 2026-06-25 (the multi-user direct-path delivery); the third from Issue #1221 (Sprint 2026-07-22). All three are always-on for the listed triggers; all are cheap when applied up-front and expensive when discovered post-merge.
 
 ## Triggers
 
@@ -87,6 +87,20 @@ The choice between these is a design decision worth documenting per script (in t
 `scripts/dev-multiuser.sh`'s first draft (PR `#868`) attempted to grant `agentconsole` traverse permission (`u:agentconsole:x`) on every parent directory from `/home/<developer>/.../worktree` up to `/`. The change was conservative-looking (no read, just traverse), correctly motivated (the service user needs to walk the path to reach the worktree), and would have worked. The owner correctly stopped it before it shipped: even a traverse ACL on `/home/<developer>/` is a meaningful expansion of `agentconsole`'s reach into a tree the operator never volunteered to share. The rewrite used rsync to a service-owned target instead.
 
 The owner's intuition matched the rule above: the project's writes stay in the project's scope. The script's iteration ergonomics suffered slightly (re-rsync on server-side edits), and that is the correct trade-off.
+
+## Discipline 3: Elevated commands must not resolve binaries by PATH-only name
+
+A command string handed to `sudo -u <user> -i sh -c '<command>'` (or any equivalent elevation invocation) must not reference a binary by bare command name (`bun`, `node`, a user-local tool) when that binary lives outside the standard system paths (`/usr/bin`, `/bin`, `/usr/local/bin`). Elevated, non-interactive login shells do not behave like an interactive login: on Ubuntu, `sudo -u <user> -i sh -c '...'` invokes `dash` as the inner shell, which does not source `.bashrc` (bash-only, interactive-only). A user-local install under `~/.bun/bin` (or any PATH entry that only exists via `.bashrc`/`.profile` sourcing) is therefore NOT resolvable by bare name inside that shell, even though the same command works fine when the developer types it in their own terminal.
+
+The failure mode is a plain "command not found" (exit 127) with no indication that the root cause is shell-init semantics rather than a missing install — easy to misdiagnose as an installation problem on the target machine.
+
+**Fix pattern:**
+
+1. Resolve the binary's absolute path via a config value (env var with a sensible PATH-resolving default for single-user/dev, e.g. `EMBEDDED_AGENT_BUN_PATH` defaulting to `'bun'`), not a hardcoded bare name.
+2. Have the setup / bootstrap script for elevated (multi-user) deployments copy (not symlink — see Discipline 2's home-directory-permission concern; a service user's HOME is typically mode `0700`, so a symlink target under it is unreachable by other elevation-target users) the binary to a location every elevation-target user can traverse (e.g. `/usr/local/bin/<binary>`), and set the config value to that absolute path in the deployment's systemd unit / environment.
+3. Copy from the SAME binary the elevating/server process itself runs (not an arbitrary system install), to avoid version drift between the server and the elevated subprocess.
+
+**Canonical example:** the embedded-agent worker's `bun <entry>` invocation (`packages/server/src/services/embedded-agent-worker-service.ts`), fixed via `EMBEDDED_AGENT_BUN_PATH` (`packages/server/src/lib/server-config.ts`) plus a bun-binary copy step in `scripts/setup-multiuser-for-ubuntu.sh` (Issue #1221). Before the fix, every embedded-agent worker activation failed under multi-user mode with a cross-user PATH-resolution error, caught by the owner's cross-user smoke run rather than by unit tests (unit tests assert argv shape, not what the OS actually resolves — the same "unit test cannot establish correctness" gap Discipline 1 exists for).
 
 ## How to use this rule
 

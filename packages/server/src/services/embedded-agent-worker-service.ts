@@ -37,6 +37,7 @@ import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { loadProviderKey } from './provider-key-store.js';
 import { createLogger } from '../lib/logger.js';
+import { serverConfig } from '../lib/server-config.js';
 import * as path from 'node:path';
 
 const logger = createLogger('embedded-agent-worker-service');
@@ -179,6 +180,8 @@ export interface EmbeddedAgentWorkerServiceDeps {
   spawnAsUserFn?: SpawnAsUserFn;
   /** Absolute path to the embedded-agent subprocess entry (resolved from the server install root). */
   entryPath?: string;
+  /** Test seam for the configured bun binary path (defaults to serverConfig.EMBEDDED_AGENT_BUN_PATH). */
+  embeddedAgentBunPath?: string;
   getGlobalActivityCallback: () => ((sessionId: string, workerId: string, state: AgentActivityState) => void) | undefined;
   getGlobalWorkerExitCallback: () => ((sessionId: string, workerId: string, exitCode: number, reason: ExitReason) => void) | undefined;
   shutdownGraceMs?: number;
@@ -224,6 +227,7 @@ export class EmbeddedAgentWorkerService {
   private readonly spawnAsUserFn: SpawnAsUserFn;
   private readonly loadProviderKeyFn: typeof loadProviderKey;
   private readonly entryPath: string;
+  private readonly bunPath: string;
   private readonly shutdownGraceMs: number;
   private readonly sigtermTimeoutMs: number;
 
@@ -231,6 +235,7 @@ export class EmbeddedAgentWorkerService {
     this.spawnAsUserFn = deps.spawnAsUserFn ?? spawnAsUser;
     this.loadProviderKeyFn = deps.loadProviderKeyFn ?? loadProviderKey;
     this.entryPath = deps.entryPath ?? resolveEmbeddedAgentEntryPath().path;
+    this.bunPath = deps.embeddedAgentBunPath ?? serverConfig.EMBEDDED_AGENT_BUN_PATH;
     this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.sigtermTimeoutMs = deps.sigtermTimeoutMs ?? DEFAULT_SIGTERM_TIMEOUT_MS;
   }
@@ -428,7 +433,7 @@ export class EmbeddedAgentWorkerService {
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
       const { subprocess, stdin } = this.spawnAsUserFn({
         username,
-        command: `bun ${shellEscape(this.entryPath)}`,
+        command: `${shellEscape(this.bunPath)} ${shellEscape(this.entryPath)}`,
         cwd: session.locationPath,
       });
       spawned = subprocess;
