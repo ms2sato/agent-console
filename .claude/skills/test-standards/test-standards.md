@@ -195,7 +195,9 @@ render(<TerminalAdapter sessionId="s" workerId="w" createInstance={mockGetOrCrea
 
 ### Pattern 2 — `spyOn()` on a named export
 
-Best for a hook or function the component-under-test imports and calls directly, when adding a DI prop is not warranted. `spyOn` is restorable per-test (unlike `mock.module()`), so it must be paired with `.mockRestore()` in `afterEach` — without that, the spy leaks into the next test in the same file (not other files, since `spyOn` targets a specific module-namespace object each test file imports independently).
+Best for a hook or function the component-under-test imports and calls directly, when adding a DI prop is not warranted. `spyOn` is restorable per-test (unlike `mock.module()`), so it must be paired with `.mockRestore()` in `afterEach` — without that, the spy leaks into the next test in the same file.
+
+**Cross-file safety is conditional, not unconditional.** Bun shares the module cache within a single process; `spyOn`'s restore-on-`mockRestore()` is what keeps it file-scoped only because this repo's `bun run test` invocation (`bun test --preload ./src/test/setup.ts src/` in `packages/client`) runs test files **sequentially** — no `--concurrent` flag on the script, no `concurrentTestGlob` in `bunfig.toml`. Under that condition, one file's spy is always torn down (via `afterEach`'s `mockRestore()`) before the next file's module-level code runs, so it cannot bleed across files. If a future test opts into Bun's `--concurrent` flag, `test.concurrent()`, or a `concurrentTestGlob` config, this guarantee no longer holds: a spy installed by one concurrently-running test file becomes observable by another before its `mockRestore()` fires, since they'd share the same in-process module cache at the same time. Do not use `spyOn()` on a shared module inside a `test.concurrent()` block without independently re-verifying isolation.
 
 ```typescript
 import * as useAppWsModule from '../../hooks/useAppWs';
@@ -211,11 +213,19 @@ afterEach(() => {
 });
 ```
 
-A generic function (`useAppWsState<T>(selector: (state) => T): T`) needs an explicit generic on the mock implementation so the cast is not silently `any`:
+A generic function (`useAppWsState<T>(selector: (state: AppWebSocketState) => T): T`) needs a real fake state run through the caller's own `selector`, not an arbitrary cast — a cast-through-`T` (e.g. `<T,>() => false as T`) type-checks for any selection but silently returns the wrong value the moment a test's `selector` reads a field the cast didn't account for:
 
 ```typescript
-useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(<T,>() => false as T);
+import type { AppWebSocketState } from '../../lib/app-websocket';
+
+const fakeWsState: AppWebSocketState = { /* ...minimal real shape... */ } as AppWebSocketState;
+
+useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(
+  <T,>(selector: (state: AppWebSocketState) => T) => selector(fakeWsState),
+);
 ```
+
+If a test genuinely never observes the mocked value (the component under test doesn't call `useAppWsState` on any path the test exercises), a cast is acceptable but must say so in a comment — see `routes/__tests__/index.test.tsx`'s `<T,>() => false as T` for the documented-exception form.
 
 (Worked examples: `routes/__tests__/index.test.tsx`, `__tests__/routes/agents/index.test.tsx`, `components/sessions/hooks/__tests__/useSessionPageState.test.ts`, `components/worktrees/__tests__/QuickWorktreeDialog.test.tsx`.)
 
