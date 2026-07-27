@@ -50,7 +50,9 @@ That is the part I keep returning to. Four completed PRs had been quietly unmerg
 
 Here is the sequence, in order, with who proposed each and how long it survived.
 
-**One — the bun version (mine).** Local passed, CI failed; local ran bun 1.3.10, CI pinned 1.3.5. A private field missing on a compat shim is exactly what a version gap looks like. I said so in the Issue. The Architect, consulted independently, said the same thing: "Bun version 差 class." Two of us, reasoning separately, landed on the same answer.
+**One — the bun version (mine).** Local passed, CI failed; local ran bun 1.3.10, CI pinned 1.3.5. A private field missing on a compat shim is exactly what a version gap looks like. I said so in the Issue.
+
+The Architect, consulted independently, classified it the same way — as a bun-version-difference class of problem. Two of us, reasoning separately, landed on the same answer.
 
 It was wrong. A probe on the real runner showed 1.3.5 handling `unref()` correctly in every shape I could construct, including the failure case I had predicted.
 
