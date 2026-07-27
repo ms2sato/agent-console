@@ -187,7 +187,7 @@ describe('scripts/install-hooks.mjs', () => {
   });
 });
 
-describe('scripts/install-hooks.mjs in a non-git environment (Issue #735)', () => {
+describe('scripts/install-hooks.mjs in a non-git environment (Issue #735, #1214)', () => {
   let nonGitSandbox;
 
   beforeEach(() => {
@@ -220,23 +220,22 @@ describe('scripts/install-hooks.mjs in a non-git environment (Issue #735)', () =
     return { ...process.env, GIT_CEILING_DIRECTORIES: nonGitSandbox };
   }
 
-  it('install-hooks.mjs exits non-zero when no .git is reachable', () => {
+  it('install-hooks.mjs exits 0 with a stderr warning when no .git is reachable (Issue #1214)', () => {
     const result = spawnSync(
       'bun',
       [join(nonGitSandbox, 'scripts/install-hooks.mjs')],
       { encoding: 'utf8', cwd: nonGitSandbox, env: envWithCeiling() },
     );
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('git rev-parse');
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('not a git repository');
   });
 
-  it('package.json#scripts.postinstall fails soft (exit 0) when no .git is reachable', () => {
+  it('package.json#scripts.postinstall exits 0 with no shell `||` needed when no .git is reachable (Issue #1214)', () => {
     const pkg = JSON.parse(
       readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8'),
     );
     const postinstallCmd = pkg.scripts.postinstall;
-    expect(postinstallCmd).toContain('bun scripts/install-hooks.mjs');
-    expect(postinstallCmd).toContain('||');
+    expect(postinstallCmd).toBe('bun scripts/install-hooks.mjs');
 
     const result = spawnSync('sh', ['-c', postinstallCmd], {
       encoding: 'utf8',
@@ -244,7 +243,41 @@ describe('scripts/install-hooks.mjs in a non-git environment (Issue #735)', () =
       env: envWithCeiling(),
     });
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('skipped');
+    expect(result.stderr).toContain('not a git repository');
+  });
+});
+
+describe('scripts/install-hooks.mjs hard-failure polarity (Issue #1214)', () => {
+  // Guards against a future regression to "everything soft": failures that
+  // occur AFTER git resolution succeeds must stay hard (non-zero exit).
+  // These scenarios are already covered above (symlink-elsewhere, different
+  // content, missing source) — this block exists to make the AC's mandatory
+  // hard-path polarity requirement explicit and separately named so a future
+  // reader sees it was intentionally verified, not just incidentally covered.
+  let sandbox;
+  let hooksDir;
+
+  beforeEach(() => {
+    sandbox = mkdtempSync(join(tmpdir(), 'install-hooks-hardfail-'));
+    mkdirSync(join(sandbox, 'scripts/git-hooks'), { recursive: true });
+    copyFileSync(SOURCE_HOOK, join(sandbox, 'scripts/git-hooks/commit-msg'));
+    chmodSync(join(sandbox, 'scripts/git-hooks/commit-msg'), 0o755);
+    spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: sandbox });
+    hooksDir = join(sandbox, '.git', 'hooks');
+    mkdirSync(hooksDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('a conflicting existing target still exits non-zero once git resolves', () => {
+    const target = join(hooksDir, 'commit-msg');
+    writeFileSync(target, '#!/bin/sh\necho different\n');
+    chmodSync(target, 0o755);
+    const result = runInstaller(sandbox);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('exists with different content');
   });
 });
 
