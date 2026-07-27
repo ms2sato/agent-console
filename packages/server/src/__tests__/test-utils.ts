@@ -26,6 +26,7 @@ import { MockPty } from './utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from './utils/mock-fs-helper.js';
 import { resetProcessMock } from './utils/mock-process-helper.js';
 import { resetGitMocks } from './utils/mock-git-helper.js';
+import { mockOpen } from './utils/mock-open-helper.js';
 import { initializeDatabase, closeDatabase } from '../database/connection.js';
 import type { Kysely } from 'kysely';
 import type { Database } from '../database/schema.js';
@@ -64,10 +65,7 @@ mock.module('../lib/pty-provider.js', () => ({
 // Open Mock
 // =============================================================================
 
-export const mockOpen = mock(async () => {});
-mock.module('open', () => ({
-  default: mockOpen,
-}));
+export { mockOpen };
 
 // =============================================================================
 // Test Environment Setup
