@@ -279,6 +279,46 @@ describe('scripts/install-hooks.mjs hard-failure polarity (Issue #1214)', () => 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('exists with different content');
   });
+
+  it('a `git rev-parse --git-path hooks` failure stays hard (exit 1) even though the repo itself resolved', () => {
+    // Stub `git` on PATH so `--git-common-dir` succeeds (as a real repo
+    // would) but `--git-path hooks` fails, simulating a corrupted /
+    // abnormal repo state distinct from "no git repo at all". Only
+    // resolveRepoRoot()'s git-absence branch is soft; a hooks-path failure
+    // AFTER the repo resolves must surface loudly, not be swallowed as if
+    // the repo were simply missing (that would silently skip installing
+    // the commit-msg language check — the #1210 silent-no-op class).
+    const stubBin = mkdtempSync(join(tmpdir(), 'install-hooks-stubgit-'));
+    const gitStub = join(stubBin, 'git');
+    writeFileSync(
+      gitStub,
+      [
+        '#!/bin/sh',
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--git-common-dir" ]; then',
+        '  echo "/tmp/fake-common-dir"',
+        '  exit 0',
+        'fi',
+        'if [ "$1" = "rev-parse" ] && [ "$2" = "--git-path" ]; then',
+        '  echo "simulated corrupted repo" 1>&2',
+        '  exit 1',
+        'fi',
+        'exit 1',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(gitStub, 0o755);
+
+    try {
+      const result = spawnSync('bun', [INSTALL_SCRIPT], {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${stubBin}:${process.env.PATH}` },
+      });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('git rev-parse --git-path hooks');
+    } finally {
+      rmSync(stubBin, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('scripts/install-hooks.mjs invoked via package.json#postinstall in a git repo (Issue #735)', () => {

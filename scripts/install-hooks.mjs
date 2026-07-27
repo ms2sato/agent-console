@@ -14,16 +14,26 @@
  * installed" and exits 0. If it exists with different content, the script
  * refuses to overwrite and asks the user to remove it explicitly.
  *
- * Soft-fail ownership (Issue #1214): when git itself is unresolvable (no
- * `.git`, e.g. a Docker bind mount of a worktree without its main repo, or a
- * non-git checkout), this script exits 0 with a stderr warning rather than
- * exit 1. This is the same fact regardless of invocation context (postinstall
- * or a manual `bun run hooks:install`), so the exit-0 contract lives here
- * rather than in a shell `||` fallback at the call site — a shell `cmdA ||
- * cmdB` postinstall string was found to not reliably surface its final exit
- * status through Bun 1.3.8's lifecycle-script bookkeeping. Failures *after*
- * git resolves (symlink failure, copy failure, conflicting existing target)
- * stay hard failures — those mean the hook genuinely didn't install.
+ * Soft-fail ownership (Issue #1214): when no git repository is resolvable at
+ * all (`git rev-parse --git-common-dir` fails — no `.git`, e.g. a Docker bind
+ * mount of a worktree without its main repo, or a non-git checkout), this
+ * script exits 0 with a stderr warning rather than exit 1. This is the same
+ * fact regardless of invocation context (postinstall or a manual
+ * `bun run hooks:install`), so the exit-0 contract lives here rather than in
+ * a shell `||` fallback at the call site — a shell `cmdA || cmdB` postinstall
+ * string was found to not reliably surface its final exit status through Bun
+ * 1.3.8's lifecycle-script bookkeeping.
+ *
+ * This soft-fail is intentionally asymmetric: only `resolveRepoRoot()`'s
+ * `--git-common-dir` failure is soft. `resolveHooksDir()`'s
+ * `--git-path hooks` failure — which only runs after a repo was already
+ * found — stays a hard failure, because at that point "no repo" has already
+ * been ruled out; the failure means something is abnormal (a corrupted repo,
+ * a git internal error) that should surface loudly rather than silently skip
+ * installing the commit-msg language check (the same silent-no-op class as
+ * #1210). Likewise, failures after both resolve (symlink failure, copy
+ * failure, conflicting existing target) stay hard failures — those mean the
+ * hook genuinely didn't install.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -62,9 +72,14 @@ function resolveHooksDir() {
     encoding: 'utf8',
   });
   if (result.status !== 0) {
-    console.error('hooks:install — not a git repository; skipping hook install.');
-    console.error(`\`git rev-parse --git-path hooks\` failed: ${result.stderr || '(no stderr)'}`);
-    return null;
+    // Reached only after resolveRepoRoot() already confirmed a git repo
+    // exists, so this is NOT the "no git repo" case — it stays a hard
+    // failure (see the module docstring for why).
+    console.error(
+      'hooks:install — `git rev-parse --git-path hooks` failed even though a git repository was found:',
+    );
+    console.error(result.stderr || '(no stderr)');
+    process.exit(1);
   }
   return resolve(result.stdout.trim());
 }
@@ -140,9 +155,6 @@ function main() {
     process.exit(0);
   }
   const hooksDir = resolveHooksDir();
-  if (hooksDir === null) {
-    process.exit(0);
-  }
   mkdirSync(hooksDir, { recursive: true });
   for (const hook of HOOKS) installOne(hook, hooksDir, repoRoot);
 }
