@@ -28,6 +28,7 @@ if [ "${1:-}" != "stage2" ]; then
     "$APP_DIR/packages/server/node_modules" \
     "$APP_DIR/packages/shared/node_modules" \
     "$APP_DIR/packages/integration/node_modules" \
+    "$APP_DIR/packages/embedded-agent/node_modules" \
     /var/lib/agent-console; do
     chown "$SERVICE_USER:$SERVICE_GROUP" "$dir"
     chmod 2775 "$dir"

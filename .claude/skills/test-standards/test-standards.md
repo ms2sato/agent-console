@@ -168,6 +168,115 @@ describe('Client-Server Boundary', () => {
 
 This gives you a single test file that exercises the full round-trip: user event → form serialization → HTTP body → server handler → persisted state. If any step drops or mistransforms data, the test fails.
 
+## Converting Cross-File `mock.module()` Poisoning
+
+See [rules/testing.md](../../rules/testing.md) Anti-Pattern #2 for the prohibition (never `mock.module()` a target another test file real-imports) and when the exception applies. This section is the conversion how-to, with three worked patterns in order of preference. Before converting, grep the repo for other real importers of the target module to confirm the poisoning classification (Issue #977 Phase 1).
+
+### Pattern 1 — DI seam (prop / injected factory)
+
+Best when the component itself resolves the dependency via a module-level singleton call. Add an optional prop defaulting to the real function; production and other consumers are unaffected because the prop is optional.
+
+```typescript
+// Production: TerminalAdapter.tsx
+export function TerminalAdapter({
+  // ...
+  createInstance = getOrCreateTerminal,   // optional DI seam, defaults to the real store
+}: TerminalProps & { createInstance?: typeof getOrCreateTerminal }) {
+  const instance = useMemo(() => createInstance(sessionId, workerId, opts), [createInstance, sessionId, workerId, opts]);
+  // ...
+}
+
+// Test: TerminalAdapter.test.tsx
+const mockGetOrCreateTerminal = mock((_sessionId: string, _workerId: string): TerminalInstance => stubInstance);
+render(<TerminalAdapter sessionId="s" workerId="w" createInstance={mockGetOrCreateTerminal} />);
+```
+
+(Worked example: PR #976, `packages/client/src/components/terminal/TerminalAdapter.tsx` + its test.)
+
+### Pattern 2 — `spyOn()` on a named export
+
+Best for a hook or function the component-under-test imports and calls directly, when adding a DI prop is not warranted. `spyOn` is restorable per-test (unlike `mock.module()`), so it must be paired with `.mockRestore()` in `afterEach` — without that, the spy leaks into the next test in the same file.
+
+**Cross-file safety is conditional, not unconditional.** Bun shares the module cache within a single process; `spyOn`'s restore-on-`mockRestore()` is what keeps it file-scoped only because this repo's `bun run test` invocation (`bun test --preload ./src/test/setup.ts src/` in `packages/client`) runs test files **sequentially** — no `--concurrent` flag on the script, no `concurrentTestGlob` in `bunfig.toml`. Under that condition, one file's spy is always torn down (via `afterEach`'s `mockRestore()`) before the next file's module-level code runs, so it cannot bleed across files. If a future test opts into Bun's `--concurrent` flag, `test.concurrent()`, or a `concurrentTestGlob` config, this guarantee no longer holds: a spy installed by one concurrently-running test file becomes observable by another before its `mockRestore()` fires, since they'd share the same in-process module cache at the same time. Do not use `spyOn()` on a shared module inside a `test.concurrent()` block without independently re-verifying isolation.
+
+```typescript
+import * as useAppWsModule from '../../hooks/useAppWs';
+
+let useAppWsEventSpy: ReturnType<typeof spyOn>;
+
+beforeEach(() => {
+  useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(() => undefined);
+});
+
+afterEach(() => {
+  useAppWsEventSpy.mockRestore();
+});
+```
+
+A generic function (`useAppWsState<T>(selector: (state: AppWebSocketState) => T): T`) needs a real fake state run through the caller's own `selector`, not an arbitrary cast — a cast-through-`T` (e.g. `<T,>() => false as T`) type-checks for any selection but silently returns the wrong value the moment a test's `selector` reads a field the cast didn't account for:
+
+```typescript
+import type { AppWebSocketState } from '../../lib/app-websocket';
+
+const fakeWsState: AppWebSocketState = { /* ...minimal real shape... */ } as AppWebSocketState;
+
+useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(
+  <T,>(selector: (state: AppWebSocketState) => T) => selector(fakeWsState),
+);
+```
+
+If a test genuinely never observes the mocked value (the component under test doesn't call `useAppWsState` on any path the test exercises), a cast is acceptable but must say so in a comment — see `routes/__tests__/index.test.tsx`'s `<T,>() => false as T` for the documented-exception form.
+
+(Worked examples: `routes/__tests__/index.test.tsx`, `__tests__/routes/agents/index.test.tsx`, `components/sessions/hooks/__tests__/useSessionPageState.test.ts`, `components/worktrees/__tests__/QuickWorktreeDialog.test.tsx`.)
+
+### Pattern 3 — Real module/context + injected fake value
+
+Best when the module already exposes a designed seam — a context Provider, or a setter function — instead of hard-coding a return value via `mock.module()`. This is the least invasive option: zero production code changes, and the "fake" data flows through the real module's real code path.
+
+```typescript
+// lib/capabilities.ts already exposes a real setter for its module-level cache:
+import { setCapabilities } from '../../lib/capabilities';
+
+beforeEach(() => {
+  setCapabilities({ vscode: false, vscodeOpenMode: 'local-spawn', vscodeRemoteHost: null });
+});
+```
+
+```typescript
+// A React context consumed via useContext(): provide a REAL Provider with a fake value
+// instead of mock.module()-replacing the hook that reads it.
+import { WorktreeDeletionTasksContext } from '../../contexts/root-contexts';
+
+render(
+  <WorktreeDeletionTasksContext.Provider value={mockDeletionTasks}>
+    <SessionSettings {...props} />
+  </WorktreeDeletionTasksContext.Provider>
+);
+```
+
+Note the context is imported from its owning module (`contexts/root-contexts.ts`), not from the barrel that re-exports it (`routes/__root.tsx`) — importing from the owning module avoids pulling in the barrel's heavier dependency surface (router registration, layout components) and is the same object reference, so `useContext` inside the real hook resolves correctly either way.
+
+(Worked examples: `__tests__/routes/WorktreeRow.test.tsx` (Pattern 3a, setter), `hooks/__tests__/useCreateWorktree.test.ts` and `components/__tests__/SessionSettings.test.tsx` (Pattern 3b, Provider).)
+
+### Which pattern to reach for
+
+1. Does the target module already expose a public setter or a context Provider for the exact state the test needs? → **Pattern 3**.
+2. Is the dependency resolved via a direct function/hook call the component makes itself, with no existing seam? → **Pattern 2** (`spyOn`) is usually less code than adding a new prop; reach for **Pattern 1** (DI prop) only when the component needs the seam for a reason beyond testing (e.g. a legitimate caller-supplied override).
+3. Never fall back to `mock.module()` to avoid picking one of the above — see rules/testing.md Anti-Pattern #2.
+
+### `mock.module()` merges, it does not replace
+
+When classifying whether a `mock.module()` call site is a cross-file poisoner (Issue #977 Phase 1), do not assume the factory's return value fully replaces the module's export namespace for other importers. Empirically (Bun 1.3.10), `mock.module(specifier, factory)` **merges** `factory()`'s return value onto the real module's exports — an export the factory does not declare falls through to the real implementation for *every* importer, not just the ones that ran before the mock. Only the properties the factory *does* declare are overridden, and that override is what leaks cross-file.
+
+Two consequences for classification:
+
+- **A partial-override factory does not "break" untouched exports.** `lib/capabilities`'s poisoner overrode `hasVSCode` / `getVSCodeOpenMode` / `getVSCodeRemoteHost` but not `setCapabilities` — a victim reading `setCapabilities` sees the real function regardless of poisoning order. Do not conclude "benign" from this: the *overridden* exports still leak (verified below).
+- **"Does the victim's assertion still pass?" is not a reliable signal.** A victim can read a poisoned export, receive the wrong value, and still pass all its own assertions if it happens to be structurally tolerant of the substitution (e.g. it re-derives its own Provider/consumer pair from the same poisoned reference, so both sides stay internally consistent even though neither is talking to the real module). Classify by whether the *specific overridden export* is provably read by another file — via a reference/identity check or by inspecting the resolved function's source (`fn.toString()`) — not by whether that file's test suite currently goes red.
+
+**Verification technique used to classify all 5 call sites in PR #977:** force deterministic load order across two real files (CLI-arg order is not respected by Bun's scheduler — see the load-order note below) by placing a lexicographically-earlier-sorting temp copy of the poisoner in `src/`, then read the victim's imported binding's `.toString()` (for functions) or compare `===` identity (for objects/contexts) against a value stashed on `globalThis` by the poisoner. A source string matching the poisoner's factory body, or an identity match against the poisoner's locally-created object, is unambiguous proof of the leak — independent of whether the victim's own assertions happen to still pass.
+
+**Load order is not controllable via CLI argument order or simple filename convention.** Passing files in a specific order to `bun test fileA fileB` does not guarantee `fileA` loads first — Bun applies its own internal scan order regardless of argument order, and that order is not simple alphabetical (it appeared to depend on more than just the basename in ad-hoc testing). The only reliable lever found: bun evaluates a *directory tree* scan in some deterministic-but-opaque order, and paths starting with a double-underscore directory (`src/__polarity_X`) reliably sort ahead of ordinary `src/<lowercase-dir>/...` paths in practice — but always verify with an explicit `console.error` load marker in each candidate file rather than trusting the naming convention alone.
+
 ## Bun mock typing for `calls[N][M]` access
 
 Bun's `mock(async () => {})` infers the mock's `args` type as `[]` when no parameters are declared, even when the call site passes arguments. Reading `mock.calls[0][1]` then fails type-checking with `TS2493: Tuple type '[]' of length '0' has no element at index '1'`.

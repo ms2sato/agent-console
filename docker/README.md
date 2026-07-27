@@ -9,7 +9,7 @@ application runs:
 
 | Stack | Compose file | What runs | When to use |
 |------|---------------|-----------|-------------|
-| **Dev** (default) | `docker-compose.yml` | vite + `bun --watch` against the **bind-mounted repo** (HMR, live server reload) | Daily multi-user development and debugging. AI agents can drive it end to end — `docker` group membership is enough, no privilege elevation. |
+| **Dev** (default) | `docker-compose.yml` | vite + `bun --watch` against the **bind-mounted repo** (HMR, live server reload) | Daily multi-user development and debugging. `docker` group membership is enough to start/restart/inspect it — no privilege elevation. **Browser QA through this stack is currently blocked**: the vite `/ws` proxy hangs inside a container (Issue [#1211](https://github.com/ms2sato/agent-console/issues/1211), root-caused to a Bun-engine issue, not fixable by vite config). Use the **Verification** stack or `scripts/dev-multiuser.sh` for WS-dependent QA until that's resolved upstream. |
 | **Verification** | `docker-compose.verification.yml` | The **built `dist/` bundle**, baked into the image, production-like | CI E2E (`scripts/verify-multiuser-docker.sh`) and pre-release verification of the standalone bundle. |
 
 Both stacks use distinct project names, container names, volumes, and host
@@ -89,8 +89,9 @@ and must never be reachable from the LAN.
 
 Named volumes (all under the `agent-console-dev` compose project):
 `root-node-modules`, `client-node-modules`, `server-node-modules`,
-`shared-node-modules`, `integration-node-modules`, `dev-data`. Remove them
-with `docker compose -f docker/docker-compose.yml down -v` for a from-scratch
+`shared-node-modules`, `integration-node-modules`,
+`embedded-agent-node-modules`, `dev-data`. Remove them with
+`docker compose -f docker/docker-compose.yml down -v` for a from-scratch
 start.
 
 ### Driving the stack as an AI agent
