@@ -120,6 +120,20 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     (Lesson: this rule itself — Issue [#1160](https://github.com/ms2sato/agent-console/issues/1160) PR-D built the exposure-table mechanism specifically because Q11's original four questions catch tool-level gaps like the embedded-agent-v1 case above, but had no equivalent for operation-level gaps like `list_agents` silently excluding embedded agents while `delegate_to_worktree` accepted them — see `docs/design/agent-surface.md` §0 "Verified current state" for that concrete parity bug.)
 
+12. **Is the AC's own verification requirement still satisfiable? — before starting implementation:**
+
+    Read the acceptance criteria and ask what would have to be true for you to *demonstrate* they are met, then confirm each of those things holds. An AC that mandates a real-environment check ("run the Docker smoke on a fresh checkout", "verify on the multi-user host", "reproduce the original symptom") is asserting that the check is currently runnable — an assumption nobody validated when the AC was written.
+
+    Concretely, before the first commit:
+
+    1. **Name the verification the AC requires**, and the environment it needs.
+    2. **Run it once against unmodified `main`** — not to see it pass, but to see it *execute*. It should fail for the reason the Issue describes. Any other failure means the verification path itself is broken, and you have found that before it has cost you an implementation.
+    3. **If it cannot run, stop and report before implementing.** The blocker may be a second, unrelated defect (fix it, or get a scope decision), or the AC may need a different verification. Both are cheap now and expensive after the work is done.
+
+    **A blocker discovered here is a finding, not an obstacle.** The verification was mandated because the code path is environment-coupled; if the environment cannot even reach the starting line, that is information about the system.
+
+    (Lesson: Sprint 2026-07-18b PR [#1228](https://github.com/ms2sato/agent-console/pull/1228) — the AC for Issue #1214 required a Docker smoke proving `bun install` completes on a fresh checkout. Implementation finished, then the smoke could not run: a *second*, unrelated defect (a missing workspace volume in `docker-compose.yml`) broke `bun install` on any fresh clone. The AC had become unsatisfiable without also fixing that. Discovered mid-implementation, it stalled the delegate and crossed with an in-flight architect consultation; the Orchestrator ultimately bundled both fixes with a scope note. Asking this question first would have surfaced it in the first five minutes — and the second defect was real and worth finding either way.)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -132,8 +146,9 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A shared / persistent artifact write (Question 7) — required regardless of whether other criteria match
   - A derived field added to a shared type that crosses the server/client wire (Question 10) — required regardless of whether other criteria match
   - A new worker / agent / execution surface analogous to an existing one, or a new entry in `AGENT_OPERATIONS` / a new agent-operations exposure table (Question 11) — required regardless of whether other criteria match
+- **Question 12 applies to any PR whose AC mandates a real-environment verification** (a smoke script, a dogfood pass, a container / multi-user / real-device check) — required regardless of whether other criteria match, and it runs **before implementation**, not before the PR. It is the one question here that is worthless if asked late.
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns
-- **Not required** for single-file bug fixes, typo corrections, or test-only additions
+- **Not required** for single-file bug fixes, typo corrections, or test-only additions — **except** that Question 12 still applies if such a fix's AC mandates a real-environment check
 
 ## Why
 

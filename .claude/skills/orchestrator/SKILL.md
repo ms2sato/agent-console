@@ -133,6 +133,23 @@ The Architect observes no ambient state — no CI, no PR status, no dogfood, no 
 
 Full rationale and the ambient-observation guarantee: [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §6.
 
+### When the Architect stops answering
+
+`get_session_status` reports `activityState: idle` both for "replied and waiting" and for "stuck" — the field describes the worker, not the exchange. Re-sending into silence is the default failure mode; it produced four unanswered pushes in one sprint before anyone checked.
+
+**Track outstanding pushes, and judge on output rather than state.** After pushing to the Architect, note the time. On each self-check, ask whether anything has come back — and if not, whether the Architect has produced output *for anyone*:
+
+```bash
+find /var/lib/agent-console/repositories/agent-console/messages \
+  -name '*<architect-session-id>*' -newermt '<time of your push>'
+```
+
+Empty means the Architect has not written to any inbox since your push — not merely that it has not answered you. That distinction matters: answering a delegate while ignoring you is a routing or priority problem; answering nobody is a stuck session.
+
+**Escalate rather than re-send.** One re-send is reasonable (messages can cross). By the second, change something: send a deliberately short message asking only for acknowledgement, and state that no answer will be read as "cannot proceed". If that also goes unanswered, the designated Architect is inactive and First Action step 1 applies — provision a fresh session, bootstrap it from the handoff memory, and leave the old one in place rather than destroying it.
+
+A generation change is cheap because the handoff memory carries the binding rulings. Waiting is not cheap: the Architect gates every delivered PR's verdict.
+
 ### Verdict shape
 
 The Architect returns one of three verdicts:
@@ -145,6 +162,19 @@ The Architect returns one of three verdicts:
 Delegate workers **may consult the Architect directly** (bypassing you) during implementation when they hit uncertainty (ambiguous AC, code-shape decisions, sibling-site consistency questions, constraint collisions). This is default-allowed; you do not gate or approve these exchanges. The worker summarizes any AC/design change from the exchange in their next report to you.
 
 If direct-channel volume becomes excessive (Architect saturation), treat it as a workload / AC-quality signal in the next retro — not as a channel to block.
+
+**Write the permission and the reporting duty as two separate sentences in the delegation prompt.** A single clause granting the channel will be read as also waiving the report:
+
+```
+Consulting the architect needs no approval from me.
+Any exchange that touches AC, scope, or a design decision MUST appear as a
+one-line summary in your next report — including when you judge it already
+resolved. Your judgment that it is resolved is what I need to see, not infer.
+```
+
+The failure is not disobedience. A worker who resolves a scope question correctly has, from their side, *handled* it — and "handled" collapses into "no longer outstanding" unless the report is named as a separate obligation. What you lose is exactly the judgment call you would have wanted to see.
+
+(Lesson: Sprint 2026-07-18b — a delegate prompt said "you may consult the architect directly — no need to route through me", meaning no pre-approval. The Architect ruled on whether a PR needed a production-side extraction — which decides whether it is Orchestrator-mergeable or owner-gated — and explicitly asked for the outcome to reach the Orchestrator. It never did; the Orchestrator found the exchange by reading message files during the retro. The ruling happened to land on the test-only branch, so nothing broke. Asked directly, the delegate confirmed they knew who the Orchestrator was and had reported everything else correctly — the gap was the prompt's wording, not role confusion.)
 
 ## Core Responsibilities
 
