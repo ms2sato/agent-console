@@ -68,6 +68,7 @@ services:
       - server-node-modules:/app/packages/server/node_modules
       - shared-node-modules:/app/packages/shared/node_modules
       - integration-node-modules:/app/packages/integration/node_modules
+      - embedded-agent-node-modules:/app/packages/embedded-agent/node_modules
       # Dev data root (DB, jwt-secret, worktrees) persists across
       # `docker compose down` / `up` cycles.
       - dev-data:/var/lib/agent-console
@@ -87,4 +88,5 @@ volumes:
   server-node-modules:
   shared-node-modules:
   integration-node-modules:
+  embedded-agent-node-modules:
   dev-data:
