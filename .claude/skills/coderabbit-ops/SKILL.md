@@ -46,6 +46,34 @@ An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not
 
 "CodeRabbit clean" requires all three. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
 
+### The fourth surface: `statusCheckRollup`'s `CodeRabbit` entry is NOT a verdict
+
+None of the three layers above is the **commit-status context** named `CodeRabbit`. That context nonetheless appears in `gh pr view <N> --json statusCheckRollup` — the command everyone runs to confirm CI — rendered alongside `test`, `preflight`, and the rest as:
+
+```
+CodeRabbit=SUCCESS
+```
+
+**Its `state` is `success` regardless of whether a review happened.** The truth is in the `description`, which `statusCheckRollup` does not surface by default. Read it explicitly:
+
+```bash
+SHA=$(gh pr view <N> --json headRefOid -q .headRefOid)
+gh api repos/<owner>/<repo>/commits/$SHA/status \
+  -q '[.statuses[] | select(.context=="CodeRabbit") | "\(.state) | \(.description) | \(.updated_at)"] | .[0]'
+```
+
+Three descriptions observed, all with `state=success`:
+
+| `description` | Meaning | Action |
+|---|---|---|
+| `Review completed` | A real review ran | Proceed to layers 2 and 3 |
+| `Review rate limited` | **The bot never reviewed this commit** | Wait, or apply the `troubleshooting.md` disposition |
+| `Review skipped: ignored keyword in the PR title` | Deliberately skipped by `.coderabbit.yaml` config (the `docs:` carve-out above) | Layer 2 is N/A — verify the diff really is docs-only |
+
+Note the `updated_at` too: the status is re-issued per head SHA, so **updating a PR branch resets it**. A `Review completed` from before a rebase says nothing about the current head.
+
+(Sprint 2026-07-18b — three PRs (#1227, #1231, #1229) carried `CodeRabbit=SUCCESS` in the rollup while the description read `Review rate limited`. Reading only the rollup state would have merged all three as "CodeRabbit clean" with no review. #1227 in particular later produced a Major finding that a standards document would otherwise have shipped with.)
+
 ## Case-by-case dispositions
 
 For the following situations, see [`troubleshooting.md`](troubleshooting.md):

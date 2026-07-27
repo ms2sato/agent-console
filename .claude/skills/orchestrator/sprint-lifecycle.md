@@ -56,6 +56,18 @@ Each sprint is labeled by the calendar date its retrospective runs (e.g., `2026-
 - Task progression, acceptance checks, merges
 - When new gotchas are discovered, append them to `memory/project_sprint_status.md` (Claude memory) immediately
 - Example: "WorkerType does not have 'custom' variant yet. If referenced, it's wrong"
+- **Check `main`'s CI health whenever the pipeline goes quiet.** `main` is only exercised when something merges. During a wait — an owner gate, a dogfood pass, an overnight pause — nothing merges, so nothing runs, so a red `main` produces no signal at all. It is not that the failure is missed; it is that no observation is being made.
+
+  Include it in the self-check timer, and always before proposing the next batch of work:
+
+  ```bash
+  gh run list --branch main --workflow CI --limit 1 --json conclusion,headSha,createdAt
+  ```
+
+  A `failure` here means every open PR is unmergeable and every new branch starts broken — the highest-priority item on the board, regardless of what was planned. Note that the cause need not be in the repository: a runner-image update, an action version bump, or an external service can turn `main` red with no commit behind it (see `workflow.md` "Inference vs Verification" Sub-pattern 6).
+
+  (Lesson: Sprint 2026-07-18b — `main` was red for four days while the sprint waited on an owner smoke gate. It surfaced only because the Orchestrator dispatched unrelated backfill work and its CI failed. Four completed PRs had been silently unmergeable the whole time.)
+
 - **Idle time utilization**: When waiting for agent completion or owner approval and **active worktrees are ≤1**, consider running `review-loop` on the full codebase or specific packages. This catches systemic issues and makes productive use of wait time. Do NOT run review-loop when many worktrees are active — it competes for compute resources.
 - **Dogfood verification as a late-sprint fixture.** When the sprint ships user-observable behavior (new UI affordance, new operator command, multi-user identity flow, webhook integration, etc.), schedule a **dogfood verification pass after all PRs land but before sprint retro**. The pass: redeploy to the relevant environment, walk the acceptance criteria matrix as a user would, and capture observations as the next retro's inputs. Sprint 2026-06-29 demonstrated the leverage — dogfooding [#871](https://github.com/ms2sato/agent-console/issues/871) Unregister flow surfaced [#905](https://github.com/ms2sato/agent-console/issues/905) (source-repos cleanup option), [#912](https://github.com/ms2sato/agent-console/issues/912) (server fetch elevation gap), [#914](https://github.com/ms2sato/agent-console/issues/914) (sidebar owner label), and [#916](https://github.com/ms2sato/agent-console/issues/916) (multi-user webhook setup docs) in a single afternoon. Without the scheduled dogfood pass these would have surfaced ad-hoc post-release. Codify the matrix in the sprint memo before the pass so observations land in a structured form.
 

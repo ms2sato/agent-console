@@ -439,6 +439,60 @@ curl -X POST http://localhost:8080/api/auth/login \
 > isolation), run the Docker verification: `scripts/verify-multiuser-docker.sh`
 > (see [`docker/README.md`](../docker/README.md)).
 
+## Re-running the bootstrap script against an existing deployment
+
+**Read the live systemd unit before re-running `setup-multiuser-for-ubuntu.sh`
+on a host that is already serving.** The script renders a unit from its own
+defaults and refuses to overwrite a differing one:
+
+```
+error: /etc/systemd/system/agent-console.service exists and differs from the
+rendered template; re-run with --force to overwrite
+```
+
+That refusal is the safety mechanism working. `--force` overwrites the unit
+**with the script's defaults for every parameter you did not pass explicitly** —
+so a value that was set once at install time and never recorded anywhere else
+is silently replaced.
+
+The port is the sharp edge: the script's default is `8080`, and a deployment
+running on any other port will be moved to `8080` by a bare `--force`, breaking
+the URL its users have. Before re-running:
+
+```bash
+# 1. Read what is actually deployed.
+cat /etc/systemd/system/agent-console.service
+
+# 2. Preview what the script would write, without touching anything.
+sudo bash scripts/setup-multiuser-for-ubuntu.sh --port <live-port> --force --dry-run
+
+# 3. Diff the rendered unit (printed between the "Rendered unit" markers)
+#    against the live one, and carry over every parameter that differs —
+#    not just the port.
+```
+
+Environment lines such as `AUTH_COOKIE_SECURE` and `HOST` are part of the unit
+and are subject to the same replacement.
+
+**Prefer the narrowest operation that achieves the goal.** Re-running the whole
+bootstrap to pick up one new provisioning step is rarely the right tool — it
+also re-syncs the application tree and re-renders sudoers. If the change you
+need is a single file, apply that file. For example, the `/usr/local/bin/bun`
+copy the script performs for `EMBEDDED_AGENT_BUN_PATH` (Issue
+[#1221](https://github.com/ms2sato/agent-console/issues/1221)) is, on its own:
+
+```bash
+sudo install -m 0755 ~agentconsole/.bun/bin/bun /usr/local/bin/bun
+```
+
+(Lesson: Sprint 2026-07-18b — a smoke-test procedure said to re-run the
+bootstrap script to provision `/usr/local/bin/bun`. Two things were wrong.
+The provisioning step existed only on the un-merged PR branch, so running the
+script from `main` could never produce the file; and the live unit used a
+non-default port, so the `--force` needed to get past the unit conflict would
+have moved the running service. The one-line `install` above was the whole
+requirement.)
+
 ## Iterative Updates (after the initial setup)
 
 After the bootstrap script has completed once, ongoing source-code updates and

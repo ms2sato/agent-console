@@ -64,7 +64,7 @@ When you form a conclusion from a *secondary signal* — a derived, lagging, or 
 | Domain | Secondary signal (do NOT conclude from this alone) | Primary information (verify here) |
 |---|---|---|
 | CI failure | "infra problem" / "rate-limit" / "external service" intuition; the red X without the log | `gh run view <run_id> --log-failed` |
-| CodeRabbit review | absence of new comments; pre-merge checks passing; a stale `CHANGES_REQUESTED`; a rate-limit message | the PR's 3-layer state (Pre-merge checks / `reviewDecision` / inline comments) re-read at decision time |
+| CodeRabbit review | absence of new comments; pre-merge checks passing; a stale `CHANGES_REQUESTED`; a rate-limit message; **`CodeRabbit=SUCCESS` in `statusCheckRollup`** | the PR's 3-layer state (Pre-merge checks / `reviewDecision` / inline comments) re-read at decision time, **plus the commit status's `description` string** — `state` is `success` even when the bot never reviewed (see [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) "The fourth surface") |
 | Cross-repo issue | "this symptom looks like the other repo's known bug / shared pattern" | reproduce in *this* repo's own code path before filing, blaming, or claiming applicability |
 | Runtime observation | a dev-server log line / websocket frame / UI render / channel assumption taken as proof a path ran or a notification arrived | the authoritative store / server-side state / a deterministic probe / per-channel confirmation |
 
@@ -148,6 +148,33 @@ When the local CLI or GitHub-side bot is rate-limited or unresponsive, follow th
 3. **State the observation's confidence** — if a conclusion rests on a secondary runtime signal that could not be primary-verified, say so rather than reporting it as established fact.
 
 (Lesson: Sprint 2026-05-02 retro PR #758 / brew PR #759 — the lightweight-worktree notification limitation was first recorded as "webhook AND `conditional_wakeup` both fail", inferred from a single missed-event observation. The owner clarified `conditional_wakeup` works fine; only webhooks fail. One observation was generalized across channels without per-channel verification.)
+
+### Sub-pattern 5: absence of a signal
+
+**Inference trap.** Waiting on a signal that has no path to arrive, and reading the silence as "still in progress". This is the inverse of the other four: there, a weak signal was over-trusted; here, a *missing* signal is not questioned at all.
+
+Two shapes seen in Sprint 2026-07-18b:
+
+- **CI that cannot fire.** `ci.yml` triggers on `pull_request` and push-to-`main` only. A push to a feature branch with no PR open runs **nothing**. A delegate investigating a CI-only failure had added a temporary debug workflow with its own push trigger; once that scaffolding was removed, they pushed the real fix and waited ~40 minutes for a run that had no way to start.
+- **An agent that stopped answering.** The Architect session showed `activityState: idle` — indistinguishable from "finished and replied". Four requests went unanswered; it was only found by listing message files and observing that no architect-originated message existed after a certain timestamp.
+
+**Verify procedure.**
+
+1. **If a push produces zero CI runs, check the workflow's trigger before waiting.** `gh run list --branch <branch>` returning empty is a fact about triggers, not about queue latency. Suspect this immediately after removing temporary workflow scaffolding — the asymmetry between a debug workflow's triggers and the real one's is invisible until the debug one is gone.
+2. **For a silent counterpart, check for evidence of *output*, not of *state*.** An `idle` worker may have replied or may be stuck. What distinguishes them is whether anything was produced after your request. Timebox the wait and escalate rather than re-sending indefinitely; for the Architect specifically, `SKILL.md`'s First Action already prescribes provisioning a fresh session when the designated one is inactive.
+
+### Sub-pattern 6: hypothesis exhaustion
+
+**Inference trap.** Generating one more plausible mechanism after several have been disproven. Each individual hypothesis is reasonable given the evidence; the failure is in the *strategy*, which samples a space instead of partitioning it — and which is structurally bad at causes that require two conditions at once.
+
+**Verify procedure.**
+
+1. **Always pair a negative with a positive control in the same run.** A hypothesis probe that comes back clean means nothing unless the same run also reproduces the failure by a known-good path. This is what makes a string of negatives trustworthy enough to act on.
+2. **After roughly three consecutive disproven hypotheses, stop generating and start reducing.** Delta-debugging on the real artifact — deleting content until the failure disappears — is guaranteed to converge, where hypothesis generation is not.
+3. **Prefer the control experiment that holds everything fixed but one variable.** Re-running a known-good state unchanged, or running the same code outside the suspected environment, beats any number of plausible mechanisms. It is also the only thing that can exonerate a whole category (the repository, the runtime, the config) in one step.
+4. **When each iteration costs a CI round-trip, go wide, not deep.** Binary search is optimal when probes are cheap and sequential; when a round-trip is the binding cost, put every enumerable variant into a single run.
+
+(Lesson: Sprint 2026-07-18b Issue #1225 — `main` was red for four days. Four single-mechanism hypotheses were disproven in sequence, each with a positive control that made the negatives credible. What resolved it was re-running the last green CI run byte-identically — which exonerated the repository and isolated the runner image as the only changed variable — followed by delta-debugging the real test file. Issue #1211 was settled the same day by the same shape: running the identical config and binary outside Docker. Neither was reached by the hypotheses.)
 
 ## Commands
 
