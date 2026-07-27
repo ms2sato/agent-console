@@ -1058,6 +1058,28 @@ describe('MultiUserMode', () => {
   // via `sh -c <unsetPrefix><command>` with env passed via opts.env, not via
   // an exported sudo-wrapped script).
   describe('Issue #918: sudo-skip (direct) path ignores sshAuthSockFallback', () => {
+    // Issue #952: the direct (sudo-skip) spawn path inherits process.env into
+    // opts.env, so SSH_AUTH_SOCK ends up on opts.env whenever the host/shell
+    // already has it set (true for every delegated agent-console session
+    // since PR #925). Pin the env var to a known, controlled (absent) state
+    // for the duration of this test so the assertion below exercises "the
+    // direct path does not inject a socket path when there wasn't one to
+    // begin with" instead of accidentally depending on the runner's env.
+    let originalSshAuthSock: string | undefined;
+
+    beforeEach(() => {
+      originalSshAuthSock = process.env.SSH_AUTH_SOCK;
+      delete process.env.SSH_AUTH_SOCK;
+    });
+
+    afterEach(() => {
+      if (originalSshAuthSock === undefined) {
+        delete process.env.SSH_AUTH_SOCK;
+      } else {
+        process.env.SSH_AUTH_SOCK = originalSshAuthSock;
+      }
+    });
+
     async function createMode(): Promise<MultiUserMode> {
       return MultiUserMode.create(ptyFactory.provider, userRepository);
     }
