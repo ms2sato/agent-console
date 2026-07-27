@@ -89,8 +89,9 @@ and must never be reachable from the LAN.
 
 Named volumes (all under the `agent-console-dev` compose project):
 `root-node-modules`, `client-node-modules`, `server-node-modules`,
-`shared-node-modules`, `integration-node-modules`, `dev-data`. Remove them
-with `docker compose -f docker/docker-compose.yml down -v` for a from-scratch
+`shared-node-modules`, `integration-node-modules`,
+`embedded-agent-node-modules`, `dev-data`. Remove them with
+`docker compose -f docker/docker-compose.yml down -v` for a from-scratch
 start.
 
 ### Driving the stack as an AI agent
