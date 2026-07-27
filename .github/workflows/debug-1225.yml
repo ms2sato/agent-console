@@ -72,3 +72,15 @@ jobs:
         continue-on-error: true
         run: |
           bun test --preload ./src/setup.ts src/__debug-1225-bun-spawn-kill-only.test.ts src/system-api-boundary.test.ts
+
+      - name: Delta-debug reduction 1 -- ctx+servers+worker creation, NO activation
+        working-directory: packages/integration
+        continue-on-error: true
+        run: |
+          bun test --preload ./src/setup.ts src/__debug-1225-reduce-no-activation.test.ts src/system-api-boundary.test.ts
+
+      - name: Delta-debug reduction 2 -- single real activate+deactivate, no message, no wait
+        working-directory: packages/integration
+        continue-on-error: true
+        run: |
+          bun test --preload ./src/setup.ts src/__debug-1225-reduce-single-activate-deactivate.test.ts src/system-api-boundary.test.ts
