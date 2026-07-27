@@ -25,5 +25,26 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Run open() probe
+      - name: Build shared package
+        run: bun run --filter @agent-console/shared build
+
+      - name: Run standalone open() probe
         run: bun scripts/debug-1225-open-probe.mjs
+
+      - name: Show packages/integration/src readdir order
+        run: ls -U packages/integration/src/
+
+      - name: Experiment 1 -- probe under bun:test + preload (isolated file)
+        working-directory: packages/integration
+        run: bun test --preload ./src/setup.ts src/__debug-1225-open-probe.test.ts
+        continue-on-error: true
+
+      - name: Experiment 2 -- failing file alone under bun:test + preload
+        working-directory: packages/integration
+        run: bun test --preload ./src/setup.ts src/system-api-boundary.test.ts
+        continue-on-error: true
+
+      - name: Experiment 3 -- full integration suite (baseline reproduction)
+        working-directory: packages/integration
+        run: bun test --preload ./src/setup.ts src/
+        continue-on-error: true
