@@ -1,23 +1,30 @@
 import { mock, describe, it, expect, beforeEach, afterAll } from 'bun:test';
+import { createElement, type ReactNode } from 'react';
+import { renderHook, act } from '@testing-library/react';
+import { useCreateWorktree } from '../useCreateWorktree';
+import { WorktreeCreationTasksContext } from '../../contexts/root-contexts';
+import type { UseWorktreeCreationTasksReturn } from '../useWorktreeCreationTasks';
+import type { CreateWorktreeFormRequest } from '../../components/worktrees/CreateWorktreeForm';
 
-// Mock the root route context -- this is safe because no other test file imports __root directly.
+// useCreateWorktree resolves its task-list callbacks from WorktreeCreationTasksContext
+// (re-exported by routes/__root). The test provides a REAL context value via
+// WorktreeCreationTasksContext.Provider instead of `mock.module`-ing routes/__root --
+// mock.module is process-global in bun:test and would poison every other test file
+// that real-imports routes/__root in the same process (testing.md Anti-Pattern #2).
 const mockAddTask = mock(() => {});
 const mockRemoveTask = mock(() => {});
 
-mock.module('../../routes/__root', () => ({
-  useWorktreeCreationTasksContext: () => ({
+function createWrapper(): ({ children }: { children: ReactNode }) => ReactNode {
+  const contextValue: UseWorktreeCreationTasksReturn = {
     addTask: mockAddTask,
     removeTask: mockRemoveTask,
     tasks: [],
     getTask: mock(() => undefined),
     handleWorktreeCreationCompleted: mock(() => {}),
     handleWorktreeCreationFailed: mock(() => {}),
-  }),
-}));
-
-import { renderHook, act } from '@testing-library/react';
-import { useCreateWorktree } from '../useCreateWorktree';
-import type { CreateWorktreeFormRequest } from '../../components/worktrees/CreateWorktreeForm';
+  };
+  return ({ children }) => createElement(WorktreeCreationTasksContext.Provider, { value: contextValue }, children);
+}
 
 // Mock fetch at the lowest level to avoid mock.module pollution on api.ts
 const originalFetch = globalThis.fetch;
@@ -58,7 +65,7 @@ describe('useCreateWorktree', () => {
   };
 
   it('should call addTask and createWorktreeAsync on success', async () => {
-    const { result } = renderHook(() => useCreateWorktree(defaultParams));
+    const { result } = renderHook(() => useCreateWorktree(defaultParams), { wrapper: createWrapper() });
 
     await act(async () => {
       await result.current.handleCreateWorktree(mockFormRequest);
@@ -98,7 +105,7 @@ describe('useCreateWorktree', () => {
       })
     );
 
-    const { result } = renderHook(() => useCreateWorktree(defaultParams));
+    const { result } = renderHook(() => useCreateWorktree(defaultParams), { wrapper: createWrapper() });
 
     // The hook re-throws the error, so we catch it in the act callback
     let thrownError: unknown;
@@ -125,7 +132,7 @@ describe('useCreateWorktree', () => {
     // Mock fetch to throw a non-Error value
     mockFetch.mockRejectedValue('some string error');
 
-    const { result } = renderHook(() => useCreateWorktree(defaultParams));
+    const { result } = renderHook(() => useCreateWorktree(defaultParams), { wrapper: createWrapper() });
 
     let thrownError: unknown;
     await act(async () => {
@@ -144,7 +151,7 @@ describe('useCreateWorktree', () => {
     // Mock fetch to fail
     mockFetch.mockRejectedValue(new Error('Some error'));
 
-    const { result } = renderHook(() => useCreateWorktree(defaultParams));
+    const { result } = renderHook(() => useCreateWorktree(defaultParams), { wrapper: createWrapper() });
 
     // Trigger an error
     await act(async () => {

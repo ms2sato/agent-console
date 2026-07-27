@@ -1,20 +1,20 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, cleanup } from '@testing-library/react';
 import { renderWithRouter } from '../../test/renderWithRouter';
-import { WorktreeDeletionTasksContext } from '../../routes/__root';
+import { WorktreeDeletionTasksContext } from '../../contexts/root-contexts';
+import { setCapabilities } from '../../lib/capabilities';
+import { WorktreeRow, type WorktreeRowProps, type SessionWithActivity } from '../../routes/index';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { Worktree, WorktreeSession, WorktreeDeletionTask, Session } from '@agent-console/shared';
 
-// Mock capabilities - reads from a module-level cache set during app initialization,
-// so module-level mocking is appropriate here (no business logic or fetch involved).
-mock.module('../../lib/capabilities', () => ({
-  hasVSCode: () => false,
-  getVSCodeOpenMode: () => 'local-spawn',
-  getVSCodeRemoteHost: () => null,
-}));
-
-// Import WorktreeRow AFTER mock.module calls to ensure mocks are applied
-import { WorktreeRow, type WorktreeRowProps, type SessionWithActivity } from '../../routes/index';
+// lib/capabilities reads from a module-level cache populated at app boot via the
+// real setCapabilities() setter. Using the setter instead of `mock.module` avoids
+// process-global poisoning of other test files that real-import lib/capabilities
+// in the same process (testing.md Anti-Pattern #2; e.g. routes/__tests__/index.test.tsx
+// spies on the real module's hasVSCode export).
+beforeEach(() => {
+  setCapabilities({ vscode: false, vscodeOpenMode: 'local-spawn', vscodeRemoteHost: null });
+});
 
 afterEach(cleanup);
 

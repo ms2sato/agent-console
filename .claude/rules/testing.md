@@ -21,6 +21,12 @@ Test file re-implements production logic instead of importing it. Signs: test-on
 ### 2. Module-Level Mocking
 Using `mock.module()` or `vi.mock()` instead of fetch-level mocks. Problems: bypasses actual API function logic, `mock.module()` is permanent in bun:test, tests pass even when integration is broken. Has caused production incidents (mocking `config.js` broke 26+ unrelated tests). **Preferred: dependency injection over module mocking.**
 
+**Never `mock.module()` a target that any other test file imports for real.** `bun:test`'s `mock.module()` is process-global and irreversible for the life of the test process, so it poisons every test file loaded afterward in the same process — and bun runs test files in directory readdir order (not CLI-arg order), which differs across operating systems. A suite that is green on one OS and red on another (or green locally and red in CI) is the signature of this failure mode (Issue #970, PR #976, Issue #977).
+
+- **Prohibited example:** `mock.module('../../routes/__root', () => ({ useWorktreeCreationTasksContext: () => ({ ... }) }))`. `routes/__root` is the route root, so multiple other test files (route tests, sibling component tests) import it for real; a mock factory that only re-declares a subset of its exports silently breaks any file that loads afterward and needs an export the factory omitted.
+- **Permitted example:** a module consumed exclusively by the one test file mocking it (e.g. a component's own tightly-scoped internal helper with no other importer) may still use `mock.module()`, but confirm the exclusivity first — grep the repo for other real importers before relying on this exception.
+- **Before adding a new `mock.module()` call**, grep the repository for other files that import the target module without mocking it. If any exist, do not use `mock.module()` — use one of, in order of preference: (1) a DI seam (prop / injected factory) on the component or hook under test, (2) `spyOn()` on the module's named export (restorable per-test via `.mockRestore()` in `afterEach`), (3) fetch-level request stubbing, (4) a real store/context with an injected fake value. See `test-standards` skill for worked conversion patterns.
+
 ### 3. Private Method Testing
 Attempting to test internal/private methods directly. Test through public interface instead, or extract to a separate module if complexity warrants it.
 
@@ -74,3 +80,4 @@ Before writing tests, verify:
 - [ ] Not following existing bad patterns blindly
 - [ ] Not changing production code just for testing without discussion
 - [ ] **Target code is mockable via DI** — check if the code under test imports module-level singletons. If it does, DI refactoring is required before the test can be written safely. Do NOT use `mock.module()` to work around missing DI. See Anti-Pattern #2.
+- [ ] **If a new `mock.module()` call is unavoidable**, grep the repo for other real importers of the target module first. See Anti-Pattern #2's cross-file-imported-target prohibition.

@@ -1,12 +1,20 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test'
 import type { Session, Worker, AgentActivityState, WorkerActivityInfo, WorkerMessage } from '@agent-console/shared'
+import { renderHook, act } from '@testing-library/react'
+import { createElement, type ReactNode } from 'react'
+import { SessionDataContext, type SessionDataContextValue } from '../../../../contexts/root-contexts'
+import { useSessionPageState, type UseSessionPageStateOptions } from '../useSessionPageState'
+import * as useAppWsModule from '../../../../hooks/useAppWs'
 
-// --- useAppWsEvent mock ---
+// --- useAppWsEvent spy ---
 //
-// We mock useAppWsEvent to capture the callbacks the hook registers.
-// This avoids coupling to the WebSocket transport layer (already tested in useAppWs.test.ts)
-// and prevents interference from other test files that mock the same module via mock.module
-// (e.g., __root.test.tsx).
+// We replace useAppWsEvent per-test via `spyOn` (NOT `mock.module`, which is
+// process-global in bun:test and would poison every other test file that
+// real-imports hooks/useAppWs in the same process -- testing.md Anti-Pattern #2;
+// routes/__tests__/index.test.tsx and __tests__/routes/agents/index.test.tsx both
+// real-import this module for the same spyOn pattern) to capture the callbacks the
+// hook registers. This avoids coupling to the WebSocket transport layer (already
+// tested in useAppWs.test.ts).
 
 interface CapturedCallbacks {
   onSessionsSync?: (sessions: Session[], activityStates: WorkerActivityInfo[]) => void
@@ -21,18 +29,8 @@ interface CapturedCallbacks {
 
 let capturedCallbacks: CapturedCallbacks = {}
 
-mock.module('../../../../hooks/useAppWs', () => ({
-  useAppWsEvent: (options: CapturedCallbacks) => {
-    capturedCallbacks = options
-  },
-  useAppWsState: () => false,
-}))
-
-// Must import AFTER mock.module
-import { renderHook, act } from '@testing-library/react'
-import { createElement, type ReactNode } from 'react'
-import { SessionDataContext, type SessionDataContextValue } from '../../../../contexts/root-contexts'
-import { useSessionPageState, type UseSessionPageStateOptions } from '../useSessionPageState'
+let useAppWsEventSpy: ReturnType<typeof spyOn>
+let useAppWsStateSpy: ReturnType<typeof spyOn>
 
 // --- Fetch-level mocking ---
 
@@ -154,6 +152,16 @@ describe('useSessionPageState', () => {
 
   beforeEach(() => {
     consoleErrorSpy = spyOn(console, 'error').mockImplementation(() => {})
+    useAppWsEventSpy = spyOn(useAppWsModule, 'useAppWsEvent').mockImplementation(
+      (options = {}) => {
+        capturedCallbacks = options as CapturedCallbacks
+      },
+    )
+    // useAppWsState<T>(selector) is generic; useSessionPageState does not call it
+    // directly today, so the cast-returned value is never observed by production code.
+    useAppWsStateSpy = spyOn(useAppWsModule, 'useAppWsState').mockImplementation(
+      <T,>() => false as T
+    )
 
     capturedCallbacks = {}
     mockFetch.mockClear()
@@ -162,6 +170,8 @@ describe('useSessionPageState', () => {
 
   afterEach(() => {
     consoleErrorSpy.mockRestore()
+    useAppWsEventSpy.mockRestore()
+    useAppWsStateSpy.mockRestore()
   })
 
   describe('initial load', () => {

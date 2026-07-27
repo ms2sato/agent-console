@@ -1,22 +1,19 @@
-import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { render, screen, waitFor, cleanup, fireEvent, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createRootRoute, createRouter, createMemoryHistory, RouterProvider } from '@tanstack/react-router';
+import { QuickWorktreeDialog } from '../QuickWorktreeDialog';
+import * as useCreateWorktreeModule from '../../../hooks/useCreateWorktree';
 
-// Mock useCreateWorktree before importing the component
+// useCreateWorktree is replaced per-test via `spyOn` (NOT `mock.module`, which is
+// process-global in bun:test and would poison every other test file that
+// real-imports hooks/useCreateWorktree in the same process -- testing.md
+// Anti-Pattern #2; hooks/__tests__/useCreateWorktree.test.ts real-imports the same
+// module as its own unit under test).
 const mockHandleCreateWorktree = mock(() => Promise.resolve());
 const mockClearError = mock(() => {});
-
-mock.module('../../../hooks/useCreateWorktree', () => ({
-  useCreateWorktree: () => ({
-    handleCreateWorktree: mockHandleCreateWorktree,
-    error: null,
-    clearError: mockClearError,
-  }),
-}));
-
-import { QuickWorktreeDialog } from '../QuickWorktreeDialog';
+let useCreateWorktreeSpy: ReturnType<typeof spyOn>;
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -27,7 +24,16 @@ afterAll(() => {
   globalThis.fetch = originalFetch;
 });
 
+beforeEach(() => {
+  useCreateWorktreeSpy = spyOn(useCreateWorktreeModule, 'useCreateWorktree').mockImplementation(() => ({
+    handleCreateWorktree: mockHandleCreateWorktree,
+    error: null,
+    clearError: mockClearError,
+  }));
+});
+
 afterEach(() => {
+  useCreateWorktreeSpy.mockRestore();
   cleanup();
 });
 
