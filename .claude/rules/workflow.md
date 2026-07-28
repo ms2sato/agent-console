@@ -68,7 +68,9 @@ When you form a conclusion from a *secondary signal* — a derived, lagging, or 
 | Cross-repo issue | "this symptom looks like the other repo's known bug / shared pattern" | reproduce in *this* repo's own code path before filing, blaming, or claiming applicability |
 | Runtime observation | a dev-server log line / websocket frame / UI render / channel assumption taken as proof a path ran or a notification arrived | the authoritative store / server-side state / a deterministic probe / per-channel confirmation |
 
-The four sub-patterns below are specializations of this single rule. Each names the inference trap, the verify procedure, and its Lesson source.
+The six sub-patterns below are specializations of this single rule. Each names the inference trap, the verify procedure, and its Lesson source. Sub-patterns 1-4 cover over-trusting a weak signal; 5 covers the inverse (a signal that never arrives), and 6 covers the search strategy that produces the wrong signals in the first place.
+
+Read this if the rules feel arbitrary: [`docs/narratives/2026-07-27-four-days-red-and-four-wrong-hypotheses.md`](../../docs/narratives/2026-07-27-four-days-red-and-four-wrong-hypotheses.md) — four disproven hypotheses in one day, and what a wrong hypothesis feels like from the inside while you hold it.
 
 ### Sub-pattern 1: CI failure self-diagnosis
 
