@@ -20,7 +20,8 @@ import { PtyMessageInjectionService } from '../pty-message-injection-service.js'
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
-import type { SpawnAsUserFn } from '../privilege-elevation.js';
+import type { SpawnAsUserFn, runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
+import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 
@@ -942,11 +943,12 @@ describe('SessionManager', () => {
       // activation path, which mints directly on `options.mcpTokenRegistry`
       // (see worker-manager.ts's `this.mcpTokenRegistry.mint(...)` call in
       // AUTH_MODE=multi-user). We mint directly here rather than driving a
-      // real multi-user PTY activation because WorkerManager's multi-user
-      // mint path additionally depends on `lookupOsUserFn` /
-      // `runAsUserImpl` seams that SessionManagerOptions does not expose
-      // (those are covered by dedicated tests in worker-manager.test.ts);
-      // this test's concern is purely the shared-instance wiring.
+      // real multi-user PTY activation to keep this test's concern isolated
+      // to the shared-registry-instance wiring; WorkerManager's own
+      // `lookupOsUserFn` / `runAsUserImpl` passthrough (now exposed on
+      // `SessionManagerOptions` too) is covered by dedicated tests in
+      // worker-manager.test.ts and the "lookupOsUserFn / runAsUserImpl
+      // passthrough to WorkerManager" describe block below.
       const terminalWorkerToken = sharedRegistry.mint({
         sessionId: 'terminal-session',
         workerId: 'terminal-worker-fake',
@@ -1043,6 +1045,139 @@ describe('SessionManager', () => {
       const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, embeddedWorkerId);
       simulateExit(0);
       await deactivatePromise;
+    });
+  });
+
+  describe('lookupOsUserFn / runAsUserImpl passthrough to WorkerManager', () => {
+    // SessionManagerOptions.lookupOsUserFn / .runAsUserImpl are threaded
+    // straight through to the WorkerManager constructor's own optional DI
+    // params (see worker-manager.ts's constructor, params 5-6). Without this
+    // passthrough, WorkerManager falls back to its own defaults (the real
+    // `lookupOsUser` / `runAsUser`) -- for `runAsUserImpl` that means a REAL
+    // `Bun.spawn(['sh', '-c', ...])` subprocess, since
+    // activateAgentWorkerPty's prompt-file write is not gated on AUTH_MODE
+    // and fires for any activated agent worker carrying a non-empty
+    // `initialPrompt`. These tests prove the passthrough by injecting a
+    // distinguishable fake and observing it actually fires.
+
+    /**
+     * Command-discriminating fake `runAsUser`, mirroring the pattern already
+     * used in worker-manager.test.ts / mcp-server.test.ts:
+     * writeUserOwnedSecretFile's command contains `cat >`.
+     */
+    function createCapturingRunAsUser() {
+      const writeCalls: RunAsUserOpts[] = [];
+      const fake: typeof runAsUser = async (opts) => {
+        if (opts.command.includes('cat >')) {
+          writeCalls.push(opts);
+        }
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      return { fake, writeCalls };
+    }
+
+    it('threads runAsUserImpl through to WorkerManager: activating an agent worker with a non-empty initialPrompt calls the injected fake', async () => {
+      const { fake: runAsUserImpl, writeCalls } = createCapturingRunAsUser();
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        runAsUserImpl,
+      });
+
+      await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        initialPrompt: 'Hello from the runAsUserImpl passthrough test',
+      });
+
+      // If SessionManager had NOT threaded `runAsUserImpl` through to its
+      // WorkerManager constructor call, WorkerManager would have fallen
+      // back to its own default (the real `runAsUser`) and this fake would
+      // never have observed a call -- the real subprocess would instead
+      // have tried (and, against this test's synthetic AGENT_CONSOLE_HOME,
+      // failed) to write to the real filesystem.
+      expect(writeCalls.length).toBe(1);
+      expect(writeCalls[0].command).toContain('cat >');
+      expect(writeCalls[0].stdin).toBe('Hello from the runAsUserImpl passthrough test');
+    });
+
+    it('threads lookupOsUserFn through to WorkerManager: multi-user prompt-file activation resolves the destination directory from the injected fake', async () => {
+      const originalAuthMode = process.env.AUTH_MODE;
+      process.env.AUTH_MODE = 'multi-user';
+      try {
+        const { fake: runAsUserImpl, writeCalls } = createCapturingRunAsUser();
+        const distinguishableHomeDir = '/home/lookup-passthrough-fake-homedir';
+        const lookupOsUserFn: LookupOsUserFn = async () => ({ uid: 4242, homeDir: distinguishableHomeDir });
+
+        // Resolve session.createdBy -> a username different from the real
+        // OS user running this test process, so WorkerManager's
+        // shouldElevateForUser(...) actually takes the elevated branch that
+        // consults lookupOsUserFn (mirrors the stub UserRepository pattern
+        // used by the "resolveSpawnUsername wiring" describe block above).
+        const stubUserRepo: UserRepository = {
+          async upsertByOsUid(): Promise<AuthUser> {
+            throw new Error('upsertByOsUid not used by this test');
+          },
+          async findById(id: string): Promise<AuthUser | null> {
+            if (id === 'user-alice-uuid') {
+              return { id, username: 'alice', homeDir: '/home/alice' };
+            }
+            return null;
+          },
+        };
+
+        const module = await import(`../session-manager.js?v=${++importCounter}`);
+        const manager = await module.SessionManager.create({
+          userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+          pathExists: mockPathExists,
+          jobQueue: testJobQueue,
+          agentManager,
+          mcpTokenRegistry: new McpTokenRegistry(),
+          repositoryLookup: defaultRepositoryLookup,
+          repositoryEnvLookup: defaultRepositoryEnvLookup,
+          userRepository: stubUserRepo,
+          runAsUserImpl,
+          lookupOsUserFn,
+        });
+
+        await manager.createSession(
+          {
+            type: 'quick',
+            locationPath: '/test/path',
+            agentId: CLAUDE_CODE_AGENT_ID,
+            initialPrompt: 'Hello from the lookupOsUserFn passthrough test',
+          },
+          { createdBy: 'user-alice-uuid' },
+        );
+
+        // With AUTH_MODE=multi-user and a resolved createdBy, WorkerManager
+        // also mints an MCP token (a separate `cat >` write to a sibling
+        // `.agent-console/mcp-tokens/` file, using the SAME lookupOsUserFn
+        // seam) alongside the prompt-file write -- discriminate by the
+        // `.prompt` destination suffix rather than asserting on write count,
+        // so this test isolates the prompt-file write specifically.
+        const promptWrite = writeCalls.find((c) => c.command.includes('.prompt'));
+        expect(promptWrite).toBeDefined();
+        // If SessionManager had NOT threaded `lookupOsUserFn` through to its
+        // WorkerManager constructor call, WorkerManager would have fallen
+        // back to its own default (the real `lookupOsUser`, an OS-level
+        // dscl/getent lookup) and the write destination would not carry
+        // this fake's distinguishable homeDir.
+        expect(promptWrite!.command).toContain(distinguishableHomeDir);
+      } finally {
+        if (originalAuthMode === undefined) {
+          delete process.env.AUTH_MODE;
+        } else {
+          process.env.AUTH_MODE = originalAuthMode;
+        }
+      }
     });
   });
 
