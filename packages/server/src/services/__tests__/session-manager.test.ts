@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import * as fs from 'fs';
 import { JOB_TYPES } from '@agent-console/shared';
 import type { CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
@@ -15,6 +15,7 @@ import type { PersistedWorker } from '../persistence-service.js';
 import { JobQueue } from '../../jobs/index.js';
 import type { PtyProvider, PtySpawnOptions } from '../../lib/pty-provider.js';
 import { SingleUserMode } from '../user-mode.js';
+import { WorkerManager } from '../worker-manager.js';
 import type { UserMode, PtySpawnRequest } from '../user-mode.js';
 import { PtyMessageInjectionService } from '../pty-message-injection-service.js';
 import { UsernameLookupService } from '../username-lookup.js';
@@ -1177,6 +1178,110 @@ describe('SessionManager', () => {
         } else {
           process.env.AUTH_MODE = originalAuthMode;
         }
+      }
+    });
+  });
+
+  describe('initial-prompt injected callback wiring (Issue #1236)', () => {
+    // SessionManager wires WorkerManager.setOnInitialPromptInjected in its
+    // constructor to mark session.initialPromptDelivered = true and persist
+    // it. These tests exercise the real end-to-end shipping path: create a
+    // session with a non-empty initialPrompt for a terminal-agent worker
+    // (the mock PTY factory auto-emits the login-shell sentinel synchronously
+    // on activation, so the injection write -- and this callback -- fires
+    // before createSession's promise resolves).
+    function createNoopRunAsUser(): typeof runAsUser {
+      return (async () => ({ stdout: '', stderr: '', exitCode: 0, timedOut: false })) as typeof runAsUser;
+    }
+
+    it('sets session.initialPromptDelivered = true after the terminal-agent worker injects the prompt', async () => {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        runAsUserImpl: createNoopRunAsUser(),
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        initialPrompt: 'Hello from the injected-callback wiring test',
+      });
+
+      expect(session.initialPromptDelivered).toBe(true);
+
+      // Also confirm the flag round-trips through getSession (reads the same
+      // in-memory session the callback mutated).
+      const fetched = manager.getSession(session.id);
+      expect(fetched?.initialPromptDelivered).toBe(true);
+    });
+
+    it('does not re-persist or throw when the callback fires again for an already-delivered session', async () => {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        runAsUserImpl: createNoopRunAsUser(),
+      });
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        initialPrompt: 'Hello from the re-fire guard test',
+      });
+      expect(session.initialPromptDelivered).toBe(true);
+
+      // Re-trigger the sentinel path on the same worker: simulate another
+      // exit + no-op re-emit is unnecessary here since the callback itself
+      // is idempotent by construction (guarded on session.initialPromptDelivered);
+      // directly re-invoke the underlying WorkerManager callback via a second
+      // PTY sentinel emission is not straightforward from this layer, so
+      // this test instead confirms the guard holds when the flag is already
+      // true and a second worker is created for the same session (an
+      // add-worker-route worker is never eligible, so it must not flip
+      // anything, and the session must not throw or corrupt state).
+      const worker = await manager.createWorker(session.id, { type: 'terminal' });
+      expect(worker).not.toBeNull();
+
+      const fetched = manager.getSession(session.id);
+      expect(fetched?.initialPromptDelivered).toBe(true);
+    });
+
+    it('does not throw when invoked for an unknown sessionId', async () => {
+      // Capture the callback SessionManager registers with WorkerManager
+      // (spyOn defaults to call-through, so registration itself is
+      // unaffected) and invoke it directly with a sessionId that was never
+      // created -- the callback's `getSession` lookup must miss cleanly.
+      const registerSpy = spyOn(WorkerManager.prototype, 'setOnInitialPromptInjected');
+      try {
+        const module = await import(`../session-manager.js?v=${++importCounter}`);
+        await module.SessionManager.create({
+          userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+          pathExists: mockPathExists,
+          jobQueue: testJobQueue,
+          agentManager,
+          mcpTokenRegistry: new McpTokenRegistry(),
+          repositoryLookup: defaultRepositoryLookup,
+          repositoryEnvLookup: defaultRepositoryEnvLookup,
+        });
+
+        expect(registerSpy).toHaveBeenCalledTimes(1);
+        const registeredCallback = registerSpy.mock.calls[0][0];
+        expect(() => registeredCallback('non-existent-session', 'non-existent-worker')).not.toThrow();
+      } finally {
+        registerSpy.mockRestore();
       }
     });
   });

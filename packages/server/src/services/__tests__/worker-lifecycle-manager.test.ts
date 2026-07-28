@@ -201,6 +201,64 @@ describe('WorkerLifecycleManager', () => {
       expect(ptyFactory.instances.length).toBe(1);
     });
 
+    it('should mark an agent worker eligible for initial-prompt redelivery when created with a non-empty initialPrompt (Issue #1236)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      // Mock out activation: this test only asserts the eligibility flag on
+      // the initialized worker object, not the real prompt-file write --
+      // a non-empty initialPrompt would otherwise trigger a real elevated
+      // `cat >` subprocess spawn via the unmocked `runAsUser`.
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
+      try {
+        const request: CreateWorkerParams = {
+          type: 'agent',
+          agentId: CLAUDE_CODE_AGENT_ID,
+        };
+
+        // Mirrors SessionManager.createSession's initial-worker call shape:
+        // createWorker(id, request, continueConversation, initialPrompt, templateVars).
+        const worker = await lifecycleManager.createWorker(session.id, request, false, 'Do the thing');
+
+        const internal = session.workers.get(worker!.id) as InternalAgentWorker;
+        expect(internal.deliverInitialPromptOnActivation).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('should NOT mark an agent worker eligible when created without an initialPrompt (generic add-worker route shape) (Issue #1236)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      };
+
+      // Mirrors routes/workers.ts's generic add-worker call shape: no
+      // initialPrompt argument is passed at all.
+      const worker = await lifecycleManager.createWorker(session.id, request, false);
+
+      const internal = session.workers.get(worker!.id) as InternalAgentWorker;
+      expect(internal.deliverInitialPromptOnActivation).toBe(false);
+    });
+
+    it('should NOT mark an agent worker eligible when initialPrompt is whitespace-only (Issue #1236)', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const request: CreateWorkerParams = {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      };
+
+      const worker = await lifecycleManager.createWorker(session.id, request, false, '   ');
+
+      const internal = session.workers.get(worker!.id) as InternalAgentWorker;
+      expect(internal.deliverInitialPromptOnActivation).toBe(false);
+    });
+
     it('should create a terminal worker successfully', async () => {
       const session = createTestSession();
       sessions.set(session.id, session);
@@ -1052,6 +1110,141 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  // ========== Restart Initial-Prompt Re-delivery (Issue #1236) ==========
+
+  describe('restartAgentWorker initial-prompt re-delivery (Issue #1236)', () => {
+    /**
+     * Creates an agent worker via the real (unmocked) activation path (no
+     * initialPrompt passed to createWorker, so no real prompt-file write is
+     * ever triggered), then marks the resulting internal worker object
+     * eligible directly -- mirrors this file's existing pattern of
+     * hand-constructing InternalAgentWorker state for restart-path tests
+     * (see e.g. the "restoreWorker" / "templateVars propagation" describe
+     * blocks) rather than routing a real initialPrompt through creation's
+     * own real activateAgentWorkerPty call, which would attempt a real
+     * elevated `cat >` subprocess spawn via the unmocked `runAsUser`.
+     */
+    async function setupEligibleWorker(
+      sessionOverrides: Parameters<typeof createTestSession>[0] = {},
+    ): Promise<{ session: InternalSession; workerId: string }> {
+      const session = createTestSession(sessionOverrides);
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+      const internal = session.workers.get(worker!.id) as InternalAgentWorker;
+      internal.deliverInitialPromptOnActivation = true;
+
+      return { session, workerId: worker!.id };
+    }
+
+    it('redelivers session.initialPrompt on restart when eligible, undelivered, and continueConversation is false [POLARITY]', async () => {
+      const { session, workerId } = await setupEligibleWorker({ initialPrompt: 'Do the important thing' });
+      expect(session.initialPromptDelivered).toBeUndefined();
+
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        const params = spy.mock.calls[0][1];
+        expect(params.initialPrompt).toBe('Do the important thing');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('does not redeliver when session.initialPromptDelivered is already true', async () => {
+      const { session, workerId } = await setupEligibleWorker({ initialPrompt: 'Do the important thing' });
+      session.initialPromptDelivered = true;
+
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][1].initialPrompt).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('does not redeliver when continueConversation is true, and does not consume eligibility for a later restart', async () => {
+      const { session, workerId } = await setupEligibleWorker({ initialPrompt: 'Do the important thing' });
+
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, workerId, true);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][1].initialPrompt).toBeUndefined();
+        // continueConversation:true never flips the delivered flag itself --
+        // only the injection-time callback (WorkerManager, separately
+        // tested) does that.
+        expect(session.initialPromptDelivered).not.toBe(true);
+
+        // Same worker restarted again, this time with continueConversation:
+        // false and still undelivered -- the earlier continue-restart must
+        // not have "used up" the eligibility.
+        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+
+        expect(spy).toHaveBeenCalledTimes(2);
+        expect(spy.mock.calls[1][1].initialPrompt).toBe('Do the important thing');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it.each([
+      ['undefined', undefined],
+      ['empty string', ''],
+      ['whitespace-only', '   '],
+    ])('does not redeliver when session.initialPrompt is %s, even though eligible and undelivered', async (_label, initialPromptValue) => {
+      const { session, workerId } = await setupEligibleWorker({ initialPrompt: initialPromptValue });
+
+      const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
+      try {
+        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+
+        expect(spy).toHaveBeenCalledTimes(1);
+        expect(spy.mock.calls[0][1].initialPrompt).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("carries the original worker's deliverInitialPromptOnActivation across restart unchanged (eligible case)", async () => {
+      const { session, workerId } = await setupEligibleWorker({ initialPrompt: 'Do the important thing' });
+      // Already delivered, so this restart's redelivery gate is false --
+      // but eligibility itself must still carry over unrecomputed.
+      session.initialPromptDelivered = true;
+
+      await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+
+      const newInternal = session.workers.get(workerId) as InternalAgentWorker;
+      expect(newInternal.deliverInitialPromptOnActivation).toBe(true);
+    });
+
+    it('carries deliverInitialPromptOnActivation: false across restart when the original worker was never eligible', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const worker = await lifecycleManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+      const before = session.workers.get(worker!.id) as InternalAgentWorker;
+      expect(before.deliverInitialPromptOnActivation).toBe(false);
+
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, false);
+
+      const after = session.workers.get(worker!.id) as InternalAgentWorker;
+      expect(after.deliverInitialPromptOnActivation).toBe(false);
+    });
+  });
+
   // ========== Update Git-Diff Workers After Branch Rename ==========
 
   describe('updateGitDiffWorkersAfterBranchRename', () => {
@@ -1142,6 +1335,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1251,6 +1445,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1290,6 +1485,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1320,6 +1516,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1348,6 +1545,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1378,6 +1576,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2144,6 +2343,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2179,6 +2379,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2261,6 +2462,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2393,6 +2595,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         mcpToken: null,
         promptFile: null,
+        deliverInitialPromptOnActivation: false,
       };
       session.workers.set(agentWorker.id, agentWorker);
 

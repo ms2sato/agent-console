@@ -248,6 +248,28 @@ describe('mappers', () => {
 
       expect(row.deliver_initial_prompt_on_activation).toBe(0);
     });
+
+    it('writes deliver_initial_prompt_on_activation: 1 when the persisted agent worker is eligible (Issue #1236)', () => {
+      const worker = buildPersistedAgentWorker({
+        id: 'worker-1',
+        deliverInitialPromptOnActivation: true,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.deliver_initial_prompt_on_activation).toBe(1);
+    });
+
+    it('writes deliver_initial_prompt_on_activation: 0 when the persisted agent worker is not eligible (Issue #1236)', () => {
+      const worker = buildPersistedAgentWorker({
+        id: 'worker-1',
+        deliverInitialPromptOnActivation: false,
+      });
+
+      const row = toWorkerRow(worker, 'session-1');
+
+      expect(row.deliver_initial_prompt_on_activation).toBe(0);
+    });
   });
 
   describe('toSessionRow - scope+slug invariants', () => {
@@ -488,6 +510,46 @@ describe('mappers', () => {
 
       expect(worker.type).toBe('agent');
       expect((worker as PersistedAgentWorker).agentId).toBe('claude-code-builtin');
+    });
+
+    it('maps deliver_initial_prompt_on_activation: 1 to deliverInitialPromptOnActivation: true for agent workers (Issue #1236)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'agent',
+        name: 'Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: 1234,
+        agent_id: 'claude-code-builtin',
+        base_commit: null,
+        embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: 1,
+      };
+
+      const worker = toPersistedWorker(dbWorker);
+
+      expect((worker as PersistedAgentWorker).deliverInitialPromptOnActivation).toBe(true);
+    });
+
+    it('maps deliver_initial_prompt_on_activation: null to deliverInitialPromptOnActivation: false for agent workers (Issue #1236)', () => {
+      const dbWorker: Worker = {
+        id: 'worker-1',
+        session_id: 'session-1',
+        type: 'agent',
+        name: 'Agent',
+        created_at: '2024-01-01T00:00:00.000Z',
+        updated_at: '2024-01-01T00:00:00.000Z',
+        pid: 1234,
+        agent_id: 'claude-code-builtin',
+        base_commit: null,
+        embedded_agent_id: null,
+        deliver_initial_prompt_on_activation: null,
+      };
+
+      const worker = toPersistedWorker(dbWorker);
+
+      expect((worker as PersistedAgentWorker).deliverInitialPromptOnActivation).toBe(false);
     });
 
     it('should convert valid terminal worker', () => {

@@ -143,6 +143,7 @@ describe('PersistenceService', () => {
               agentId: 'claude-code',
               pid: 12345,
               createdAt: '2024-01-01T00:00:00.000Z',
+              deliverInitialPromptOnActivation: false,
             },
           ],
           serverPid: 99999,

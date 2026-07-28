@@ -90,6 +90,17 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
    * pendingCommand cleanup.
    */
   promptFile: { filePath: string; username: string } | null;
+  /**
+   * Whether this worker is eligible to receive the session's `initialPrompt`
+   * on activation or restart. The terminal-agent counterpart of
+   * `InternalEmbeddedAgentWorker.deliverInitialPromptOnActivation` below.
+   * Set true only for the session's initial agent worker (created with a
+   * non-empty `initialPrompt`); workers added later via the generic
+   * add-worker route, or created without a prompt, are never eligible.
+   * Persisted via `PersistedAgentWorker.deliverInitialPromptOnActivation`
+   * and survives server restart.
+   */
+  deliverInitialPromptOnActivation: boolean;
 }
 
 /**
@@ -130,15 +141,19 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
   epoch: number;
   connectionCallbacks: Map<string, WorkerCallbacks>;
   /**
-   * Whether this worker is eligible to receive the session's `initialPrompt`
-   * as its first user message once the loop reports `ready`.
+   * Whether this worker is eligible to receive the session's `initialPrompt`.
+   * One of two mechanisms for the same family: the session's initial
+   * agent-kind worker (embedded OR terminal-agent) is eligible; workers
+   * added later via the generic add-worker route, or created without a
+   * prompt, are never eligible. For this (embedded-agent) worker kind,
+   * delivery happens as this worker's first user message once its loop
+   * reports `ready`. See `InternalAgentWorker.deliverInitialPromptOnActivation`
+   * for the terminal-agent twin, which instead delivers via a
+   * sentinel-injected command referencing a prompt file.
    * Persisted via `PersistedEmbeddedAgentWorker.deliverInitialPromptOnActivation`
    * and survives server restart -- unlike `subprocess`/`stdin`, which are
-   * always null-on-restore. Set true only for the session's initial
-   * embedded-agent worker (created with a non-empty `initialPrompt`);
-   * workers added later via the generic add-worker route are never
-   * eligible. See `docs/design/embedded-agent-worker.md` "Initial prompt
-   * delivery".
+   * always null-on-restore. See `docs/design/embedded-agent-worker.md`
+   * "Initial prompt delivery".
    */
   deliverInitialPromptOnActivation: boolean;
 }

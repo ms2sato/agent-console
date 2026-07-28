@@ -44,11 +44,12 @@ export interface SessionBase {
   initialPrompt?: string;    // The prompt used to start the session
   /**
    * Whether `initialPrompt` has already been delivered as the session's
-   * initial embedded-agent worker's first user message. Once
-   * true, delivery never re-fires, including across worker/server restart --
-   * this is intentional (a one-time creation-time prompt, distinct from the
-   * ephemeral chat history that DOES reset on restart). Undefined for
-   * sessions with no `initialPrompt` or no embedded-agent worker.
+   * initial agent-kind worker's (embedded OR terminal-agent) first message.
+   * Once true, delivery never re-fires, including across worker/server
+   * restart -- this is intentional (a one-time creation-time prompt,
+   * distinct from the ephemeral chat history that DOES reset on restart).
+   * Undefined for sessions with no `initialPrompt` or no eligible
+   * agent-kind worker.
    */
   initialPromptDelivered?: boolean;
   title?: string;            // Human-readable title for the session

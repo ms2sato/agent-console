@@ -308,6 +308,21 @@ export class SessionManager {
       options.lookupOsUserFn,
       options.runAsUserImpl,
     );
+    this.workerManager.setOnInitialPromptInjected((sessionId, workerId) => {
+      // Fire-and-forget: this callback is invoked synchronously from a PTY
+      // onData event listener (see WorkerManager.setupWorkerEventHandlers) and
+      // cannot be awaited by its caller. "Delivered" here means the prompt was
+      // injected into the PTY, not that the agent process actually received or
+      // acted on it -- if the agent binary fails immediately after this
+      // write, the flag is still set and a future restart will not
+      // re-deliver. Failures are logged, not thrown.
+      const session = this.sessions.get(sessionId);
+      if (!session || session.initialPromptDelivered) return;
+      session.initialPromptDelivered = true;
+      this.persistSession(session).catch((err: unknown) => {
+        logger.error({ sessionId, workerId, err }, 'Failed to persist initialPromptDelivered after prompt injection');
+      });
+    });
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));
