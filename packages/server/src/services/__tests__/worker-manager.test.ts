@@ -1629,7 +1629,13 @@ describe('WorkerManager', () => {
       ).rejects.toThrow();
 
       expect(registry.mintedIdentities.length).toBe(1);
-      expect(registry.revokedWorkerIds).toEqual(['mcp-agent-4']);
+      // Revoked twice: once from the MCP-token block's own inline
+      // fast-path revoke (fires immediately on the write-failure branch,
+      // before the throw), and again from the outer catch block's
+      // revokeAndDeleteMcpToken -- worker.mcpToken is set BEFORE the write
+      // (not after success), so it is already non-null when the catch
+      // runs and its null-check no longer short-circuits.
+      expect(registry.revokedWorkerIds).toEqual(['mcp-agent-4', 'mcp-agent-4']);
       expect(worker.mcpToken).toBeNull();
     });
 
@@ -2091,18 +2097,27 @@ describe('WorkerManager', () => {
       expect(worker.promptFile).toBeNull();
       expect(worker.mcpToken).toBeNull();
       expect(worker.pty).toBeNull();
-      // Exactly one `rm -rf` fires -- for the prompt file. The MCP-token
-      // write itself failed (never produced a file), so there is nothing
-      // for revokeAndDeleteMcpToken to `rm`; its own internal null-check
-      // short-circuits before issuing a second rm call.
-      expect(rmCalls.length).toBe(1);
-      expect(rmCalls[0].command).toContain('.prompt');
-      // revokeByWorker fires exactly once, from the MCP-token block's own
-      // inline revoke-on-write-failure branch (worker.mcpToken was never
-      // assigned on this path, so the catch block's
-      // revokeAndDeleteMcpToken sees a null token and short-circuits
-      // without a second revoke call).
-      expect(revokedWorkerIds).toEqual(['prompt-agent-later-throw']);
+      // Both worker.promptFile and worker.mcpToken are now set BEFORE their
+      // respective writes (not after success), so the outer catch's
+      // cleanup reaches BOTH artifacts unconditionally on any later throw
+      // -- regardless of which specific artifact's own write is what
+      // failed. Two `rm -rf` calls fire: one for the prompt file (its write
+      // succeeded), one for the token file (its write is what failed here,
+      // but `worker.mcpToken` was already assigned before that write, so
+      // the catch's revokeAndDeleteMcpToken still issues the `rm` -- this
+      // matters because writeUserOwnedSecretFile's `cat >` truncates the
+      // destination before writing, so even a failed write can leave a
+      // truncated file containing a fragment of the secret token behind).
+      expect(rmCalls.length).toBe(2);
+      expect(rmCalls.some((c) => c.command.includes('.prompt'))).toBe(true);
+      expect(rmCalls.some((c) => c.command.includes('.token'))).toBe(true);
+      // revokeByWorker fires TWICE: once from the MCP-token block's own
+      // inline fast-path revoke (runs immediately on the write-failure
+      // branch, before the throw), and again from the catch block's
+      // revokeAndDeleteMcpToken (worker.mcpToken is now non-null at that
+      // point, since it was assigned before the write, so the catch's
+      // null-check no longer short-circuits).
+      expect(revokedWorkerIds).toEqual(['prompt-agent-later-throw', 'prompt-agent-later-throw']);
     });
 
     it('prompt file write failure aborts activation with no fallback embedding of the raw prompt, and cleans up via the catch block', async () => {

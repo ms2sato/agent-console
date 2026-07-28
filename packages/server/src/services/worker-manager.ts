@@ -581,6 +581,17 @@ export class WorkerManager {
               'mcp-tokens',
               `${worker.id}.token`,
             );
+            // Set BEFORE the write (not after a successful write):
+            // writeUserOwnedSecretFile's command truncates the destination
+            // (`cat >`) before streaming the new content, so a write that
+            // fails partway through (the elevated process gets killed
+            // mid-stream, or the shell fails after truncation but before the
+            // full payload lands) can leave a truncated/partial file behind
+            // -- and that file may contain a FRAGMENT OF THE SECRET TOKEN.
+            // The outer catch block's cleanup must reach this path even when
+            // the failure happens mid-write, not only on a clean exitCode
+            // !== 0 result.
+            worker.mcpToken = { filePath: tokenFilePath, username: params.username };
             const writeResult = await writeUserOwnedSecretFile({
               username: params.username,
               filePath: tokenFilePath,
@@ -594,8 +605,11 @@ export class WorkerManager {
               // orphaned token from a failed activation" invariant. The
               // in-memory revoke here is a fast-path for THIS failure only;
               // the outer catch below also unconditionally calls
-              // revokeAndDeleteMcpToken (idempotent no-op if already revoked
-              // and no worker.mcpToken was ever assigned in this branch).
+              // revokeAndDeleteMcpToken, which now (worker.mcpToken having
+              // just been assigned above) also issues the file-level `rm`
+              // for the possibly-truncated token file -- this fast-path call
+              // only revokes the registry entry a moment sooner than the
+              // catch would.
               this.mcpTokenRegistry.revokeByWorker(worker.id);
               logger.error(
                 {
@@ -608,7 +622,6 @@ export class WorkerManager {
               );
               throw new Error(`Failed to write MCP token file for worker ${worker.id}`);
             }
-            worker.mcpToken = { filePath: tokenFilePath, username: params.username };
             additionalEnvVars[MCP_TOKEN_FILE_ENV_VAR] = tokenFilePath;
           }
         }
