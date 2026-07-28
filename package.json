@@ -18,6 +18,7 @@
     "test:scripts": "bun test scripts/ ./.claude/hooks/__tests__/ ./.claude/skills/*/__tests__/",
     "test:coverage": "bun run --filter '*' test:coverage",
     "check:lang": "bun scripts/check-public-artifacts-language.mjs",
+    "check:mock-module": "bun scripts/check-mock-module-poisoners.mjs",
     "check:preview-sandbox-browser": "bun scripts/run-preview-sandbox-browser-check.mjs",
     "check:pty-fd-leak": "bun scripts/smoke/check-pty-fd-leak.ts",
     "hooks:install": "bun scripts/install-hooks.mjs",
