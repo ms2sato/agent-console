@@ -35,15 +35,25 @@
  * false-positive on every one of them. The AST naturally excludes comments
  * and string literals from being mistaken for a call expression.
  *
- * A call is flagged when its callee is a `PropertyAccessExpression` named
- * `module` on an identifier named `mock` (i.e. `mock.module(...)`). A
- * non-string-literal first argument (e.g. `mock.module(someVar, ...)`) is
- * still a violation; its specifier is reported as `<dynamic>`.
+ * A call is flagged when its callee is a static `.module` access — either
+ * `PropertyAccessExpression` form (`mock.module(...)`) or the equivalent
+ * `ElementAccessExpression` form with a string-literal property
+ * (`mock['module'](...)`), any parenthesization of either side included —
+ * on an identifier named `mock`. A non-string-literal first argument (e.g.
+ * `mock.module(someVar, ...)`) is still a violation; its specifier is
+ * reported as `<dynamic>`.
  *
- * Known accepted limitation (v1, not chased): an aliased import
- * (`import { mock as m } from 'bun:test'; m.module(...)`) evades
- * detection, since the callee identifier check is textual (`mock`), not
- * binding-resolved.
+ * v1's evasion boundary is drawn at whether recognizing a form requires
+ * binding/dataflow resolution: static syntax variants (property vs bracket
+ * access, parenthesization) are all in scope regardless of which one is
+ * used, because none of them need resolving what `mock` is bound to or
+ * where a computed value came from. Two evasions remain out of scope for
+ * that reason, both accepted as v1 limitations, not chased:
+ *   - an aliased/renamed binding (`import { mock as m } from 'bun:test';
+ *     m.module(...)`) — recognizing it requires resolving what `m` is
+ *     bound to;
+ *   - a computed bracket property (`mock[someVar](...)`) — recognizing it
+ *     requires resolving `someVar`'s value, i.e. dataflow analysis.
  *
  * Output format (one line per violation):
  *
@@ -65,6 +75,12 @@
  * call is itself a CI failure, reported with a distinct "stale allowlist
  * entry" message. This keeps the allowlist monotonically accurate by
  * structure rather than by header-comment convention.
+ *
+ * Matching is cardinality-aware: each entry authorizes exactly ONE
+ * occurrence of its `(file, specifier)` pair. Two entries sharing the same
+ * key authorize two occurrences, and so on — a second, previously-unseen
+ * `mock.module()` call added later with the same specifier in the same
+ * file is a new violation, not a free ride on an existing entry.
  *
  * Usage:
  *   bun scripts/check-mock-module-poisoners.mjs
@@ -102,7 +118,49 @@ export function isSanctionedLocation(file) {
 }
 
 /**
- * Parse a source file and return every `mock.module(...)` call site found.
+ * Strip enclosing parentheses from an expression node, e.g. `(mock)` -> `mock`.
+ *
+ * @param {ts.Expression} node
+ * @returns {ts.Expression}
+ */
+function unwrapParens(node) {
+  while (ts.isParenthesizedExpression(node)) {
+    node = node.expression;
+  }
+  return node;
+}
+
+/**
+ * If `callee` is a static `.module` access — either `x.module` or
+ * `x['module']` (any parenthesization of either side) — return the accessed
+ * object expression (unwrapped) and the property name. Otherwise `null`.
+ *
+ * `mock['module'](...)` invokes the same bun:test API as `mock.module(...)`
+ * but uses `ElementAccessExpression` instead of `PropertyAccessExpression`;
+ * both forms must be recognized so the gate cannot be evaded by switching
+ * accessor syntax.
+ *
+ * @param {ts.Expression} callee
+ * @returns {{ obj: ts.Expression, propName: string } | null}
+ */
+function matchStaticModuleAccess(callee) {
+  const expr = unwrapParens(callee);
+  if (ts.isPropertyAccessExpression(expr)) {
+    return { obj: unwrapParens(expr.expression), propName: expr.name.text };
+  }
+  if (
+    ts.isElementAccessExpression(expr) &&
+    expr.argumentExpression &&
+    ts.isStringLiteralLike(expr.argumentExpression)
+  ) {
+    return { obj: unwrapParens(expr.expression), propName: expr.argumentExpression.text };
+  }
+  return null;
+}
+
+/**
+ * Parse a source file and return every `mock.module(...)` (or the
+ * equivalent `mock['module'](...)` / parenthesized) call site found.
  *
  * Pure function — exported for direct testing.
  *
@@ -124,18 +182,15 @@ export function findMockModuleCallsInSource(source, fileName) {
   const calls = [];
 
   const visit = (node) => {
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === 'module' &&
-      ts.isIdentifier(node.expression.expression) &&
-      node.expression.expression.text === 'mock'
-    ) {
-      const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
-      const firstArg = node.arguments[0];
-      const specifier =
-        firstArg && ts.isStringLiteralLike(firstArg) ? firstArg.text : '<dynamic>';
-      calls.push({ line: line + 1, col: character + 1, specifier });
+    if (ts.isCallExpression(node)) {
+      const access = matchStaticModuleAccess(node.expression);
+      if (access && access.propName === 'module' && ts.isIdentifier(access.obj) && access.obj.text === 'mock') {
+        const { line, character } = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+        const firstArg = node.arguments[0];
+        const specifier =
+          firstArg && ts.isStringLiteralLike(firstArg) ? firstArg.text : '<dynamic>';
+        calls.push({ line: line + 1, col: character + 1, specifier });
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -199,15 +254,33 @@ export async function findViolationsInFile(file, { cwd = process.cwd() } = {}) {
 }
 
 /**
- * Does a `KNOWN_VIOLATIONS` entry match a detected violation? Matched on
- * `file + specifier` only (not line/col — see allowlist strategy above).
+ * Allowlist key for a `{file, specifier}`-shaped record (violation or
+ * `KNOWN_VIOLATIONS` entry).
  *
- * @param {{file: string, specifier: string}} entry
- * @param {{file: string, specifier: string}} violation
- * @returns {boolean}
+ * @param {{file: string, specifier: string}} v
+ * @returns {string}
  */
-function entryMatches(entry, violation) {
-  return entry.file === violation.file && entry.specifier === violation.specifier;
+function allowlistKey(v) {
+  return `${v.file} ${v.specifier}`;
+}
+
+/**
+ * Group an array of `{file, specifier}`-shaped records by their allowlist
+ * key.
+ *
+ * @template T
+ * @param {T[]} items
+ * @returns {Map<string, T[]>}
+ */
+function groupByAllowlistKey(items) {
+  const map = new Map();
+  for (const item of items) {
+    const key = allowlistKey(item);
+    const bucket = map.get(key);
+    if (bucket) bucket.push(item);
+    else map.set(key, [item]);
+  }
+  return map;
 }
 
 /**
@@ -233,19 +306,34 @@ export async function runCheck({ cwd = process.cwd(), files, allowlist = KNOWN_V
     violations.push(...(await findViolationsInFile(file, { cwd })));
   }
 
+  // Cardinality-aware matching: each KNOWN_VIOLATIONS entry authorizes
+  // exactly ONE occurrence of its (file, specifier) pair, not unlimited
+  // occurrences. A second mock.module() call added later with the same
+  // specifier in the same file would otherwise silently ride along on the
+  // first entry's allowlisting. Two entries with the same key authorize two
+  // occurrences, and so on — entries and violations are paired up in
+  // (line, col) order within each key group; any excess on either side is
+  // reported (excess violations as new, excess entries as stale).
+  const violationsByKey = groupByAllowlistKey(violations);
+  const allowlistByKey = groupByAllowlistKey(allowlist);
+
   const newViolations = [];
   const allowlisted = [];
-  for (const v of violations) {
-    if (allowlist.some((entry) => entryMatches(entry, v))) {
-      allowlisted.push(v);
-    } else {
-      newViolations.push(v);
+  const staleEntries = [];
+
+  const allKeys = new Set([...violationsByKey.keys(), ...allowlistByKey.keys()]);
+  for (const key of allKeys) {
+    const vs = [...(violationsByKey.get(key) ?? [])].sort(
+      (a, b) => a.line - b.line || a.col - b.col,
+    );
+    const entries = allowlistByKey.get(key) ?? [];
+    const consumeCount = Math.min(vs.length, entries.length);
+    allowlisted.push(...vs.slice(0, consumeCount));
+    newViolations.push(...vs.slice(consumeCount));
+    if (entries.length > vs.length) {
+      staleEntries.push(...entries.slice(vs.length));
     }
   }
-
-  const staleEntries = allowlist.filter(
-    (entry) => !violations.some((v) => entryMatches(entry, v)),
-  );
 
   return { files: targetFiles, violations, newViolations, allowlisted, staleEntries };
 }

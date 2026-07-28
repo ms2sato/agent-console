@@ -65,6 +65,44 @@ describe('findMockModuleCallsInSource — AST detection', () => {
     expect(findMockModuleCallsInSource(source, 'x.ts')).toEqual([]);
   });
 
+  it('detects the bracket-notation form mock[\'module\'](...)', () => {
+    const source = `mock['module']('x', () => ({}));\n`;
+    expect(findMockModuleCallsInSource(source, 'x.ts')).toEqual([
+      { line: 1, col: 1, specifier: 'x' },
+    ]);
+  });
+
+  it('detects a parenthesized callee form (mock).module(...)', () => {
+    const source = `(mock).module('x', () => ({}));\n`;
+    expect(findMockModuleCallsInSource(source, 'x.ts')).toEqual([
+      { line: 1, col: 1, specifier: 'x' },
+    ]);
+  });
+
+  it('detects the other parenthesized form (mock.module)(...)', () => {
+    const source = `(mock.module)('x', () => ({}));\n`;
+    expect(findMockModuleCallsInSource(source, 'x.ts')).toEqual([
+      { line: 1, col: 1, specifier: 'x' },
+    ]);
+  });
+
+  it('detects the template-literal bracket form mock[`module`](...)', () => {
+    const source = 'mock[`module`](\'x\', () => ({}));\n';
+    expect(findMockModuleCallsInSource(source, 'x.ts')).toEqual([
+      { line: 1, col: 1, specifier: 'x' },
+    ]);
+  });
+
+  it('does not flag bracket access with a non-"module" property name', () => {
+    const source = `mock['moduleFactory']('x', () => ({}));\n`;
+    expect(findMockModuleCallsInSource(source, 'x.ts')).toEqual([]);
+  });
+
+  it('does not flag bracket access with a dynamic (non-literal) property name', () => {
+    const source = `const prop = 'module';\nmock[prop]('x', () => ({}));\n`;
+    expect(findMockModuleCallsInSource(source, 'x.ts')).toEqual([]);
+  });
+
   it('detects a call inside a .tsx file (JSX-aware parse)', () => {
     const source = `import { mock } from 'bun:test';\nconst el = <div />;\nmock.module('x', () => ({}));\n`;
     const calls = findMockModuleCallsInSource(source, 'x.tsx');
@@ -199,6 +237,63 @@ describe('runCheck — allowlist and sanctioned-location behaviour', () => {
         file: 'packages/server/src/foo.test.ts',
         specifier: 'bar',
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('cardinality: a single allowlist entry does NOT authorize a second occurrence of the same (file, specifier)', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(
+        join(root, 'packages/server/src/foo.test.ts'),
+        `mock.module('bar', () => ({}));\nmock.module('bar', () => ({}));\n`,
+      );
+      const allowlist = [{ file: 'packages/server/src/foo.test.ts', specifier: 'bar', reason: 'baseline' }];
+      const result = await runCheck({ cwd: root, allowlist });
+      expect(result.allowlisted).toHaveLength(1);
+      expect(result.newViolations).toHaveLength(1);
+      expect(result.staleEntries).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('cardinality: two allowlist entries for the same (file, specifier) authorize two occurrences', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(
+        join(root, 'packages/server/src/foo.test.ts'),
+        `mock.module('bar', () => ({}));\nmock.module('bar', () => ({}));\n`,
+      );
+      const allowlist = [
+        { file: 'packages/server/src/foo.test.ts', specifier: 'bar', reason: 'first' },
+        { file: 'packages/server/src/foo.test.ts', specifier: 'bar', reason: 'second' },
+      ];
+      const result = await runCheck({ cwd: root, allowlist });
+      expect(result.allowlisted).toHaveLength(2);
+      expect(result.newViolations).toEqual([]);
+      expect(result.staleEntries).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('cardinality: an unused second entry for a single-occurrence key is reported as stale', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(
+        join(root, 'packages/server/src/foo.test.ts'),
+        `mock.module('bar', () => ({}));\n`,
+      );
+      const allowlist = [
+        { file: 'packages/server/src/foo.test.ts', specifier: 'bar', reason: 'first' },
+        { file: 'packages/server/src/foo.test.ts', specifier: 'bar', reason: 'second' },
+      ];
+      const result = await runCheck({ cwd: root, allowlist });
+      expect(result.allowlisted).toHaveLength(1);
+      expect(result.newViolations).toEqual([]);
+      expect(result.staleEntries).toEqual([{ file: 'packages/server/src/foo.test.ts', specifier: 'bar', reason: 'second' }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
