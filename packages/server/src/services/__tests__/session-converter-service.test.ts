@@ -76,7 +76,15 @@ describe('SessionConverterService', () => {
         const existing = toPersistedWorkerResults.get(w.id);
         if (existing) return existing;
         if (w.type === 'agent') {
-          return { id: w.id, type: 'agent', name: w.name, agentId: w.agentId, createdAt: w.createdAt, pid: w.pty?.pid ?? null };
+          return {
+            id: w.id,
+            type: 'agent',
+            name: w.name,
+            agentId: w.agentId,
+            createdAt: w.createdAt,
+            pid: w.pty?.pid ?? null,
+            deliverInitialPromptOnActivation: w.deliverInitialPromptOnActivation,
+          };
         } else if (w.type === 'terminal') {
           return { id: w.id, type: 'terminal', name: w.name, createdAt: w.createdAt, pid: w.pty?.pid ?? null };
         } else if (w.type === 'git-diff') {

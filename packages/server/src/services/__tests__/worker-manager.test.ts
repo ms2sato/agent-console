@@ -132,6 +132,29 @@ describe('WorkerManager', () => {
 
       expect(worker.agentId).toBe(CLAUDE_CODE_AGENT_ID);
     });
+
+    it('defaults deliverInitialPromptOnActivation to false when omitted (Issue #1236)', () => {
+      const worker = workerManager.initializeAgentWorker({
+        id: 'w-no-flag',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      expect(worker.deliverInitialPromptOnActivation).toBe(false);
+    });
+
+    it('threads deliverInitialPromptOnActivation: true through to the worker (Issue #1236)', () => {
+      const worker = workerManager.initializeAgentWorker({
+        id: 'w-with-flag',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        deliverInitialPromptOnActivation: true,
+      });
+
+      expect(worker.deliverInitialPromptOnActivation).toBe(true);
+    });
   });
 
   describe('initializeTerminalWorker', () => {
@@ -1058,6 +1081,34 @@ describe('WorkerManager', () => {
       }
     });
 
+    it('should carry deliverInitialPromptOnActivation: true through to PersistedAgentWorker (Issue #1236)', () => {
+      const worker = workerManager.initializeAgentWorker({
+        id: 'agent-eligible',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        deliverInitialPromptOnActivation: true,
+      });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('agent');
+      if (persisted.type === 'agent') {
+        expect(persisted.deliverInitialPromptOnActivation).toBe(true);
+      }
+    });
+
+    it('should carry deliverInitialPromptOnActivation: false through to PersistedAgentWorker (Issue #1236)', () => {
+      const worker = createTestAgentWorker();
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('agent');
+      if (persisted.type === 'agent') {
+        expect(persisted.deliverInitialPromptOnActivation).toBe(false);
+      }
+    });
+
     it('should persist terminal worker', () => {
       const worker = createTestTerminalWorker();
 
@@ -1187,6 +1238,42 @@ describe('WorkerManager', () => {
         expect(worker.activityState).toBe('unknown');
         expect(worker.activityDetector).toBeNull();
         expect(worker.connectionCallbacks.size).toBe(0);
+      }
+    });
+
+    it('should restore agent workers with deliverInitialPromptOnActivation: true when persisted as eligible (Issue #1236)', () => {
+      const persistedWorkers: PersistedAgentWorker[] = [
+        buildPersistedAgentWorker({
+          id: 'restored-agent-eligible',
+          agentId: 'claude-code',
+          deliverInitialPromptOnActivation: true,
+        }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-agent-eligible')!;
+      expect(worker.type).toBe('agent');
+      if (worker.type === 'agent') {
+        expect(worker.deliverInitialPromptOnActivation).toBe(true);
+      }
+    });
+
+    it('should restore agent workers with deliverInitialPromptOnActivation: false when persisted as not eligible (Issue #1236)', () => {
+      const persistedWorkers: PersistedAgentWorker[] = [
+        buildPersistedAgentWorker({
+          id: 'restored-agent-ineligible',
+          agentId: 'claude-code',
+          deliverInitialPromptOnActivation: false,
+        }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-agent-ineligible')!;
+      expect(worker.type).toBe('agent');
+      if (worker.type === 'agent') {
+        expect(worker.deliverInitialPromptOnActivation).toBe(false);
       }
     });
 
@@ -2302,6 +2389,61 @@ describe('WorkerManager', () => {
         await wm.killWorker(worker, 'session-1');
 
         expect(rmCalls.length).toBe(0);
+      });
+    });
+
+    describe('initial-prompt injection callback (Issue #1236)', () => {
+      it('fires once with (sessionId, worker.id) when the injection write occurs with a prompt file attached', async () => {
+        delete process.env.AUTH_MODE;
+        const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+        const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+        const calls: Array<[string, string]> = [];
+        wm.setOnInitialPromptInjected((sessionId, workerId) => {
+          calls.push([sessionId, workerId]);
+        });
+
+        const worker = wm.initializeAgentWorker({
+          id: 'prompt-callback-1',
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+
+        await wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'testuser',
+          initialPrompt: 'hello world',
+        });
+
+        expect(worker.promptFile).not.toBeNull();
+        expect(calls).toEqual([['session-1', worker.id]]);
+      });
+
+      it('does not fire when the worker activates without a prompt file (no initialPrompt)', async () => {
+        delete process.env.AUTH_MODE;
+        const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+        const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+        const calls: Array<[string, string]> = [];
+        wm.setOnInitialPromptInjected((sessionId, workerId) => {
+          calls.push([sessionId, workerId]);
+        });
+
+        const worker = wm.initializeAgentWorker({
+          id: 'prompt-callback-2',
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+
+        await wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'testuser',
+        });
+
+        expect(worker.promptFile).toBeNull();
+        expect(calls).toEqual([]);
       });
     });
   });

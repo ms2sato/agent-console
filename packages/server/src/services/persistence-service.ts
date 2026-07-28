@@ -57,6 +57,8 @@ export interface PersistedAgentWorker extends PersistedWorkerBase {
   type: 'agent';
   agentId: string;
   pid: number | null;  // PTY process ID (null when not yet activated after server restart)
+  /** See `InternalAgentWorker.deliverInitialPromptOnActivation`. */
+  deliverInitialPromptOnActivation: boolean;
 }
 
 export interface PersistedTerminalWorker extends PersistedWorkerBase {
@@ -164,6 +166,10 @@ function migrateSession(old: OldPersistedSession): PersistedSession {
     agentId: 'claude-code-builtin',
     pid: old.pid,
     createdAt: old.createdAt,
+    // Legacy pre-migration rows predate this eligibility gate entirely;
+    // never redeliver a prompt this old format never tracked in the first
+    // place.
+    deliverInitialPromptOnActivation: false,
   }];
 
   if (isQuick) {

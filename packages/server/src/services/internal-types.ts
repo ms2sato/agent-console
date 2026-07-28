@@ -47,7 +47,10 @@ export interface InternalSessionBase {
   initialPrompt?: string;
   /**
    * Whether `initialPrompt` has already been delivered as the session's
-   * initial embedded-agent worker's first user message. See
+   * initial agent-kind worker's (embedded OR terminal-agent) first message.
+   * An embedded-agent worker delivers it as a first user message once its
+   * loop reports `ready`; a terminal-agent worker delivers it via a
+   * sentinel-injected command referencing a prompt file. See
    * `packages/shared/src/types/session.ts` `Session.initialPromptDelivered`
    * for the full contract (never re-fires once true, including across
    * restart).

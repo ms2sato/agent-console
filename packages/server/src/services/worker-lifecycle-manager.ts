@@ -175,6 +175,9 @@ export class WorkerLifecycleManager {
         name: workerName,
         createdAt,
         agentId: request.agentId,
+        // Only the session's initial agent worker (created with a
+        // non-empty initialPrompt) is eligible for restart re-delivery.
+        deliverInitialPromptOnActivation: !!initialPrompt?.trim(),
       });
       await this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
         sessionId,
@@ -418,6 +421,20 @@ export class WorkerLifecycleManager {
     const existingWorker = session.workers.get(workerId);
     if (!existingWorker || existingWorker.type !== 'agent') return null;
 
+    // Redelivery gate: only re-inject session.initialPrompt on
+    // this restart when this is the session's eligible initial agent worker,
+    // a prompt actually exists, it was never actually delivered (delivered
+    // here means the sentinel-injected write occurred -- see
+    // WorkerManager.setupWorkerEventHandlers), and the caller isn't asking to
+    // continue the existing conversation (a fresh prompt makes no sense
+    // there). Computed BEFORE the worker is killed/recreated below, from the
+    // still-live existingWorker/session state.
+    const shouldRedeliverInitialPrompt =
+      continueConversation === false &&
+      existingWorker.deliverInitialPromptOnActivation &&
+      !!session.initialPrompt?.trim() &&
+      session.initialPromptDelivered !== true;
+
     // Resolve agent ID: use provided agentId or fall back to existing
     const workerAgentId = agentId ?? existingWorker.agentId;
 
@@ -487,6 +504,11 @@ export class WorkerLifecycleManager {
       name: workerName,
       createdAt: workerCreatedAt,
       agentId: workerAgentId,
+      // Eligibility carries over unchanged across restart -- it is a
+      // property of "is this the session's initial agent worker", which
+      // restart does not change. NOT recomputed from whether THIS restart
+      // redelivers (see shouldRedeliverInitialPrompt above).
+      deliverInitialPromptOnActivation: existingWorker.deliverInitialPromptOnActivation,
     });
     // Adopt the epoch minted by resetWorkerOutput so the manifest and the
     // in-memory worker agree from the first live chunk (activation is
@@ -500,6 +522,10 @@ export class WorkerLifecycleManager {
       resolver,
       agentId: workerAgentId,
       continueConversation,
+      // Only carries a value when this restart's redelivery gate passed
+      // (see shouldRedeliverInitialPrompt above); otherwise the activation
+      // machinery behaves exactly as before this issue.
+      initialPrompt: shouldRedeliverInitialPrompt ? session.initialPrompt : undefined,
       repositoryId,
       context: {
         parentSessionId: session.parentSessionId,

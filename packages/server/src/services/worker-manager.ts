@@ -86,6 +86,14 @@ export interface AgentWorkerInitParams {
   name: string;
   createdAt: string;
   agentId: string;
+  /**
+   * Whether this worker is the session's initial agent worker, created with
+   * a non-empty `initialPrompt`. Gates whether `restartAgentWorker` re-injects
+   * the session's `initialPrompt` on a restart that never actually delivered
+   * it. `false`/omitted for workers added later via the generic add-worker
+   * route.
+   */
+  deliverInitialPromptOnActivation?: boolean;
 }
 
 /**
@@ -209,6 +217,16 @@ export type GlobalWorkerExitCallback = (
 ) => void;
 
 /**
+ * Callback fired when a terminal-agent worker's initial-prompt command is
+ * injected into its PTY (the post-sentinel `pty.write` in
+ * setupWorkerEventHandlers), gated on `worker.promptFile !== null`. Wired
+ * by SessionManager to mark `session.initialPromptDelivered = true` and
+ * persist it. "Delivered" here means injected, not received; the server
+ * cannot observe actual agent receipt.
+ */
+export type OnInitialPromptInjectedCallback = (sessionId: string, workerId: string) => void;
+
+/**
  * Session info for notification events.
  * Minimal interface to avoid circular dependency with InternalSession.
  */
@@ -225,6 +243,7 @@ export class WorkerManager {
   private globalActivityCallback?: GlobalActivityCallback;
   private globalPtyExitCallback?: PtyExitCallback;
   private globalWorkerExitCallback?: GlobalWorkerExitCallback;
+  private onInitialPromptInjectedCallback?: OnInitialPromptInjectedCallback;
 
   constructor(
     userMode: UserMode,
@@ -272,6 +291,14 @@ export class WorkerManager {
     this.globalWorkerExitCallback = callback;
   }
 
+  /**
+   * Set the callback fired when a terminal-agent worker's initial-prompt
+   * command is injected into its PTY. See `OnInitialPromptInjectedCallback`.
+   */
+  setOnInitialPromptInjected(callback: OnInitialPromptInjectedCallback): void {
+    this.onInitialPromptInjectedCallback = callback;
+  }
+
   // ========== Worker Initialization ==========
 
   /**
@@ -280,6 +307,7 @@ export class WorkerManager {
    */
   initializeAgentWorker(params: AgentWorkerInitParams): InternalAgentWorker {
     const { id, name, createdAt, agentId } = params;
+    const deliverInitialPromptOnActivation = params.deliverInitialPromptOnActivation ?? false;
 
     const resolvedAgentId = agentId ?? CLAUDE_CODE_AGENT_ID;
     const agentManager = this.agentManager;
@@ -300,6 +328,7 @@ export class WorkerManager {
       connectionCallbacks: new Map(),
       mcpToken: null,
       promptFile: null,
+      deliverInitialPromptOnActivation,
     };
 
     return worker;
@@ -773,6 +802,16 @@ export class WorkerManager {
         if (worker.pendingCommand && worker.pty) {
           worker.pty.write(worker.pendingCommand + '\r');
           worker.pendingCommand = undefined;
+          // "Delivered" for a terminal-agent worker means this injection write
+          // occurred while a prompt file was attached to the command. This is
+          // delivered=injected, not delivered=received: if the agent binary
+          // fails after this write (e.g. command not found), this callback
+          // still fires and a future restart will NOT re-deliver. The server
+          // cannot observe actual agent receipt; do not approximate it with
+          // activity-pattern heuristics.
+          if (worker.promptFile !== null) {
+            this.onInitialPromptInjectedCallback?.(sessionId, worker.id);
+          }
         }
         const afterSentinel = haystack.slice(idx + sentinel.length).replace(/^[\r\n]+/, '');
         worker.loginShellSentinel = undefined;
@@ -945,6 +984,10 @@ export class WorkerManager {
             activityDetector: null,
             mcpToken: null,
             promptFile: null,
+            // Round-trips from PersistedAgentWorker.deliverInitialPromptOnActivation,
+            // written at create time by toPersistedWorker, so eligibility
+            // survives a server restart.
+            deliverInitialPromptOnActivation: pw.deliverInitialPromptOnActivation,
           };
           break;
         case 'terminal':
@@ -1026,7 +1069,13 @@ export class WorkerManager {
 
     switch (worker.type) {
       case 'agent': {
-        const persistedAgent: PersistedAgentWorker = { ...base, type: 'agent', agentId: worker.agentId, pid: worker.pty?.pid ?? null };
+        const persistedAgent: PersistedAgentWorker = {
+          ...base,
+          type: 'agent',
+          agentId: worker.agentId,
+          pid: worker.pty?.pid ?? null,
+          deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
+        };
         return persistedAgent;
       }
       case 'terminal': {
