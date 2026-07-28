@@ -181,6 +181,32 @@ describe('expandTemplate', () => {
       expect(result.command).toBe("test-cli '$HOME and $(whoami)'");
       expect(result.env).toEqual({});
     });
+
+    it('should not interpret String.replace special replacement patterns ($$, $&, $`, $\') in the prompt', () => {
+      // String.prototype.replace() treats a STRING second argument
+      // specially: $$ -> literal $, $& -> the matched substring, $` -> text
+      // before the match, $' -> text after the match. A plain-string
+      // replacer would silently mangle a prompt containing these sequences
+      // before it ever reaches the shell. This locks in the function-form
+      // replacer fix for the inline-prompt branch.
+      const prompt = 'price is $$5, ref $&, before $` marker, after $\' marker';
+      const result = expandTemplate({
+        template: 'test-cli {{prompt}}',
+        prompt,
+        cwd: '/repo',
+      });
+
+      // shellEscape wraps in single quotes; the one literal `'` in the
+      // prompt (from `$'`) is itself escaped via the `'\''` technique
+      // (see the "should safely handle prompts with quotes" test above) --
+      // that escaping is orthogonal to this test's concern, which is that
+      // NONE of the $$/$&/$`/$' sequences get reinterpreted as
+      // String.replace patterns.
+      expect(result.command).toBe(
+        "test-cli 'price is $$5, ref $&, before $` marker, after $'\\'' marker'"
+      );
+      expect(result.env).toEqual({});
+    });
   });
 
   describe('path handling', () => {
@@ -205,6 +231,20 @@ describe('expandTemplate', () => {
 
       // Single quotes in paths are escaped using the '\'' technique
       expect(result.command).toBe("cd '/path/with'\\''quote/repo' && run 'test'");
+      expect(result.env).toEqual({});
+    });
+
+    it('should not interpret String.replace special replacement patterns ($&) in cwd', () => {
+      // Same String.prototype.replace() trap as {{prompt}}: a plain-string
+      // replacer would silently mangle a cwd containing these sequences.
+      // Locks in the function-form replacer fix for the {{cwd}} site.
+      const result = expandTemplate({
+        template: 'cd {{cwd}} && run {{prompt}}',
+        prompt: 'test',
+        cwd: '/repo/$&marker',
+      });
+
+      expect(result.command).toBe("cd '/repo/$&marker' && run 'test'");
       expect(result.env).toEqual({});
     });
   });
@@ -417,6 +457,32 @@ describe('promptFilePath option', () => {
     expect(result.env).toEqual({});
   });
 
+  it('should not interpret String.replace special replacement patterns ($$, $&, $`, $\') in the promptFilePath', () => {
+    // Same String.prototype.replace() trap as the inline-prompt branch: a
+    // plain-string replacer would silently mangle a path containing these
+    // sequences. Paths are derived from AGENT_CONSOLE_HOME / an OS user's
+    // homeDir, which could theoretically contain such characters depending
+    // on system configuration. Locks in the function-form replacer fix for
+    // the promptFilePath branch.
+    const promptFilePath = "/home/weird$$user/$&marker/$`before/$'after/w1.prompt";
+    const result = expandTemplate({
+      template: 'claude {{prompt}}',
+      promptFilePath,
+      cwd: '/repo',
+    });
+
+    // shellEscape wraps in single quotes; the one literal `'` in the path
+    // (from `$'`) is itself escaped via the `'\''` technique (see the
+    // "should shell-escape a promptFilePath containing a single quote" test
+    // above) -- that escaping is orthogonal to this test's concern, which
+    // is that NONE of the $$/$&/$`/$' sequences get reinterpreted as
+    // String.replace patterns.
+    expect(result.command).toBe(
+      "claude \"$(cat '/home/weird$$user/$&marker/$`before/$'\\''after/w1.prompt')\""
+    );
+    expect(result.env).toEqual({});
+  });
+
   it('should throw TemplateExpansionError when both prompt and promptFilePath are provided', () => {
     expect(() =>
       expandTemplate({
@@ -429,7 +495,12 @@ describe('promptFilePath option', () => {
   });
 
   // Regression lock: promptFilePath being absent must not change existing
-  // behavior at all (Issue #1234 fix must be byte-identical when unused).
+  // behavior for ordinary inputs (Issue #1234 fix must be byte-identical
+  // when unused). This covers the LEGACY CONTRACT, not the legacy $$/$&/
+  // $`/$' mangling bug -- inputs containing those sequences now produce
+  // verbatim (fixed) output regardless of whether promptFilePath is used;
+  // see "should not interpret String.replace special replacement
+  // patterns..." above for that corrected contract.
   it('should produce byte-identical output to before when promptFilePath is absent (basic prompt)', () => {
     const result = expandTemplate({
       template: 'test-cli {{prompt}}',

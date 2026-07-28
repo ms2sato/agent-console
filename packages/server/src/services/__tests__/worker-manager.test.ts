@@ -1834,16 +1834,43 @@ describe('WorkerManager', () => {
     function buildManagerWithSeams(seams: {
       lookupOsUserFn?: LookupOsUserFn;
       runAsUserImpl?: typeof runAsUser;
+      mcpTokenRegistry?: { mint: (identity: { sessionId: string; workerId: string; userId: string }) => string; revokeByWorker: (workerId: string) => void };
     }): WorkerManager {
       const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
       return new WorkerManager(
         userMode,
         agentManager,
         new WorkerOutputFileManager(),
-        undefined,
+        seams.mcpTokenRegistry,
         seams.lookupOsUserFn,
         seams.runAsUserImpl,
       );
+    }
+
+    /**
+     * Path-discriminating fake `runAsUser` for tests that need ONE `cat >`
+     * write (prompt file or MCP token file) to succeed while the OTHER
+     * fails, within the same activation. `failSuffix` matches against the
+     * destination path embedded in the write command (`.prompt` vs
+     * `.token`).
+     */
+    function createPathDiscriminatingRunAsUser(opts: { failSuffix: string }) {
+      const writeCalls: RunAsUserOpts[] = [];
+      const rmCalls: RunAsUserOpts[] = [];
+      const fake: typeof runAsUser = async (callOpts) => {
+        if (callOpts.command.includes('cat >')) {
+          writeCalls.push(callOpts);
+          return {
+            stdout: '',
+            stderr: '',
+            exitCode: callOpts.command.includes(opts.failSuffix) ? 1 : 0,
+            timedOut: false,
+          };
+        }
+        rmCalls.push(callOpts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      return { fake, writeCalls, rmCalls };
     }
 
     const defaultLookupOsUserFn: LookupOsUserFn = async (username) => ({
@@ -2022,7 +2049,63 @@ describe('WorkerManager', () => {
       expect(worker.pty).toBeNull();
     });
 
-    it('prompt file write failure aborts activation with no fallback embedding of the raw prompt', async () => {
+    it('a later throw (MCP-token write failure) after a successful prompt-file write cleans up the prompt file via the shared catch block', async () => {
+      // The prompt-file write and the MCP-token mint/write both attach
+      // state to `worker` before `worker.pty` is assigned. This test proves
+      // the single shared try/catch in activateAgentWorkerPty closes the
+      // gap for BOTH artifacts even when the prompt-file write itself
+      // succeeded and the LATER MCP-token write is what actually fails.
+      process.env.AUTH_MODE = 'multi-user';
+      const { fake: runAsUserImpl, rmCalls } = createPathDiscriminatingRunAsUser({ failSuffix: '.token' });
+      const revokedWorkerIds: string[] = [];
+      const fakeMcpTokenRegistry = {
+        mint: () => 'fake-mcp-token-value',
+        revokeByWorker: (workerId: string) => { revokedWorkerIds.push(workerId); },
+      };
+      const wm = buildManagerWithSeams({
+        lookupOsUserFn: defaultLookupOsUserFn,
+        runAsUserImpl,
+        mcpTokenRegistry: fakeMcpTokenRegistry,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-later-throw',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await expect(
+        wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'alice',
+          initialPrompt: 'hello world',
+          createdByUserId: 'user-uuid-1',
+        }),
+      ).rejects.toThrow();
+
+      // The prompt-file write succeeded; the MCP-token write (later in the
+      // same activation) is what failed and triggered the throw. Both
+      // artifacts must be cleaned up / cleared despite worker.pty never
+      // being set.
+      expect(worker.promptFile).toBeNull();
+      expect(worker.mcpToken).toBeNull();
+      expect(worker.pty).toBeNull();
+      // Exactly one `rm -rf` fires -- for the prompt file. The MCP-token
+      // write itself failed (never produced a file), so there is nothing
+      // for revokeAndDeleteMcpToken to `rm`; its own internal null-check
+      // short-circuits before issuing a second rm call.
+      expect(rmCalls.length).toBe(1);
+      expect(rmCalls[0].command).toContain('.prompt');
+      // revokeByWorker fires exactly once, from the MCP-token block's own
+      // inline revoke-on-write-failure branch (worker.mcpToken was never
+      // assigned on this path, so the catch block's
+      // revokeAndDeleteMcpToken sees a null token and short-circuits
+      // without a second revoke call).
+      expect(revokedWorkerIds).toEqual(['prompt-agent-later-throw']);
+    });
+
+    it('prompt file write failure aborts activation with no fallback embedding of the raw prompt, and cleans up via the catch block', async () => {
       delete process.env.AUTH_MODE;
       const { fake: runAsUserImpl, rmCalls } = createCommandDiscriminatingRunAsUser({ writeExitCode: 1 });
       const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
@@ -2044,11 +2127,16 @@ describe('WorkerManager', () => {
         }),
       ).rejects.toThrow();
 
-      // No orphaned reference left on the worker, and no cleanup was
-      // triggered (nothing was ever set to clean up).
+      // worker.promptFile is set BEFORE the write is attempted (so a
+      // partially-interrupted write is still covered by cleanup), so the
+      // catch block's deletePromptFile call clears it back to null and
+      // issues an `rm -rf` -- a no-op success against a path the write
+      // never actually produced (POSIX `rm -f` is idempotent on a missing
+      // path), but observable via the fake regardless.
       expect(worker.promptFile).toBeNull();
       expect(worker.pty).toBeNull();
-      expect(rmCalls.length).toBe(0);
+      expect(rmCalls.length).toBe(1);
+      expect(rmCalls[0].command).toContain('rm -rf --');
       // The failure happens before spawnPty is reached, so no PTY (and thus
       // no fallback embedding of the raw prompt into any spawned command)
       // was ever created.
