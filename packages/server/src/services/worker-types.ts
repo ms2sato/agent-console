@@ -80,6 +80,16 @@ export interface InternalAgentWorker extends InternalPtyWorkerBase {
    * delete the file on exit/kill/delete alongside the in-memory token revoke.
    */
   mcpToken: { filePath: string; username: string } | null;
+  /**
+   * Prompt file delivered to this worker's shell via the sentinel-injected
+   * `claude "$(cat '<path>')"` command -- avoids embedding a
+   * long initialPrompt directly on the injected line, which truncates once
+   * it exceeds the tty's canonical-mode input buffer. null when no prompt
+   * file was written (no initialPrompt, template lacks {{prompt}}, or
+   * restart/continue). Used to delete the file on exit/kill alongside the
+   * pendingCommand cleanup.
+   */
+  promptFile: { filePath: string; username: string } | null;
 }
 
 /**

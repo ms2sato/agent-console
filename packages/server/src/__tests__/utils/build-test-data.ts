@@ -154,6 +154,7 @@ export function buildInternalAgentWorker(
     activityState: 'unknown',
     activityDetector: null,
     mcpToken: null,
+    promptFile: null,
     ...overrides,
   };
 }

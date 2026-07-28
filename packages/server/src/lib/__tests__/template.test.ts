@@ -392,6 +392,90 @@ describe('custom template variables', () => {
   });
 });
 
+describe('promptFilePath option', () => {
+  it('should expand {{prompt}} to a quoted command substitution reading the prompt file', () => {
+    const result = expandTemplate({
+      template: 'claude {{prompt}}',
+      promptFilePath: '/home/alice/.agent-console/prompts/w1.prompt',
+      cwd: '/repo',
+    });
+
+    expect(result.command).toBe(
+      `claude "$(cat '/home/alice/.agent-console/prompts/w1.prompt')"`
+    );
+    expect(result.env).toEqual({});
+  });
+
+  it('should shell-escape a promptFilePath containing a single quote', () => {
+    const result = expandTemplate({
+      template: 'claude {{prompt}}',
+      promptFilePath: "/home/al'ice/w1.prompt",
+      cwd: '/repo',
+    });
+
+    expect(result.command).toBe(`claude "$(cat '/home/al'\\''ice/w1.prompt')"`);
+    expect(result.env).toEqual({});
+  });
+
+  it('should throw TemplateExpansionError when both prompt and promptFilePath are provided', () => {
+    expect(() =>
+      expandTemplate({
+        template: 'claude {{prompt}}',
+        prompt: 'inline prompt',
+        promptFilePath: '/home/alice/.agent-console/prompts/w1.prompt',
+        cwd: '/repo',
+      })
+    ).toThrow(TemplateExpansionError);
+  });
+
+  // Regression lock: promptFilePath being absent must not change existing
+  // behavior at all (Issue #1234 fix must be byte-identical when unused).
+  it('should produce byte-identical output to before when promptFilePath is absent (basic prompt)', () => {
+    const result = expandTemplate({
+      template: 'test-cli {{prompt}}',
+      prompt: 'Hello World',
+      cwd: '/repo',
+    });
+
+    expect(result.command).toBe("test-cli 'Hello World'");
+    expect(result.env).toEqual({});
+  });
+
+  it('should produce byte-identical output to before when promptFilePath is absent (special characters)', () => {
+    const result = expandTemplate({
+      template: 'test-cli {{prompt}}',
+      prompt: '$HOME and $(whoami)',
+      cwd: '/repo',
+    });
+
+    expect(result.command).toBe("test-cli '$HOME and $(whoami)'");
+    expect(result.env).toEqual({});
+  });
+
+  it('should be a no-op when promptFilePath is set but the template has no {{prompt}}', () => {
+    const result = expandTemplate({
+      template: 'cli --continue',
+      promptFilePath: '/home/alice/.agent-console/prompts/w1.prompt',
+      cwd: '/repo',
+    });
+
+    expect(result.command).toBe('cli --continue');
+    expect(result.env).toEqual({});
+  });
+
+  it('should replace multiple {{prompt}} occurrences identically when promptFilePath is set', () => {
+    const result = expandTemplate({
+      template: 'cmd {{prompt}} --extra {{prompt}}',
+      promptFilePath: '/home/alice/.agent-console/prompts/w1.prompt',
+      cwd: '/repo',
+    });
+
+    const expected = `"$(cat '/home/alice/.agent-console/prompts/w1.prompt')"`;
+    expect(result.command).toBe(`cmd ${expected} --extra ${expected}`);
+    expect(result.env).toEqual({});
+  });
+});
+
 describe('TemplateExpansionError', () => {
   it('should be instance of Error', () => {
     const error = new TemplateExpansionError('test message');

@@ -1141,6 +1141,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1249,6 +1250,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1287,6 +1289,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1316,6 +1319,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1343,6 +1347,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -1372,6 +1377,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2137,6 +2143,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2171,6 +2178,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2252,6 +2260,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 
@@ -2383,6 +2392,7 @@ describe('WorkerLifecycleManager', () => {
         activityDetector: null,
         connectionCallbacks: new Map(),
         mcpToken: null,
+        promptFile: null,
       };
       session.workers.set(agentWorker.id, agentWorker);
 

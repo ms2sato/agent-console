@@ -16,6 +16,7 @@ import type { JobQueue } from './jobs/job-queue.js';
 import type { SessionRepository } from './repositories/session-repository.js';
 import type { UserRepository } from './repositories/user-repository.js';
 import type { SessionManager } from './services/session-manager.js';
+import type { runAsUser } from './services/privilege-elevation.js';
 import type { RepositoryManager } from './services/repository-manager.js';
 import type { NotificationManager } from './services/notifications/notification-manager.js';
 import type { AgentManager } from './services/agent-manager.js';
@@ -603,6 +604,18 @@ export interface CreateTestContextOptions {
    * port known only after `Bun.serve` starts.
    */
   getMcpBaseUrl?: () => string;
+  /**
+   * Test seam for WorkerManager's `runAsUser`-shaped elevation calls (MCP
+   * token file write/delete, prompt file write/delete). Threaded straight
+   * through to `SessionManager.create()`'s own `runAsUserImpl` seam.
+   * Defaults to `undefined`, which leaves `WorkerManager` on its own default
+   * (the real `runAsUser`) -- production and every existing test context are
+   * unaffected. The prompt-file write runs unconditionally whenever an
+   * activated agent worker carries a non-empty `initialPrompt` (not gated on
+   * auth mode), so integration tests that create such a worker and don't
+   * want a real filesystem write should inject an always-success fake here.
+   */
+  runAsUserImpl?: typeof runAsUser;
 }
 
 /**
@@ -696,6 +709,7 @@ export async function createTestContext(
     // Thread only when provided so default behavior (local /mcp URL) is
     // unchanged for tests that do not override it.
     ...(overrides?.getMcpBaseUrl ? { getMcpBaseUrl: overrides.getMcpBaseUrl } : {}),
+    runAsUserImpl: overrides?.runAsUserImpl,
     notificationManager,
     annotationService,
     workerOutputFileManager,
