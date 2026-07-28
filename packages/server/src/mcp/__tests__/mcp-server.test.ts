@@ -37,6 +37,7 @@ import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { AgentDirectoryEntry, EmbeddedAgentDefinition } from '@agent-console/shared';
+import type { runAsUser } from '../../services/privilege-elevation.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
 // Declaring the parameter type makes `mock.calls` typed correctly so the
@@ -57,6 +58,47 @@ const mockFindOpenPullRequest = mock<
 const mockFetchPullRequestUrl = mock<
   (branch: string, cwd: string, requestUsername: string | null) => Promise<string | null>
 >(async () => null);
+
+/**
+ * Captures the content written to each prompt file via the injected
+ * `runAsUserImpl` seam below (Issue #1234), keyed by destination file path.
+ * `writeUserOwnedSecretFile`'s command ends in `cat > '<path>'`; the actual
+ * payload travels via `opts.stdin`, never through argv/the command string
+ * (see privilege-elevation.ts). Reset in `beforeEach`. Consumed by
+ * `getAgentPromptForSession` below to recover the delivered prompt text now
+ * that it no longer travels inline in the spawn command.
+ */
+const capturedPromptFileWrites = new Map<string, string>();
+
+/**
+ * Always-success fake for WorkerManager's `runAsUser`-shaped elevation
+ * calls, injected via SessionManager's `runAsUserImpl` seam (Issue #1234).
+ * `delegate_to_worktree` always activates its agent worker with a non-empty
+ * `initialPrompt`, and that write is NOT AUTH_MODE-gated -- without this
+ * fake, `activateAgentWorkerPty`'s prompt-file write would hit the REAL
+ * elevation helper's `Bun.spawn(['sh', '-c', ...])` subprocess against the
+ * real filesystem (memfs mocking here only covers `fs`/`fs/promises`, not
+ * real subprocess spawns), and fail with a real `mkdir: Permission denied`
+ * under the synthetic `TEST_CONFIG_DIR` used by this suite.
+ *
+ * Discriminates the prompt-file write call by its `cat >` command shape
+ * (mirrors `createCommandDiscriminatingRunAsUser` in worker-manager.test.ts)
+ * and captures its content rather than loosening the tests that inspect the
+ * delivered prompt text.
+ */
+const fakeRunAsUserAlwaysSuccess: typeof runAsUser = async (opts) => {
+  const writeMatch = opts.command.match(/cat > '((?:[^']|'\\'')*)'$/);
+  if (writeMatch && typeof opts.stdin === 'string') {
+    const filePath = writeMatch[1].replace(/'\\''/g, "'");
+    capturedPromptFileWrites.set(filePath, opts.stdin);
+  }
+  return {
+    stdout: '',
+    stderr: '',
+    exitCode: 0,
+    timedOut: false,
+  };
+};
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -281,6 +323,10 @@ describe('MCP Server Tools', () => {
     mcpRunAsUserCapture.capturedWorktreePath = '';
     mcpRunAsUserCapture.responseOverride = null;
 
+    // Reset the prompt-file write capture (Issue #1234, used by
+    // getAgentPromptForSession below).
+    capturedPromptFileWrites.clear();
+
     // Reset the embedded-agent registry stub, seeded with the default
     // fixture (see `testEmbeddedAgentManagerStub` comment above).
     embeddedAgentDefsById = new Map([[TEST_EMBEDDED_AGENT_DEF.id, TEST_EMBEDDED_AGENT_DEF]]);
@@ -326,6 +372,7 @@ describe('MCP Server Tools', () => {
       agentManager,
       annotationService,
       mcpTokenRegistry: new McpTokenRegistry(),
+      runAsUserImpl: fakeRunAsUserAlwaysSuccess,
       repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager?.getRepositorySlug(id) },
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
@@ -2249,10 +2296,16 @@ describe('MCP Server Tools', () => {
     // -----------------------------------------------------------------------
 
     /**
-     * Extract the embedded prompt from the PTY spawn call that matches the
-     * given session ID. After Issue #851, the prompt is embedded directly
+     * Extract the delivered prompt for the PTY spawn call that matches the
+     * given session ID. After Issue #851, the prompt was embedded directly
      * into the spawn command via shellEscape (single-quoted literal),
-     * instead of being indirected through env.__AGENT_PROMPT__.
+     * instead of being indirected through env.__AGENT_PROMPT__. After Issue
+     * #1234, the injected command no longer embeds the prompt at all --
+     * `activateAgentWorkerPty` writes it to a file and injects a bounded
+     * `claude "$(cat '<path>')"` command instead (avoids truncation when the
+     * injected line exceeds the tty's canonical-mode input buffer). This
+     * helper extracts the file path from the injected command and looks up
+     * the content captured by the `fakeRunAsUserAlwaysSuccess` seam above.
      */
     function getAgentPromptForSession(sessionId: string): string {
       const calls = ptyFactory.spawn.mock.calls as unknown as Array<[string, string[], PtySpawnOptions]>;
@@ -2265,6 +2318,15 @@ describe('MCP Server Tools', () => {
       const commandWithCR = pty.writtenData.find((d) => d.endsWith('\r'));
       expect(commandWithCR).toBeDefined();
       const command = commandWithCR!.slice(0, -1);
+      const fileMatch = command.match(/\$\(cat '((?:[^']|'\\'')*)'\)/);
+      if (fileMatch) {
+        const filePath = fileMatch[1].replace(/'\\''/g, "'");
+        const content = capturedPromptFileWrites.get(filePath);
+        expect(content).toBeDefined();
+        return content!;
+      }
+      // Fallback for templates that still embed the prompt inline (no
+      // {{prompt}}-bearing promptFilePath write occurred).
       return extractPromptFromSpawnCommand(command);
     }
 

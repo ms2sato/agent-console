@@ -35,15 +35,35 @@ import {
 } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import type { runAsUser } from '@agent-console/server/src/services/privilege-elevation';
 
 import { AppServerMessageSchema } from '@agent-console/shared';
+
+/**
+ * Always-success fake for WorkerManager's `runAsUser`-shaped elevation
+ * calls, injected via the `runAsUserImpl` test seam threaded through
+ * `createTestContext` (Issue #1234). `createSession` below activates an
+ * agent worker with a non-empty `initialPrompt`, and that write is NOT
+ * AUTH_MODE-gated -- without this fake, `activateAgentWorkerPty`'s
+ * prompt-file write would hit the REAL elevation helper's
+ * `Bun.spawn(['sh', '-c', ...])` subprocess against the real filesystem
+ * (this test's `AGENT_CONSOLE_HOME` is a synthetic path set up by
+ * `setupTestEnvironment`, not a directory that real subprocess I/O can
+ * write to), and fail with a real `mkdir: Permission denied`.
+ */
+const fakeRunAsUserAlwaysSuccess: typeof runAsUser = async () => ({
+  stdout: '',
+  stderr: '',
+  exitCode: 0,
+  timedOut: false,
+});
 
 describe('Client-Server Boundary: Session.initialPromptDelivered', () => {
   let ctx: AppContext;
 
   beforeEach(async () => {
     await setupTestEnvironment();
-    ctx = await createTestContext();
+    ctx = await createTestContext({ runAsUserImpl: fakeRunAsUserAlwaysSuccess });
   });
 
   afterEach(async () => {

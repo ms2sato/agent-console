@@ -26,7 +26,8 @@ import {
   type SendUserMessageResult,
   type TriggerHandoffResult,
 } from './embedded-agent-worker-service.js';
-import type { SpawnAsUserFn } from './privilege-elevation.js';
+import type { SpawnAsUserFn, runAsUser } from './privilege-elevation.js';
+import type { LookupOsUserFn } from './os-user-lookup.js';
 import type { sweepOrphanProcesses } from './orphan-process-sweeper.js';
 import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
@@ -145,6 +146,30 @@ interface SessionManagerOptions {
    * `EmbeddedAgentWorkerService` test seam.
    */
   spawnAsUserFn?: SpawnAsUserFn;
+  /**
+   * Test seam for WorkerManager's OS user lookup (used to resolve the
+   * destination directory for a multi-user-mode MCP token file or prompt
+   * file). Threaded straight through to the `WorkerManager`
+   * constructor (which already accepts this as an optional param). Defaults
+   * to `WorkerManager`'s own default (the real `lookupOsUser`) when omitted
+   * -- production and every existing caller are unaffected.
+   */
+  lookupOsUserFn?: LookupOsUserFn;
+  /**
+   * Test seam for WorkerManager's `runAsUser`-shaped elevation calls (MCP
+   * token file write/delete, prompt file write/delete).
+   * Threaded straight through to the `WorkerManager` constructor (which
+   * already accepts this as an optional param). Defaults to `WorkerManager`'s
+   * own default (the real `runAsUser`) when omitted -- production and every
+   * existing caller are unaffected. The prompt-file write runs
+   * unconditionally whenever an activated agent worker carries a non-empty
+   * `initialPrompt` (not gated on auth mode), so it is on the hot path for
+   * any such test -- tests using a synthetic `AGENT_CONSOLE_HOME`
+   * (e.g. memfs-backed fixtures) should inject an always-success fake here to
+   * avoid the elevation helper's real `Bun.spawn` subprocess touching the
+   * real filesystem.
+   */
+  runAsUserImpl?: typeof runAsUser;
   /**
    * Test seam for the SESSION_ID marker orphan-process sweep. Defaults to
    * the real `sweepOrphanProcesses`. Threaded through
@@ -275,7 +300,14 @@ export class SessionManager {
     // registry explicitly so it can never be silently disconnected from the
     // one `/mcp` verifies against.
     this.mcpTokenRegistry = options.mcpTokenRegistry;
-    this.workerManager = new WorkerManager(userMode, agentManager, workerOutputFileManager, this.mcpTokenRegistry);
+    this.workerManager = new WorkerManager(
+      userMode,
+      agentManager,
+      workerOutputFileManager,
+      this.mcpTokenRegistry,
+      options.lookupOsUserFn,
+      options.runAsUserImpl,
+    );
     this.pathExists = options?.pathExists ?? defaultPathExists;
     this.sessionRepository = options?.sessionRepository ??
       new JsonSessionRepository(path.join(getConfigDir(), 'sessions.json'));

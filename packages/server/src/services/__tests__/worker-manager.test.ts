@@ -34,6 +34,7 @@ import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
 import type { listDescendantPids, signalPids } from '../../lib/process-tree.js';
+import * as os from 'node:os';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -1628,7 +1629,13 @@ describe('WorkerManager', () => {
       ).rejects.toThrow();
 
       expect(registry.mintedIdentities.length).toBe(1);
-      expect(registry.revokedWorkerIds).toEqual(['mcp-agent-4']);
+      // Revoked twice: once from the MCP-token block's own inline
+      // fast-path revoke (fires immediately on the write-failure branch,
+      // before the throw), and again from the outer catch block's
+      // revokeAndDeleteMcpToken -- worker.mcpToken is set BEFORE the write
+      // (not after success), so it is already non-null when the catch
+      // runs and its null-check no longer short-circuits.
+      expect(registry.revokedWorkerIds).toEqual(['mcp-agent-4', 'mcp-agent-4']);
       expect(worker.mcpToken).toBeNull();
     });
 
@@ -1786,6 +1793,514 @@ describe('WorkerManager', () => {
         await wm.killWorker(worker, 'session-1');
 
         expect(registry.revokeByWorker).not.toHaveBeenCalled();
+        expect(rmCalls.length).toBe(0);
+      });
+    });
+  });
+
+  describe('prompt file lifecycle (Issue #1234)', () => {
+    const originalAuthMode = process.env.AUTH_MODE;
+
+    afterEach(() => {
+      if (originalAuthMode === undefined) {
+        delete process.env.AUTH_MODE;
+      } else {
+        process.env.AUTH_MODE = originalAuthMode;
+      }
+    });
+
+    /**
+     * Command-discriminating fake `runAsUser`, mirroring the MCP token
+     * lifecycle describe block's helper of the same shape (see "wrapper-
+     * consumer test responder splitting" in memory): writeUserOwnedSecretFile's
+     * command contains `cat >`; rmRecursiveAsUser's command contains `rm -rf`.
+     */
+    function createCommandDiscriminatingRunAsUser(opts: {
+      writeExitCode?: number;
+      writeTimedOut?: boolean;
+    } = {}) {
+      const writeCalls: RunAsUserOpts[] = [];
+      const rmCalls: RunAsUserOpts[] = [];
+      const fake: typeof runAsUser = async (callOpts) => {
+        if (callOpts.command.includes('cat >')) {
+          writeCalls.push(callOpts);
+          return {
+            stdout: '',
+            stderr: '',
+            exitCode: opts.writeExitCode ?? 0,
+            timedOut: opts.writeTimedOut ?? false,
+          };
+        }
+        rmCalls.push(callOpts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      return { fake, writeCalls, rmCalls };
+    }
+
+    function buildManagerWithSeams(seams: {
+      lookupOsUserFn?: LookupOsUserFn;
+      runAsUserImpl?: typeof runAsUser;
+      mcpTokenRegistry?: { mint: (identity: { sessionId: string; workerId: string; userId: string }) => string; revokeByWorker: (workerId: string) => void };
+    }): WorkerManager {
+      const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+      return new WorkerManager(
+        userMode,
+        agentManager,
+        new WorkerOutputFileManager(),
+        seams.mcpTokenRegistry,
+        seams.lookupOsUserFn,
+        seams.runAsUserImpl,
+      );
+    }
+
+    /**
+     * Path-discriminating fake `runAsUser` for tests that need ONE `cat >`
+     * write (prompt file or MCP token file) to succeed while the OTHER
+     * fails, within the same activation. `failSuffix` matches against the
+     * destination path embedded in the write command (`.prompt` vs
+     * `.token`).
+     */
+    function createPathDiscriminatingRunAsUser(opts: { failSuffix: string }) {
+      const writeCalls: RunAsUserOpts[] = [];
+      const rmCalls: RunAsUserOpts[] = [];
+      const fake: typeof runAsUser = async (callOpts) => {
+        if (callOpts.command.includes('cat >')) {
+          writeCalls.push(callOpts);
+          return {
+            stdout: '',
+            stderr: '',
+            exitCode: callOpts.command.includes(opts.failSuffix) ? 1 : 0,
+            timedOut: false,
+          };
+        }
+        rmCalls.push(callOpts);
+        return { stdout: '', stderr: '', exitCode: 0, timedOut: false };
+      };
+      return { fake, writeCalls, rmCalls };
+    }
+
+    const defaultLookupOsUserFn: LookupOsUserFn = async (username) => ({
+      uid: 1000,
+      homeDir: `/home/${username}`,
+    });
+
+    /** The actual bytes injected into the PTY as typeahead (see setupWorkerEventHandlers). */
+    function getLastInjectedCommand(): string | undefined {
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+      return mockPty?.writtenData[0];
+    }
+
+    const LONG_PROMPT = 'A'.repeat(5200);
+
+    it('single-user mode, non-empty prompt, template with {{prompt}}: writes a prompt file and injects a bounded command (no AUTH_MODE gate)', async () => {
+      // Explicit single-user-mode regression guard: this is the exact bug the
+      // issue exists to fix, and the fix must NOT be gated on AUTH_MODE.
+      delete process.env.AUTH_MODE;
+      const { fake: runAsUserImpl, writeCalls } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-1',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'testuser',
+        initialPrompt: LONG_PROMPT,
+      });
+
+      const expectedFilePath = `${TEST_CONFIG_DIR}/prompts/prompt-agent-1.prompt`;
+      expect(worker.promptFile).toEqual({ filePath: expectedFilePath, username: 'testuser' });
+
+      expect(writeCalls.length).toBe(1);
+      expect(writeCalls[0].command).toContain(`cat > '${expectedFilePath}'`);
+      expect(writeCalls[0].stdin).toBe(LONG_PROMPT);
+
+      const injectedCommand = getLastInjectedCommand();
+      expect(injectedCommand).toBeDefined();
+      // Bounded well under the ~1KB/4096B tty canonical-mode input buffer,
+      // even though the prompt itself is 5200 bytes.
+      expect(Buffer.byteLength(injectedCommand!, 'utf-8')).toBeLessThan(512);
+      expect(injectedCommand).toContain(`"$(cat '`);
+      expect(injectedCommand).not.toContain('AAAA');
+    });
+
+    it('multi-user elevated: prompt file path uses the OS user home directory', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-2',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'alice',
+        initialPrompt: 'hello world',
+      });
+
+      expect(worker.promptFile).toEqual({
+        filePath: '/home/alice/.agent-console/prompts/prompt-agent-2.prompt',
+        username: 'alice',
+      });
+    });
+
+    it('multi-user elevation-skip (username equals server process user): prompt file path uses getConfigDir()', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-3',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      // shouldElevateForUser bypasses elevation when username === the server
+      // process's own OS user, even under AUTH_MODE=multi-user.
+      const serverUsername = os.userInfo().username;
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: serverUsername,
+        initialPrompt: 'hello world',
+      });
+
+      expect(worker.promptFile).toEqual({
+        filePath: `${TEST_CONFIG_DIR}/prompts/prompt-agent-3.prompt`,
+        username: serverUsername,
+      });
+    });
+
+    it('delivers special characters (quotes, backticks, $, backslashes, newlines) to the prompt file verbatim via stdin', async () => {
+      delete process.env.AUTH_MODE;
+      const { fake: runAsUserImpl, writeCalls } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-4',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const trickyPrompt = 'Say "hello" and \'goodbye\'\nrun `whoami` and $HOME and $(rm -rf /) and a\\backslash';
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'testuser',
+        initialPrompt: trickyPrompt,
+      });
+
+      expect(writeCalls.length).toBe(1);
+      expect(writeCalls[0].stdin).toBe(trickyPrompt);
+    });
+
+    it('core regression guard: a 5000+ char initialPrompt produces an injected command well under 512 bytes', async () => {
+      delete process.env.AUTH_MODE;
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-5',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const veryLongPrompt = 'the quick brown fox jumps over the lazy dog. '.repeat(120); // > 5000 chars
+      expect(veryLongPrompt.length).toBeGreaterThan(5000);
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'testuser',
+        initialPrompt: veryLongPrompt,
+      });
+
+      const injectedCommand = getLastInjectedCommand();
+      expect(injectedCommand).toBeDefined();
+      expect(Buffer.byteLength(injectedCommand!, 'utf-8')).toBeLessThan(512);
+      expect(injectedCommand).not.toContain('quick brown fox');
+    });
+
+    it('elevation-required home-dir resolution failure aborts activation (hard-fail, unlike the MCP-token block\'s soft skip)', async () => {
+      process.env.AUTH_MODE = 'multi-user';
+      const { fake: runAsUserImpl } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: async () => null, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-6',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await expect(
+        wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'alice',
+          initialPrompt: 'hello world',
+        }),
+      ).rejects.toThrow();
+
+      expect(worker.promptFile).toBeNull();
+      expect(worker.pty).toBeNull();
+    });
+
+    it('a later throw (MCP-token write failure) after a successful prompt-file write cleans up the prompt file via the shared catch block', async () => {
+      // The prompt-file write and the MCP-token mint/write both attach
+      // state to `worker` before `worker.pty` is assigned. This test proves
+      // the single shared try/catch in activateAgentWorkerPty closes the
+      // gap for BOTH artifacts even when the prompt-file write itself
+      // succeeded and the LATER MCP-token write is what actually fails.
+      process.env.AUTH_MODE = 'multi-user';
+      const { fake: runAsUserImpl, rmCalls } = createPathDiscriminatingRunAsUser({ failSuffix: '.token' });
+      const revokedWorkerIds: string[] = [];
+      const fakeMcpTokenRegistry = {
+        mint: () => 'fake-mcp-token-value',
+        revokeByWorker: (workerId: string) => { revokedWorkerIds.push(workerId); },
+      };
+      const wm = buildManagerWithSeams({
+        lookupOsUserFn: defaultLookupOsUserFn,
+        runAsUserImpl,
+        mcpTokenRegistry: fakeMcpTokenRegistry,
+      });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-later-throw',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await expect(
+        wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'alice',
+          initialPrompt: 'hello world',
+          createdByUserId: 'user-uuid-1',
+        }),
+      ).rejects.toThrow();
+
+      // The prompt-file write succeeded; the MCP-token write (later in the
+      // same activation) is what failed and triggered the throw. Both
+      // artifacts must be cleaned up / cleared despite worker.pty never
+      // being set.
+      expect(worker.promptFile).toBeNull();
+      expect(worker.mcpToken).toBeNull();
+      expect(worker.pty).toBeNull();
+      // Both worker.promptFile and worker.mcpToken are now set BEFORE their
+      // respective writes (not after success), so the outer catch's
+      // cleanup reaches BOTH artifacts unconditionally on any later throw
+      // -- regardless of which specific artifact's own write is what
+      // failed. Two `rm -rf` calls fire: one for the prompt file (its write
+      // succeeded), one for the token file (its write is what failed here,
+      // but `worker.mcpToken` was already assigned before that write, so
+      // the catch's revokeAndDeleteMcpToken still issues the `rm` -- this
+      // matters because writeUserOwnedSecretFile's `cat >` truncates the
+      // destination before writing, so even a failed write can leave a
+      // truncated file containing a fragment of the secret token behind).
+      expect(rmCalls.length).toBe(2);
+      expect(rmCalls.some((c) => c.command.includes('.prompt'))).toBe(true);
+      expect(rmCalls.some((c) => c.command.includes('.token'))).toBe(true);
+      // revokeByWorker fires TWICE: once from the MCP-token block's own
+      // inline fast-path revoke (runs immediately on the write-failure
+      // branch, before the throw), and again from the catch block's
+      // revokeAndDeleteMcpToken (worker.mcpToken is now non-null at that
+      // point, since it was assigned before the write, so the catch's
+      // null-check no longer short-circuits).
+      expect(revokedWorkerIds).toEqual(['prompt-agent-later-throw', 'prompt-agent-later-throw']);
+    });
+
+    it('prompt file write failure aborts activation with no fallback embedding of the raw prompt, and cleans up via the catch block', async () => {
+      delete process.env.AUTH_MODE;
+      const { fake: runAsUserImpl, rmCalls } = createCommandDiscriminatingRunAsUser({ writeExitCode: 1 });
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-7',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      const spawnCallsBefore = ptyFactory.spawn.mock.calls.length;
+
+      await expect(
+        wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'testuser',
+          initialPrompt: 'hello world',
+        }),
+      ).rejects.toThrow();
+
+      // worker.promptFile is set BEFORE the write is attempted (so a
+      // partially-interrupted write is still covered by cleanup), so the
+      // catch block's deletePromptFile call clears it back to null and
+      // issues an `rm -rf` -- a no-op success against a path the write
+      // never actually produced (POSIX `rm -f` is idempotent on a missing
+      // path), but observable via the fake regardless.
+      expect(worker.promptFile).toBeNull();
+      expect(worker.pty).toBeNull();
+      expect(rmCalls.length).toBe(1);
+      expect(rmCalls[0].command).toContain('rm -rf --');
+      // The failure happens before spawnPty is reached, so no PTY (and thus
+      // no fallback embedding of the raw prompt into any spawned command)
+      // was ever created.
+      expect(ptyFactory.spawn.mock.calls.length).toBe(spawnCallsBefore);
+    });
+
+    it('no-op: no initialPrompt (interactive start) does not write a prompt file', async () => {
+      delete process.env.AUTH_MODE;
+      const { fake: runAsUserImpl, writeCalls } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-8a',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'testuser',
+      });
+
+      expect(worker.promptFile).toBeNull();
+      expect(writeCalls.length).toBe(0);
+    });
+
+    it('no-op: continueConversation with continueTemplate (no {{prompt}}) does not write a prompt file', async () => {
+      delete process.env.AUTH_MODE;
+      const { fake: runAsUserImpl, writeCalls } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-8b',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'testuser',
+        continueConversation: true,
+        // continueTemplate ('claude -c') has no {{prompt}}; a stray
+        // initialPrompt must not cause a write against a templateless target.
+        initialPrompt: 'this should be ignored',
+      });
+
+      expect(worker.promptFile).toBeNull();
+      expect(writeCalls.length).toBe(0);
+    });
+
+    it('no-op: whitespace-only initialPrompt (trims to empty) does not write a prompt file', async () => {
+      delete process.env.AUTH_MODE;
+      const { fake: runAsUserImpl, writeCalls } = createCommandDiscriminatingRunAsUser();
+      const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+      const worker = wm.initializeAgentWorker({
+        id: 'prompt-agent-8c',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      await wm.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        username: 'testuser',
+        initialPrompt: '   \n\t  ',
+      });
+
+      expect(worker.promptFile).toBeNull();
+      expect(writeCalls.length).toBe(0);
+    });
+
+    describe('cleanup on kill / exit', () => {
+      async function activateWithPromptFile(id: string): Promise<{
+        wm: WorkerManager;
+        worker: InternalAgentWorker;
+        rmCalls: RunAsUserOpts[];
+      }> {
+        delete process.env.AUTH_MODE;
+        const { fake: runAsUserImpl, rmCalls } = createCommandDiscriminatingRunAsUser();
+        const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+
+        const worker = wm.initializeAgentWorker({
+          id,
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+
+        await wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'testuser',
+          initialPrompt: 'hello world',
+        });
+
+        expect(worker.promptFile).not.toBeNull();
+        return { wm, worker, rmCalls };
+      }
+
+      it('killWorker deletes the prompt file', async () => {
+        const { wm, worker, rmCalls } = await activateWithPromptFile('prompt-kill-1');
+        const filePath = worker.promptFile!.filePath;
+
+        await wm.killWorker(worker, 'session-1');
+
+        expect(worker.promptFile).toBeNull();
+        expect(rmCalls.length).toBe(1);
+        expect(rmCalls[0].command).toContain(`rm -rf -- '${filePath}'`);
+        expect(rmCalls[0].username).toBe('testuser');
+      });
+
+      it('PTY exit (unexpected) deletes the prompt file', async () => {
+        const { worker, rmCalls } = await activateWithPromptFile('prompt-exit-1');
+        const filePath = worker.promptFile!.filePath;
+
+        const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+        mockPty.simulateExit(1);
+
+        // deletePromptFile is fire-and-forget from the sync PTY exit
+        // callback; flush microtasks so its awaited rmRecursiveAsUser call
+        // has a chance to run.
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(worker.promptFile).toBeNull();
+        expect(rmCalls.length).toBe(1);
+        expect(rmCalls[0].command).toContain(`rm -rf -- '${filePath}'`);
+      });
+
+      it('killWorker on a worker with promptFile: null is a no-op for prompt-file cleanup', async () => {
+        const { fake: runAsUserImpl, rmCalls } = createCommandDiscriminatingRunAsUser();
+        const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
+        delete process.env.AUTH_MODE;
+        const worker = wm.initializeAgentWorker({
+          id: 'prompt-none-1',
+          name: 'Agent',
+          createdAt: new Date().toISOString(),
+          agentId: CLAUDE_CODE_AGENT_ID,
+        });
+        // No initialPrompt: no prompt file is ever written.
+        await wm.activateAgentWorkerPty(worker, {
+          ...defaultAgentActivationParams,
+          username: 'testuser',
+        });
+        expect(worker.promptFile).toBeNull();
+
+        await wm.killWorker(worker, 'session-1');
+
         expect(rmCalls.length).toBe(0);
       });
     });

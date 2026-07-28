@@ -25,6 +25,13 @@
  *     directly.
  *   - bun-pty's internal PTY allocation. That is a library concern.
  *   - The agent-console server. The builders are pure; no server runs here.
+ *   - (long-prompt case, Issue #1234) The --elevated variant of the
+ *     long-prompt case is intentionally omitted. Writing the payload file as
+ *     the target user would require `writeUserOwnedSecretFile` plumbing this
+ *     smoke does not otherwise need; the direct-mode case already exercises
+ *     the exact mechanism the issue is about (the injected line typed as PTY
+ *     typeahead while the tty is in canonical mode), which is identical in
+ *     shape between direct and elevated activation.
  *
  * Usage:
  *   bun scripts/smoke/check-login-shell-sentinel.ts               # direct mode
@@ -52,7 +59,7 @@
 
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, unlinkSync } from 'fs';
 import type { PtyInstance } from '../../packages/server/src/lib/pty-provider.js';
 import { bunPtyProvider } from '../../packages/server/src/lib/pty-provider.js';
 import { getUnsetEnvPrefix } from '../../packages/server/src/services/env-filter.js';
@@ -61,6 +68,7 @@ import {
   buildElevatedSentinelCommand,
 } from '../../packages/server/src/services/sentinel-spawn-command.js';
 import { buildElevationArgs } from '../../packages/server/src/services/elevation-args.js';
+import { expandTemplate } from '../../packages/server/src/lib/template.js';
 
 // Neutralize any unreadable inherited cwd (see check-multiuser-pty-env.ts):
 // when invoked via an elevation wrapper the caller's cwd may be untraversable
@@ -225,6 +233,58 @@ await waitFor(() =>
     }),
 );
 
+// Phase 3 (direct mode only): long-initialPrompt case (Issue #1234). Builds
+// the injected command via the SAME production `expandTemplate` helper
+// (promptFilePath variant) that `activateAgentWorkerPty` uses, and asserts
+// the injected command stays well under the tty's canonical-mode input
+// buffer even though the underlying prompt is far larger than that buffer.
+// >4096 bytes: the issue is explicit that <=4096 bytes is NOT sufficient to
+// reproduce the pre-fix truncation on Linux.
+const longPromptPayload = 'the quick brown fox jumps over the lazy dog. '.repeat(120);
+let longPromptCommand = '';
+let longPromptMarkerSeen = false;
+let longPromptFile: string | undefined;
+if (mode === 'direct') {
+  if (longPromptPayload.length <= 5000) {
+    console.error(`FAILED: smoke misconfiguration -- payload length ${longPromptPayload.length} <= 5000`);
+    finish(2);
+  }
+
+  longPromptFile = `/tmp/agent-console-smoke-prompt-${crypto.randomUUID()}.prompt`;
+  await Bun.write(longPromptFile, longPromptPayload);
+
+  const { command } = expandTemplate({
+    template: "printf '%s' {{prompt}} | wc -c; echo SMOKE_LONG_PROMPT_DONE",
+    cwd: '/',
+    promptFilePath: longPromptFile,
+  });
+  longPromptCommand = command;
+  if (Buffer.byteLength(command, 'utf-8') >= 512) {
+    console.error(
+      `FAILED: smoke misconfiguration -- injected command is ${Buffer.byteLength(command, 'utf-8')} bytes (expected < 512)`,
+    );
+    finish(2);
+  }
+
+  pty.write(command + '\r');
+  longPromptMarkerSeen = await waitFor(() => output.includes('SMOKE_LONG_PROMPT_DONE'));
+
+  // Best-effort cleanup: by the time the marker (or the timeout) is
+  // observed, `cat` has already read the file (or never will), so it's safe
+  // to remove now. Never let cleanup failure change the exit code.
+  try {
+    unlinkSync(longPromptFile);
+  } catch {
+    // best-effort; ignore
+  }
+  if (!longPromptMarkerSeen) {
+    console.error('FAILED: long-prompt probe never produced its marker (command was not executed).');
+    console.error('  captured output (first 800 chars, tail):');
+    console.error(output.slice(-800));
+    finish(1);
+  }
+}
+
 // ---------- assertions ----------
 const failures: string[] = [];
 let passes = 0;
@@ -268,6 +328,29 @@ if (expectedHome) {
   }
 } else {
   console.warn('  WARN  could not resolve expected home; skipping login-init PATH check');
+}
+
+if (mode === 'direct') {
+  console.log('==> long initialPrompt (Issue #1234) -- injected command stays bounded');
+  expect(
+    Buffer.byteLength(longPromptCommand, 'utf-8') < 512,
+    'injected command for a 5000+ char prompt is under 512 bytes',
+    `got ${Buffer.byteLength(longPromptCommand, 'utf-8')} bytes`,
+  );
+  expect(longPromptMarkerSeen, 'long-prompt probe completed (SMOKE_LONG_PROMPT_DONE observed)');
+
+  const doneIdx = lines.findIndex((l) => l === 'SMOKE_LONG_PROMPT_DONE');
+  const wcLine = doneIdx > 0 ? lines[doneIdx - 1] : '';
+  // The tty may prefix the line with terminal control sequences (e.g. a
+  // bracketed-paste-mode toggle); extract the trailing digit run rather than
+  // parsing from the start of the line.
+  const wcMatch = wcLine.match(/(\d+)\s*$/);
+  const wcCount = wcMatch ? parseInt(wcMatch[1], 10) : NaN;
+  expect(
+    !isNaN(wcCount) && wcCount === longPromptPayload.length,
+    `wc -c reports the exact payload byte length (${longPromptPayload.length})`,
+    `got line: "${wcLine}"`,
+  );
 }
 
 console.log('==> sentinel-gate negatives');

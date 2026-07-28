@@ -17,6 +17,17 @@ export type ExpandTemplateOptions = {
   prompt?: string;
   cwd: string;
   templateVars?: Record<string, string>;
+  /**
+   * Path to a file containing the prompt payload. When provided, {{prompt}}
+   * is expanded to `"$(cat '<escaped path>')"` instead of the shell-escaped
+   * prompt text. Command substitution inside double quotes is
+   * never re-parsed by the shell (no word splitting/globbing; quotes,
+   * backticks, `$`, and backslashes in the prompt file's contents are
+   * inert), so this avoids embedding a long prompt directly on the injected
+   * command line, which can exceed the tty's canonical-mode input buffer
+   * and silently truncate. Mutually exclusive with `prompt`.
+   */
+  promptFilePath?: string;
 };
 
 export type ExpandTemplateResult = {
@@ -46,10 +57,14 @@ export class TemplateExpansionError extends Error {
  * @throws {TemplateExpansionError} If template is empty or expansion fails
  */
 export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateResult {
-  const { template, prompt, cwd, templateVars } = options;
+  const { template, prompt, cwd, templateVars, promptFilePath } = options;
 
   if (!template || template.trim().length === 0) {
     throw new TemplateExpansionError('Template is empty');
+  }
+
+  if (prompt !== undefined && promptFilePath !== undefined) {
+    throw new TemplateExpansionError('prompt and promptFilePath are mutually exclusive');
   }
 
   let command = template;
@@ -57,9 +72,11 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
 
   // Expand {{cwd}} - shell-escaped to handle paths with special characters safely
   // Although cwd is validated by validateSessionPath before reaching here,
-  // we still escape it as defense-in-depth against shell metacharacter issues
+  // we still escape it as defense-in-depth against shell metacharacter issues.
+  // Function-form replacer: see the {{prompt}} block below for why a plain
+  // string replacer is unsafe here too ($$/$&/$`/$' reinterpretation).
   if (command.includes('{{cwd}}')) {
-    command = command.replace(/\{\{cwd\}\}/g, shellEscape(cwd));
+    command = command.replace(/\{\{cwd\}\}/g, () => shellEscape(cwd));
   }
 
   // Expand {{prompt}} - shell-escaped and embedded directly into the command,
@@ -74,7 +91,20 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
   // the placeholder is replaced with an empty shell-escaped string, which
   // allows starting agents interactively without a pre-filled prompt.
   if (command.includes('{{prompt}}')) {
-    command = command.replace(/\{\{prompt\}\}/g, shellEscape(prompt ?? ''));
+    // Function-form replacer: a string replacer interprets special patterns
+    // ($$, $&, $`, $', $<name>) in the replacement text, which would
+    // silently mangle the substituted value if it happened to contain one
+    // of those sequences (e.g. a prompt containing "cost is $$5" would
+    // become "cost is $5"). The function form inserts the value literally,
+    // matching the custom-template-var replacer below. Applied to both
+    // branches: the promptFilePath branch interpolates a filesystem path
+    // (derived from AGENT_CONSOLE_HOME / an OS user's homeDir), which is
+    // lower-risk than arbitrary prompt text but not immune to the same trap.
+    if (promptFilePath !== undefined) {
+      command = command.replace(/\{\{prompt\}\}/g, () => `"$(cat ${shellEscape(promptFilePath)})"`);
+    } else {
+      command = command.replace(/\{\{prompt\}\}/g, () => shellEscape(prompt ?? ''));
+    }
   }
 
   // Expand custom template variables (after reserved variables are already expanded)

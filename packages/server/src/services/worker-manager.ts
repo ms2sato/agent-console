@@ -49,10 +49,11 @@ import { computeDefaultBaseSpec } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
-import { writeUserOwnedSecretFile, rmRecursiveAsUser, type runAsUser } from './privilege-elevation.js';
+import { writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
 import { listDescendantPids, signalPids } from '../lib/process-tree.js';
 import { createLogger } from '../lib/logger.js';
+import { getConfigDir } from '../lib/config.js';
 import * as path from 'node:path';
 
 const logger = createLogger('worker-manager');
@@ -298,6 +299,7 @@ export class WorkerManager {
       activityDetector: null,
       connectionCallbacks: new Map(),
       mcpToken: null,
+      promptFile: null,
     };
 
     return worker;
@@ -436,157 +438,247 @@ export class WorkerManager {
       ? agent.continueTemplate
       : agent.commandTemplate;
 
-    const { command, env: templateEnv } = expandTemplate({
-      template,
-      prompt: initialPrompt,
-      cwd: locationPath,
-      templateVars: context?.templateVars,
-    });
-
-    // Build AgentConsole context so the agent knows its own identity.
-    // These enable self-delegation (e.g., MCP tools) and agent self-awareness.
-    const agentConsoleContext: AgentConsoleContext = {
-      baseUrl: `http://localhost:${serverConfig.PORT}`,
-      sessionId,
-      workerId: worker.id,
-      repositoryId,
-      parentSessionId: context?.parentSessionId,
-      parentWorkerId: context?.parentWorkerId,
-    };
-
-    // additionalEnvVars: repository + template env vars
-    // Base env (getCleanChildProcessEnv) and AGENT_CONSOLE_* conversion
-    // are handled internally by UserMode.spawnPty()
-    const additionalEnvVars: Record<string, string> = {
-      ...repositoryEnvVars,
-      ...templateEnv,
-    };
-
-    // Multi-user mode: mint an MCP bearer token for this worker, write it to
-    // a user-owned 0600 file, and inject only the FILE PATH via env. The raw
-    // token must NEVER travel through argv or an env var embedded into the
-    // elevation's inner shell command string (visible via
-    // /proc/<pid>/cmdline of the inner `sh -c` process, see
-    // privilege-elevation.ts:buildInnerCommand) -- a file path is not a
-    // secret and is safe to pass this way.
-    // (docs/design/embedded-agent-worker.md § "MCP caller identity")
-    if (process.env.AUTH_MODE === 'multi-user') {
-      if (!params.createdByUserId) {
-        // Non-fatal skip (unlike EmbeddedAgentWorkerService's hard-fail):
-        // terminal-agent PTY activation is a long-established
-        // availability-critical path (create / revive / restart / restore).
-        // The default AGENT_CONSOLE_MCP_AUTH mode is `warn`, so this
-        // worker's tokenless MCP calls are merely logged, not rejected;
-        // only an operator-opted-in `enforce` would reject them
-        // (fail-closed). The worker itself still starts either way.
-        logger.warn(
-          { workerId: worker.id, sessionId },
-          'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)',
-        );
-      } else if (this.mcpTokenRegistry) {
-        // lookupOsUserFn is an injectable seam (LookupOsUserFn); the built-in
-        // implementation never rejects, but an injected implementation (test
-        // stub, future variant) is not contractually guaranteed not to throw
-        // -- see os-user-lookup.ts's LookupOsUserFn JSDoc. Fold a throw into
-        // the same "skip mint, don't fail activation" path as a null result,
-        // distinguished by `logger.error` (implementation misbehaved) vs the
-        // `logger.warn` below (genuinely unresolved).
-        const osUser = await this.lookupOsUserFn(params.username).catch((err: unknown) => {
-          logger.error(
-            { workerId: worker.id, username: params.username, err },
-            'lookupOsUserFn threw unexpectedly during MCP token mint; skipping mint',
-          );
-          return null;
-        });
-        if (!osUser) {
-          logger.warn(
-            { workerId: worker.id, username: params.username },
-            'Could not resolve OS user home directory for MCP token file; skipping MCP token mint',
-          );
-        } else {
-          const token = this.mcpTokenRegistry.mint({
-            sessionId,
-            workerId: worker.id,
-            userId: params.createdByUserId,
-          });
-          const tokenFilePath = path.join(
-            osUser.homeDir,
-            '.agent-console',
-            'mcp-tokens',
-            `${worker.id}.token`,
-          );
-          const writeResult = await writeUserOwnedSecretFile({
-            username: params.username,
-            filePath: tokenFilePath,
-            content: token,
-            runAsUserImpl: this.runAsUserImpl,
-          });
-          if (writeResult.exitCode !== 0 || writeResult.timedOut) {
-            // Unlike the missing-createdBy case above (a deliberate skip),
-            // a write FAILURE after a successful mint is an unexpected error
-            // state -- fail loud, mirroring EmbeddedAgentWorkerService's "no
-            // orphaned token from a failed activation" invariant.
-            this.mcpTokenRegistry.revokeByWorker(worker.id);
+    // Everything below can leave a partially-activated worker behind: the
+    // prompt-file write and the MCP-token mint/write both attach state to
+    // `worker` (promptFile / mcpToken) before `worker.pty` is assigned, and
+    // `spawnPty` itself can throw synchronously (PTY allocation failure).
+    // Neither `pty.onExit` nor `killWorker` ever runs for a worker whose
+    // `pty` was never assigned -- and callers (createWorker/restartWorker)
+    // discard the worker object entirely on a rejected activation, so
+    // nothing else can reach it either. This try/catch is the ONLY closure
+    // point for both artifacts; on any failure in this span, clean up
+    // whatever was already written before rethrowing the original error
+    // unchanged (activation must still fail loudly).
+    try {
+      // Persist initialPrompt to a file and inject a short `"$(cat '<path>')"`
+      // substitution instead of embedding the raw prompt on the sentinel-
+      // injected command line: the injected line is typed as PTY
+      // typeahead while the tty is still in canonical mode, and canonical-mode
+      // input buffers are bounded (~1KB macOS / 4096B Linux) -- a long prompt
+      // silently truncates and the agent never starts. Deliberately NOT gated
+      // on AUTH_MODE: the underlying truncation reproduces in single-user mode.
+      let promptFilePath: string | undefined;
+      if (initialPrompt?.trim() && template.includes('{{prompt}}')) {
+        const elevate = shouldElevateForUser(params.username);
+        let promptsDir: string;
+        if (elevate) {
+          const osUser = await this.lookupOsUserFn(params.username);
+          if (!osUser) {
             logger.error(
-              {
-                workerId: worker.id,
-                exitCode: writeResult.exitCode,
-                timedOut: writeResult.timedOut,
-                stderr: writeResult.stderr,
-              },
-              'Failed to write MCP token file; aborting agent worker PTY activation',
+              { workerId: worker.id, username: params.username },
+              'Could not resolve OS user home directory for prompt file; aborting agent worker PTY activation',
             );
-            throw new Error(`Failed to write MCP token file for worker ${worker.id}`);
+            throw new Error(`Failed to resolve OS user home directory for prompt file (worker ${worker.id})`);
           }
-          worker.mcpToken = { filePath: tokenFilePath, username: params.username };
-          additionalEnvVars[MCP_TOKEN_FILE_ENV_VAR] = tokenFilePath;
+          promptsDir = path.join(osUser.homeDir, '.agent-console', 'prompts');
+        } else {
+          promptsDir = path.join(getConfigDir(), 'prompts');
+        }
+        const filePath = path.join(promptsDir, `${worker.id}.prompt`);
+        // Set BEFORE the write (not after a successful write): if the write
+        // is interrupted partway through (e.g. `cat >` receives a partial
+        // stream), the catch block's cleanup below still reaches this path
+        // -- `rmRecursiveAsUser`'s `rm -f` is idempotent on a missing or
+        // partial file either way.
+        worker.promptFile = { filePath, username: params.username };
+        const writeResult = await writeUserOwnedSecretFile({
+          username: params.username,
+          filePath,
+          content: initialPrompt,
+          runAsUserImpl: this.runAsUserImpl,
+        });
+        if (writeResult.exitCode !== 0 || writeResult.timedOut) {
+          logger.error(
+            {
+              workerId: worker.id,
+              exitCode: writeResult.exitCode,
+              timedOut: writeResult.timedOut,
+              stderr: writeResult.stderr,
+            },
+            'Failed to write prompt file; aborting agent worker PTY activation',
+          );
+          throw new Error(`Failed to write prompt file for worker ${worker.id}`);
+        }
+        promptFilePath = filePath;
+      }
+
+      const { command, env: templateEnv } = expandTemplate({
+        template,
+        cwd: locationPath,
+        templateVars: context?.templateVars,
+        ...(promptFilePath !== undefined ? { promptFilePath } : { prompt: initialPrompt }),
+      });
+
+      // Build AgentConsole context so the agent knows its own identity.
+      // These enable self-delegation (e.g., MCP tools) and agent self-awareness.
+      const agentConsoleContext: AgentConsoleContext = {
+        baseUrl: `http://localhost:${serverConfig.PORT}`,
+        sessionId,
+        workerId: worker.id,
+        repositoryId,
+        parentSessionId: context?.parentSessionId,
+        parentWorkerId: context?.parentWorkerId,
+      };
+
+      // additionalEnvVars: repository + template env vars
+      // Base env (getCleanChildProcessEnv) and AGENT_CONSOLE_* conversion
+      // are handled internally by UserMode.spawnPty()
+      const additionalEnvVars: Record<string, string> = {
+        ...repositoryEnvVars,
+        ...templateEnv,
+      };
+
+      // Multi-user mode: mint an MCP bearer token for this worker, write it to
+      // a user-owned 0600 file, and inject only the FILE PATH via env. The raw
+      // token must NEVER travel through argv or an env var embedded into the
+      // elevation's inner shell command string (visible via
+      // /proc/<pid>/cmdline of the inner `sh -c` process, see
+      // privilege-elevation.ts:buildInnerCommand) -- a file path is not a
+      // secret and is safe to pass this way.
+      // (docs/design/embedded-agent-worker.md § "MCP caller identity")
+      if (process.env.AUTH_MODE === 'multi-user') {
+        if (!params.createdByUserId) {
+          // Non-fatal skip (unlike EmbeddedAgentWorkerService's hard-fail):
+          // terminal-agent PTY activation is a long-established
+          // availability-critical path (create / revive / restart / restore).
+          // The default AGENT_CONSOLE_MCP_AUTH mode is `warn`, so this
+          // worker's tokenless MCP calls are merely logged, not rejected;
+          // only an operator-opted-in `enforce` would reject them
+          // (fail-closed). The worker itself still starts either way.
+          logger.warn(
+            { workerId: worker.id, sessionId },
+            'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)',
+          );
+        } else if (this.mcpTokenRegistry) {
+          // lookupOsUserFn is an injectable seam (LookupOsUserFn); the built-in
+          // implementation never rejects, but an injected implementation (test
+          // stub, future variant) is not contractually guaranteed not to throw
+          // -- see os-user-lookup.ts's LookupOsUserFn JSDoc. Fold a throw into
+          // the same "skip mint, don't fail activation" path as a null result,
+          // distinguished by `logger.error` (implementation misbehaved) vs the
+          // `logger.warn` below (genuinely unresolved).
+          const osUser = await this.lookupOsUserFn(params.username).catch((err: unknown) => {
+            logger.error(
+              { workerId: worker.id, username: params.username, err },
+              'lookupOsUserFn threw unexpectedly during MCP token mint; skipping mint',
+            );
+            return null;
+          });
+          if (!osUser) {
+            logger.warn(
+              { workerId: worker.id, username: params.username },
+              'Could not resolve OS user home directory for MCP token file; skipping MCP token mint',
+            );
+          } else {
+            const token = this.mcpTokenRegistry.mint({
+              sessionId,
+              workerId: worker.id,
+              userId: params.createdByUserId,
+            });
+            const tokenFilePath = path.join(
+              osUser.homeDir,
+              '.agent-console',
+              'mcp-tokens',
+              `${worker.id}.token`,
+            );
+            // Set BEFORE the write (not after a successful write):
+            // writeUserOwnedSecretFile's command truncates the destination
+            // (`cat >`) before streaming the new content, so a write that
+            // fails partway through (the elevated process gets killed
+            // mid-stream, or the shell fails after truncation but before the
+            // full payload lands) can leave a truncated/partial file behind
+            // -- and that file may contain a FRAGMENT OF THE SECRET TOKEN.
+            // The outer catch block's cleanup must reach this path even when
+            // the failure happens mid-write, not only on a clean exitCode
+            // !== 0 result.
+            worker.mcpToken = { filePath: tokenFilePath, username: params.username };
+            const writeResult = await writeUserOwnedSecretFile({
+              username: params.username,
+              filePath: tokenFilePath,
+              content: token,
+              runAsUserImpl: this.runAsUserImpl,
+            });
+            if (writeResult.exitCode !== 0 || writeResult.timedOut) {
+              // Unlike the missing-createdBy case above (a deliberate skip),
+              // a write FAILURE after a successful mint is an unexpected error
+              // state -- fail loud, mirroring EmbeddedAgentWorkerService's "no
+              // orphaned token from a failed activation" invariant. The
+              // in-memory revoke here is a fast-path for THIS failure only;
+              // the outer catch below also unconditionally calls
+              // revokeAndDeleteMcpToken, which now (worker.mcpToken having
+              // just been assigned above) also issues the file-level `rm`
+              // for the possibly-truncated token file -- this fast-path call
+              // only revokes the registry entry a moment sooner than the
+              // catch would.
+              this.mcpTokenRegistry.revokeByWorker(worker.id);
+              logger.error(
+                {
+                  workerId: worker.id,
+                  exitCode: writeResult.exitCode,
+                  timedOut: writeResult.timedOut,
+                  stderr: writeResult.stderr,
+                },
+                'Failed to write MCP token file; aborting agent worker PTY activation',
+              );
+              throw new Error(`Failed to write MCP token file for worker ${worker.id}`);
+            }
+            additionalEnvVars[MCP_TOKEN_FILE_ENV_VAR] = tokenFilePath;
+          }
         }
       }
+
+      const sentinel = `__AGENT_CONSOLE_READY_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+
+      const ptyProcess = this.userMode.spawnPty({
+        type: 'agent',
+        username: params.username,
+        cwd: locationPath,
+        additionalEnvVars,
+        cols: 120,
+        rows: 30,
+        command,
+        agentConsoleContext,
+        sentinel,
+        // Forward the optional SSH_AUTH_SOCK fallback from the session
+        // creation context. Populated only by the MCP delegate path;
+        // undefined for every other path so existing behavior is preserved.
+        sshAuthSockFallback: context?.sshAuthSockFallback,
+      });
+
+      const activityDetector = new ActivityDetector({
+        onStateChange: (state) => {
+          worker.activityState = state;
+          const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
+          for (const callbacks of callbacksSnapshot) {
+            callbacks.onActivityChange?.(state);
+          }
+          this.globalActivityCallback?.(sessionId, worker.id, state);
+        },
+        activityPatterns: agent.activityPatterns,
+      });
+
+      worker.pty = ptyProcess;
+      worker.activityDetector = activityDetector;
+      worker.agentId = agent.id;
+      worker.loginShellSentinel = sentinel;
+      worker.pendingCommand = command;
+
+      // Set initial activity state to match ActivityDetector's initial state ('idle').
+      // The onStateChange callback only fires on state *changes*, not on initialization,
+      // so we must explicitly set the initial state here.
+      worker.activityState = 'idle';
+      this.globalActivityCallback?.(sessionId, worker.id, 'idle');
+
+      this.setupWorkerEventHandlers(worker, sessionId, params.resolver);
+    } catch (err) {
+      // Both cleanup calls are null-safe (no-op when nothing was ever set)
+      // and never throw (internal failures are logged as warnings) -- see
+      // deletePromptFile / revokeAndDeleteMcpToken. Always rethrow the
+      // ORIGINAL error unmodified; activation must still fail loudly.
+      await this.deletePromptFile(worker);
+      await this.revokeAndDeleteMcpToken(worker);
+      throw err;
     }
-
-    const sentinel = `__AGENT_CONSOLE_READY_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
-
-    const ptyProcess = this.userMode.spawnPty({
-      type: 'agent',
-      username: params.username,
-      cwd: locationPath,
-      additionalEnvVars,
-      cols: 120,
-      rows: 30,
-      command,
-      agentConsoleContext,
-      sentinel,
-      // Forward the optional SSH_AUTH_SOCK fallback from the session
-      // creation context. Populated only by the MCP delegate path;
-      // undefined for every other path so existing behavior is preserved.
-      sshAuthSockFallback: context?.sshAuthSockFallback,
-    });
-
-    const activityDetector = new ActivityDetector({
-      onStateChange: (state) => {
-        worker.activityState = state;
-        const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
-        for (const callbacks of callbacksSnapshot) {
-          callbacks.onActivityChange?.(state);
-        }
-        this.globalActivityCallback?.(sessionId, worker.id, state);
-      },
-      activityPatterns: agent.activityPatterns,
-    });
-
-    worker.pty = ptyProcess;
-    worker.activityDetector = activityDetector;
-    worker.agentId = agent.id;
-    worker.loginShellSentinel = sentinel;
-    worker.pendingCommand = command;
-
-    // Set initial activity state to match ActivityDetector's initial state ('idle').
-    // The onStateChange callback only fires on state *changes*, not on initialization,
-    // so we must explicitly set the initial state here.
-    worker.activityState = 'idle';
-    this.globalActivityCallback?.(sessionId, worker.id, 'idle');
-
-    this.setupWorkerEventHandlers(worker, sessionId, params.resolver);
   }
 
   /**
@@ -731,6 +823,7 @@ export class WorkerManager {
         // and cannot be awaited by its caller. Failures are logged inside
         // revokeAndDeleteMcpToken itself.
         void this.revokeAndDeleteMcpToken(worker);
+        void this.deletePromptFile(worker);
       }
 
       const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
@@ -851,6 +944,7 @@ export class WorkerManager {
             activityState: 'unknown',
             activityDetector: null,
             mcpToken: null,
+            promptFile: null,
           };
           break;
         case 'terminal':
@@ -1018,6 +1112,31 @@ export class WorkerManager {
   }
 
   /**
+   * Delete the prompt file written for an agent worker. Called
+   * on every path a terminal-agent PTY can stop existing through:
+   * unexpected exit (pty.onExit) and managed kill (killWorker). No-op when
+   * the worker never had a prompt file. Never throws -- deletion failures
+   * are logged as warnings so cleanup never blocks the exit/kill flow.
+   */
+  private async deletePromptFile(worker: InternalAgentWorker): Promise<void> {
+    const promptFile = worker.promptFile;
+    if (promptFile === null) {
+      return;
+    }
+    worker.promptFile = null;
+    try {
+      await rmRecursiveAsUser(promptFile.filePath, promptFile.username, {
+        runAsUserImpl: this.runAsUserImpl,
+      });
+    } catch (err) {
+      logger.warn(
+        { workerId: worker.id, filePath: promptFile.filePath, err },
+        'Failed to delete prompt file',
+      );
+    }
+  }
+
+  /**
    * Kill a worker's PTY process and clean up resources.
    * Awaits PTY process exit to ensure directory handles are released
    * before callers proceed (e.g., git worktree remove).
@@ -1152,6 +1271,7 @@ export class WorkerManager {
       // expects the timer to already be registered.
       if (worker.type === 'agent') {
         await this.revokeAndDeleteMcpToken(worker);
+        await this.deletePromptFile(worker);
       }
     }
     // git-diff workers have no PTY to kill
