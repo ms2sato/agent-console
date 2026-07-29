@@ -36,6 +36,11 @@
  * Usage:
  *   bun scripts/smoke/check-pty-als-data.ts
  *
+ * When to run: before (and after, on the upgraded host) ANY Bun runtime
+ * upgrade or floor change. The failure mode this guards is silent in
+ * production -- a delegated agent worker simply never starts -- so this
+ * 15-second check is the designated canary for it.
+ *
  * Exit codes:
  *   0  all cycles observed the complete marker while spawned inside an
  *      AsyncLocalStorage.run() scope
