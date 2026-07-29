@@ -21,6 +21,7 @@
     "check:mock-module": "bun scripts/check-mock-module-poisoners.mjs",
     "check:preview-sandbox-browser": "bun scripts/run-preview-sandbox-browser-check.mjs",
     "check:pty-fd-leak": "bun scripts/smoke/check-pty-fd-leak.ts",
+    "check:pty-early-output": "bun scripts/smoke/check-pty-early-output.ts",
     "hooks:install": "bun scripts/install-hooks.mjs",
     "preinstall": "bun scripts/check-bun-version.mjs",
     "postinstall": "bun scripts/install-hooks.mjs",

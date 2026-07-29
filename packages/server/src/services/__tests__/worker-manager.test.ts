@@ -6,7 +6,8 @@
  *
  * Uses mock PTY provider via dependency injection (no mock.module needed).
  */
-import { describe, it, expect, beforeEach, afterEach, mock, jest } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock, jest, spyOn } from 'bun:test';
+import { rootLogger } from '../../lib/logger.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
@@ -555,6 +556,133 @@ describe('WorkerManager', () => {
 
       expect(worker.loginShellSentinel).toBeUndefined();
       expect(worker.pendingCommand).toBeUndefined();
+    });
+  });
+
+  describe('sentinel watchdog (Issue #1242)', () => {
+    const WATCHDOG_MESSAGE =
+      'Login-shell sentinel not detected within timeout; agent worker PTY output may be stuck or lost';
+
+    afterEach(() => {
+      ptyFactory.setAutoEmitSentinel(true);
+    });
+
+    it('logs an ERROR with sessionId, workerId, and diagnostics when the sentinel is never detected within the timeout', async () => {
+      jest.useFakeTimers();
+      const errorSpy = spyOn(rootLogger, 'error');
+      try {
+        ptyFactory.setAutoEmitSentinel(false);
+        const worker = createTestAgentWorker();
+        await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+        const mockPty = ptyFactory.instances[0]!;
+        mockPty.dataDiagnostics = { fireCount: 3, bufferedBytes: 10, droppedBytes: 0 };
+        // Feed a few pre-sentinel bytes so preSentinelSample is non-empty.
+        mockPty.emitRaw('banner line before sentinel\r\n');
+
+        jest.advanceTimersByTime(15000);
+
+        const watchdogCalls = errorSpy.mock.calls.filter((call) => call[1] === WATCHDOG_MESSAGE);
+        expect(watchdogCalls.length).toBe(1);
+        const fields = watchdogCalls[0]![0] as Record<string, unknown>;
+        expect(fields.sessionId).toBe('session-1');
+        expect(fields.workerId).toBe(worker.id);
+        expect(fields.fireCount).toBe(3);
+        expect(fields.bufferedBytes).toBe(10);
+        expect(fields.droppedBytes).toBe(0);
+        expect(fields.preSentinelSample).toContain('banner line before sentinel');
+      } finally {
+        errorSpy.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it('omits diagnostics fields gracefully when the PTY provider does not implement getDataDiagnostics', async () => {
+      jest.useFakeTimers();
+      const errorSpy = spyOn(rootLogger, 'error');
+      try {
+        ptyFactory.setAutoEmitSentinel(false);
+        const worker = createTestAgentWorker();
+        await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+        // Deliberately leave mockPty.dataDiagnostics unset (bunPtyProvider-shaped absence).
+
+        jest.advanceTimersByTime(15000);
+
+        const watchdogCalls = errorSpy.mock.calls.filter((call) => call[1] === WATCHDOG_MESSAGE);
+        expect(watchdogCalls.length).toBe(1);
+        const fields = watchdogCalls[0]![0] as Record<string, unknown>;
+        expect(fields.fireCount).toBeUndefined();
+        expect(fields.bufferedBytes).toBeUndefined();
+        expect(fields.droppedBytes).toBeUndefined();
+      } finally {
+        errorSpy.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it('does NOT log after the sentinel is detected within the timeout (negative)', async () => {
+      jest.useFakeTimers();
+      const errorSpy = spyOn(rootLogger, 'error');
+      try {
+        // Default autoEmitSentinel=true -- MockPty fires the sentinel
+        // synchronously on the first onData() attach inside activation.
+        const worker = createTestAgentWorker();
+        await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+        jest.advanceTimersByTime(15000);
+
+        const watchdogCalls = errorSpy.mock.calls.filter((call) => call[1] === WATCHDOG_MESSAGE);
+        expect(watchdogCalls.length).toBe(0);
+      } finally {
+        errorSpy.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it('does NOT log after the worker exits before the sentinel ever arrived (negative)', async () => {
+      jest.useFakeTimers();
+      const errorSpy = spyOn(rootLogger, 'error');
+      try {
+        ptyFactory.setAutoEmitSentinel(false);
+        const worker = createTestAgentWorker();
+        await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+        const mockPty = ptyFactory.instances[0]!;
+        mockPty.simulateExit(1);
+
+        jest.advanceTimersByTime(15000);
+
+        const watchdogCalls = errorSpy.mock.calls.filter((call) => call[1] === WATCHDOG_MESSAGE);
+        expect(watchdogCalls.length).toBe(0);
+      } finally {
+        errorSpy.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
+    it('clears the watchdog on managed kill (killWorker) so it does not fire afterward', async () => {
+      jest.useFakeTimers();
+      const errorSpy = spyOn(rootLogger, 'error');
+      try {
+        ptyFactory.setAutoEmitSentinel(false);
+        const worker = createTestAgentWorker();
+        await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+        const mockPty = ptyFactory.instances[0]!;
+        // killWorker awaits an exit race; make kill() resolve promptly like
+        // the default MockPty.kill() already does (fires exit via microtask).
+        const killPromise = workerManager.killWorker(worker, 'session-1');
+        await killPromise;
+
+        jest.advanceTimersByTime(15000);
+
+        const watchdogCalls = errorSpy.mock.calls.filter((call) => call[1] === WATCHDOG_MESSAGE);
+        expect(watchdogCalls.length).toBe(0);
+        void mockPty; // referenced for clarity; no further assertions needed
+      } finally {
+        errorSpy.mockRestore();
+        jest.useRealTimers();
+      }
     });
   });
 

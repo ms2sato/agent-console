@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { PtyProvider } from '../../lib/pty-provider.js';
+import type { PtyProvider, PtyDataDiagnostics } from '../../lib/pty-provider.js';
 
 /**
  * Disposable interface matching bun-pty's IDisposable.
@@ -26,6 +26,14 @@ export class MockPty {
   currentCols = 120;
   currentRows = 30;
   loginShellSentinel?: string;
+  /**
+   * Optional diagnostics stub for the sentinel watchdog (Issue #1242).
+   * Mirrors `BunTerminalPtyAdapter.getDataDiagnostics()`. Tests set this
+   * directly; left unset it returns `undefined`, exercising the same
+   * "diagnostics absent" branch worker-manager.ts must handle gracefully
+   * for `bunPtyProvider`.
+   */
+  dataDiagnostics?: PtyDataDiagnostics;
   private sentinelEmitted = false;
   private autoEmitSentinel: boolean;
 
@@ -83,6 +91,11 @@ export class MockPty {
   /** Mirrors PtyInstance's optional dispose() so detachPty wiring is assertable. */
   dispose() {
     this.disposed = true;
+  }
+
+  /** Mirrors PtyInstance's optional getDataDiagnostics() -- see `dataDiagnostics` field doc. */
+  getDataDiagnostics(): PtyDataDiagnostics | undefined {
+    return this.dataDiagnostics;
   }
 
   // Test helpers - simulate PTY events

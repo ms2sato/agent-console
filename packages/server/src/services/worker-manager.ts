@@ -63,6 +63,10 @@ const MCP_TOKEN_FILE_ENV_VAR = 'AGENT_CONSOLE_MCP_TOKEN_FILE';
 
 /** Maximum time to wait for a PTY process to exit after kill signal. */
 const PTY_EXIT_TIMEOUT_MS = 5000;
+// If an agent worker's login-shell sentinel is never detected,
+// the pre-sentinel swallow gate keeps the worker's output log at 0 bytes
+// forever with no other signal. This bounds that silence.
+const SENTINEL_WATCHDOG_TIMEOUT_MS = 15000;
 
 /**
  * Context passed from SessionManager for worker operations.
@@ -786,11 +790,53 @@ export class WorkerManager {
     // sentinel.length - 1 characters (the largest partial match possible).
     let preSentinelCarry = '';
 
+    // Sentinel watchdog: the pre-sentinel swallow gate above
+    // keeps the worker's output log at 0 bytes forever if the sentinel is
+    // never observed, with no other signal to distinguish "stuck" from
+    // "just slow". Arm a bounded timer at handler setup (below); on expiry,
+    // log an ERROR carrying enough diagnostics (the PTY adapter's native
+    // data-callback fire count, buffered/dropped byte counts from the
+    // pre-attach buffer, and a sample of the pre-sentinel bytes actually
+    // received) to distinguish "native never delivered a byte" from "bytes
+    // arrived but never matched" from "the pre-attach cap was hit". Cleared
+    // on sentinel detection, on worker exit, and (via `disposables`) on
+    // managed kill -- it must never fire after any of those.
+    let sentinelWatchdogTimer: ReturnType<typeof setTimeout> | undefined;
+    let preSentinelSample = '';
+    const PRE_SENTINEL_SAMPLE_MAX_LEN = 256;
+    const clearSentinelWatchdog = (): void => {
+      if (sentinelWatchdogTimer !== undefined) {
+        clearTimeout(sentinelWatchdogTimer);
+        sentinelWatchdogTimer = undefined;
+      }
+    };
+    if (!sentinelDetected) {
+      sentinelWatchdogTimer = setTimeout(() => {
+        sentinelWatchdogTimer = undefined;
+        const diagnostics = worker.pty?.getDataDiagnostics?.();
+        logger.error(
+          {
+            sessionId,
+            workerId: worker.id,
+            fireCount: diagnostics?.fireCount,
+            bufferedBytes: diagnostics?.bufferedBytes,
+            droppedBytes: diagnostics?.droppedBytes,
+            preSentinelSample: JSON.stringify(preSentinelSample),
+          },
+          'Login-shell sentinel not detected within timeout; agent worker PTY output may be stuck or lost',
+        );
+      }, SENTINEL_WATCHDOG_TIMEOUT_MS);
+    }
+    disposables.push({ dispose: clearSentinelWatchdog });
+
     const onDataDisposable = worker.pty.onData((rawData) => {
       let data = rawData;
 
       if (!sentinelDetected && worker.type === 'agent' && worker.loginShellSentinel) {
         const sentinel = worker.loginShellSentinel;
+        if (preSentinelSample.length < PRE_SENTINEL_SAMPLE_MAX_LEN) {
+          preSentinelSample = (preSentinelSample + data).slice(0, PRE_SENTINEL_SAMPLE_MAX_LEN);
+        }
         const haystack = preSentinelCarry + data;
         const idx = haystack.indexOf(sentinel);
         if (idx === -1) {
@@ -798,6 +844,7 @@ export class WorkerManager {
           return;
         }
         sentinelDetected = true;
+        clearSentinelWatchdog();
         preSentinelCarry = '';
         if (worker.pendingCommand && worker.pty) {
           worker.pty.write(worker.pendingCommand + '\r');
@@ -846,6 +893,13 @@ export class WorkerManager {
     const onExitDisposable = pty.onExit(({ exitCode, signal }) => {
       const signalStr = signal !== undefined ? String(signal) : null;
       logger.info({ workerId: worker.id, pid: pty.pid, exitCode, signal: signalStr }, 'Worker exited');
+
+      // Sentinel watchdog: the worker exited (naturally, e.g.
+      // the agent binary failed to start) before the sentinel was ever
+      // detected -- no point logging a stuck-sentinel ERROR for a worker
+      // that is already gone. No-op if the watchdog was never armed or
+      // already cleared.
+      clearSentinelWatchdog();
 
       // Mark worker as deactivated (PTY no longer running)
       this.detachPty(worker);

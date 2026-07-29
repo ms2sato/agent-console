@@ -342,5 +342,162 @@ describe('pty-provider', () => {
         expect(mockTerminal.close).toHaveBeenCalledTimes(1);
       });
     });
+
+    describe('pre-attach data buffer (Issue #1242)', () => {
+      it('buffers chunks that arrive before onData is attached and delivers them on first attach, in order', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        // Fires with no adapter listener attached yet -- window 2.
+        dataCb(null, new TextEncoder().encode('hello '));
+        dataCb(null, new TextEncoder().encode('world'));
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received).toEqual(['hello world']);
+      });
+
+      it('copies pushed chunk bytes rather than retaining a view (Bun may reuse the callback buffer)', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        const mutable = new TextEncoder().encode('original');
+        dataCb(null, mutable);
+
+        // Simulate Bun reusing/mutating the same underlying buffer for a
+        // later, unrelated event AFTER the callback that delivered
+        // `mutable` has already returned -- this must NOT corrupt what was
+        // buffered.
+        mutable.fill(0x58); // overwrite in place with 'X' bytes
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received.join('')).toBe('original');
+      });
+
+      it('preserves a UTF-8 multi-byte sequence split across the pre-attach boundary', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        // U+1F600 "GRINNING FACE" is F0 9F 98 80, split across two
+        // pre-attach chunks.
+        const bytes = new Uint8Array([0xf0, 0x9f, 0x98, 0x80]);
+        dataCb(null, bytes.slice(0, 2));
+        dataCb(null, bytes.slice(2));
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received.join('')).toBe('\u{1F600}');
+      });
+
+      it('does NOT deliver anything on attach when no pre-attach bytes arrived (empty buffer is not flushed as an empty string)', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received).toEqual([]);
+      });
+
+      it('caps buffered bytes at 64 KiB, keeps the FIRST bytes, and counts the rest as dropped', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        const CAP = 64 * 1024;
+        const overflowBy = 100;
+        const chunk = new Uint8Array(CAP + overflowBy).fill(0x61); // 'a' repeated
+        dataCb(null, chunk);
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received.join('').length).toBe(CAP);
+        expect(received.join('')).toBe('a'.repeat(CAP));
+        expect(pty.getDataDiagnostics!().droppedBytes).toBe(overflowBy);
+        expect(pty.getDataDiagnostics!().bufferedBytes).toBe(0); // freed after flush
+      });
+
+      it('keeps exactly the cap with zero drops when a chunk lands exactly at the boundary', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        const CAP = 64 * 1024;
+        dataCb(null, new Uint8Array(CAP).fill(0x62)); // 'b' repeated, exactly the cap
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received.join('').length).toBe(CAP);
+        expect(pty.getDataDiagnostics!().droppedBytes).toBe(0);
+      });
+
+      it('does NOT replay on a second onData attach (listener replacement)', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        dataCb(null, new TextEncoder().encode('pre-attach'));
+
+        const received1: string[] = [];
+        const disp1 = pty.onData((data) => received1.push(data));
+        expect(received1).toEqual(['pre-attach']);
+
+        disp1.dispose();
+
+        // No listener attached right now -- this chunk is counted as
+        // dropped (buffer is already flushed/retired), NOT re-buffered.
+        dataCb(null, new TextEncoder().encode('post-flush-gap'));
+
+        const received2: string[] = [];
+        pty.onData((data) => received2.push(data));
+
+        expect(received2).toEqual([]);
+        expect(pty.getDataDiagnostics!().droppedBytes).toBe('post-flush-gap'.length);
+      });
+
+      it('dispose() before any onData attach discards buffered bytes (no retention, no replay)', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        dataCb(null, new TextEncoder().encode('will be discarded'));
+
+        pty.dispose?.();
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received).toEqual([]);
+      });
+
+      it('getDataDiagnostics().fireCount counts every native data callback fire, pre- and post-attach', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        dataCb(null, new TextEncoder().encode('a'));
+        dataCb(null, new TextEncoder().encode('b'));
+        dataCb(null, new TextEncoder().encode('c'));
+
+        pty.onData(() => {});
+
+        dataCb(null, new TextEncoder().encode('d'));
+        dataCb(null, new TextEncoder().encode('e'));
+
+        expect(pty.getDataDiagnostics!().fireCount).toBe(5);
+      });
+
+      it('live chunks after the first attach still flow straight through onData (no buffering once attached)', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        dataCb(null, new TextEncoder().encode('live-chunk'));
+
+        expect(received).toEqual(['live-chunk']);
+        expect(pty.getDataDiagnostics!().bufferedBytes).toBe(0);
+      });
+    });
   });
 });
