@@ -21,6 +21,11 @@ export interface PtySpawnOptions {
  * `bunPtyProvider`'s native Terminal (which has no such method) still
  * structurally satisfies this type.
  */
+/**
+ * Diagnostics for the pre-attach data buffer (see {@link PtyInstance.getDataDiagnostics}).
+ */
+export type PtyDataDiagnostics = { fireCount: number; bufferedBytes: number; droppedBytes: number };
+
 export type PtyInstance = IPty & {
   dispose?(): void;
   /**
@@ -32,7 +37,7 @@ export type PtyInstance = IPty & {
    * such instrumentation) -- callers must treat this as optional and omit
    * the diagnostics fields gracefully when absent.
    */
-  getDataDiagnostics?(): { fireCount: number; bufferedBytes: number; droppedBytes: number };
+  getDataDiagnostics?(): PtyDataDiagnostics;
 };
 
 /**
@@ -388,7 +393,7 @@ class BunTerminalPtyAdapter implements IPty {
    * @internal Diagnostics for the sentinel watchdog. See
    * `PtyInstance.getDataDiagnostics`'s doc comment.
    */
-  getDataDiagnostics(): { fireCount: number; bufferedBytes: number; droppedBytes: number } {
+  getDataDiagnostics(): PtyDataDiagnostics {
     return {
       fireCount: this.preAttachBuffer.fireCount,
       bufferedBytes: this.preAttachBuffer.bufferedBytes,

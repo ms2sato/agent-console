@@ -1,5 +1,5 @@
 import { mock } from 'bun:test';
-import type { PtyProvider } from '../../lib/pty-provider.js';
+import type { PtyProvider, PtyDataDiagnostics } from '../../lib/pty-provider.js';
 
 /**
  * Disposable interface matching bun-pty's IDisposable.
@@ -33,7 +33,7 @@ export class MockPty {
    * "diagnostics absent" branch worker-manager.ts must handle gracefully
    * for `bunPtyProvider`.
    */
-  dataDiagnostics?: { fireCount: number; bufferedBytes: number; droppedBytes: number };
+  dataDiagnostics?: PtyDataDiagnostics;
   private sentinelEmitted = false;
   private autoEmitSentinel: boolean;
 
@@ -94,7 +94,7 @@ export class MockPty {
   }
 
   /** Mirrors PtyInstance's optional getDataDiagnostics() -- see `dataDiagnostics` field doc. */
-  getDataDiagnostics(): { fireCount: number; bufferedBytes: number; droppedBytes: number } | undefined {
+  getDataDiagnostics(): PtyDataDiagnostics | undefined {
     return this.dataDiagnostics;
   }
 
