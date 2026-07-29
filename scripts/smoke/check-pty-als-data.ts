@@ -76,8 +76,12 @@ function sleep(ms: number): Promise<void> {
  * check is only about basic PTY viability, not the bug under test.
  */
 async function selfCheck(): Promise<void> {
+  // The probe runs OUTSIDE any AsyncLocalStorage scope on purpose: data
+  // delivery here works even on runtimes where the ALS-scoped bug exists,
+  // so requiring the marker below does not weaken the cycles' polarity.
+  const probeMarker = 'SMOKE_ALS_SELFCHECK_OK';
   try {
-    const pty = bunTerminalProvider.spawn('sh', ['-c', 'echo ok'], {
+    const pty = bunTerminalProvider.spawn('sh', ['-c', `echo ${probeMarker}`], {
       name: 'xterm-256color',
       cols: 80,
       rows: 24,
@@ -85,11 +89,23 @@ async function selfCheck(): Promise<void> {
     const exited = new Promise<void>((resolve) => {
       pty.onExit(() => resolve());
     });
-    pty.onData(() => {});
+    let output = '';
+    pty.onData((chunk) => {
+      output += chunk;
+    });
+    const start = Date.now();
+    while (!output.includes(probeMarker) && Date.now() - start < MARKER_WAIT_TIMEOUT_MS) {
+      await sleep(20);
+    }
+    if (!output.includes(probeMarker)) {
+      throw new Error(
+        `basic PTY output never arrived outside AsyncLocalStorage (captured: ${JSON.stringify(output.slice(0, 200))})`,
+      );
+    }
     await Promise.race([exited, sleep(EXIT_WAIT_TIMEOUT_MS)]);
   } catch (err) {
     console.error(
-      'Self-check failed: could not spawn a basic PTY via bunTerminalProvider -- cannot run this smoke.',
+      'Self-check failed: could not spawn a basic working PTY via bunTerminalProvider -- cannot run this smoke.',
     );
     console.error(err);
     process.exit(2);

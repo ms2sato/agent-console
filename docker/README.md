@@ -232,7 +232,7 @@ DOCKER_BUILDKIT=0 docker build \
 ```
 
 The in-image step normalizes bun to `BUN_VERSION` (default `1.3.14`) regardless of
-the base tag, so an older cached base still produces a `>= 1.3.5` runtime. bun
+the base tag, so an older cached base still produces a `>= 1.3.14` runtime. bun
 itself is fetched from `bun.sh` and npm packages from the npm registry — neither
 goes through Docker Hub.
 
