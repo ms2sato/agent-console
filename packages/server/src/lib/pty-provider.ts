@@ -152,12 +152,23 @@ class PreAttachDataBuffer {
       return;
     }
     if (chunk.byteLength > remaining) {
-      this.chunks.push(chunk.subarray(0, remaining));
+      // .slice() COPIES the bytes (unlike .subarray(), which is a view into
+      // the same underlying ArrayBuffer) -- the terminal `data` callback's
+      // buffer is only valid for the duration of that synchronous callback
+      // and may be reused/mutated by the runtime for a later event, so a
+      // view would risk silent corruption of buffered pre-attach bytes.
+      // Copying removes the need to know whether Bun's Terminal binding
+      // actually reuses that buffer across events -- the same
+      // don't-trust-native-behavior-assumptions principle this buffer
+      // itself exists for (see the class doc comment above).
+      this.chunks.push(chunk.slice(0, remaining));
       this.bufferedByteCount += remaining;
       this.droppedByteCount += chunk.byteLength - remaining;
       return;
     }
-    this.chunks.push(chunk);
+    // .slice() with no args also copies (same reasoning as above -- removes
+    // the native-buffer-reuse assumption entirely).
+    this.chunks.push(chunk.slice());
     this.bufferedByteCount += chunk.byteLength;
   }
 

@@ -358,6 +358,25 @@ describe('pty-provider', () => {
         expect(received).toEqual(['hello world']);
       });
 
+      it('copies pushed chunk bytes rather than retaining a view (Bun may reuse the callback buffer)', () => {
+        const pty = bunTerminalProvider.spawn('sh', [], {});
+        const dataCb = lastSpawn!.options.terminal!.data!;
+
+        const mutable = new TextEncoder().encode('original');
+        dataCb(null, mutable);
+
+        // Simulate Bun reusing/mutating the same underlying buffer for a
+        // later, unrelated event AFTER the callback that delivered
+        // `mutable` has already returned -- this must NOT corrupt what was
+        // buffered.
+        mutable.fill(0x58); // overwrite in place with 'X' bytes
+
+        const received: string[] = [];
+        pty.onData((data) => received.push(data));
+
+        expect(received.join('')).toBe('original');
+      });
+
       it('preserves a UTF-8 multi-byte sequence split across the pre-attach boundary', () => {
         const pty = bunTerminalProvider.spawn('sh', [], {});
         const dataCb = lastSpawn!.options.terminal!.data!;
