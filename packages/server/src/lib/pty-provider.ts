@@ -1,7 +1,32 @@
 import type { IPty, IDisposable, IExitEvent } from 'bun-pty';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('pty-provider');
+
+/**
+ * Runs a callback in the pristine (empty) async context captured at module
+ * load, before any `AsyncLocalStorage.run()` scope exists.
+ *
+ * Why this exists: Bun (verified on 1.3.5, macOS and Linux) never delivers
+ * `terminal.data` callbacks for a subprocess whose `Bun.spawn({ terminal })`
+ * call happens while an AsyncLocalStorage context is active (a non-empty
+ * AsyncContextFrame is current) -- the callback simply never fires and zero
+ * bytes ever reach JS. Non-terminal (pipe) spawns are unaffected, and
+ * `als.exit()` does NOT avoid the bug; only spawning under the pristine
+ * top-level frame does. The server's MCP tool handlers run inside
+ * `mcpCallerStorage.run(...)` (see mcp-server.ts), so PTYs spawned by MCP
+ * `delegate_to_worktree`'s create path hit exactly this: the sentinel
+ * watchdog recorded `fireCount: 0` -- the native side never invoked the
+ * `data` callback at all, while the same worker restarted via
+ * the plain REST route (no AsyncLocalStorage) worked every time.
+ *
+ * This module is imported during server startup (never lazily inside a
+ * request scope), so the snapshot is guaranteed to capture the empty
+ * top-level context. Real-PTY regression check:
+ * `scripts/smoke/check-pty-als-data.ts`.
+ */
+const runInPristineAsyncContext = AsyncLocalStorage.snapshot();
 
 /**
  * PTY spawn options (subset of bun-pty options)
@@ -447,23 +472,28 @@ export const bunTerminalProvider: PtyProvider = {
     // Terminal handle. The adapter is constructed after spawn returns.
     let adapter: BunTerminalPtyAdapter | null = null;
 
-    const subprocess = Bun.spawn([command, ...args], {
-      cwd: options.cwd,
-      env: options.env,
-      terminal: {
-        cols,
-        rows,
-        name: options.name ?? 'xterm-256color',
-        data: (_terminal, chunk) => {
-          preAttachBuffer.recordFire();
-          if (adapter) {
-            adapter._emitData(chunk);
-          } else {
-            preAttachBuffer.push(chunk);
-          }
+    // Spawn under the pristine (empty) async context captured at module
+    // load, not whatever AsyncLocalStorage scope happens to be active at
+    // call time -- see runInPristineAsyncContext's doc comment above.
+    const subprocess = runInPristineAsyncContext(() =>
+      Bun.spawn([command, ...args], {
+        cwd: options.cwd,
+        env: options.env,
+        terminal: {
+          cols,
+          rows,
+          name: options.name ?? 'xterm-256color',
+          data: (_terminal, chunk) => {
+            preAttachBuffer.recordFire();
+            if (adapter) {
+              adapter._emitData(chunk);
+            } else {
+              preAttachBuffer.push(chunk);
+            }
+          },
         },
-      },
-    });
+      }),
+    );
 
     const terminal = subprocess.terminal;
     if (!terminal) {

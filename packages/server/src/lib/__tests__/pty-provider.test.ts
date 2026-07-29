@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   bunPtyProvider,
   bunTerminalProvider,
@@ -497,6 +498,55 @@ describe('pty-provider', () => {
 
         expect(received).toEqual(['live-chunk']);
         expect(pty.getDataDiagnostics!().bufferedBytes).toBe(0);
+      });
+    });
+
+    describe('async-context escape (Issue #1242)', () => {
+      // Bun (verified on 1.3.5, macOS and Linux) never delivers
+      // `terminal.data` callbacks for a Bun.spawn({ terminal }) call made
+      // while an AsyncLocalStorage context is active. bunTerminalProvider
+      // must spawn under the pristine (empty) async context captured at
+      // module load, regardless of any ALS scope active at call time -- see
+      // `runInPristineAsyncContext` in pty-provider.ts.
+
+      it('invokes Bun.spawn with the pristine async context even when spawn() is called inside AsyncLocalStorage.run()', () => {
+        const als = new AsyncLocalStorage<string>();
+        let recordedStore: string | undefined;
+
+        // Override the mock spawn installed in beforeEach so it also records
+        // the ALS store visible at the moment Bun.spawn actually runs.
+        const spawnable = Bun as unknown as SpawnableBun;
+        spawnable.spawn = (cmd, options) => {
+          recordedStore = als.getStore();
+          lastSpawn = { cmd, options };
+          return mockSubprocess;
+        };
+
+        als.run('mcp-request-scope', () => {
+          bunTerminalProvider.spawn('sh', [], {});
+        });
+
+        // Bun.spawn must have run outside the ALS scope (pristine context),
+        // not inside it -- an unfixed provider would record
+        // 'mcp-request-scope' here.
+        expect(recordedStore).toBeUndefined();
+      });
+
+      it('adapter still routes terminal data to onData listeners when spawned inside AsyncLocalStorage.run()', () => {
+        const als = new AsyncLocalStorage<string>();
+
+        let pty: ReturnType<typeof bunTerminalProvider.spawn> | undefined;
+        als.run('mcp-request-scope', () => {
+          pty = bunTerminalProvider.spawn('sh', [], {});
+        });
+
+        const received: string[] = [];
+        pty!.onData((data) => received.push(data));
+
+        const dataCb = lastSpawn!.options.terminal!.data!;
+        dataCb(null, new TextEncoder().encode('hello from inside ALS'));
+
+        expect(received).toEqual(['hello from inside ALS']);
       });
     });
   });
