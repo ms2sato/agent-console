@@ -213,7 +213,7 @@ beyond loopback**; they exist solely for local development and verification.
 
 ## Building behind a blocked Docker Hub
 
-The default `BUN_BASE` (`oven/bun:1.3.8`) is a directly-pullable fixed tag, so a
+The default `BUN_BASE` (`oven/bun:1.3.14`) is a directly-pullable fixed tag, so a
 clean environment with normal Docker Hub access builds with no extra flags:
 
 ```bash
@@ -231,7 +231,7 @@ DOCKER_BUILDKIT=0 docker build \
   -f docker/Dockerfile -t agent-console-multiuser-verify .
 ```
 
-The in-image step normalizes bun to `BUN_VERSION` (default `1.3.8`) regardless of
+The in-image step normalizes bun to `BUN_VERSION` (default `1.3.14`) regardless of
 the base tag, so an older cached base still produces a `>= 1.3.5` runtime. bun
 itself is fetched from `bun.sh` and npm packages from the npm registry — neither
 goes through Docker Hub.

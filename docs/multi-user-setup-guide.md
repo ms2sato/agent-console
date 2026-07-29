@@ -24,7 +24,7 @@ Browser (User: alice) ──> Agent Console Server (agentconsole)
 ## Prerequisites
 
 - Agent Console installed and working in single-user mode first (verify with `AUTH_MODE=none`)
-- [Bun](https://bun.com) **≥ 1.3.5** (required by `Bun.Terminal`; enforced by the repo's preinstall check)
+- [Bun](https://bun.com) **≥ 1.3.14** (required by `Bun.Terminal` and by the fix for a PTY output-delivery bug in earlier 1.3.x releases; enforced by the repo's preinstall check)
 - Root or sudo access on the server machine (for initial setup only)
 - Linux (Ubuntu/Debian, RHEL/Fedora, etc.) or macOS
 - **Linux only:** the `pamtester` package must be installed (see [Step 0](#step-0-install-pamtester-linux-only)). Without it, **every login returns 401.**

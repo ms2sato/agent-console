@@ -11,14 +11,15 @@
 #
 # The default BUN_BASE is a directly-pullable fixed tag so a clean environment
 # (CI, another machine) can `docker build` this without any local cache. The
-# in-image step below normalizes bun to BUN_VERSION (>= 1.3.5, required by
-# Bun.Terminal and the repo's preinstall gate), so you may override BUN_BASE
+# in-image step below normalizes bun to BUN_VERSION (>= 1.3.14, required by
+# the repo's preinstall gate -- see scripts/check-bun-version.mjs for the
+# reasons behind the floor), so you may override BUN_BASE
 # with an older locally-cached base when registry pulls are unavailable, e.g.:
 #   DOCKER_BUILDKIT=0 docker build --build-arg BUN_BASE=oven/bun:1.3.4 ...
 # See docker/README.md ("Building behind a blocked Docker Hub").
 
-ARG BUN_BASE=oven/bun:1.3.8
-ARG BUN_VERSION=1.3.8
+ARG BUN_BASE=oven/bun:1.3.14
+ARG BUN_VERSION=1.3.14
 
 # ===== Stage 1: build the standalone dist bundle =====
 FROM ${BUN_BASE} AS builder
