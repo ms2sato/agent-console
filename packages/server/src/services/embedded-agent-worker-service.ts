@@ -14,6 +14,16 @@
  * over time), so the fire-and-forget `stdin.end()` obligation does NOT apply.
  * The drain obligation is satisfied by the stdout / stderr readers, whose
  * completion is tracked via `streamsDone` (never fire-and-forget).
+ *
+ * Staying open for the process lifetime is not staying open forever: at
+ * teardown the stdin sink must still be closed explicitly, or the OS pipe fd
+ * is left for incidental GC -- the same unsound pattern previously flagged
+ * as unacceptable for the PTY master-fd handle. `endStdinSafely` (a private
+ * method on this class) is called from both teardown points -- the exit
+ * observer (`handleExit`) and the activation-failure catch in
+ * `runActivation` -- so every path that stops owning a live stdin sink
+ * closes it deterministically. See `.claude/rules/elevation-helpers.md`'s
+ * "feeding-consumer teardown obligation".
  */
 import type { Subprocess, FileSink } from 'bun';
 import * as v from 'valibot';
@@ -339,6 +349,7 @@ export class EmbeddedAgentWorkerService {
     // in the registry forever — the exit observer (its only other revoker)
     // never runs when the subprocess failed to spawn or was never observed.
     let spawned: PipedSubprocess | null = null;
+    let spawnedStdin: FileSink | null = null;
     try {
       // Step 4: attempt restore before resetting (Transcript Restore, #1123),
       // unless this is the worker's first-ever activation (nothing to
@@ -437,6 +448,7 @@ export class EmbeddedAgentWorkerService {
         cwd: session.locationPath,
       });
       spawned = subprocess;
+      spawnedStdin = stdin;
       worker.subprocess = subprocess;
       worker.stdin = stdin;
 
@@ -508,6 +520,7 @@ export class EmbeddedAgentWorkerService {
       if (spawned) {
         this.safeKill(spawned, 9);
       }
+      this.endStdinSafely(spawnedStdin);
       worker.subprocess = null;
       worker.stdin = null;
       // Safe to delete unconditionally: the in-flight activation guard prevents
@@ -937,6 +950,7 @@ export class EmbeddedAgentWorkerService {
     // Append the server-authored exited row so the on-disk log is complete.
     this.appendEvent(ctx, { v: 1, type: 'exited', code: code ?? null });
 
+    this.endStdinSafely(worker.stdin);
     worker.subprocess = null;
     worker.stdin = null;
     this.deps.mcpTokenRegistry.revokeByWorker(workerId);
@@ -970,6 +984,22 @@ export class EmbeddedAgentWorkerService {
       subprocess.kill(signal);
     } catch {
       // Process may have already exited.
+    }
+  }
+
+  /**
+   * Close a subprocess's stdin sink at teardown so the OS pipe fd is
+   * released deterministically rather than left for incidental GC -- see
+   * the class-level JSDoc's "feeding-consumer teardown obligation" note.
+   * Tolerates: no sink, an already-exited child (broken pipe on `end()`),
+   * and being invoked more than once for the same sink.
+   */
+  private endStdinSafely(stdin: FileSink | null): void {
+    if (!stdin) return;
+    try {
+      stdin.end();
+    } catch (err) {
+      logger.warn({ err }, 'Failed to close subprocess stdin sink at teardown');
     }
   }
 
