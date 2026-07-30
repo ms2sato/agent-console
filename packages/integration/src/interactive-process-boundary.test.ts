@@ -22,17 +22,21 @@ import { AgentManager } from '@agent-console/server/src/services/agent-manager';
 import { SqliteAgentRepository } from '@agent-console/server/src/repositories/sqlite-agent-repository';
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
+import { AgentDirectory } from '@agent-console/server/src/services/agent-directory';
+import { ConditionalWakeupManager } from '@agent-console/server/src/services/conditional-wakeup-manager';
+import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
 import { InteractiveProcessManager } from '@agent-console/server/src/services/interactive-process-manager';
 import { InterSessionMessageService } from '@agent-console/server/src/services/inter-session-message-service';
 import { TimerManager } from '@agent-console/server/src/services/timer-manager';
 import { WorktreeService } from '@agent-console/server/src/services/worktree-service';
 import { RepositoryManager } from '@agent-console/server/src/services/repository-manager';
 import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
+import type { SuggestSessionMetadataFn } from '@agent-console/server/src/services/session-metadata-suggester';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
-// The shared type — this is the contract we're verifying
-import type { InteractiveProcessInfo } from '@agent-console/shared';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
+import { createEmptyEmbeddedAgentSurface } from './test-utils';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
@@ -141,6 +145,8 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
       jobQueue: testJobQueue,
       agentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
       annotationService: new AnnotationService(),
     });
 
@@ -150,14 +156,20 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
       sessionManager,
       repositoryManager: await RepositoryManager.create({ jobQueue: testJobQueue }),
       agentManager,
+      agentDirectory: new AgentDirectory({ terminal: agentManager, embedded: createEmptyEmbeddedAgentSurface() }),
       timerManager: new TimerManager(() => {}),
+      conditionalWakeupManager: new ConditionalWakeupManager(() => {}),
       interactiveProcessManager,
       worktreeService: new WorktreeService({ db }),
       annotationService: new AnnotationService(),
       interSessionMessageService: new InterSessionMessageService(),
-      suggestSessionMetadata: mock(async () => ({ branch: 'feat/test', title: 'Test' })) as any,
+      suggestSessionMetadata: mock(
+        async (): ReturnType<SuggestSessionMetadataFn> =>
+          Promise.resolve({ branch: 'feat/test', title: 'Test' })
+      ) as SuggestSessionMetadataFn,
       createWorktreeWithSession,
       deleteWorktree,
+      userRepository: new SqliteUserRepository(db),
       broadcastToApp: () => {},
       findOpenPullRequest: mock(async () => null) as any,
       fetchPullRequestUrl: mock(async () => null) as any,
@@ -271,9 +283,11 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     expect(typeof info.workerId).toBe('string');
     expect(typeof info.command).toBe('string');
     expect(info.status).toBe('running');
-    expect(typeof info.startedAt).toBe('string');
+    if (typeof info.startedAt !== 'string') {
+      throw new Error(`expected info.startedAt to be a string, got ${typeof info.startedAt}`);
+    }
     // startedAt must be ISO date string (catches Date serialization issues)
-    expect(new Date(info.startedAt as string).toISOString()).toBe(info.startedAt);
+    expect(new Date(info.startedAt).toISOString()).toBe(info.startedAt);
   });
 
   it('list_processes after kill shows process removed', async () => {

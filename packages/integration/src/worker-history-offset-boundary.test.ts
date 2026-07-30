@@ -28,6 +28,7 @@ import { SqliteAgentRepository } from '@agent-console/server/src/repositories/sq
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 import type { WorkerServerMessage } from '@agent-console/shared';
 import { WORKER_SERVER_MESSAGE_TYPES } from '@agent-console/shared';
 
@@ -61,6 +62,8 @@ describe('Client-Server Boundary: worker history startOffset + epoch', () => {
       jobQueue,
       agentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
       annotationService: new AnnotationService(),
     });
   });
@@ -99,7 +102,9 @@ describe('Client-Server Boundary: worker history startOffset + epoch', () => {
     // The epoch tagging the history must match the worker's in-memory epoch
     // used to tag live `output` messages — otherwise the client would spuriously
     // detect a generation mismatch.
-    expect(result!.epoch).toBe(sessionManager.getWorkerEpoch(session.id, workerId));
+    const workerEpoch = sessionManager.getWorkerEpoch(session.id, workerId);
+    expect(workerEpoch).not.toBeNull();
+    expect(result!.epoch).toBe(workerEpoch!);
 
     // Build the wire message exactly as the route does and round-trip it.
     const historyMsg: WorkerServerMessage = {

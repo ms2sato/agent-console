@@ -18,6 +18,7 @@ import {
   setupTestEnvironment,
   cleanupTestEnvironment,
 } from '@agent-console/server/src/__tests__/test-utils';
+import type { AppBindings } from '@agent-console/server/src/app-context';
 
 // Import services needed for AppContext
 import { AgentManager } from '@agent-console/server/src/services/agent-manager';
@@ -32,7 +33,7 @@ import { renderWithQuery } from '@agent-console/client/src/test/renderWithQuery'
 import { createFetchBridge, findRequest } from './test-utils';
 
 describe('Client-Server Boundary: EditAgentForm', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
 
   beforeEach(async () => {

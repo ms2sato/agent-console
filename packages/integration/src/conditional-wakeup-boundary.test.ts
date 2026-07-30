@@ -6,6 +6,7 @@
  * This validates the cross-package contract for Issue #700.
  */
 import { describe, it, expect } from 'bun:test';
+import type { ConditionalWakeupInfo } from '@agent-console/shared';
 
 describe('Cross-Package Contract: ConditionalWakeup Types', () => {
   it('should export ConditionalWakeupInfo from shared package', async () => {
@@ -16,7 +17,7 @@ describe('Cross-Package Contract: ConditionalWakeup Types', () => {
     expect(sharedModule).toBeDefined();
 
     // Create a ConditionalWakeupInfo-compatible object to verify the contract
-    const wakeupInfo = {
+    const wakeupInfo: ConditionalWakeupInfo = {
       id: 'test-wakeup-123',
       sessionId: 'session-abc',
       workerId: 'worker-xyz',
@@ -55,7 +56,7 @@ describe('Cross-Package Contract: ConditionalWakeup Types', () => {
     ];
 
     for (const status of statusValues) {
-      const wakeupInfo = {
+      const wakeupInfo: ConditionalWakeupInfo = {
         id: `test-${status}`,
         sessionId: 'session-test',
         workerId: 'worker-test',
@@ -73,7 +74,7 @@ describe('Cross-Package Contract: ConditionalWakeup Types', () => {
 
   it('should support optional fields in ConditionalWakeupInfo', async () => {
     // Test minimal ConditionalWakeupInfo without optional fields
-    const minimalWakeupInfo = {
+    const minimalWakeupInfo: ConditionalWakeupInfo = {
       id: 'minimal-test',
       sessionId: 'session-minimal',
       workerId: 'worker-minimal',

@@ -6,7 +6,7 @@
  *
  * Key scenario: openInVSCode must call /api/system/open-in-vscode (not /api/system/open-vscode)
  */
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import type { Hono } from 'hono';
 
 // Import test utilities from server package
@@ -16,6 +16,7 @@ import {
   cleanupTestEnvironment,
   mockOpen,
 } from '@agent-console/server/src/__tests__/test-utils';
+import type { AppBindings } from '@agent-console/server/src/app-context';
 
 // Import system capabilities service class
 import { SystemCapabilitiesService } from '@agent-console/server/src/services/system-capabilities-service';
@@ -69,7 +70,7 @@ function setupSpawnMock() {
 }
 
 describe('Client-Server Boundary: System API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
   let systemCapabilities: SystemCapabilitiesService;
 

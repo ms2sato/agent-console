@@ -6,7 +6,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import type { Hono } from 'hono';
-import type { MessageTemplate } from '@agent-console/shared';
 
 // Import test utilities from server package
 import {
@@ -14,6 +13,7 @@ import {
   setupTestEnvironment,
   cleanupTestEnvironment,
 } from '@agent-console/server/src/__tests__/test-utils';
+import type { AppBindings } from '@agent-console/server/src/app-context';
 
 // Import the real SQLite repository (full stack test)
 import { SqliteMessageTemplateRepository } from '@agent-console/server/src/repositories/sqlite-message-template-repository';
@@ -32,7 +32,7 @@ import {
 import { createFetchBridge } from './test-utils';
 
 describe('Client-Server Boundary: Message Templates API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
 
   beforeEach(async () => {

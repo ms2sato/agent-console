@@ -27,6 +27,7 @@ import { JsonSessionRepository } from '@agent-console/server/src/repositories/in
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { handleHistoryRangeRequest } from '@agent-console/server/src/websocket/history-range-handler';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 import type { WSContext } from 'hono/ws';
 import type { WorkerServerMessage } from '@agent-console/shared';
 import { WORKER_SERVER_MESSAGE_TYPES } from '@agent-console/shared';
@@ -73,6 +74,8 @@ describe('Client-Server Boundary: request-history-range → history-range', () =
       jobQueue,
       agentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
       annotationService: new AnnotationService(),
     });
   });
@@ -121,7 +124,9 @@ describe('Client-Server Boundary: request-history-range → history-range', () =
     expect(msg.data).toBe('X'.repeat(100));
     expect(msg.hasMore).toBe(true);
     // The range epoch matches the worker's in-memory epoch tagging live output.
-    expect(msg.epoch).toBe(sessionManager.getWorkerEpoch(sessionId, workerId));
+    const workerEpoch = sessionManager.getWorkerEpoch(sessionId, workerId);
+    expect(workerEpoch).not.toBeNull();
+    expect(msg.epoch).toBe(workerEpoch!);
   });
 
   it('answers beforeOffset 0 with the unavailable-range shape (nothing before the start)', async () => {

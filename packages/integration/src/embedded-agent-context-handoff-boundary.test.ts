@@ -44,6 +44,7 @@ import { SqliteUserRepository } from '@agent-console/server/src/repositories/sql
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
 
 import {
@@ -178,6 +179,8 @@ describe('Client-Server Boundary: Context Handoff (Phase A) wire round trips', (
       embeddedAgentManager,
       annotationService: new AnnotationService(),
       mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
       // Test seam: fake the loop subprocess so this boundary test exercises the
       // real activate/append/persist machinery without spawning a real `bun`
       // process (that shipping-path E2E is covered separately).

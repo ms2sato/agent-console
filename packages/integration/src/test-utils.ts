@@ -3,7 +3,8 @@
  *
  * Provides helpers for testing client-server boundaries.
  */
-import type { Hono } from 'hono';
+import type { Env, Hono } from 'hono';
+import type { AgentSurface } from '@agent-console/shared';
 
 /**
  * Captured HTTP request for inspection
@@ -40,11 +41,11 @@ export interface CapturedRequest {
  * });
  * ```
  */
-export function createFetchBridge(app: Hono) {
+export function createFetchBridge<E extends Env = Env>(app: Hono<E>) {
   const capturedRequests: CapturedRequest[] = [];
   const originalFetch = globalThis.fetch;
 
-  globalThis.fetch = async (input, init) => {
+  const mockFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
     capturedRequests.push({
@@ -61,6 +62,8 @@ export function createFetchBridge(app: Hono) {
     });
   };
 
+  globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
+
   return {
     /** All captured requests */
     capturedRequests,
@@ -68,6 +71,20 @@ export function createFetchBridge(app: Hono) {
     restore: () => {
       globalThis.fetch = originalFetch;
     },
+  };
+}
+
+/**
+ * An always-empty `AgentSurface<'embedded'>` for boundary tests that need to
+ * construct a real `AgentDirectory` (required by `McpDependencies`) but do
+ * not exercise embedded agents.
+ */
+export function createEmptyEmbeddedAgentSurface(): AgentSurface<'embedded'> {
+  return {
+    kind: 'embedded',
+    list: () => [],
+    get: () => undefined,
+    findByName: () => [],
   };
 }
 

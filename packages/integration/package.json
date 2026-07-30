@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "typecheck": "tsc --noEmit",
     "test": "bun test --preload ./src/setup.ts src/",
     "test:coverage": "bun test --coverage --preload ./src/setup.ts src/",
     "test:watch": "bun test --watch --preload ./src/setup.ts src/"
@@ -16,6 +17,9 @@
     "@testing-library/react": "^16.3.1",
     "@testing-library/user-event": "^14.6.1",
     "@types/bun": "^1.1.14",
+    "@types/node": "^22.10.1",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
     "hono": "^4.11.9",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

@@ -19,6 +19,7 @@ import {
   setupTestEnvironment,
   cleanupTestEnvironment,
 } from '@agent-console/server/src/__tests__/test-utils';
+import type { AppBindings } from '@agent-console/server/src/app-context';
 import { SystemCapabilitiesService } from '@agent-console/server/src/services/system-capabilities-service';
 import { serverConfig } from '@agent-console/server/src/lib/server-config';
 
@@ -40,7 +41,7 @@ function createMockSystemCapabilities(vscodeAvailable: boolean = false): SystemC
 }
 
 describe('Client-Server Boundary: Config API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
 
   beforeEach(async () => {

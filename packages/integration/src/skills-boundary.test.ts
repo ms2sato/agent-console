@@ -12,13 +12,14 @@ import {
   setupTestEnvironment,
   cleanupTestEnvironment,
 } from '@agent-console/server/src/__tests__/test-utils';
+import type { AppBindings } from '@agent-console/server/src/app-context';
 
 import { fetchSkills } from '@agent-console/client/src/lib/api';
 
 import { createFetchBridge, findRequest } from './test-utils';
 
 describe('Client-Server Boundary: Skills API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
 
   beforeEach(async () => {
