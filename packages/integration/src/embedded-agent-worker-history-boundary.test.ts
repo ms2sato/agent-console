@@ -48,6 +48,7 @@ import { JsonSessionRepository } from '@agent-console/server/src/repositories/in
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 
 import { EmbeddedAgentStreamEventSchema, type EmbeddedAgentStreamEvent } from '@agent-console/shared';
 
@@ -161,6 +162,8 @@ describe('Client-Server Boundary: embedded-agent worker reconnect + history repl
       agentManager,
       embeddedAgentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
       annotationService: new AnnotationService(),
       // Test seam: fake the loop subprocess so this boundary test exercises the
       // real history-serving machinery without spawning a real `bun` process

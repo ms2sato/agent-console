@@ -25,6 +25,7 @@ import { JsonSessionRepository } from '@agent-console/server/src/repositories/in
 import { SqliteRepositoryRepository } from '@agent-console/server/src/repositories/sqlite-repository-repository';
 import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
+import { AgentDirectory } from '@agent-console/server/src/services/agent-directory';
 import { InteractiveProcessManager } from '@agent-console/server/src/services/interactive-process-manager';
 import { InterSessionMessageService } from '@agent-console/server/src/services/inter-session-message-service';
 import { TimerManager } from '@agent-console/server/src/services/timer-manager';
@@ -35,6 +36,8 @@ import { createMcpApp, type McpDependencies } from '@agent-console/server/src/mc
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
+import { createEmptyEmbeddedAgentSurface } from './test-utils';
 
 const TEST_CONFIG_DIR = '/test/config';
 const TEST_REPO_PATH = '/test/repo';
@@ -148,6 +151,8 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
       jobQueue: testJobQueue,
       agentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
       annotationService: new AnnotationService(),
     });
 
@@ -178,6 +183,7 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
       sessionManager,
       repositoryManager,
       agentManager,
+      agentDirectory: new AgentDirectory({ terminal: agentManager, embedded: createEmptyEmbeddedAgentSurface() }),
       timerManager,
       conditionalWakeupManager,
       interactiveProcessManager,

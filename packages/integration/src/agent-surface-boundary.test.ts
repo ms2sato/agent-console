@@ -48,6 +48,7 @@ import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
+import { defaultRepositoryLookup, defaultRepositoryEnvLookup } from '@agent-console/server/src/__tests__/utils/repository-lookup-mock';
 
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
@@ -160,6 +161,8 @@ describe('Agent surface boundary: list_agents wire-level shape (Issue #1160 PR-A
       agentManager,
       embeddedAgentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
+      repositoryLookup: defaultRepositoryLookup,
+      repositoryEnvLookup: defaultRepositoryEnvLookup,
       annotationService: new AnnotationService(),
     });
 

@@ -180,6 +180,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
         sessionManager: ctx.sessionManager,
         repositoryManager: ctx.repositoryManager,
         agentManager: ctx.agentManager,
+        agentDirectory: ctx.agentDirectory,
         timerManager: ctx.timerManager,
         conditionalWakeupManager: ctx.conditionalWakeupManager,
         interactiveProcessManager: ctx.interactiveProcessManager,

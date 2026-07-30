@@ -14,6 +14,7 @@ import {
   setupTestEnvironment,
   cleanupTestEnvironment,
 } from '@agent-console/server/src/__tests__/test-utils';
+import type { AppBindings } from '@agent-console/server/src/app-context';
 
 // Import services
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
@@ -48,11 +49,11 @@ function createMockSession(overrides: Partial<Session> & { id: string }): Sessio
     isShared: false,
     recoveryState: 'healthy',
     ...overrides,
-  };
+  } as Session;
 }
 
 describe('Client-Server Boundary: Review Queue API', () => {
-  let app: Hono;
+  let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
   let annotationService: AnnotationService;
 

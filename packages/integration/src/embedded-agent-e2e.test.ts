@@ -293,6 +293,7 @@ describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
         sessionManager: ctx.sessionManager,
         repositoryManager: ctx.repositoryManager,
         agentManager: ctx.agentManager,
+        agentDirectory: ctx.agentDirectory,
         timerManager: ctx.timerManager,
         conditionalWakeupManager: ctx.conditionalWakeupManager,
         interactiveProcessManager: ctx.interactiveProcessManager,
