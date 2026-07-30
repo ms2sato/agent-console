@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # preflight-check.js spawns `bun` internally for the language-check helper.
       # Required even though the script itself is invoked via `node`.
