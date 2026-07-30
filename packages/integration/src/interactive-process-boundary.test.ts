@@ -31,6 +31,7 @@ import { TimerManager } from '@agent-console/server/src/services/timer-manager';
 import { WorktreeService } from '@agent-console/server/src/services/worktree-service';
 import { RepositoryManager } from '@agent-console/server/src/services/repository-manager';
 import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
+import type { SuggestSessionMetadataFn } from '@agent-console/server/src/services/session-metadata-suggester';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
 import { McpTokenRegistry } from '@agent-console/server/src/mcp/mcp-auth';
@@ -162,7 +163,10 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
       worktreeService: new WorktreeService({ db }),
       annotationService: new AnnotationService(),
       interSessionMessageService: new InterSessionMessageService(),
-      suggestSessionMetadata: mock(async () => ({ branch: 'feat/test', title: 'Test' })) as any,
+      suggestSessionMetadata: mock(
+        async (): ReturnType<SuggestSessionMetadataFn> =>
+          Promise.resolve({ branch: 'feat/test', title: 'Test' })
+      ) as SuggestSessionMetadataFn,
       createWorktreeWithSession,
       deleteWorktree,
       userRepository: new SqliteUserRepository(db),
@@ -279,9 +283,11 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
     expect(typeof info.workerId).toBe('string');
     expect(typeof info.command).toBe('string');
     expect(info.status).toBe('running');
-    expect(typeof info.startedAt).toBe('string');
+    if (typeof info.startedAt !== 'string') {
+      throw new Error(`expected info.startedAt to be a string, got ${typeof info.startedAt}`);
+    }
     // startedAt must be ISO date string (catches Date serialization issues)
-    expect(new Date(info.startedAt as string).toISOString()).toBe(info.startedAt as string);
+    expect(new Date(info.startedAt).toISOString()).toBe(info.startedAt);
   });
 
   it('list_processes after kill shows process removed', async () => {

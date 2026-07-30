@@ -45,7 +45,7 @@ export function createFetchBridge<E extends Env = Env>(app: Hono<E>) {
   const capturedRequests: CapturedRequest[] = [];
   const originalFetch = globalThis.fetch;
 
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const mockFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     const body = init?.body ? JSON.parse(init.body as string) : undefined;
     capturedRequests.push({
@@ -60,7 +60,9 @@ export function createFetchBridge<E extends Env = Env>(app: Hono<E>) {
       headers: init?.headers as Record<string, string>,
       body: init?.body as string,
     });
-  }) as unknown as typeof fetch;
+  };
+
+  globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
   return {
     /** All captured requests */
