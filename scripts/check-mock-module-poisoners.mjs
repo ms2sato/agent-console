@@ -340,56 +340,15 @@ export async function runCheck({ cwd = process.cwd(), files, allowlist = KNOWN_V
 
 // ---------------------------------------------------------------------------
 // KNOWN_VIOLATIONS — see the file header for the allowlist strategy. Keys
-// are `file + specifier` pairs. Enumerated by running this detector
-// against `main` at the time this script landed (Issue #1226); the
-// follow-up cleanup Issue (see .claude/rules/testing.md Anti-Pattern #2)
-// converts these to DI seam / spyOn / central registry migration per the
-// #977 playbook. Remove an entry here in the same PR that converts it —
-// a stale entry left behind fails CI by design.
+// are `file + specifier` pairs. The original 8-entry baseline (enumerated
+// against `main` at the time this script landed, Issue #1226) was fully
+// converted to DI seam / spyOn / central-registry migration per the #977
+// playbook in Issue #1238. Empty now; a new justified entry is added the
+// same way -- via the permitted file-exclusive exception in
+// `.claude/rules/testing.md` Anti-Pattern #2 -- and removed in the same PR
+// that converts it. A stale entry left behind fails CI by design.
 // ---------------------------------------------------------------------------
-export const KNOWN_VIOLATIONS = [
-  {
-    file: 'packages/integration/src/paste-focus-isolation.test.tsx',
-    specifier: '@agent-console/client/src/lib/api',
-    reason:
-      'Live #1225-class poisoner: mocked here but imported for real by sibling integration tests in the same bun:test process; priority conversion target.',
-  },
-  {
-    file: 'packages/integration/src/paste-focus-isolation.test.tsx',
-    specifier: '@agent-console/client/src/lib/worker-websocket',
-    reason: 'Same file/priority as the api.ts entry above.',
-  },
-  {
-    file: 'packages/server/src/__tests__/api.test.ts',
-    specifier: '../lib/pty-provider.js',
-    reason: 'Ad-hoc baseline; large integration-style test file, not yet converted to DI.',
-  },
-  {
-    file: 'packages/server/src/__tests__/api.test.ts',
-    specifier: 'open',
-    reason: 'Ad-hoc baseline, duplicate of the system.test.ts open mock below.',
-  },
-  {
-    file: 'packages/server/src/routes/__tests__/system.test.ts',
-    specifier: 'open',
-    reason: 'Ad-hoc baseline, duplicate of the api.test.ts open mock above.',
-  },
-  {
-    file: 'packages/server/src/services/__tests__/worktree-creation-service.test.ts',
-    specifier: '../../lib/logger.js',
-    reason: 'Ad-hoc baseline; logger mock, candidate for DI conversion.',
-  },
-  {
-    file: 'packages/server/src/services/__tests__/worktree-deletion-service.test.ts',
-    specifier: '../../lib/logger.js',
-    reason: 'Ad-hoc baseline; logger mock, candidate for DI conversion.',
-  },
-  {
-    file: 'packages/server/src/services/inbound/__tests__/diff-worker-handler.test.ts',
-    specifier: '../../git-diff-service.js',
-    reason: 'Ad-hoc baseline; standalone function mock, candidate for DI via InboundHandlerDependencies.',
-  },
-];
+export const KNOWN_VIOLATIONS = [];
 
 // ---------------------------------------------------------------------------
 // CLI wrapper

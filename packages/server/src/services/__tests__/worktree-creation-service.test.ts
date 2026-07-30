@@ -50,17 +50,11 @@ const mockWorktreeService = {
   executeHookCommand: mockExecuteHookCommand,
 };
 
-// --- Mock logger ---
-mock.module('../../lib/logger.js', () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-}));
-
-// Import after mocks
+// No logger mock needed: `lib/logger.js`'s pino instance is already disabled
+// (`enabled: !isTest`) whenever `NODE_ENV === 'test'`, which Bun sets by
+// default for `bun test` runs. The real (silent) logger is used directly,
+// avoiding a process-global `mock.module()` of a module other test files
+// import for real (`.claude/rules/testing.md` Anti-Pattern #2).
 const { createWorktreeWithSession } = await import('../worktree-creation-service.js');
 
 // --- Helpers ---
