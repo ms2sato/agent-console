@@ -251,6 +251,17 @@ describe('InteractiveProcessManager', () => {
     }
 
     /**
+     * Issue #1230: fake `spawnAsUserFn` options controlling the returned
+     * stdin sink's `end()` behavior, so teardown tests can assert
+     * `endStdinSafely` is invoked (via an `endCalls` counter) and that a
+     * throwing `end()` (simulating an already-exited child / broken pipe)
+     * does not propagate out of the teardown path.
+     */
+    interface FakeSpawnAsUserOpts {
+      endThrows?: boolean;
+    }
+
+    /**
      * Subset of Bun's `Subprocess<'pipe','pipe','pipe'>` shape that
      * `interactive-process-manager` actually consumes (`exited`, `stdout`,
      * `stderr`, `stdin`, `kill`). Mirrors the `FakeProc` pattern used in
@@ -269,16 +280,21 @@ describe('InteractiveProcessManager', () => {
      * a controllable FakeSubprocess. The FakeSubprocess exposes
      * `.simulateExit(code)` so tests can drive the lifecycle.
      */
-    function makeFakeSpawnAsUser(captured: CapturedSpawn[]): {
+    function makeFakeSpawnAsUser(
+      captured: CapturedSpawn[],
+      opts?: FakeSpawnAsUserOpts,
+    ): {
       fn: SpawnAsUserFn;
       lastStdinWrites: Array<string | Uint8Array>;
       flushCalls: { count: number };
       killSignals: number[];
+      endCalls: { count: number };
       simulateExit: (code: number) => void;
     } {
       const lastStdinWrites: Array<string | Uint8Array> = [];
       const flushCalls = { count: 0 };
       const killSignals: number[] = [];
+      const endCalls = { count: 0 };
       let resolveExited: ((code: number) => void) | null = null;
       const exited = new Promise<number>((resolve) => {
         resolveExited = resolve;
@@ -289,7 +305,12 @@ describe('InteractiveProcessManager', () => {
           lastStdinWrites.push(chunk);
           return 0;
         },
-        end: () => {},
+        end: () => {
+          endCalls.count++;
+          if (opts?.endThrows) {
+            throw new Error('EPIPE: stdin already closed');
+          }
+        },
         flush: () => {
           flushCalls.count++;
           return Promise.resolve(0);
@@ -338,6 +359,7 @@ describe('InteractiveProcessManager', () => {
         lastStdinWrites,
         flushCalls,
         killSignals,
+        endCalls,
         simulateExit: (code: number) => resolveExited?.(code),
       };
     }
@@ -476,6 +498,147 @@ describe('InteractiveProcessManager', () => {
       // Resolve to avoid hanging promises in afterEach
       fake.simulateExit(143);
       elevatedManager.disposeAll();
+    });
+
+    // -----------------------------------------------------------------------
+    // Issue #1230: close the stdin sink at each of the 3 teardown sites so the
+    // OS pipe fd is released deterministically (not left for incidental GC,
+    // same unsound pattern Issue #1196 flagged for PTY master fds). Nested
+    // inside this describe block so the tests can reuse `makeFakeSpawnAsUser`.
+    // -----------------------------------------------------------------------
+    describe('stdin sink teardown (Issue #1230)', () => {
+      it('killProcess closes the stdin sink exactly once', async () => {
+        const captured: CapturedSpawn[] = [];
+        const fake = makeFakeSpawnAsUser(captured);
+        const elevatedManager = new InteractiveProcessManager(
+          onOutput,
+          onExit,
+          { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+          onResponse,
+          fake.fn,
+        );
+
+        const info = await elevatedManager.runProcess({
+          sessionId: 'session-1',
+          workerId: 'worker-1',
+          command: 'sleep 60',
+        });
+
+        elevatedManager.killProcess(info.id);
+        expect(fake.endCalls.count).toBe(1);
+
+        fake.simulateExit(143);
+      });
+
+      it('deleteProcessesBySession closes the stdin sink exactly once per deleted process', async () => {
+        const captured: CapturedSpawn[] = [];
+        const fake = makeFakeSpawnAsUser(captured);
+        const elevatedManager = new InteractiveProcessManager(
+          onOutput,
+          onExit,
+          { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+          onResponse,
+          fake.fn,
+        );
+
+        await elevatedManager.runProcess({
+          sessionId: 'session-1',
+          workerId: 'worker-1',
+          command: 'sleep 60',
+        });
+
+        const deleted = elevatedManager.deleteProcessesBySession('session-1');
+        expect(deleted).toBe(1);
+        expect(fake.endCalls.count).toBe(1);
+
+        fake.simulateExit(143);
+      });
+
+      it('disposeAll closes the stdin sink exactly once per disposed process', async () => {
+        const captured: CapturedSpawn[] = [];
+        const fake = makeFakeSpawnAsUser(captured);
+        const elevatedManager = new InteractiveProcessManager(
+          onOutput,
+          onExit,
+          { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+          onResponse,
+          fake.fn,
+        );
+
+        await elevatedManager.runProcess({
+          sessionId: 'session-1',
+          workerId: 'worker-1',
+          command: 'sleep 60',
+        });
+
+        elevatedManager.disposeAll();
+        expect(fake.endCalls.count).toBe(1);
+
+        fake.simulateExit(143);
+      });
+
+      it('killProcess still returns true and removes the process when the stdin sink throws on end() (broken pipe)', async () => {
+        const captured: CapturedSpawn[] = [];
+        const fake = makeFakeSpawnAsUser(captured, { endThrows: true });
+        const elevatedManager = new InteractiveProcessManager(
+          onOutput,
+          onExit,
+          { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+          onResponse,
+          fake.fn,
+        );
+
+        const info = await elevatedManager.runProcess({
+          sessionId: 'session-1',
+          workerId: 'worker-1',
+          command: 'sleep 60',
+        });
+
+        const killed = elevatedManager.killProcess(info.id);
+        expect(killed).toBe(true);
+        expect(elevatedManager.getProcess(info.id)).toBeUndefined();
+        expect(fake.endCalls.count).toBe(1);
+
+        fake.simulateExit(143);
+      });
+
+      it('tolerates end() being invoked more than once on the same stdin sink without throwing', async () => {
+        // Two processes spawned through the SAME fake spawnAsUserFn share the
+        // identical underlying fake stdin sink object (the fake's `stdin`
+        // closure variable is created once and reused across calls). Killing
+        // both exercises `endStdinSafely` twice against the same sink through
+        // two separate, real teardown-path invocations (killProcess x2),
+        // demonstrating the double-teardown tolerance without fabricating an
+        // artificial call sequence.
+        const captured: CapturedSpawn[] = [];
+        const fake = makeFakeSpawnAsUser(captured);
+        const elevatedManager = new InteractiveProcessManager(
+          onOutput,
+          onExit,
+          { injectPtyMessage: mockInjectPtyMessage, writePtyData: mockWritePtyData },
+          onResponse,
+          fake.fn,
+        );
+
+        const infoA = await elevatedManager.runProcess({
+          sessionId: 'session-1',
+          workerId: 'worker-1',
+          command: 'sleep 60',
+        });
+        const infoB = await elevatedManager.runProcess({
+          sessionId: 'session-1',
+          workerId: 'worker-1',
+          command: 'sleep 61',
+        });
+
+        expect(() => {
+          elevatedManager.killProcess(infoA.id);
+          elevatedManager.killProcess(infoB.id);
+        }).not.toThrow();
+        expect(fake.endCalls.count).toBe(2);
+
+        fake.simulateExit(143);
+      });
     });
   });
 

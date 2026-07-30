@@ -105,6 +105,35 @@ The fix is a one-liner; the cost of missing it is a class of bugs that does not 
 
 The `stdin.end()` discipline is structurally similar to "drain stdout/stderr after spawnAsUser if you do not consume them" (also a `spawnAsUser` consumer obligation, addressed in PR #889 via the same conditional-wakeup migration's `drainAndDiscard` helper). Both follow from the primitive piping streams that its long-lived consumers need but that fire-and-forget consumers do not. Future helpers in this family may introduce analogous consumer-side disciplines; the principle is the same: **the primitive's defaults are tuned for its loudest consumer; quieter consumers inherit obligations that the primitive cannot encode**.
 
+### `spawnAsUser`: close stdin at teardown for feeding consumers
+
+The fire-and-forget rule above is written against the shape "never writes to stdin". It is silent about the opposite shape: a **feeding** consumer that writes to stdin across the process's whole lifetime (a long-lived worker fed commands over time). A feeding consumer correctly concludes the fire-and-forget obligation is not theirs -- and then nothing tells them what IS theirs. The obligation does not disappear; it moves from "immediately" to "at teardown".
+
+**Rule**: every teardown path for a feeding `spawnAsUser` consumer -- every place that stops tracking the subprocess (a kill call, a map deletion/clear, an activation-failure cleanup catch) -- must close the stdin `FileSink` via a per-service private `endStdinSafely(stdin)` helper, not merely drop the reference and let GC incidentally reclaim the pipe fd. This is the same reachability argument Issue #1196 established for the PTY master fd: a worker object referenced from a session/worker map stays reachable for the worker's whole life, so "unreachable, therefore GC'd" is not a real release path in production.
+
+The helper is a thin, per-service, private wrapper -- NOT a new elevation primitive (the strict-thin-wrapper contract in this file's "The strict-thin-wrapper contract" section stands; a tolerant "safe end" is *semantics*, and semantics live at the caller). Duplicate it in each consumer once a second consumer needs it, rather than extracting a shared helper before a third consumer exists (see "When to extract a new helper" above). It must tolerate, without throwing into the teardown path:
+
+- `stdin` being `null` (not yet activated / already torn down),
+- an already-exited child (`end()` on a broken pipe),
+- being invoked more than once for the same sink (a defensive property, not necessarily a reachable production sequence -- teardown code should still never assume it is the only caller).
+
+```ts
+function endStdinSafely(stdin: FileSink | null): void {
+  if (!stdin) return;
+  try {
+    stdin.end();
+  } catch (err) {
+    logger.warn({ err }, 'Failed to close subprocess stdin sink at teardown');
+  }
+}
+```
+
+**Ordering matters when a signal is also involved.** If a teardown path both signals the process (SIGTERM/SIGKILL) and closes stdin, signal FIRST, then close -- kill-then-end keeps existing signal-based exit semantics byte-identical, because closing stdin first would give the child an EOF-triggered exit path that races the signal, introducing a second, previously-nonexistent exit mechanism. The end is purely additive resource release once the signal path is already in flight; it must never become alternative exit machinery.
+
+**Ordering matters relative to the reference itself.** Close the sink BEFORE nulling the field that held it (`worker.stdin = null` or equivalent) -- once the reference is dropped, `endStdinSafely` cannot reach the sink to close it.
+
+**Worked example**: Issue [#1230](https://github.com/ms2sato/agent-console/issues/1230) found this gap in both of this codebase's feeding `spawnAsUser` consumers -- `interactive-process-manager.ts` (3 teardown sites: `killProcess()`, the per-session cleanup loop, the shutdown-all path) and `embedded-agent-worker-service.ts` (the exit observer, which is every exit's single choke point, managed or unexpected; and the activation-failure catch, which the exit observer never runs for, since a spawn that fails before the exit observer is registered has no observer to fall back on). `embedded-agent-worker-service.ts`'s own header comment had stated the fire-and-forget exemption correctly but never mentioned the teardown obligation that replaces it -- confident-but-incomplete phrasing hid the gap from a reader auditing for exactly this class of bug.
+
 ### Caller-side pre-filter discipline
 
 When the consumer's existing direct-spawn path applies an env / arg / shape transformation that `runAsUser`'s non-elevated branch does NOT replicate (e.g., `getCleanChildProcessEnv()` stripping `AGENT_CONSOLE_*` / `SERVER_ONLY_ENV_VARS` before spawn), **gate the elevation at the caller** via `shouldElevateForUser(requestUsername)` and keep the legacy direct-spawn branch verbatim for the non-elevated case. Do NOT push the filter into `runAsUser` — that would violate the strict-thin-wrapper contract by adding semantic layering inside the primitive.

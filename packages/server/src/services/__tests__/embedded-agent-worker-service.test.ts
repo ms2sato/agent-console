@@ -80,6 +80,8 @@ interface FakeSpawn {
   stdinWrites: string[];
   flushCount: () => number;
   killSignals: number[];
+  /** Issue #1230: number of times the fake stdin sink's `end()` was called. */
+  endCount: () => number;
   pushStdout: (s: string) => void;
   pushStderr: (s: string) => void;
   /** Resolve `exited` AND close both streams so the exit observer can complete. */
@@ -90,11 +92,18 @@ interface FakeSpawn {
   setOnStdinWrite: (fn: (chunk: string) => void) => void;
 }
 
-function makeFakeSpawn(): FakeSpawn {
+/**
+ * Issue #1230: options controlling the fake stdin sink's `end()` behavior, so
+ * teardown tests can assert `endStdinSafely` was invoked (via `endCount`) and
+ * that a throwing `end()` (simulating an already-exited child / broken pipe)
+ * does not propagate out of the teardown path.
+ */
+function makeFakeSpawn(opts?: { endThrows?: boolean }): FakeSpawn {
   const captured: SpawnAsUserOpts[] = [];
   const stdinWrites: string[] = [];
   const killSignals: number[] = [];
   let flushes = 0;
+  let ends = 0;
   let onKill: ((signal: number) => void) | undefined;
   // Fired at the exact moment stdin.write is called (Finding 3: lets the
   // append-before-forward test record ordering at call-time, not after await).
@@ -115,7 +124,12 @@ function makeFakeSpawn(): FakeSpawn {
       onStdinWrite?.(s);
       return 0;
     },
-    end: () => {},
+    end: () => {
+      ends += 1;
+      if (opts?.endThrows) {
+        throw new Error('EPIPE: stdin already closed');
+      }
+    },
     flush: () => {
       flushes += 1;
       return 0;
@@ -149,6 +163,7 @@ function makeFakeSpawn(): FakeSpawn {
     stdinWrites,
     flushCount: () => flushes,
     killSignals,
+    endCount: () => ends,
     pushStdout: stdout.push,
     pushStderr: stderr.push,
     simulateExit: (code: number) => {
@@ -223,6 +238,8 @@ function setup(opts?: {
   staleOutputOffset?: number;
   /** Transcript Restore (#1123): readHistoryWithOffset rejects instead of resolving (simulates a persistent I/O error on an existing worker). */
   readHistoryWithOffsetThrows?: boolean;
+  /** Issue #1230: make the fake stdin sink's `end()` throw (simulates an already-exited child / broken pipe at teardown). */
+  spawnEndThrows?: boolean;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -239,7 +256,7 @@ function setup(opts?: {
     initialPrompt: opts?.initialPrompt,
     initialPromptDelivered: opts?.initialPromptDelivered,
   });
-  const fake = makeFakeSpawn();
+  const fake = makeFakeSpawn({ endThrows: opts?.spawnEndThrows });
 
   const mint = mock(() => TOKEN);
   const revokeByWorker = mock(() => {});
@@ -1045,6 +1062,61 @@ describe('EmbeddedAgentWorkerService exit handling', () => {
     expect(h.revokeByWorker).not.toHaveBeenCalled();
     expect(appendedLines(h.bufferOutput)).not.toContain('{"v":1,"type":"exited","code":1}');
     expect(h.globalExit).not.toHaveBeenCalled();
+  });
+});
+
+// -----------------------------------------------------------------------
+// Issue #1230: feeding spawnAsUser consumers must close the stdin sink at
+// teardown so the OS pipe fd is released deterministically instead of being
+// left for incidental GC (same unsound pattern Issue #1196 flagged for PTY
+// master fds). Two teardown sites: the exit observer (handleExit) and the
+// activation-failure catch in runActivation (for a failure occurring after
+// spawn but before the exit observer is registered).
+// -----------------------------------------------------------------------
+describe('EmbeddedAgentWorkerService stdin sink teardown (Issue #1230)', () => {
+  it('closes the stdin sink exactly once when the subprocess exits (handleExit)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.simulateExit(0);
+    await waitFor(() => h.worker.subprocess === null);
+
+    expect(h.fake.endCount()).toBe(1);
+  });
+
+  it('completes exit cleanup without throwing when the stdin sink throws on end() (broken pipe)', async () => {
+    const h = setup({ spawnEndThrows: true });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.recorder.onExit.mockClear();
+
+    h.fake.simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null);
+
+    // Cleanup ran to completion (revoke, null fields, fire onExit) despite
+    // the sink throwing on end() -- `endStdinSafely` swallows it internally.
+    expect(h.worker.subprocess).toBeNull();
+    expect(h.worker.stdin).toBeNull();
+    expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
+    expect(h.recorder.onExit).toHaveBeenCalledWith(1, null, 'unexpected');
+    expect(h.fake.endCount()).toBe(1);
+  });
+
+  it('closes the spawned stdin sink when a post-spawn step fails before the exit observer is registered', async () => {
+    // The init command write (runActivation Step 6) is the only step between
+    // assigning the spawned stdin handle and registering the exit observer
+    // (Step 7). Forcing it to throw exercises the activation-failure catch's
+    // teardown path with a live (never-observed) stdin sink.
+    const h = setup();
+    h.fake.setOnStdinWrite(() => {
+      throw new Error('EPIPE: broken pipe during init write');
+    });
+
+    await expect(h.service.activate(h.sessionId, h.workerId)).rejects.toThrow('EPIPE');
+
+    expect(h.worker.subprocess).toBeNull();
+    expect(h.worker.stdin).toBeNull();
+    expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
+    expect(h.fake.endCount()).toBe(1);
   });
 });
 

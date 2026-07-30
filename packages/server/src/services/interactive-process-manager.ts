@@ -7,6 +7,25 @@ const logger = createLogger('interactive-process-manager');
 
 export const MAX_PROCESSES_PER_SESSION = 10;
 
+/**
+ * Close a subprocess's stdin sink at teardown so the OS pipe fd is released
+ * deterministically rather than left for incidental GC. Mirrors the
+ * discipline `.claude/rules/elevation-helpers.md`'s "feeding-consumer
+ * teardown obligation" documents for `spawnAsUser` consumers that feed stdin
+ * over the process's lifetime -- the same unsound GC-reliance pattern
+ * previously flagged as unacceptable for PTY master-fd handles. Tolerates:
+ * no sink, an already-exited child (broken pipe on `end()`), and being
+ * invoked more than once for the same sink.
+ */
+function endStdinSafely(stdin: FileSink | null): void {
+  if (!stdin) return;
+  try {
+    stdin.end();
+  } catch (err) {
+    logger.warn({ err }, 'Failed to close subprocess stdin sink at teardown');
+  }
+}
+
 interface StoredProcess {
   info: InteractiveProcessInfo;
   subprocess: Subprocess<'pipe', 'pipe', 'pipe'>;
@@ -262,6 +281,7 @@ export class InteractiveProcessManager {
     } catch {
       // Process may have already exited
     }
+    endStdinSafely(stored.stdin);
 
     stored.info.status = 'exited';
     this.processes.delete(processId);
@@ -294,6 +314,7 @@ export class InteractiveProcessManager {
         } catch {
           // Process may have already exited
         }
+        endStdinSafely(stored.stdin);
         this.processes.delete(id);
         count += 1;
       }
@@ -316,6 +337,7 @@ export class InteractiveProcessManager {
       } catch {
         // Process may have already exited
       }
+      endStdinSafely(stored.stdin);
     }
     const count = this.processes.size;
     this.processes.clear();
