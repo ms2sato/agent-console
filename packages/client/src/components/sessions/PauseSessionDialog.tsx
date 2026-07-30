@@ -1,6 +1,4 @@
-import { useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { useMutation } from '@tanstack/react-query';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -10,8 +8,8 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from '../ui/alert-dialog';
-import { ButtonSpinner } from '../ui/Spinner';
 import { pauseSession } from '../../lib/api';
+import { useSessionStopTasksContext } from '../../routes/__root';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
 export interface PauseSessionDialogProps {
@@ -27,6 +25,11 @@ export interface PauseSessionDialogProps {
 /**
  * Dialog for pausing a worktree session.
  * Pausing kills PTY processes but preserves session data for later resume.
+ *
+ * The pending/error state lives in `SessionStopTasksContext` (scoped to the
+ * affected session -- dashboard row + session page banner) instead of this
+ * modal, so pausing a session no longer freezes the whole app for the
+ * server round-trip. See DeleteWorktreeDialog for the sibling pattern.
  */
 export function PauseSessionDialog({
   open,
@@ -37,7 +40,7 @@ export function PauseSessionDialog({
   workerActivityStates,
 }: PauseSessionDialogProps) {
   const navigate = useNavigate();
-  const [error, setError] = useState<string | null>(null);
+  const { addTask, markAsFailed } = useSessionStopTasksContext();
 
   // Check if any agent or embedded-agent workers are in 'active' or 'asking' state
   // (embedded-agent workers only ever report 'active'/'idle', never 'asking')
@@ -46,33 +49,27 @@ export function PauseSessionDialog({
       (workerActivityStates[w.id] === 'active' || workerActivityStates[w.id] === 'asking')
   );
 
-  const pauseMutation = useMutation({
-    mutationFn: () => pauseSession(sessionId),
-    onSuccess: () => {
-      // Close dialog and navigate immediately
-      onOpenChange(false);
-      navigate({ to: '/' });
-      // Session will be updated when WebSocket broadcast arrives from server
-    },
-    onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to pause session');
-    },
-  });
+  const handlePause = async () => {
+    const added = addTask({ sessionId, action: 'pause', sessionTitle });
+    if (!added) return;
 
-  const handleConfirm = () => {
-    setError(null);
-    pauseMutation.mutate();
-  };
+    // Close dialog and navigate immediately
+    onOpenChange(false);
+    navigate({ to: '/' });
 
-  const handleClose = () => {
-    if (!pauseMutation.isPending) {
-      setError(null);
-      onOpenChange(false);
+    // Session will be updated when WebSocket broadcast arrives from server
+
+    try {
+      await pauseSession(sessionId);
+      // Success will be handled via WebSocket (session-paused / sessions-sync).
+    } catch (err) {
+      // If API call fails immediately (network error), mark task as failed
+      markAsFailed(sessionId, err instanceof Error ? err.message : 'Failed to pause session');
     }
   };
 
   return (
-    <AlertDialog open={open} onOpenChange={handleClose}>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="text-yellow-400">Pause Session</AlertDialogTitle>
@@ -93,26 +90,18 @@ export function PauseSessionDialog({
               <p className="text-xs text-gray-500">
                 Session data will be preserved. You can resume this session later from the dashboard.
               </p>
-              {error && (
-                <p className="text-xs text-red-400 bg-red-950/50 p-2 rounded">
-                  {error}
-                </p>
-              )}
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pauseMutation.isPending}>
+          <AlertDialogCancel>
             Cancel
           </AlertDialogCancel>
           <button
-            onClick={handleConfirm}
+            onClick={handlePause}
             className="btn bg-yellow-600 hover:bg-yellow-500 text-white"
-            disabled={pauseMutation.isPending}
           >
-            <ButtonSpinner isPending={pauseMutation.isPending} pendingText="Pausing...">
-              Pause
-            </ButtonSpinner>
+            Pause
           </button>
         </AlertDialogFooter>
       </AlertDialogContent>

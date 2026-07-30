@@ -25,7 +25,7 @@ import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import { GitHubIcon, VSCodeIcon } from '../components/Icons';
-import { Spinner } from '../components/ui/Spinner';
+import { Spinner, ButtonSpinner } from '../components/ui/Spinner';
 import { hasVSCode } from '../lib/capabilities';
 import {
   AlertDialog,
@@ -38,7 +38,7 @@ import {
 } from '../components/ui/alert-dialog';
 import { AddRepositoryForm, type AddRepositoryFormSubmitData } from '../components/repositories';
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
-import { useWorktreeDeletionTasksContext, useSessionDataContext } from './__root';
+import { useWorktreeDeletionTasksContext, useSessionStopTasksContext, useSessionDataContext } from './__root';
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
 import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
 import { logger } from '../lib/logger';
@@ -828,6 +828,8 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
   const isDeleting = deletionTasks.some(
     (t) => t.worktreePath === worktree.path && t.status === 'deleting'
   );
+  const { getTask: getStopTask, removeTask: removeStopTask } = useSessionStopTasksContext();
+  const stopTask = session ? getStopTask(session.id) : undefined;
 
   const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
@@ -1003,7 +1005,25 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
             {isDeleting ? 'Deleting...' : 'Delete'}
           </button>
         )}
+        {stopTask && (
+          <span className="text-xs text-gray-400 flex items-center gap-1">
+            <Spinner size="sm" />
+            {stopTask.action === 'pause' ? 'Pausing...' : 'Stopping...'}
+          </span>
+        )}
       </div>
+
+      {stopTask?.error && (
+        <div className="text-xs text-red-400 bg-red-950/50 p-2 rounded flex items-center justify-between gap-2 md:ml-11">
+          <span>{stopTask.error}</span>
+          <button
+            onClick={() => removeStopTask(stopTask.sessionId)}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600 shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* Delete Worktree Confirmation */}
       <ConfirmDialog
@@ -1060,20 +1080,27 @@ interface SessionCardProps {
   session: SessionWithActivity;
 }
 
-function SessionCard({ session }: SessionCardProps) {
-  const queryClient = useQueryClient();
+export function SessionCard({ session }: SessionCardProps) {
+  const { addTask, removeTask, markAsFailed, getTask } = useSessionStopTasksContext();
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const task = getTask(session.id);
 
-  const deleteMutation = useMutation({
-    mutationFn: deleteSession,
-    onSuccess: () => {
-      // Emit session-deleted locally for immediate UI update
-      // WebSocket event will arrive later but will be processed idempotently
-      emitSessionDeleted(session.id);
-      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
-      setShowStopConfirm(false);
-    },
-  });
+  const handleConfirmStop = async () => {
+    const added = addTask({ sessionId: session.id, action: 'stop', sessionTitle: session.title });
+    setShowStopConfirm(false);
+    if (!added) return;
+
+    // Session will be removed from UI when WebSocket broadcast arrives from server
+    // (no optimistic update to avoid race condition/flicker)
+
+    try {
+      await deleteSession(session.id);
+      // Success will be handled via WebSocket (session-deleted / sessions-sync).
+    } catch (err) {
+      // If API call fails immediately (network error), mark task as failed
+      markAsFailed(session.id, err instanceof Error ? err.message : 'Failed to stop session');
+    }
+  };
 
   const statusColor =
     session.status === 'active'
@@ -1107,11 +1134,26 @@ function SessionCard({ session }: SessionCardProps) {
         </Link>
         <button
           onClick={() => setShowStopConfirm(true)}
+          disabled={Boolean(task)}
           className="btn btn-danger text-sm"
         >
-          Stop
+          <ButtonSpinner isPending={Boolean(task)} pendingText={task?.action === 'pause' ? 'Pausing...' : 'Stopping...'}>
+            Stop
+          </ButtonSpinner>
         </button>
       </div>
+
+      {task?.error && (
+        <div className="text-xs text-red-400 bg-red-950/50 p-2 rounded flex items-center justify-between gap-2 mt-2">
+          <span>{task.error}</span>
+          <button
+            onClick={() => removeTask(session.id)}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600 shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <ConfirmDialog
         open={showStopConfirm}
@@ -1120,8 +1162,7 @@ function SessionCard({ session }: SessionCardProps) {
         description="Are you sure you want to stop this session?"
         confirmLabel="Stop"
         variant="danger"
-        onConfirm={() => deleteMutation.mutate(session.id)}
-        isLoading={deleteMutation.isPending}
+        onConfirm={handleConfirmStop}
       />
     </>
   );

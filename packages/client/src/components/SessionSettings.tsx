@@ -21,6 +21,8 @@ interface SessionSettingsProps {
   session?: Session;
   /** Activity states for workers in this session: { workerId: state } */
   workerActivityStates?: Record<string, AgentActivityState>;
+  /** Disables the "Pause" menu entry, e.g. while a stop/pause task is already in flight */
+  pauseDisabled?: boolean;
   onBranchChange?: (newBranch: string) => void;
   onTitleChange?: (newTitle: string) => void;
   onSessionRestart?: () => void;
@@ -38,6 +40,7 @@ export function SessionSettings({
   isMainWorktree,
   session,
   workerActivityStates,
+  pauseDisabled,
   onBranchChange,
   onTitleChange,
   onSessionRestart,
@@ -59,6 +62,7 @@ export function SessionSettings({
         worktreePath={worktreePath}
         initialPrompt={initialPrompt}
         isMainWorktree={isMainWorktree}
+        pauseDisabled={pauseDisabled}
         onMenuAction={handleMenuAction}
       />
 

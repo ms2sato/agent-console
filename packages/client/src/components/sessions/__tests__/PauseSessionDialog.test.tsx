@@ -1,11 +1,22 @@
 import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PauseSessionDialog, type PauseSessionDialogProps } from '../PauseSessionDialog';
+import { SessionStopTasksContext } from '../../../contexts/root-contexts';
+import { useSessionStopTasks, type UseSessionStopTasksReturn } from '../../../hooks/useSessionStopTasks';
+import { renderWithRouter } from '../../../test/renderWithRouter';
 import type { Session, Worker, AgentActivityState } from '@agent-console/shared';
 
 const originalFetch = globalThis.fetch;
-const mockFetch = mock(() => Promise.resolve(new Response()));
+let resolvePauseSession: (() => void) | null = null;
+let rejectPauseSession: ((err: Error) => void) | null = null;
+const mockFetch = mock(
+  () =>
+    new Promise<Response>((resolve, reject) => {
+      resolvePauseSession = () => resolve(new Response(null, { status: 204 }));
+      rejectPauseSession = (err) => reject(err);
+    })
+);
 globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} });
 
 afterAll(() => {
@@ -14,6 +25,9 @@ afterAll(() => {
 
 afterEach(() => {
   cleanup();
+  mockFetch.mockClear();
+  resolvePauseSession = null;
+  rejectPauseSession = null;
 });
 
 function createMockSession(workers: Worker[]): Session {
@@ -42,12 +56,29 @@ function embeddedAgentWorker(id: string): Worker {
   return { id, type: 'embedded-agent', name: 'Embedded Agent', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'embedded-1', activated: true };
 }
 
-function TestWrapper({ children }: { children: React.ReactNode }) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
+function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn> = {}): UseSessionStopTasksReturn {
+  return {
+    tasks: [],
+    addTask: mock(() => true),
+    removeTask: mock(() => {}),
+    getTask: mock(() => undefined),
+    markAsFailed: mock(() => {}),
+    ...overrides,
+  };
 }
 
-function renderDialog(props: Partial<PauseSessionDialogProps> = {}) {
+function TestWrapper({ children, sessionStopTasks }: { children: React.ReactNode; sessionStopTasks: UseSessionStopTasksReturn }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return (
+    <QueryClientProvider client={queryClient}>
+      <SessionStopTasksContext.Provider value={sessionStopTasks}>
+        {children}
+      </SessionStopTasksContext.Provider>
+    </QueryClientProvider>
+  );
+}
+
+function renderDialog(props: Partial<PauseSessionDialogProps> = {}, sessionStopTasks: UseSessionStopTasksReturn = createMockSessionStopTasks()) {
   const defaultProps: PauseSessionDialogProps = {
     open: true,
     onOpenChange: mock(() => {}),
@@ -55,7 +86,7 @@ function renderDialog(props: Partial<PauseSessionDialogProps> = {}) {
   };
 
   return render(
-    <TestWrapper>
+    <TestWrapper sessionStopTasks={sessionStopTasks}>
       <PauseSessionDialog {...defaultProps} {...props} />
     </TestWrapper>
   );
@@ -104,5 +135,104 @@ describe('PauseSessionDialog', () => {
     renderDialog();
 
     expect(screen.queryByText(WARNING_TEXT)).toBeNull();
+  });
+});
+
+/**
+ * Tests for Issue #1247 -- Pause Session no longer holds a modal open while the
+ * server round-trip is in flight. These tests exercise the confirm handler's
+ * synchronous close + fire-and-forget API call, mirroring DeleteWorktreeDialog's
+ * pattern. A real router (via renderWithRouter) and a real
+ * SessionStopTasksContext.Provider are used instead of mock.module(), which is
+ * process-global in bun:test and would poison other test files that import
+ * routes/__root or contexts/root-contexts for real (testing.md Anti-Pattern #2).
+ */
+describe('PauseSessionDialog / Issue #1247 scoped pending state', () => {
+  async function renderWithRouterAndContext(
+    props: Partial<PauseSessionDialogProps> = {},
+    sessionStopTasks: UseSessionStopTasksReturn = createMockSessionStopTasks()
+  ) {
+    const defaultProps: PauseSessionDialogProps = {
+      open: true,
+      onOpenChange: mock(() => {}),
+      sessionId: 'session-1',
+    };
+
+    return renderWithRouter(
+      <SessionStopTasksContext.Provider value={sessionStopTasks}>
+        <PauseSessionDialog {...defaultProps} {...props} />
+      </SessionStopTasksContext.Provider>
+    );
+  }
+
+  it('closes the dialog synchronously on confirm, without awaiting the pauseSession fetch call', async () => {
+    // POLARITY CHECK (workflow.md TDD requirement): this exact assertion was
+    // run against the pre-conversion PauseSessionDialog.tsx (the useMutation +
+    // isPending-gated AlertDialog implementation) and FAILED there, because
+    // the old handleClose guarded onOpenChange(false) behind
+    // `!pauseMutation.isPending` -- the dialog stayed open until the fetch
+    // promise settled. It passes here against the converted implementation,
+    // which calls onOpenChange(false) synchronously in handlePause before
+    // ever awaiting pauseSession().
+    const onOpenChange = mock(() => {});
+    await renderWithRouterAndContext({ onOpenChange });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+
+    // Assert synchronously (before resolving/flushing the mocked fetch promise).
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(resolvePauseSession).not.toBeNull();
+
+    resolvePauseSession?.();
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+  });
+
+  it('double-clicking confirm before the dialog unmounts results in exactly one pauseSession call', async () => {
+    // Uses the REAL useSessionStopTasks hook (not a mock) so addTask's
+    // at-most-one-per-session dedupe is actually exercised -- a mock that
+    // unconditionally returns `true` would not catch a regression where the
+    // guard `if (!added) return;` is removed from handlePause.
+    function RealSessionStopTasksProvider({ children }: { children: React.ReactNode }) {
+      const sessionStopTasks = useSessionStopTasks();
+      return (
+        <SessionStopTasksContext.Provider value={sessionStopTasks}>
+          {children}
+        </SessionStopTasksContext.Provider>
+      );
+    }
+
+    const defaultProps: PauseSessionDialogProps = {
+      open: true,
+      onOpenChange: mock(() => {}),
+      sessionId: 'session-1',
+    };
+    await renderWithRouter(
+      <RealSessionStopTasksProvider>
+        <PauseSessionDialog {...defaultProps} />
+      </RealSessionStopTasksProvider>
+    );
+
+    const button = screen.getByRole('button', { name: 'Pause' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    resolvePauseSession?.();
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+  });
+
+  it('calls markAsFailed with a message when pauseSession rejects', async () => {
+    const sessionStopTasks = createMockSessionStopTasks();
+    await renderWithRouterAndContext({}, sessionStopTasks);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+
+    rejectPauseSession?.(new Error('Network error'));
+
+    await waitFor(() => {
+      expect(sessionStopTasks.markAsFailed).toHaveBeenCalledWith('session-1', 'Network error');
+    });
   });
 });

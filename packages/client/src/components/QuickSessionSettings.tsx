@@ -14,6 +14,8 @@ interface QuickSessionSettingsProps {
   session?: Session;
   /** Activity states for workers in this session: { workerId: state } */
   workerActivityStates?: Record<string, AgentActivityState>;
+  /** Disables the "Stop Session" menu entry, e.g. while a stop task is already in flight */
+  stopDisabled?: boolean;
 }
 
 type DialogType = QuickMenuAction | null;
@@ -24,6 +26,7 @@ export function QuickSessionSettings({
   initialPrompt,
   session,
   workerActivityStates,
+  stopDisabled,
 }: QuickSessionSettingsProps) {
   const [activeDialog, setActiveDialog] = useState<DialogType>(null);
 
@@ -39,6 +42,7 @@ export function QuickSessionSettings({
     <>
       <QuickSessionSettingsMenu
         initialPrompt={initialPrompt}
+        stopDisabled={stopDisabled}
         onMenuAction={handleMenuAction}
       />
 

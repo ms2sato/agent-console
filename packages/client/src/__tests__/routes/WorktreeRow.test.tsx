@@ -1,10 +1,11 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, cleanup } from '@testing-library/react';
 import { renderWithRouter } from '../../test/renderWithRouter';
-import { WorktreeDeletionTasksContext } from '../../contexts/root-contexts';
+import { WorktreeDeletionTasksContext, SessionStopTasksContext } from '../../contexts/root-contexts';
 import { setCapabilities } from '../../lib/capabilities';
 import { WorktreeRow, type WorktreeRowProps, type SessionWithActivity } from '../../routes/index';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
+import type { UseSessionStopTasksReturn } from '../../hooks/useSessionStopTasks';
 import type { Worktree, WorktreeSession, WorktreeDeletionTask, Session } from '@agent-console/shared';
 
 // lib/capabilities reads from a module-level cache populated at app boot via the
@@ -85,11 +86,28 @@ function createMockDeletionContext(
   };
 }
 
+// WorktreeRow always calls useSessionStopTasksContext() (Issue #1247), so every
+// render needs a Provider ancestor even when the test doesn't exercise a
+// stop/pause task.
+function createMockSessionStopTasks(
+  overrides?: Partial<UseSessionStopTasksReturn>
+): UseSessionStopTasksReturn {
+  return {
+    tasks: [],
+    addTask: mock(() => true),
+    removeTask: mock(() => {}),
+    getTask: mock(() => undefined),
+    markAsFailed: mock(() => {}),
+    ...overrides,
+  };
+}
+
 // -- Render helper --
 
 async function renderWorktreeRow(
   props: Partial<WorktreeRowProps> = {},
-  deletionContext?: UseWorktreeDeletionTasksReturn
+  deletionContext?: UseWorktreeDeletionTasksReturn,
+  sessionStopTasks?: UseSessionStopTasksReturn
 ) {
   const defaultProps: WorktreeRowProps = {
     worktree: createTestWorktree(),
@@ -100,10 +118,13 @@ async function renderWorktreeRow(
   };
 
   const ctx = deletionContext ?? createMockDeletionContext();
+  const stopTasksCtx = sessionStopTasks ?? createMockSessionStopTasks();
 
   return renderWithRouter(
     <WorktreeDeletionTasksContext.Provider value={ctx}>
-      <WorktreeRow {...defaultProps} />
+      <SessionStopTasksContext.Provider value={stopTasksCtx}>
+        <WorktreeRow {...defaultProps} />
+      </SessionStopTasksContext.Provider>
     </WorktreeDeletionTasksContext.Provider>
   );
 }

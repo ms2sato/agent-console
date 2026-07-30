@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import type { UseWorktreeCreationTasksReturn } from '../hooks/useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../hooks/useWorktreeDeletionTasks';
+import type { UseSessionStopTasksReturn } from '../hooks/useSessionStopTasks';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
 /**
@@ -63,6 +64,26 @@ export function useWorktreeDeletionTasksContext(): UseWorktreeDeletionTasksRetur
   const context = useContext(WorktreeDeletionTasksContext);
   if (!context) {
     throw new Error('useWorktreeDeletionTasksContext must be used within WorktreeDeletionTasksContext.Provider');
+  }
+  return context;
+}
+
+/**
+ * Context for in-flight Stop/Pause session tasks.
+ * This allows child routes (Dashboard, SessionPage) to add tasks and scope
+ * the pending/error UI to the affected session instead of a modal that
+ * freezes the whole app.
+ */
+export const SessionStopTasksContext = createContext<UseSessionStopTasksReturn | null>(null);
+
+/**
+ * Hook to access session stop/pause tasks context.
+ * Must be used within a route that is a child of __root.
+ */
+export function useSessionStopTasksContext(): UseSessionStopTasksReturn {
+  const context = useContext(SessionStopTasksContext);
+  if (!context) {
+    throw new Error('useSessionStopTasksContext must be used within SessionStopTasksContext.Provider');
   }
   return context;
 }
