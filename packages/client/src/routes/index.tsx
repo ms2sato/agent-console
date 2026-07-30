@@ -922,95 +922,101 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
       : 'bg-gray-600';     // No session
 
   return (
-    <div className="flex flex-col gap-2 p-2 bg-slate-800 rounded md:flex-row md:items-center md:gap-3">
-      {/* Info section: index, status dot, and content - always horizontal */}
-      <div className="flex items-center gap-3 flex-1 min-w-0">
-        <span className="w-6 text-center text-sm font-mono text-gray-500 shrink-0">
-          {worktree.index !== undefined ? worktree.index : '0'}
-        </span>
-        <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium flex items-center gap-2">
-            {/* Show title from active session or paused session */}
-            {(session?.title || pausedSession?.title) && (
-              <>
-                <span className="truncate" title={session?.title || pausedSession?.title}>{session?.title || pausedSession?.title}</span>
-                <span className="text-gray-500">-</span>
-              </>
-            )}
-            <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
-            {worktree.isMain && (
-              <span className="text-xs text-gray-500">(primary)</span>
-            )}
-            {hasVSCode() && (
-              <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  try {
-                    await openInVSCode(worktree.path);
-                  } catch (err) {
-                    logger.error('Failed to open in VS Code:', err);
-                  }
-                }}
-                className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
-                title="Open in VS Code"
-              >
-                <VSCodeIcon className="w-4 h-4" />
-              </button>
-            )}
-            {session && <ActivityBadge state={session.activityState} />}
-          </div>
-          <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
-        </div>
-      </div>
-      <div className="flex gap-2 shrink-0 pl-11 md:pl-0">
-        {session ? (
-          <Link
-            to="/sessions/$sessionId"
-            params={{ sessionId: session.id }}
-            className="btn btn-primary text-xs no-underline"
-          >
-            Open
-          </Link>
-        ) : pausedSession ? (
-          <button
-            onClick={handleResumeSession}
-            disabled={resumeSessionMutation.isPending}
-            className="btn btn-primary text-xs"
-          >
-            {resumeSessionMutation.isPending ? 'Resuming...' : 'Resume'}
-          </button>
-        ) : (
-          <button
-            onClick={handleRestoreSession}
-            disabled={restoreSessionMutation.isPending}
-            className="btn btn-primary text-xs"
-          >
-            {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
-          </button>
-        )}
-        <button
-          onClick={onPull}
-          disabled={isPulling}
-          className="btn text-xs bg-slate-700 hover:bg-slate-600"
-        >
-          {isPulling ? 'Pulling...' : 'Pull'}
-        </button>
-        {!worktree.isMain && (
-          <button
-            onClick={handleDeleteWorktree}
-            disabled={isDeleting}
-            className="btn btn-danger text-xs"
-          >
-            {isDeleting ? 'Deleting...' : 'Delete'}
-          </button>
-        )}
-        {stopTask && (
-          <span className="text-xs text-gray-400 flex items-center gap-1">
-            <Spinner size="sm" />
-            {stopTask.action === 'pause' ? 'Pausing...' : 'Stopping...'}
+    <div className="flex flex-col gap-2 p-2 bg-slate-800 rounded">
+      {/* Row wrapper: info + actions, horizontal from md: up. The error block
+          below is a sibling of this wrapper (not a flex item within it) so it
+          always renders on its own line instead of being squeezed by the
+          outer container's flex-row layout. */}
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
+        {/* Info section: index, status dot, and content - always horizontal */}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <span className="w-6 text-center text-sm font-mono text-gray-500 shrink-0">
+            {worktree.index !== undefined ? worktree.index : '0'}
           </span>
-        )}
+          <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium flex items-center gap-2">
+              {/* Show title from active session or paused session */}
+              {(session?.title || pausedSession?.title) && (
+                <>
+                  <span className="truncate" title={session?.title || pausedSession?.title}>{session?.title || pausedSession?.title}</span>
+                  <span className="text-gray-500">-</span>
+                </>
+              )}
+              <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
+              {worktree.isMain && (
+                <span className="text-xs text-gray-500">(primary)</span>
+              )}
+              {hasVSCode() && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await openInVSCode(worktree.path);
+                    } catch (err) {
+                      logger.error('Failed to open in VS Code:', err);
+                    }
+                  }}
+                  className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
+                  title="Open in VS Code"
+                >
+                  <VSCodeIcon className="w-4 h-4" />
+                </button>
+              )}
+              {session && <ActivityBadge state={session.activityState} />}
+              {stopTask && (
+                <span className="text-xs text-gray-400 flex items-center gap-1 shrink-0">
+                  <Spinner size="sm" />
+                  {stopTask.action === 'pause' ? 'Pausing...' : 'Stopping...'}
+                </span>
+              )}
+            </div>
+            <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
+          </div>
+        </div>
+        <div className="flex gap-2 shrink-0 pl-11 md:pl-0">
+          {session ? (
+            <Link
+              to="/sessions/$sessionId"
+              params={{ sessionId: session.id }}
+              className="btn btn-primary text-xs no-underline"
+            >
+              Open
+            </Link>
+          ) : pausedSession ? (
+            <button
+              onClick={handleResumeSession}
+              disabled={resumeSessionMutation.isPending}
+              className="btn btn-primary text-xs"
+            >
+              {resumeSessionMutation.isPending ? 'Resuming...' : 'Resume'}
+            </button>
+          ) : (
+            <button
+              onClick={handleRestoreSession}
+              disabled={restoreSessionMutation.isPending}
+              className="btn btn-primary text-xs"
+            >
+              {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
+            </button>
+          )}
+          <button
+            onClick={onPull}
+            disabled={isPulling}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600"
+          >
+            {isPulling ? 'Pulling...' : 'Pull'}
+          </button>
+          {!worktree.isMain && (
+            <button
+              onClick={handleDeleteWorktree}
+              disabled={isDeleting}
+              className="btn btn-danger text-xs"
+            >
+              {isDeleting ? 'Deleting...' : 'Delete'}
+            </button>
+          )}
+        </div>
       </div>
 
       {stopTask?.error && (
