@@ -319,8 +319,11 @@ describe('findDefaultFiles — scan glob', () => {
 });
 
 describe('KNOWN_VIOLATIONS / SANCTIONED_LOCATIONS — baseline integrity', () => {
-  it('every KNOWN_VIOLATIONS entry has a file, specifier, and one-line reason', () => {
-    expect(KNOWN_VIOLATIONS.length).toBeGreaterThan(0);
+  it('every KNOWN_VIOLATIONS entry (if any) has a file, specifier, and one-line reason', () => {
+    // The original 8-entry baseline was fully converted in Issue #1238;
+    // the array is expected to be empty until a new justified exception is
+    // added (see the file-exclusive exception in testing.md Anti-Pattern #2).
+    expect(KNOWN_VIOLATIONS.length).toBeGreaterThanOrEqual(0);
     for (const entry of KNOWN_VIOLATIONS) {
       expect(typeof entry.file).toBe('string');
       expect(typeof entry.specifier).toBe('string');

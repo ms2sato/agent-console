@@ -48,15 +48,11 @@ const mockWorktreeService = {
   removeOrphanedWorktree: mockRemoveOrphanedWorktree,
 };
 
-// --- Mock logger ---
-mock.module('../../lib/logger.js', () => ({
-  createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
-  }),
-}));
+// No logger mock needed: `lib/logger.js`'s pino instance is already disabled
+// (`enabled: !isTest`) whenever `NODE_ENV === 'test'`, which Bun sets by
+// default for `bun test` runs. The real (silent) logger is used directly,
+// avoiding a process-global `mock.module()` of a module other test files
+// import for real (`.claude/rules/testing.md` Anti-Pattern #2).
 
 // Note: The Bun shell ($) tagged template literal cannot be reliably mocked
 // via mock.module('bun', ...). The gitStatus capture path runs a real `git -C`

@@ -6,37 +6,27 @@
  */
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
 import { fireEvent, cleanup, act, within } from '@testing-library/react';
-
-// Mock dependencies required by MessagePanel
-const mockSendWorkerMessage = mock(() =>
-  Promise.resolve({
-    message: {
-      id: 'msg-1',
-      sessionId: 'session-1',
-      fromWorkerId: 'user',
-      fromWorkerName: 'User',
-      toWorkerId: 'worker-1',
-      toWorkerName: 'Worker 1',
-      content: '',
-      timestamp: new Date().toISOString(),
-    },
-  })
-);
-mock.module('@agent-console/client/src/lib/api', () => ({
-  sendWorkerMessage: mockSendWorkerMessage,
-}));
-mock.module('@agent-console/client/src/lib/worker-websocket', () => ({
-  sendInput: mock(() => true),
-}));
-
 import { MessagePanel } from '@agent-console/client/src/components/sessions/MessagePanel';
 import { renderWithRouter } from '@agent-console/client/src/test/renderWithRouter';
 import { _getDraftsMap } from '@agent-console/client/src/hooks/useDraftMessage';
+
+// MessagePanel resolves its send action via an injected `onSend` prop, not
+// via a module-level import of `lib/api` / `lib/worker-websocket` -- the
+// prior `mock.module()` of those two modules was a leftover from before
+// that DI seam existed and mocked exports MessagePanel no longer reads.
+// Neither test below triggers a send, but `onSend` is a required prop.
+// Using the real DI seam (Pattern 1) instead of `mock.module()` avoids
+// process-globally poisoning sibling integration tests that import
+// `lib/api` / `lib/worker-websocket` for real in the same bun:test
+// process (e.g. system-api-boundary.test.ts) -- the live #1225-class
+// poisoner this file used to be (`.claude/rules/testing.md` Anti-Pattern #2).
+const mockOnSend = mock(() => Promise.resolve());
 
 const defaultProps = {
   sessionId: 'session-1',
   targetWorkerId: 'worker-1',
   newMessage: null,
+  onSend: mockOnSend,
 };
 
 describe('Paste Focus Isolation (#523)', () => {

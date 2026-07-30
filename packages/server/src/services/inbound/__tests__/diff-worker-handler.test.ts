@@ -1,13 +1,25 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
 import type { InboundSystemEvent, Session, Worker } from '@agent-console/shared';
 import { createInboundHandlers, type InboundEventHandler, type InboundHandlerDependencies, type EventTarget } from '../handlers.js';
 import { buildWorktreeSession } from '../../../__tests__/utils/build-test-data.js';
+import * as gitDiffServiceModule from '../../git-diff-service.js';
 
-// Mock triggerRefresh at the module level since it's a standalone function import
+// `triggerRefresh` is a standalone function import in handlers.ts (no DI
+// seam via InboundHandlerDependencies exists for it yet -- see the PR
+// description for this conversion). spyOn() on the real module keeps this
+// test file-scoped and restorable, instead of process-globally poisoning
+// every other importer of git-diff-service.js the way mock.module() would
+// (`.claude/rules/testing.md` Anti-Pattern #2).
 const mockTriggerRefresh = mock(() => {});
-mock.module('../../git-diff-service.js', () => ({
-  triggerRefresh: mockTriggerRefresh,
-}));
+let triggerRefreshSpy: ReturnType<typeof spyOn>;
+
+beforeEach(() => {
+  triggerRefreshSpy = spyOn(gitDiffServiceModule, 'triggerRefresh').mockImplementation(mockTriggerRefresh);
+});
+
+afterEach(() => {
+  triggerRefreshSpy.mockRestore();
+});
 
 function createEvent(type: 'ci:completed' | 'pr:merged' = 'ci:completed'): InboundSystemEvent {
   return {

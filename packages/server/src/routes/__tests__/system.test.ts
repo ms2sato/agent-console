@@ -1,14 +1,7 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import type { AppBindings } from '../../app-context.js';
 import { asAppContext } from '../../__tests__/test-utils.js';
-
-// Mock open package BEFORE importing mock-fs-helper
-// The open package internally uses fs and needs to be mocked first
-const mockOpen = mock(async () => {});
-mock.module('open', () => ({
-  default: mockOpen,
-}));
 
 // Import mock-fs-helper to set up memfs mocks
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';

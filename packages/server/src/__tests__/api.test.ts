@@ -11,7 +11,7 @@ import type {
 } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
-import { MockPty, createMockPtyFactory } from './utils/mock-pty.js';
+import { createMockPtyFactory } from './utils/mock-pty.js';
 import { mockGit, GitError } from './utils/mock-git-helper.js';
 
 // Set up test config directory BEFORE any service imports to ensure
@@ -23,28 +23,7 @@ process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 // Infrastructure Mocks (must be before any service imports)
 // =============================================================================
 
-// Track PTY instances
-const mockPtyInstances: MockPty[] = [];
-let nextPtyPid = 10000;
-
-// Mock pty-provider module to avoid spawning real PTY processes in tests
-mock.module('../lib/pty-provider.js', () => ({
-  bunPtyProvider: {
-    spawn: () => {
-      const pty = new MockPty(nextPtyPid++);
-      mockPtyInstances.push(pty);
-      return pty;
-    },
-  },
-}));
-
 // Note: process-utils is mocked via mock-process-helper.js (imported above)
-
-// Mock open package to prevent actual file opening
-const mockOpen = mock(async () => {});
-mock.module('open', () => ({
-  default: mockOpen,
-}));
 
 // Mock session-metadata-suggester to avoid running actual agent commands
 const mockSuggestSessionMetadata = mock(async () => ({
@@ -114,7 +93,7 @@ import { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
 import { WorktreeService } from '../services/worktree-service.js';
 import type { AppBindings } from '../app-context.js';
-import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser } from './test-utils.js';
+import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser, mockOpen } from './test-utils.js';
 import { SingleUserMode } from '../services/user-mode.js';
 import { McpTokenRegistry } from '../mcp/mcp-auth.js';
 
@@ -201,8 +180,6 @@ describe('API Routes Integration', () => {
     process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
     // Reset PTY tracking
-    mockPtyInstances.length = 0;
-    nextPtyPid = 10000;
     ptyFactory.reset();
 
     // Reset process tracking
