@@ -27,6 +27,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # Bun is required to run the unit tests (`bun:test`). The drift check
       # script itself runs under `node`, but keeping a single runtime here
