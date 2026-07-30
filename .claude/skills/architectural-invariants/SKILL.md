@@ -302,6 +302,53 @@ Issue [#728](https://github.com/ms2sato/agent-console/issues/728) surfaced the b
 
 ---
 
+## I-9. No Silent Drop of Pre-Attach Events
+
+**Rule.** Data or events that arrive while no handler/listener is attached yet must be **buffered** (bounded, flushed on first attach) or **fail loudly** (throw, ERROR log). A guard that silently discards them — `if (listener) { deliver } // else: nothing` — is prohibited.
+
+**Why it matters.** The failure mode is **silent and timing-sensitive**. The guard looks defensive when written; in reality it converts an early event into an unobservable non-event. The code works in every environment where the producer is slower than the consumer's attach (slow spawn chains, loaded machines, synthetic tests that emit after attaching), and fails only where the producer is fast (a direct spawn emitting within milliseconds) — presenting as "the event never happened" with zero diagnostic signal. No error is logged, nothing crashes, downstream state simply never advances.
+
+Two structural traps make this worse than an ordinary race:
+
+1. **A synchronous JS span cannot close the window when the callback is registered natively.** If the callback is passed as an argument to the creation call itself (`Bun.spawn({ terminal: { data } })`, a constructor option, an FFI registration), the native side holds it *before the creation call returns*, while the wrapper object the callback consults is assigned only *after*. "There are no awaits between spawn and attach" is then an argument about the wrong window — its safety rests on an unverifiable assumption about when the native layer may invoke the callback (`os-environment-coupling.md`'s forbidden should-work reasoning).
+2. **The correct implementation often already exists for a sibling event on the same object.** One event type gets late-attach replay because a hang was noticed; another gets the silent guard because a drop was not. The asymmetry hides in plain sight.
+
+### Domains where this applies
+
+| Domain | Producer | Pre-attach window |
+|---|---|---|
+| PTY / subprocess output | native `data` callback | between spawn and adapter/listener attach |
+| Process exit events | `exited` promise / exit callback | between exit and `onExit` attach (the solved sibling — replay pattern) |
+| WebSocket / socket messages | `message` events | between open and `onmessage` attach |
+| Event emitters with replace semantics | single-listener `on*` setters | between construction and first setter call |
+| Queue / stream consumers | delivery callbacks | between subscribe-at-create and handler wiring |
+
+### Detection heuristics
+
+1. **Grep the guard shape.** `if (listener)` / `if (handler)` / `handler?.(...)` inside a delivery callback, with no else-branch that stores the payload, is the signature. Ask: where does the payload go when the guard is false?
+2. **Callback-as-creation-argument.** Any callback passed into the creating call itself is live before your wrapper exists. Trace what it consults, and what happens while that is still null/undefined.
+3. **Sibling-event comparison (the discovery path that found the incident below).** For every event type on the same object (`data` / `exit` / `error` / `close`), compare their late-attach handling side by side — `grep` sibling call sites in the same file. One replaying while another drops is the bug, and the replaying one is your in-file reference implementation for the fix.
+4. **"Works on the slow path, fails on the fast path" reports.** An environment asymmetry where the failing configuration has the *shorter* producer startup (direct vs elevated spawn, local vs remote, warm vs cold) is this invariant's field signature.
+
+### Resolution patterns
+
+- **Bounded buffer, flush on first attach.** A capped buffer (keep the FIRST bytes — early data is usually the valuable data — count what is dropped past the cap) shared by every window, flushed in arrival order through the same decode path as live data on the first attach only; freed on flush and on dispose. **Copy payloads at buffer time** if the producer may reuse its callback buffer (`.slice()`, not `.subarray()` — a view can be corrupted before flush).
+- **Synchronous replay-on-attach** for one-shot events (exit): if the event already fired, invoke the newly attached listener immediately, with a double-fire guard.
+- **Loud failure** where buffering is genuinely wrong: throw or ERROR-log so the drop is observable.
+- **Watchdog for the residual.** Where downstream silently waits on the event (a gate that swallows output until a sentinel), add a bounded timer that converts indefinite silence into an ERROR carrying delivery diagnostics.
+
+### Example: caught (late) by this invariant
+
+Issue [#1242](https://github.com/ms2sato/agent-console/issues/1242), fixed in PR [#1243](https://github.com/ms2sato/agent-console/pull/1243). The default PTY provider's `data` callback (passed as a `Bun.spawn` argument — trap 1) dropped chunks while `adapter === null`, and the adapter's `_emitData` dropped them again while `dataListener === null`. The same adapter's `onExit` **already implemented late-attach replay with a double-fire guard** — the correct pattern for the sibling event lived in the same file (trap 2), found by the sibling-grep heuristic. Production symptom: MCP `delegate_to_worktree` on macOS created every resource but the agent never started — the login-shell sentinel was emitted within milliseconds on the direct spawn path and lost in the pre-attach window, leaving a 0-byte output log with no error anywhere. The same code passed 3/3 on Ubuntu, where the elevated spawn chain's login-shell init delays the sentinel past every window. Fix: a shared bounded pre-attach buffer created *before* `Bun.spawn` (closing both windows with one flush), copy-on-push after a review round found the buffered views could alias the producer's reusable buffer, plus a sentinel watchdog. The owner-environment checkpoint confirmed the windows were the cause.
+
+**Review question that would have caught it mechanically:** *"For every event callback this change registers or consumes: what happens to an event that fires before the first handler is attached — buffered, replayed, or silently dropped? Do all sibling events on the same object answer the same way?"*
+
+### Suggested acceptance criterion template
+
+- [ ] For each event/data callback introduced or consumed, pre-attach delivery is either buffered (bounded, copy-on-push, flush-on-first-attach, freed on dispose) or loudly rejected — never silently dropped; a deterministic test emits before attach and asserts byte-identical delivery after attach (and fails against a silently-dropping implementation); sibling events on the same object are audited for late-attach symmetry
+
+---
+
 ## How to Add New Invariants
 
 A new entry to this catalog should satisfy all of:
