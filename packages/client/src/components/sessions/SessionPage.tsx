@@ -578,7 +578,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
       {/* Non-modal Stop/Pause task banner (scoped to this session) */}
       {stopTask && (
         stopTask.error ? (
-          <div className="bg-red-950/50 border-b border-red-900 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 text-xs text-red-400">
+          <div role="alert" className="bg-red-950/50 border-b border-red-900 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 text-xs text-red-400">
             <span>{stopTask.error}</span>
             <button
               onClick={() => removeStopTask(stopTask.sessionId)}

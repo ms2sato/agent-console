@@ -208,6 +208,18 @@ function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn
   };
 }
 
+// Provider that exercises the REAL useSessionStopTasks hook (not a mock), so
+// production task-state transitions (addTask / markAsFailed / getTask) flow
+// through to consumers and re-render them as they would in the app.
+function RealSessionStopTasksProvider({ children }: { children: React.ReactNode }) {
+  const sessionStopTasks = useSessionStopTasks();
+  return (
+    <SessionStopTasksContext.Provider value={sessionStopTasks}>
+      {children}
+    </SessionStopTasksContext.Provider>
+  );
+}
+
 // --- Render helper ---
 
 async function renderDashboard(
@@ -731,15 +743,6 @@ describe('SessionCard / Issue #1247 scoped pending state', () => {
     // Uses the REAL useSessionStopTasks hook so the disabled-control guard is
     // exercised against production task state, not a mock that always reports
     // "no task".
-    function RealSessionStopTasksProvider({ children }: { children: React.ReactNode }) {
-      const sessionStopTasks = useSessionStopTasks();
-      return (
-        <SessionStopTasksContext.Provider value={sessionStopTasks}>
-          {children}
-        </SessionStopTasksContext.Provider>
-      );
-    }
-
     const session = createMockQuickSession();
     await renderWithRouter(
       <RealSessionStopTasksProvider>
@@ -781,14 +784,6 @@ describe('SessionCard / Issue #1247 scoped pending state', () => {
 
     // Exercise the REAL useSessionStopTasks hook (not a mock) so markAsFailed's
     // state update actually flows through to `getTask` and re-renders the card.
-    function RealSessionStopTasksProvider({ children }: { children: React.ReactNode }) {
-      const sessionStopTasks = useSessionStopTasks();
-      return (
-        <SessionStopTasksContext.Provider value={sessionStopTasks}>
-          {children}
-        </SessionStopTasksContext.Provider>
-      );
-    }
     await renderWithRouter(
       <RealSessionStopTasksProvider>
         <SessionCard session={session} />

@@ -1,10 +1,30 @@
-import { describe, it, expect, mock, afterEach } from 'bun:test';
+import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
 import { render, screen, cleanup, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SessionSettingsMenu } from '../SessionSettingsMenu';
 
+// SessionSettingsMenu enables the `fetchSessionPrLink` query as soon as the
+// menu opens. Without a fetch-level stub, every test that opens the menu
+// fires a real, unmocked network request that resolves/rejects after the
+// test's assertions already ran, making the suite non-deterministic.
+const originalFetch = globalThis.fetch;
+const mockFetch = mock(() =>
+  Promise.resolve(
+    new Response(JSON.stringify({ prUrl: null, branchName: 'test-branch', orgRepo: null }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  )
+);
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} });
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
+
 afterEach(() => {
   cleanup();
+  mockFetch.mockClear();
 });
 
 function renderMenu(props: Partial<React.ComponentProps<typeof SessionSettingsMenu>> = {}) {
