@@ -208,6 +208,30 @@ export const MATCHING_RULES = {
     relevance:
       'artifact written to a shared / persistent location — embedded references must resolve via globally-stable anchors, not cwd or per-worktree paths',
   },
+  'I-9': {
+    keywords: [
+      'onData',
+      'onExit',
+      'onMessage',
+      'listener',
+      'event callback',
+      'data callback',
+      'attach',
+      'pre-attach',
+      'subscribe',
+      'pty',
+      'terminal',
+      'subprocess output',
+      'websocket message',
+      'event emitter',
+      'buffer',
+      'replay',
+      'sentinel',
+    ],
+    pathFragments: ['pty-provider', 'worker-manager', 'websocket/', 'worker-websocket', 'app-websocket'],
+    relevance:
+      'event/data callbacks with a pre-attach window — payloads arriving before the first handler attach must be buffered (bounded, flush-on-first-attach) or fail loudly, never silently dropped; audit sibling events on the same object for late-attach symmetry',
+  },
 };
 
 function usage() {
