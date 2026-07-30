@@ -3,8 +3,9 @@ import { screen, fireEvent, waitFor, act, cleanup, render } from '@testing-libra
 import { createRootRoute, createRouter, createMemoryHistory, RouterProvider } from '@tanstack/react-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { SessionSettings } from '../SessionSettings';
-import { WorktreeDeletionTasksContext } from '../../contexts/root-contexts';
+import { WorktreeDeletionTasksContext, SessionStopTasksContext } from '../../contexts/root-contexts';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
+import type { UseSessionStopTasksReturn } from '../../hooks/useSessionStopTasks';
 
 // Helper to create mock Response
 function createMockResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
@@ -37,11 +38,26 @@ function createMockDeletionTasks(): UseWorktreeDeletionTasksReturn {
   };
 }
 
+// Create mock session stop tasks context. SessionSettings always mounts
+// PauseSessionDialog (visibility is controlled by its `open` prop, not by
+// conditional rendering), so it always calls useSessionStopTasksContext()
+// and requires a Provider ancestor.
+function createMockSessionStopTasks(): UseSessionStopTasksReturn {
+  return {
+    tasks: [],
+    addTask: mock(() => true),
+    removeTask: mock(() => {}),
+    getTask: mock(() => undefined),
+    markAsFailed: mock(() => {}),
+  };
+}
+
 // Helper to render with router and context
 async function renderWithRouterAndContext(
   ui: React.ReactNode,
   deletionTasks: UseWorktreeDeletionTasksReturn,
-  initialPath = '/'
+  initialPath = '/',
+  sessionStopTasks: UseSessionStopTasksReturn = createMockSessionStopTasks()
 ) {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -64,7 +80,9 @@ async function renderWithRouterAndContext(
   const rootRoute = createRootRoute({
     component: () => (
       <WorktreeDeletionTasksContext.Provider value={deletionTasks}>
-        {ui}
+        <SessionStopTasksContext.Provider value={sessionStopTasks}>
+          {ui}
+        </SessionStopTasksContext.Provider>
       </WorktreeDeletionTasksContext.Provider>
     ),
   });
@@ -221,6 +239,36 @@ describe('SessionSettings', () => {
         );
         expect(deleteCall).toBeTruthy();
       });
+    });
+  });
+
+  describe('pauseDisabled threading (Issue #1247)', () => {
+    it('disables the Pause menu entry when pauseDisabled is true', async () => {
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} pauseDisabled />,
+        mockDeletionTasks
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByTitle('Session settings'));
+      });
+
+      const pauseButton = screen.getByRole('button', { name: /Pause/ });
+      expect((pauseButton as HTMLButtonElement).disabled).toBe(true);
+    });
+
+    it('leaves the Pause menu entry enabled when pauseDisabled is false/omitted', async () => {
+      await renderWithRouterAndContext(
+        <SessionSettings {...defaultProps} />,
+        mockDeletionTasks
+      );
+
+      await act(async () => {
+        fireEvent.click(screen.getByTitle('Session settings'));
+      });
+
+      const pauseButton = screen.getByRole('button', { name: /Pause/ });
+      expect((pauseButton as HTMLButtonElement).disabled).toBe(false);
     });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
-import { renderHook } from '@testing-library/react';
+import { renderHook, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement } from 'react';
 import type {
@@ -8,8 +8,11 @@ import type {
 } from '@agent-console/shared';
 import type { UseWorktreeCreationTasksReturn } from '../useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../useWorktreeDeletionTasks';
+import type { UseSessionStopTasksReturn, SessionStopTask } from '../useSessionStopTasks';
 import { useSessionSideEffects } from '../useSessionSideEffects';
 import { clearDraftsForSession, _getDraftsMap } from '../useDraftMessage';
+import { _reset as resetWebSocket } from '../../lib/app-websocket';
+import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
 
 // --- Helpers ---
 
@@ -48,6 +51,17 @@ function createMockWorktreeDeletionTasks(): UseWorktreeDeletionTasksReturn {
   };
 }
 
+function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn> = {}): UseSessionStopTasksReturn {
+  return {
+    tasks: [],
+    addTask: mock(() => true),
+    removeTask: mock(() => {}),
+    getTask: mock(() => undefined),
+    markAsFailed: mock(() => {}),
+    ...overrides,
+  };
+}
+
 interface DefaultOptions {
   handleSessionsSync: ReturnType<typeof mock>;
   handleSessionCreated: ReturnType<typeof mock>;
@@ -59,6 +73,7 @@ interface DefaultOptions {
   workerActivityStates: Record<string, Record<string, AgentActivityState>>;
   worktreeCreationTasks: UseWorktreeCreationTasksReturn;
   worktreeDeletionTasks: UseWorktreeDeletionTasksReturn;
+  sessionStopTasks: UseSessionStopTasksReturn;
 }
 
 function createDefaultOptions(overrides: Partial<DefaultOptions> = {}): DefaultOptions {
@@ -73,6 +88,7 @@ function createDefaultOptions(overrides: Partial<DefaultOptions> = {}): DefaultO
     workerActivityStates: {},
     worktreeCreationTasks: createMockWorktreeCreationTasks(),
     worktreeDeletionTasks: createMockWorktreeDeletionTasks(),
+    sessionStopTasks: createMockSessionStopTasks(),
     ...overrides,
   };
 }
@@ -164,5 +180,123 @@ describe('useSessionSideEffects', () => {
 
     // Clean up
     draftsMap.clear();
+  });
+});
+
+/**
+ * Tests for Issue #1247 -- session stop/pause task removal is event-driven off
+ * server truth. These tests simulate real WebSocket frames (via MockWebSocket,
+ * the same infrastructure useAppWs.test.ts uses) rather than calling the
+ * wrapped handlers directly, so the assertions exercise the actual
+ * useAppWsEvent -> useSessionSideEffects wiring, not a hand-rolled shortcut.
+ */
+describe('useSessionSideEffects - session stop task removal (Issue #1247)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+  });
+
+  function stopTask(overrides: Partial<SessionStopTask> = {}): SessionStopTask {
+    return {
+      sessionId: 'session-1',
+      action: 'stop',
+      error: null,
+      ...overrides,
+    };
+  }
+
+  it('removes a stop task whose session left the sessions-sync list', () => {
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [stopTask({ sessionId: 'session-gone', action: 'stop' })],
+    });
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'sessions-sync', sessions: [], activityStates: [] }));
+    });
+
+    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-gone');
+  });
+
+  it('removes a pause task whose session is present but status is inactive', () => {
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [stopTask({ sessionId: 'session-1', action: 'pause' })],
+    });
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const session = createMockSession({ id: 'session-1', status: 'inactive', activationState: 'running', isShared: false, recoveryState: 'healthy' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'sessions-sync', sessions: [session], activityStates: [] }));
+    });
+
+    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-1');
+  });
+
+  it('does NOT remove a stop task whose session is still present and active (no resurrection on a mid-flight sync)', () => {
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [stopTask({ sessionId: 'session-1', action: 'stop' })],
+    });
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const session = createMockSession({ id: 'session-1', status: 'active', activationState: 'running', isShared: false, recoveryState: 'healthy' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'sessions-sync', sessions: [session], activityStates: [] }));
+    });
+
+    expect(sessionStopTasks.removeTask).not.toHaveBeenCalled();
+  });
+
+  it('removes the task unconditionally on a session-deleted event', () => {
+    const sessionStopTasks = createMockSessionStopTasks();
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-deleted', sessionId: 'session-1' }));
+    });
+
+    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-1');
+  });
+
+  it('removes the task unconditionally on a session-paused event', () => {
+    const sessionStopTasks = createMockSessionStopTasks();
+    const options = createDefaultOptions({ sessionStopTasks });
+    renderWithQueryClient(options);
+
+    const session = createMockSession({ id: 'session-1', status: 'inactive', activationState: 'hibernated', isShared: false, recoveryState: 'healthy', pausedAt: '2026-01-01T00:00:00Z' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-paused', session }));
+    });
+
+    expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-1');
   });
 });

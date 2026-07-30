@@ -9,11 +9,14 @@ export type QuickMenuAction = 'view-initial-prompt' | 'stop-session';
 
 export interface QuickSessionSettingsMenuProps {
   initialPrompt?: string;
+  /** Disables the "Stop Session" menu entry, e.g. while a stop task is already in flight */
+  stopDisabled?: boolean;
   onMenuAction: (action: QuickMenuAction) => void;
 }
 
 export function QuickSessionSettingsMenu({
   initialPrompt,
+  stopDisabled = false,
   onMenuAction,
 }: QuickSessionSettingsMenuProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -82,7 +85,8 @@ export function QuickSessionSettingsMenu({
             )}
             <button
               onClick={() => handleMenuAction('stop-session')}
-              className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2"
+              disabled={stopDisabled}
+              className="w-full px-4 py-2 text-left text-sm text-red-400 hover:bg-slate-700 hover:text-red-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-red-400"
             >
               <StopIcon />
               Stop Session

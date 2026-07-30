@@ -25,7 +25,7 @@ import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
 import { GitHubIcon, VSCodeIcon } from '../components/Icons';
-import { Spinner } from '../components/ui/Spinner';
+import { Spinner, ButtonSpinner } from '../components/ui/Spinner';
 import { hasVSCode } from '../lib/capabilities';
 import {
   AlertDialog,
@@ -38,7 +38,7 @@ import {
 } from '../components/ui/alert-dialog';
 import { AddRepositoryForm, type AddRepositoryFormSubmitData } from '../components/repositories';
 import { CreateWorktreeForm, type CreateWorktreeFormRequest } from '../components/worktrees';
-import { useWorktreeDeletionTasksContext, useSessionDataContext } from './__root';
+import { useWorktreeDeletionTasksContext, useSessionStopTasksContext, useSessionDataContext } from './__root';
 import { repositoryKeys, agentKeys, sessionKeys, worktreeKeys, branchKeys } from '../lib/query-keys';
 import type { Session, Repository, Worktree, AgentActivityState, CreateWorktreeSessionRequest, BranchNameFallback, AgentDefinition, HookCommandResult, WorktreePullCompletedPayload, WorktreePullFailedPayload } from '@agent-console/shared';
 import { logger } from '../lib/logger';
@@ -828,6 +828,8 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
   const isDeleting = deletionTasks.some(
     (t) => t.worktreePath === worktree.path && t.status === 'deleting'
   );
+  const { getTask: getStopTask, removeTask: removeStopTask } = useSessionStopTasksContext();
+  const stopTask = session ? getStopTask(session.id) : undefined;
 
   const restoreSessionMutation = useMutation({
     mutationFn: (request: CreateWorktreeSessionRequest) => createSession(request),
@@ -920,90 +922,114 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
       : 'bg-gray-600';     // No session
 
   return (
-    <div className="flex flex-col gap-2 p-2 bg-slate-800 rounded md:flex-row md:items-center md:gap-3">
-      {/* Info section: index, status dot, and content - always horizontal */}
-      <div className="flex items-center gap-3 flex-1 min-w-0">
-        <span className="w-6 text-center text-sm font-mono text-gray-500 shrink-0">
-          {worktree.index !== undefined ? worktree.index : '0'}
-        </span>
-        <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
-        <div className="flex-1 min-w-0">
-          <div className="text-sm font-medium flex items-center gap-2">
-            {/* Show title from active session or paused session */}
-            {(session?.title || pausedSession?.title) && (
-              <>
-                <span className="truncate" title={session?.title || pausedSession?.title}>{session?.title || pausedSession?.title}</span>
-                <span className="text-gray-500">-</span>
-              </>
-            )}
-            <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
-            {worktree.isMain && (
-              <span className="text-xs text-gray-500">(primary)</span>
-            )}
-            {hasVSCode() && (
-              <button
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  try {
-                    await openInVSCode(worktree.path);
-                  } catch (err) {
-                    logger.error('Failed to open in VS Code:', err);
-                  }
-                }}
-                className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
-                title="Open in VS Code"
-              >
-                <VSCodeIcon className="w-4 h-4" />
-              </button>
-            )}
-            {session && <ActivityBadge state={session.activityState} />}
+    <div className="flex flex-col gap-2 p-2 bg-slate-800 rounded">
+      {/* Row wrapper: info + actions, horizontal from md: up. The error block
+          below is a sibling of this wrapper (not a flex item within it) so it
+          always renders on its own line instead of being squeezed by the
+          outer container's flex-row layout. */}
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:gap-3">
+        {/* Info section: index, status dot, and content - always horizontal */}
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <span className="w-6 text-center text-sm font-mono text-gray-500 shrink-0">
+            {worktree.index !== undefined ? worktree.index : '0'}
+          </span>
+          <span className={`inline-block w-2 h-2 rounded-full ${statusColor} shrink-0`} />
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium flex items-center gap-2">
+              {/* Show title from active session or paused session */}
+              {(session?.title || pausedSession?.title) && (
+                <>
+                  <span className="truncate" title={session?.title || pausedSession?.title}>{session?.title || pausedSession?.title}</span>
+                  <span className="text-gray-500">-</span>
+                </>
+              )}
+              <span className={(session?.title || pausedSession?.title) ? 'text-gray-400' : ''}>{worktree.branch}</span>
+              {worktree.isMain && (
+                <span className="text-xs text-gray-500">(primary)</span>
+              )}
+              {hasVSCode() && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await openInVSCode(worktree.path);
+                    } catch (err) {
+                      logger.error('Failed to open in VS Code:', err);
+                    }
+                  }}
+                  className="p-1 text-gray-400 hover:text-white hover:bg-slate-700 rounded"
+                  title="Open in VS Code"
+                >
+                  <VSCodeIcon className="w-4 h-4" />
+                </button>
+              )}
+              {session && <ActivityBadge state={session.activityState} />}
+              {stopTask && (
+                <span className="text-xs text-gray-400 flex items-center gap-1 shrink-0">
+                  <Spinner size="sm" />
+                  {stopTask.action === 'pause' ? 'Pausing...' : 'Stopping...'}
+                </span>
+              )}
+            </div>
+            <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
           </div>
-          <PathLink path={worktree.path} className="text-xs text-gray-500 truncate" />
+        </div>
+        <div className="flex gap-2 shrink-0 pl-11 md:pl-0">
+          {session ? (
+            <Link
+              to="/sessions/$sessionId"
+              params={{ sessionId: session.id }}
+              className="btn btn-primary text-xs no-underline"
+            >
+              Open
+            </Link>
+          ) : pausedSession ? (
+            <button
+              onClick={handleResumeSession}
+              disabled={resumeSessionMutation.isPending}
+              className="btn btn-primary text-xs"
+            >
+              {resumeSessionMutation.isPending ? 'Resuming...' : 'Resume'}
+            </button>
+          ) : (
+            <button
+              onClick={handleRestoreSession}
+              disabled={restoreSessionMutation.isPending}
+              className="btn btn-primary text-xs"
+            >
+              {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
+            </button>
+          )}
+          <button
+            onClick={onPull}
+            disabled={isPulling}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600"
+          >
+            {isPulling ? 'Pulling...' : 'Pull'}
+          </button>
+          {!worktree.isMain && (
+            <button
+              onClick={handleDeleteWorktree}
+              disabled={isDeleting}
+              className="btn btn-danger text-xs"
+            >
+              {isDeleting ? 'Deleting...' : 'Delete'}
+            </button>
+          )}
         </div>
       </div>
-      <div className="flex gap-2 shrink-0 pl-11 md:pl-0">
-        {session ? (
-          <Link
-            to="/sessions/$sessionId"
-            params={{ sessionId: session.id }}
-            className="btn btn-primary text-xs no-underline"
-          >
-            Open
-          </Link>
-        ) : pausedSession ? (
+
+      {stopTask?.error && (
+        <div className="text-xs text-red-400 bg-red-950/50 p-2 rounded flex items-center justify-between gap-2 md:ml-11">
+          <span>{stopTask.error}</span>
           <button
-            onClick={handleResumeSession}
-            disabled={resumeSessionMutation.isPending}
-            className="btn btn-primary text-xs"
+            onClick={() => removeStopTask(stopTask.sessionId)}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600 shrink-0"
           >
-            {resumeSessionMutation.isPending ? 'Resuming...' : 'Resume'}
+            Dismiss
           </button>
-        ) : (
-          <button
-            onClick={handleRestoreSession}
-            disabled={restoreSessionMutation.isPending}
-            className="btn btn-primary text-xs"
-          >
-            {restoreSessionMutation.isPending ? 'Restoring...' : 'Restore'}
-          </button>
-        )}
-        <button
-          onClick={onPull}
-          disabled={isPulling}
-          className="btn text-xs bg-slate-700 hover:bg-slate-600"
-        >
-          {isPulling ? 'Pulling...' : 'Pull'}
-        </button>
-        {!worktree.isMain && (
-          <button
-            onClick={handleDeleteWorktree}
-            disabled={isDeleting}
-            className="btn btn-danger text-xs"
-          >
-            {isDeleting ? 'Deleting...' : 'Delete'}
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Delete Worktree Confirmation */}
       <ConfirmDialog
@@ -1060,20 +1086,27 @@ interface SessionCardProps {
   session: SessionWithActivity;
 }
 
-function SessionCard({ session }: SessionCardProps) {
-  const queryClient = useQueryClient();
+export function SessionCard({ session }: SessionCardProps) {
+  const { addTask, removeTask, markAsFailed, getTask } = useSessionStopTasksContext();
   const [showStopConfirm, setShowStopConfirm] = useState(false);
+  const task = getTask(session.id);
 
-  const deleteMutation = useMutation({
-    mutationFn: deleteSession,
-    onSuccess: () => {
-      // Emit session-deleted locally for immediate UI update
-      // WebSocket event will arrive later but will be processed idempotently
-      emitSessionDeleted(session.id);
-      queryClient.invalidateQueries({ queryKey: sessionKeys.root() });
-      setShowStopConfirm(false);
-    },
-  });
+  const handleConfirmStop = async () => {
+    const added = addTask({ sessionId: session.id, action: 'stop', sessionTitle: session.title });
+    setShowStopConfirm(false);
+    if (!added) return;
+
+    // Session will be removed from UI when WebSocket broadcast arrives from server
+    // (no optimistic update to avoid race condition/flicker)
+
+    try {
+      await deleteSession(session.id);
+      // Success will be handled via WebSocket (session-deleted / sessions-sync).
+    } catch (err) {
+      // If API call fails immediately (network error), mark task as failed
+      markAsFailed(session.id, err instanceof Error ? err.message : 'Failed to stop session');
+    }
+  };
 
   const statusColor =
     session.status === 'active'
@@ -1107,11 +1140,26 @@ function SessionCard({ session }: SessionCardProps) {
         </Link>
         <button
           onClick={() => setShowStopConfirm(true)}
+          disabled={Boolean(task)}
           className="btn btn-danger text-sm"
         >
-          Stop
+          <ButtonSpinner isPending={Boolean(task)} pendingText={task?.action === 'pause' ? 'Pausing...' : 'Stopping...'}>
+            Stop
+          </ButtonSpinner>
         </button>
       </div>
+
+      {task?.error && (
+        <div className="text-xs text-red-400 bg-red-950/50 p-2 rounded flex items-center justify-between gap-2 mt-2">
+          <span>{task.error}</span>
+          <button
+            onClick={() => removeTask(session.id)}
+            className="btn text-xs bg-slate-700 hover:bg-slate-600 shrink-0"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       <ConfirmDialog
         open={showStopConfirm}
@@ -1120,8 +1168,7 @@ function SessionCard({ session }: SessionCardProps) {
         description="Are you sure you want to stop this session?"
         confirmLabel="Stop"
         variant="danger"
-        onConfirm={() => deleteMutation.mutate(session.id)}
-        isLoading={deleteMutation.isPending}
+        onConfirm={handleConfirmStop}
       />
     </>
   );

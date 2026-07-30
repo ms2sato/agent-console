@@ -25,6 +25,9 @@ import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { MemoPanel } from './MemoPanel';
 import { useAgents } from '../../hooks/useAgents';
+import { useSessionStopTasksContext } from '../../routes/__root';
+import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
+import { Spinner } from '../ui/Spinner';
 import { logger } from '../../lib/logger';
 
 export { sessionToPageState } from './hooks/useSessionPageState';
@@ -96,6 +99,18 @@ export interface SessionPageProps {
  *
  * @internal Exported for testing
  */
+/**
+ * Resolves the non-modal banner text for an in-flight stop/pause task,
+ * shown on SessionPage while a `SessionStopTasksContext` task targets the
+ * displayed session. Extracted for testability without a full component
+ * render, mirroring `resolveShouldStripScrollback` above.
+ *
+ * @internal Exported for testing
+ */
+export function getSessionStopTaskBannerText(task: SessionStopTask): string {
+  return task.action === 'pause' ? 'Pausing this session...' : 'Stopping this session...';
+}
+
 export function resolveShouldStripScrollback(
   workers: Worker[],
   activeTabId: string | null,
@@ -112,6 +127,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const [exitInfo, setExitInfo] = useState<{ code: number; signal: string | null } | undefined>();
   const { errorDialogProps, showError } = useErrorDialog();
   const { agents } = useAgents();
+  const { getTask: getStopTask, removeTask: removeStopTask } = useSessionStopTasksContext();
+  const stopTask = getStopTask(sessionId);
   const messagePanelRef = useRef<MessagePanelHandle>(null);
   const navigate = useNavigate();
   // State for resuming paused session
@@ -558,6 +575,25 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
+      {/* Non-modal Stop/Pause task banner (scoped to this session) */}
+      {stopTask && (
+        stopTask.error ? (
+          <div role="alert" className="bg-red-950/50 border-b border-red-900 px-3 py-1.5 flex items-center justify-between gap-2 shrink-0 text-xs text-red-400">
+            <span>{stopTask.error}</span>
+            <button
+              onClick={() => removeStopTask(stopTask.sessionId)}
+              className="btn text-xs bg-slate-700 hover:bg-slate-600 shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        ) : (
+          <div className="bg-yellow-950/50 border-b border-yellow-900 px-3 py-1.5 flex items-center gap-2 shrink-0 text-xs text-yellow-400">
+            <Spinner size="sm" />
+            {getSessionStopTaskBannerText(stopTask)}
+          </div>
+        )
+      )}
       {/* Tab bar with worker tabs */}
       <div className="bg-slate-800 border-b border-slate-600 flex items-center shrink-0">
         {/* Worker tabs */}
@@ -582,6 +618,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
               isMainWorktree={session.isMainWorktree}
               session={session}
               workerActivityStates={workerActivityStates}
+              pauseDisabled={Boolean(stopTask)}
             />
           ) : (
             <QuickSessionSettings
@@ -590,6 +627,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
               initialPrompt={session.initialPrompt}
               session={session}
               workerActivityStates={workerActivityStates}
+              stopDisabled={Boolean(stopTask)}
             />
           )}
         </div>

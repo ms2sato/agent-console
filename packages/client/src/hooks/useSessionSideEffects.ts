@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { Session, AgentActivityState, WorkerActivityInfo, WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import type { UseWorktreeCreationTasksReturn } from './useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from './useWorktreeDeletionTasks';
+import type { UseSessionStopTasksReturn } from './useSessionStopTasks';
 import { useAppWsEvent } from './useAppWs';
 import { worktreeKeys, sessionKeys } from '../lib/query-keys';
 import { disconnectSession } from '../lib/worker-websocket';
@@ -20,6 +21,7 @@ interface UseSessionSideEffectsOptions {
   workerActivityStates: Record<string, Record<string, AgentActivityState>>;
   worktreeCreationTasks: UseWorktreeCreationTasksReturn;
   worktreeDeletionTasks: UseWorktreeDeletionTasksReturn;
+  sessionStopTasks: UseSessionStopTasksReturn;
 }
 
 /**
@@ -43,6 +45,7 @@ export function useSessionSideEffects({
   workerActivityStates,
   worktreeCreationTasks,
   worktreeDeletionTasks,
+  sessionStopTasks,
 }: UseSessionSideEffectsOptions): void {
   const queryClient = useQueryClient();
 
@@ -61,17 +64,34 @@ export function useSessionSideEffects({
     clearDraftsForSession(sessionId);
     handleSessionDeleted(sessionId);
     invalidateValidation();
-  }, [handleSessionDeleted, invalidateValidation]);
+    // A stop/pause task's target session is gone -- remove it unconditionally
+    // (harmless no-op if no task exists for this session).
+    sessionStopTasks.removeTask(sessionId);
+  }, [handleSessionDeleted, invalidateValidation, sessionStopTasks]);
 
   const handleSessionUpdatedWithValidation = useCallback((...args: Parameters<typeof handleSessionUpdated>) => {
     handleSessionUpdated(...args);
     invalidateValidation();
   }, [handleSessionUpdated, invalidateValidation]);
 
-  const handleSessionsSyncWithValidation = useCallback((...args: Parameters<typeof handleSessionsSync>) => {
-    handleSessionsSync(...args);
+  // Removes stop/pause tasks whose session-side truth (from the sessions-sync
+  // snapshot) indicates the task is complete: a `stop` task's session left the
+  // list entirely, or a `pause` task's session is present but now `inactive`.
+  // This makes WS-reconnect self-healing -- the task-removal side effect does
+  // not depend on the `session-deleted`/`session-paused` events having been
+  // observed by this client.
+  const handleSessionsSyncWithValidation = useCallback((sessions: Session[], activityStates: WorkerActivityInfo[]) => {
+    handleSessionsSync(sessions, activityStates);
     invalidateValidation();
-  }, [handleSessionsSync, invalidateValidation]);
+    for (const task of sessionStopTasks.tasks) {
+      const session = sessions.find((s) => s.id === task.sessionId);
+      if (!session) {
+        sessionStopTasks.removeTask(task.sessionId);
+      } else if (task.action === 'pause' && session.status === 'inactive') {
+        sessionStopTasks.removeTask(task.sessionId);
+      }
+    }
+  }, [handleSessionsSync, invalidateValidation, sessionStopTasks]);
 
   // Wrap session paused handler to also disconnect lingering worker WebSocket connections
   const handleSessionPausedWithCleanup = useCallback((session: Session) => {
@@ -80,7 +100,8 @@ export function useSessionSideEffects({
     // no longer exists in server memory.
     disconnectSession(session.id);
     handleSessionPaused(session);
-  }, [handleSessionPaused]);
+    sessionStopTasks.removeTask(session.id);
+  }, [handleSessionPaused, sessionStopTasks]);
 
   // Wrap worktree deletion completed handler to also invalidate worktree queries
   const handleWorktreeDeletionCompleted = useCallback((payload: WorktreeDeletionCompletedPayload) => {

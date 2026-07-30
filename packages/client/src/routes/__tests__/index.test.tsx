@@ -15,13 +15,15 @@
  */
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { useEffect } from 'react';
 
-import { DashboardPage } from '../index';
-import { SessionDataContext, WorktreeDeletionTasksContext, WorktreeCreationTasksContext } from '../../contexts/root-contexts';
+import { DashboardPage, SessionCard, WorktreeRow } from '../index';
+import { SessionDataContext, WorktreeDeletionTasksContext, WorktreeCreationTasksContext, SessionStopTasksContext } from '../../contexts/root-contexts';
 import { renderWithRouter } from '../../test/renderWithRouter';
-import type { Repository } from '@agent-console/shared';
+import type { Repository, Session } from '@agent-console/shared';
 import type { UseWorktreeDeletionTasksReturn } from '../../hooks/useWorktreeDeletionTasks';
 import type { UseWorktreeCreationTasksReturn } from '../../hooks/useWorktreeCreationTasks';
+import { useSessionStopTasks, type UseSessionStopTasksReturn } from '../../hooks/useSessionStopTasks';
 import * as useAppWsModule from '../../hooks/useAppWs';
 import * as capabilitiesModule from '../../lib/capabilities';
 
@@ -67,6 +69,15 @@ interface FetchResponses {
    * `deleteRepositoryCalls`.
    */
   deleteRepositoryBodies?: unknown[];
+  /**
+   * Recorded DELETE /api/sessions/:id calls (Issue #1247 SessionCard tests).
+   */
+  deleteSessionCalls?: string[];
+  /**
+   * When set, DELETE /api/sessions/:id rejects with this message instead of
+   * resolving 204 (Issue #1247 SessionCard error-surfacing tests).
+   */
+  deleteSessionError?: string;
 }
 
 let fetchResponses: FetchResponses = {
@@ -127,6 +138,17 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
     return new Response(null, { status: 204 });
   }
 
+  // DELETE /api/sessions/:id  (Stop Session flow, Issue #1247)
+  if (method === 'DELETE' && /\/api\/sessions\/[^/]+$/.test(url)) {
+    const match = url.match(/\/api\/sessions\/([^/]+)$/);
+    const sessionId = match?.[1] ?? '';
+    fetchResponses.deleteSessionCalls?.push(sessionId);
+    if (fetchResponses.deleteSessionError) {
+      return Promise.reject(new Error(fetchResponses.deleteSessionError));
+    }
+    return new Response(null, { status: 204 });
+  }
+
   // Default: empty success response (covers branches lookups, etc.)
   return new Response(JSON.stringify({}), {
     status: 200,
@@ -175,6 +197,29 @@ function createMockCreationContext(): UseWorktreeCreationTasksReturn {
   };
 }
 
+function createMockSessionStopTasks(overrides: Partial<UseSessionStopTasksReturn> = {}): UseSessionStopTasksReturn {
+  return {
+    tasks: [],
+    addTask: mock(() => true),
+    removeTask: mock(() => {}),
+    getTask: mock(() => undefined),
+    markAsFailed: mock(() => {}),
+    ...overrides,
+  };
+}
+
+// Provider that exercises the REAL useSessionStopTasks hook (not a mock), so
+// production task-state transitions (addTask / markAsFailed / getTask) flow
+// through to consumers and re-render them as they would in the app.
+function RealSessionStopTasksProvider({ children }: { children: React.ReactNode }) {
+  const sessionStopTasks = useSessionStopTasks();
+  return (
+    <SessionStopTasksContext.Provider value={sessionStopTasks}>
+      {children}
+    </SessionStopTasksContext.Provider>
+  );
+}
+
 // --- Render helper ---
 
 async function renderDashboard(
@@ -183,6 +228,10 @@ async function renderDashboard(
     deleteRepositoryResponses?: Record<string, { status: number; body?: unknown }>;
     deleteRepositoryCalls?: string[];
     deleteRepositoryBodies?: unknown[];
+    sessionStopTasks?: UseSessionStopTasksReturn;
+    sessions?: Session[];
+    deleteSessionCalls?: string[];
+    deleteSessionError?: string;
   }
 ) {
   fetchResponses = {
@@ -191,10 +240,12 @@ async function renderDashboard(
     deleteRepositoryResponses: options?.deleteRepositoryResponses,
     deleteRepositoryCalls: options?.deleteRepositoryCalls,
     deleteRepositoryBodies: options?.deleteRepositoryBodies,
+    deleteSessionCalls: options?.deleteSessionCalls,
+    deleteSessionError: options?.deleteSessionError,
   };
 
   const sessionDataValue = {
-    sessions: [],
+    sessions: options?.sessions ?? [],
     wsInitialized: true,
     workerActivityStates: {},
   };
@@ -203,7 +254,9 @@ async function renderDashboard(
     <SessionDataContext.Provider value={sessionDataValue}>
       <WorktreeCreationTasksContext.Provider value={createMockCreationContext()}>
         <WorktreeDeletionTasksContext.Provider value={createMockDeletionContext()}>
-          <DashboardPage />
+          <SessionStopTasksContext.Provider value={options?.sessionStopTasks ?? createMockSessionStopTasks()}>
+            <DashboardPage />
+          </SessionStopTasksContext.Provider>
         </WorktreeDeletionTasksContext.Provider>
       </WorktreeCreationTasksContext.Provider>
     </SessionDataContext.Provider>
@@ -618,5 +671,274 @@ describe('DashboardPage / Unregister Repository — source-repo cleanup checkbox
       expect(screen.getByRole('heading', { name: 'Unregister Repository' })).toBeTruthy();
     });
     expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+  });
+});
+
+/**
+ * Tests for Issue #1247 -- Stop Session no longer holds a modal open while the
+ * server round-trip is in flight, for the Dashboard's quick-session card. The
+ * "no optimistic update" boundary (the session list only changes via
+ * sessions-sync / session-deleted) is covered by useSessionSideEffects.test.ts;
+ * these tests only pin SessionCard's own confirm-handler behavior.
+ */
+describe('SessionCard / Issue #1247 scoped pending state', () => {
+  function createMockQuickSession(overrides: Partial<Session> = {}): Session {
+    return {
+      id: 'quick-1',
+      type: 'quick',
+      title: 'My Quick Session',
+      locationPath: '/tmp/quick-1',
+      status: 'active',
+      activationState: 'running',
+      createdAt: new Date().toISOString(),
+      workers: [],
+      isShared: false,
+      recoveryState: 'healthy',
+      ...overrides,
+    } as Session;
+  }
+
+  beforeEach(() => {
+    mockFetch.mockClear();
+    fetchResponses = {
+      repositories: [],
+      worktreesByRepoId: {},
+      deleteSessionCalls: [],
+    };
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('closes the ConfirmDialog synchronously on confirm, without awaiting deleteSession', async () => {
+    const session = createMockQuickSession();
+    await renderWithRouter(
+      <SessionStopTasksContext.Provider value={createMockSessionStopTasks()}>
+        <SessionCard session={session} />
+      </SessionStopTasksContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alertdialog')).toBeTruthy();
+    });
+
+    const dialog = screen.getByRole('alertdialog');
+    const confirmButton = screen.getAllByRole('button', { name: 'Stop' })
+      .find((btn) => dialog.contains(btn));
+    expect(confirmButton).toBeTruthy();
+
+    fireEvent.click(confirmButton!);
+
+    // Assert synchronously, before awaiting/flushing the deleteSession fetch call.
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+
+    await waitFor(() => {
+      expect(fetchResponses.deleteSessionCalls).toEqual(['quick-1']);
+    });
+  });
+
+  it('disables the trigger button once a task exists, so a second click cannot fire a second deleteSession call', async () => {
+    // Uses the REAL useSessionStopTasks hook so the disabled-control guard is
+    // exercised against production task state, not a mock that always reports
+    // "no task".
+    const session = createMockQuickSession();
+    await renderWithRouter(
+      <RealSessionStopTasksProvider>
+        <SessionCard session={session} />
+      </RealSessionStopTasksProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alertdialog')).toBeTruthy();
+    });
+
+    const dialog = screen.getByRole('alertdialog');
+    const confirmButton = screen.getAllByRole('button', { name: 'Stop' })
+      .find((btn) => dialog.contains(btn));
+    fireEvent.click(confirmButton!);
+
+    await waitFor(() => {
+      expect(fetchResponses.deleteSessionCalls).toEqual(['quick-1']);
+    });
+
+    // The dialog is gone; the card's own trigger button now shows the
+    // disabled "Stopping..." indicator instead of "Stop".
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    const triggerButton = screen.getByText('Stopping...').closest('button');
+    expect(triggerButton).toBeTruthy();
+    expect((triggerButton as HTMLButtonElement).disabled).toBe(true);
+
+    // Clicking the disabled trigger does not reopen the confirm dialog, and
+    // no second deleteSession call fires.
+    fireEvent.click(triggerButton!);
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(fetchResponses.deleteSessionCalls).toEqual(['quick-1']);
+  });
+
+  it('renders the error and Dismiss control when deleteSession rejects, and Dismiss clears it', async () => {
+    fetchResponses.deleteSessionError = 'Network error';
+    const session = createMockQuickSession();
+
+    // Exercise the REAL useSessionStopTasks hook (not a mock) so markAsFailed's
+    // state update actually flows through to `getTask` and re-renders the card.
+    await renderWithRouter(
+      <RealSessionStopTasksProvider>
+        <SessionCard session={session} />
+      </RealSessionStopTasksProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => {
+      expect(screen.getByRole('alertdialog')).toBeTruthy();
+    });
+    const dialog = screen.getByRole('alertdialog');
+    const confirmButton = screen.getAllByRole('button', { name: 'Stop' })
+      .find((btn) => dialog.contains(btn));
+    fireEvent.click(confirmButton!);
+
+    await waitFor(() => {
+      expect(screen.getByText('Network error')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Network error')).toBeNull();
+    });
+  });
+});
+
+/**
+ * Tests for Issue #1247 -- the Dashboard's worktree row shows a read-only
+ * Stopping.../Pausing... indicator (and error+Dismiss) while a stop/pause task
+ * targets its session, without disturbing Open/Pull/Delete. Worktree deletion
+ * itself is untouched (out of scope).
+ */
+describe('WorktreeRow / Issue #1247 stop/pause task indicator', () => {
+  function createMockWorktree(overrides: Partial<{ path: string; branch: string; isMain: boolean; repositoryId: string }> = {}) {
+    return {
+      path: '/tmp/worktree-1',
+      branch: 'feature/foo',
+      isMain: false,
+      repositoryId: 'repo-1',
+      ...overrides,
+    };
+  }
+
+  function createMockWorktreeSession(overrides: Partial<Session> = {}): Session {
+    return {
+      id: 'session-1',
+      type: 'worktree',
+      title: 'My Worktree Session',
+      locationPath: '/tmp/worktree-1',
+      status: 'active',
+      activationState: 'running',
+      createdAt: new Date().toISOString(),
+      workers: [],
+      isShared: false,
+      recoveryState: 'healthy',
+      repositoryId: 'repo-1',
+      repositoryName: 'repo',
+      worktreeId: 'feature/foo',
+      isMainWorktree: false,
+      ...overrides,
+    } as Session;
+  }
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shows a "Pausing..." indicator and keeps Open enabled while a pause task targets the session', async () => {
+    const session = createMockWorktreeSession();
+    const sessionStopTasks = createMockSessionStopTasks({
+      tasks: [{ sessionId: session.id, action: 'pause', error: null }],
+      getTask: mock((sessionId: string) => (sessionId === session.id ? { sessionId, action: 'pause' as const, error: null } : undefined)),
+    });
+
+    await renderWithRouter(
+      <WorktreeDeletionTasksContext.Provider value={createMockDeletionContext()}>
+        <SessionStopTasksContext.Provider value={sessionStopTasks}>
+          <WorktreeRow
+            worktree={createMockWorktree()}
+            session={session}
+            repositoryId="repo-1"
+            isPulling={false}
+            onPull={() => {}}
+          />
+        </SessionStopTasksContext.Provider>
+      </WorktreeDeletionTasksContext.Provider>
+    );
+
+    expect(screen.getByText('Pausing...')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Open' })).toBeTruthy();
+  });
+
+  it('renders the error and Dismiss control when the task has an error, and Dismiss clears it', async () => {
+    // Uses the REAL useSessionStopTasks hook (seeded via useEffect on mount) so
+    // the Dismiss click's removeTask call flows through real state and
+    // re-renders reactively -- no manual `rerender()` with a differently-shaped
+    // tree is needed (rerender() replaces the whole render output, including
+    // the router/query-client wrapper renderWithRouter built, and would crash).
+    const session = createMockWorktreeSession();
+
+    function WorktreeRowWithSeededError({ session }: { session: Session }) {
+      const sessionStopTasks = useSessionStopTasks();
+      useEffect(() => {
+        sessionStopTasks.addTask({ sessionId: session.id, action: 'stop' });
+        sessionStopTasks.markAsFailed(session.id, 'Network error');
+        // eslint-disable-next-line react-hooks/exhaustive-deps -- seed once on mount
+      }, []);
+      return (
+        <WorktreeDeletionTasksContext.Provider value={createMockDeletionContext()}>
+          <SessionStopTasksContext.Provider value={sessionStopTasks}>
+            <WorktreeRow
+              worktree={createMockWorktree()}
+              session={session}
+              repositoryId="repo-1"
+              isPulling={false}
+              onPull={() => {}}
+            />
+          </SessionStopTasksContext.Provider>
+        </WorktreeDeletionTasksContext.Provider>
+      );
+    }
+
+    await renderWithRouter(<WorktreeRowWithSeededError session={session} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Network error')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+
+    await waitFor(() => {
+      expect(screen.queryByText('Network error')).toBeNull();
+    });
+  });
+
+  it('does not render an indicator when no task targets the session', async () => {
+    const session = createMockWorktreeSession();
+    const sessionStopTasks = createMockSessionStopTasks();
+
+    await renderWithRouter(
+      <WorktreeDeletionTasksContext.Provider value={createMockDeletionContext()}>
+        <SessionStopTasksContext.Provider value={sessionStopTasks}>
+          <WorktreeRow
+            worktree={createMockWorktree()}
+            session={session}
+            repositoryId="repo-1"
+            isPulling={false}
+            onPull={() => {}}
+          />
+        </SessionStopTasksContext.Provider>
+      </WorktreeDeletionTasksContext.Provider>
+    );
+
+    expect(screen.queryByText('Stopping...')).toBeNull();
+    expect(screen.queryByText('Pausing...')).toBeNull();
   });
 });

@@ -25,6 +25,8 @@ export interface SessionSettingsMenuProps {
   worktreePath: string;
   initialPrompt?: string;
   isMainWorktree: boolean;
+  /** Disables the "Pause" menu entry, e.g. while a stop/pause task is already in flight */
+  pauseDisabled?: boolean;
   onMenuAction: (action: MenuAction) => void;
 }
 
@@ -33,6 +35,7 @@ export function SessionSettingsMenu({
   worktreePath,
   initialPrompt,
   isMainWorktree,
+  pauseDisabled = false,
   onMenuAction,
 }: SessionSettingsMenuProps) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -190,7 +193,8 @@ export function SessionSettingsMenu({
             <div className="border-t border-slate-700 my-1" />
             <button
               onClick={() => handleMenuAction('pause')}
-              className="w-full px-4 py-2 text-left text-sm text-yellow-400 hover:bg-slate-700 hover:text-yellow-300 flex items-center gap-2"
+              disabled={pauseDisabled}
+              className="w-full px-4 py-2 text-left text-sm text-yellow-400 hover:bg-slate-700 hover:text-yellow-300 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-yellow-400"
             >
               <PauseIcon />
               Pause

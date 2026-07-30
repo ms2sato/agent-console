@@ -1,6 +1,4 @@
-import { useState } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { useMutation } from '@tanstack/react-query';
 import {
   AlertDialog,
   AlertDialogContent,
@@ -10,8 +8,8 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from '../ui/alert-dialog';
-import { ButtonSpinner } from '../ui/Spinner';
 import { deleteSession } from '../../lib/api';
+import { useSessionStopTasksContext } from '../../routes/__root';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
 export interface EndSessionDialogProps {
@@ -25,8 +23,12 @@ export interface EndSessionDialogProps {
 }
 
 /**
- * Dialog for ending (deleting) a quick session.
- * Quick sessions are deleted synchronously without task management.
+ * Dialog for ending (stopping/deleting) a quick session.
+ *
+ * The pending/error state lives in `SessionStopTasksContext` (scoped to the
+ * affected session -- dashboard row + session page banner) instead of this
+ * modal, so stopping a session no longer freezes the whole app for the
+ * server round-trip. See DeleteWorktreeDialog for the sibling pattern.
  */
 export function EndSessionDialog({
   open,
@@ -37,7 +39,7 @@ export function EndSessionDialog({
   workerActivityStates,
 }: EndSessionDialogProps) {
   const navigate = useNavigate();
-  const [error, setError] = useState<string | null>(null);
+  const { addTask, markAsFailed } = useSessionStopTasksContext();
 
   // Check if any agent or embedded-agent workers are in 'active' or 'asking' state
   // (embedded-agent workers only ever report 'active'/'idle', never 'asking')
@@ -46,34 +48,28 @@ export function EndSessionDialog({
       (workerActivityStates[w.id] === 'active' || workerActivityStates[w.id] === 'asking')
   );
 
-  const deleteMutation = useMutation({
-    mutationFn: () => deleteSession(sessionId),
-    onSuccess: () => {
-      // Close dialog and navigate immediately
-      onOpenChange(false);
-      navigate({ to: '/' });
-      // Session will be removed from UI when WebSocket broadcast arrives from server
-      // (no optimistic update to avoid race condition/flicker)
-    },
-    onError: (err) => {
-      setError(err instanceof Error ? err.message : 'Failed to stop session');
-    },
-  });
+  const handleStop = async () => {
+    const added = addTask({ sessionId, action: 'stop', sessionTitle });
+    if (!added) return;
 
-  const handleConfirm = () => {
-    setError(null);
-    deleteMutation.mutate();
-  };
+    // Close dialog and navigate immediately
+    onOpenChange(false);
+    navigate({ to: '/' });
 
-  const handleClose = () => {
-    if (!deleteMutation.isPending) {
-      setError(null);
-      onOpenChange(false);
+    // Session will be removed from UI when WebSocket broadcast arrives from server
+    // (no optimistic update to avoid race condition/flicker)
+
+    try {
+      await deleteSession(sessionId);
+      // Success will be handled via WebSocket (session-deleted / sessions-sync).
+    } catch (err) {
+      // If API call fails immediately (network error), mark task as failed
+      markAsFailed(sessionId, err instanceof Error ? err.message : 'Failed to stop session');
     }
   };
 
   return (
-    <AlertDialog open={open} onOpenChange={handleClose}>
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle className="text-red-400">Stop Session</AlertDialogTitle>
@@ -94,26 +90,18 @@ export function EndSessionDialog({
               <p className="text-xs text-gray-500">
                 This will terminate all running workers and close their terminals.
               </p>
-              {error && (
-                <p className="text-xs text-red-400 bg-red-950/50 p-2 rounded">
-                  {error}
-                </p>
-              )}
             </div>
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={deleteMutation.isPending}>
+          <AlertDialogCancel>
             Cancel
           </AlertDialogCancel>
           <button
-            onClick={handleConfirm}
+            onClick={handleStop}
             className="btn btn-danger"
-            disabled={deleteMutation.isPending}
           >
-            <ButtonSpinner isPending={deleteMutation.isPending} pendingText="Stopping...">
-              Stop Session
-            </ButtonSpinner>
+            Stop Session
           </button>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -13,7 +13,8 @@ import {
   executeWorkerRestart,
   type WorkerRestartResult,
 } from '../workerRestart';
-import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId } from '../SessionPage';
+import { sessionToPageState, resolveShouldStripScrollback, resolveActiveEmbeddedAgentId, getSessionStopTaskBannerText } from '../SessionPage';
+import type { SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
@@ -572,6 +573,18 @@ describe('primary agent tab close-button wiring (Issue #1134)', () => {
 
     expect(isCloseableTabType('agent', tabs[0].id === primaryAgentTabId)).toBe(false);
     expect(isCloseableTabType('agent', tabs[2].id === primaryAgentTabId)).toBe(true);
+  });
+});
+
+describe('getSessionStopTaskBannerText (Issue #1247)', () => {
+  it('returns the pausing copy for a pause task', () => {
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'pause', error: null };
+    expect(getSessionStopTaskBannerText(task)).toBe('Pausing this session...');
+  });
+
+  it('returns the stopping copy for a stop task', () => {
+    const task: SessionStopTask = { sessionId: 'session-1', action: 'stop', error: null };
+    expect(getSessionStopTaskBannerText(task)).toBe('Stopping this session...');
   });
 });
 

@@ -18,11 +18,12 @@ import { useSidebarState } from '../hooks/useSidebarState';
 import { useActiveSessionsWithActivity } from '../hooks/useActiveSessionsWithActivity';
 import { useWorktreeCreationTasks } from '../hooks/useWorktreeCreationTasks';
 import { useWorktreeDeletionTasks } from '../hooks/useWorktreeDeletionTasks';
+import { useSessionStopTasks } from '../hooks/useSessionStopTasks';
 import { useSessionFilter, matchesUserFilter } from '../hooks/useSessionFilter';
 import type { Session } from '@agent-console/shared';
 import { useAuth } from '../lib/auth';
 import { logger } from '../lib/logger';
-import { SessionDataContext, WorktreeCreationTasksContext, WorktreeDeletionTasksContext } from '../contexts/root-contexts';
+import { SessionDataContext, WorktreeCreationTasksContext, WorktreeDeletionTasksContext, SessionStopTasksContext } from '../contexts/root-contexts';
 import type { SessionDataContextValue } from '../contexts/root-contexts';
 
 // Re-export contexts for backward compatibility
@@ -33,6 +34,8 @@ export {
   useWorktreeCreationTasksContext,
   WorktreeDeletionTasksContext,
   useWorktreeDeletionTasksContext,
+  SessionStopTasksContext,
+  useSessionStopTasksContext,
 } from '../contexts/root-contexts';
 export type { SessionDataContextValue } from '../contexts/root-contexts';
 
@@ -91,6 +94,9 @@ function RootLayout() {
   // Worktree deletion task management
   const worktreeDeletionTasks = useWorktreeDeletionTasks();
 
+  // In-flight Stop/Pause session task management (scoped pending/error UI)
+  const sessionStopTasks = useSessionStopTasks();
+
   // Wire up cross-cutting side effects (validation, cache cleanup, favicon, WebSocket subscription)
   useSessionSideEffects({
     handleSessionsSync,
@@ -103,6 +109,7 @@ function RootLayout() {
     workerActivityStates,
     worktreeCreationTasks,
     worktreeDeletionTasks,
+    sessionStopTasks,
   });
 
   // Keep the embedded-agent registry query cache fresh regardless of route
@@ -173,6 +180,7 @@ function RootLayout() {
     <SessionDataContext.Provider value={sessionDataContextValue}>
     <WorktreeCreationTasksContext.Provider value={worktreeCreationTasks}>
       <WorktreeDeletionTasksContext.Provider value={worktreeDeletionTasks}>
+      <SessionStopTasksContext.Provider value={sessionStopTasks}>
         <div className="h-dvh flex flex-col">
           <header className="px-4 py-2 border-b border-slate-700 bg-[#0f172a] flex items-center shrink-0 relative">
             <div className="flex items-center gap-1.5">
@@ -281,6 +289,7 @@ function RootLayout() {
             </main>
           </div>
         </div>
+      </SessionStopTasksContext.Provider>
       </WorktreeDeletionTasksContext.Provider>
     </WorktreeCreationTasksContext.Provider>
     </SessionDataContext.Provider>
