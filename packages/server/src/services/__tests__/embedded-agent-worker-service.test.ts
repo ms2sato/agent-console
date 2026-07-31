@@ -16,6 +16,11 @@ import {
   EmbeddedMessageDeliveryError,
   resolveEmbeddedAgentEntryPath,
 } from '../embedded-agent-worker-service.js';
+import {
+  ProviderKeyStoreError,
+  PROVIDER_KEY_STORE_UI_MESSAGES,
+  type ProviderKeyStoreErrorKind,
+} from '../provider-key-store.js';
 
 const MCP_BASE_URL = 'http://localhost:3457/mcp';
 const ENTRY_PATH = '/install/embedded-agent/src/main.ts';
@@ -492,6 +497,86 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     await expect(h.service.activate(h.sessionId, h.workerId)).rejects.not.toBeInstanceOf(
       EmbeddedAgentActivationError,
     );
+  });
+
+  describe('ProviderKeyStoreError reclassification (Issue #1259)', () => {
+    const ALL_KINDS = Object.keys(PROVIDER_KEY_STORE_UI_MESSAGES) as ProviderKeyStoreErrorKind[];
+    const REF = 'missing';
+    // Sentinels standing in for content that must never leak into the UI-facing
+    // EmbeddedAgentActivationError message -- the real absolute path (or, for
+    // `unreadable`, the underlying fs error text) that ProviderKeyStoreError's
+    // OWN `message` carries for server logs.
+    const SENTINEL_PATH = '/test/config/provider-keys.json#sentinel-real-path';
+    const SENTINEL_FS_MESSAGE = 'ENOENT: sentinel-fs-error-text';
+
+    for (const kind of ALL_KINDS) {
+      it(`wraps a ProviderKeyStoreError(kind='${kind}') into EmbeddedAgentActivationError with the matching UI template`, async () => {
+        const logFacingMessage =
+          kind === 'unreadable'
+            ? `Failed to read provider key store at ${SENTINEL_PATH}: ${SENTINEL_FS_MESSAGE}`
+            : `some log-facing message naming ${SENTINEL_PATH} for kind ${kind}`;
+        const storeError = new ProviderKeyStoreError(logFacingMessage, kind, REF);
+        const throwingLoader = mock(async () => {
+          throw storeError;
+        });
+        const h = setup({
+          definition: buildDefinition({ provider: { baseUrl: 'http://x/v1', model: 'm', apiKeyRef: REF } }),
+          loadProviderKeyFn: throwingLoader,
+        });
+
+        let caught: unknown;
+        try {
+          await h.service.activate(h.sessionId, h.workerId);
+        } catch (err) {
+          caught = err;
+        }
+
+        expect(caught).toBeInstanceOf(EmbeddedAgentActivationError);
+        const activationError = caught as EmbeddedAgentActivationError;
+        expect(activationError.message).toBe(PROVIDER_KEY_STORE_UI_MESSAGES[kind](REF));
+        expect(activationError.message).not.toContain(SENTINEL_PATH);
+        expect(activationError.message).not.toContain(SENTINEL_FS_MESSAGE);
+        // `cause` preserves the original marker for server-side logging --
+        // asserted with `toBe` (same instance), not just `toBeInstanceOf`.
+        expect(activationError.cause).toBe(storeError);
+        expect(h.fake.captured.length).toBe(0);
+      });
+    }
+
+    // Note: the "UI message never contains the key VALUE" lock lives in
+    // provider-key-store.test.ts's PROVIDER_KEY_STORE_UI_MESSAGES suite --
+    // this seam only ever throws (never returns a resolved key), so there is
+    // no key value to assert against here.
+
+    // Allowlist-widening polarity lock (ii) (see .../__tests__/routes-embedded-agent.test.ts
+    // for the WS-layer classification half of this lock): a bare
+    // ProviderKeyStoreError reaching runActivation from OUTSIDE step 2's own
+    // try/catch (e.g. thrown by a step-5 spawn seam, standing in for any
+    // non-step-2 source) must NOT be reclassified into
+    // EmbeddedAgentActivationError. This pins Ruling 1's mechanism choice: the
+    // reclassification is a call-site wrap local to step 2, not a second
+    // allowlisted class the WS/MCP/REST layer would need to know about.
+    it('does NOT reclassify a bare ProviderKeyStoreError thrown from outside step 2 (e.g. the spawn step)', async () => {
+      const storeError = new ProviderKeyStoreError(
+        `Provider key store not found at ${SENTINEL_PATH}; cannot resolve apiKeyRef '${REF}'`,
+        'not-found',
+        REF,
+      );
+      const throwingSpawn = () => {
+        throw storeError;
+      };
+      const h = setup({ spawnAsUserFnOverride: throwingSpawn });
+
+      let caught: unknown;
+      try {
+        await h.service.activate(h.sessionId, h.workerId);
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeInstanceOf(ProviderKeyStoreError);
+      expect(caught).not.toBeInstanceOf(EmbeddedAgentActivationError);
+    });
   });
 
   it('rejects a session without createdBy without minting or spawning', async () => {

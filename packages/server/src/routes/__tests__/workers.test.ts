@@ -23,6 +23,7 @@ import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
+import { GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE } from '../../services/embedded-agent-worker-service.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -799,7 +800,11 @@ describe('Workers API', () => {
         expect(res.status).toBe(400);
         const body = (await res.json()) as { error: string };
         expect(body.error).not.toContain('ENOENT');
-        expect(body.error).toContain('Embedded-agent activation failed');
+        // Pins the exact literal via the shared constant workers.ts now
+        // imports from EmbeddedAgentWorkerService (Issue #1259 consolidation),
+        // proving the import is actually wired through end-to-end and not
+        // just type-compatible.
+        expect(body.error).toBe(GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE);
       });
     });
 

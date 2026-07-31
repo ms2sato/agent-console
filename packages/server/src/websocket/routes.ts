@@ -24,7 +24,10 @@ import { BufferedWebSocketSender } from './buffered-ws-sender.js';
 import { WebSocketConnectionRegistry } from './connection-registry.js';
 import { withRepositoryRemote } from '../lib/repository-remote.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
-import { EmbeddedAgentActivationError } from '../services/embedded-agent-worker-service.js';
+import {
+  EmbeddedAgentActivationError,
+  GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
+} from '../services/embedded-agent-worker-service.js';
 
 const logger = createLogger('websocket');
 
@@ -63,17 +66,6 @@ const currentServerPid = getServerPid();
  * reused for consistency across both directions of the channel.
  */
 export const EMBEDDED_USER_MESSAGE_MAX_BYTES = 262144; // 256 KiB
-
-/**
- * Client-visible fallback for an activation failure whose message is NOT
- * from the {@link EmbeddedAgentActivationError} allowlist (e.g. provider key
- * loading, spawn username resolution, process spawn, filesystem, DB errors).
- * Those errors can carry unbounded/unstructured content, so their real
- * `message` stays server-side-only (see the `logger.warn` call alongside
- * this constant's use site) and only this fixed string reaches the client.
- */
-const GENERIC_ACTIVATION_FAILURE_MESSAGE =
-  'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 /**
  * Length cap for an embedded-agent `embedded-user-message.clientMessageId`.
@@ -882,7 +874,7 @@ export async function setupWebSocketRoutes(
                 const message =
                   err instanceof EmbeddedAgentActivationError
                     ? err.message
-                    : GENERIC_ACTIVATION_FAILURE_MESSAGE;
+                    : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
                 logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed');
                 if (!connectionClosed) {
                   sendWorkerError(ws, message, 'ACTIVATION_FAILED');

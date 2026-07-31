@@ -28,6 +28,7 @@ import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.
 import { setupWebSocketRoutes, EMBEDDED_USER_MESSAGE_MAX_BYTES } from '../routes.js';
 import type { AppContext } from '../../app-context.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { PROVIDER_KEY_STORE_UI_MESSAGES } from '../../services/provider-key-store.js';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -373,6 +374,43 @@ describe('Worker WebSocket: embedded-agent branch', () => {
     expect(mockWs.closeCalls.length).toBe(0);
     // The throwing spawn call is consumed (not recorded as a successful
     // capture), and no further spawn was attempted.
+    expect(fake.captured.length).toBe(0);
+  });
+
+  it('surfaces a dangling provider apiKeyRef as its specific UI template, WITHOUT closing the socket or leaking the real path (Issue #1259)', async () => {
+    // No provider-keys.json exists at TEST_CONFIG_DIR on the REAL filesystem
+    // (memfs mocks node:fs only; loadProviderKey reads via Bun.file -- see
+    // this file's Bun.file/Bun.write NOTE in provider-key-store.test.ts), so
+    // an apiKeyRef-bearing definition drives loadProviderKey down its real
+    // 'not-found' path through the actual EmbeddedAgentWorkerService step 2
+    // wrap -- no injected seam needed.
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Keyed model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai' } },
+      sessionOwnerUserId,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: sessionOwnerUserId },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+
+    const { mockWs } = openConnection(session.id, worker!.id);
+
+    await waitFor(() => mockWs.sentMessages.length > 0);
+
+    const errorMsg = JSON.parse(mockWs.sentMessages[0]);
+    expect(errorMsg.type).toBe('error');
+    expect(errorMsg.code).toBe('ACTIVATION_FAILED');
+    expect(errorMsg.message).toBe(PROVIDER_KEY_STORE_UI_MESSAGES['not-found']('openai'));
+    expect(errorMsg.message).toContain('<AGENT_CONSOLE_HOME>/provider-keys.json');
+    expect(errorMsg.message).not.toContain(TEST_CONFIG_DIR);
+
+    // Same activation-failure contract as the other classification tests
+    // above: the socket stays open and no spawn was attempted.
+    expect(mockWs.closeCalls.length).toBe(0);
     expect(fake.captured.length).toBe(0);
   });
 

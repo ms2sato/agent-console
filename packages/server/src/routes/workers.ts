@@ -19,25 +19,11 @@ import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
 import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
+  GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
 } from '../services/embedded-agent-worker-service.js';
 import type { WorkerMessage } from '@agent-console/shared';
 
 const logger = createLogger('api:workers');
-
-/**
- * Client-visible fallback for an embedded-agent activation/delivery failure
- * on this REST route whose message is NOT from the
- * {@link EmbeddedAgentActivationError} / {@link EmbeddedMessageDeliveryError}
- * marker allowlist. Mirrors `GENERIC_ACTIVATION_FAILURE_MESSAGE` in
- * `websocket/routes.ts` and `GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE` in
- * `mcp/mcp-server.ts` (the worker WebSocket open handler's and the MCP
- * send_session_message/delegate_to_worktree tools' equivalent
- * classification). Kept as a separate literal here rather than a shared
- * export -- there are now 3 copies to keep in sync; a future consolidation
- * of all three call sites' error classification is tracked as a follow-up.
- */
-const GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE =
-  'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 // Upload directory is per-uid under the OS temp directory so that:
 //   1. Different users on the same host (e.g. Model B service user `agentconsole`
