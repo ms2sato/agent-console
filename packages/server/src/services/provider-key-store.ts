@@ -9,8 +9,17 @@
  *
  * Every failure path is explicit and surfaced to the client (a dangling ref
  * fails activation rather than silently falling back to keyless): a missing
- * file, unparseable JSON, or an absent / non-string ref each throw a clear
- * Error. The key value itself is NEVER included in a thrown message or a log.
+ * file, unreadable file, unparseable JSON, non-object root, or an absent /
+ * non-string ref each throw a {@link ProviderKeyStoreError}. The key value
+ * itself is NEVER included in a thrown message or a log.
+ *
+ * `ProviderKeyStoreError.message` is a developer-authored, path-naming string
+ * intended for SERVER LOGS ONLY (real absolute path, and for `unreadable` the
+ * underlying fs error text). The UI-safe, path-placeholder-only text for each
+ * `kind` lives separately in {@link PROVIDER_KEY_STORE_UI_MESSAGES} -- see
+ * `embedded-agent-worker-service.ts` step 2 for how the two are bridged at
+ * the activation call site (structural allowlist wrap, NOT a new WS/MCP/REST-
+ * layer marker class).
  */
 import * as path from 'node:path';
 import { getConfigDir } from '../lib/config.js';
@@ -21,6 +30,57 @@ const logger = createLogger('provider-key-store');
 /** Minimal structural type for the DI logger seam below (matches `pino.Logger['warn']`). */
 type WarnLogger = { warn: (obj: Record<string, unknown>, msg: string) => void };
 
+/** Discriminates the 5 explicit failure paths in {@link loadProviderKey}. */
+export type ProviderKeyStoreErrorKind =
+  | 'not-found'
+  | 'unreadable'
+  | 'invalid-json'
+  | 'not-object'
+  | 'missing-ref';
+
+/**
+ * Thrown by {@link loadProviderKey} for each of its 5 explicit failure paths.
+ * `message` keeps the real absolute path (and, for `unreadable`, the
+ * underlying fs error text) -- that content is for SERVER LOGS ONLY. Client-
+ * facing surfacing must go through {@link PROVIDER_KEY_STORE_UI_MESSAGES},
+ * never `message` directly.
+ */
+export class ProviderKeyStoreError extends Error {
+  constructor(
+    message: string,
+    public readonly kind: ProviderKeyStoreErrorKind,
+    public readonly ref: string,
+  ) {
+    super(message);
+    this.name = 'ProviderKeyStoreError';
+  }
+}
+
+/**
+ * Fixed, UI-safe message templates keyed by {@link ProviderKeyStoreErrorKind}.
+ * Each template takes ONLY `ref` as input -- by construction this guarantees
+ * (a) the key value can never appear in a surfaced message (templates never
+ * receive it), and (b) the `unreadable` template can never carry the
+ * underlying fs error's own text (its template is a fixed sentence pointing
+ * to the server log, not an interpolation of any dynamic content). The file
+ * is named via the literal placeholder `<AGENT_CONSOLE_HOME>/provider-keys.json`
+ * -- never the resolved absolute path, never the bare basename -- and the
+ * wording does NOT branch on `AUTH_MODE` (uniform across single-user and
+ * multi-user deployments).
+ */
+export const PROVIDER_KEY_STORE_UI_MESSAGES: Record<ProviderKeyStoreErrorKind, (ref: string) => string> = {
+  'not-found': (ref) =>
+    `Provider key store <AGENT_CONSOLE_HOME>/provider-keys.json was not found, so apiKeyRef '${ref}' could not be resolved. Create the file (see the multi-user setup guide) or remove the apiKeyRef from this agent's provider configuration.`,
+  unreadable: () =>
+    `Provider key store <AGENT_CONSOLE_HOME>/provider-keys.json could not be read. Check the server log for details and verify the file's permissions.`,
+  'invalid-json': () =>
+    `Provider key store <AGENT_CONSOLE_HOME>/provider-keys.json is not valid JSON. Fix the file's contents (it must be a JSON object of "<ref>": "<key>" pairs).`,
+  'not-object': () =>
+    `Provider key store <AGENT_CONSOLE_HOME>/provider-keys.json must be a JSON object of "<ref>": "<key>" pairs. Fix the file's contents.`,
+  'missing-ref': (ref) =>
+    `Provider key ref '${ref}' is not present as a non-empty string in <AGENT_CONSOLE_HOME>/provider-keys.json. Add the ref to the key store or remove it from this agent's provider configuration.`,
+};
+
 /**
  * Resolve a provider key by its reference name.
  *
@@ -29,8 +89,9 @@ type WarnLogger = { warn: (obj: Record<string, unknown>, msg: string) => void };
  *   `<AGENT_CONSOLE_HOME>/provider-keys.json`.
  * @param opts.logger Override for the mode-warning logger (test seam). Defaults to
  *   the module's structured logger.
- * @throws Error when the file is missing, unparseable, or the ref does not map
- *   to a non-empty string. The key value is never included in the message.
+ * @throws {@link ProviderKeyStoreError} when the file is missing, unreadable,
+ *   unparseable, not a JSON object, or the ref does not map to a non-empty
+ *   string. The key value is never included in the message.
  */
 export async function loadProviderKey(
   ref: string,
@@ -41,8 +102,10 @@ export async function loadProviderKey(
 
   const file = Bun.file(filePath);
   if (!(await file.exists())) {
-    throw new Error(
+    throw new ProviderKeyStoreError(
       `Provider key store not found at ${filePath}; cannot resolve apiKeyRef '${ref}'`,
+      'not-found',
+      ref,
     );
   }
 
@@ -52,8 +115,10 @@ export async function loadProviderKey(
   try {
     raw = await file.text();
   } catch (err) {
-    throw new Error(
+    throw new ProviderKeyStoreError(
       `Failed to read provider key store at ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      'unreadable',
+      ref,
     );
   }
 
@@ -61,21 +126,27 @@ export async function loadProviderKey(
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error(
+    throw new ProviderKeyStoreError(
       `Provider key store at ${filePath} is not valid JSON`,
+      'invalid-json',
+      ref,
     );
   }
 
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(
+    throw new ProviderKeyStoreError(
       `Provider key store at ${filePath} must be a JSON object of { "<ref>": "<key>" }`,
+      'not-object',
+      ref,
     );
   }
 
   const value = (parsed as Record<string, unknown>)[ref];
   if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(
+    throw new ProviderKeyStoreError(
       `Provider key ref '${ref}' is not present as a non-empty string in ${filePath}`,
+      'missing-ref',
+      ref,
     );
   }
 

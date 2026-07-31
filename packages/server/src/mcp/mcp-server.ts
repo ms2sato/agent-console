@@ -36,7 +36,10 @@ import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
-import { EmbeddedAgentActivationError } from '../services/embedded-agent-worker-service.js';
+import {
+  EmbeddedAgentActivationError,
+  GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
+} from '../services/embedded-agent-worker-service.js';
 import {
   McpTokenRegistry,
   resolveMcpAuthMode,
@@ -50,21 +53,6 @@ import type { Session, Worker, AgentActivityState, AppServerMessage } from '@age
 import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
-
-/**
- * Client-visible fallback for an embedded-agent auto-activation failure on
- * the `delegate_to_worktree` path whose message is NOT from the
- * {@link EmbeddedAgentActivationError} allowlist (e.g. provider key loading,
- * spawn username resolution, process spawn, filesystem, DB errors). Mirrors
- * `GENERIC_ACTIVATION_FAILURE_MESSAGE` in `websocket/routes.ts` (the worker
- * WebSocket open handler's equivalent classification for the browser-open
- * activation path). Kept as a separate literal here rather than a shared
- * export -- a future consolidation of the two call sites' error
- * classification is expected; keep the two message strings in sync until
- * then.
- */
-const GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE =
-  'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 // ---------- Response helpers ----------
 

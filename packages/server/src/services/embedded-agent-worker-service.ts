@@ -45,7 +45,7 @@ import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
-import { loadProviderKey } from './provider-key-store.js';
+import { loadProviderKey, ProviderKeyStoreError, PROVIDER_KEY_STORE_UI_MESSAGES } from './provider-key-store.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
 import * as path from 'node:path';
@@ -155,18 +155,34 @@ const STDERR_LOG_CAP = 2048;
 /**
  * Marks the small, enumerable set of `runActivation` failure reasons whose
  * `message` is safe to forward to the client verbatim (session/worker/
- * definition lookup failures, missing `createdBy`). Every other failure in
- * `runActivation` (provider key loading, spawn username resolution, process
- * spawn, output reset, persistence) throws a plain `Error` and must NOT be
- * wrapped in this class -- callers use `instanceof` to decide whether
- * `err.message` is client-safe or must be replaced with a generic fallback.
+ * definition lookup failures, missing `createdBy`, and provider-key-store
+ * failures, whose {@link ProviderKeyStoreError} `kind` is mapped to a fixed
+ * UI template in step 2 below). Every other failure in `runActivation`
+ * (spawn username resolution, process spawn, output reset, persistence)
+ * throws a plain `Error` and must NOT be wrapped in this class -- callers
+ * use `instanceof` to decide whether `err.message` is client-safe or must be
+ * replaced with a generic fallback.
  */
 export class EmbeddedAgentActivationError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'EmbeddedAgentActivationError';
   }
 }
+
+/**
+ * Client-visible fallback for an embedded-agent activation failure whose
+ * message is NOT from the {@link EmbeddedAgentActivationError} allowlist
+ * (e.g. spawn username resolution, process spawn, filesystem, DB errors).
+ * Those errors can carry unbounded/unstructured content, so their real
+ * message stays server-side-only (see each call site's `logger.warn`
+ * alongside this constant's use) and only this fixed string reaches the
+ * client. Single shared export consumed by every classification site
+ * (`websocket/routes.ts`, `mcp/mcp-server.ts`, `routes/workers.ts`) so the
+ * wording cannot drift between copies.
+ */
+export const GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE =
+  'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 /**
  * Marker error wrapping a {@link SendUserMessageResult}'s `{ ok: false }`
@@ -363,9 +379,24 @@ export class EmbeddedAgentWorkerService {
     }
 
     // Step 2: resolve the provider key if referenced (dangling ref fails activation).
+    // ProviderKeyStoreError (developer-authored, enumerable by `kind`) is
+    // reclassified to EmbeddedAgentActivationError via the fixed UI template
+    // table -- this is the ONLY place a ProviderKeyStoreError is caught and
+    // converted. Any other error from this seam (including a misbehaving
+    // injected loadProviderKeyFn) propagates unwrapped.
     let apiKey: string | undefined;
     if (definition.provider.apiKeyRef) {
-      apiKey = await this.loadProviderKeyFn(definition.provider.apiKeyRef);
+      try {
+        apiKey = await this.loadProviderKeyFn(definition.provider.apiKeyRef);
+      } catch (err) {
+        if (err instanceof ProviderKeyStoreError) {
+          throw new EmbeddedAgentActivationError(
+            PROVIDER_KEY_STORE_UI_MESSAGES[err.kind](err.ref),
+            { cause: err },
+          );
+        }
+        throw err;
+      }
     }
 
     // Step 3: mint the MCP token. Requires a session owner so the minted identity
