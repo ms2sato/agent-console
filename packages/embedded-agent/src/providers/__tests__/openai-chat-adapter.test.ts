@@ -41,6 +41,7 @@ interface MockResponseInit {
   status?: number;
   headers?: Record<string, string>;
   body?: ReadableStream<Uint8Array> | null;
+  text?: () => Promise<string>;
 }
 
 function mockResponse(init: MockResponseInit): Response {
@@ -50,6 +51,7 @@ function mockResponse(init: MockResponseInit): Response {
     status,
     headers: new Headers(init.headers ?? {}),
     body: init.body === undefined ? streamFromChunks([]) : init.body,
+    text: init.text ?? (async () => ''),
   } as unknown as Response;
 }
 
@@ -552,6 +554,172 @@ describe('OpenAIChatAdapter — HTTP errors', () => {
 
     expect((await grab(server)).retryable).toBe(true);
     expect((await grab(client)).retryable).toBe(false);
+  });
+});
+
+describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
+  it('includes the provider error message and type/code from an OpenAI-shape JSON error body', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({
+          status: 403,
+          text: async () =>
+            JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'RegionError',
+                code: 'region_not_supported',
+                message: 'regional opt-in required: https://example.com/opt-in',
+              },
+            }),
+        }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    const err = caught as ProviderError;
+    expect(err.message).toContain('provider responded with HTTP 403');
+    expect(err.message).toContain('regional opt-in required: https://example.com/opt-in');
+    expect(err.message).toContain('RegionError');
+    expect(err.message).toContain('region_not_supported');
+    // retryable/status/retryAfterMs semantics stay exactly as before.
+    expect(err.status).toBe(403);
+    expect(err.retryable).toBe(false);
+  });
+
+  it('surfaces the truncated head of a non-JSON (e.g. HTML gateway) error body', async () => {
+    const html = '<html><body><h1>403 Forbidden</h1><p>Access denied by WAF.</p></body></html>';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 403, text: async () => html }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as ProviderError;
+    expect(err.message).toContain('provider responded with HTTP 403');
+    expect(err.message).toContain(html);
+  });
+
+  it('does not truncate a body exactly at the 500-char cap', async () => {
+    const body = 'a'.repeat(500);
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 400, text: async () => body }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as ProviderError;
+    expect(err.message).toContain(body);
+    expect(err.message).not.toContain('[truncated]');
+  });
+
+  it('truncates a body one char over the 500-char cap and marks it as truncated', async () => {
+    const body = 'a'.repeat(501);
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 400, text: async () => body }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as ProviderError;
+    expect(err.message).toContain('a'.repeat(500));
+    expect(err.message).not.toContain('a'.repeat(501));
+    expect(err.message).toContain('[truncated]');
+  });
+
+  it('stays status-only when the body is empty', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 500, text: async () => '' }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as ProviderError).message).toBe('provider responded with HTTP 500');
+  });
+
+  it('degrades to today’s status-only message when reading the body rejects, without throwing a secondary error', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({
+          status: 503,
+          headers: { 'retry-after': '3' },
+          text: async () => {
+            throw new Error('stream error: connection reset');
+          },
+        }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    const err = caught as ProviderError;
+    expect(err.message).toBe('provider responded with HTTP 503');
+    expect(err.status).toBe(503);
+    expect(err.retryable).toBe(true);
+    expect(err.retryAfterMs).toBe(3000);
+  });
+
+  it('never surfaces the Authorization header value in the enriched error message', async () => {
+    const apiKey = 'sk-should-never-leak-1234567890';
+    let capturedHeaders: Headers | null = null;
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      apiKey,
+      fetchFn: async (_url, init) => {
+        capturedHeaders = new Headers(init.headers);
+        return mockResponse({
+          status: 403,
+          text: async () => JSON.stringify({ error: { message: 'forbidden' } }),
+        });
+      },
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(capturedHeaders!.get('authorization')).toBe(`Bearer ${apiKey}`);
+    expect((caught as ProviderError).message).not.toContain(apiKey);
   });
 });
 
