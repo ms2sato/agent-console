@@ -12,10 +12,14 @@
  * What this smoke exercises:
  *   - `resolveEmbeddedAgentEntryPath()` actually resolves via the
  *     package-resolution branch (`@agent-console/embedded-agent/package.json`),
- *     not the dev-source-tree fallback. Unit tests cannot distinguish the two
- *     branches on a dev checkout, where BOTH resolve to the same file -- only a
- *     real deploy layout (where the fallback's relative path would be wrong)
- *     can prove which branch actually ran.
+ *     not the dev-source-tree fallback. This smoke runs from a repo checkout
+ *     (no `dist/embedded-agent.js` sibling present), so the bundle-sibling
+ *     branch a REAL bundled production deploy takes is structurally out of
+ *     reach here -- unit tests cover that branch directly via a fixture
+ *     directory (`embedded-agent-worker-service.test.ts`). What this smoke
+ *     proves instead is that the checkout's OWN resolution (package, not
+ *     source-tree fallback) is what a dev/CI environment actually exercises
+ *     end-to-end, including the elevation and MCP handshake below.
  *   - The REAL `sudo -u <target-user> ... -i sh -c '<bunPath> <entry>'`
  *     elevation argv, spawned by the REAL `spawnAsUser`, against a REAL
  *     second OS user, using the configured `EMBEDDED_AGENT_BUN_PATH` (Issue
@@ -251,7 +255,7 @@ async function main(): Promise<void> {
     expect(
       resolution.source === 'package',
       "resolveEmbeddedAgentEntryPath() took the package-resolution branch (not the dev-source-tree fallback)",
-      `got source='${resolution.source}'; a real deploy where the workspace package edge is not installed is exactly the failure mode this smoke exists to catch`,
+      `got source='${resolution.source}'; this smoke runs from a checkout (no dist/embedded-agent.js sibling), so 'package' is the only deployment-correct branch reachable here -- a bundled production deploy instead takes the 'bundle' branch, covered by a fixture-directory unit test rather than this smoke`,
     );
     expect(
       await Bun.file(resolution.path).exists(),

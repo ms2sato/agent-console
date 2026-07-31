@@ -120,7 +120,30 @@ if (copiedLibs.length === 0) {
   process.exit(1);
 }
 
-// 4. Generate dist/package.json for standalone distribution.
+// 4. Bundle the embedded-agent subprocess loop -> dist/embedded-agent.js.
+//    `EmbeddedAgentWorkerService` spawns this as a sibling file next to the
+//    running server (see resolveEmbeddedAgentEntryPath's 'bundle' branch) --
+//    @agent-console/embedded-agent is a private workspace package, so it is
+//    never installed into a production `dist/` deploy and must be bundled
+//    like the server/shim above rather than resolved as an npm dependency.
+const embeddedAgentBuild = await Bun.build({
+  entrypoints: [join(__dirname, '../embedded-agent/src/main.ts')],
+  outdir: distDir,
+  target: 'bun',
+  format: 'esm',
+  sourcemap: 'external',
+  naming: { entry: 'embedded-agent.[ext]' },
+});
+
+if (!embeddedAgentBuild.success) {
+  console.error('Embedded-agent build failed:');
+  for (const message of embeddedAgentBuild.logs) {
+    console.error(message);
+  }
+  process.exit(1);
+}
+
+// 5. Generate dist/package.json for standalone distribution.
 //    bin/scripts still point at index.js — which is now the shim — so the
 //    on-disk contract for systemd / `bun run start` is unchanged.
 const distPackageJson = {
@@ -144,7 +167,7 @@ writeFileSync(
   JSON.stringify(distPackageJson, null, 2) + '\n'
 );
 
-// 5. Prepend the CLI shebang to the shim (not the server bundle — the server
+// 6. Prepend the CLI shebang to the shim (not the server bundle — the server
 //    is loaded via dynamic import, never executed directly).
 const indexPath = join(distDir, 'index.js');
 const indexContent = readFileSync(indexPath, 'utf-8');
@@ -154,7 +177,8 @@ if (!indexContent.startsWith('#!')) {
 }
 
 console.log('Build complete:');
-console.log('  dist/index.js   (shim, sets BUN_PTY_LIB and loads server.js)');
-console.log('  dist/server.js  (bundled server)');
+console.log('  dist/index.js           (shim, sets BUN_PTY_LIB and loads server.js)');
+console.log('  dist/server.js          (bundled server)');
+console.log('  dist/embedded-agent.js  (bundled embedded-agent subprocess loop)');
 console.log(`  dist/rust-pty/target/release/  (copied: ${copiedLibs.join(', ')})`);
 console.log('  dist/package.json');
