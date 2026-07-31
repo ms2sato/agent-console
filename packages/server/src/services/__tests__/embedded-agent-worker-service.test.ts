@@ -1,5 +1,6 @@
 import { describe, it, expect, mock } from 'bun:test';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
@@ -816,7 +817,19 @@ describe('resolveEmbeddedAgentEntryPath', () => {
   it('resolves via the bundle-sibling branch when embedded-agent.js sits next to baseDir', async () => {
     // Simulates a bundled production deploy: `dist/embedded-agent.js` next to
     // the running server bundle, with no workspace-package edge installed.
-    const tmpDir = await mkdtemp(join(tmpdir(), 'embedded-agent-bundle-'));
+    //
+    // Uses a manually-constructed unique path + `mkdir(..., { recursive: true })`
+    // instead of `mkdtemp(tmpdir())`: when this file runs after another test
+    // file that loaded `mock-fs-helper.ts` (mock.module poisons `node:fs`/
+    // `node:fs/promises` process-wide -- see
+    // `workers-upload-dir-real-fs.test.ts`'s header comment), `tmpdir()`'s
+    // ancestors may not exist inside the active memfs volume, and `mkdtemp`
+    // fails with ENOENT. `recursive: true` creates the missing `/tmp`
+    // ancestor under memfs while being a no-op under the real fs, so the
+    // fixture lands in the same filesystem the production `existsSync` call
+    // observes in both regimes.
+    const tmpDir = join(tmpdir(), `embedded-agent-bundle-${randomUUID()}`);
+    await mkdir(tmpDir, { recursive: true });
     try {
       const bundlePath = join(tmpDir, 'embedded-agent.js');
       await writeFile(bundlePath, '// stub bundle\n');
@@ -833,7 +846,11 @@ describe('resolveEmbeddedAgentEntryPath', () => {
     // A bare tmpdir has neither embedded-agent.js nor a resolvable
     // @agent-console/embedded-agent package edge, so resolution falls through
     // to the source-tree-relative fallback branch.
-    const tmpDir = await mkdtemp(join(tmpdir(), 'embedded-agent-no-bundle-'));
+    //
+    // See the `mkdtemp` -> `mkdir(..., { recursive: true })` note in the
+    // preceding test for why a manual unique path is used here.
+    const tmpDir = join(tmpdir(), `embedded-agent-no-bundle-${randomUUID()}`);
+    await mkdir(tmpDir, { recursive: true });
     try {
       const result = resolveEmbeddedAgentEntryPath(tmpDir);
       expect(result.source).toBe('fallback');
