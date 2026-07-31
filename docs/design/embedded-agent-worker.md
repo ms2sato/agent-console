@@ -606,6 +606,16 @@ Replace the five inline checks with the matching predicate (positively phrased: 
 
 After the refactor, adding `embedded-agent` costs **zero changes at the guard sites**: the predicates already exclude it (v1 decision: embedded-agent workers reject PTY notifications, conditional wakeups, `run_process` attachment, and inbound `send_session_message` — the notification channels are PTY-injection-shaped and the message-injection path is PTY-shaped; routing these to loop workers as `user-message` events is a post-v1 item). When post-v1 extends a capability to embedded-agent, the change is one line in one predicate.
 
+**Update (Issue #1260 PR-2, post-v1): the `send_session_message` capability was extended to embedded-agent.** `canReceiveSessionMessages` is now:
+
+```ts
+export function canReceiveSessionMessages(w: Worker): w is AgentWorker | EmbeddedAgentWorker {
+  return w.type === 'agent' || w.type === 'embedded-agent';
+}
+```
+
+`isPtyBackedWorker` is unchanged (embedded-agent workers still have no PTY) — the two predicates have diverged, and callers must pick the one matching what they actually need: genuine PTY delivery (`isPtyBackedWorker`, still used by `create_timer` / `create_conditional_wakeup` / `run_process`) vs. the `send_session_message` capability (`canReceiveSessionMessages`, used by `send_session_message`'s explicit-target and auto-select paths, combined as `isPtyBackedWorker(w) || canReceiveSessionMessages(w)` at the explicit-target guard so terminal workers — admitted only via `isPtyBackedWorker` — stay valid explicit targets without being folded into `canReceiveSessionMessages` itself). Delivery for the embedded branch routes through `SessionManager.sendMessage`'s and the MCP tool's own activate-on-delivery + `EmbeddedAgentWorkerService.sendUserMessage` call, not a PTY write — see [PTY-backed Worker in the glossary](../glossary.md#pty-backed-worker) for the up-to-date capability-grouping statement.
+
 This mirrors the repo's existing disciplines: single-writer patterns (`COVERAGE_PATTERNS`, sentinel protocol #999), "enforce constraints through structure, not convention" (`design-principles.md`), and the two-PR-convergence extraction rule (`elevation-helpers.md`).
 
 ## MCP caller identity (Issue #878, phase 1)
@@ -995,7 +1005,7 @@ Each phase is a PR (or small PR series) with its own tests and green CI; later p
 
 1. **Transcript persistence / restart-resume** — **un-deferred (Issue #1123, owner directive 2026-07-15); specified in [Transcript Restore](#transcript-restore).** This section's spec (Stage a) is design-only; the implementation (Stage b) is a separate PR. Context Handoff (Phase A)'s `context-handoff` marker event is deliberately persisted into the same NDJSON stream restore replays, so a handoff boundary within a worker's lifetime is already representable — it did not need its own retrofit, per the [Context-handoff boundary](#context-handoff-boundary) subsection.
 2. `asking` activity state (loop-side heuristics or model-declared).
-3. Inbound `send_session_message` → `user-message` routing for embedded-agent workers (extend `canReceiveSessionMessages`).
+3. ~~Inbound `send_session_message` → `user-message` routing for embedded-agent workers (extend `canReceiveSessionMessages`).~~ **Done (Issue #1260 PR-2).** `canReceiveSessionMessages` now admits `EmbeddedAgentWorker`; both the MCP `send_session_message` tool and the REST `POST /api/sessions/:id/messages` route deliver to embedded-agent targets via activate-on-delivery + `EmbeddedAgentWorkerService.sendUserMessage`, instead of the PTY-injection path. See the updated predicate snippet and capability-predicate discussion above (§"MCP tool surface: capability predicates, not per-type branches").
 4. Non-native tool-calling: text-parse fallback, constrained decoding (llama.cpp / vLLM structured output).
 5. Provider key management UI/API; per-user keys.
 6. Single-user `enforce` default (retiring `warn`) once tokenless callers no longer exist anywhere.

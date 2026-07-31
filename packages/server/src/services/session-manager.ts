@@ -23,6 +23,7 @@ import { WorkerManager } from './worker-manager.js';
 import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifecycle-manager.js';
 import {
   EmbeddedAgentWorkerService,
+  EmbeddedMessageDeliveryError,
   type SendUserMessageResult,
   type TriggerHandoffResult,
 } from './embedded-agent-worker-service.js';
@@ -585,7 +586,7 @@ export class SessionManager {
    * Send a message from the user to a worker via API.
    * If fromWorkerId is null, the message is sent as "User".
    */
-  sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string, filePaths?: string[]): WorkerMessage | null {
+  async sendMessage(sessionId: string, fromWorkerId: string | null, toWorkerId: string, content: string, filePaths?: string[]): Promise<WorkerMessage | null> {
     const session = this.sessions.get(sessionId);
     if (!session) return null;
 
@@ -599,6 +600,42 @@ export class SessionManager {
       if (!fromWorker || fromWorker.type === 'git-diff') return null;
       fromWorkerName = fromWorker.name;
       effectiveFromWorkerId = fromWorkerId;
+    }
+
+    if (targetWorker.type === 'embedded-agent') {
+      // Activate-on-delivery via the same idempotent entry point the worker
+      // WebSocket open handler and the delegate_to_worktree path use. Safe
+      // to call even when already activated (Step 0 of runActivation is an
+      // idempotent no-op check).
+      // Propagates EmbeddedAgentActivationError (marker) or a plain Error on
+      // genuine activation failure -- classification into a user-facing
+      // message is the caller's job (REST route / MCP tool), mirroring
+      // delegate_to_worktree's own classification.
+      await this.activateEmbeddedAgentWorker(sessionId, toWorkerId);
+
+      // Embedded delivery has no file-attachment concept; fold filePaths
+      // into the text (best-effort parity with the PTY branch's typed-lines
+      // behavior) so a same-session composer send with files still delivers
+      // something meaningful.
+      const deliveryText = [content, ...(filePaths ?? [])].filter((s) => s.length > 0).join('\n');
+      const result = await this.sendEmbeddedAgentUserMessage(sessionId, toWorkerId, deliveryText);
+      if (!result.ok) {
+        throw new EmbeddedMessageDeliveryError(result.error, result.code);
+      }
+
+      const message: WorkerMessage = {
+        id: crypto.randomUUID(),
+        sessionId,
+        fromWorkerId: effectiveFromWorkerId,
+        fromWorkerName,
+        toWorkerId,
+        toWorkerName: targetWorker.name,
+        content,
+        timestamp: new Date().toISOString(),
+      };
+      this.messageService.addMessage(message);
+      this.webSocketCallbacks?.broadcastToApp({ type: 'worker-message', message });
+      return message;
     }
 
     const message: WorkerMessage = {

@@ -13,6 +13,7 @@ import {
 import {
   EmbeddedAgentWorkerService,
   EmbeddedAgentActivationError,
+  EmbeddedMessageDeliveryError,
   resolveEmbeddedAgentEntryPath,
 } from '../embedded-agent-worker-service.js';
 
@@ -1434,5 +1435,22 @@ describe('EmbeddedAgentWorkerService.deactivate escalation', () => {
     // After deactivate resolves, the exit observer's cleanup has run.
     expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
     expect(h.worker.subprocess).toBeNull();
+  });
+});
+
+describe('EmbeddedMessageDeliveryError (Issue #1260 PR-2)', () => {
+  it('sets name, message, and code passthrough', () => {
+    const err = new EmbeddedMessageDeliveryError('turn in progress', 'TURN_IN_PROGRESS');
+    expect(err).toBeInstanceOf(Error);
+    expect(err.name).toBe('EmbeddedMessageDeliveryError');
+    expect(err.message).toBe('turn in progress');
+    expect(err.code).toBe('TURN_IN_PROGRESS');
+  });
+
+  it('carries each SendUserMessageResult failure code', () => {
+    expect(new EmbeddedMessageDeliveryError('not activated', 'NOT_ACTIVATED').code).toBe('NOT_ACTIVATED');
+    expect(new EmbeddedMessageDeliveryError('failed to write to subprocess stdin', 'WRITE_FAILED').code).toBe(
+      'WRITE_FAILED',
+    );
   });
 });

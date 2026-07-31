@@ -124,7 +124,9 @@ function makeFakeEmbeddedAgentDelegateSpawn(): {
   fn: SpawnAsUserFn;
   captured: SpawnAsUserOpts[];
   stdinWrites: string[];
+  pushLine: (obj: unknown) => void;
   simulateExit: (code: number) => void;
+  throwOnNextSpawn: Error | null;
 } {
   const captured: SpawnAsUserOpts[] = [];
   const stdinWrites: string[] = [];
@@ -145,6 +147,11 @@ function makeFakeEmbeddedAgentDelegateSpawn(): {
     stderrCtrl.close();
   };
 
+  const encoder = new TextEncoder();
+  const pushLine = (obj: unknown) => {
+    stdoutCtrl.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
+  };
+
   const stdin: McpDelegateFakeFileSink = {
     write: (chunk) => {
       stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
@@ -163,12 +170,34 @@ function makeFakeEmbeddedAgentDelegateSpawn(): {
     kill: () => {},
   };
 
+  // Mirrors `delegate-embedded-agent-activation.test.ts`'s `makeFakeEmbeddedSpawn`
+  // `throwOnNextSpawn` hook (Issue #1260 PR-2), used to simulate a non-marker
+  // spawn failure for send_session_message's generic-fallback classification test.
+  const state = { throwOnNextSpawn: null as Error | null };
+
   const fn: SpawnAsUserFn = (opts) => {
+    if (state.throwOnNextSpawn) {
+      const err = state.throwOnNextSpawn;
+      state.throwOnNextSpawn = null;
+      throw err;
+    }
     captured.push(opts);
     return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
   };
 
-  return { fn, captured, stdinWrites, simulateExit };
+  return {
+    fn,
+    captured,
+    stdinWrites,
+    pushLine,
+    simulateExit,
+    get throwOnNextSpawn() {
+      return state.throwOnNextSpawn;
+    },
+    set throwOnNextSpawn(err: Error | null) {
+      state.throwOnNextSpawn = err;
+    },
+  };
 }
 
 // Test config directory
@@ -1702,6 +1731,186 @@ describe('MCP Server Tools', () => {
         expect(response.result?.isError).toBe(true);
       }
     });
+  });
+
+  describe('send_session_message: embedded-agent target (Issue #1260 PR-2)', () => {
+    // Polarity requirement (self-pass, see Issue #1260 PR-2 AC): against the
+    // pre-fix implementation (isPtyBackedWorker-only gate), the first test
+    // below fails at `expect(response.result?.isError).toBeUndefined()`
+    // because the tool rejects with 'cannot receive inbound messages:
+    // requires a PTY-backed worker (agent/terminal)' -- verified manually by
+    // stashing the production diff and re-running this file (see PR body).
+
+    it('should succeed with explicit toWorkerId targeting a deactivated embedded-agent worker (activates + delivers the same notification template as the PTY branch)', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        // createdBy is required for embedded-agent activation to mint an MCP
+        // caller identity (runActivation's Step 3) -- see
+        // EmbeddedAgentWorkerService's "has no createdBy" guard.
+        { createdBy: 'test-user-id' },
+      );
+      const embeddedWorker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      expect(embeddedWorker).toBeDefined();
+
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
+
+      expect(fakeEmbeddedSpawn.captured.length).toBe(0);
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        toWorkerId: embeddedWorker!.id,
+        content: 'task done',
+        fromSessionId: senderSession.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      // Activated as a side effect of delivery (activate-on-delivery, Ruling B).
+      expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+
+      const userMessageWrite = fakeEmbeddedSpawn.stdinWrites
+        .map((w) => JSON.parse(w) as { type: string; text?: string })
+        .find((c) => c.type === 'user-message');
+      expect(userMessageWrite).toBeDefined();
+      // Same notification template the PTY branch writes: internal:message
+      // tag, sender, message file path, and reply instructions.
+      expect(userMessageWrite!.text).toContain('[internal:message]');
+      expect(userMessageWrite!.text).toContain('source=session');
+      expect(userMessageWrite!.text).toContain(`from=${senderSession.id}`);
+      expect(userMessageWrite!.text).toContain('intent=triage');
+      expect(userMessageWrite!.text).toContain('[Reply Instructions]');
+      expect(userMessageWrite!.text).toContain(`toSessionId: "${senderSession.id}"`);
+
+      const data = parseToolResult(response) as { messageId: string; path: string };
+      expect(userMessageWrite!.text).toContain(data.path);
+
+      const deactivatePromise = sessionManager.deactivateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
+      fakeEmbeddedSpawn.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('should fail with a classified message when the embedded-agent target is mid-turn (TURN_IN_PROGRESS)', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        // createdBy is required for embedded-agent activation to mint an MCP
+        // caller identity (runActivation's Step 3) -- see
+        // EmbeddedAgentWorkerService's "has no createdBy" guard.
+        { createdBy: 'test-user-id' },
+      );
+      const embeddedWorker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
+
+      await sessionManager.activateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
+      // Admit a turn that never resolves idle, so the second delivery below
+      // hits TURN_IN_PROGRESS without a second activation attempt.
+      const first = await sessionManager.sendEmbeddedAgentUserMessage(session.id, embeddedWorker!.id, 'busy');
+      expect(first.ok).toBe(true);
+      expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        toWorkerId: embeddedWorker!.id,
+        content: 'please respond',
+        fromSessionId: senderSession.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('turn in progress');
+      // No re-activation attempted (already activated).
+      expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+
+      // Teardown: clear the turn so afterEach's deactivate isn't rejected.
+      fakeEmbeddedSpawn.pushLine({ v: 1, type: 'state', state: 'idle' });
+    });
+
+    it('should fail with the marker message verbatim when embedded-agent activation fails for an enumerable reason (deleted definition)', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        // createdBy is required for embedded-agent activation to mint an MCP
+        // caller identity (runActivation's Step 3) -- see
+        // EmbeddedAgentWorkerService's "has no createdBy" guard.
+        { createdBy: 'test-user-id' },
+      );
+      const embeddedWorker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
+
+      // Simulate the definition being deleted between worker-creation and
+      // delivery -- runActivation throws EmbeddedAgentActivationError.
+      embeddedAgentDefsById.delete(TEST_EMBEDDED_AGENT_DEF.id);
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        toWorkerId: embeddedWorker!.id,
+        content: 'hello',
+        fromSessionId: senderSession.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('Embedded agent definition not found');
+      expect(fakeEmbeddedSpawn.captured.length).toBe(0); // never reached the spawn step
+    });
+
+    it('should fail with the generic fallback message (not the raw error) when embedded-agent activation fails for a non-marker reason', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        // createdBy is required for embedded-agent activation to mint an MCP
+        // caller identity (runActivation's Step 3) -- see
+        // EmbeddedAgentWorkerService's "has no createdBy" guard.
+        { createdBy: 'test-user-id' },
+      );
+      const embeddedWorker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      const senderSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/sender-path',
+        agentId: 'claude-code',
+      });
+
+      fakeEmbeddedSpawn.throwOnNextSpawn = new Error(
+        'ENOENT: unstructured internal detail nobody should see client-side',
+      );
+
+      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+        toSessionId: session.id,
+        toWorkerId: embeddedWorker!.id,
+        content: 'hello',
+        fromSessionId: senderSession.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).not.toContain('ENOENT');
+      expect(data.error).toContain('Embedded-agent activation failed');
+    });
+
+    // Regression: the pre-existing terminal-agent send_session_message tests
+    // in the parent `describe('send_session_message', ...)` block above are
+    // UNCHANGED by this PR (no assertion in them was modified) -- their
+    // continued passing is the byte-identical-PTY-branch AC requirement.
   });
 
   // ===========================================================================

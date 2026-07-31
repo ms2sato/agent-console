@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { Hono } from 'hono';
@@ -22,6 +22,7 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { MAX_MESSAGE_FILES, MAX_TOTAL_FILE_SIZE } from '@agent-console/shared';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
+import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
 
 // Config dir is memfs-only; uploads target a per-uid /tmp dir by spec (see #821).
 // memfs hooks fs/promises so the route's mkdir lands in memfs, which we then
@@ -33,10 +34,90 @@ const TEST_CONFIG_DIR = '/test/config';
 
 const ptyFactory = createMockPtyFactory(20000);
 
+/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
+interface FakeFileSink {
+  write: (chunk: string | Uint8Array) => number;
+  end: () => void;
+  flush: () => number;
+}
+
+/**
+ * Fake spawnAsUser for the embedded-agent loop subprocess (Issue #1260
+ * PR-2), needed because POST /:sessionId/messages now activates a
+ * deactivated embedded-agent target as part of delivery. Mirrors
+ * `makeFakeEmbeddedAgentDelegateSpawn` in `mcp/__tests__/mcp-server.test.ts`.
+ * Single-shot (one spawn per fake instance). Reset in `beforeEach`.
+ */
+function makeFakeEmbeddedSpawn(): {
+  fn: SpawnAsUserFn;
+  captured: SpawnAsUserOpts[];
+  stdinWrites: string[];
+  simulateExit: (code: number) => void;
+  throwOnNextSpawn: Error | null;
+} {
+  const captured: SpawnAsUserOpts[] = [];
+  const stdinWrites: string[] = [];
+
+  let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+  const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+
+  let resolveExited!: (code: number) => void;
+  const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+  let exitSimulated = false;
+  const simulateExit = (code: number) => {
+    if (exitSimulated) return;
+    exitSimulated = true;
+    resolveExited(code);
+    stdoutCtrl.close();
+    stderrCtrl.close();
+  };
+
+  const stdin: FakeFileSink = {
+    write: (chunk) => {
+      stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+      return 0;
+    },
+    end: () => {},
+    flush: () => 0,
+  };
+
+  const subprocess = { pid: 6543, exited, stdin, stdout, stderr, kill: () => {} };
+
+  const state = { throwOnNextSpawn: null as Error | null };
+
+  const fn: SpawnAsUserFn = (opts) => {
+    if (state.throwOnNextSpawn) {
+      const err = state.throwOnNextSpawn;
+      state.throwOnNextSpawn = null;
+      throw err;
+    }
+    captured.push(opts);
+    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+  };
+
+  return {
+    fn,
+    captured,
+    stdinWrites,
+    simulateExit,
+    get throwOnNextSpawn() {
+      return state.throwOnNextSpawn;
+    },
+    set throwOnNextSpawn(err: Error | null) {
+      state.throwOnNextSpawn = err;
+    },
+  };
+}
+
 describe('Workers API', () => {
   let app: Hono<AppBindings>;
   let sessionManager: SessionManager;
   let testJobQueue: JobQueue;
+  // Issue #1260 PR-2: embedded-agent loop subprocess fake, see
+  // `makeFakeEmbeddedSpawn` above. Fresh instance each test.
+  let fakeEmbeddedSpawn: ReturnType<typeof makeFakeEmbeddedSpawn>;
 
   beforeEach(async () => {
     await closeDatabase();
@@ -62,6 +143,8 @@ describe('Workers API', () => {
 
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
 
+    fakeEmbeddedSpawn = makeFakeEmbeddedSpawn();
+
     sessionManager = await SessionManager.create({
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
       pathExists: async () => true,
@@ -69,6 +152,7 @@ describe('Workers API', () => {
       jobQueue: testJobQueue,
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
+      spawnAsUserFn: fakeEmbeddedSpawn.fn,
       // Resolve only 'agent-def-1'; any other embeddedAgentId is dangling and
       // createWorker rejects it (surfaced as 400 by the route error handler).
       embeddedAgentManager: {
@@ -115,6 +199,20 @@ describe('Workers API', () => {
   });
 
   afterEach(async () => {
+    // Issue #1260 PR-2: deactivate any embedded-agent worker the /messages
+    // route activated during the test so the fake subprocess's `exited`
+    // await / stdout reader don't outlive the test.
+    if (sessionManager) {
+      for (const session of sessionManager.getAllSessions()) {
+        for (const worker of session.workers) {
+          if (worker.type === 'embedded-agent' && worker.activated) {
+            const deactivatePromise = sessionManager.deactivateEmbeddedAgentWorker(session.id, worker.id);
+            fakeEmbeddedSpawn.simulateExit(0);
+            await deactivatePromise;
+          }
+        }
+      }
+    }
     await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
@@ -629,6 +727,116 @@ describe('Workers API', () => {
 
       const body = (await res.json()) as { error: string };
       expect(body.error).toContain('Session');
+    });
+
+    describe('embedded-agent target (Issue #1260 PR-2)', () => {
+      it('should activate a deactivated embedded-agent worker and deliver the message (201)', async () => {
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          // createdBy is required for embedded-agent activation to mint an
+          // MCP caller identity -- see EmbeddedAgentWorkerService's "has no
+          // createdBy" guard (runActivation Step 3).
+          { createdBy: 'test-user-id' },
+        );
+        const embeddedWorker = await sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: 'agent-def-1',
+        });
+        expect(embeddedWorker).toBeDefined();
+
+        expect(fakeEmbeddedSpawn.captured.length).toBe(0);
+
+        const formData = new FormData();
+        formData.append('toWorkerId', embeddedWorker!.id);
+        formData.append('content', 'hello embedded');
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        expect(res.status).toBe(201);
+        // Activated as a side effect of delivery (activate-on-delivery, Ruling B).
+        expect(fakeEmbeddedSpawn.captured.length).toBe(1);
+
+        const body = (await res.json()) as { message: { content: string } };
+        expect(body.message.content).toBe('hello embedded');
+
+        const userMessageWrite = fakeEmbeddedSpawn.stdinWrites
+          .map((w) => JSON.parse(w) as { type: string; text?: string })
+          .find((c) => c.type === 'user-message');
+        expect(userMessageWrite).toBeDefined();
+        expect(userMessageWrite!.text).toBe('hello embedded');
+      });
+
+      it('should return a classified 400 when embedded-agent activation fails for a non-marker reason', async () => {
+        const session = await sessionManager.createSession(
+          { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+          // createdBy is required for embedded-agent activation to mint an
+          // MCP caller identity -- see EmbeddedAgentWorkerService's "has no
+          // createdBy" guard (runActivation Step 3).
+          { createdBy: 'test-user-id' },
+        );
+        const embeddedWorker = await sessionManager.createWorker(session.id, {
+          type: 'embedded-agent',
+          embeddedAgentId: 'agent-def-1',
+        });
+        expect(embeddedWorker).toBeDefined();
+
+        fakeEmbeddedSpawn.throwOnNextSpawn = new Error(
+          'ENOENT: unstructured internal detail nobody should see client-side',
+        );
+
+        const formData = new FormData();
+        formData.append('toWorkerId', embeddedWorker!.id);
+        formData.append('content', 'hello');
+
+        const res = await app.request(`/api/sessions/${session.id}/messages`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        expect(res.status).toBe(400);
+        const body = (await res.json()) as { error: string };
+        expect(body.error).not.toContain('ENOENT');
+        expect(body.error).toContain('Embedded-agent activation failed');
+      });
+    });
+
+    it('should surface an unrelated sessionManager.sendMessage failure as-is instead of a misleading 400 (CodeRabbit PR #1265 finding 1)', async () => {
+      // Target a PTY-backed (non-embedded) worker: sendMessage failures for
+      // this worker type have nothing to do with embedded-agent activation
+      // or delivery, so they must not be classified as such.
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const sendMessageSpy = spyOn(sessionManager, 'sendMessage').mockImplementation(async () => {
+        throw new Error('unexpected internal failure');
+      });
+
+      const formData = new FormData();
+      formData.append('toWorkerId', worker!.id);
+      formData.append('content', 'hello');
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      sendMessageSpy.mockRestore();
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('unexpected internal failure');
+      expect(body.error).not.toContain('Embedded-agent activation failed');
     });
   });
 
