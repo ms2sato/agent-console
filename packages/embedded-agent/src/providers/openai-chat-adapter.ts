@@ -73,9 +73,38 @@ interface OpenAIStreamChunk {
 // that body for diagnosis, not the whole page.
 const MAX_PROVIDER_ERROR_BODY_CHARS = 500;
 
+// Read bound for the raw network stream, well above MAX_PROVIDER_ERROR_BODY_CHARS
+// so a JSON error body's `type`/`code` wrapper around the `message` field isn't
+// cut off before extractProviderErrorDetail gets to parse and truncate it, but
+// still far below "arbitrarily large" so a hostile/misbehaving gateway can't
+// force an unbounded read.
+const MAX_PROVIDER_ERROR_BODY_BYTES = 8 * 1024;
+
 function truncateProviderErrorDetail(text: string): string {
   if (text.length <= MAX_PROVIDER_ERROR_BODY_CHARS) return text;
   return `${text.slice(0, MAX_PROVIDER_ERROR_BODY_CHARS)} [truncated]`;
+}
+
+/**
+ * Reads at most MAX_PROVIDER_ERROR_BODY_BYTES from a response body stream.
+ * Errors from the reader propagate to the caller -- enrichment is best-effort
+ * and the existing call site already wraps this in a try/catch.
+ */
+async function readBoundedBodyText(res: Response): Promise<string> {
+  if (res.body === null) return '';
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    while (text.length < MAX_PROVIDER_ERROR_BODY_BYTES) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return text;
 }
 
 /**
@@ -223,7 +252,7 @@ export class OpenAIChatAdapter implements ProviderAdapter {
         const retryable = res.status === 429 || res.status >= 500;
         let message = `provider responded with HTTP ${res.status}`;
         try {
-          const detail = extractProviderErrorDetail(await res.text());
+          const detail = extractProviderErrorDetail(await readBoundedBodyText(res));
           if (detail !== undefined) {
             message = `${message}: ${detail}`;
           }

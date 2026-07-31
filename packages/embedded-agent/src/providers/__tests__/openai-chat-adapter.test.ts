@@ -37,11 +37,19 @@ function hangingStream(signal: AbortSignal): ReadableStream<Uint8Array> {
   });
 }
 
+/** A body stream whose first read rejects, e.g. a dropped connection mid-body. */
+function rejectingStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    pull() {
+      return Promise.reject(new Error('stream error: connection reset'));
+    },
+  });
+}
+
 interface MockResponseInit {
   status?: number;
   headers?: Record<string, string>;
   body?: ReadableStream<Uint8Array> | null;
-  text?: () => Promise<string>;
 }
 
 function mockResponse(init: MockResponseInit): Response {
@@ -51,7 +59,6 @@ function mockResponse(init: MockResponseInit): Response {
     status,
     headers: new Headers(init.headers ?? {}),
     body: init.body === undefined ? streamFromChunks([]) : init.body,
-    text: init.text ?? (async () => ''),
   } as unknown as Response;
 }
 
@@ -564,7 +571,7 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
       fetchFn: async () =>
         mockResponse({
           status: 403,
-          text: async () =>
+          body: streamFromChunks([
             JSON.stringify({
               type: 'error',
               error: {
@@ -573,6 +580,7 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
                 message: 'regional opt-in required: https://example.com/opt-in',
               },
             }),
+          ]),
         }),
     });
     let caught: unknown;
@@ -594,11 +602,13 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
     expect(err.retryable).toBe(false);
   });
 
-  it('surfaces the truncated head of a non-JSON (e.g. HTML gateway) error body', async () => {
+  it('surfaces the truncated head of a non-JSON (e.g. HTML gateway) error body split across multiple reads', async () => {
     const html = '<html><body><h1>403 Forbidden</h1><p>Access denied by WAF.</p></body></html>';
     const adapter = new OpenAIChatAdapter({
       baseUrl: 'http://x/v1',
-      fetchFn: async () => mockResponse({ status: 403, text: async () => html }),
+      // 10-byte chunks force the bounded-read loop to make several reader.read()
+      // calls, exercising the loop rather than a single-chunk stream.
+      fetchFn: async () => mockResponse({ status: 403, body: streamFromChunks(chunkString(html, 10)) }),
     });
     let caught: unknown;
     try {
@@ -617,7 +627,7 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
     const body = 'a'.repeat(500);
     const adapter = new OpenAIChatAdapter({
       baseUrl: 'http://x/v1',
-      fetchFn: async () => mockResponse({ status: 400, text: async () => body }),
+      fetchFn: async () => mockResponse({ status: 400, body: streamFromChunks([body]) }),
     });
     let caught: unknown;
     try {
@@ -636,7 +646,7 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
     const body = 'a'.repeat(501);
     const adapter = new OpenAIChatAdapter({
       baseUrl: 'http://x/v1',
-      fetchFn: async () => mockResponse({ status: 400, text: async () => body }),
+      fetchFn: async () => mockResponse({ status: 400, body: streamFromChunks([body]) }),
     });
     let caught: unknown;
     try {
@@ -652,10 +662,10 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
     expect(err.message).toContain('[truncated]');
   });
 
-  it('stays status-only when the body is empty', async () => {
+  it('stays status-only when the body is null', async () => {
     const adapter = new OpenAIChatAdapter({
       baseUrl: 'http://x/v1',
-      fetchFn: async () => mockResponse({ status: 500, text: async () => '' }),
+      fetchFn: async () => mockResponse({ status: 500, body: null }),
     });
     let caught: unknown;
     try {
@@ -675,9 +685,7 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
         mockResponse({
           status: 503,
           headers: { 'retry-after': '3' },
-          text: async () => {
-            throw new Error('stream error: connection reset');
-          },
+          body: rejectingStream(),
         }),
     });
     let caught: unknown;
@@ -706,7 +714,7 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
         capturedHeaders = new Headers(init.headers);
         return mockResponse({
           status: 403,
-          text: async () => JSON.stringify({ error: { message: 'forbidden' } }),
+          body: streamFromChunks([JSON.stringify({ error: { message: 'forbidden' } })]),
         });
       },
     });
@@ -720,6 +728,45 @@ describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
     }
     expect(capturedHeaders!.get('authorization')).toBe(`Bearer ${apiKey}`);
     expect((caught as ProviderError).message).not.toContain(apiKey);
+  });
+
+  it('stops reading once the bounded prefix is reached, never consuming a much larger body', async () => {
+    // Mirrors production's MAX_PROVIDER_ERROR_BODY_BYTES (8 * 1024); kept local
+    // to this test rather than imported, since the constant is not exported.
+    const BOUND_BYTES = 8 * 1024;
+    const CHUNK_BYTES = 1024;
+    const TOTAL_CHUNKS = 24; // 24KB total, 3x the bound -- a res.text()-based
+    // unbounded read would consume all of it.
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        if (pulls > TOTAL_CHUNKS) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(encoder.encode('a'.repeat(CHUNK_BYTES)));
+      },
+    });
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 500, body }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    // The loop's length check stops consuming once BOUND_BYTES is reached, so
+    // only ~BOUND_BYTES/CHUNK_BYTES reads happen (+1 for the stream's own
+    // readahead prefetch) -- proving the stream was never fully drained. A
+    // res.text()-based unbounded read would have pulled all TOTAL_CHUNKS.
+    expect(pulls).toBeLessThanOrEqual(BOUND_BYTES / CHUNK_BYTES + 1);
+    expect(pulls).toBeLessThan(TOTAL_CHUNKS);
   });
 });
 
