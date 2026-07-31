@@ -36,6 +36,7 @@ import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
 import { resolveRequestUsername } from '../services/resolve-spawn-username.js';
+import { EmbeddedAgentActivationError } from '../services/embedded-agent-worker-service.js';
 import {
   McpTokenRegistry,
   resolveMcpAuthMode,
@@ -49,6 +50,21 @@ import type { Session, Worker, AgentActivityState, AppServerMessage } from '@age
 import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
+
+/**
+ * Client-visible fallback for an embedded-agent auto-activation failure on
+ * the `delegate_to_worktree` path whose message is NOT from the
+ * {@link EmbeddedAgentActivationError} allowlist (e.g. provider key loading,
+ * spawn username resolution, process spawn, filesystem, DB errors). Mirrors
+ * `GENERIC_ACTIVATION_FAILURE_MESSAGE` in `websocket/routes.ts` (the worker
+ * WebSocket open handler's equivalent classification for the browser-open
+ * activation path). Kept as a separate literal here rather than a shared
+ * export -- a future consolidation of the two call sites' error
+ * classification is expected; keep the two message strings in sync until
+ * then.
+ */
+const GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE =
+  'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 // ---------- Response helpers ----------
 
@@ -913,6 +929,39 @@ export function createMcpApp(deps: McpDependencies): Hono {
         );
         if (!agentWorker) {
           return errorResult('Session created but no agent worker was found');
+        }
+
+        // Delegate-path-only activation: the delegate path is the only place
+        // that knows no browser tab is coming for this worker, so it activates an
+        // embedded-agent initial worker itself here, through the SAME
+        // idempotent entry point the worker WebSocket open handler uses
+        // (`activateEmbeddedAgentWorker` -> websocket/routes.ts). A later
+        // browser open on this worker hits that entry's existing
+        // already-activated no-op guard -- no second activation entry point,
+        // no new activation semantics. Terminal-agent workers are unaffected:
+        // they already spawn their PTY at session-creation time
+        // (worker-lifecycle-manager.ts).
+        if (agentWorker.type === 'embedded-agent') {
+          try {
+            await sessionManager.activateEmbeddedAgentWorker(session.id, agentWorker.id);
+          } catch (err) {
+            // Only the enumerable, developer-authored reasons (marked by
+            // EmbeddedAgentActivationError) are safe to forward verbatim --
+            // identical classification to websocket/routes.ts. The created
+            // worktree/session are NOT rolled back: this is the delegate
+            // path's only failure channel, and the resulting state (session
+            // exists, its agent failed to start) mirrors what a UI-created
+            // activation failure already leaves behind.
+            const message =
+              err instanceof EmbeddedAgentActivationError ? err.message : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
+            logger.warn(
+              { sessionId: session.id, workerId: agentWorker.id, err },
+              'Embedded-agent auto-activation failed on delegate path',
+            );
+            return errorResult(
+              `Session ${session.id} was created but its embedded agent failed to activate: ${message}`,
+            );
+          }
         }
 
         const delegateResult: DelegateResult = {

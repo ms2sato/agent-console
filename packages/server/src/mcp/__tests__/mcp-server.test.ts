@@ -37,7 +37,7 @@ import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import type { AgentDirectoryEntry, EmbeddedAgentDefinition } from '@agent-console/shared';
-import type { runAsUser } from '../../services/privilege-elevation.js';
+import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
 // Declaring the parameter type makes `mock.calls` typed correctly so the
@@ -99,6 +99,77 @@ const fakeRunAsUserAlwaysSuccess: typeof runAsUser = async (opts) => {
     timedOut: false,
   };
 };
+
+/** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService (write/end/flush). */
+interface McpDelegateFakeFileSink {
+  write: (chunk: string | Uint8Array) => number;
+  end: () => void;
+  flush: () => number;
+}
+
+/**
+ * Fake spawnAsUser for the embedded-agent loop subprocess (Issue #1260
+ * PR-1). Needed because `delegate_to_worktree` now eagerly activates an
+ * embedded-agent initial worker as part of the tool call itself -- without
+ * this seam, the two `should create an embedded-agent initial worker...`
+ * tests below would hit the REAL `spawnAsUser` and attempt a real `bun`
+ * subprocess spawn. Mirrors `websocket/__tests__/routes-embedded-agent.test.ts`'s
+ * `makeFakeSpawn` (never emits stdout on its own -- these tests only assert
+ * that activation was attempted, not on the loop's own event stream).
+ * Reset in `beforeEach`; deactivated in `afterEach` via `simulateExit` so no
+ * activated worker's `subprocess.exited` await / stdout reader outlives the
+ * test.
+ */
+function makeFakeEmbeddedAgentDelegateSpawn(): {
+  fn: SpawnAsUserFn;
+  captured: SpawnAsUserOpts[];
+  stdinWrites: string[];
+  simulateExit: (code: number) => void;
+} {
+  const captured: SpawnAsUserOpts[] = [];
+  const stdinWrites: string[] = [];
+
+  let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+  const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+  const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+
+  let resolveExited!: (code: number) => void;
+  const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+  let exitSimulated = false;
+  const simulateExit = (code: number) => {
+    if (exitSimulated) return;
+    exitSimulated = true;
+    resolveExited(code);
+    stdoutCtrl.close();
+    stderrCtrl.close();
+  };
+
+  const stdin: McpDelegateFakeFileSink = {
+    write: (chunk) => {
+      stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+      return 0;
+    },
+    end: () => {},
+    flush: () => 0,
+  };
+
+  const subprocess = {
+    pid: 8765,
+    exited,
+    stdin,
+    stdout,
+    stderr,
+    kill: () => {},
+  };
+
+  const fn: SpawnAsUserFn = (opts) => {
+    captured.push(opts);
+    return { subprocess, stdin, elevated: false } as unknown as SpawnAsUserResult;
+  };
+
+  return { fn, captured, stdinWrites, simulateExit };
+}
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -257,6 +328,9 @@ describe('MCP Server Tools', () => {
   let mcpSessionId: string;
   // Track unique IDs for tool calls to avoid collisions in the shared transport
   let nextId: number;
+  // Issue #1260 PR-1: embedded-agent loop subprocess fake, see
+  // `makeFakeEmbeddedAgentDelegateSpawn` above.
+  let fakeEmbeddedSpawn: ReturnType<typeof makeFakeEmbeddedAgentDelegateSpawn>;
 
   /**
    * Capture of the `runAsUser` invocation made by the injected stub on the
@@ -363,6 +437,12 @@ describe('MCP Server Tools', () => {
     // Create AnnotationService
     annotationService = new AnnotationService();
 
+    // Issue #1260 PR-1: fresh fake for each test (see declaration comment
+    // above); `delegate_to_worktree` now eagerly activates an embedded-agent
+    // initial worker, so this seam is required even though most tests never
+    // exercise it.
+    fakeEmbeddedSpawn = makeFakeEmbeddedAgentDelegateSpawn();
+
     // Create SessionManager directly
     sessionManager = await SessionManager.create({
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
@@ -373,6 +453,7 @@ describe('MCP Server Tools', () => {
       annotationService,
       mcpTokenRegistry: new McpTokenRegistry(),
       runAsUserImpl: fakeRunAsUserAlwaysSuccess,
+      spawnAsUserFn: fakeEmbeddedSpawn.fn,
       repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager?.getRepositorySlug(id) },
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
@@ -475,6 +556,20 @@ describe('MCP Server Tools', () => {
   }
 
   afterEach(async () => {
+    // Issue #1260 PR-1: deactivate any embedded-agent worker `delegate_to_worktree`
+    // activated during the test (mirrors routes-embedded-agent.test.ts's afterEach)
+    // so the fake subprocess's `exited` await / stdout reader don't outlive the test.
+    if (sessionManager) {
+      for (const session of sessionManager.getAllSessions()) {
+        for (const worker of session.workers) {
+          if (worker.type === 'embedded-agent' && worker.activated) {
+            const deactivatePromise = sessionManager.deactivateEmbeddedAgentWorker(session.id, worker.id);
+            fakeEmbeddedSpawn.simulateExit(0);
+            await deactivatePromise;
+          }
+        }
+      }
+    }
     timerManager.disposeAll();
     conditionalWakeupManager.disposeAll();
     interactiveProcessManager.disposeAll();
@@ -2214,11 +2309,24 @@ describe('MCP Server Tools', () => {
     it('should create an embedded-agent initial worker when agentId matches an embedded agent', async () => {
       await setupDelegateEnvironment('feat/embedded-by-id');
 
+      // Issue #1260 PR-1: `delegate_to_worktree` now eagerly activates an
+      // embedded-agent initial worker, which requires the created session to
+      // have a `createdBy` (to mint the worker's MCP caller identity). A
+      // parent session provides that via the standard delegate inheritance
+      // path (see "should inherit createdBy from parent session" above).
+      const parentSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: TEST_REPO_PATH,
+      }, { createdBy: 'parent-user-embedded-by-id' });
+
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test embedded agent selection by id',
         branch: 'feat/embedded-by-id',
         agentId: TEST_EMBEDDED_AGENT_DEF.id,
+        parentSessionId: parentSession.id,
+        parentWorkerId: 'parent-worker-id',
+        skipMessageCallbackPrompt: true,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2231,17 +2339,28 @@ describe('MCP Server Tools', () => {
       expect(worker!.type).toBe('embedded-agent');
       if (worker!.type === 'embedded-agent') {
         expect(worker!.embeddedAgentId).toBe(TEST_EMBEDDED_AGENT_DEF.id);
+        // Auto-activated by the delegate path itself (Issue #1260 Gap 1).
+        expect(worker!.activated).toBe(true);
       }
+      expect(fakeEmbeddedSpawn.captured.length).toBe(1);
     });
 
     it('should create an embedded-agent initial worker when agentName matches an embedded agent', async () => {
       await setupDelegateEnvironment('feat/embedded-by-name');
+
+      const parentSession = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: TEST_REPO_PATH,
+      }, { createdBy: 'parent-user-embedded-by-name' });
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test embedded agent selection by name',
         branch: 'feat/embedded-by-name',
         agentName: TEST_EMBEDDED_AGENT_DEF.name,
+        parentSessionId: parentSession.id,
+        parentWorkerId: 'parent-worker-id',
+        skipMessageCallbackPrompt: true,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2254,7 +2373,9 @@ describe('MCP Server Tools', () => {
       expect(worker!.type).toBe('embedded-agent');
       if (worker!.type === 'embedded-agent') {
         expect(worker!.embeddedAgentId).toBe(TEST_EMBEDDED_AGENT_DEF.id);
+        expect(worker!.activated).toBe(true);
       }
+      expect(fakeEmbeddedSpawn.captured.length).toBe(1);
     });
 
     it('should return error when agentName matches both a terminal agent and an embedded agent', async () => {
