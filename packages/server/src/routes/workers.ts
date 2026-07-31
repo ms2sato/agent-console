@@ -291,12 +291,33 @@ const workers = new Hono<AppBindings>()
     } catch (err) {
       // Clean up saved files since the message was not delivered
       await Promise.allSettled(savedPaths.map((p) => unlink(p)));
-      const classified =
-        err instanceof EmbeddedAgentActivationError || err instanceof EmbeddedMessageDeliveryError
-          ? err.message
-          : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
-      logger.warn({ err, sessionId, toWorkerId: validated.toWorkerId }, 'Embedded-agent message delivery failed');
-      throw new ValidationError(classified);
+
+      // The two marker types are always safe to forward verbatim, regardless
+      // of target worker type -- sendMessage only throws them from its
+      // embedded-agent branch.
+      if (err instanceof EmbeddedAgentActivationError || err instanceof EmbeddedMessageDeliveryError) {
+        logger.warn({ err, sessionId, toWorkerId: validated.toWorkerId }, 'Embedded-agent message delivery failed');
+        throw new ValidationError(err.message);
+      }
+
+      // A non-marker error can still be a genuine embedded-agent activation
+      // failure (e.g. provider key loading, spawn -- see
+      // EmbeddedAgentActivationError's JSDoc in embedded-agent-worker-service.ts):
+      // sendMessage's embedded-agent branch does not wrap every activation
+      // failure in the marker class. Only classify it as such when the
+      // target actually IS an embedded-agent worker -- otherwise this is an
+      // unrelated failure from the shared/PTY-side code path (session/worker
+      // resolution, PTY injection, message persistence, ...) and must
+      // propagate unchanged so onApiError reports the real status/message
+      // instead of a misleading 400.
+      const targetWorker = sessionManager.getWorker(sessionId, validated.toWorkerId);
+      if (targetWorker?.type === 'embedded-agent') {
+        logger.warn({ err, sessionId, toWorkerId: validated.toWorkerId }, 'Embedded-agent message delivery failed');
+        throw new ValidationError(GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE);
+      }
+
+      logger.error({ err, sessionId, toWorkerId: validated.toWorkerId }, 'Message delivery failed');
+      throw err;
     }
     if (!message) {
       // Clean up saved files since the message was not delivered

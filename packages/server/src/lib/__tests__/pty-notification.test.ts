@@ -1,4 +1,4 @@
-import { describe, expect, it, jest, mock } from 'bun:test';
+import { describe, expect, it, jest, mock, spyOn } from 'bun:test';
 import { formatFieldValue, writePtyNotification, buildPtyNotificationText } from '../pty-notification.js';
 
 describe('formatFieldValue', () => {
@@ -252,20 +252,18 @@ describe('buildPtyNotificationText', () => {
     expect(returnedFromWrite).toBe(built);
   });
 
-  it('does not write anything or schedule a timer (pure function)', () => {
-    jest.useFakeTimers();
+  it('does not schedule any timer (pure function)', () => {
+    const setTimeoutSpy = spyOn(globalThis, 'setTimeout');
     try {
-      const written: string[] = [];
       buildPtyNotificationText({
         kind: 'internal-message',
         tag: 'internal:message',
         fields: { source: 'session', from: 'sender-1', summary: 'hi', path: '/tmp/msg' },
         intent: 'inform',
       });
-      jest.advanceTimersByTime(1000);
-      expect(written).toHaveLength(0);
+      expect(setTimeoutSpy).not.toHaveBeenCalled();
     } finally {
-      jest.useRealTimers();
+      setTimeoutSpy.mockRestore();
     }
   });
 

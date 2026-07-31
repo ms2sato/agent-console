@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import * as os from 'os';
 import { join as pathJoin } from 'path';
 import { Hono } from 'hono';
@@ -801,6 +801,42 @@ describe('Workers API', () => {
         expect(body.error).not.toContain('ENOENT');
         expect(body.error).toContain('Embedded-agent activation failed');
       });
+    });
+
+    it('should surface an unrelated sessionManager.sendMessage failure as-is instead of a misleading 400 (CodeRabbit PR #1265 finding 1)', async () => {
+      // Target a PTY-backed (non-embedded) worker: sendMessage failures for
+      // this worker type have nothing to do with embedded-agent activation
+      // or delivery, so they must not be classified as such.
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'agent',
+        agentId: 'claude-code',
+      });
+      expect(worker).not.toBeNull();
+
+      const sendMessageSpy = spyOn(sessionManager, 'sendMessage').mockImplementation(async () => {
+        throw new Error('unexpected internal failure');
+      });
+
+      const formData = new FormData();
+      formData.append('toWorkerId', worker!.id);
+      formData.append('content', 'hello');
+
+      const res = await app.request(`/api/sessions/${session.id}/messages`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      sendMessageSpy.mockRestore();
+
+      expect(res.status).toBe(500);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('unexpected internal failure');
+      expect(body.error).not.toContain('Embedded-agent activation failed');
     });
   });
 
