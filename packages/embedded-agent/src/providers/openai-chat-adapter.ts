@@ -68,6 +68,84 @@ interface OpenAIStreamChunk {
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | null;
 }
 
+// Gateways in front of OpenAI-compatible providers often return a full HTML
+// error page on 4xx/5xx (WAF blocks, region gating); the UI needs the head of
+// that body for diagnosis, not the whole page.
+const MAX_PROVIDER_ERROR_BODY_CHARS = 500;
+
+// Read bound for the raw network stream, well above MAX_PROVIDER_ERROR_BODY_CHARS
+// so a JSON error body's `type`/`code` wrapper around the `message` field isn't
+// cut off before extractProviderErrorDetail gets to parse and truncate it, but
+// still far below "arbitrarily large" so a hostile/misbehaving gateway can't
+// force an unbounded read.
+const MAX_PROVIDER_ERROR_BODY_BYTES = 8 * 1024;
+
+function truncateProviderErrorDetail(text: string): string {
+  if (text.length <= MAX_PROVIDER_ERROR_BODY_CHARS) return text;
+  return `${text.slice(0, MAX_PROVIDER_ERROR_BODY_CHARS)} [truncated]`;
+}
+
+/**
+ * Reads at most MAX_PROVIDER_ERROR_BODY_BYTES from a response body stream.
+ * Errors from the reader propagate to the caller -- enrichment is best-effort
+ * and the existing call site already wraps this in a try/catch.
+ */
+async function readBoundedBodyText(res: Response): Promise<string> {
+  if (res.body === null) return '';
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  try {
+    while (text.length < MAX_PROVIDER_ERROR_BODY_BYTES) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  return text;
+}
+
+/**
+ * Best-effort extraction of a human-readable detail from a non-ok provider
+ * response body, for enriching the `ProviderError` message. Never throws --
+ * any shape that doesn't match the expected JSON error shapes falls back to
+ * the raw (truncated) text.
+ */
+function extractProviderErrorDetail(bodyText: string): string | undefined {
+  const trimmed = bodyText.trim();
+  if (trimmed.length === 0) return undefined;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    parsed = undefined;
+  }
+
+  if (parsed !== undefined && parsed !== null && typeof parsed === 'object') {
+    const obj = parsed as Record<string, unknown>;
+    const errorObj =
+      obj.error !== null && typeof obj.error === 'object'
+        ? (obj.error as Record<string, unknown>)
+        : undefined;
+    const message =
+      (errorObj !== undefined && typeof errorObj.message === 'string'
+        ? errorObj.message
+        : undefined) ?? (typeof obj.message === 'string' ? obj.message : undefined);
+
+    if (message !== undefined) {
+      const type = errorObj !== undefined && typeof errorObj.type === 'string' ? errorObj.type : undefined;
+      const code = errorObj !== undefined && typeof errorObj.code === 'string' ? errorObj.code : undefined;
+      const context = [type, code].filter((v): v is string => v !== undefined).join('/');
+      return truncateProviderErrorDetail(context.length > 0 ? `${message} (${context})` : message);
+    }
+  }
+
+  return truncateProviderErrorDetail(trimmed);
+}
+
 function toOpenAITools(tools: ToolDefinition[]): unknown[] {
   return tools.map((t) => ({
     type: 'function',
@@ -172,10 +250,17 @@ export class OpenAIChatAdapter implements ProviderAdapter {
       if (!res.ok) {
         const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
         const retryable = res.status === 429 || res.status >= 500;
-        throw new ProviderError(
-          `provider responded with HTTP ${res.status}`,
-          { retryable, status: res.status, retryAfterMs },
-        );
+        let message = `provider responded with HTTP ${res.status}`;
+        try {
+          const detail = extractProviderErrorDetail(await readBoundedBodyText(res));
+          if (detail !== undefined) {
+            message = `${message}: ${detail}`;
+          }
+        } catch {
+          // Enrichment is best-effort only; an unreadable body must not
+          // prevent throwing the status-only ProviderError below.
+        }
+        throw new ProviderError(message, { retryable, status: res.status, retryAfterMs });
       }
       if (res.body === null) {
         throw new ProviderError('provider returned an empty response body', {

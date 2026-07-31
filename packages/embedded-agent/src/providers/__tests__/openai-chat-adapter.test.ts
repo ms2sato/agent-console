@@ -37,6 +37,15 @@ function hangingStream(signal: AbortSignal): ReadableStream<Uint8Array> {
   });
 }
 
+/** A body stream whose first read rejects, e.g. a dropped connection mid-body. */
+function rejectingStream(): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    pull() {
+      return Promise.reject(new Error('stream error: connection reset'));
+    },
+  });
+}
+
 interface MockResponseInit {
   status?: number;
   headers?: Record<string, string>;
@@ -552,6 +561,212 @@ describe('OpenAIChatAdapter — HTTP errors', () => {
 
     expect((await grab(server)).retryable).toBe(true);
     expect((await grab(client)).retryable).toBe(false);
+  });
+});
+
+describe('OpenAIChatAdapter — HTTP error body enrichment', () => {
+  it('includes the provider error message and type/code from an OpenAI-shape JSON error body', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({
+          status: 403,
+          body: streamFromChunks([
+            JSON.stringify({
+              type: 'error',
+              error: {
+                type: 'RegionError',
+                code: 'region_not_supported',
+                message: 'regional opt-in required: https://example.com/opt-in',
+              },
+            }),
+          ]),
+        }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    const err = caught as ProviderError;
+    expect(err.message).toContain('provider responded with HTTP 403');
+    expect(err.message).toContain('regional opt-in required: https://example.com/opt-in');
+    expect(err.message).toContain('RegionError');
+    expect(err.message).toContain('region_not_supported');
+    // retryable/status/retryAfterMs semantics stay exactly as before.
+    expect(err.status).toBe(403);
+    expect(err.retryable).toBe(false);
+  });
+
+  it('surfaces the truncated head of a non-JSON (e.g. HTML gateway) error body split across multiple reads', async () => {
+    const html = '<html><body><h1>403 Forbidden</h1><p>Access denied by WAF.</p></body></html>';
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      // 10-byte chunks force the bounded-read loop to make several reader.read()
+      // calls, exercising the loop rather than a single-chunk stream.
+      fetchFn: async () => mockResponse({ status: 403, body: streamFromChunks(chunkString(html, 10)) }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as ProviderError;
+    expect(err.message).toContain('provider responded with HTTP 403');
+    expect(err.message).toContain(html);
+  });
+
+  it('does not truncate a body exactly at the 500-char cap', async () => {
+    const body = 'a'.repeat(500);
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 400, body: streamFromChunks([body]) }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as ProviderError;
+    expect(err.message).toContain(body);
+    expect(err.message).not.toContain('[truncated]');
+  });
+
+  it('truncates a body one char over the 500-char cap and marks it as truncated', async () => {
+    const body = 'a'.repeat(501);
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 400, body: streamFromChunks([body]) }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    const err = caught as ProviderError;
+    expect(err.message).toContain('a'.repeat(500));
+    expect(err.message).not.toContain('a'.repeat(501));
+    expect(err.message).toContain('[truncated]');
+  });
+
+  it('stays status-only when the body is null', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 500, body: null }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect((caught as ProviderError).message).toBe('provider responded with HTTP 500');
+  });
+
+  it('degrades to today’s status-only message when reading the body rejects, without throwing a secondary error', async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({
+          status: 503,
+          headers: { 'retry-after': '3' },
+          body: rejectingStream(),
+        }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    const err = caught as ProviderError;
+    expect(err.message).toBe('provider responded with HTTP 503');
+    expect(err.status).toBe(503);
+    expect(err.retryable).toBe(true);
+    expect(err.retryAfterMs).toBe(3000);
+  });
+
+  it('never surfaces the Authorization header value in the enriched error message', async () => {
+    const apiKey = 'sk-should-never-leak-1234567890';
+    let capturedHeaders: Headers | null = null;
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      apiKey,
+      fetchFn: async (_url, init) => {
+        capturedHeaders = new Headers(init.headers);
+        return mockResponse({
+          status: 403,
+          body: streamFromChunks([JSON.stringify({ error: { message: 'forbidden' } })]),
+        });
+      },
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(capturedHeaders!.get('authorization')).toBe(`Bearer ${apiKey}`);
+    expect((caught as ProviderError).message).not.toContain(apiKey);
+  });
+
+  it('stops reading once the bounded prefix is reached, never consuming a much larger body', async () => {
+    // Mirrors production's MAX_PROVIDER_ERROR_BODY_BYTES (8 * 1024); kept local
+    // to this test rather than imported, since the constant is not exported.
+    const BOUND_BYTES = 8 * 1024;
+    const CHUNK_BYTES = 1024;
+    const TOTAL_CHUNKS = 24; // 24KB total, 3x the bound -- a res.text()-based
+    // unbounded read would consume all of it.
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        if (pulls > TOTAL_CHUNKS) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(encoder.encode('a'.repeat(CHUNK_BYTES)));
+      },
+    });
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () => mockResponse({ status: 500, body }),
+    });
+    let caught: unknown;
+    try {
+      await collect(
+        adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }),
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ProviderError);
+    // The loop's length check stops consuming once BOUND_BYTES is reached, so
+    // only ~BOUND_BYTES/CHUNK_BYTES reads happen (+1 for the stream's own
+    // readahead prefetch) -- proving the stream was never fully drained. A
+    // res.text()-based unbounded read would have pulled all TOTAL_CHUNKS.
+    expect(pulls).toBeLessThanOrEqual(BOUND_BYTES / CHUNK_BYTES + 1);
+    expect(pulls).toBeLessThan(TOTAL_CHUNKS);
   });
 });
 
