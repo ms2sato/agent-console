@@ -1,4 +1,7 @@
 import { describe, it, expect, mock } from 'bun:test';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
@@ -808,6 +811,35 @@ describe('resolveEmbeddedAgentEntryPath', () => {
     expect(result.source).toBe('package');
     expect(result.path.endsWith('packages/embedded-agent/src/main.ts')).toBe(true);
     expect(await Bun.file(result.path).exists()).toBe(true);
+  });
+
+  it('resolves via the bundle-sibling branch when embedded-agent.js sits next to baseDir', async () => {
+    // Simulates a bundled production deploy: `dist/embedded-agent.js` next to
+    // the running server bundle, with no workspace-package edge installed.
+    const tmpDir = await mkdtemp(join(tmpdir(), 'embedded-agent-bundle-'));
+    try {
+      const bundlePath = join(tmpDir, 'embedded-agent.js');
+      await writeFile(bundlePath, '// stub bundle\n');
+
+      const result = resolveEmbeddedAgentEntryPath(tmpDir);
+      expect(result.source).toBe('bundle');
+      expect(result.path).toBe(bundlePath);
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not take the bundle branch when embedded-agent.js is absent from baseDir', async () => {
+    // A bare tmpdir has neither embedded-agent.js nor a resolvable
+    // @agent-console/embedded-agent package edge, so resolution falls through
+    // to the source-tree-relative fallback branch.
+    const tmpDir = await mkdtemp(join(tmpdir(), 'embedded-agent-no-bundle-'));
+    try {
+      const result = resolveEmbeddedAgentEntryPath(tmpDir);
+      expect(result.source).toBe('fallback');
+    } finally {
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
