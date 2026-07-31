@@ -1,5 +1,5 @@
 import { describe, expect, it, jest, mock } from 'bun:test';
-import { formatFieldValue, writePtyNotification } from '../pty-notification.js';
+import { formatFieldValue, writePtyNotification, buildPtyNotificationText } from '../pty-notification.js';
 
 describe('formatFieldValue', () => {
   it('returns simple value as-is', () => {
@@ -231,5 +231,54 @@ describe('writePtyNotification', () => {
 
     // After the tag, timestamp should be the first key=value pair
     expect(written[0]).toMatch(/^\n\[internal:timer\] timestamp=/);
+  });
+});
+
+describe('buildPtyNotificationText', () => {
+  it('produces the exact same string writePtyNotification writes to the PTY (same-output equivalence)', () => {
+    const written: string[] = [];
+
+    const params = {
+      kind: 'internal-message' as const,
+      tag: 'internal:message' as const,
+      fields: { source: 'session', from: 'sender-1', summary: 'hello world', path: '/tmp/msg' },
+      intent: 'triage' as const,
+    };
+
+    const built = buildPtyNotificationText(params);
+    const returnedFromWrite = writePtyNotification({ ...params, writeInput: (data) => { written.push(data); } });
+
+    expect(written[0]).toBe(built);
+    expect(returnedFromWrite).toBe(built);
+  });
+
+  it('does not write anything or schedule a timer (pure function)', () => {
+    jest.useFakeTimers();
+    try {
+      const written: string[] = [];
+      buildPtyNotificationText({
+        kind: 'internal-message',
+        tag: 'internal:message',
+        fields: { source: 'session', from: 'sender-1', summary: 'hi', path: '/tmp/msg' },
+        intent: 'inform',
+      });
+      jest.advanceTimersByTime(1000);
+      expect(written).toHaveLength(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('includes tag, fields, intent, and timestamp in the built string', () => {
+    const result = buildPtyNotificationText({
+      kind: 'inbound-event',
+      tag: 'inbound:ci:failed',
+      fields: { type: 'ci:failed', source: 'github', repo: 'owner/repo', branch: 'main', url: 'https://example.com', summary: 'Build failed' },
+      intent: 'triage',
+    });
+
+    expect(result).toMatch(/^\n\[inbound:ci:failed\] timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z /);
+    expect(result).toContain('type=ci:failed');
+    expect(result).toContain('intent=triage');
   });
 });

@@ -83,8 +83,8 @@ describe('canReceiveSessionMessages', () => {
     expect(canReceiveSessionMessages(gitDiffWorker)).toBe(false);
   });
 
-  it('returns false for an embedded-agent worker', () => {
-    expect(canReceiveSessionMessages(embeddedAgentWorker)).toBe(false);
+  it('returns true for an embedded-agent worker (Issue #1260 PR-2)', () => {
+    expect(canReceiveSessionMessages(embeddedAgentWorker)).toBe(true);
   });
 
   it('narrows to an agent worker with an agentId field', () => {
@@ -94,6 +94,16 @@ describe('canReceiveSessionMessages', () => {
       expect(w.agentId).toBe('claude-code-builtin');
     } else {
       throw new Error('expected agent worker to receive session messages');
+    }
+  });
+
+  it('narrows to an embedded-agent worker with an embeddedAgentId field', () => {
+    const w = embeddedAgentWorker as AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;
+    if (canReceiveSessionMessages(w) && w.type === 'embedded-agent') {
+      // Type narrowing: `embeddedAgentId` exists only on EmbeddedAgentWorker.
+      expect(w.embeddedAgentId).toBe('def-1');
+    } else {
+      throw new Error('expected embedded-agent worker to receive session messages');
     }
   });
 });

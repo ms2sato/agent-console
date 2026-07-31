@@ -25,6 +25,7 @@ import type { SpawnAsUserFn, runAsUser, RunAsUserOpts } from '../privilege-eleva
 import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { sweepOrphanProcesses } from '../orphan-process-sweeper.js';
 import { McpTokenRegistry } from '../../mcp/mcp-auth.js';
+import { EmbeddedMessageDeliveryError } from '../embedded-agent-worker-service.js';
 
 // Test config directory
 const TEST_CONFIG_DIR = '/test/config';
@@ -1603,7 +1604,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'hello world');
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'hello world');
       expect(message).not.toBeNull();
       expect(ptyFactory.instances[0].writtenData).toContain('hello world');
     });
@@ -1617,7 +1618,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'line1\nline2\nline3');
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'line1\nline2\nline3');
       expect(message).not.toBeNull();
       // Content stored in message should retain original newlines
       expect(message!.content).toBe('line1\nline2\nline3');
@@ -1638,7 +1639,7 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Browser form submissions normalize line endings to \r\n
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'line1\r\nline2\r\nline3');
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'line1\r\nline2\r\nline3');
       expect(message).not.toBeNull();
       expect(message!.content).toBe('line1\r\nline2\r\nline3');
       const pty = ptyFactory.instances[0];
@@ -1658,7 +1659,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
       expect(message).not.toBeNull();
 
       // First part is sent immediately
@@ -1680,7 +1681,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, '', ['/tmp/file1.txt']);
       expect(message).not.toBeNull();
 
       // First part (file path) is sent immediately
@@ -1693,7 +1694,7 @@ describe('SessionManager', () => {
 
     it('should return null for non-existent session', async () => {
       const manager = await getSessionManager();
-      const result = manager.sendMessage('non-existent', null, 'worker-1', 'hello');
+      const result = await manager.sendMessage('non-existent', null, 'worker-1', 'hello');
       expect(result).toBeNull();
     });
 
@@ -1709,7 +1710,7 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Send a message with file paths, which schedules delayed writes via setTimeout
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
       expect(message).not.toBeNull();
 
       const pty = ptyFactory.instances[0];
@@ -1741,7 +1742,7 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Send a message with file paths targeting the agent worker, which schedules delayed writes
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'check these', ['/tmp/file1.txt', '/tmp/file2.txt']);
       expect(message).not.toBeNull();
 
       const pty = ptyFactory.instances[0];
@@ -1792,7 +1793,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'hello via DI');
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'hello via DI');
       expect(message).not.toBeNull();
       expect(injectCalls).toHaveLength(1);
       expect(injectCalls[0].content).toBe('hello via DI');
@@ -1835,7 +1836,7 @@ describe('SessionManager', () => {
       manager.getWorkerActivityState = (sessionId: string, workerId: string) =>
         sessionId === session.id && workerId === agentWorker.id ? 'asking' : 'idle';
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'answer to prompt');
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'answer to prompt');
       expect(message).not.toBeNull();
       expect(injectCalls).toHaveLength(1);
       expect(injectCalls[0].isAsking).toBe(true);
@@ -1875,7 +1876,7 @@ describe('SessionManager', () => {
       // Worker is idle (not asking).
       manager.getWorkerActivityState = () => 'idle';
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'normal message');
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'normal message');
       expect(message).not.toBeNull();
       expect(injectCalls).toHaveLength(1);
       expect(injectCalls[0].isAsking).toBe(false);
@@ -1908,8 +1909,247 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const message = manager.sendMessage(session.id, null, agentWorker.id, 'should fail');
+      const message = await manager.sendMessage(session.id, null, agentWorker.id, 'should fail');
       expect(message).toBeNull();
+    });
+  });
+
+  describe('sendMessage: embedded-agent target (Issue #1260 PR-2)', () => {
+    // Mirrors the `sendMessage` async-shape / embedded-worker facade patterns
+    // exercised above and in `delegate-embedded-agent-activation.test.ts`.
+    const STUB_DEF = {
+      id: 'stub-def-1260',
+      name: 'Stub Model',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    /** Minimal subset of Bun's FileSink consumed by EmbeddedAgentWorkerService. */
+    interface FakeSink {
+      write: (chunk: string | Uint8Array) => number;
+      end: () => void;
+      flush: () => number;
+    }
+
+    function makeFakeEmbeddedSpawn(): {
+      fn: SpawnAsUserFn;
+      captured: unknown[];
+      stdinWrites: string[];
+      pushLine: (obj: unknown) => void;
+      simulateExit: (code: number) => void;
+    } {
+      const captured: unknown[] = [];
+      const stdinWrites: string[] = [];
+
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+
+      const encoder = new TextEncoder();
+      const pushLine = (obj: unknown) => {
+        stdoutCtrl.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
+      };
+
+      const stdin: FakeSink = {
+        write: (chunk) => {
+          stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+          return 0;
+        },
+        end: () => {},
+        flush: () => 0,
+      };
+
+      const subprocess = { pid: 7000, exited, stdin, stdout, stderr, kill: () => {} };
+
+      const fn: SpawnAsUserFn = ((opts: unknown) => {
+        captured.push(opts);
+        return { subprocess, stdin, elevated: false };
+      }) as unknown as SpawnAsUserFn;
+
+      return { fn, captured, stdinWrites, pushLine, simulateExit };
+    }
+
+    async function setupManager(fake: ReturnType<typeof makeFakeEmbeddedSpawn>, defs: Map<string, typeof STUB_DEF>) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => defs.get(id) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fake.fn,
+      });
+    }
+
+    async function createEmbeddedWorker(
+      manager: Awaited<ReturnType<typeof setupManager>>,
+    ): Promise<{ sessionId: string; workerId: string }> {
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', embeddedAgentId: STUB_DEF.id },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = session.workers.find((w: Worker) => w.type === 'embedded-agent')!;
+      return { sessionId: session.id, workerId: worker.id };
+    }
+
+    it('activates a deactivated embedded-agent target and delivers the message', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      expect(fake.captured.length).toBe(0);
+
+      const message = await manager.sendMessage(sessionId, null, workerId, 'hello embedded');
+
+      // Activated as a side effect of delivery.
+      expect(fake.captured.length).toBe(1);
+      expect(message).not.toBeNull();
+      expect(message!.content).toBe('hello embedded');
+
+      const userMessageWrite = fake.stdinWrites
+        .map((w) => JSON.parse(w) as { type: string; text?: string })
+        .find((c) => c.type === 'user-message');
+      expect(userMessageWrite).toBeDefined();
+      expect(userMessageWrite!.text).toBe('hello embedded');
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('folds filePaths into the delivered text (no file-attachment concept for embedded targets)', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      const message = await manager.sendMessage(sessionId, null, workerId, 'check these', ['/tmp/a.txt', '/tmp/b.txt']);
+      expect(message).not.toBeNull();
+
+      const userMessageWrite = fake.stdinWrites
+        .map((w) => JSON.parse(w) as { type: string; text?: string })
+        .find((c) => c.type === 'user-message');
+      expect(userMessageWrite!.text).toBe('check these\n/tmp/a.txt\n/tmp/b.txt');
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('delivers to an already-active-idle target without re-activating', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      expect(fake.captured.length).toBe(1);
+
+      const message = await manager.sendMessage(sessionId, null, workerId, 'second message');
+      // No re-spawn: activate-on-delivery is idempotent when already activated.
+      expect(fake.captured.length).toBe(1);
+      expect(message).not.toBeNull();
+
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('rejects with EmbeddedMessageDeliveryError (TURN_IN_PROGRESS) when the target is mid-turn, without re-activation or delivery', async () => {
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, new Map([[STUB_DEF.id, STUB_DEF]]));
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      await manager.activateEmbeddedAgentWorker(sessionId, workerId);
+      // First message admits the turn; the loop never reports idle, so the
+      // turn stays active for the second call below.
+      await manager.sendMessage(sessionId, null, workerId, 'first');
+      expect(fake.captured.length).toBe(1);
+      const stdinWritesBeforeSecond = fake.stdinWrites.length;
+
+      let caught: unknown;
+      try {
+        await manager.sendMessage(sessionId, null, workerId, 'second');
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(EmbeddedMessageDeliveryError);
+      expect((caught as EmbeddedMessageDeliveryError).code).toBe('TURN_IN_PROGRESS');
+
+      // No re-spawn attempted (already activated) and no additional stdin
+      // write for the rejected message (delivery never reached the loop).
+      expect(fake.captured.length).toBe(1);
+      expect(fake.stdinWrites.length).toBe(stdinWritesBeforeSecond);
+
+      // Teardown: clear the turn so deactivate's shutdown command isn't
+      // rejected by a stale in-progress turn, then simulate exit.
+      fake.pushLine({ v: 1, type: 'state', state: 'idle' });
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+      fake.simulateExit(0);
+      await deactivatePromise;
+    });
+
+    it('propagates an unclassified (marker) activation failure verbatim, without attempting delivery', async () => {
+      // Definition deleted between worker-creation and delivery -- runActivation
+      // throws EmbeddedAgentActivationError('...definition not found (deleted)...'),
+      // mirroring delegate-embedded-agent-activation.test.ts's marker-classified case.
+      const defs = new Map([[STUB_DEF.id, STUB_DEF]]);
+      const fake = makeFakeEmbeddedSpawn();
+      const manager = await setupManager(fake, defs);
+      const { sessionId, workerId } = await createEmbeddedWorker(manager);
+
+      defs.delete(STUB_DEF.id);
+
+      await expect(manager.sendMessage(sessionId, null, workerId, 'hello')).rejects.toThrow(
+        'Embedded agent definition not found (deleted)',
+      );
+      expect(fake.captured.length).toBe(0); // never reached the spawn step
+    });
+
+    it('propagates a generic (non-marker) activation failure verbatim as a plain Error', async () => {
+      const throwingFn: SpawnAsUserFn = (() => {
+        throw new Error('ENOENT: spawn bun');
+      }) as unknown as SpawnAsUserFn;
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === STUB_DEF.id ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: throwingFn,
+      });
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', embeddedAgentId: STUB_DEF.id },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = session.workers.find((w: Worker) => w.type === 'embedded-agent')!;
+
+      await expect(manager.sendMessage(session.id, null, worker.id, 'hello')).rejects.toThrow('ENOENT: spawn bun');
+      // Not wrapped in EmbeddedMessageDeliveryError -- that marker is reserved
+      // for SendUserMessageResult ({ok:false}) failures, not activation failures.
+      await expect(manager.sendMessage(session.id, null, worker.id, 'hello')).rejects.not.toBeInstanceOf(
+        EmbeddedMessageDeliveryError,
+      );
     });
   });
 

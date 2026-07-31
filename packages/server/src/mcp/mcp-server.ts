@@ -31,7 +31,7 @@ import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
 import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
-import { writePtyNotification } from '../lib/pty-notification.js';
+import { writePtyNotification, buildPtyNotificationText } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -533,9 +533,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
           if (!worker) {
             return errorResult(`Worker ${toWorkerId} not found in session ${toSessionId}`);
           }
-          if (!isPtyBackedWorker(worker)) {
+          if (!isPtyBackedWorker(worker) && !canReceiveSessionMessages(worker)) {
             return errorResult(
-              `Worker ${toWorkerId} in session ${toSessionId} cannot receive inbound messages: requires a PTY-backed worker (agent/terminal)`,
+              `Worker ${toWorkerId} in session ${toSessionId} cannot receive inbound messages: requires a PTY-backed worker (agent/terminal) or an embedded-agent worker`,
             );
           }
           resolvedWorkerId = toWorkerId;
@@ -554,6 +554,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
           }
           resolvedWorkerId = agentWorkers[0].id;
         }
+
+        // Resolve the actual Worker object so the delivery step below can
+        // branch on `.type` (embedded-agent vs PTY-backed).
+        const resolvedWorker = targetSession.workers.find((w) => w.id === resolvedWorkerId);
 
         // 3. Validate sender session (defense-in-depth against agents that pass
         //    a stale or hallucinated fromSessionId).
@@ -594,33 +598,80 @@ export function createMcpApp(deps: McpDependencies): Hono {
           resolver,
         });
 
-        // 5. PTY notification (best-effort -- message file is already written)
-        try {
-          const senderTitle = senderSession.title ?? fromSessionId;
+        // 5. Deliver the notification to the target worker.
+        const senderTitle = senderSession.title ?? fromSessionId;
 
-          const writeInput = (data: string) =>
-            sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data);
+        if (resolvedWorker?.type === 'embedded-agent') {
+          // Embedded branch: activate-on-delivery, then deliver the SAME
+          // notification template a PTY-backed worker would receive, via
+          // sendEmbeddedAgentUserMessage instead of a PTY write. Unlike the
+          // PTY branch below, this is a HARD failure -- no best-effort
+          // try/catch -- the tool call fails with a classified message
+          // rather than silently dropping the notification.
+          try {
+            await sessionManager.activateEmbeddedAgentWorker(toSessionId, resolvedWorkerId);
+          } catch (err) {
+            const message =
+              err instanceof EmbeddedAgentActivationError ? err.message : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
+            logger.warn(
+              { sessionId: toSessionId, workerId: resolvedWorkerId, err },
+              'Embedded-agent activation failed on send_session_message path',
+            );
+            return errorResult(`Failed to deliver message to embedded agent: ${message}`);
+          }
 
-          writePtyNotification({
-            kind: 'internal-message',
-            tag: 'internal:message',
-            fields: {
-              source: 'session',
-              from: fromSessionId,
-              summary: `Message from session ${senderTitle}`,
-              path: result.path,
-            },
-            intent: 'triage',
-            writeInput,
-          });
+          const notificationText =
+            buildPtyNotificationText({
+              kind: 'internal-message',
+              tag: 'internal:message',
+              fields: {
+                source: 'session',
+                from: fromSessionId,
+                summary: `Message from session ${senderTitle}`,
+                path: result.path,
+              },
+              intent: 'triage',
+            }) + buildReplyInstructions(fromSessionId);
 
-          // Append reply instructions so the receiving agent knows how to respond
-          writeInput(buildReplyInstructions(fromSessionId));
-        } catch (notifyErr) {
-          logger.warn(
-            { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
-            'PTY notification failed (message file was written successfully)',
+          const deliveryResult = await sessionManager.sendEmbeddedAgentUserMessage(
+            toSessionId,
+            resolvedWorkerId,
+            notificationText,
           );
+          if (!deliveryResult.ok) {
+            logger.warn(
+              { toSessionId, toWorkerId: resolvedWorkerId, code: deliveryResult.code },
+              'Embedded-agent message delivery failed on send_session_message path',
+            );
+            return errorResult(`Failed to deliver message to embedded agent: ${deliveryResult.error}`);
+          }
+        } else {
+          // PTY notification (best-effort -- message file is already written)
+          try {
+            const writeInput = (data: string) =>
+              sessionManager.writeWorkerInput(toSessionId, resolvedWorkerId, data);
+
+            writePtyNotification({
+              kind: 'internal-message',
+              tag: 'internal:message',
+              fields: {
+                source: 'session',
+                from: fromSessionId,
+                summary: `Message from session ${senderTitle}`,
+                path: result.path,
+              },
+              intent: 'triage',
+              writeInput,
+            });
+
+            // Append reply instructions so the receiving agent knows how to respond
+            writeInput(buildReplyInstructions(fromSessionId));
+          } catch (notifyErr) {
+            logger.warn(
+              { err: notifyErr, toSessionId, toWorkerId: resolvedWorkerId },
+              'PTY notification failed (message file was written successfully)',
+            );
+          }
         }
 
         return textResult({

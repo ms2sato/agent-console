@@ -16,8 +16,28 @@ import { NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { createLogger } from '../lib/logger.js';
 import { resolveSpawnUsername } from '../services/resolve-spawn-username.js';
+import {
+  EmbeddedAgentActivationError,
+  EmbeddedMessageDeliveryError,
+} from '../services/embedded-agent-worker-service.js';
+import type { WorkerMessage } from '@agent-console/shared';
 
 const logger = createLogger('api:workers');
+
+/**
+ * Client-visible fallback for an embedded-agent activation/delivery failure
+ * on this REST route whose message is NOT from the
+ * {@link EmbeddedAgentActivationError} / {@link EmbeddedMessageDeliveryError}
+ * marker allowlist. Mirrors `GENERIC_ACTIVATION_FAILURE_MESSAGE` in
+ * `websocket/routes.ts` and `GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE` in
+ * `mcp/mcp-server.ts` (the worker WebSocket open handler's and the MCP
+ * send_session_message/delegate_to_worktree tools' equivalent
+ * classification). Kept as a separate literal here rather than a shared
+ * export -- there are now 3 copies to keep in sync; a future consolidation
+ * of all three call sites' error classification is tracked as a follow-up.
+ */
+const GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE =
+  'Embedded-agent activation failed. Contact an administrator if this persists.';
 
 // Upload directory is per-uid under the OS temp directory so that:
 //   1. Different users on the same host (e.g. Model B service user `agentconsole`
@@ -265,7 +285,19 @@ const workers = new Hono<AppBindings>()
       savedPaths.push(filePath);
     }
 
-    const message = sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, savedPaths);
+    let message: WorkerMessage | null;
+    try {
+      message = await sessionManager.sendMessage(sessionId, null, validated.toWorkerId, validated.content, savedPaths);
+    } catch (err) {
+      // Clean up saved files since the message was not delivered
+      await Promise.allSettled(savedPaths.map((p) => unlink(p)));
+      const classified =
+        err instanceof EmbeddedAgentActivationError || err instanceof EmbeddedMessageDeliveryError
+          ? err.message
+          : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
+      logger.warn({ err, sessionId, toWorkerId: validated.toWorkerId }, 'Embedded-agent message delivery failed');
+      throw new ValidationError(classified);
+    }
     if (!message) {
       // Clean up saved files since the message was not delivered
       await Promise.allSettled(savedPaths.map((p) => unlink(p)));

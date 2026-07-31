@@ -130,6 +130,24 @@ export type WritePtyNotificationParams =
   | InternalConditionalWakeupPtyNotification;
 
 /**
+ * Build the structured notification text (`\n[tag] key1=val1 key2=val2
+ * intent=...`) without writing it anywhere. Pure string-building extracted
+ * from {@link writePtyNotification} so non-PTY delivery channels (e.g. an
+ * embedded-agent worker's sendUserMessage) can reuse the exact same
+ * notification template instead of duplicating it.
+ */
+export function buildPtyNotificationText(params: Omit<WritePtyNotificationParams, 'writeInput'>): string {
+  const { tag, fields, intent } = params;
+  const allFields: Record<string, string> = { timestamp: new Date().toISOString(), ...fields, intent };
+
+  const fieldString = Object.entries(allFields)
+    .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
+    .join(' ');
+
+  return `\n[${tag}] ${fieldString}`;
+}
+
+/**
  * Build and send a structured notification to a PTY process.
  *
  * Writes `\n[tag] key1=val1 key2=val2 intent=...` immediately, then sends
@@ -139,14 +157,8 @@ export type WritePtyNotificationParams =
  * @returns The notification string that was written (without the trailing `\r`)
  */
 export function writePtyNotification(params: WritePtyNotificationParams): string {
-  const { tag, fields, writeInput, intent } = params;
-  const allFields: Record<string, string> = { timestamp: new Date().toISOString(), ...fields, intent };
-
-  const fieldString = Object.entries(allFields)
-    .map(([key, value]) => `${key}=${formatFieldValue(value)}`)
-    .join(' ');
-
-  const notification = `\n[${tag}] ${fieldString}`;
+  const { writeInput } = params;
+  const notification = buildPtyNotificationText(params);
   writeInput(notification);
   // Send Enter keystroke separately after a delay so TUI agents can process the text input first.
   // The PTY may have been disposed by the time the callback fires, so guard against errors.

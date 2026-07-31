@@ -169,6 +169,26 @@ export class EmbeddedAgentActivationError extends Error {
 }
 
 /**
+ * Marker error wrapping a {@link SendUserMessageResult}'s `{ ok: false }`
+ * case. Thrown by `SessionManager.sendMessage`'s embedded-agent branch so
+ * REST/MCP callers can distinguish "safe, curated delivery-result message,
+ * forward verbatim" (this class) from "unclassified activation error, needs
+ * generic fallback" (a plain `Error`, e.g. from
+ * `EmbeddedAgentWorkerService.activate` failing for a non-
+ * `EmbeddedAgentActivationError` reason) -- both would otherwise be
+ * indistinguishable plain `Error` instances at the caller.
+ */
+export class EmbeddedMessageDeliveryError extends Error {
+  constructor(
+    message: string,
+    public readonly code: 'TURN_IN_PROGRESS' | 'NOT_ACTIVATED' | 'WRITE_FAILED',
+  ) {
+    super(message);
+    this.name = 'EmbeddedMessageDeliveryError';
+  }
+}
+
+/**
  * Result of {@link EmbeddedAgentWorkerService.sendUserMessage}. `code` is the
  * machine-checkable discriminant callers should switch on; `error` is the
  * human-readable string for logging only (its exact wording is NOT a
