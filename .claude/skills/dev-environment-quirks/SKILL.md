@@ -77,6 +77,25 @@ Sequence the owner usually wants after applying a server-side fix:
 3. Re-launch with the appropriate `REPO_ROOT`: `REPO_ROOT=/path/to/wt-XXX bash scripts/dev-multiuser.sh`.
 4. Wait for both ports to listen again, then reload the browser tab at `localhost:5173`. Vite HMR may have kept the page alive across the gap, but the backend has restarted, so any open WebSocket reconnects via the existing scrollback-restore path.
 
+## Terminology: "dev server" means `bun run dev`
+
+When the owner says "dev server" (kaihatsu server) in conversation, it means the **`bun run dev` instance** (or the `dev.sh` / `dev-multiuser.sh` scripts that wrap it) — NOT the long-running production/systemd-managed instance. The production instance has its own name ("production" / the port-8080 instance) and its own restart gate (owner approval). Confusing the two leads to verifying changes against the wrong process, or worse, proposing restarts of the instance that hosts live sessions. When in doubt about which instance a conversation refers to, ask — or identify it empirically per the next section. (Lesson: Sprint 2026-08-01 — the Orchestrator read "dev server" as the systemd instance and initially verified against the wrong process.)
+
+## Identify what code a running server is actually executing
+
+Do not assume a running server reflects the latest code — measure it. A server keeps executing whatever was loaded at start time; a checkout updated after the process started changes nothing until restart (and for `dev-multiuser.sh`, until the rsync re-runs; for bundled deploys, until the bundle is rebuilt).
+
+Mechanical check:
+
+```bash
+# When was the server process started?
+ps -o lstart=,cmd= -p <server-pid>
+# When did the code it serves last change?
+git -C <serving-checkout> log -1 --format='%ci %h %s'
+```
+
+If the process start time predates the commit time, the server is running old code — restart (or re-rsync / re-bundle) before drawing any verification conclusion from its behavior. (Lesson: Sprint 2026-08-01 — merged PRs #1237/#1241 were believed E2E-verified on the shared dev server, which was in fact running a binary from before the merges; the gap sat undetected for two days. See `.claude/rules/pre-pr-completeness.md` Q13 "Retroactive application".)
+
 ## Cross-references
 
 - `scripts/dev.sh` and `scripts/dev-multiuser.sh` — canonical scripts (the prologues are required reading).
