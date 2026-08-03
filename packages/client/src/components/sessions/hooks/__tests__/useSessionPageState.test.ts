@@ -71,7 +71,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
 })
 
 // Install fetch mock at module level (consistent with useTabManagement.test.ts)
-globalThis.fetch = mockFetch as unknown as typeof fetch
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch
 
 afterAll(() => {
   globalThis.fetch = originalFetch

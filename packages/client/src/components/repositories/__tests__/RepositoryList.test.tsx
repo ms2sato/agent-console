@@ -8,7 +8,7 @@ import type { Repository } from '@agent-console/shared';
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
 const mockFetch = mock((_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response()));
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 afterAll(() => {
   globalThis.fetch = originalFetch;

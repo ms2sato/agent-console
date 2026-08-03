@@ -58,7 +58,7 @@ function installScriptedFetch(opts: {
     });
   });
 
-  globalThis.fetch = scripted as unknown as typeof fetch;
+  globalThis.fetch = Object.assign(scripted, { preconnect: () => {} }) as typeof fetch;
   return { calls, scripted };
 }
 

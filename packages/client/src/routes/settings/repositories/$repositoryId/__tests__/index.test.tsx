@@ -89,7 +89,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   throw new Error(`Unhandled fetch request in RepositoryDetailView test: ${method} ${url}`);
 });
 
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 afterAll(() => {
   globalThis.fetch = originalFetch;

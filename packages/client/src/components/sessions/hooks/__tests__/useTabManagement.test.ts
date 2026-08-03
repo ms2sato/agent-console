@@ -73,7 +73,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
   return new Response('Not Found', { status: 404 });
 });
 
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 afterAll(() => {
   globalThis.fetch = originalFetch;

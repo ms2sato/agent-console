@@ -34,7 +34,7 @@ const mockFetch = mock((_input: RequestInfo | URL, _init?: RequestInit) =>
     headers: { 'Content-Type': 'application/json' },
   }))
 );
-globalThis.fetch = mockFetch as unknown as typeof fetch;
+globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
 
 afterAll(() => {
   globalThis.fetch = originalFetch;

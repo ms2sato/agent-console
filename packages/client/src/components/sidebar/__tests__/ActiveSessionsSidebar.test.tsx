@@ -1059,16 +1059,19 @@ describe('ActiveSessionsSidebar', () => {
 
     beforeEach(() => {
       restartAllResponse = { restarted: 0, failed: 0, results: [] };
-      globalThis.fetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
-        const url = input instanceof Request ? input.url : String(input);
-        if (url.includes('/restart-all-agents')) {
-          return new Response(JSON.stringify(restartAllResponse), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-        return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
-      }) as unknown as typeof fetch;
+      globalThis.fetch = Object.assign(
+        mock(async (input: RequestInfo | URL): Promise<Response> => {
+          const url = input instanceof Request ? input.url : String(input);
+          if (url.includes('/restart-all-agents')) {
+            return new Response(JSON.stringify(restartAllResponse), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+        }),
+        { preconnect: () => {} },
+      ) as typeof fetch;
     });
 
     afterEach(() => {
