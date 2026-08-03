@@ -9,7 +9,8 @@ import type {
 import type { UseWorktreeCreationTasksReturn } from '../useWorktreeCreationTasks';
 import type { UseWorktreeDeletionTasksReturn } from '../useWorktreeDeletionTasks';
 import type { UseSessionStopTasksReturn, SessionStopTask } from '../useSessionStopTasks';
-import { useSessionSideEffects } from '../useSessionSideEffects';
+import { useSessionSideEffects, worktreeInvalidationKeyFor } from '../useSessionSideEffects';
+import { worktreeKeys } from '../../lib/query-keys';
 import { clearDraftsForSession, _getDraftsMap } from '../useDraftMessage';
 import { _reset as resetWebSocket } from '../../lib/app-websocket';
 import { MockWebSocket, installMockWebSocket } from '../../test/mock-websocket';
@@ -298,5 +299,187 @@ describe('useSessionSideEffects - session stop task removal (Issue #1247)', () =
     });
 
     expect(sessionStopTasks.removeTask).toHaveBeenCalledWith('session-1');
+  });
+});
+
+/**
+ * Tests for Issue #1266 -- a worktree-type session-created event must
+ * invalidate that repository's worktree queries so the dashboard repository
+ * card picks up worktrees created outside the REST form flow (e.g. MCP
+ * delegate_to_worktree, which never fires worktree-creation-completed).
+ */
+describe('useSessionSideEffects - worktree query invalidation on session-created (Issue #1266)', () => {
+  let restoreWebSocket: () => void;
+  let originalLocation: Location;
+
+  beforeEach(() => {
+    originalLocation = window.location;
+    restoreWebSocket = installMockWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+    });
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+    });
+  });
+
+  function worktreeSession(overrides: Partial<Session> = {}): Session {
+    return createMockSession({
+      type: 'worktree',
+      repositoryId: 'repo-1',
+      repositoryName: 'repo-one',
+      worktreeId: 'feature-branch',
+      isMainWorktree: false,
+      isShared: false,
+      recoveryState: 'healthy',
+      activationState: 'running',
+      ...overrides,
+    } as Partial<Session>);
+  }
+
+  it('invalidates the repository worktree query on a worktree session-created event', () => {
+    const handleSessionCreated = mock(() => {});
+    const options = createDefaultOptions({ handleSessionCreated });
+    const { invalidateSpy } = renderWithQueryClient(options);
+
+    const session = worktreeSession({ id: 'session-wt-1' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-created', session }));
+    });
+
+    expect(handleSessionCreated).toHaveBeenCalledWith(session);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: worktreeKeys.byRepository('repo-1') });
+  });
+
+  it('does NOT invalidate worktree queries on a quick session-created event', () => {
+    const handleSessionCreated = mock(() => {});
+    const options = createDefaultOptions({ handleSessionCreated });
+    const { invalidateSpy } = renderWithQueryClient(options);
+
+    const session = createMockSession({ id: 'session-quick-1', type: 'quick', isShared: false, recoveryState: 'healthy', activationState: 'running' } as Partial<Session>);
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-created', session }));
+    });
+
+    expect(handleSessionCreated).toHaveBeenCalledWith(session);
+    const worktreeInvalidations = invalidateSpy.mock.calls.filter(
+      ([arg]) => Array.isArray((arg as { queryKey?: unknown[] })?.queryKey) && (arg as { queryKey: unknown[] }).queryKey[0] === 'worktrees',
+    );
+    expect(worktreeInvalidations).toHaveLength(0);
+  });
+
+  it('a malformed worktree session-created message (missing repositoryId) is rejected at the wire and never invalidates or throws', () => {
+    // repositoryId is required by WorktreeSessionSchema, so this shape cannot
+    // legitimately arrive over the wire -- it is rejected by app-websocket's
+    // schema parse before onSessionCreated is ever invoked. This test proves
+    // the AC's "no invalidation, no throw" boundary holds for the full pipeline;
+    // the wrapper's own defensive guard (for callers other than the wire) is
+    // covered directly by the worktreeInvalidationKeyFor unit tests below.
+    const handleSessionCreated = mock(() => {});
+    const options = createDefaultOptions({ handleSessionCreated });
+    const { invalidateSpy } = renderWithQueryClient(options);
+
+    const session = worktreeSession({ id: 'session-wt-2', repositoryId: undefined } as Partial<Session>);
+    const ws = MockWebSocket.getLastInstance();
+    expect(() => {
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(JSON.stringify({ type: 'session-created', session }));
+      });
+    }).not.toThrow();
+
+    expect(handleSessionCreated).not.toHaveBeenCalled();
+    const worktreeInvalidations = invalidateSpy.mock.calls.filter(
+      ([arg]) => Array.isArray((arg as { queryKey?: unknown[] })?.queryKey) && (arg as { queryKey: unknown[] }).queryKey[0] === 'worktrees',
+    );
+    expect(worktreeInvalidations).toHaveLength(0);
+  });
+
+  it('invalidates independently for two worktree sessions created in rapid succession', () => {
+    const handleSessionCreated = mock(() => {});
+    const options = createDefaultOptions({ handleSessionCreated });
+    const { invalidateSpy } = renderWithQueryClient(options);
+
+    const sessionA = worktreeSession({ id: 'session-wt-a', repositoryId: 'repo-a' });
+    const sessionB = worktreeSession({ id: 'session-wt-b', repositoryId: 'repo-b' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+      ws?.simulateMessage(JSON.stringify({ type: 'session-created', session: sessionA }));
+      ws?.simulateMessage(JSON.stringify({ type: 'session-created', session: sessionB }));
+    });
+
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: worktreeKeys.byRepository('repo-a') });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: worktreeKeys.byRepository('repo-b') });
+  });
+});
+
+describe('worktreeInvalidationKeyFor (Issue #1266)', () => {
+  it('returns the repository worktree key for a worktree session with a repositoryId', () => {
+    const session = createMockSession({
+      type: 'worktree',
+      repositoryId: 'repo-1',
+      repositoryName: 'repo-one',
+      worktreeId: 'feature-branch',
+      isMainWorktree: false,
+      isShared: false,
+      recoveryState: 'healthy',
+      activationState: 'running',
+    } as Partial<Session>);
+
+    expect(worktreeInvalidationKeyFor(session)).toEqual(worktreeKeys.byRepository('repo-1'));
+  });
+
+  it('returns null and does not throw for a quick session', () => {
+    const session = createMockSession({ type: 'quick', isShared: false, recoveryState: 'healthy', activationState: 'running' } as Partial<Session>);
+
+    expect(() => worktreeInvalidationKeyFor(session)).not.toThrow();
+    expect(worktreeInvalidationKeyFor(session)).toBeNull();
+  });
+
+  it('returns null and does not throw for a worktree session without a repositoryId', () => {
+    // Defensive boundary: repositoryId is required by the WorktreeSession type
+    // and by the wire schema, but the guard must stay safe against a runtime
+    // value (e.g. an unsafe cast) that omits it.
+    const session = createMockSession({
+      type: 'worktree',
+      repositoryId: undefined,
+      repositoryName: 'repo-one',
+      worktreeId: 'feature-branch',
+      isMainWorktree: false,
+      isShared: false,
+      recoveryState: 'healthy',
+      activationState: 'running',
+    } as Partial<Session>);
+
+    expect(() => worktreeInvalidationKeyFor(session)).not.toThrow();
+    expect(worktreeInvalidationKeyFor(session)).toBeNull();
+  });
+
+  it('returns null and does not throw for a worktree session with an empty-string repositoryId', () => {
+    const session = createMockSession({
+      type: 'worktree',
+      repositoryId: '',
+      repositoryName: 'repo-one',
+      worktreeId: 'feature-branch',
+      isMainWorktree: false,
+      isShared: false,
+      recoveryState: 'healthy',
+      activationState: 'running',
+    } as Partial<Session>);
+
+    expect(() => worktreeInvalidationKeyFor(session)).not.toThrow();
+    expect(worktreeInvalidationKeyFor(session)).toBeNull();
   });
 });
