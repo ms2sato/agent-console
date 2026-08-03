@@ -152,6 +152,16 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     The mechanical counterpart is `acceptance-check.js` Q12 (Shipping-Path Verification Match), which re-asks the same questions at audit time; this rule text is the issuance-side duty and the rationale layer.
 
+    **When a verification is blocked by a credential you cannot legitimately obtain.** Occasionally the mandated verification needs a credential that is not available to you and cannot be made available cheaply (an OS password, a third-party account, a hardware token). Substituting the credential-issuance step is permitted, but only as a **recorded** decision meeting all three of:
+
+    1. **Upstream and outside.** The mechanism you substitute sits upstream of, and outside, the chain under test — replacing it changes how you *arrive* at the thing being verified, never the thing itself. If the substituted mechanism is part of what the AC claims to verify, this is not available to you.
+    2. **Genuinely provisioned.** The artifact your substitute produces is created the way production creates it, through real code paths, from real state — not hand-assembled to look right. (Worked example: a session JWT minted with the same signing call and payload shape as the login endpoint, whose subject came from a real `upsertByOsUid()` against the instance's own database, rather than a hand-written token.)
+    3. **Recorded as a proxy, next to the result.** The evidence states what was substituted, why it is outside the chain under test, and what remained production-real — in the same place as the result, not a footnote. An unrecorded proxy is the failure mode this question exists to catch; a recorded one is simply an honest verification.
+
+    Missing any of the three makes it a **bypass**, not a workaround: stubbing the mechanism under test, hand-writing the artifact, or relaxing the setting whose behavior is being verified are never permitted, however convenient. When in doubt, consult before improvising — the consultation is cheap and the wrong substitution invalidates the whole verification silently.
+
+    (Lesson: Sprint 2026-08-03, Issue #1004 item 5 — the mandated check needed a real OS login password that the delegate had no legitimate way to obtain. Rather than improvise, they held and consulted; the JWT-mint substitution was approved against these three conditions, and the resulting evidence recorded it alongside the result. The same task's PAM-substitution *also* demonstrated the boundary: it was acceptable precisely because PAM sits outside the MCP caller-identity chain the item verifies.)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
