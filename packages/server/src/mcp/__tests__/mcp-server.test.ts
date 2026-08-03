@@ -257,12 +257,13 @@ const ptyFactory = createMockPtyFactory(30000);
  * Initialize MCP session by sending the initialize request and notifications/initialized.
  * Returns the Mcp-Session-Id header value (may be empty if sessions are not managed).
  */
-async function initializeMcp(app: Hono): Promise<string> {
+async function initializeMcp(app: Hono, extraHeaders?: Record<string, string>): Promise<string> {
   const res = await app.request('/mcp', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
+      ...extraHeaders,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -287,6 +288,7 @@ async function initializeMcp(app: Hono): Promise<string> {
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
       'Mcp-Session-Id': sessionId,
+      ...extraHeaders,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -340,6 +342,44 @@ function parseToolResult(response: Awaited<ReturnType<typeof callTool>>): unknow
   return JSON.parse(text);
 }
 
+/**
+ * Call an MCP tool expecting a TRANSPORT-level rejection (Issue #1269): a
+ * caller with no verified identity under `AGENT_CONSOLE_MCP_AUTH=enforce`
+ * never reaches the tool body at all -- `createMcpAuthMiddleware` rejects
+ * the request with an HTTP 401 and a plain `{ error: string }` body before
+ * `transport.handleRequest` (and therefore any `checkCallerOwnsSession`
+ * call site) ever runs. This is a different response shape from `callTool`,
+ * which asserts HTTP 200 and expects a JSON-RPC tool-result envelope --
+ * appropriate for the "presented but rejected inside the tool" scenarios,
+ * not for "rejected before the tool was ever reached".
+ */
+async function callToolExpectTransportRejection(
+  app: Hono,
+  sessionId: string,
+  name: string,
+  args: Record<string, unknown>,
+  id: number = 2,
+  extraHeaders?: Record<string, string>,
+): Promise<{ status: number; error: string }> {
+  const res = await app.request('/mcp', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json, text/event-stream',
+      'Mcp-Session-Id': sessionId,
+      ...extraHeaders,
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name, arguments: args },
+      id,
+    }),
+  });
+  const body = (await res.json()) as { error: string };
+  return { status: res.status, error: body.error };
+}
+
 // ---------- Tests ----------
 
 describe('MCP Server Tools', () => {
@@ -391,7 +431,27 @@ describe('MCP Server Tools', () => {
     const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
     app = new Hono();
     app.route('', mcpApp);
-    mcpSessionId = await initializeMcp(app);
+
+    // Issue #1269: under `enforce`, the transport-level gate now rejects the
+    // handshake itself when tokenless (it runs for EVERY /mcp request, not
+    // just tool calls). Mint a throwaway "test harness" token purely to get
+    // this helper's `initialize` / `notifications/initialized` calls past
+    // that gate. This is unrelated to -- and does not interfere with -- the
+    // per-test tool-call token scenarios below: `mcpCallerStorage` resolves
+    // the caller fresh from the Authorization header on EACH HTTP request,
+    // not once per MCP session, so a tool call that presents no token (or a
+    // different token) still exercises exactly the auth path it intends to.
+    let initializeHeaders: Record<string, string> | undefined;
+    if (authOpts?.mcpAuthMode === 'enforce' && authOpts.mcpTokenRegistry) {
+      const handshakeToken = authOpts.mcpTokenRegistry.mint({
+        sessionId: 'test-harness-handshake-session',
+        workerId: 'test-harness-handshake-worker',
+        userId: 'test-harness-handshake-user',
+      });
+      initializeHeaders = { Authorization: `Bearer ${handshakeToken}` };
+    }
+
+    mcpSessionId = await initializeMcp(app, initializeHeaders);
   }
 
   beforeEach(async () => {
@@ -4607,22 +4667,22 @@ describe('MCP Server Tools', () => {
 
     const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
 
-    it('enforce + no token rejects create_conditional_wakeup', async () => {
+    it('enforce + no token rejects create_conditional_wakeup (Issue #1269: rejected at the transport gate, before the tool -- and its checkCallerOwnsSession call -- is ever reached)', async () => {
       const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
       const registry = new McpTokenRegistry();
       await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
 
-      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'create_conditional_wakeup', {
         sessionId,
         workerId,
         intervalSeconds: 60,
         conditionScript: 'true',
         onTrueMessage: 'x',
       }, nextId++);
-      const data = parseToolResult(response) as { error: string };
 
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('MCP authentication required');
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
+      expect(response.error).toContain('AGENT_CONSOLE_MCP_AUTH=enforce');
     });
 
     it('enforce + valid matching token succeeds', async () => {
@@ -4644,22 +4704,21 @@ describe('MCP Server Tools', () => {
       expect(data.wakeupId).toBeDefined();
     });
 
-    it('enforce + unknown token rejects (unverified token is tokenless)', async () => {
+    it('enforce + unknown token rejects (unverified token is tokenless, rejected at the transport gate)', async () => {
       const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
       const registry = new McpTokenRegistry();
       await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
 
-      const response = await callTool(app, mcpSessionId, 'create_conditional_wakeup', {
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'create_conditional_wakeup', {
         sessionId,
         workerId,
         intervalSeconds: 60,
         conditionScript: 'true',
         onTrueMessage: 'x',
       }, nextId++, bearer('unknown-token-not-in-registry'));
-      const data = parseToolResult(response) as { error: string };
 
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('MCP authentication required');
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
     });
 
     it('off + mismatched token rejects (presented-but-mismatched is always an error)', async () => {
@@ -4717,22 +4776,21 @@ describe('MCP Server Tools', () => {
       expect(data.wakeupId).toBeDefined();
     });
 
-    it('run_process: enforce + no token rejects', async () => {
+    it('run_process: enforce + no token rejects (at the transport gate)', async () => {
       const { sessionId, workerId } = await createSessionForOwner(OWNER_ID);
       await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
 
-      const response = await callTool(app, mcpSessionId, 'run_process', {
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'run_process', {
         command: 'echo hi',
         sessionId,
         workerId,
       }, nextId++);
-      const data = parseToolResult(response) as { error: string };
 
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('MCP authentication required');
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
     });
 
-    it('remove_worktree: enforce + no token rejects', async () => {
+    it('remove_worktree: enforce + no token rejects (at the transport gate)', async () => {
       await registerTestRepo();
       const session = await sessionManager.createSession(
         {
@@ -4746,29 +4804,27 @@ describe('MCP Server Tools', () => {
       );
       await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
 
-      const response = await callTool(app, mcpSessionId, 'remove_worktree', {
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'remove_worktree', {
         sessionId: session.id,
       }, nextId++);
-      const data = parseToolResult(response) as { error: string };
 
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('MCP authentication required');
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
     });
 
-    it('send_session_message: enforce + no token rejects', async () => {
+    it('send_session_message: enforce + no token rejects (at the transport gate)', async () => {
       const target = await createSessionForOwner(OWNER_ID);
       const sender = await createSessionForOwner(OWNER_ID);
       await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
 
-      const response = await callTool(app, mcpSessionId, 'send_session_message', {
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'send_session_message', {
         toSessionId: target.sessionId,
         content: 'hello',
         fromSessionId: sender.sessionId,
       }, nextId++);
-      const data = parseToolResult(response) as { error: string };
 
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('MCP authentication required');
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
     });
 
     it('send_session_message: mismatched token rejects (fromSessionId owned by another user)', async () => {
@@ -4793,18 +4849,17 @@ describe('MCP Server Tools', () => {
       expect(data.error).toContain('identity mismatch');
     });
 
-    it('delegate_to_worktree: enforce + no token without parentSessionId rejects', async () => {
+    it('delegate_to_worktree: enforce + no token without parentSessionId rejects (at the transport gate)', async () => {
       await registerTestRepo();
       await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
 
-      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'repo-1',
         prompt: 'Do something',
       }, nextId++);
-      const data = parseToolResult(response) as { error: string };
 
-      expect(response.result?.isError).toBe(true);
-      expect(data.error).toContain('MCP authentication required');
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
     });
 
     it('delegate_to_worktree: enforce + matching token + parentSessionId proceeds past auth', async () => {
@@ -4830,6 +4885,214 @@ describe('MCP Server Tools', () => {
       // not set up here), but it must NOT fail at the auth gate.
       expect(data.error ?? '').not.toContain('MCP authentication required');
       expect(data.error ?? '').not.toContain('identity mismatch');
+    });
+  });
+
+  // ===========================================================================
+  // Transport-level MCP authN gate (Issue #1269)
+  //
+  // Ruling 1: one middleware in front of `mcpApp`, applied to EVERY /mcp
+  // request before any tool dispatch. Unlike the "MCP caller identity
+  // wiring" tests above (which exercise the 5 tools that already called
+  // `checkCallerOwnsSession` pre-#1269), these tests specifically exercise
+  // tools that were structurally UNREACHABLE by any auth mechanism before
+  // this gate existed -- `list_sessions` (read) and `close_session`
+  // (mutating) are two of the 17 tools the Issue enumerated as ungated.
+  // ===========================================================================
+
+  describe('Transport-level MCP authN gate (Issue #1269)', () => {
+    it('enforce + no token rejects a previously-ungated read-only tool (list_sessions)', async () => {
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'list_sessions', {}, nextId++);
+
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
+      expect(response.error).toContain('AGENT_CONSOLE_MCP_AUTH=enforce');
+    });
+
+    it('enforce + no token rejects a previously-ungated MUTATING tool (close_session)', async () => {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/dir', agentId: 'claude-code' },
+        { createdBy: 'owner-uuid-close' },
+      );
+      const sessionId = session.id;
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callToolExpectTransportRejection(app, mcpSessionId, 'close_session', {
+        sessionId,
+      }, nextId++);
+
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
+    });
+
+    it('warn + no token still allows a previously-ungated tool (list_sessions) -- regression: today\'s default behavior preserved', async () => {
+      await remountMcpApp({ mcpAuthMode: 'warn', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as { sessions: unknown[] };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.sessions).toBeDefined();
+    });
+
+    it('off + no token allows a previously-ungated tool (list_sessions) -- proceeds silently', async () => {
+      await remountMcpApp({ mcpAuthMode: 'off', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      const data = parseToolResult(response) as { sessions: unknown[] };
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(data.sessions).toBeDefined();
+    });
+
+    // No-localhost-exception guard. This test's purpose is to make a future
+    // "but the request came from localhost" patch fail: the transport gate
+    // resolves the caller ONLY from the Authorization bearer token; it has
+    // no source-address / forwarded-header input to key a bypass off of.
+    // Spoofing a loopback-shaped signal upstream must have zero effect.
+    it('enforce + no token rejects even when the request claims a loopback origin via X-Forwarded-For (no localhost bypass exists)', async () => {
+      await remountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: new McpTokenRegistry() });
+
+      const response = await callToolExpectTransportRejection(
+        app,
+        mcpSessionId,
+        'list_sessions',
+        {},
+        nextId++,
+        { 'X-Forwarded-For': '127.0.0.1' },
+      );
+
+      expect(response.status).toBe(401);
+      expect(response.error).toContain('MCP authentication required');
+    });
+
+    // Real client flow (AC: "MCP handshake under enforce"). A broken
+    // handshake silences every agent, so this traverses initialize ->
+    // notifications/initialized -> tools/list -> tools/call, all with the
+    // SAME real bearer token presented from the very first request, through
+    // the real `createMcpApp(...)`-produced Hono app via `app.request()`.
+    it('MCP handshake under enforce: a token presented from the FIRST request (initialize) completes end-to-end through tools/list and tools/call', async () => {
+      const registry = new McpTokenRegistry();
+      const token = registry.mint({
+        sessionId: 'handshake-session',
+        workerId: 'handshake-worker',
+        userId: 'handshake-user',
+      });
+      const agentDirectory = new AgentDirectory({ terminal: agentManager, embedded: testEmbeddedAgentManagerStub });
+      const mcpApp = createMcpApp({
+        sessionManager,
+        repositoryManager,
+        agentManager,
+        agentDirectory,
+        timerManager,
+        conditionalWakeupManager,
+        interactiveProcessManager,
+        worktreeService,
+        annotationService,
+        interSessionMessageService: new InterSessionMessageService(),
+        suggestSessionMetadata: mockSuggestSessionMetadata,
+        createWorktreeWithSession,
+        deleteWorktree,
+        userRepository,
+        broadcastToApp: () => {},
+        findOpenPullRequest: mockFindOpenPullRequest,
+        fetchPullRequestUrl: mockFetchPullRequestUrl,
+        mcpAuthMode: 'enforce',
+        mcpTokenRegistry: registry,
+      });
+      const handshakeApp = new Hono();
+      handshakeApp.route('', mcpApp);
+      const authHeaders = { Authorization: `Bearer ${token}` };
+
+      // 1. initialize -- WITH the token from the first request.
+      const initRes = await handshakeApp.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          ...authHeaders,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'initialize',
+          params: {
+            protocolVersion: '2025-03-26',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0.0' },
+          },
+          id: 1,
+        }),
+      });
+      expect(initRes.status).toBe(200);
+      const handshakeSessionId = initRes.headers.get('mcp-session-id') ?? '';
+
+      // 2. notifications/initialized -- WITH the token.
+      const initializedRes = await handshakeApp.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': handshakeSessionId,
+          ...authHeaders,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      });
+      // Notifications return 202 Accepted (no JSON-RPC response body expected);
+      // the load-bearing assertion is that this request was NOT rejected (401).
+      expect(initializedRes.status).not.toBe(401);
+
+      // 3. tools/list -- WITH the token.
+      const listRes = await handshakeApp.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': handshakeSessionId,
+          ...authHeaders,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 2 }),
+      });
+      expect(listRes.status).toBe(200);
+      const listBody = (await listRes.json()) as { result?: { tools?: Array<{ name: string }> } };
+      expect(listBody.result?.tools?.some((t) => t.name === 'list_sessions')).toBe(true);
+
+      // 4. tools/call (list_sessions) -- WITH the token.
+      const callRes = await handshakeApp.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': handshakeSessionId,
+          ...authHeaders,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'tools/call',
+          params: { name: 'list_sessions', arguments: {} },
+          id: 3,
+        }),
+      });
+      expect(callRes.status).toBe(200);
+      const callBody = (await callRes.json()) as {
+        result?: { content: Array<{ type: string; text: string }>; isError?: boolean };
+      };
+      expect(callBody.result?.isError).toBeUndefined();
+    });
+
+    // Single-user regression (AC): a full tokenless call sequence succeeds
+    // under the effective `warn` default (AUTH_MODE=none resolves
+    // AGENT_CONSOLE_MCP_AUTH to `warn` via resolveMcpAuthMode) -- no token
+    // required anywhere in the flow, matching today's behavior exactly.
+    it('single-user regression: a full tokenless call sequence succeeds under the default warn mode (no mcpAuthMode override, mirrors AUTH_MODE=none)', async () => {
+      await remountMcpApp(); // no authOpts: mcpAuthMode defaults via resolveMcpAuthMode(undefined, serverConfig.AUTH_MODE)
+
+      const listResponse = await callTool(app, mcpSessionId, 'list_sessions', {}, nextId++);
+      expect(listResponse.result?.isError).toBeUndefined();
+
+      const agentsResponse = await callTool(app, mcpSessionId, 'list_agents', {}, nextId++);
+      expect(agentsResponse.result?.isError).toBeUndefined();
     });
   });
 });

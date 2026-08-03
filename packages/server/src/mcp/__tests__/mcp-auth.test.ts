@@ -4,6 +4,7 @@ import {
   resolveMcpAuthMode,
   resolveCallerFromAuthHeader,
   checkCallerOwnsSession,
+  evaluateMcpAuthGate,
   type McpCallerIdentity,
   type McpAuthLogger,
 } from '../mcp-auth.js';
@@ -85,8 +86,8 @@ describe('McpTokenRegistry', () => {
 });
 
 describe('resolveMcpAuthMode', () => {
-  it('passes explicit values through', () => {
-    for (const mode of ['off', 'warn', 'enforce'] as const) {
+  it('passes explicit off/warn through regardless of AUTH_MODE', () => {
+    for (const mode of ['off', 'warn'] as const) {
       expect(resolveMcpAuthMode(mode)).toBe(mode);
     }
   });
@@ -127,6 +128,103 @@ describe('resolveMcpAuthMode', () => {
     expect(() => resolveMcpAuthMode('yes')).toThrow(
       /Invalid AGENT_CONSOLE_MCP_AUTH/,
     );
+  });
+
+  // Ruling 3 (Issue #1269, binding clarification): the contradiction check
+  // is scoped to an EXPLICITLY-set AGENT_CONSOLE_MCP_AUTH=enforce only. It
+  // must NOT fire for a value arrived at by default resolution (empty/unset),
+  // otherwise a future default flip to `enforce` (#1107) would brick every
+  // single-user deployment at startup.
+  describe('Ruling 3: enforce + non-multi-user is a configuration error', () => {
+    it('case (a): explicit enforce + non-multi-user AUTH_MODE -> throws naming both variables', () => {
+      expect(() => resolveMcpAuthMode('enforce', 'none')).toThrow(
+        /AGENT_CONSOLE_MCP_AUTH.*enforce.*AUTH_MODE|AUTH_MODE.*AGENT_CONSOLE_MCP_AUTH/s,
+      );
+      expect(() => resolveMcpAuthMode('enforce', 'none')).toThrow(/AGENT_CONSOLE_MCP_AUTH/);
+      expect(() => resolveMcpAuthMode('enforce', 'none')).toThrow(/AUTH_MODE/);
+    });
+
+    it('case (a): explicit enforce + undefined AUTH_MODE -> throws (undefined is not multi-user)', () => {
+      expect(() => resolveMcpAuthMode('enforce', undefined)).toThrow(/AUTH_MODE/);
+    });
+
+    it('case (b): explicit enforce + multi-user AUTH_MODE -> accepted', () => {
+      expect(resolveMcpAuthMode('enforce', 'multi-user')).toBe('enforce');
+    });
+
+    it('case (c): DEFAULTED value (unset) + non-multi-user AUTH_MODE -> accepted as warn, no error', () => {
+      expect(() => resolveMcpAuthMode(undefined, 'none')).not.toThrow();
+      expect(resolveMcpAuthMode(undefined, 'none')).toBe('warn');
+    });
+
+    it('case (c): DEFAULTED value (empty string) + non-multi-user AUTH_MODE -> accepted as warn, no error', () => {
+      expect(() => resolveMcpAuthMode('', 'none')).not.toThrow();
+      expect(resolveMcpAuthMode('', 'none')).toBe('warn');
+    });
+
+    it('case (c): DEFAULTED value (whitespace-only) + non-multi-user AUTH_MODE -> accepted as warn, no error', () => {
+      expect(() => resolveMcpAuthMode('  ', 'none')).not.toThrow();
+      expect(resolveMcpAuthMode('  ', 'none')).toBe('warn');
+    });
+
+    it('explicit off/warn + non-multi-user AUTH_MODE -> accepted (contradiction check is enforce-only)', () => {
+      expect(resolveMcpAuthMode('off', 'none')).toBe('off');
+      expect(resolveMcpAuthMode('warn', 'none')).toBe('warn');
+    });
+  });
+});
+
+describe('evaluateMcpAuthGate (transport-level authN gate, Issue #1269)', () => {
+  it('caller present -> allowed regardless of mode, no warn', () => {
+    for (const mode of ['off', 'warn', 'enforce'] as const) {
+      const { logger, calls } = makeRecordingLogger();
+      const result = evaluateMcpAuthGate(identityA, mode, { logger });
+      expect(result).toEqual({ allowed: true, caller: identityA });
+      expect(calls).toHaveLength(0);
+    }
+  });
+
+  it('caller=null + off -> allowed, no warn', () => {
+    const { logger, calls } = makeRecordingLogger();
+    expect(evaluateMcpAuthGate(null, 'off', { logger })).toEqual({ allowed: true, caller: null });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('caller=null + warn -> allowed, warns once', () => {
+    const { logger, calls } = makeRecordingLogger();
+    expect(evaluateMcpAuthGate(null, 'warn', { logger })).toEqual({ allowed: true, caller: null });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].message).toContain('AGENT_CONSOLE_MCP_AUTH=warn');
+  });
+
+  it('caller=null + enforce -> rejected with a distinct, greppable message naming the mode', () => {
+    const result = evaluateMcpAuthGate(null, 'enforce');
+    expect(result.allowed).toBe(false);
+    if (!result.allowed) {
+      expect(result.error).toContain('MCP authentication required');
+      expect(result.error).toContain('AGENT_CONSOLE_MCP_AUTH=enforce');
+    }
+  });
+
+  // No-localhost-exception guard (AC requirement): evaluateMcpAuthGate takes
+  // ONLY the already-resolved caller identity and the mode -- it has no
+  // source-address / header parameter of any kind to key a bypass off of.
+  // This test exists to make a future "but it's only localhost" patch fail:
+  // spoofing a loopback-shaped signal upstream (e.g. X-Forwarded-For:
+  // 127.0.0.1) cannot change `caller`, so a tokenless request is rejected
+  // identically under enforce no matter what the caller claims about its
+  // network origin.
+  it('a tokenless caller is rejected under enforce even when it claims a loopback origin (no localhost bypass exists)', () => {
+    // Simulates what a future localhost-exception patch would plausibly key
+    // off of: some upstream signal claiming the request originated from
+    // 127.0.0.1. evaluateMcpAuthGate has no such parameter, so there is
+    // nothing for such a patch to thread through without changing this
+    // function's signature -- and this test's assertion would need to be
+    // updated (and re-justified) the moment one did.
+    const spoofedLoopbackOriginSignal = '127.0.0.1';
+    void spoofedLoopbackOriginSignal; // no bypass parameter exists to pass this to
+    const result = evaluateMcpAuthGate(null, 'enforce');
+    expect(result.allowed).toBe(false);
   });
 });
 

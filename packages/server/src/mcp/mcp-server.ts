@@ -44,10 +44,9 @@ import {
   McpTokenRegistry,
   resolveMcpAuthMode,
   type McpAuthMode,
-  mcpCallerStorage,
   getMcpCallerIdentity,
   checkCallerOwnsSession,
-  resolveCallerFromAuthHeader,
+  createMcpAuthMiddleware,
 } from './mcp-auth.js';
 import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
 import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
@@ -1770,14 +1769,27 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // so concurrent arrivals await the same connection rather than racing.
   const connectingPromise: Promise<void> = mcpServer.connect(transport);
 
+  // Transport-level authN gate (Ruling 1): runs for EVERY
+  // request to `/mcp` before the dispatch handler below -- including
+  // `initialize` and `tools/list`, not just `tools/call` -- because MCP
+  // tools are JSON-RPC methods dispatched INSIDE `transport.handleRequest`,
+  // not separate Hono routes. Registering this once here is what
+  // structurally guarantees a newly-registered `mcpServer.tool(...)` call
+  // above is covered with zero per-tool action: there is exactly one place
+  // in this file where a request reaches a tool body, and this middleware
+  // sits in front of it. This answers "is this caller anyone at all?"
+  // (authentication); the existing `checkCallerOwnsSession` call sites in
+  // the 5 tools above still separately answer "does this caller own the
+  // claimed session?" (authorization) and are unchanged by this gate.
+  mcpApp.use('/mcp', createMcpAuthMiddleware({ mcpTokenRegistry, mcpAuthMode }));
+
   mcpApp.all('/mcp', async (c) => {
     await connectingPromise;
-    const caller = resolveCallerFromAuthHeader(c.req.header('authorization'), mcpTokenRegistry);
     // Cast required: @hono/mcp depends on its own Hono version (@jsr/hono__hono)
     // which has a slightly different Context type than the project's hono package.
     // The runtime Context objects are fully compatible; only the TypeScript types differ.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return await mcpCallerStorage.run(caller, () => transport.handleRequest(c as any));
+    return await transport.handleRequest(c as any);
   });
 
   return mcpApp;
