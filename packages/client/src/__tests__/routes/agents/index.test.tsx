@@ -76,7 +76,7 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit): Pro
 let useAppWsStateSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
-  globalThis.fetch = mockFetch as unknown as typeof fetch;
+  globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
   mockFetch.mockClear();
   agentsResponse = { agents: [] };
   embeddedAgentsResponse = { embeddedAgents: [] };

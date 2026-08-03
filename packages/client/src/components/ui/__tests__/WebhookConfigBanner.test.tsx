@@ -40,7 +40,7 @@ describe('WebhookConfigBanner', () => {
     localStorage.clear();
     // Set up fetch-level mock
     mockFetch = vi.fn();
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
   });
 
   afterEach(() => {

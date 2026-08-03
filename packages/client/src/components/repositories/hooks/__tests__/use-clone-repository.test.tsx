@@ -55,7 +55,7 @@ function installScriptedFetch(opts: {
       headers: { 'Content-Type': 'application/json' },
     });
   });
-  globalThis.fetch = scripted as unknown as typeof fetch;
+  globalThis.fetch = Object.assign(scripted, { preconnect: () => {} }) as typeof fetch;
   return { calls, scripted };
 }
 

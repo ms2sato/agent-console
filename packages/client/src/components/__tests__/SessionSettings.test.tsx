@@ -149,7 +149,7 @@ describe('SessionSettings', () => {
       return Promise.resolve(new Response());
     });
 
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
     defaultProps.onBranchChange.mockClear();
     defaultProps.onSessionRestart.mockClear();
   });

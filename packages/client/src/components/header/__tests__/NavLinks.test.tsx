@@ -48,7 +48,7 @@ const mockFetch = mock(async (input: RequestInfo | URL): Promise<Response> => {
 });
 
 beforeEach(() => {
-  globalThis.fetch = mockFetch as unknown as typeof fetch;
+  globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
   reviewQueueResponse = [];
   validateSessionsResponse = { hasIssues: false, results: [] };
   logoutCalled = false;
