@@ -2,6 +2,7 @@
 globs:
   - "packages/server/src/routes/**/*.ts"
   - "packages/server/src/services/**/*.ts"
+  - "packages/server/src/mcp/**/*.ts"
   - "packages/client/src/hooks/**/*.ts"
   - "packages/client/src/components/**/*.tsx"
   - "packages/shared/src/**/*.ts"
@@ -23,6 +24,7 @@ When modifying production files matching these patterns, corresponding test file
 |-------------|------------------------|
 | `packages/server/src/routes/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `packages/server/src/services/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
+| `packages/server/src/mcp/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
 | `packages/client/src/hooks/**/*.ts` | `.../__tests__/*.test.ts(x)` or sibling `*.test.ts(x)` |
 | `packages/client/src/components/**/*.tsx` | `.../__tests__/*.test.tsx` or sibling `*.test.tsx` (a JSX-free pure-logic test may instead use `*.test.ts`, e.g. `SessionPage.test.ts` alongside `SessionPage.tsx`) |
 | `packages/shared/src/**/*.ts` | `.../__tests__/*.test.ts` or sibling `*.test.ts` |
