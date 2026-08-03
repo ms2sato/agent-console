@@ -306,15 +306,15 @@ describe('createStdinReader', () => {
 });
 
 describe('getQuestions', () => {
-  it('returns 11 questions (Q1-Q11)', () => {
+  it('returns 12 questions (Q1-Q12)', () => {
     const questions = getQuestions(false);
-    expect(questions).toHaveLength(11);
+    expect(questions).toHaveLength(12);
   });
 
-  it('returns questions with keys q1-q11 in order', () => {
+  it('returns questions with keys q1-q12 in order', () => {
     const questions = getQuestions(false);
     const keys = questions.map(q => q.key);
-    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10', 'q11']);
+    expect(keys).toEqual(['q1', 'q2', 'q3', 'q4', 'q5', 'q6', 'q7', 'q8', 'q9', 'q10', 'q11', 'q12']);
   });
 
   it('Q10 references the Concerns Surfacing Discipline', () => {
@@ -393,6 +393,18 @@ describe('getQuestions', () => {
     const q11 = questions.find(q => q.key === 'q11');
     expect(q11.text).toContain('passed');
     expect(q11.text).not.toContain('FAILED');
+  });
+
+  it('Q12 requires shipping-path verification matching with HOLD on undocumented substitution', () => {
+    const questions = getQuestions(false);
+    const q12 = questions.find(q => q.key === 'q12');
+    expect(q12).toBeTruthy();
+    expect(q12.text).toContain('Shipping-Path Verification Match');
+    expect(q12.text).toContain('joint-skip');
+    expect(q12.text).toContain('HOLD');
+    expect(q12.text).toContain('polarity');
+    expect(q12.text).toContain('retroactively');
+    expect(q12.focus).toContain('pre-pr-completeness.md');
   });
 });
 

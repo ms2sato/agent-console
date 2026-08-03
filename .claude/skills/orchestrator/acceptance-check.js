@@ -4,7 +4,7 @@
  * Orchestrator Acceptance Check (Interactive STDIN/STDOUT Mode)
  *
  * Full acceptance check requiring human judgment. Guides the Orchestrator
- * through Q1-Q11 in an interactive session via run_process.
+ * through Q1-Q12 in an interactive session via run_process.
  *
  * For mechanical pre-merge checks (CI), use preflight-check.js instead.
  *
@@ -36,7 +36,7 @@ function usage() {
   console.error('Usage:');
   console.error('  node .claude/skills/orchestrator/acceptance-check.js <PR number>');
   console.error('');
-  console.error('This script runs a full interactive acceptance check (Q1-Q11).');
+  console.error('This script runs a full interactive acceptance check (Q1-Q12).');
   console.error('For mechanical pre-merge checks, use preflight-check.js instead.');
   process.exit(1);
 }
@@ -497,6 +497,22 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
       sufficient: languageCheckFailed
         ? '"Auto-detection reported 3 violations in docs/glossary.md L82-87 (Japanese phrases). Instructed agent to translate to English; verified the follow-up commit before re-running acceptance."'
         : '"Auto-detection reported PASS. PR adds 2 new sections in docs/design/foo.md; spot-checked both — pure ASCII English."',
+    },
+    {
+      key: 'q12',
+      text: 'Q12: Shipping-Path Verification Match — For each AC item that names a shipping path or user-observable behavior, name the EXECUTED verification that actually traversed that path (the shipping entry point, not a mechanism probe / unit substitute). If a probe or unit test substituted for the path, confirm a documented joint-skip decision exists — silence is a HOLD. Additionally confirm: (a) each mandated verification was production-real or explicitly recorded as a proxy, (b) each had polarity (fails against the pre-change implementation), and (c) any newly-discovered fact from this PR\'s verification has been applied retroactively to recently-merged sibling PRs, not only to this one.',
+      focus: [
+        'See `.claude/rules/pre-pr-completeness.md` Q13 (role-switch self-pass) for the issuance-side duty and rationale; this question is the audit-side mechanical gate.',
+        'Mechanical procedure:',
+        '  1. List the AC items that name a shipping path or user-observable behavior (MCP tool call, UI interaction, REST endpoint, worker lifecycle event).',
+        '  2. For each, name the executed verification (test file + case, smoke script + run evidence, Browser QA step) and answer: did it enter through the shipping entry point?',
+        '  3. If a mechanism probe or unit test substituted for the path, locate the documented joint-skip decision (PR body or Issue comment). Missing documentation → HOLD, not PASS-with-notes.',
+        '  4. Polarity: for each verification, ask "would this have failed against the pre-change implementation?" A verification passing in both worlds proves nothing.',
+        '  5. Retroactive application: if this PR\'s verification surfaced a new environmental fact (stale binary, broken channel, unreachable path), list recently-merged sibling PRs whose verification conclusions relied on the old assumption, and confirm each was re-checked or flagged.',
+        '(Lesson: Sprint 2026-08-01 — the #1234 AC named the MCP delegate_to_worktree shipping path; the audit accepted a sentinel smoke (a mechanism probe) as satisfying it with no joint-skip record. Separately, "the shared dev server runs an old binary" was discovered during one PR\'s verification and not applied back to merged #1237/#1241 — their shipping-path E2E gap sat undetected for two days until the owner asked. Both incidents were owner-caught; this question converts them to audit-time self-catches.)',
+      ].join('\n  '),
+      insufficient: '"All ACs verified by tests" (without matching each shipping-path AC item to the executed verification\'s entry point) — OR — "The smoke covers it" (when the smoke is a mechanism probe and no joint-skip decision is documented)',
+      sufficient: '"AC item 2 names the send_session_message shipping path. Executed verification: integration test embedded-delivery.test.ts \'delivers via send_session_message to embedded worker\' — enters through the real MCP tool handler, production-real. Polarity: confirmed failing on pre-fix main in the delegate\'s TDD report. AC item 3 (UI toast) was verified by Browser QA screenshot in the PR body. No proxy substitutions. This PR surfaced no new environmental fact requiring retroactive application."',
     },
   ];
 }

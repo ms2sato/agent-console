@@ -134,6 +134,24 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     (Lesson: Sprint 2026-07-18b PR [#1228](https://github.com/ms2sato/agent-console/pull/1228) — the AC for Issue #1214 required a Docker smoke proving `bun install` completes on a fresh checkout. Implementation finished, then the smoke could not run: a *second*, unrelated defect (a missing workspace volume in `docker-compose.yml`) broke `bun install` on any fresh clone. The AC had become unsatisfiable without also fixing that. Discovered mid-implementation, it stalled the delegate and crossed with an in-flight architect consultation; the Orchestrator ultimately bundled both fixes with a scope note. Asking this question first would have surfaced it in the first five minutes — and the second defect was real and worth finding either way.)
 
+13. **Role-switch self-pass — for anyone ISSUING an AC / verification plan / experiment design, and for anyone AUDITING one:**
+
+    The moment a role becomes "inspector", its own artifacts silently leave the inspection scope. The concrete failure shape: applying a check to someone else's work and, the same day, not applying it to your own (both the Architect and the Orchestrator did exactly this on 2026-07-29 — a verification plan built on a synthetic probe was issued hours after demanding polarity from a delegate, and the Q12 satisfiability question was asked without asking what the satisfiable verification would actually prove).
+
+    **Before issuing, run two questions against your own artifact:**
+
+    1. **Production-real or proxy?** For each verification the plan mandates: does it traverse the production shipping path, or a proxy (synthetic stub, internal API call, mock, mechanism probe)? Proxies are allowed — but only as an explicit, recorded decision, never as an unnoticed default.
+    2. **Does it have polarity?** Would the verification fail against the pre-change implementation (or, for an experiment, distinguish the hypotheses)? A verification that passes in both worlds proves nothing and reads as false confidence.
+
+    **Two variants of the same blindness, checked at the same moment:**
+
+    - **Retroactive application.** A newly-discovered fact must be applied backward to recently-merged conclusions, not only to in-flight work. (Lesson: 2026-07-29 — "the shared dev server runs an old binary" was discovered during one PR's verification and applied only to that PR; merged #1237/#1241 had never actually run on any dev server, and the shipping-path E2E gap sat undetected for two days until the owner asked.)
+    - **Shipping-path AC audit line.** When an AC item names a shipping path ("MCP delegate_to_worktree starts the agent"), the audit must match it against *which executed verification actually traversed that path*. If a probe or unit test substituted for it, a documented joint-skip decision must exist — silence is a finding. (Lesson: #1234 AC item 1 was audited as satisfied by a sentinel smoke — a mechanism probe `workflow.md` explicitly says is not goal verification — with no joint-skip record; the AC author and the auditor were the same role.)
+
+    **Boundary — what this question does NOT govern:** the self-pass guards the "WHAT does this verification prove" layer at issuance time. The "HOW" layer — concrete verification mechanics (which child process, which assertion shape, which counter) — is a hypothesis that legitimately changes during implementation; the implementer's deviation-report duty (hold and consult with data, per the AC's own escalation rule) is the safety net there. Do not read this clause as freezing verification mechanics at AC time. (Lesson: #1230/PR #1254 — the AC-specified smoke design was empirically wrong about child-exit behavior; the delegate's measured deviation report produced a better design. That was the process working, not failing.)
+
+    The mechanical counterpart is `acceptance-check.js` Q12 (Shipping-Path Verification Match), which re-asks the same questions at audit time; this rule text is the issuance-side duty and the rationale layer.
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -147,6 +165,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A derived field added to a shared type that crosses the server/client wire (Question 10) — required regardless of whether other criteria match
   - A new worker / agent / execution surface analogous to an existing one, or a new entry in `AGENT_OPERATIONS` / a new agent-operations exposure table (Question 11) — required regardless of whether other criteria match
 - **Question 12 applies to any PR whose AC mandates a real-environment verification** (a smoke script, a dogfood pass, a container / multi-user / real-device check) — required regardless of whether other criteria match, and it runs **before implementation**, not before the PR. It is the one question here that is worthless if asked late.
+- **Question 13 applies at AC / verification-plan issuance and at audit time** — it binds the author and auditor roles, not the implementing delegate.
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns
 - **Not required** for single-file bug fixes, typo corrections, or test-only additions — **except** that Question 12 still applies if such a fix's AC mandates a real-environment check
 
