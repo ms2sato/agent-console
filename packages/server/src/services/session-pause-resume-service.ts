@@ -27,6 +27,7 @@ import type { UserRepository } from '../repositories/user-repository.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { SessionOrphanedError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
+import { hasUndeliveredInitialPrompt } from './embedded-agent-worker-service.js';
 
 const logger = createLogger('session-pause-resume');
 
@@ -57,6 +58,12 @@ export interface SessionPauseResumeDeps {
    * (subprocess leak). The pause path routes them here instead.
    */
   deactivateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
+  /**
+   * Activate an embedded-agent worker (idempotent — same entry point every
+   * other activation path uses). Used by the revival hook below to
+   * auto-activate workers with an undelivered initial-prompt obligation.
+   */
+  activateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
   pathExists: (path: string) => Promise<boolean>;
   getRepositoryEnvVars: (sessionId: string) => Promise<Record<string, string>>;
   getPathResolverForSession: (session: InternalSession) => SessionDataPathResolver;
@@ -286,6 +293,21 @@ export class SessionPauseResumeService {
             revived: true,
           });
           activatedWorkers.push(worker);
+        } else if (worker.type === 'embedded-agent') {
+          if (hasUndeliveredInitialPrompt(worker, internalSession)) {
+            try {
+              await this.deps.activateEmbeddedAgentWorker(id, worker.id);
+              logger.info(
+                { sessionId: id, workerId: worker.id },
+                'Auto-activated embedded-agent worker with undelivered initial-prompt obligation on revival',
+              );
+            } catch (err) {
+              logger.warn(
+                { sessionId: id, workerId: worker.id, err },
+                'Failed to auto-activate embedded-agent worker on revival; leaving deactivated',
+              );
+            }
+          }
         }
         // git-diff workers don't need PTY activation
       }

@@ -472,6 +472,8 @@ export class SessionManager {
       workerManager: this.workerManager,
       deactivateEmbeddedAgentWorker: (sessionId, workerId) =>
         this.embeddedAgentWorkerService.deactivate(sessionId, workerId),
+      activateEmbeddedAgentWorker: (sessionId, workerId) =>
+        this.embeddedAgentWorkerService.activate(sessionId, workerId),
       pathExists: this.pathExists,
       getRepositoryEnvVars: (id) => this.getRepositoryEnvVars(id),
       getPathResolverForSession: (session) => this.getPathResolverForSession(session),

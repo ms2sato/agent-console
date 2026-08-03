@@ -279,6 +279,26 @@ interface Runtime {
 
 type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
 
+/**
+ * Whether `worker` has an undelivered initial-prompt obligation: it was
+ * created with `deliverInitialPromptOnActivation: true`, `session`'s
+ * `initialPrompt` is non-empty after trimming, and it has not already been
+ * delivered. Single writer (I-2) for this eligibility check -- see Issue
+ * #1264. Consumed by both `maybeDeliverInitialPrompt` (below, the normal
+ * lazy-activation delivery path) and the revival hook in
+ * `session-pause-resume-service.ts` (auto-activates workers with this
+ * obligation on server-restart / manual resume so a prompt that was never
+ * delivered before the server died is not stranded forever).
+ */
+export function hasUndeliveredInitialPrompt(
+  worker: InternalEmbeddedAgentWorker,
+  session: InternalSession,
+): boolean {
+  if (!worker.deliverInitialPromptOnActivation) return false;
+  if (session.initialPromptDelivered) return false;
+  return !!session.initialPrompt?.trim();
+}
+
 export class EmbeddedAgentWorkerService {
   private readonly runtimes = new Map<string, Runtime>();
   /**
@@ -725,12 +745,10 @@ export class EmbeddedAgentWorkerService {
    * prompt delivery".
    */
   private async maybeDeliverInitialPrompt(ctx: StreamContext): Promise<void> {
-    if (!ctx.worker.deliverInitialPromptOnActivation) return;
     const session = this.deps.getSession(ctx.sessionId);
     if (!session) return;
-    const prompt = session.initialPrompt?.trim();
-    if (!prompt) return;
-    if (session.initialPromptDelivered) return;
+    if (!hasUndeliveredInitialPrompt(ctx.worker, session)) return;
+    const prompt = session.initialPrompt!.trim();
     const result = await this.sendUserMessage(ctx.sessionId, ctx.workerId, prompt);
     if (!result.ok) {
       logger.warn(
