@@ -79,6 +79,7 @@ export function categorizeFiles(files) {
 export const COVERAGE_PATTERNS = [
   /^packages\/server\/src\/routes\/.+\.ts$/,
   /^packages\/server\/src\/services\/.+\.ts$/,
+  /^packages\/server\/src\/mcp\/.+\.ts$/,
   /^packages\/client\/src\/hooks\/.+\.ts$/,
   /^packages\/client\/src\/components\/.+\.tsx$/,
   /^packages\/shared\/src\/.+\.ts$/,
