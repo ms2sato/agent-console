@@ -10,6 +10,19 @@ import { disconnectSession } from '../lib/worker-websocket';
 import { clearDraftsForSession } from './useDraftMessage';
 import { updateFavicon, hasAnyAskingWorker } from '../lib/favicon-manager';
 
+/**
+ * Query key to invalidate for a session-created event, or null if this
+ * session-created event carries no worktree-cache implication (a quick
+ * session, or a worktree session that -- despite `repositoryId` being a
+ * required field on the wire schema -- was constructed without one).
+ */
+export function worktreeInvalidationKeyFor(session: Session): ReturnType<typeof worktreeKeys.byRepository> | null {
+  if (session.type === 'worktree' && session.repositoryId) {
+    return worktreeKeys.byRepository(session.repositoryId);
+  }
+  return null;
+}
+
 interface UseSessionSideEffectsOptions {
   handleSessionsSync: (sessions: Session[], activityStates: WorkerActivityInfo[]) => void;
   handleSessionCreated: (session: Session) => void;
@@ -58,7 +71,15 @@ export function useSessionSideEffects({
   const handleSessionCreatedWithValidation = useCallback((...args: Parameters<typeof handleSessionCreated>) => {
     handleSessionCreated(...args);
     invalidateValidation();
-  }, [handleSessionCreated, invalidateValidation]);
+    // A worktree-type session may have been created outside the REST form flow
+    // (e.g. MCP delegate_to_worktree), which never fires worktree-creation-completed.
+    // React to the authoritative session-created fact instead of relying on that
+    // task event, so the dashboard repository card sees the new worktree row.
+    const queryKey = worktreeInvalidationKeyFor(args[0]);
+    if (queryKey) {
+      queryClient.invalidateQueries({ queryKey });
+    }
+  }, [handleSessionCreated, invalidateValidation, queryClient]);
 
   const handleSessionDeletedWithValidation = useCallback((sessionId: string) => {
     clearDraftsForSession(sessionId);
