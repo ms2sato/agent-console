@@ -485,11 +485,11 @@ Beyond the reserved `{{prompt}}` / `{{cwd}}` placeholders, any template may use 
 |------|------------|
 | `{{var}}` | The `templateVars` value, or empty string if not supplied |
 | `{{var:default}}` | The `templateVars` value, or `default` if not supplied |
-| `{{var:+prefix}}` | `<prefix> <shell-escaped value> ` (note the trailing space) when `templateVars` supplies a non-empty value for `var`; otherwise the empty string |
+| `{{var:+prefix}}` | `<prefix> <shell-escaped value>` followed by one trailing space when `templateVars` supplies a non-empty value for `var`; otherwise the empty string |
 
 `{{var:+prefix}}` is the optional-argument form (mirrors POSIX `${var:+word}`) — it lets a template emit a flag *and* its value only when the caller actually supplied one, which the other two forms cannot express (an unset `{{var}}` still leaves the preceding flag dangling with nothing after it). Place the placeholder directly adjacent to the next token so an unset var leaves no stray whitespace or flag behind, e.g.:
 
-```
+```text
 claude {{model:+--model}}{{prompt}}
 ```
 
