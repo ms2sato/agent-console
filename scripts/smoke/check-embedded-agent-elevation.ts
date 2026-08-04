@@ -25,12 +25,17 @@
  *     second OS user, using the configured `EMBEDDED_AGENT_BUN_PATH` (Issue
  *     #1221 -- resolving `bun` by bare PATH-only name inside a non-interactive,
  *     non-bash elevated shell does not find a user-local `~/.bun/bin/bun`).
- *   - The configured `EMBEDDED_AGENT_BUN_PATH` (or default `'bun'`) binary's
- *     `--version` output is compared against the ACTUAL systemd server
- *     binary at the conventional `${service_home}/.bun/bin/bun` path (per
- *     `render_systemd_unit()` in `scripts/setup-multiuser-for-ubuntu.sh`) --
- *     not the runtime that happens to launch this smoke script itself -- to
- *     catch binary drift (Issue #1221 follow-up).
+ *   - (Issue #1222) When `EMBEDDED_AGENT_BUN_PATH` is configured to an
+ *     absolute path, the LIVE `agent-console.service` systemd process is
+ *     resolved via `systemctl show -p MainPID` and its actual executable
+ *     (`/proc/<pid>/exe`) is asserted to be that same configured path --
+ *     proving the running server really executes the unit-unified binary,
+ *     not merely that two config strings happen to match (see the detailed
+ *     comment at the assertion itself for why the pre-#1222 `--version`
+ *     comparison was replaced rather than repointed). A version difference
+ *     between the unified path and the service user's own `~/.bun/bin/bun`
+ *     is reported as a WARNING (expected freshness after a `bun upgrade`,
+ *     not a failure).
  *   - The loop's init handshake completing end-to-end against a REAL `/mcp`
  *     Streamable-HTTP endpoint, with `AGENT_CONSOLE_MCP_AUTH` left UNSET so
  *     `resolveMcpAuthMode` resolves it to `enforce` via the real Phase 4
@@ -89,7 +94,12 @@
  *      disk -- the multi-user setup script's bun-copy step was not applied --
  *      and, symmetrically, when the default 'bun' (bare-name, PATH-resolved)
  *      cannot be resolved at all, e.g. under a real `sudo` invocation whose
- *      secure_path excludes a user-local ~/.bun/bin)
+ *      secure_path excludes a user-local ~/.bun/bin; also fired by the
+ *      Issue #1222 live-process assertion when `systemctl` / the
+ *      `agent-console` unit / its `/proc/<pid>/exe` cannot be resolved --
+ *      the live-server check needs the real production service active,
+ *      distinct from an assertion FAILURE which means the service IS
+ *      running but on the wrong binary)
  *
  * Sync contract: entry-path resolution is imported directly from
  * `resolveEmbeddedAgentEntryPath` (packages/server/src/services/
@@ -165,6 +175,7 @@ process.env.AUTH_MODE = 'multi-user';
 
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { realpathSync } from 'node:fs';
 // Type-only imports are erased at compile time -- they do NOT trigger module
 // evaluation, so they are safe above the env-var prelude despite the module
 // they point at (app-context.ts) transitively importing server-config.ts, and
@@ -195,6 +206,11 @@ function parseStreamEventLine(line: string): { type: string } | undefined {
   }
   return undefined;
 }
+
+// The production systemd unit name rendered by setup-multiuser-for-ubuntu.sh
+// (SYSTEMD_TARGET = /etc/systemd/system/agent-console.service). Used by the
+// live-process assertion below to resolve the actual running server's PID.
+const SYSTEMD_UNIT_NAME = 'agent-console';
 
 const failures: string[] = [];
 let passes = 0;
@@ -263,30 +279,51 @@ async function main(): Promise<void> {
       resolution.path,
     );
 
-    // --- Assertion 2 (Issue #1221 follow-up): configured EMBEDDED_AGENT_BUN_PATH
-    // bun --version matches the ACTUAL systemd server binary's version (see the
-    // detailed comment further below, at the comparison itself). Guards against the
-    // embedded-agent subprocess running a stale/different bun binary than the
-    // server itself once EMBEDDED_AGENT_BUN_PATH is configured as an absolute
-    // path separate from whatever `bun` PATH-resolves to for this process. ---
-    console.log('==> configured bun-path version check');
+    // --- Assertion 2 (Issue #1222 redesign, replacing the Issue #1221
+    // follow-up comparison -- NOT a repoint): before Issue #1222,
+    // setup-multiuser-for-ubuntu.sh rendered ExecStart from the service
+    // user's own `${service_home}/.bun/bin/bun` while hardcoding
+    // Environment=EMBEDDED_AGENT_BUN_PATH= to `/usr/local/bin/bun`, two
+    // independent values. This assertion compared them (via `--version`) to
+    // catch drift between the two. Issue #1222 unified both to derive from
+    // the SAME rendered value, so as of that unification the two are always
+    // the identical file -- continuing to compare
+    // `${EMBEDDED_AGENT_BUN_PATH} --version` against
+    // `${service_home}/.bun/bin/bun --version` would be a file-vs-itself
+    // comparison: it can never fail, and would sit here passing forever
+    // while proving nothing (see Issue #1222's architect ruling, which
+    // explicitly corrects the Issue's own earlier "resync serverBunPath"
+    // note -- that note predates the fix and would have produced exactly
+    // this vacuous test if followed literally).
+    //
+    // What actually carries meaning after unification is RUNTIME reality,
+    // not template intent: does the LIVE `agent-console.service` process
+    // actually execute the configured EMBEDDED_AGENT_BUN_PATH binary? This
+    // fails if the unit was never (re)installed after the #1222 upgrade, or
+    // if someone hand-edited ExecStart and restarted with a different
+    // binary -- both cases the OLD comparison could never detect (it only
+    // ever inspected two config-derived strings, never what was actually
+    // running). Only meaningful when EMBEDDED_AGENT_BUN_PATH is configured
+    // to an absolute path (the multi-user contract); the
+    // single-user/degenerate default ('bun', PATH-resolved) has no unified
+    // path to verify against -- Issue #1222 Ruling 2 explicitly scopes
+    // unification to multi-user (the single-user template is unchanged). ---
+    console.log('==> configured bun-path resolvability check');
     const configuredBunCmd = process.env.EMBEDDED_AGENT_BUN_PATH || 'bun';
-    let versionResult: ReturnType<typeof Bun.spawnSync>;
+    let configuredVersionResult: ReturnType<typeof Bun.spawnSync>;
     try {
-      versionResult = Bun.spawnSync([configuredBunCmd, '--version']);
+      configuredVersionResult = Bun.spawnSync([configuredBunCmd, '--version']);
     } catch (err) {
       // Bun.spawnSync throws synchronously (rather than returning a non-zero
       // exit code) when the executable cannot be resolved via PATH at all.
-      // This is the same probe-cannot-run condition the absolute-path guard
-      // above exists for, just reached via the default 'bun' (bare-name,
-      // PATH-resolved) branch instead of a configured absolute path: e.g.
-      // under a real `sudo` invocation, the elevated child's PATH is sudo's
-      // own secure_path, which does not include a user-local ~/.bun/bin --
-      // so 'bun' is unresolvable until the multi-user setup script's
-      // bun-copy step has provisioned /usr/local/bin/bun AND
-      // EMBEDDED_AGENT_BUN_PATH has been set to point at it. Not a real
-      // assertion failure; the environment simply isn't ready to run this
-      // smoke meaningfully yet.
+      // Reached via the default 'bun' (bare-name, PATH-resolved) branch when
+      // no absolute EMBEDDED_AGENT_BUN_PATH is configured: e.g. under a real
+      // `sudo` invocation, the elevated child's PATH is sudo's own
+      // secure_path, which does not include a user-local ~/.bun/bin -- so
+      // 'bun' is unresolvable until the multi-user setup script's bun-copy
+      // step has provisioned /usr/local/bin/bun AND EMBEDDED_AGENT_BUN_PATH
+      // has been set to point at it. Not a real assertion failure; the
+      // environment simply isn't ready to run this smoke meaningfully yet.
       console.error(
         `Could not execute '${configuredBunCmd} --version' (${err instanceof Error ? err.message : String(err)}) -- ` +
           'this smoke cannot run meaningfully without a resolvable bun binary. If EMBEDDED_AGENT_BUN_PATH is unset, ' +
@@ -296,42 +333,102 @@ async function main(): Promise<void> {
       );
       process.exit(2);
     }
-    const configuredVersion = versionResult.stdout.toString().trim();
-    // Compare against the ACTUAL systemd server binary, per the
-    // `render_systemd_unit()` convention in
-    // scripts/setup-multiuser-for-ubuntu.sh (`ExecStart = ${service_home}/.bun/bin/bun`)
-    // -- NOT `process.versions.bun` (the runtime that happened to launch THIS
-    // smoke script). Those two are only guaranteed equal when the smoke is
-    // invoked through the exact same binary the server's systemd unit uses;
-    // an operator running the smoke via a DIFFERENT bun (e.g. a stale
-    // /usr/local/bin/bun copy left over from before a `bun upgrade` on the
-    // service user's own install) would have both sides of the comparison
-    // silently drawn from the wrong pair, false-passing a real version drift
-    // (CodeRabbit MAJOR, PR #1223). Reading the conventional path directly
-    // sidesteps that ambiguity -- it still assumes the smoke runs AS the
-    // server/service user itself (already a documented Requirement above),
-    // so `os.homedir()` resolves to the service user's home.
-    const serverBunPath = path.join(os.homedir(), '.bun', 'bin', 'bun');
-    let serverVersionResult: ReturnType<typeof Bun.spawnSync>;
-    try {
-      serverVersionResult = Bun.spawnSync([serverBunPath, '--version']);
-    } catch (err) {
-      console.error(
-        `Could not execute '${serverBunPath} --version' (${err instanceof Error ? err.message : String(err)}) -- ` +
-          'this smoke expects the server bun install at the conventional location used by ' +
-          "scripts/setup-multiuser-for-ubuntu.sh's rendered systemd unit ExecStart. Run this smoke as the " +
-          'server/service user itself (see Requirements above).',
+    const configuredVersion = configuredVersionResult.stdout.toString().trim();
+    console.log(`  configured (${configuredBunCmd}): ${configuredVersion}`);
+
+    console.log('==> live systemd server process executes the configured EMBEDDED_AGENT_BUN_PATH');
+    if (configuredBunCmd.startsWith('/')) {
+      let pidResult: ReturnType<typeof Bun.spawnSync>;
+      try {
+        pidResult = Bun.spawnSync(['systemctl', 'show', '-p', 'MainPID', '--value', SYSTEMD_UNIT_NAME]);
+      } catch (err) {
+        console.error(
+          `Could not run 'systemctl show -p MainPID --value ${SYSTEMD_UNIT_NAME}' (${err instanceof Error ? err.message : String(err)}) -- ` +
+            'this assertion needs systemd and the production agent-console.service unit to check the live process.',
+        );
+        process.exit(2);
+      }
+      const pidRaw = pidResult.stdout.toString().trim();
+      if (pidResult.exitCode !== 0 || !pidRaw || pidRaw === '0') {
+        console.error(
+          `Could not resolve a running MainPID for systemd unit '${SYSTEMD_UNIT_NAME}' ` +
+            `(exit=${pidResult.exitCode} stdout='${pidRaw}' stderr='${pidResult.stderr.toString().trim()}') -- ` +
+            `this assertion needs the production service active. Run 'sudo systemctl status ${SYSTEMD_UNIT_NAME}' ` +
+            'and start it if needed, then re-run this smoke.',
+        );
+        process.exit(2);
+      }
+      const exeLinkPath = `/proc/${pidRaw}/exe`;
+      let liveExePath: string;
+      let configuredRealPath: string;
+      try {
+        liveExePath = realpathSync(exeLinkPath);
+      } catch (err) {
+        console.error(
+          `Could not resolve '${exeLinkPath}' (${err instanceof Error ? err.message : String(err)}) -- ` +
+            'the smoke must run with permission to read the server process\'s /proc entry (e.g. as the ' +
+            'service user itself, or root).',
+        );
+        process.exit(2);
+      }
+      try {
+        configuredRealPath = realpathSync(configuredBunCmd);
+      } catch (err) {
+        // Already covered by the top-of-file probe-cannot-run guard for the
+        // common case (configured path missing entirely); this catches the
+        // narrower race where it existed at that check but not now.
+        console.error(
+          `Could not resolve configured EMBEDDED_AGENT_BUN_PATH '${configuredBunCmd}' (${err instanceof Error ? err.message : String(err)}).`,
+        );
+        process.exit(2);
+      }
+      console.log(`  live server exe (pid ${pidRaw}):    ${liveExePath}`);
+      console.log(`  configured EMBEDDED_AGENT_BUN_PATH: ${configuredRealPath}`);
+      expect(
+        liveExePath === configuredRealPath,
+        'live agent-console.service process executes the configured EMBEDDED_AGENT_BUN_PATH (Issue #1222 -- unit reinstalled and ExecStart matches what is actually running)',
+        `live='${liveExePath}' configured='${configuredRealPath}'`,
       );
-      process.exit(2);
+    } else {
+      console.log(
+        '  skipped: EMBEDDED_AGENT_BUN_PATH is unset (default \'bun\', PATH-resolved) -- no unified path to verify ' +
+          '(Issue #1222 Ruling 2 scopes unification to multi-user deployments only).',
+      );
     }
-    const serverVersion = serverVersionResult.stdout.toString().trim();
-    console.log(`  configured (${configuredBunCmd}):   ${configuredVersion}`);
-    console.log(`  server (${serverBunPath}): ${serverVersion}`);
-    expect(
-      configuredVersion === serverVersion,
-      'configured EMBEDDED_AGENT_BUN_PATH bun --version matches the actual systemd server binary version (no version drift, see Issue #1221 follow-up)',
-      `configured='${configuredVersion}' server='${serverVersion}'`,
-    );
+
+    // --- Freshness signal (Issue #1222 Ruling 1 -- WARNING, never a
+    // failure): unification removes drift BETWEEN the server and the
+    // embedded-agent subprocess (both now execute the same
+    // EMBEDDED_AGENT_BUN_PATH file, verified above). It does NOT eliminate
+    // ALL drift -- the service user's OWN `~/.bun/bin/bun` can still
+    // legitimately advance past the provisioned EMBEDDED_AGENT_BUN_PATH
+    // after a `bun upgrade`, until scripts/setup-multiuser-for-ubuntu.sh is
+    // re-run. That divergence is expected freshness (the deployed server
+    // deterministically stays on its provisioned version until
+    // re-provisioned), not a correctness bug, so it is reported and never
+    // fails the smoke. ---
+    console.log('==> freshness check: service-user bun vs unified bun (warning-only, not a failure)');
+    const serviceUserBunPath = path.join(os.homedir(), '.bun', 'bin', 'bun');
+    try {
+      const serviceUserVersionResult = Bun.spawnSync([serviceUserBunPath, '--version']);
+      if (serviceUserVersionResult.exitCode === 0) {
+        const serviceUserVersion = serviceUserVersionResult.stdout.toString().trim();
+        if (configuredVersion !== serviceUserVersion) {
+          console.warn(
+            `  WARN  ${configuredBunCmd} is ${configuredVersion}, but ${serviceUserBunPath} (service user's own bun) is ` +
+              `${serviceUserVersion} -- re-run scripts/setup-multiuser-for-ubuntu.sh to refresh the provisioned copy ` +
+              'if you want the server to pick up the newer version. Not a failure: the deployed server stays on its ' +
+              'provisioned version until setup is re-run (Issue #1222).',
+          );
+        } else {
+          console.log(`  OK    ${configuredBunCmd} matches service-user bun (${configuredVersion})`);
+        }
+      } else {
+        console.log('  skipped: could not run --version on the service-user bun path (non-fatal, informational check only)');
+      }
+    } catch {
+      console.log('  skipped: could not spawn the service-user bun binary for the freshness check (non-fatal)');
+    }
 
     // --- Resolve the REAL target OS user (uid + home) via the production lookup. ---
     console.log('==> resolving real target OS user');

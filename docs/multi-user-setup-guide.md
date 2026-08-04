@@ -266,26 +266,35 @@ sudo -u agentconsole bun run build
 
 > **Note**: `sudo -u agentconsole` runs the command as the service user. Since the service user has `/usr/sbin/nologin` as its shell, you may need to use `sudo -u agentconsole -s /bin/sh -c '...'` or `sudo -u agentconsole bash -c '...'` for multi-command sequences.
 
-**Copy the bun binary to a globally-reachable path (Issue #1221).** The
-embedded-agent worker spawns `bun <entry>` inside an elevated, non-interactive
-login shell (`sudo -u <target-user> -i sh -c '...'`). On Ubuntu that inner
-shell is dash, which does not source `.bashrc` — a user-local
-`~/.bun/bin/bun` install is therefore NOT resolvable by bare command name
-inside that shell (see
+**Copy the bun binary to a globally-reachable path (Issue #1221), and unify it
+with the server's own `ExecStart` (Issue #1222).** The embedded-agent worker
+spawns `bun <entry>` inside an elevated, non-interactive login shell
+(`sudo -u <target-user> -i sh -c '...'`). On Ubuntu that inner shell is dash,
+which does not source `.bashrc` — a user-local `~/.bun/bin/bun` install is
+therefore NOT resolvable by bare command name inside that shell (see
 [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)).
 Copy — not symlink — the service user's own bun binary to `/usr/local/bin/bun`
-so every elevation-target user can reach it. Copying from the service user's
-own bun (rather than an operator's) keeps it in sync with the version the
-server process itself runs:
+so every elevation-target user can reach it:
 
 ```bash
 sudo install -m 0755 /home/agentconsole/.bun/bin/bun /usr/local/bin/bun
 ```
 
-Re-run this step whenever you `bun upgrade` the service user's bun install,
-so the copy does not drift out of version sync with the server process.
-`scripts/setup-multiuser-for-ubuntu.sh` performs this copy automatically on
-every invocation.
+**The server's own systemd unit is provisioned to run from this SAME
+`/usr/local/bin/bun` copy** — `ExecStart` and
+`Environment=EMBEDDED_AGENT_BUN_PATH=` both point at it (see Step 4 below).
+The server process and the embedded-agent subprocess therefore always execute
+the identical file: version drift *between them* is structurally impossible,
+not merely detected after the fact. This does **not** mean drift is
+eliminated everywhere — the service user's own `~/.bun/bin/bun` can still
+advance past `/usr/local/bin/bun` after a `bun upgrade`. That is expected
+freshness (the deployed server deterministically stays on its provisioned
+version until re-provisioned), not a bug. **Re-run this copy step (or the
+whole bootstrap script) whenever you `bun upgrade` the service user's bun
+install**, so the provisioned copy — and therefore the running server —
+picks up the newer version. `scripts/setup-multiuser-for-ubuntu.sh` performs
+this copy automatically on every invocation, before it renders/installs the
+unit.
 
 ### Step 4: Configure the Service (Linux)
 
@@ -296,7 +305,7 @@ Render the unit from the bundled template at `scripts/agent-console-multiuser.se
 ```bash
 sudo bash -c '
 sed -e "s|{{HOME}}|/home/agentconsole|g" \
-    -e "s|{{BUN_PATH}}|/home/agentconsole/.bun/bin/bun|g" \
+    -e "s|{{BUN_PATH}}|/usr/local/bin/bun|g" \
     -e "s|{{PORT}}|8080|g" \
     -e "s|{{AUTH_COOKIE_SECURE}}|false|g" \
     /home/agentconsole/agent-console/scripts/agent-console-multiuser.service.template \
@@ -307,15 +316,15 @@ sed -e "s|{{HOME}}|/home/agentconsole|g" \
 Adjust the four placeholder values for your environment:
 
 - `{{HOME}}` — the service user's home directory (typically `/home/agentconsole`). If you installed Agent Console under a different path, update `{{HOME}}` so both `WorkingDirectory` and the `PATH` environment entry resolve correctly.
-- `{{BUN_PATH}}` — the absolute path to the `bun` executable for the service user (typically `/home/agentconsole/.bun/bin/bun`). Run `sudo -u agentconsole which bun` to confirm.
+- `{{BUN_PATH}}` — the absolute path to the **unified** bun binary both `ExecStart` and `EMBEDDED_AGENT_BUN_PATH` execute (Issue #1222). This is the `/usr/local/bin/bun` copy from the step above, **not** the service user's own `~/.bun/bin/bun` — the template substitutes the same value into both lines, so passing the service user's own path here would defeat the unification. Must exist and be executable before installing the unit (`scripts/setup-multiuser-for-ubuntu.sh` fails closed on this; a manual render does not, so verify it yourself with `sudo test -x /usr/local/bin/bun`).
 - `{{PORT}}` — the TCP port the server listens on (e.g. `8080`).
 - `{{AUTH_COOKIE_SECURE}}` — `true` or `false`. Set to `true` if all access is over HTTPS or via `http://localhost`; set to `false` for plain-HTTP access on a trusted network. See [TLS, `NODE_ENV`, and secure contexts](#tls-node_env-and-secure-contexts).
 
 > `NODE_ENV=production` is set unconditionally by the template and enables the
 > web UI. The auth cookie's `Secure` attribute is controlled separately by
-> `AUTH_COOKIE_SECURE` above. `EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun` is
-> also set unconditionally by the template — it must match the destination
-> path used for the bun-binary copy step above.
+> `AUTH_COOKIE_SECURE` above. `EMBEDDED_AGENT_BUN_PATH={{BUN_PATH}}` (Issue
+> #1222) — the same substitution as `ExecStart`, not an independent value —
+> so it always matches whatever binary the server itself just started from.
 
 > **Note**: A separate per-user systemd template
 > (`scripts/agent-console.service.template`) exists for single-user
@@ -485,6 +494,13 @@ copy the script performs for `EMBEDDED_AGENT_BUN_PATH` (Issue
 sudo install -m 0755 ~agentconsole/.bun/bin/bun /usr/local/bin/bun
 ```
 
+Since Issue #1222, this same file is also what the server's own `ExecStart`
+runs from — replacing it refreshes the binary the server picks up on its
+**next** restart, not the already-running process (systemd does not hot-swap
+a running executable). Follow the copy with `sudo systemctl restart
+agent-console` if you want the server itself, not just the next
+embedded-agent worker, to pick up the newer bun version.
+
 (Lesson: Sprint 2026-07-18b — a smoke-test procedure said to re-run the
 bootstrap script to provision `/usr/local/bin/bun`. Two things were wrong.
 The provisioning step existed only on the un-merged PR branch, so running the
@@ -570,7 +586,7 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `AUTH_COOKIE_SECURE` | _(unset)_ | Tri-state override for the auth cookie's `Secure` attribute, decoupling it from `NODE_ENV`. Unset → follows `NODE_ENV` (default); `false` → never `Secure` (for trusted-network plain-HTTP deployments); `true` → always `Secure`. Invalid values fail fast at startup. See [Plain HTTP on a trusted network](#plain-http-on-a-trusted-network-auth_cookie_secure). |
 | `PTY_PROVIDER` | _(unset; server default `bun-terminal`)_ | Override for the PTY backend. Valid values: `bun-terminal` (default; the `Bun.spawn({ terminal: ... })` provider, Bun ≥ 1.3.5) or `bun-pty` (the bun-pty native shared library). Stage 2 (Issue [#827](https://github.com/ms2sato/agent-console/issues/827)) flipped the compiled default to `bun-terminal`; `bun-pty` remains selectable for one release as a rollback escape hatch, with Stage 3 (Issue [#828](https://github.com/ms2sato/agent-console/issues/828)) removing it. The backend migration was evaluated under Issue [#824](https://github.com/ms2sato/agent-console/issues/824). The bootstrap script exposes this as `--pty-provider <name>` (or env `AGENT_CONSOLE_PTY_PROVIDER`); when unset, the rendered systemd unit omits the entry entirely so the server falls back to its compiled default. Invalid values are rejected at bootstrap time before any system state is touched. |
 | `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling on EVERY `/mcp` request (transport-level gate, Issue #1269): `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16; see Issue #1107 for the enforce-by-default restoration path). Setting `enforce` explicitly while `AUTH_MODE` is not `multi-user` fails server startup with a configuration error: `resolveMcpAuthMode` rejects the combination because MCP bearer tokens for terminal-agent workers are only minted when `AUTH_MODE=multi-user` (`worker-manager.ts`'s mint gate — see [Ruling 2](design/embedded-agent-worker.md#transport-level-authn-gate-issue-1269)), so enforcing without it would reject every terminal-agent MCP call outright; this is a deliberate fail-fast, not a bug. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
-| `EMBEDDED_AGENT_BUN_PATH` | `bun` | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Default `bun` resolves via PATH, correct for single-user/dev where the spawned process shares the server's shell environment. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this automatically. |
+| `EMBEDDED_AGENT_BUN_PATH` | `bun` | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Default `bun` resolves via PATH, correct for single-user/dev where the spawned process shares the server's shell environment. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this to the SAME value as `ExecStart` (Issue #1222) — the server process and the embedded-agent subprocess always execute the identical file, so drift between them is structurally impossible; re-run the setup script after a `bun upgrade` to refresh which version that shared file is. |
 
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
@@ -1174,28 +1190,37 @@ What it verifies:
   `/proc/<pid>/cmdline` or `/proc/<pid>/environ` of the elevated subprocess,
   with an "actually executed" guard so a silently-skipped check (process
   already exited, `/proc` unreadable) reports as a failure, not a pass.
-- (Issue #1221) The version reported by `${EMBEDDED_AGENT_BUN_PATH:-bun}
-  --version` matches the version of the **actual systemd server binary** —
-  read directly from the conventional `${service_home}/.bun/bin/bun` path
-  (the same path `render_systemd_unit()` in
-  `scripts/setup-multiuser-for-ubuntu.sh` renders into `ExecStart`), not the
-  runtime that happens to launch the smoke script itself. Comparing against
-  the smoke's own launching runtime would be unreliable: an operator
-  invoking the smoke through a different bun (e.g. a stale
-  `/usr/local/bin/bun` copy left over from before a `bun upgrade` on the
-  service user's own install) could make both sides of a naive comparison
-  match coincidentally and mask a real drift. This assertion assumes the
-  smoke runs as the server/service user itself, per the Requirements above.
-  Guards against the embedded-agent subprocess drifting to a different bun
-  binary than the server (see the follow-up Issue referenced from PR #1221's
-  fix for the structural version-alignment gap this points at).
+- (Issue #1222) When `EMBEDDED_AGENT_BUN_PATH` is configured to an absolute
+  path, the LIVE `agent-console.service` systemd process is resolved via
+  `systemctl show -p MainPID` and its actual executable (`/proc/<pid>/exe`)
+  is asserted to be that same configured path — proving the running server
+  really executes the unit-unified binary, not merely that two config
+  strings happen to match. This replaces the pre-#1222 assertion that
+  compared `${EMBEDDED_AGENT_BUN_PATH} --version` against the version at the
+  conventional `${service_home}/.bun/bin/bun` path: once `ExecStart` and
+  `EMBEDDED_AGENT_BUN_PATH` were unified to the same rendered value, that
+  comparison became a file-vs-itself check that could never fail — it was
+  **removed**, not repointed. See [`scripts/setup-multiuser-for-ubuntu.sh`
+  §Step 4](#step-4-configure-the-service-linux) above for the unification.
+- (Issue #1222, WARNING-only, never fails the smoke) A version difference
+  between the configured `EMBEDDED_AGENT_BUN_PATH` and the service user's own
+  `~/.bun/bin/bun` is reported, not failed. Unification removes drift
+  *between the server and the embedded-agent subprocess* (both now execute
+  the same file, verified above); it does not eliminate drift entirely — the
+  service user's own bun install can still advance past the provisioned
+  `/usr/local/bin/bun` after a `bun upgrade`. That is expected freshness (the
+  deployed server deterministically stays on its provisioned version until
+  `scripts/setup-multiuser-for-ubuntu.sh` is re-run), not a correctness bug.
 
 Exit codes: `0` all assertions passed, `1` an assertion failed (the system is
 wrong), `2` bad usage or the smoke could not run (missing target-user
-argument, target user unknown, spawn-launch failure, or — new in Issue #1221 —
-`EMBEDDED_AGENT_BUN_PATH` configured to an absolute path that does not exist
-on disk, meaning the bun-binary copy step from the setup guide/script has not
-been applied yet).
+argument, target user unknown, spawn-launch failure; `EMBEDDED_AGENT_BUN_PATH`
+configured to an absolute path that does not exist on disk, meaning the
+bun-binary copy step from the setup guide/script has not been applied yet;
+or — Issue #1222 — `systemctl` / the `agent-console` unit's `MainPID` /
+`/proc/<pid>/exe` could not be resolved, meaning the live-process check needs
+the real production service active and reachable, distinct from an assertion
+FAILURE which means the service IS running but on the wrong binary).
 
 Passing the current process user as `<target-user>` runs in a degenerate
 same-user mode where `spawnAsUser` bypasses elevation (target equals the
