@@ -12,13 +12,13 @@ const LIB = resolve(__dirname, '..', 'lib', 'setup-multiuser-checks.sh');
 // running the full bootstrap script (which requires real root privilege for
 // any non-dry-run path). The production script sources this same file, so
 // there is no replication to drift.
+//
+// LIB and the tested path are passed as argv ($1/$2), never interpolated
+// into the script string, so they cannot be reinterpreted as shell syntax.
+const RUN_SCRIPT = 'set -eu; source "$1"; assert_unified_bun_executable "$2"';
+
 function runAssert(path) {
-  const script = `
-    set -eu
-    source "${LIB}"
-    assert_unified_bun_executable "${path}"
-  `;
-  return spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
+  return spawnSync('bash', ['-c', RUN_SCRIPT, 'bash', LIB, path], { encoding: 'utf-8' });
 }
 
 describe('setup-multiuser-checks: assert_unified_bun_executable (Issue #1222 fail-closed guard)', () => {
@@ -34,13 +34,13 @@ describe('setup-multiuser-checks: assert_unified_bun_executable (Issue #1222 fai
   it('fails closed (exit 1) when the path exists but is not executable', () => {
     const script = `
       set -eu
-      source "${LIB}"
+      source "$1"
       tmp="$(mktemp)"
       chmod 0644 "$tmp"
       trap 'rm -f "$tmp"' EXIT
       assert_unified_bun_executable "$tmp"
     `;
-    const r = spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
+    const r = spawnSync('bash', ['-c', script, 'bash', LIB], { encoding: 'utf-8' });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('missing or not executable');
   });
