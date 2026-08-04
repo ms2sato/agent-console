@@ -3301,6 +3301,33 @@ describe('MCP Server Tools', () => {
       const delegatedSession = listData.sessions.find((s) => s.id === data.sessionId);
       expect(delegatedSession).toBeDefined();
     });
+
+    it("should describe the templateVars parameter's optional-argument form ({{model:+--model}}) in the tool schema (Issue #1281)", async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      expect(listRes.status).toBe(200);
+
+      const listBody = (await listRes.json()) as {
+        result?: {
+          tools?: Array<{
+            name: string;
+            inputSchema?: { properties?: Record<string, { description?: string }> };
+          }>;
+        };
+      };
+      const delegateTool = listBody.result?.tools?.find((t) => t.name === 'delegate_to_worktree');
+      const templateVarsDescription = delegateTool?.inputSchema?.properties?.templateVars?.description;
+
+      expect(templateVarsDescription).toContain('{{model:+--model}}');
+      expect(templateVarsDescription).toContain('--model');
+    });
   });
 
   // ===========================================================================

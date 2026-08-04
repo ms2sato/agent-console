@@ -432,6 +432,131 @@ describe('custom template variables', () => {
   });
 });
 
+describe('optional-argument form {{var:+prefix}}', () => {
+  describe('parsing collision with the default-value form', () => {
+    it('should treat {{var:+prefix}} as the optional-argument form, NOT a default value literal "+prefix"', () => {
+      // Under the pre-existing default-value regex alone, "{{flag:+--flag}}"
+      // parses as name "flag" with default value "+--flag" (the literal "+"
+      // included), which would expand to "cli '+--flag' 'test'" when flag is
+      // unset. This test locks in that the optional-argument form is
+      // recognized first and takes precedence: unset -> empty string, not the
+      // "+--flag" default-value literal.
+      const result = expandTemplate({
+        template: 'cli {{flag:+--flag}} {{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+      });
+
+      expect(result.command).not.toBe("cli '+--flag' 'test'");
+      expect(result.command).toBe("cli  'test'");
+    });
+  });
+
+  describe('byte-identity regression', () => {
+    it('should produce a command byte-identical to the plain {{prompt}} template when the var is unset', () => {
+      const withOptionalArg = expandTemplate({
+        template: 'claude {{model:+--model}}{{prompt}}',
+        prompt: 'do the task',
+        cwd: '/repo',
+      });
+      const legacy = expandTemplate({
+        template: 'claude {{prompt}}',
+        prompt: 'do the task',
+        cwd: '/repo',
+      });
+
+      expect(withOptionalArg.command).toBe(legacy.command);
+      expect(withOptionalArg.command).toBe("claude 'do the task'");
+      expect(withOptionalArg.env).toEqual({});
+    });
+  });
+
+  describe('value provided', () => {
+    it('should expand to "prefix <escaped value> " with a trailing space when templateVars provides a non-empty value', () => {
+      const result = expandTemplate({
+        template: 'claude {{model:+--model}}{{prompt}}',
+        prompt: 'do the task',
+        cwd: '/repo',
+        templateVars: { model: 'claude-sonnet-5' },
+      });
+
+      expect(result.command).toBe("claude --model 'claude-sonnet-5' 'do the task'");
+      expect(result.env).toEqual({});
+    });
+
+    it('should shell-escape a value containing spaces and quotes as a single argument', () => {
+      const result = expandTemplate({
+        template: 'claude {{model:+--model}}{{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+        templateVars: { model: "weird model's name" },
+      });
+
+      expect(result.command).toBe("claude --model 'weird model'\\''s name' 'test'");
+    });
+
+    it('should expand the form correctly when used twice in the same template', () => {
+      const result = expandTemplate({
+        template: 'cli {{model:+--model}}{{temperature:+--temp}}{{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+        templateVars: { model: 'sonnet', temperature: '0.7' },
+      });
+
+      expect(result.command).toBe("cli --model 'sonnet' --temp '0.7' 'test'");
+    });
+  });
+
+  describe('value absent or empty', () => {
+    it('should expand to empty string when the var is not present in templateVars at all', () => {
+      const result = expandTemplate({
+        template: 'claude {{model:+--model}}{{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+      });
+
+      expect(result.command).toBe("claude 'test'");
+    });
+
+    it('should expand to empty string when templateVars provides an empty string (mirrors POSIX ${var:+word})', () => {
+      const result = expandTemplate({
+        template: 'claude {{model:+--model}}{{prompt}}',
+        prompt: 'test',
+        cwd: '/repo',
+        templateVars: { model: '' },
+      });
+
+      expect(result.command).toBe("claude 'test'");
+    });
+  });
+
+  describe('reserved variable guard', () => {
+    it('should NOT expand {{prompt:+X}} through the optional-argument form', () => {
+      const result = expandTemplate({
+        template: 'cli {{prompt:+--extra}}',
+        prompt: 'real prompt',
+        cwd: '/repo',
+      });
+
+      // {{prompt}} (no colon) is already expanded before this point via its
+      // own dedicated regex, which does not match "{{prompt:+--extra}}", so
+      // this placeholder reaches the optional-argument pass unexpanded. The
+      // reserved-name guard there must also refuse to expand it.
+      expect(result.command).toBe('cli {{prompt:+--extra}}');
+    });
+
+    it('should NOT expand {{cwd:+X}} through the optional-argument form', () => {
+      const result = expandTemplate({
+        template: 'cli {{cwd:+--extra}}',
+        prompt: 'test',
+        cwd: '/repo',
+      });
+
+      expect(result.command).toBe('cli {{cwd:+--extra}}');
+    });
+  });
+});
+
 describe('promptFilePath option', () => {
   it('should expand {{prompt}} to a quoted command substitution reading the prompt file', () => {
     const result = expandTemplate({

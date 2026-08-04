@@ -477,6 +477,29 @@ INCORRECT: aider -m '{{prompt}}'
 
 **Note**: Pipe stdin (`echo "..." | cmd`) and interactive input simulation (delayed pty.write) are intentionally NOT supported. All surveyed agents support argument-based prompt passing.
 
+### Custom Template Variables
+
+Beyond the reserved `{{prompt}}` / `{{cwd}}` placeholders, any template may use custom variables. A `delegate_to_worktree` caller supplies values via its `templateVars: Record<string, string>` argument; reserved names (`prompt`, `cwd`) cannot be overridden this way.
+
+| Form | Expands to |
+|------|------------|
+| `{{var}}` | The `templateVars` value, or empty string if not supplied |
+| `{{var:default}}` | The `templateVars` value, or `default` if not supplied |
+| `{{var:+prefix}}` | `<prefix> <shell-escaped value>` followed by one trailing space when `templateVars` supplies a non-empty value for `var`; otherwise the empty string |
+
+`{{var:+prefix}}` is the optional-argument form (mirrors POSIX `${var:+word}`) — it lets a template emit a flag *and* its value only when the caller actually supplied one, which the other two forms cannot express (an unset `{{var}}` still leaves the preceding flag dangling with nothing after it). Place the placeholder directly adjacent to the next token so an unset var leaves no stray whitespace or flag behind, e.g.:
+
+```text
+claude {{model:+--model}}{{prompt}}
+```
+
+- No `model` in `templateVars` → `claude '<prompt>'` (byte-identical to a template without the optional argument at all)
+- `templateVars: {"model": "claude-sonnet-5"}` → `claude --model 'claude-sonnet-5' '<prompt>'`
+
+This is how the built-in Claude Code agent's `commandTemplate` exposes model selection to `delegate_to_worktree` callers (Issue #1281).
+
+In every form, the value itself is only shell-escaped — never validated or normalized. Whether a given value is accepted (e.g. a short alias like `sonnet` vs. a full model ID) is the target CLI's own contract, not this template engine's.
+
 ### Feature Availability by Template
 
 | Template | Required | If Missing |
