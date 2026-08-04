@@ -27,6 +27,7 @@ import type { UserRepository } from '../repositories/user-repository.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import { SessionOrphanedError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
+import { hasUndeliveredInitialPrompt } from './embedded-agent-worker-service.js';
 
 const logger = createLogger('session-pause-resume');
 
@@ -57,6 +58,12 @@ export interface SessionPauseResumeDeps {
    * (subprocess leak). The pause path routes them here instead.
    */
   deactivateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
+  /**
+   * Activate an embedded-agent worker (idempotent — same entry point every
+   * other activation path uses). Used by the revival hook below to
+   * auto-activate workers with an undelivered initial-prompt obligation.
+   */
+  activateEmbeddedAgentWorker: (sessionId: string, workerId: string) => Promise<void>;
   pathExists: (path: string) => Promise<boolean>;
   getRepositoryEnvVars: (sessionId: string) => Promise<Record<string, string>>;
   getPathResolverForSession: (session: InternalSession) => SessionDataPathResolver;
@@ -250,6 +257,10 @@ export class SessionPauseResumeService {
 
     // Track activated workers for cleanup on failure
     const activatedWorkers: InternalPtyWorker[] = [];
+    // Track embedded-agent workers auto-activated by the revival hook below,
+    // separately from PTY workers, so rollback can deactivate their
+    // subprocess/MCP token (workerManager.killWorker no-ops on non-PTY workers).
+    const activatedEmbeddedAgentWorkerIds: string[] = [];
 
     // Restore all PTY workers with continueConversation: true
     const repositoryEnvVars = await this.deps.getRepositoryEnvVars(id);
@@ -286,6 +297,22 @@ export class SessionPauseResumeService {
             revived: true,
           });
           activatedWorkers.push(worker);
+        } else if (worker.type === 'embedded-agent') {
+          if (hasUndeliveredInitialPrompt(worker, internalSession)) {
+            try {
+              await this.deps.activateEmbeddedAgentWorker(id, worker.id);
+              activatedEmbeddedAgentWorkerIds.push(worker.id);
+              logger.info(
+                { sessionId: id, workerId: worker.id },
+                'Auto-activated embedded-agent worker with undelivered initial-prompt obligation on revival',
+              );
+            } catch (err) {
+              logger.warn(
+                { sessionId: id, workerId: worker.id, err },
+                'Failed to auto-activate embedded-agent worker on revival; leaving deactivated',
+              );
+            }
+          }
         }
         // git-diff workers don't need PTY activation
       }
@@ -295,6 +322,13 @@ export class SessionPauseResumeService {
 
       // Kill all workers that were successfully activated
       await Promise.all(activatedWorkers.map((worker) => this.deps.workerManager.killWorker(worker, id)));
+
+      // Deactivate any embedded-agent workers auto-activated by the revival
+      // hook before the failure, so their subprocess/MCP token isn't leaked.
+      // Must run BEFORE deleteSession: deactivateEmbeddedAgentWorker looks up
+      // the session in memory, so it would silently no-op once the session
+      // is removed.
+      await this.deactivateAutoActivatedEmbeddedAgentWorkers(id, activatedEmbeddedAgentWorkerIds);
 
       // Remove session from memory
       this.deps.deleteSession(id);
@@ -320,6 +354,13 @@ export class SessionPauseResumeService {
 
       // Kill all workers that were successfully activated
       await Promise.all(activatedWorkers.map((worker) => this.deps.workerManager.killWorker(worker, id)));
+
+      // Deactivate any embedded-agent workers auto-activated by the revival
+      // hook before the failure, so their subprocess/MCP token isn't leaked.
+      // Must run BEFORE deleteSession: deactivateEmbeddedAgentWorker looks up
+      // the session in memory, so it would silently no-op once the session
+      // is removed.
+      await this.deactivateAutoActivatedEmbeddedAgentWorkers(id, activatedEmbeddedAgentWorkerIds);
 
       // Remove session from memory
       this.deps.deleteSession(id);
@@ -362,5 +403,29 @@ export class SessionPauseResumeService {
     this.deps.getSessionLifecycleCallbacks()?.onSessionResumed?.(publicSession as RunningSession, activityStates);
 
     return publicSession;
+  }
+
+  /**
+   * Deactivate embedded-agent workers that the revival hook auto-activated,
+   * as part of resume rollback. Uses `Promise.allSettled` (not `Promise.all`)
+   * so one worker's deactivation failure never blocks the others, nor blocks
+   * the rest of the rollback sequence (deleteSession / DB paused-state
+   * restore) that runs after this call.
+   */
+  private async deactivateAutoActivatedEmbeddedAgentWorkers(
+    sessionId: string,
+    workerIds: string[],
+  ): Promise<void> {
+    const results = await Promise.allSettled(
+      workerIds.map((workerId) => this.deps.deactivateEmbeddedAgentWorker(sessionId, workerId)),
+    );
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'rejected') {
+        logger.warn(
+          { sessionId, workerId: workerIds[index], err: result.reason },
+          'Failed to deactivate auto-activated embedded-agent worker during resume rollback',
+        );
+      }
+    }
   }
 }

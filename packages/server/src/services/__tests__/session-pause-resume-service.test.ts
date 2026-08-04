@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SessionPauseResumeService, type SessionPauseResumeDeps } from '../session-pause-resume-service.js';
 import type { InternalSession } from '../internal-types.js';
+import type { InternalWorker } from '../worker-types.js';
 import type { PersistedSession } from '../persistence-service.js';
 import type { Session } from '@agent-console/shared';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
@@ -42,6 +43,7 @@ function createMockDeps(overrides?: Partial<SessionPauseResumeDeps>): SessionPau
       activateTerminalWorkerPty: mock(async () => {}),
     } satisfies SessionPauseResumeDeps['workerManager'],
     deactivateEmbeddedAgentWorker: mock(async () => {}),
+    activateEmbeddedAgentWorker: mock(async () => {}),
     pathExists: mock(async () => true),
     getRepositoryEnvVars: mock(async () => ({})),
     getPathResolverForSession: mock((_session: InternalSession) => new SessionDataPathResolver('/dummy')),
@@ -481,6 +483,132 @@ describe('SessionPauseResumeService', () => {
     // worker-manager activation methods, which then read the file size before
     // spawning the PTY. See docs/design/websocket-protocol.md "Output offset
     // semantics".
+    // Issue #1264 follow-up (CodeRabbit finding on PR #1276): an embedded-agent
+    // worker auto-activated by the revival hook must be torn down on rollback,
+    // just like PTY workers are. Otherwise its subprocess/MCP token leaks and a
+    // future resume attempt spawns a second, orphaned subprocess for the same
+    // worker.
+    it('should deactivate an auto-activated embedded-agent worker on PTY activation failure', async () => {
+      const embeddedWorker = buildInternalEmbeddedAgentWorker({
+        id: 'w-emb',
+        deliverInitialPromptOnActivation: true,
+      });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      // Insertion order matters: the embedded-agent worker must be restored
+      // (and successfully activated) BEFORE the PTY worker whose activation
+      // throws, reproducing the exact leak scenario.
+      const restoredWorkers = new Map<string, InternalWorker>([
+        ['w-emb', embeddedWorker],
+        ['w1', agentWorker],
+      ]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        initialPrompt: 'Please summarize the repo',
+        initialPromptDelivered: false,
+      });
+
+      // Ordering tracker: deactivateEmbeddedAgentWorker looks up the session
+      // via getSession, so it MUST run before deleteSession removes it from
+      // memory — otherwise it would silently no-op on an already-gone
+      // session. Record call order to lock this in.
+      const callOrder: string[] = [];
+      const activateEmbeddedAgentWorker = mock(async () => {});
+      const deactivateEmbeddedAgentWorker = mock(async () => {
+        callOrder.push('deactivateEmbeddedAgentWorker');
+      });
+      const deps = createMockDeps({
+        deleteSession: mock((_sessionId: string) => {
+          callOrder.push('deleteSession');
+        }),
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: mock(async () => { throw new Error('PTY activation failed'); }),
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+        activateEmbeddedAgentWorker,
+        deactivateEmbeddedAgentWorker,
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.resumeSession('session-1');
+
+      expect(result).toBeNull();
+      // The embedded-agent worker activated successfully before the PTY
+      // worker's activation threw.
+      expect(activateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb');
+      // It must be deactivated during rollback so its subprocess/MCP token
+      // isn't leaked. This is the assertion that fails without the fix.
+      expect(deactivateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb');
+      // Existing rollback behavior preserved.
+      expect(deps.deleteSession).toHaveBeenCalledWith('session-1');
+      // Ordering: deactivate must happen BEFORE deleteSession, or the worker
+      // lookup inside deactivateEmbeddedAgentWorker would silently no-op on
+      // an already-removed session.
+      expect(callOrder).toEqual(['deactivateEmbeddedAgentWorker', 'deleteSession']);
+    });
+
+    it('should deactivate an auto-activated embedded-agent worker on DB persistence failure after successful activation', async () => {
+      const embeddedWorker = buildInternalEmbeddedAgentWorker({
+        id: 'w-emb',
+        deliverInitialPromptOnActivation: true,
+      });
+      const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+      const restoredWorkers = new Map<string, InternalWorker>([
+        ['w-emb', embeddedWorker],
+        ['w1', agentWorker],
+      ]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        initialPrompt: 'Please summarize the repo',
+        initialPromptDelivered: false,
+      });
+
+      let updateCallCount = 0;
+      const activateEmbeddedAgentWorker = mock(async () => {});
+      const deactivateEmbeddedAgentWorker = mock(async () => {});
+
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => {
+            updateCallCount++;
+            if (updateCallCount === 1) {
+              throw new Error('DB write failed');
+            }
+            return true;
+          }),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: mock(async () => {}),
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+        activateEmbeddedAgentWorker,
+        deactivateEmbeddedAgentWorker,
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.resumeSession('session-1');
+
+      expect(result).toBeNull();
+      expect(deactivateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb');
+      // PTY worker cleanup preserved.
+      expect(deps.workerManager.killWorker).toHaveBeenCalledTimes(1);
+      expect(deps.deleteSession).toHaveBeenCalledWith('session-1');
+    });
+
     it('should pass revived: true when activating agent worker on resume', async () => {
       const agentWorker = buildInternalAgentWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', agentWorker]]);
@@ -618,6 +746,287 @@ describe('SessionPauseResumeService', () => {
       await service.resumeSession('session-1');
 
       expect(deps.workerManager.activateTerminalWorkerPty).toHaveBeenCalledTimes(1);
+    });
+
+    describe('embedded-agent worker revival (Issue #1264)', () => {
+      it('auto-activates a revived embedded-agent worker with an undelivered initial-prompt obligation', async () => {
+        const embeddedWorker = buildInternalEmbeddedAgentWorker({
+          id: 'w-emb',
+          deliverInitialPromptOnActivation: true,
+        });
+        const restoredWorkers = new Map([['w-emb', embeddedWorker]]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          initialPrompt: 'Please summarize the repo',
+          initialPromptDelivered: false,
+        });
+
+        const activateEmbeddedAgentWorker = mock(async () => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          activateEmbeddedAgentWorker,
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        const result = await service.resumeSession('session-1');
+
+        expect(result).not.toBeNull();
+        expect(activateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb');
+      });
+
+      it('does NOT auto-activate a revived embedded-agent worker whose prompt was already delivered', async () => {
+        const embeddedWorker = buildInternalEmbeddedAgentWorker({
+          id: 'w-emb',
+          deliverInitialPromptOnActivation: true,
+        });
+        const restoredWorkers = new Map([['w-emb', embeddedWorker]]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          initialPrompt: 'Please summarize the repo',
+          initialPromptDelivered: true,
+        });
+
+        const activateEmbeddedAgentWorker = mock(async () => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          activateEmbeddedAgentWorker,
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        await service.resumeSession('session-1');
+
+        expect(activateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      });
+
+      it('does NOT auto-activate a revived embedded-agent worker that never opted into delivery', async () => {
+        const embeddedWorker = buildInternalEmbeddedAgentWorker({
+          id: 'w-emb',
+          deliverInitialPromptOnActivation: false,
+        });
+        const restoredWorkers = new Map([['w-emb', embeddedWorker]]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          initialPrompt: 'Please summarize the repo',
+          initialPromptDelivered: false,
+        });
+
+        const activateEmbeddedAgentWorker = mock(async () => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          activateEmbeddedAgentWorker,
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        await service.resumeSession('session-1');
+
+        expect(activateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      });
+
+      it('does NOT auto-activate when session.initialPrompt is undefined', async () => {
+        const embeddedWorker = buildInternalEmbeddedAgentWorker({
+          id: 'w-emb',
+          deliverInitialPromptOnActivation: true,
+        });
+        const restoredWorkers = new Map([['w-emb', embeddedWorker]]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          initialPromptDelivered: false,
+        });
+
+        const activateEmbeddedAgentWorker = mock(async () => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          activateEmbeddedAgentWorker,
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        await service.resumeSession('session-1');
+
+        expect(activateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      });
+
+      it('does NOT auto-activate when session.initialPrompt is whitespace-only', async () => {
+        const embeddedWorker = buildInternalEmbeddedAgentWorker({
+          id: 'w-emb',
+          deliverInitialPromptOnActivation: true,
+        });
+        const restoredWorkers = new Map([['w-emb', embeddedWorker]]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          initialPrompt: '   \n\t  ',
+          initialPromptDelivered: false,
+        });
+
+        const activateEmbeddedAgentWorker = mock(async () => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          activateEmbeddedAgentWorker,
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        await service.resumeSession('session-1');
+
+        expect(activateEmbeddedAgentWorker).not.toHaveBeenCalled();
+      });
+
+      it('logs and isolates a failure in one eligible worker\'s activation without aborting resume or affecting a second eligible worker', async () => {
+        const failingWorker = buildInternalEmbeddedAgentWorker({
+          id: 'w-emb-fail',
+          deliverInitialPromptOnActivation: true,
+        });
+        const okWorker = buildInternalEmbeddedAgentWorker({
+          id: 'w-emb-ok',
+          deliverInitialPromptOnActivation: true,
+        });
+        const restoredWorkers = new Map([
+          ['w-emb-fail', failingWorker],
+          ['w-emb-ok', okWorker],
+        ]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          initialPrompt: 'Please summarize the repo',
+          initialPromptDelivered: false,
+        });
+
+        const activateEmbeddedAgentWorker = mock(async (_sessionId: string, workerId: string) => {
+          if (workerId === 'w-emb-fail') {
+            throw new Error('activation exploded');
+          }
+        });
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty: mock(async () => {}),
+            activateTerminalWorkerPty: mock(async () => {}),
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          activateEmbeddedAgentWorker,
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        // Must not reject/throw — the outer resume flow completes normally.
+        const result = await service.resumeSession('session-1');
+
+        expect(result).not.toBeNull();
+        // Both workers were attempted...
+        expect(activateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb-fail');
+        // ...and the second worker's revival was not skipped/aborted by the first's throw.
+        expect(activateEmbeddedAgentWorker).toHaveBeenCalledWith('session-1', 'w-emb-ok');
+        expect(activateEmbeddedAgentWorker).toHaveBeenCalledTimes(2);
+        // No rollback: the session was not removed/killed as a result of this failure.
+        expect(deps.deleteSession).not.toHaveBeenCalled();
+        expect(deps.workerManager.killWorker).not.toHaveBeenCalled();
+      });
+
+      it('never calls activateEmbeddedAgentWorker for a session with no embedded-agent workers, and PTY activation is unaffected', async () => {
+        const agentWorker = buildInternalAgentWorker({ id: 'w1' });
+        const terminalWorker = buildInternalTerminalWorker({ id: 'w2' });
+        const restoredWorkers = new Map<string, InternalWorker>([
+          ['w1', agentWorker],
+          ['w2', terminalWorker],
+        ]);
+        const persisted = buildPersistedWorktreeSession({
+          id: 'session-1',
+          serverPid: null,
+          pausedAt: '2026-01-01T00:00:00.000Z',
+          workers: [
+            buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent' }),
+            buildPersistedTerminalWorker({ id: 'w2' }),
+          ],
+        });
+
+        const activateEmbeddedAgentWorker = mock(async () => {});
+        const activateAgentWorkerPty = mock(async () => {});
+        const activateTerminalWorkerPty = mock(async () => {});
+        const deps = createMockDeps({
+          sessionRepository: {
+            ...createMockDeps().sessionRepository,
+            findById: mock(async () => persisted),
+            update: mock(async () => true),
+          },
+          workerManager: {
+            killWorker: mock(async () => {}),
+            restoreWorkersFromPersistence: mock(() => restoredWorkers),
+            activateAgentWorkerPty,
+            activateTerminalWorkerPty,
+          } satisfies SessionPauseResumeDeps['workerManager'],
+          activateEmbeddedAgentWorker,
+        });
+        const service = new SessionPauseResumeService(deps);
+
+        await service.resumeSession('session-1');
+
+        expect(activateEmbeddedAgentWorker).not.toHaveBeenCalled();
+        expect(activateAgentWorkerPty).toHaveBeenCalledTimes(1);
+        expect(activateTerminalWorkerPty).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });

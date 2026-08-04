@@ -846,6 +846,78 @@ describe('SessionManager', () => {
       await deactivatePromise;
     });
 
+    it('auto-activates a revived embedded-agent worker with an undelivered initial-prompt obligation on resumeSession (Issue #1264)', async () => {
+      // Proves SessionManager's real wiring (activateEmbeddedAgentWorker dep
+      // passed to SessionPauseResumeService, session-manager.ts) actually
+      // reaches EmbeddedAgentWorkerService.activate end-to-end via
+      // SessionPauseResumeService's revival hook -- the exhaustive
+      // eligibility-boundary coverage lives in
+      // session-pause-resume-service.test.ts against mocked deps; this test
+      // is the DI-seam proof that the real wiring is not mis-plumbed,
+      // mirroring the "threads spawnAsUserFn option through" test above.
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const subprocess = { pid: 5555, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+      });
+
+      // Create a worktree session whose initial worker is embedded-agent,
+      // with a non-empty initialPrompt, and never activate it -- matching
+      // the "server died before the worker's first activation" scenario
+      // Issue #1264 fixes.
+      const session = await manager.createSession(
+        {
+          type: 'worktree',
+          locationPath: '/test/path',
+          repositoryId: 'repo-1',
+          worktreeId: 'feature-branch',
+          embeddedAgentId: 'stub-def',
+          initialPrompt: 'Summarize this repo (Issue #1264 wiring test)',
+        },
+        { createdBy: 'test-user-id' },
+      );
+      const embeddedWorker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+      expect(embeddedWorker).toBeDefined();
+      expect(fakeSpawnAsUserFn).not.toHaveBeenCalled();
+
+      await manager.pauseSession(session.id);
+      expect(manager.getSession(session.id)).toBeUndefined();
+
+      await manager.resumeSession(session.id);
+
+      expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+
+      // Teardown: deactivate the now-live subprocess.
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
+      simulateExit(0);
+      await deactivatePromise;
+    });
+
     it('sendEmbeddedAgentUserMessage threads clientMessageId through to the persisted/broadcast event (facade pass-through)', async () => {
       // Issue #1117: SessionManager.sendEmbeddedAgentUserMessage is a
       // one-line pass-through to EmbeddedAgentWorkerService.sendUserMessage.

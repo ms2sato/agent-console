@@ -15,6 +15,7 @@ import {
   EmbeddedAgentActivationError,
   EmbeddedMessageDeliveryError,
   resolveEmbeddedAgentEntryPath,
+  hasUndeliveredInitialPrompt,
 } from '../embedded-agent-worker-service.js';
 import {
   ProviderKeyStoreError,
@@ -1136,6 +1137,57 @@ describe('EmbeddedAgentWorkerService initial-prompt delivery (Issue #1068)', () 
 
     expect(h.session.initialPromptDelivered).toBeUndefined();
     expect(h.persistSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('hasUndeliveredInitialPrompt (Issue #1264)', () => {
+  it('is true when all three conditions hold', () => {
+    const worker = buildInternalEmbeddedAgentWorker({ deliverInitialPromptOnActivation: true });
+    const session = buildInternalWorktreeSession([worker], {
+      initialPrompt: 'Please summarize the repo',
+      initialPromptDelivered: false,
+    });
+
+    expect(hasUndeliveredInitialPrompt(worker, session)).toBe(true);
+  });
+
+  it('is false when deliverInitialPromptOnActivation is false', () => {
+    const worker = buildInternalEmbeddedAgentWorker({ deliverInitialPromptOnActivation: false });
+    const session = buildInternalWorktreeSession([worker], {
+      initialPrompt: 'Please summarize the repo',
+      initialPromptDelivered: false,
+    });
+
+    expect(hasUndeliveredInitialPrompt(worker, session)).toBe(false);
+  });
+
+  it('is false when initialPromptDelivered is already true', () => {
+    const worker = buildInternalEmbeddedAgentWorker({ deliverInitialPromptOnActivation: true });
+    const session = buildInternalWorktreeSession([worker], {
+      initialPrompt: 'Please summarize the repo',
+      initialPromptDelivered: true,
+    });
+
+    expect(hasUndeliveredInitialPrompt(worker, session)).toBe(false);
+  });
+
+  it('is false when initialPrompt is undefined', () => {
+    const worker = buildInternalEmbeddedAgentWorker({ deliverInitialPromptOnActivation: true });
+    const session = buildInternalWorktreeSession([worker], {
+      initialPromptDelivered: false,
+    });
+
+    expect(hasUndeliveredInitialPrompt(worker, session)).toBe(false);
+  });
+
+  it('is false when initialPrompt is whitespace-only', () => {
+    const worker = buildInternalEmbeddedAgentWorker({ deliverInitialPromptOnActivation: true });
+    const session = buildInternalWorktreeSession([worker], {
+      initialPrompt: '   \n\t  ',
+      initialPromptDelivered: false,
+    });
+
+    expect(hasUndeliveredInitialPrompt(worker, session)).toBe(false);
   });
 });
 
