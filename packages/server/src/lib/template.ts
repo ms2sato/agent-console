@@ -51,6 +51,13 @@ export class TemplateExpansionError extends Error {
  * Placeholders:
  * - {{prompt}} - Replaced with the shell-escaped prompt string (direct substitution)
  * - {{cwd}} - Replaced with the shell-escaped working directory path (direct substitution)
+ * - {{var}} / {{var:default}} - Custom template variable, optionally overridden via
+ *   templateVars; expands to the shell-escaped value (or default, or empty string)
+ * - {{var:+prefix}} - Optional-argument form (mirrors POSIX ${var:+word}). Expands to
+ *   "<prefix> <shell-escaped value> " (with a trailing space) when templateVars
+ *   supplies a non-empty value for var, or to the empty string when var is absent
+ *   or empty. Pass-through only: the value itself is never validated or normalized.
+ *   Reserved names (prompt, cwd) are not expandable through this form.
  *
  * @param options - Template expansion options
  * @returns The expanded command and environment variables
@@ -109,6 +116,37 @@ export function expandTemplate(options: ExpandTemplateOptions): ExpandTemplateRe
 
   // Expand custom template variables (after reserved variables are already expanded)
   const RESERVED_VARS = new Set(['prompt', 'cwd']);
+
+  // Expand the optional-argument form {{var:+prefix}} - e.g. {{model:+--model}}.
+  // This MUST run before the {{var:default}} pass below: the default-value
+  // regex `/\{\{(\w+)(?::([^}]*))?\}\}/g` would otherwise parse
+  // "{{model:+--model}}" as name "model" with default value "+--model" (the
+  // literal "+" included), silently producing the wrong expansion. Matching
+  // and consuming the ":+"-prefixed form here first prevents the default-value
+  // pass from ever seeing it.
+  //
+  // Semantics (mirrors POSIX ${var:+word}):
+  // - Provided and non-empty -> "<prefix> <shell-escaped value> ", including
+  //   a trailing space, so the placeholder can sit directly adjacent to the
+  //   next token in the template (e.g. `{{model:+--model}}{{prompt}}`).
+  // - Absent, or provided as an empty string -> expands to the empty string,
+  //   so `{{model:+--model}}{{prompt}}` collapses to exactly `{{prompt}}`'s
+  //   own expansion when the var is unset - byte-identical to a template
+  //   that never had the optional argument at all.
+  command = command.replace(/\{\{(\w+):\+([^}]*)\}\}/g, (match, varName: string, prefix: string) => {
+    if (RESERVED_VARS.has(varName)) {
+      return match; // Safety guard: reserved variables cannot use this form
+    }
+    const value =
+      templateVars && Object.prototype.hasOwnProperty.call(templateVars, varName)
+        ? templateVars[varName]
+        : undefined;
+    if (!value) {
+      return '';
+    }
+    return `${prefix} ${shellEscape(value)} `;
+  });
+
   command = command.replace(/\{\{(\w+)(?::([^}]*))?\}\}/g, (match, varName: string, defaultValue: string | undefined) => {
     if (RESERVED_VARS.has(varName)) {
       return match; // Safety guard: reserved variables should already be expanded

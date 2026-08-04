@@ -757,7 +757,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
         )
         .describe(
           'Custom template variable overrides. Keys are variable names (e.g., "model"), values are the replacement strings. ' +
-            'These override default values defined in the agent command template (e.g., {{model:claude-opus-4-6}}).',
+            'These override default values defined in the agent command template (e.g., {{model:claude-opus-4-6}}), ' +
+            'or supply an optional CLI argument declared as {{model:+--model}} (present only when a value is given). ' +
+            'For the built-in Claude Code agent, {"model": "<model-name-or-id>"} adds --model <value> to the spawned ' +
+            'command; the value is passed through as-is (not validated), so its accepted form is Claude Code\'s own contract.',
         ),
     },
     async ({

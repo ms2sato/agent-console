@@ -43,7 +43,7 @@ const ASKING_PATTERNS: string[] = [
 const claudeCodeAgentBase = {
   id: CLAUDE_CODE_AGENT_ID,
   name: 'Claude Code',
-  commandTemplate: 'claude {{prompt}}',
+  commandTemplate: 'claude {{model:+--model}}{{prompt}}',
   continueTemplate: 'claude -c',
   headlessTemplate: 'claude -p --output-format text {{prompt}}',
   description: 'Anthropic Claude Code - Interactive AI coding assistant',
