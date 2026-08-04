@@ -27,3 +27,20 @@ assert_unified_bun_executable() {
   fi
   return 0
 }
+
+# Direct-invocation entry point for tests (Issue #1222): when this file is
+# executed directly (not sourced), run assert_unified_bun_executable with
+# the given argv. This lets scripts/__tests__/setup-multiuser-checks.test.mjs
+# spawn this file as a plain executable (`spawnSync(LIB, [path])`) instead of
+# building a `bash -c '...'` command string -- no shell ever parses a
+# dynamic value, which is the structural (not merely argv-separated) fix for
+# the CodeQL js/shell-command-injection-from-environment false positive that
+# flagged the earlier `bash -c script bash "$LIB" "$path"` form (that form
+# passed values as real, unparsed positional parameters and was already
+# injection-safe, but CodeQL's taint analysis does not model that -- it
+# flags any tainted value reaching a spawnSync call whose command is a shell
+# interpreter, regardless of whether the value lands in the command string
+# or a separate argv slot).
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  assert_unified_bun_executable "$@"
+fi
