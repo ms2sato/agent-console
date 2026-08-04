@@ -24,9 +24,16 @@
 #      subprocess can resolve it without relying on PATH (Issue #1221) -- runs
 #      on every invocation, so re-running this script after `bun upgrade`
 #      refreshes the copy.
-#   7. Render the systemd unit from scripts/agent-console-multiuser.service.template
-#      with UMask=0002, AUTH_MODE=multi-user, AGENT_CONSOLE_HOME=<data-root>,
-#      EMBEDDED_AGENT_BUN_PATH=/usr/local/bin/bun.
+#   7. Fail closed if /usr/local/bin/bun is missing/not executable (Issue
+#      #1222 -- a real install must not proceed if step 6 could not provision
+#      the binary the unit is about to reference). Then render the systemd
+#      unit from scripts/agent-console-multiuser.service.template with
+#      UMask=0002, AUTH_MODE=multi-user, AGENT_CONSOLE_HOME=<data-root>. Both
+#      ExecStart and Environment=EMBEDDED_AGENT_BUN_PATH= are derived from the
+#      SAME /usr/local/bin/bun value (Issue #1222) so the server process and
+#      the embedded-agent subprocess execute the identical file -- version
+#      drift between them becomes structurally impossible, not merely
+#      detected after the fact.
 #   8. `systemctl daemon-reload && systemctl enable --now agent-console`.
 #
 # Idempotency: a second invocation with the same parameters is a no-op
@@ -252,6 +259,21 @@ SYSTEMD_TEMPLATE="$SCRIPT_DIR/agent-console-multiuser.service.template"
 SUDOERS_TARGET="/etc/sudoers.d/agent-console"
 SYSTEMD_TARGET="/etc/systemd/system/agent-console.service"
 
+# shellcheck source=lib/setup-multiuser-checks.sh
+source "$SCRIPT_DIR/lib/setup-multiuser-checks.sh"
+
+# Single source of truth (Issue #1222): the bun binary BOTH the server's own
+# systemd ExecStart AND the embedded-agent worker's elevated subprocess
+# execute. Feeding both the unit's ExecStart and its
+# Environment=EMBEDDED_AGENT_BUN_PATH= from this one variable (see
+# render_systemd_unit() below) makes the two structurally impossible to edit
+# apart -- previously ExecStart used the service user's own
+# `$service_home/.bun/bin/bun` while EMBEDDED_AGENT_BUN_PATH was hardcoded to
+# `/usr/local/bin/bun` in the template, two independent values that could
+# (and did) drift. This is also the destination Step 6b copies the service
+# user's bun binary to.
+UNIFIED_BUN_PATH="/usr/local/bin/bun"
+
 if [ ! -f "$SUDOERS_TEMPLATE" ]; then
   err "missing template: $SUDOERS_TEMPLATE"
 fi
@@ -290,8 +312,6 @@ render_systemd_unit() {
   if [ -z "$service_home" ]; then
     service_home="/home/$SERVICE_USER"
   fi
-  local bun_path
-  bun_path="$service_home/.bun/bin/bun"
   # PTY_PROVIDER opt-in slot (Issue #832). When set, replace the placeholder
   # comment with a real Environment= entry. When unset, delete the placeholder
   # line so the rendered unit stays byte-equivalent with prior installs (which
@@ -307,7 +327,7 @@ render_systemd_unit() {
     -e "s|{{SERVICE_USER}}|$SERVICE_USER|g" \
     -e "s|{{SERVICE_GROUP}}|$SERVICE_GROUP|g" \
     -e "s|{{HOME}}|$service_home|g" \
-    -e "s|{{BUN_PATH}}|$bun_path|g" \
+    -e "s|{{BUN_PATH}}|$UNIFIED_BUN_PATH|g" \
     -e "s|{{DATA_ROOT}}|$DATA_ROOT|g" \
     -e "s|{{PORT}}|$PORT|g" \
     -e "s|{{AUTH_COOKIE_SECURE}}|$AUTH_COOKIE_SECURE|g" \
@@ -568,14 +588,13 @@ fi
 # this script after `bun upgrade` on the service user's account refreshes the
 # copy -- see docs/multi-user-setup-guide.md for the upgrade procedure.
 heading "Step 6b — embedded-agent bun binary"
-EMBEDDED_AGENT_BUN_PATH_DEST="/usr/local/bin/bun"
 SERVICE_BUN_PATH="$SERVICE_HOME/.bun/bin/bun"
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "    --dry-run: would copy $SERVICE_BUN_PATH -> $EMBEDDED_AGENT_BUN_PATH_DEST (mode 0755)"
+  echo "    --dry-run: would copy $SERVICE_BUN_PATH -> $UNIFIED_BUN_PATH (mode 0755)"
 elif [ -f "$SERVICE_BUN_PATH" ]; then
-  run install -m 0755 "$SERVICE_BUN_PATH" "$EMBEDDED_AGENT_BUN_PATH_DEST"
+  run install -m 0755 "$SERVICE_BUN_PATH" "$UNIFIED_BUN_PATH"
 else
-  echo "    warning: $SERVICE_BUN_PATH not found; skipping copy to $EMBEDDED_AGENT_BUN_PATH_DEST" >&2
+  echo "    warning: $SERVICE_BUN_PATH not found; skipping copy to $UNIFIED_BUN_PATH" >&2
   echo "    (embedded-agent workers will fail with a PATH-resolution error under" >&2
   echo "     elevation until this is fixed manually -- see Issue #1221)" >&2
 fi
@@ -585,6 +604,18 @@ fi
 # ---------------------------------------------------------------------------
 
 heading "Step 7/8 — systemd unit at $SYSTEMD_TARGET"
+# Fail closed (Issue #1222 Ruling 2): a real (non-dry-run) install must not
+# proceed if the unified binary Step 6b was supposed to provision is missing
+# or not executable -- an installed unit whose ExecStart cannot start would
+# otherwise surface only as a silent boot failure at `systemctl restart`,
+# the worst possible discovery point. Skipped during --dry-run: a preview on
+# a fresh host (before Step 6b has actually copied anything) must still be
+# inspectable.
+if [ "$DRY_RUN" -eq 0 ]; then
+  assert_unified_bun_executable "$UNIFIED_BUN_PATH" || exit 1
+else
+  echo "    --dry-run: skipping unified-binary executability check ($UNIFIED_BUN_PATH)"
+fi
 RENDERED_UNIT="$(render_systemd_unit)"
 echo "    --- Rendered unit (start) ---"
 echo "$RENDERED_UNIT"
