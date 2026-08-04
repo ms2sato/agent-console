@@ -162,6 +162,26 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     (Lesson: Sprint 2026-08-03, Issue #1004 item 5 — the mandated check needed a real OS login password that the delegate had no legitimate way to obtain. Rather than improvise, they held and consulted; the JWT-mint substitution was approved against these three conditions, and the resulting evidence recorded it alongside the result. The same task's PAM-substitution *also* demonstrated the boundary: it was acceptable precisely because PAM sits outside the MCP caller-identity chain the item verifies.)
 
+    **Where you record a correction is part of the correction.** When you discover that a claim in a PR body, an Issue, or a design doc overstates its evidence, correct it *there*. A note in a session memo, a chat message, or a report to the requester does not reach the person who reads the artifact six months from now — and the artifact is what they will act on. A memo is transient; a PR body is durable. This applies with particular force to observations recorded under the proxy rules above: an observation whose strength was overstated in a durable place, and corrected only in a transient one, is still overstated as far as every future reader is concerned. (Lesson: Sprint 2026-08-05 PR [#1283](https://github.com/ms2sato/agent-console/pull/1283) — the PR body reported "the alias form was accepted at spawn", evidenced only by the process still being alive ~2s later. The Orchestrator noticed the gap between that evidence and that claim, explained the distinction in the owner memo, and considered it handled. The Architect required the PR body itself be fixed before merge: the memo would be gone, the body would not.)
+
+14. **Rollback-resource question — for PRs that add a resource acquisition inside a function that already has failure rollback:**
+
+    When this PR makes a function acquire something new — spawn a subprocess, mint a token, open a handle, create a file, take a lock — and that function already has a failure path that cleans up (a `catch` that kills workers, deletes state, restores a previous status), ask one question:
+
+    > **Does that existing rollback release the resource I just added?**
+
+    It usually does not. Rollback code enumerates what existed when it was written; a new acquisition is invisible to it. The failure is silent — the happy path is unaffected, the rollback still "succeeds", and the leak only appears under a failure that tests rarely exercise.
+
+    Check three things at the code, not from the caller:
+
+    1. **Read every rollback path in the function**, not just the one nearest your change. A function with two `catch` blocks needs both updated; fixing one leaves the same hole half-open.
+    2. **Confirm the cleanup call actually reaches your resource type.** A shared cleanup helper may silently ignore it — a `killWorker` gated on `worker.type === 'agent' || 'terminal'` no-ops on anything else, so appending your worker to its list looks correct and does nothing.
+    3. **Confirm the ordering.** Cleanup that runs after the lookup structure is torn down cannot find the resource. Deactivating a worker *after* `deleteSession` removes it from the session map is a no-op, and the resource becomes permanently unreachable rather than merely leaked.
+
+    Then add a test per rollback path: acquisition succeeds, a *later* step fails, the resource is released. A test that only exercises "my own acquisition failed" does not cover this.
+
+    (Lesson: Sprint 2026-08-05 PR [#1276](https://github.com/ms2sato/agent-console/pull/1276) — session-resume gained an embedded-agent activation inside a function whose two rollback paths killed only PTY workers. On a later PTY failure or a DB-persist failure, the activated subprocess and its minted MCP token survived the rollback, and the subsequent `deleteSession` made them unreachable, so each retry compounded the leak. CodeRabbit found it in a review body; the Architect's own audit had missed it, and named the gap precisely: they had required exactly this check of a delegate four days earlier in PR #1237 and did not apply it to their own review. That is the role-switch blind spot Q13 describes, in its most direct form.)
+
 ## When to apply
 
 - **Required** for PRs that introduce:
@@ -174,6 +194,7 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
   - A shared / persistent artifact write (Question 7) — required regardless of whether other criteria match
   - A derived field added to a shared type that crosses the server/client wire (Question 10) — required regardless of whether other criteria match
   - A new worker / agent / execution surface analogous to an existing one, or a new entry in `AGENT_OPERATIONS` / a new agent-operations exposure table (Question 11) — required regardless of whether other criteria match
+- **Question 14 applies to any PR that adds a resource acquisition inside a function with an existing failure-rollback path** — required regardless of whether other criteria match
 - **Question 12 applies to any PR whose AC mandates a real-environment verification** (a smoke script, a dogfood pass, a container / multi-user / real-device check) — required regardless of whether other criteria match, and it runs **before implementation**, not before the PR. It is the one question here that is worthless if asked late.
 - **Question 13 applies at AC / verification-plan issuance and at audit time** — it binds the author and auditor roles, not the implementing delegate.
 - **Optional but encouraged** for any production code PR touching infrastructure or cross-cutting patterns

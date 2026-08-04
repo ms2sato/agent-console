@@ -118,15 +118,22 @@ When a single design or Issue is too large for one PR (e.g., a multi-slice featu
     -F sub_issue_id=$(gh api repos/<owner>/<repo>/issues/<sub> --jq '.id')
   ```
 
-**3-layer cleaning rule (mandatory).** GitHub's auto-close parser scans **three locations** for `closes / fixes / resolves <issue>` keywords. To prevent the parent from auto-closing when a slice merges, all three must be clean:
+**Close-keyword cleaning rule (mandatory).** GitHub's auto-close parser scans **three locations** for `closes / fixes / resolves <issue>` keywords. Every location must be clean for any Issue that must survive the merge:
 
-| Location | Parent (`#parent`) | Sub-issue (`#sub`) |
+| Location | Issue that must stay open | Issue the PR really completes |
 |---|---|---|
-| PR body | `Refs #parent` (no close keyword) | `Closes #sub` |
-| PR title | `Part N of #parent` (no close keyword for parent) | (sub-issue mention optional) |
-| Original commit message (squash source) | `Refs #parent` only | `Closes #sub` (optional) |
+| PR body | `Refs #NNN` (no close keyword) | `Closes #NNN` |
+| PR title | mention without a close keyword (e.g. `Part N of #NNN`) | (mention optional) |
+| Original commit message (squash source) | `Refs #NNN` only | `Closes #NNN` (optional) |
 
-If any of the three carries a close keyword for the parent, the parent auto-closes when the squash merge lands. Recovery requires manual reopen + comment explaining the incident — far more expensive than getting the title right at delegation time. **The orchestrator's delegation prompt MUST set the PR title to `Part N of #parent` style before sending; do not let the agent produce a title that includes parent close keywords.** (Lesson: Sprint 2026-05-03 PR [#764](https://github.com/ms2sato/agent-console/pull/764) — orchestrator's delegation prompt allowed the agent to craft `(closes #678 part 1)`; parent [#678](https://github.com/ms2sato/agent-console/issues/678) auto-closed on merge despite body-level cleanup, requiring manual reopen.)
+If any location carries a close keyword, the Issue auto-closes when the squash merge lands. Recovery requires manual reopen + a comment explaining the incident — far more expensive than getting it right at delegation time. **The orchestrator's delegation prompt MUST state the required form for all three locations before sending; do not let the agent choose.**
+
+**This applies to two distinct cases, not just one.** The rule was written for multi-slice parents, but the same parser closes any Issue named anywhere:
+
+1. **Multi-slice parent** — a slice PR must not close the umbrella Issue. (Lesson: Sprint 2026-05-03 PR [#764](https://github.com/ms2sato/agent-console/pull/764) — the delegation prompt allowed the agent to craft `(closes #678 part 1)`; parent [#678](https://github.com/ms2sato/agent-console/issues/678) auto-closed on merge despite body-level cleanup.)
+2. **Checkpoint-gated Issue** — an Issue whose close condition is a post-merge verification the PR itself cannot perform (a real-machine smoke, an owner dogfood pass). Merging the code is not completing the Issue, so the PR must not close it. (Lesson: Sprint 2026-08-05 PR [#1278](https://github.com/ms2sato/agent-console/pull/1278) — the AC explicitly made an owner real-machine checkpoint the close condition, and the PR body correctly said so and omitted `Closes`. An intermediate commit's subject carried `(closes #1222)`, was inherited into the squash commit body, and closed [#1222](https://github.com/ms2sato/agent-console/issues/1222) one second after merge with the checkpoint still unperformed. Both the delegate and the Orchestrator had verified the PR body and stopped there — the rule above already covered the commit-message location, but neither of us read it as applying outside the parent/sub-issue case.)
+
+When an Issue is checkpoint-gated, say so in the delegation prompt and name the checkpoint, so the agent knows the merge is not the finish line.
 
 ### Paired Backend + Frontend Delegation Pattern
 

@@ -48,13 +48,41 @@ Schema unit tests alone are insufficient. Required: actual form interaction test
 - Test files MUST be named after the production file they test: `foo-bar.ts` -> `__tests__/foo-bar.test.ts`
 - Place test files in the `__tests__/` directory at the same level as the production file
 
+## Test Categories and What "Polarity" Means for Each
+
+`workflow.md` requires a failing-first test for bug fixes. Applied mechanically to every test in a PR, that requirement produces a wrong verdict, because tests come in kinds with different correct behaviors against unmodified code.
+
+| Category | Purpose | Against unmodified code |
+|---|---|---|
+| **Bug-polarity** | Prove the reported defect existed and is now fixed | **Must fail** — no exceptions |
+| **New-mechanism contract** | Pin the behavior a newly added mechanism promises | **Must fail** (the mechanism does not exist yet) |
+| **Invariant-preservation** | Prove existing behavior did *not* change when new code was introduced alongside it | **Passes in both worlds — this is correct** |
+
+The third category is the one that gets misjudged. A test that passes before and after looks like the "passes in both directions" case `workflow.md` warns about, but the two are distinguished by a different question:
+
+> **Would this test fail against a plausible wrong implementation of the new code?**
+
+If yes, it is a real guard and its both-worlds pass is the point. If no — if no realistic mistake in this PR could break it — it is vacuous and should be redesigned or removed.
+
+Worked example: PR [#1283](https://github.com/ms2sato/agent-console/pull/1283) added a `{{var:+prefix}}` template form, and two of its nine new tests asserted that reserved names (`{{prompt:+X}}`, `{{cwd:+X}}`) are *not* expanded through it. Those two passed against the unmodified engine — the reserved-name guard already existed one pass down. They are not vacuous: dropping the guard from the new pass makes `{{prompt:+X}}` expand to the empty string and the placeholder silently disappear, which is exactly the mistake an implementer might make. Seven tests flipped, two did not, and all nine were correct.
+
+**When reporting polarity, state the category per test.** "7 of 9 flipped" invites a partial-polarity finding; "7 bug/contract tests flipped, 2 invariant-preservation tests hold in both worlds and fail against a guard-less implementation" is the same fact, correctly classified.
+
+### Demonstrating polarity without breaking the build
+
+To show a test fails against pre-change code, **comment out only the added block, leaving new exports and signatures intact**, then restore.
+
+Do not use `git stash --patch` to separate an added block from the exports it needs. Splitting hunks interactively is error-prone (a mis-answered prompt leaves a broken intermediate state), and stashing a new export makes the whole test file fail to load — a load error, not a behavioral failure, which proves nothing about the assertion under test and cannot be distinguished from a real polarity result. (Lesson: Sprint 2026-08-05 — PR [#1275](https://github.com/ms2sato/agent-console/pull/1275)'s delegate hit exactly this: a heredoc-driven `stash --patch` stashed a helper's export while leaving its call sites, and the resulting failure was an import error. PR [#1276](https://github.com/ms2sato/agent-console/pull/1276)'s delegate used the comment-out form and got a clean `But it was not called` on precisely the assertions that mattered.)
+
+After restoring, confirm the round trip left nothing behind — `git diff --stat` should match what it was before, and `git status` should be clean of stray edits.
+
 ## Evaluation Criteria
 
 ### Test Validity
 - Tests verify **requirements**, not implementation details
 - Assertions are meaningful and specific
 - Test names clearly describe what is being tested
-- Tests would fail if production code behavior changes
+- Tests would fail if production code behavior changes (see the category table above for what this means for invariant-preservation tests)
 
 ### Coverage
 - Happy path is covered

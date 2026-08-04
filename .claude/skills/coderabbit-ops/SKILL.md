@@ -1,17 +1,17 @@
 ---
 name: coderabbit-ops
-description: CodeRabbit code review operations playbook + troubleshooting / FAQ. Use when creating a PR, before merge, when handling CodeRabbit issues (rate-limit fallback, GitHub-side bot unresponsive, both layers simultaneously rate-limited), or when interpreting the 3-layer clean verdict (Pre-merge checks / reviewDecision / inline comments). Covers local CLI invocation, GitHub-side bot interpretation, and case-by-case dispositions.
+description: CodeRabbit code review operations playbook + troubleshooting / FAQ. Use when creating a PR, before merge, when handling CodeRabbit issues (rate-limit fallback, GitHub-side bot unresponsive, both layers simultaneously rate-limited), or when interpreting the CodeRabbit verdict surfaces (pre-merge checks / reviewDecision / inline comments / commit-status description / formal review bodies). Covers local CLI invocation, GitHub-side bot interpretation, and case-by-case dispositions.
 ---
 
 # CodeRabbit Ops
 
-This skill is the operational playbook for **CodeRabbit code review** in this project. It covers CLI invocation, the LOW / NITPICK findings policy, and the 3-layer clean verdict. For case-by-case dispositions (rate-limit fallback, unresponsive bot, simultaneous rate-limit), see [`troubleshooting.md`](troubleshooting.md).
+This skill is the operational playbook for **CodeRabbit code review** in this project. It covers CLI invocation, the LOW / NITPICK findings policy, and the verdict-surface checklist (the single writer for that list). For case-by-case dispositions (rate-limit fallback, unresponsive bot, simultaneous rate-limit), see [`troubleshooting.md`](troubleshooting.md).
 
 ## When to invoke
 
 - **PR creation** — to know how to run the local CLI and how to address findings.
-- **Before merge** — to verify the 3-layer clean verdict.
-- **CodeRabbit troubleshooting** — when the local CLI is rate-limited, the GitHub-side bot is unresponsive, both layers are simultaneously rate-limited, or the verdict layers are confusing.
+- **Before merge** — to walk the verdict-surface checklist.
+- **CodeRabbit troubleshooting** — when the local CLI is rate-limited, the GitHub-side bot is unresponsive, both channels are simultaneously rate-limited, or the verdict surfaces disagree.
 - **CI failure diagnosis** — when CodeRabbit-related checks fail and you need the resolution flow.
 
 ## CLI invocation
@@ -30,25 +30,31 @@ Read every finding regardless of severity. For LOW / NITPICK / "minor" findings:
 - **Defer with a one-line note in the PR body** when the fix is non-trivial or out of scope — name the finding and the reason for deferral so the owner can override. Silent skip is not acceptable.
 - **Never mark "addressed" without a code change or an explicit defer note.** "I read it and decided it's fine" is not closure; the absence of either a fix commit or a defer note hides the trade-off.
 
-## 3-layer clean verdict
+## CodeRabbit verdict surfaces (checklist)
 
-GitHub surfaces CodeRabbit info in three distinct layers that are easy to confuse. **All three must be clean** before merge:
+GitHub scatters CodeRabbit information across several unrelated surfaces. **Every surface below must be checked** before merge — none of them alone is the verdict, and a clean-looking subset is the recurring way findings get missed.
 
-| Layer | Verification | Clean state |
-|---|---|---|
-| **Pre-merge checks** (Title / Description / Docstring / Linked Issues / Out-of-Scope) | "5/5 passed" in the GitHub UI | Metadata validation only — **not** code review |
-| **Review state** | `gh pr view <N> --json reviewDecision` | `APPROVED` (or empty under the rate-limit fallback in `troubleshooting.md`) |
-| **Inline comments** | `gh api repos/<owner>/<repo>/pulls/<N>/comments` | Resolved or addressed if actionable |
+This section is the **single writer** for the surface list. Other documents (`workflow.md`, `core-responsibilities.md`) link here rather than restating it; when a new surface is discovered, add it here only.
+
+> **Why this section is not called "the N-layer verdict" anymore.** It was "the 3-layer clean verdict" for months, then a 4th surface was documented in a separate subsection, and then a 5th (below) was found the hard way — a Major finding sat in a place none of the named layers read, on a PR both the Orchestrator and the Architect had already called clean. A name that encodes a count asserts completeness the list does not have, and invites checking "the three" and stopping. Treat the list as open: the next surface is not yet in it.
+
+| # | Surface | Verification | Clean state |
+|---|---|---|---|
+| 1 | **Pre-merge checks** (Title / Description / Docstring / Linked Issues / Out-of-Scope) | "5/5 passed" in the GitHub UI | Metadata validation only — **not** code review |
+| 2 | **Review state** | `gh pr view <N> --json reviewDecision` | `APPROVED` (or empty under the rate-limit fallback in `troubleshooting.md`) |
+| 3 | **Inline comments** | `gh api repos/<owner>/<repo>/pulls/<N>/comments` | Resolved or addressed if actionable |
+| 4 | **Commit-status `description`** | see "The commit-status surface" below | `Review completed` — `state` is `success` even when no review ran |
+| 5 | **Formal review bodies** | see "The review-body surface" below | No unaddressed findings in any review's `body` |
 
 An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception 1: under the rate-limit fallback in `troubleshooting.md`, an empty state may persist; in that exception path, follow the fallback's verification steps before merge. Exception 2: a completed walkthrough with 0 actionable inline comments can also leave `reviewDecision` empty — CodeRabbit does not always submit a formal review event when it finds nothing to flag. See "the walkthrough-exists rubric" in `troubleshooting.md` before assuming "not yet reviewed" from an empty field alone.)
 
-**Docs-only PR carve-out (by configuration).** `.coderabbit.yaml` sets `reviews.auto_review.ignore_title_keywords: ["docs:"]`, so PRs titled with the conventional `docs:` prefix are skipped by auto-review ON PURPOSE (quota preservation — docs-only PRs were rate-limiting code PRs during PR-dense sprints). For such PRs an empty `reviewDecision` with no bot activity is the EXPECTED state, not a wait condition: verify the diff is genuinely docs-only (no production code), then treat layer 2 as N/A. When a docs PR warrants a bot pass anyway (e.g. a large design doc), trigger one manually with an `@coderabbitai review` comment — the manual path is unaffected by the title skip. Note the file also carries the review profile (`chill`) previously configured in the web UI, because a repo config file takes precedence over UI settings.
+**Docs-only PR carve-out (by configuration).** `.coderabbit.yaml` sets `reviews.auto_review.ignore_title_keywords: ["docs:"]`, so PRs titled with the conventional `docs:` prefix are skipped by auto-review ON PURPOSE (quota preservation — docs-only PRs were rate-limiting code PRs during PR-dense sprints). For such PRs an empty `reviewDecision` with no bot activity is the EXPECTED state, not a wait condition: verify the diff is genuinely docs-only (no production code), then treat surface 2 as N/A. When a docs PR warrants a bot pass anyway (e.g. a large design doc), trigger one manually with an `@coderabbitai review` comment — the manual path is unaffected by the title skip. Note the file also carries the review profile (`chill`) previously configured in the web UI, because a repo config file takes precedence over UI settings.
 
-"CodeRabbit clean" requires all three. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
+"CodeRabbit clean" requires every surface. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
 
-### The fourth surface: `statusCheckRollup`'s `CodeRabbit` entry is NOT a verdict
+### The commit-status surface: `statusCheckRollup`'s `CodeRabbit` entry is NOT a verdict
 
-None of the three layers above is the **commit-status context** named `CodeRabbit`. That context nonetheless appears in `gh pr view <N> --json statusCheckRollup` — the command everyone runs to confirm CI — rendered alongside `test`, `preflight`, and the rest as:
+None of surfaces 1-3 is the **commit-status context** named `CodeRabbit`. That context nonetheless appears in `gh pr view <N> --json statusCheckRollup` — the command everyone runs to confirm CI — rendered alongside `test`, `preflight`, and the rest as:
 
 ```
 CodeRabbit=SUCCESS
@@ -66,13 +72,30 @@ Three descriptions observed, all with `state=success`:
 
 | `description` | Meaning | Action |
 |---|---|---|
-| `Review completed` | A real review ran | Proceed to layers 2 and 3 |
+| `Review completed` | A real review ran | Proceed to surfaces 2, 3 and 5 |
 | `Review rate limited` | **The bot never reviewed this commit** | Wait, or apply the `troubleshooting.md` disposition |
-| `Review skipped: ignored keyword in the PR title` | Deliberately skipped by `.coderabbit.yaml` config (the `docs:` carve-out above) | Layer 2 is N/A — verify the diff really is docs-only |
+| `Review skipped: ignored keyword in the PR title` | Deliberately skipped by `.coderabbit.yaml` config (the `docs:` carve-out above) | Surface 2 is N/A — verify the diff really is docs-only |
 
 Note the `updated_at` too: the status is re-issued per head SHA, so **updating a PR branch resets it**. A `Review completed` from before a rebase says nothing about the current head.
 
 (Sprint 2026-07-18b — three PRs (#1227, #1231, #1229) carried `CodeRabbit=SUCCESS` in the rollup while the description read `Review rate limited`. Reading only the rollup state would have merged all three as "CodeRabbit clean" with no review. #1227 in particular later produced a Major finding that a standards document would otherwise have shipped with.)
+
+### The review-body surface: findings that live in no inline comment
+
+A finding CodeRabbit cannot anchor to a changed line — GitHub rejects inline comments outside the diff — is posted in the **body of the formal review** instead. Nothing about it appears in the inline-comment list, so surface 3 reports zero and surface 4 reports `Review completed`: the PR looks reviewed and clean while carrying an unread finding.
+
+Read every review body explicitly:
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<N>/reviews \
+  -q '.[] | "\(.submitted_at) \(.user.login) \(.state)\n\(.body)"'
+```
+
+The tell in the body is a `⚠️ Outside diff range comments (N)` block. Its findings carry the same severity markers as inline ones and must be dispositioned the same way — fixed, or deferred with a note.
+
+**Zero inline comments is not evidence of zero findings.** When surface 3 comes back empty, that is precisely when surface 5 must be read, not when the check is over.
+
+(Sprint 2026-08-05 PR #1276 — CodeRabbit posted a formal review whose body held a Major finding: session-resume rollback freed PTY workers but not the embedded-agent worker the same change had just activated, leaking a subprocess and a minted MCP token that became unreachable once the session was deleted. `reviewDecision` was empty, inline comments were 0, and the commit status said `Review completed`. The Orchestrator reported "findings zero" to the owner on that basis; the Architect's independent audit had also missed the rollback asymmetry. It surfaced only because the delegate re-examined the CodeRabbit state on their own initiative and reported the ambiguity rather than accepting the Orchestrator's summary. A process that depends on a delegate doubting the Orchestrator is not a process — this section is what replaces it.)
 
 ## Case-by-case dispositions
 
