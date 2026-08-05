@@ -20,7 +20,7 @@ Before completing any code changes, always verify:
    - **Stale `routeTree.gen.ts` caveat:** The presence-only check accepts a stale `routeTree.gen.ts` when route files have been added / renamed / removed but the generated file was not regenerated. After modifying anything under `packages/client/src/routes/`, delete `packages/client/src/routeTree.gen.ts` (or run `bun run build`) before relying on `bun run typecheck`.
 3. **Run CodeRabbit CLI review:** Execute `coderabbit review --agent --base main` and address any CRITICAL / HIGH / MEDIUM severity issues before creating a PR. If the CodeRabbit CLI is not installed locally, skip this step and recommend installation: `curl -fsSL https://cli.coderabbit.ai/install.sh | sh`.
 
-   For the LOW / NITPICK findings policy, the **3-layer clean verdict** (Pre-merge checks / `reviewDecision` / inline comments), and operational case-by-case dispositions (rate-limit fallback, GitHub-side bot unresponsive, both layers simultaneously rate-limited, `CHANGES_REQUESTED` resolution), invoke the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill.
+   For the LOW / NITPICK findings policy, the **CodeRabbit verdict-surface checklist** (`coderabbit-ops/SKILL.md` is its single writer — do not restate the surface list elsewhere), and operational case-by-case dispositions (rate-limit fallback, GitHub-side bot unresponsive, both layers simultaneously rate-limited, `CHANGES_REQUESTED` resolution), invoke the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill.
 4. **Review test quality:** When tests are added or modified, evaluate adequacy and coverage
 5. **Manual verification (UI changes only):** When modifying UI components and Chrome DevTools MCP is available, perform manual testing through the browser.
 
@@ -53,7 +53,7 @@ A task or PR is "done" only when ALL of the following hold. Reporting "ready for
 5. **Branch is pushed to origin**.
 6. **PR is opened with linked Issue** — the body contains `Closes #NNN` (the title's `(closes #N)` does not auto-close the Issue; only the body's keyword does, and the script `acceptance-check.js` requires the body match).
 7. **CI is fully green** — verified via the rollup, not a single per-run event. Use `gh pr view <PR> --json statusCheckRollup` to confirm. (Issue #699 fixed the per-run vs rollup gap; before that fix the per-run event could falsely report "all passed" while the rollup had failures.)
-8. **CodeRabbit review state is clean** — see [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill for the 3-layer verdict (Pre-merge checks / `reviewDecision` / inline comments) and any fallback exceptions.
+8. **CodeRabbit review state is clean** — walk the verdict-surface checklist in the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) skill (its single writer) and apply any fallback exceptions documented there.
 
 "Implementation complete" without all eight is **not** done. (Lesson: Sprint 2026-04-27 PR #703 — agent reported "Production ready" with no commit / no push / no PR, requiring three rounds of hand-holding before reaching actual mergeable state.)
 
@@ -64,7 +64,7 @@ When you form a conclusion from a *secondary signal* — a derived, lagging, or 
 | Domain | Secondary signal (do NOT conclude from this alone) | Primary information (verify here) |
 |---|---|---|
 | CI failure | "infra problem" / "rate-limit" / "external service" intuition; the red X without the log | `gh run view <run_id> --log-failed` |
-| CodeRabbit review | absence of new comments; pre-merge checks passing; a stale `CHANGES_REQUESTED`; a rate-limit message; **`CodeRabbit=SUCCESS` in `statusCheckRollup`** | the PR's 3-layer state (Pre-merge checks / `reviewDecision` / inline comments) re-read at decision time, **plus the commit status's `description` string** — `state` is `success` even when the bot never reviewed (see [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) "The fourth surface") |
+| CodeRabbit review | absence of new comments; pre-merge checks passing; a stale `CHANGES_REQUESTED`; a rate-limit message; **`CodeRabbit=SUCCESS` in `statusCheckRollup`** | every surface in the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) verdict-surface checklist, re-read at decision time — including the commit status's `description` (`state` is `success` even when the bot never reviewed) and the **body of each formal review** (a finding outside the diff appears there and in no inline comment) |
 | Cross-repo issue | "this symptom looks like the other repo's known bug / shared pattern" | reproduce in *this* repo's own code path before filing, blaming, or claiming applicability |
 | Runtime observation | a dev-server log line / websocket frame / UI render / channel assumption taken as proof a path ran or a notification arrived | the authoritative store / server-side state / a deterministic probe / per-channel confirmation |
 
@@ -117,7 +117,7 @@ The reverse failure mode is also real: CI output that locally would mean "broken
 
 **Inference trap.** Concluding "CodeRabbit is clean" from a secondary signal: pre-merge checks passing (5/5), the absence of *new* inline comments, or a rate-limit message read as "nothing to address". None of these are the review verdict. A stale `CHANGES_REQUESTED` from an earlier push, or a bot that never actually ran because it was rate-limited, both look identical to "clean" if you only glance at one layer.
 
-**Verify procedure.** Re-read the PR's 3-layer state at decision time, not from memory of an earlier read:
+**Verify procedure.** Re-read every verdict surface at decision time, not from memory of an earlier read:
 
 1. **Pre-merge checks** — necessary but not sufficient on their own.
 2. **`reviewDecision`** — `gh pr view <N> --json reviewDecision`. Empty means the bot has not reviewed yet (not "clean"); `CHANGES_REQUESTED` must be resolved, not aged out. The only exception is the documented rate-limit fallback.
@@ -177,6 +177,21 @@ Two shapes seen in Sprint 2026-07-18b:
 4. **When each iteration costs a CI round-trip, go wide, not deep.** Binary search is optimal when probes are cheap and sequential; when a round-trip is the binding cost, put every enumerable variant into a single run.
 
 (Lesson: Sprint 2026-07-18b Issue #1225 — `main` was red for four days. Four single-mechanism hypotheses were disproven in sequence, each with a positive control that made the negatives credible. What resolved it was re-running the last green CI run byte-identically — which exonerated the repository and isolated the runner image as the only changed variable — followed by delta-debugging the real test file. Issue #1211 was settled the same day by the same shape: running the identical config and binary outside Docker. Neither was reached by the hypotheses.)
+
+### Sub-pattern 7: stale state carried across idle
+
+**Inference trap.** A state claim that was verified once, then repeated across many turns without re-verification, until repetition itself makes it feel established. Where the other sub-patterns over-trust a weak signal, this one keeps trusting a signal that was strong *at the time* and has since expired. It hides especially well in status summaries: restating "waiting on X" in every progress report reads as diligence, but no re-reading occurs.
+
+Claims of the form "**still waiting on** X" are the highest-risk shape, because they assert something about the present while being evidenced only by the past. Whatever you are waiting on may have already moved — and if it has, everything you decided *because* you were waiting is also wrong.
+
+**Verify procedure.**
+
+1. **Re-verify any carried-over state claim at the moment you act on it**, not when you first recorded it. Reporting it, escalating on it, or choosing not to act because of it all count as acting on it.
+2. **Ask what would have changed it while you were idle.** A PR merges, a review lands, a gate clears — none of these notify you retroactively, and idle time is exactly when they happen.
+3. **When the claim is about someone else's queue, check for evidence of *output*, not of *state*.** (This is Sub-pattern 5's test, and it applies here too.)
+4. **Keep the wording of any standing reminder — a timer's action text, a checklist item — in sync with what you are actually waiting for.** A reminder describing last week's blocker will fire on schedule and confirm the wrong thing.
+
+(Lessons, both Sprint 2026-08-05: the Architect held "PR #1270 is awaiting owner gate" across two days of intermittent turns, restating it in each status summary without re-reading, then raised an urgent warning that a commit-message keyword would close an Issue on merge — the PR had merged two days earlier and the Issue had closed with it. Separately, the Orchestrator left a self-check timer whose action text still described a PR merged hours before; it fired repeatedly while a delegate's completed PR sat unreviewed for six hours, and the stall was surfaced by the owner asking what the hold-up was, not by the timer.)
 
 ## Commands
 

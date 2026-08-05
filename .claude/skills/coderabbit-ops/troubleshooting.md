@@ -1,6 +1,6 @@
 # CodeRabbit Ops — Troubleshooting / FAQ
 
-Case-by-case dispositions for CodeRabbit issues. The 3-layer clean verdict definition, CLI invocation, and LOW / NITPICK findings policy live in [`SKILL.md`](SKILL.md); this file covers the exception paths.
+Case-by-case dispositions for CodeRabbit issues. The verdict-surface checklist, CLI invocation, and LOW / NITPICK findings policy live in [`SKILL.md`](SKILL.md); this file covers the exception paths.
 
 ## Q: The local CodeRabbit CLI is rate-limited. What do I do?
 
@@ -34,7 +34,7 @@ Conflating the two in a PR body misleads whoever reads it later: an auth failure
 
 **No. Abandon the wait, do not over-engineer.** If the GitHub-side bot posts a rate-limit warning at PR open and a subsequent `@coderabbitai review` re-trigger does not produce a review submission within ~10-15 minutes, abandon the wait. CodeRabbit's "incremental review" policy can treat the rate-limit warning event as "already reviewed" and refuse to re-review the same commit. **Do not push trivial commits to force a re-trigger** — that bends the workflow around CodeRabbit's quirks at the cost of CI cycles and review log noise.
 
-Instead, when the local CodeRabbit CLI is clean (0 findings), add the rate-limit fallback note (above) to the PR body, treat that as the documented exception path, and proceed to merge after the rest of the "clean" 3-layer condition is satisfied. (Sprint 2026-04-30 PR #738 — bot unresponsive 60+ min after re-trigger while PR #737 in the same flow returned APPROVED in 3 min; owner guidance: do not bend the process for CodeRabbit, abandon the wait early.)
+Instead, when the local CodeRabbit CLI is clean (0 findings), add the rate-limit fallback note (above) to the PR body, treat that as the documented exception path, and proceed to merge after the remaining verdict surfaces are satisfied. (Sprint 2026-04-30 PR #738 — bot unresponsive 60+ min after re-trigger while PR #737 in the same flow returned APPROVED in 3 min; owner guidance: do not bend the process for CodeRabbit, abandon the wait early.)
 
 ## Q: I retriggered `@coderabbitai review` and got "Review finished... does not re-review already reviewed commits." Does that count as clean?
 
@@ -95,7 +95,7 @@ The simultaneous-rate-limit case does not relax PR Merge Authority — it remove
    gh pr view <N> --json reviews,latestReviews
    ```
    If the latest review is `APPROVED`, the rollup field is just laggy and a UI refresh / `gh pr view` re-query usually flips it.
-3. **If the latest review is still `CHANGES_REQUESTED` despite all comments resolved**, the bot has not submitted the follow-up positive review. Treat the 3-layer clean verdict as satisfied: pre-merge checks SUCCESS + 0 unresolved actionable inline comments + no outstanding CodeRabbit ask. The stale `reviewDecision` does not block merge under PR Merge Authority. Add a one-line note to the PR body / merge confirmation:
+3. **If the latest review is still `CHANGES_REQUESTED` despite all comments resolved**, the bot has not submitted the follow-up positive review. Treat the verdict-surface checklist as satisfied: pre-merge checks SUCCESS + 0 unresolved actionable inline comments + no unaddressed finding in any review body + no outstanding CodeRabbit ask. The stale `reviewDecision` does not block merge under PR Merge Authority. Add a one-line note to the PR body / merge confirmation:
    ```
    CodeRabbit reviewDecision is `CHANGES_REQUESTED` (stale UX) — all comments are marker-closed; merging under existing PR Merge Authority.
    ```
@@ -110,7 +110,7 @@ Recommended sequence per push:
 
 1. **Run the local CLI** (`coderabbit review --agent --base main`). Address every CRITICAL / HIGH / MEDIUM finding. Re-push if you make code changes from CLI feedback.
 2. **Wait for the GitHub-side bot review.** It may take 3-12 minutes typically, longer under rate-limit. Do not push trivial commits to retrigger (per "abandon-the-wait" above).
-3. **Merge when `reviewDecision: APPROVED` and CLI is clean.** Both layers form the 3-layer clean verdict.
+3. **Merge when `reviewDecision: APPROVED` and CLI is clean.** Both feed the verdict-surface checklist in `SKILL.md`.
 
 This pattern is robust against the GitHub bot being temporarily rate-limited: the CLI gives you a verifiable clean signal you can act on while the bot recovers. When the bot eventually submits, it serves as confirmation rather than the only data point. (Lesson: Sprint 2026-06-26 — observed across PRs #892 / #897. Both pushed multiple times during a CodeRabbit rate-limit window; CLI ran clean on every push and caught Major findings the bot would later have flagged. The bot's APPROVED arrived after rate-limit lifted, confirming the CLI verdict. Without the CLI pass, both PRs would have been merge-blocked on the bot's rate-limit recovery or proceeded with no review at all.)
 

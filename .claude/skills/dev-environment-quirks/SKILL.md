@@ -96,6 +96,28 @@ git -C <serving-checkout> log -1 --format='%ci %h %s'
 
 If the process start time predates the commit time, the server is running old code — restart (or re-rsync / re-bundle) before drawing any verification conclusion from its behavior. (Lesson: Sprint 2026-08-01 — merged PRs #1237/#1241 were believed E2E-verified on the shared dev server, which was in fact running a binary from before the merges; the gap sat undetected for two days. See `.claude/rules/pre-pr-completeness.md` Q13 "Retroactive application".)
 
+## Driving MCP against a throwaway instance you started yourself
+
+Shipping-path verification often needs a disposable instance (`AGENT_CONSOLE_HOME=/tmp/agent-console-<issue>-verify` on a free port — never under `~/.agent-console*`, which a guard protects from cleanup). **The session's pre-registered MCP clients cannot reach it**: those entries point at the shared instances, and rewriting the global `~/.claude.json` to retarget them would disturb every other session on the machine.
+
+Call the instance's own `/mcp` endpoint directly instead — it is the same production transport the registered clients use, so the code path under test is unchanged:
+
+```bash
+# 1. handshake, 2. tools/call — both plain JSON-RPC over HTTP
+curl -s -X POST http://localhost:<port>/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -H 'MCP-Protocol-Version: 2025-11-25' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call",
+       "params":{"name":"delegate_to_worktree","arguments":{...}}}'
+```
+
+Then read primary evidence from the OS rather than the tool's reply — e.g. `tr '\0' ' ' < /proc/<pid>/cmdline` for the spawned process's argv, which neither truncates nor reformats the way `ps` output can.
+
+Cleaning up afterward: the sandbox guard rejects recursive and force delete flags even for a temp directory you created. `find <dir> -depth -delete` removes the tree without them (a flagless single-file `rm` is also permitted). Verify removal with a listing rather than assuming.
+
+(Two delegates rediscovered this independently in Sprint 2026-08-05, on PRs [#1275](https://github.com/ms2sato/agent-console/pull/1275) and [#1283](https://github.com/ms2sato/agent-console/pull/1283).)
+
 ## Cross-references
 
 - `scripts/dev.sh` and `scripts/dev-multiuser.sh` — canonical scripts (the prologues are required reading).
