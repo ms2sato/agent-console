@@ -89,6 +89,11 @@ const worktrees = new Hono<AppBindings>()
     // POST /api/sessions (see routes/sessions.ts) exactly. Resolved
     // synchronously (before the fire-and-forget block) so an invalid request
     // (feature disabled) fails with 400 instead of a broadcast failure.
+    // Does NOT go through `resolveRequestUsername` (services/resolve-spawn-username.ts):
+    // the personal branch already has the freshest source (`authUser.username`,
+    // no DB round-trip needed), and the shared branch reads a registry cache
+    // whose only write path is the one-time startup upsert, so it cannot
+    // drift from a fresh `userRepository.findById` lookup.
     let createdBy: string;
     let initiatedBy: string | undefined;
     let requestUsername: string | null;
