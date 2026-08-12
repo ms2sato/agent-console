@@ -194,6 +194,7 @@ if getent passwd "$USERNAME" >/dev/null 2>&1; then
     run usermod -s "$SHELL_PATH" "$USERNAME"
   fi
   CURRENT_HOME="$(getent passwd "$USERNAME" | cut -d: -f6)"
+  ACCOUNT_HOME="$CURRENT_HOME"
   if [ -d "$CURRENT_HOME" ]; then
     echo "    home directory '$CURRENT_HOME' exists."
   else
@@ -204,6 +205,11 @@ else
   # credentials live there) and a real login shell (the elevation helper
   # invokes it). It is an execution identity, not a daemon.
   run useradd --create-home --shell "$SHELL_PATH" "$USERNAME"
+  # Resolve the actual home for the next-steps output. Falls back to the
+  # conventional path under dry-run, where useradd did not actually run
+  # (getent then exits non-zero, hence the || true under set -e).
+  ACCOUNT_HOME="$(getent passwd "$USERNAME" 2>/dev/null | cut -d: -f6 || true)"
+  ACCOUNT_HOME="${ACCOUNT_HOME:-/home/$USERNAME}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -256,9 +262,9 @@ echo ""
 echo "2. Configure LLM vendor credentials in the account's OWN home (this"
 echo "   script does not write secrets — they are the operator's to place)."
 echo "   For AWS Bedrock, for example:"
-echo "     - export lines in /home/$USERNAME/.profile — NOT ~/.bashrc: the"
+echo "     - export lines in $ACCOUNT_HOME/.profile — NOT ~/.bashrc: the"
 echo "       elevated inner shell is dash and never reads .bashrc"
-echo "     - /home/$USERNAME/.aws/credentials, mode 0600, owned by $USERNAME"
+echo "     - $ACCOUNT_HOME/.aws/credentials, mode 0600, owned by $USERNAME"
 echo ""
 echo "3. (Recommended, optional) Block SSH login for the account by adding"
 echo "     DenyUsers $USERNAME"
