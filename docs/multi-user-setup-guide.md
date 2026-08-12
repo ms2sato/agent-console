@@ -588,6 +588,8 @@ target), reference it from the systemd unit with `EnvironmentFile=-`, then
 | `AGENT_CONSOLE_MCP_AUTH` | _(unset)_ | Mode for missing-MCP-token handling on EVERY `/mcp` request (transport-level gate, Issue #1269): `off`, `warn`, or `enforce`. Unset resolves to `warn` for every `AUTH_MODE`, including multi-user (Sprint 2026-07-16; see Issue #1107 for the enforce-by-default restoration path). Setting `enforce` explicitly while `AUTH_MODE` is not `multi-user` fails server startup with a configuration error: `resolveMcpAuthMode` rejects the combination because MCP bearer tokens for terminal-agent workers are only minted when `AUTH_MODE=multi-user` (`worker-manager.ts`'s mint gate — see [Ruling 2](design/embedded-agent-worker.md#transport-level-authn-gate-issue-1269)), so enforcing without it would reject every terminal-agent MCP call outright; this is a deliberate fail-fast, not a bug. See [MCP authentication mode](#mcp-authentication-mode-agent_console_mcp_auth) below — most deployments should leave this unset. |
 | `EMBEDDED_AGENT_BUN_PATH` | `bun` | Absolute path (or bare command name) used to invoke `bun` when spawning the embedded-agent worker's loop subprocess. Default `bun` resolves via PATH, correct for single-user/dev where the spawned process shares the server's shell environment. Multi-user mode MUST set this to an absolute path (e.g. `/usr/local/bin/bun`) because the subprocess runs inside an elevated, non-interactive login shell that does not source `.bashrc` and cannot resolve a user-local `~/.bun/bin/bun` by bare name (Issue #1221; see [`.claude/rules/os-environment-coupling.md`](../.claude/rules/os-environment-coupling.md)). `scripts/setup-multiuser-for-ubuntu.sh` sets this to the SAME value as `ExecStart` (Issue #1222) — the server process and the embedded-agent subprocess always execute the identical file, so drift between them is structurally impossible; re-run the setup script after a `bun upgrade` to refresh which version that shared file is. |
 
+| `AGENT_CONSOLE_SHARED_USERNAME` | _(unset)_ | OS username of the **Shared Account** that runs [SharedSessions](design/shared-orchestrator-session.md). Unset → shared sessions disabled (`/api/config` reports `sharedAccountsAvailable: false`). Set → the server resolves the account at startup and **fails fast** if it does not exist. Honoured only when `AUTH_MODE=multi-user`. Provision the account with `scripts/setup-shared-account.sh`; see [Shared Account Setup](#shared-account-setup-shared-sessions). |
+
 The full list of server variables is defined in
 [`packages/server/src/lib/server-config.ts`](../packages/server/src/lib/server-config.ts).
 
@@ -1065,6 +1067,113 @@ multi-user instance): the helper does read the file and the resulting
 [#1107](https://github.com/ms2sato/agent-console/issues/1107) (restoring
 `enforce` as the multi-user default), not as a gate on general multi-user
 support, and that prerequisite is now satisfied.
+
+## Shared Account Setup (shared sessions)
+
+Optional. A **Shared Account** is a dedicated OS account that runs
+[SharedSessions](design/shared-orchestrator-session.md) — sessions any
+authenticated user can read and write. It is structurally an ordinary
+account (real home, real login shell), distinct from both the service user
+and individual users; its LLM-vendor authentication is API-key-based rather
+than subscription-based. See `docs/glossary.md` for the term.
+
+### 1. Provision the OS account
+
+```bash
+sudo scripts/setup-shared-account.sh project-sa
+```
+
+The script is idempotent (safe to re-run) and accepts `--group <name>`,
+`--shell <path>`, and `--dry-run` (previews without root). It:
+
+- verifies the shared group exists (run the bootstrap script first if not);
+- creates the account with a real home and a login shell the sudoers rule
+  permits (`/bin/bash` by default — zsh and others are rejected because the
+  elevation path invokes the target's login shell and the installed rule
+  only allows `sh`/`bash`);
+- locks the password (the account is a pure execution identity — humans
+  authenticate as themselves; elevation into it is NOPASSWD via the service
+  user's existing rule, so no sudoers change is needed);
+- adds it to the shared group (required for the setgid data-root tree). It
+  deliberately does NOT add the account to `shadow` and does NOT edit
+  sshd_config — blocking SSH login with a `DenyUsers` entry is a
+  recommended manual step the script prints.
+
+### 2. Register the account with the server
+
+Add the username to the systemd unit via a drop-in (survives bootstrap
+re-runs, unlike edits to the generated unit file):
+
+```bash
+sudo systemctl edit agent-console
+```
+
+```ini
+[Service]
+Environment=AGENT_CONSOLE_SHARED_USERNAME=project-sa
+```
+
+Then restart and verify:
+
+```bash
+sudo systemctl restart agent-console
+curl -s http://localhost:<port>/api/config   # expect "sharedAccountsAvailable":true
+```
+
+The server fails fast at startup when the configured username does not
+resolve to an OS account — create the account first, configure second.
+The setting is honoured only under `AUTH_MODE=multi-user`.
+
+### 3. Configure LLM vendor credentials in the account's own home
+
+The elevation path deliberately does not forward server env to spawned
+PTYs, so vendor credentials must come from the shared account's own
+login-shell init. Put exports in `~/.profile` — NOT `~/.bashrc`, which the
+elevated inner shell (dash) never reads.
+
+Example for AWS Bedrock with a long-term Bedrock API key, keeping the
+rotating secret in its own file so rotation is a one-file overwrite:
+
+```bash
+sudo -u project-sa -i
+
+cat >> ~/.profile <<'EOF'
+export CLAUDE_CODE_USE_BEDROCK=1
+export AWS_REGION=ap-northeast-1
+[ -f ~/.bedrock-key.env ] && . ~/.bedrock-key.env
+EOF
+
+umask 077
+cat > ~/.bedrock-key.env <<'EOF'
+export AWS_BEARER_TOKEN_BEDROCK=<long-term Bedrock API key>
+EOF
+
+exit
+```
+
+Use a **long-term** Bedrock API key (short-term keys expire within 12
+hours and will break unattended shared sessions). To rotate, overwrite
+`~/.bedrock-key.env` with the new key and recreate running shared sessions
+(PTYs read env at spawn time). Do NOT put `CLAUDE_CODE_*` or `AWS_*`
+variables on the server's systemd unit — they do not reach elevated PTYs,
+and `CLAUDE_CODE_*` on the server env triggers the direct-path unset-prefix
+hazard (`packages/server/src/services/env-filter.ts`).
+
+### 4. Verify
+
+```bash
+# Vendor auth works for the account itself
+sudo -u project-sa -i claude -p "hello"
+
+# Full elevation chain delivers the login-init env (see Post-deploy Verification)
+sudo -u agentconsole sh -c 'cd /home/agentconsole/agent-console && NODE_ENV=production /usr/local/bin/bun scripts/smoke/check-multiuser-pty-env.ts project-sa'
+```
+
+Finally, log in to the web UI as a regular user, create a quick session
+with **Create as shared session** checked (the checkbox appears only when
+`sharedAccountsAvailable` is true), and confirm `whoami` in the session
+terminal reports the shared account and the agent responds via the
+configured vendor.
 
 ## Post-deploy Verification (smoke tests)
 
