@@ -59,7 +59,7 @@ usage() {
   cat <<'EOF'
 Usage: setup-shared-account.sh <username> [--group <name>] [--shell <path>] [--dry-run]
 
-  username        Shared Account OS user to provision (e.g. project-sa).
+  username        Shared Account OS user to provision (e.g. agent-console-shared).
   --group <name>  Shared group to join (default: agent-console-users, or
                   $AGENT_CONSOLE_SERVICE_GROUP if set). Must already exist.
   --shell <path>  Login shell (default: /bin/bash). Must be one of

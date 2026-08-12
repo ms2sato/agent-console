@@ -1080,7 +1080,7 @@ than subscription-based. See `docs/glossary.md` for the term.
 ### 1. Provision the OS account
 
 ```bash
-sudo scripts/setup-shared-account.sh project-sa
+sudo scripts/setup-shared-account.sh agent-console-shared
 ```
 
 The script is idempotent (safe to re-run) and accepts `--group <name>`,
@@ -1110,7 +1110,7 @@ sudo systemctl edit agent-console
 
 ```ini
 [Service]
-Environment=AGENT_CONSOLE_SHARED_USERNAME=project-sa
+Environment=AGENT_CONSOLE_SHARED_USERNAME=agent-console-shared
 ```
 
 Then restart and verify:
@@ -1135,7 +1135,7 @@ Example for AWS Bedrock with a long-term Bedrock API key, keeping the
 rotating secret in its own file so rotation is a one-file overwrite:
 
 ```bash
-sudo -u project-sa -i
+sudo -u agent-console-shared -i
 
 cat >> ~/.profile <<'EOF'
 export CLAUDE_CODE_USE_BEDROCK=1
@@ -1163,10 +1163,10 @@ hazard (`packages/server/src/services/env-filter.ts`).
 
 ```bash
 # Vendor auth works for the account itself
-sudo -u project-sa -i claude -p "hello"
+sudo -u agent-console-shared -i claude -p "hello"
 
 # Full elevation chain delivers the login-init env (see Post-deploy Verification)
-sudo -u agentconsole sh -c 'cd /home/agentconsole/agent-console && NODE_ENV=production /usr/local/bin/bun scripts/smoke/check-multiuser-pty-env.ts project-sa'
+sudo -u agentconsole sh -c 'cd /home/agentconsole/agent-console && NODE_ENV=production /usr/local/bin/bun scripts/smoke/check-multiuser-pty-env.ts agent-console-shared'
 ```
 
 Finally, log in to the web UI as a regular user, create a quick session
