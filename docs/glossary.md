@@ -74,7 +74,8 @@ A session tied only to a directory path, without repository or worktree manageme
 A session running under a shared account OS identity, accessible to all authenticated users.
 - **Contrast:** [PersonalSession](#personalsession)
 - **Identifier:** `Session.isShared: boolean` (boolean discriminator on the wire, server-derived via `SharedAccountRegistry.isSharedUserId(createdBy)`)
-- **See:** [Terminology in shared-orchestrator-session.md](design/shared-orchestrator-session.md#terminology)
+- **Entry points:** the optional `shared: boolean` request field on `POST /api/sessions` and on `POST /repositories/:id/worktrees` (in `CreateWorktreeBaseSchema`, so all three worktree-creation modes — prompt / custom / existing — accept it). Both endpoints resolve ownership identically ([created_by](#created_by) = shared account's `users.id`, [initiated_by](#initiated_by) = authenticated user) and fail 400 when the shared account registry is disabled. Each endpoint has a "Create as shared session" UI checkbox gated on `sharedAccountsAvailable` (see [Shared Account](#shared-account)). For the worktree endpoint, the whole creation pipeline runs as the shared account. MCP `delegate_to_worktree` deliberately has no `shared` parameter — a shared parent session already yields shared worktree sessions via `created_by` inheritance.
+- **See:** [Terminology in shared-orchestrator-session.md](design/shared-orchestrator-session.md#terminology), [Worktree-creation entry point in shared-orchestrator-session.md](design/shared-orchestrator-session.md#worktree-creation-entry-point)
 
 ### WorktreeSession
 A session tied to a repository and worktree, with branch management features.

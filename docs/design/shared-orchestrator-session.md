@@ -104,6 +104,20 @@ End user `userA` clicks "Create shared session" in the UI. If the server is conf
 
 End-user perspective: a shared session appears in the session list. Any authenticated user can click it, open its worker's PTY, and type into it — exactly like a personal session, except the PTY process is running as the shared account and the participants include the whole team.
 
+### Worktree-creation entry point
+
+Shared sessions have two REST entry points, not one. The flow above describes the session-create request (`POST /api/sessions`, where the `shared` indicator is the optional `shared: boolean` request field); the worktree-creation endpoint `POST /repositories/:id/worktrees` accepts the same optional field, defined once in `CreateWorktreeBaseSchema` so all three creation modes — prompt, custom, existing — carry it. Ownership resolution is identical to the sessions endpoint: `sessions.created_by` = the shared account's `users.id`, `sessions.initiated_by` = the authenticated user who submitted the form, and the request fails with 400 (`Shared sessions are not enabled on this server.`) when the shared account registry is disabled. The UI mirrors the quick-session form: both worktree-creation forms gain a "Create as shared session" checkbox, visible only when `sharedAccountsAvailable` is true.
+
+**The whole creation pipeline runs as the shared account.** For a shared worktree session, `requestUsername` is resolved to the shared account's OS username before any work begins, so `git worktree add`, the `useRemote` fetch, the repository's setup command, and the prompt mode's headless branch-name suggestion all execute under the shared account via the elevation helpers. Three reasons:
+
+1. **Ownership consistency.** The session's PTY runs as the shared account, so the worktree files it operates on should be owned by the same identity. This is the "Identity × filesystem boundary" invariant below — no process writes into a user's `$HOME` unless it is running as that user — applied to the shared account's own filesystem scope.
+2. **Consistency with the MCP path.** `delegate_to_worktree` already resolves `requestUsername` from the parent session's `created_by`, so a worktree delegated from a shared session is already created as the shared account. The REST entry point behaves the same way rather than introducing a second ownership rule.
+3. **Billing / auth consistency.** The prompt mode's headless branch-name suggestion invokes the LLM CLI; running it as the shared account uses the shared account's API-key credentials (per the Authentication model above) rather than the initiating human's personal subscription.
+
+**Operational prerequisite — remote access for the shared account.** Because the `useRemote` fetch runs as the shared account, the shared account needs its own git access to the repository remote (an SSH key or credential helper in its own home), in addition to the LLM credentials from Operational Setup step 2. Without it, worktree creation still succeeds — the existing `fetchFailed` fallback creates the branch from the local ref and surfaces the failed fetch to the user — but subsequent pulls from inside the session will fail until access is provisioned.
+
+**Out of scope.** MCP `delegate_to_worktree` gains no `shared` parameter: shared parent sessions already produce shared worktree sessions via `created_by` inheritance (reason 2 above). Per-user permission modeling and multiple shared accounts remain governed by the Permission Model and Open Questions sections.
+
 ## Per-user Worktree Dispatch
 
 The shared session is only half the multi-user story. The other half is what happens when the Orchestrator inside the shared session delegates work to an individual team member: the resulting worktree must live under the **assignee's** own home directory, and all commits made there must bear the assignee's git identity.

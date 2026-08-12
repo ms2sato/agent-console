@@ -216,6 +216,12 @@ const CreateWorktreeBaseSchema = v.strictObject({
   embeddedAgentId: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Embedded agent ID cannot be empty'))),
   initialPrompt: v.optional(v.string()),
   title: v.optional(v.string()),
+  /**
+   * When true, create the worktree session as a shared session (PTY runs as
+   * the configured shared account). Requires AGENT_CONSOLE_SHARED_USERNAME
+   * to be set on the server. See docs/design/shared-orchestrator-session.md.
+   */
+  shared: v.optional(v.boolean()),
 });
 
 /**

@@ -8,7 +8,7 @@ import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-c
 import type { AppBindings } from '../app-context.js';
 import { getRepositoriesDir } from '../lib/config.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
-import { NotFoundError, ValidationError } from '../lib/errors.js';
+import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js';
 import { vValidator } from '../middleware/validation.js';
 import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -48,7 +48,7 @@ const worktrees = new Hono<AppBindings>()
   // Create a worktree (async - returns immediately and broadcasts result via WebSocket)
   .post('/:id/worktrees', vValidator(CreateWorktreeRequestSchema), async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, agentManager, agentDirectory, worktreeService, broadcastToApp, suggestSessionMetadata } = c.get('appContext');
+    const { repositoryManager, sessionManager, agentManager, agentDirectory, worktreeService, broadcastToApp, suggestSessionMetadata, sharedAccountRegistry } = c.get('appContext');
     const repo = repositoryManager.getRepository(repoId);
 
     if (!repo) {
@@ -78,6 +78,41 @@ const worktrees = new Hono<AppBindings>()
       }
     }
 
+    // Determine worktree/session ownership. For shared sessions, createdBy is
+    // the shared account (PTY spawn identity) and initiatedBy is the
+    // authenticated user (audit trail); the whole creation pipeline below
+    // (git worktree add, useRemote fetch, setup command, headless
+    // branch-name suggestion) runs as the shared account via
+    // `requestUsername`. For personal sessions, createdBy is the
+    // authenticated user, initiatedBy is left undefined, and requestUsername
+    // is the authenticated user's OS username. This mirrors
+    // POST /api/sessions (see routes/sessions.ts) exactly. Resolved
+    // synchronously (before the fire-and-forget block) so an invalid request
+    // (feature disabled) fails with 400 instead of a broadcast failure.
+    let createdBy: string;
+    let initiatedBy: string | undefined;
+    let requestUsername: string | null;
+    if (body.shared === true) {
+      if (!sharedAccountRegistry.isEnabled()) {
+        throw new ValidationError('Shared sessions are not enabled on this server.');
+      }
+      const sharedUserId = sharedAccountRegistry.getDefaultUserId();
+      const sharedUsername = sharedAccountRegistry.getDefaultUsername();
+      if (!sharedUserId || !sharedUsername) {
+        // isEnabled() returned true but no default -- unreachable in
+        // practice; surface as 500 since it indicates server-side
+        // inconsistency, not a client input error.
+        throw new InternalError('Shared account registry is enabled but has no default user.');
+      }
+      createdBy = sharedUserId;
+      initiatedBy = authUser.id;
+      requestUsername = sharedUsername;
+    } else {
+      createdBy = authUser.id;
+      initiatedBy = undefined;
+      requestUsername = authUser.username;
+    }
+
     // Execute worktree creation in background (fire-and-forget)
     // This promise is intentionally not awaited
     (async () => {
@@ -92,15 +127,20 @@ const worktrees = new Hono<AppBindings>()
 
         switch (mode) {
           case 'prompt': {
-            // Thread the authenticated OS username down so the headless agent
-            // command runs as the requesting user in multi-user mode. In
-            // single-user mode `runAsUser` reads this value but `AUTH_MODE`
-            // gates the elevation to a no-op.
+            // Thread `requestUsername` down so the headless agent command
+            // runs as the requesting user in multi-user mode. For shared
+            // sessions this is the shared account's OS username (the whole
+            // creation pipeline runs as the shared account, so the
+            // suggestion uses the shared account's API-key credentials
+            // rather than the human's personal subscription); otherwise it
+            // is the authenticated user's OS username. In single-user mode
+            // `runAsUser` reads this value but `AUTH_MODE` gates the
+            // elevation to a no-op.
             const suggestion = await suggestSessionMetadata({
               prompt: body.initialPrompt!.trim(),
               repositoryPath: repo.path,
               agent,
-              requestUser: authUser.username,
+              requestUser: requestUsername,
             });
             if (suggestion.error || !suggestion.branch) {
               // Fallback: use timestamp-based branch name, empty title
@@ -145,12 +185,13 @@ const worktrees = new Hono<AppBindings>()
           initialPrompt,
           title: effectiveTitle,
           autoStartSession,
-          context: { createdBy: authUser.id },
-          // Thread the authenticated OS username down to `git worktree add`
-          // so multi-user installs create the worktree as the requesting
-          // user. In single-user mode, `runAsUser` reads this value but
-          // `AUTH_MODE` gates the elevation to a no-op.
-          requestUsername: authUser.username,
+          context: { createdBy, initiatedBy },
+          // Thread `requestUsername` down to `git worktree add` (and the
+          // rest of the creation pipeline) so multi-user installs create the
+          // worktree as the requesting user -- or, for shared sessions, as
+          // the shared account. In single-user mode, `runAsUser` reads this
+          // value but `AUTH_MODE` gates the elevation to a no-op.
+          requestUsername,
         }, sessionManager, worktreeService);
 
         if (!result.success) {
