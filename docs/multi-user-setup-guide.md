@@ -1139,7 +1139,7 @@ sudo -u agent-console-shared -i
 
 cat >> ~/.profile <<'EOF'
 export CLAUDE_CODE_USE_BEDROCK=1
-export AWS_REGION=ap-northeast-1
+export AWS_REGION=us-east-1
 [ -f ~/.bedrock-key.env ] && . ~/.bedrock-key.env
 EOF
 
