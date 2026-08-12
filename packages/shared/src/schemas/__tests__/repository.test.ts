@@ -387,6 +387,43 @@ describe('CreateWorktreePromptRequestSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('shared (Issue #1286)', () => {
+    it('should accept shared: true', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+        shared: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.shared).toBe(true);
+      }
+    });
+
+    it('should accept shared absent (backward compat)', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.shared).toBeUndefined();
+      }
+    });
+
+    it('should reject non-boolean shared', () => {
+      const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+        taskId: validTaskId,
+        mode: 'prompt',
+        initialPrompt: 'Fix login bug',
+        shared: 'yes',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('CreateWorktreeCustomRequestSchema', () => {
@@ -567,6 +604,43 @@ describe('CreateWorktreeCustomRequestSchema', () => {
       expect(result.success).toBe(false);
     });
   });
+
+  describe('shared (Issue #1286)', () => {
+    it('should accept shared: true', () => {
+      const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+        taskId: validTaskId,
+        mode: 'custom',
+        branch: 'feature/custom-branch',
+        shared: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.shared).toBe(true);
+      }
+    });
+
+    it('should accept shared absent (backward compat)', () => {
+      const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+        taskId: validTaskId,
+        mode: 'custom',
+        branch: 'feature/custom-branch',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.shared).toBeUndefined();
+      }
+    });
+
+    it('should reject non-boolean shared', () => {
+      const result = v.safeParse(CreateWorktreeCustomRequestSchema, {
+        taskId: validTaskId,
+        mode: 'custom',
+        branch: 'feature/custom-branch',
+        shared: 'yes',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('CreateWorktreeExistingRequestSchema', () => {
@@ -718,6 +792,43 @@ describe('CreateWorktreeExistingRequestSchema', () => {
         mode: 'existing',
         branch: 'existing-branch',
         embeddedAgentId: '',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
+  describe('shared (Issue #1286)', () => {
+    it('should accept shared: true', () => {
+      const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+        taskId: validTaskId,
+        mode: 'existing',
+        branch: 'existing-branch',
+        shared: true,
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.shared).toBe(true);
+      }
+    });
+
+    it('should accept shared absent (backward compat)', () => {
+      const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+        taskId: validTaskId,
+        mode: 'existing',
+        branch: 'existing-branch',
+      });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.shared).toBeUndefined();
+      }
+    });
+
+    it('should reject non-boolean shared', () => {
+      const result = v.safeParse(CreateWorktreeExistingRequestSchema, {
+        taskId: validTaskId,
+        mode: 'existing',
+        branch: 'existing-branch',
+        shared: 'yes',
       });
       expect(result.success).toBe(false);
     });

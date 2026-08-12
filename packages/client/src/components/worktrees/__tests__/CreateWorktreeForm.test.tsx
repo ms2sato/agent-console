@@ -4,6 +4,7 @@ import { render, screen, waitFor, act, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CreateWorktreeForm } from '../CreateWorktreeForm';
+import { setSharedAccountsAvailable, _reset as resetAuth } from '../../../lib/auth';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -18,6 +19,7 @@ afterAll(() => {
 // Clean up after each test
 afterEach(() => {
   cleanup();
+  resetAuth();
 });
 
 // Mock agents response
@@ -1250,6 +1252,84 @@ describe('CreateWorktreeForm', () => {
       await waitFor(() => {
         expect(screen.getByText(/⚠️ 1 commit behind origin\/main/)).toBeTruthy();
       });
+    });
+  });
+
+  describe('shared session checkbox', () => {
+    it('should NOT render the checkbox when sharedAccountsAvailable is false', async () => {
+      setSharedAccountsAvailable(false);
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      expect(screen.queryByText('Create as shared session')).toBeNull();
+    });
+
+    it('should render the checkbox when sharedAccountsAvailable is true', async () => {
+      setSharedAccountsAvailable(true);
+      renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      expect(screen.getByText('Create as shared session')).toBeTruthy();
+    });
+
+    it('should submit shared: true when the checkbox is checked', async () => {
+      setSharedAccountsAvailable(true);
+      const user = userEvent.setup();
+      const { props } = renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const checkbox = screen.getByRole('checkbox');
+      await user.click(checkbox);
+
+      const branchInput = screen.getByPlaceholderText('New branch name');
+      await user.type(branchInput, 'feature/shared-session');
+
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).toMatchObject({
+        mode: 'custom',
+        branch: 'feature/shared-session',
+        shared: true,
+      });
+    });
+
+    it('should omit the shared field when the checkbox is left unchecked', async () => {
+      setSharedAccountsAvailable(true);
+      const user = userEvent.setup();
+      const { props } = renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const branchInput = screen.getByPlaceholderText('New branch name');
+      await user.type(branchInput, 'feature/not-shared');
+
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0]).not.toHaveProperty('shared', false);
+      expect(submitCall[0].shared).toBeUndefined();
     });
   });
 });

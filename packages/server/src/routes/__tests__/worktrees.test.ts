@@ -7,12 +7,14 @@ import type { WorktreeService } from '../../services/worktree-service.js';
 import type { RepositoryManager } from '../../services/repository-manager.js';
 import type { SessionManager } from '../../services/session-manager.js';
 import type { AppServerMessage, Repository } from '@agent-console/shared';
-import { asAppContext } from '../../__tests__/test-utils.js';
+import { asAppContext, TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { _getPullsInProgress, _getDeletionsInProgress } from '../worktrees.js';
 import { CLAUDE_CODE_AGENT_ID } from '../../services/agent-manager.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
+import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
+import type { AuthUser } from '@agent-console/shared';
 
 // ---------------------------------------------------------------------------
 // Test constants
@@ -307,6 +309,287 @@ describe('Worktrees API', () => {
       // Primary assertion: requestUser must equal the authenticated OS user.
       expect(req.requestUser).toBe('testuser');
     });
+  });
+
+  // =========================================================================
+  // POST /api/repositories/:id/worktrees (Issue #1286: shared worktree
+  // sessions). Mirrors POST /api/sessions (see sessions.test.ts's "shared
+  // sessions" describe block) -- `body.shared` is translated into
+  // createdBy/initiatedBy ownership and the whole creation pipeline
+  // (createWorktree, session creation) runs under `requestUsername`.
+  // =========================================================================
+
+  describe('POST /api/repositories/:id/worktrees (Issue #1286 shared worktree sessions)', () => {
+    const mockAgentManager = {
+      getAgent: mock(() => ({ id: 'claude-code-builtin', name: 'Claude Code' })),
+    } as unknown as Parameters<typeof asAppContext>[0]['agentManager'];
+
+    /**
+     * The route kicks off worktree creation in a fire-and-forget IIFE; the
+     * mock resolves a promise the test awaits before asserting the args it
+     * was called with (mirrors createCapturingWorktreeMock above, but
+     * resolves a success shape so the pipeline continues to session
+     * creation instead of short-circuiting).
+     */
+    function createCapturingCreateWorktreeMock(worktreePath: string) {
+      let resolveCall!: (args: unknown[]) => void;
+      const captured = new Promise<unknown[]>((resolve) => {
+        resolveCall = resolve;
+      });
+      const mockFn = mock((...args: unknown[]) => {
+        resolveCall(args);
+        return Promise.resolve({ worktreePath, index: 0 });
+      });
+      return { mockFn, captured };
+    }
+
+    function createCapturingSessionMock() {
+      let resolveCall!: (args: unknown[]) => void;
+      const captured = new Promise<unknown[]>((resolve) => {
+        resolveCall = resolve;
+      });
+      const mockFn = mock((...args: unknown[]) => {
+        resolveCall(args);
+        return Promise.resolve({ id: 'session-shared-1' });
+      });
+      return { mockFn, captured };
+    }
+
+    /**
+     * Builds a real SharedAccountRegistry (enabled or disabled) backed by a
+     * fake UserRepository, mirroring sessions.test.ts's setupCommon pattern.
+     * The registry's public API (isEnabled / getDefaultUserId /
+     * getDefaultUsername) is exercised for real; only the OS lookup + DB
+     * upsert are faked.
+     */
+    async function createSharedAccountRegistry(opts: { enabled: boolean }): Promise<SharedAccountRegistry> {
+      if (!opts.enabled) {
+        return SharedAccountRegistry.createDisabled();
+      }
+      const fakeUserRepository = {
+        upsertByOsUid: mock((_uid: number, username: string, homeDir: string) =>
+          Promise.resolve({ id: 'shared-user-id', username, homeDir } satisfies AuthUser),
+        ),
+        findById: mock(() => Promise.resolve(null)),
+      };
+      return SharedAccountRegistry.create({
+        username: 'shared-user',
+        userRepository: fakeUserRepository as unknown as Parameters<typeof SharedAccountRegistry.create>[0]['userRepository'],
+        lookupOsUser: () => Promise.resolve({ uid: 6000, homeDir: '/home/shared-user' }),
+      });
+    }
+
+    it('shared:true + registry disabled -> 400 with exact message, createWorktree not called', async () => {
+      const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: false });
+      const { mockFn: createCapture } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
+      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+          sharedAccountRegistry,
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(`/api/repositories/${TEST_REPO.id}/worktrees`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: 'task-1286-disabled',
+          mode: 'custom',
+          branch: 'feature/shared-disabled',
+          baseBranch: 'main',
+          useRemote: false,
+          autoStartSession: false,
+          agentId: 'claude-code-builtin',
+          shared: true,
+        }),
+      });
+
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toBe('Shared sessions are not enabled on this server.');
+      // Failure happens synchronously (before the fire-and-forget block), so
+      // the worktree creation pipeline must never have been entered.
+      expect(createCapture).not.toHaveBeenCalled();
+    });
+
+    it('shared:true + registry enabled -> createWorktree + session creation run under the shared account', async () => {
+      const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: true });
+      const sharedUserId = sharedAccountRegistry.getDefaultUserId();
+      const sharedUsername = sharedAccountRegistry.getDefaultUsername();
+      expect(sharedUserId).not.toBeNull();
+      expect(sharedUsername).toBe('shared-user');
+
+      const { mockFn: createCapture, captured: createCaptured } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
+      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+
+      const { mockFn: sessionCapture, captured: sessionCaptured } = createCapturingSessionMock();
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          sessionManager: { createSession: sessionCapture } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+          sharedAccountRegistry,
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(`/api/repositories/${TEST_REPO.id}/worktrees`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: 'task-1286-enabled',
+          mode: 'custom',
+          branch: 'feature/shared-enabled',
+          baseBranch: 'main',
+          useRemote: false,
+          autoStartSession: true,
+          agentId: 'claude-code-builtin',
+          shared: true,
+        }),
+      });
+
+      expect(res.status).toBe(202);
+
+      // createWorktree signature: (repoPath, branch, repoId, baseBranch, requestUsername)
+      const createArgs = await createCaptured;
+      expect(createArgs[4]).toBe(sharedUsername);
+
+      // sessionManager.createSession signature: (sessionParams, context)
+      const sessionArgs = await sessionCaptured;
+      const context = sessionArgs[1] as { createdBy?: string; initiatedBy?: string };
+      expect(context.createdBy).toBe(sharedUserId!);
+      expect(context.initiatedBy).toBe(TEST_AUTH_USER.id);
+    });
+
+    it('shared:true + registry enabled -> prompt-mode suggestSessionMetadata receives the shared account username', async () => {
+      const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: true });
+      const sharedUsername = sharedAccountRegistry.getDefaultUsername();
+
+      const { mockFn: createCapture } = createCapturingWorktreeMockShortCircuit();
+
+      let resolveSuggestionCall!: (args: unknown[]) => void;
+      const suggestionCaptured = new Promise<unknown[]>((resolve) => {
+        resolveSuggestionCall = resolve;
+      });
+      const suggestionMock = mock((...args: unknown[]) => {
+        resolveSuggestionCall(args);
+        return Promise.resolve({ branch: undefined, title: undefined, error: 'short-circuit for test' });
+      });
+
+      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          sessionManager: { createSession: mock() } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: suggestionMock as unknown as Parameters<typeof asAppContext>[0]['suggestSessionMetadata'],
+          sharedAccountRegistry,
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(`/api/repositories/${TEST_REPO.id}/worktrees`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: 'task-1286-prompt-shared',
+          mode: 'prompt',
+          initialPrompt: 'Add a shared-session feature',
+          baseBranch: 'main',
+          useRemote: false,
+          autoStartSession: false,
+          agentId: 'claude-code-builtin',
+          shared: true,
+        }),
+      });
+
+      expect(res.status).toBe(202);
+
+      const args = await suggestionCaptured;
+      const req = args[0] as { requestUser: string | null };
+      expect(req.requestUser).toBe(sharedUsername);
+    });
+
+    it('default (no shared field) -> personal ownership (createdBy = authUser, initiatedBy undefined)', async () => {
+      const sharedAccountRegistry = await createSharedAccountRegistry({ enabled: true });
+
+      const { mockFn: createCapture, captured: createCaptured } = createCapturingCreateWorktreeMock(WORKTREE_PATH);
+      (mockWorktreeService as unknown as { createWorktree: typeof createCapture }).createWorktree = createCapture;
+
+      const { mockFn: sessionCapture, captured: sessionCaptured } = createCapturingSessionMock();
+
+      app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', asAppContext({
+          repositoryManager: mockRepositoryManager,
+          worktreeService: mockWorktreeService,
+          agentManager: mockAgentManager,
+          sessionManager: { createSession: sessionCapture } as unknown as SessionManager,
+          broadcastToApp: () => {},
+          suggestSessionMetadata: mock(async () => ({ branch: '', title: '', error: 'unused' })),
+          sharedAccountRegistry,
+        }));
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/api', api);
+
+      const res = await app.request(`/api/repositories/${TEST_REPO.id}/worktrees`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: 'task-1286-default',
+          mode: 'custom',
+          branch: 'feature/personal',
+          baseBranch: 'main',
+          useRemote: false,
+          autoStartSession: true,
+          agentId: 'claude-code-builtin',
+        }),
+      });
+
+      expect(res.status).toBe(202);
+
+      const createArgs = await createCaptured;
+      // requestUsername forwarded to createWorktree must be the authenticated
+      // user's OS username, unaffected by the (enabled but unused) registry.
+      expect(createArgs[4]).toBe('testuser');
+
+      const sessionArgs = await sessionCaptured;
+      const context = sessionArgs[1] as { createdBy?: string; initiatedBy?: string };
+      expect(context.createdBy).toBe(TEST_AUTH_USER.id);
+      expect(context.initiatedBy).toBeUndefined();
+    });
+
+    /** Short-circuit variant used by the prompt-mode suggestion test, mirroring createCapturingWorktreeMock above. */
+    function createCapturingWorktreeMockShortCircuit() {
+      const mockFn = mock(() => Promise.resolve({ worktreePath: '', error: 'short-circuit for test' }));
+      return { mockFn };
+    }
   });
 
   // =========================================================================

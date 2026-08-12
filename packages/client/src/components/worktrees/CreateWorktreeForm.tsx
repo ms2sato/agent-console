@@ -6,6 +6,7 @@ import { FormField, Input, Textarea } from '../ui/FormField';
 import { UnifiedAgentSelector, useResolvedEmbeddedAgentId } from '../AgentSelector';
 import { useResolvedAgentId } from '../../hooks/useAgents';
 import { Spinner } from '../ui/Spinner';
+import { useAuth } from '../../lib/auth';
 import type { CreateWorktreeFormData } from '../../schemas/worktree-form';
 import { CreateWorktreeFormSchema } from '../../schemas/worktree-form';
 import type {
@@ -88,6 +89,8 @@ export function CreateWorktreeForm({
     mode: 'onBlur',
     shouldUnregister: true,
   });
+
+  const { sharedAccountsAvailable } = useAuth();
 
   // Draft persistence: restore saved values on mount, save on change, clear on successful submit
   // Tracks whether draft was cleared (e.g., after successful submit) to skip unmount save
@@ -247,6 +250,7 @@ export function CreateWorktreeForm({
           embeddedAgentId: resolvedEmbeddedAgentId || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
+          shared: data.shared || undefined,
         };
       case 'custom':
         return {
@@ -259,6 +263,7 @@ export function CreateWorktreeForm({
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
+          shared: data.shared || undefined,
         };
       case 'existing':
         return {
@@ -269,6 +274,7 @@ export function CreateWorktreeForm({
           embeddedAgentId: resolvedEmbeddedAgentId || undefined,
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
+          shared: data.shared || undefined,
         };
     }
     // Exhaustiveness check - compile error if new mode is added
@@ -326,6 +332,17 @@ export function CreateWorktreeForm({
               />
             </div>
           </div>
+
+          {sharedAccountsAvailable && (
+            <label className="flex items-center gap-2 text-sm text-gray-400">
+              <input
+                type="checkbox"
+                {...register('shared')}
+                className="accent-indigo-600"
+              />
+              Create as shared session
+            </label>
+          )}
 
           {/* Two-column layout for form fields */}
           <div className="grid grid-cols-1 md:grid-cols-[3fr_2fr] gap-x-4 gap-y-2">
