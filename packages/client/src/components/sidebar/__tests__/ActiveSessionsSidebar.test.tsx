@@ -3,6 +3,7 @@ import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { ActiveSessionsSidebar } from '../ActiveSessionsSidebar';
+import { QUICK_SESSIONS_GROUP_KEY } from '../group-sessions-by-repository';
 import {
   SIDEBAR_COLLAPSED_WIDTH,
   SIDEBAR_DEFAULT_WIDTH,
@@ -1116,6 +1117,262 @@ describe('ActiveSessionsSidebar', () => {
       await waitFor(() => {
         expect(screen.getByText('Restarted 3 agents.')).toBeTruthy();
       });
+    });
+  });
+
+  describe('Repository grouping (Issue #1292)', () => {
+    beforeEach(() => {
+      localStorage.clear();
+    });
+
+    it('renders a header per group with session counts when 2+ groups exist', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a2', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+      const headerA = document.querySelector('[aria-controls="session-group-repo-a-list"]');
+      const headerB = document.querySelector('[aria-controls="session-group-repo-b-list"]');
+      expect(headerA).toBeTruthy();
+      expect(headerB).toBeTruthy();
+      expect(headerA?.textContent).toContain('Repo A');
+      expect(headerA?.textContent).toContain('2');
+      expect(headerB?.textContent).toContain('Repo B');
+      expect(headerB?.textContent).toContain('1');
+    });
+
+    it('collapsing a group header hides its sessions but keeps the count badge visible', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A', title: 'branch-a1' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B', title: 'branch-b1' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+      expect(screen.getByText('branch-a1')).toBeTruthy();
+
+      const headerA = document.querySelector('[aria-controls="session-group-repo-a-list"]') as HTMLButtonElement;
+      fireEvent.click(headerA);
+
+      expect(screen.queryByText('branch-a1')).toBeNull();
+      expect(headerA.textContent).toContain('1');
+      expect(headerA.getAttribute('aria-expanded')).toBe('false');
+      // The sibling group is unaffected by collapsing this one.
+      expect(screen.getByText('branch-b1')).toBeTruthy();
+    });
+
+    it('persists group collapse state to localStorage on toggle and restores it on the next mount', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+      const headerA = document.querySelector('[aria-controls="session-group-repo-a-list"]') as HTMLButtonElement;
+      expect(headerA.getAttribute('aria-expanded')).toBe('true'); // default expanded (M3)
+      fireEvent.click(headerA);
+
+      expect(localStorage.getItem('agent-console:sidebar-group-collapsed:repo-a')).toBe('true');
+
+      cleanup();
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+      const restoredHeaderA = document.querySelector('[aria-controls="session-group-repo-a-list"]');
+      expect(restoredHeaderA?.getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('renders flat with no group header when exactly one group exists (R6 single-group degradation)', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a2', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+      expect(document.querySelectorAll('[aria-controls^="session-group-"]')).toHaveLength(0);
+      // Both sessions still render, just without a header.
+      expect(screen.getAllByText('Repo A')).toHaveLength(2);
+    });
+
+    it('renders a flat icon list with no group headers when the sidebar is collapsed, even with multiple repositories (R5)', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} collapsed={true} sessions={sessions} />
+      );
+
+      expect(document.querySelectorAll('[aria-controls^="session-group-"]')).toHaveLength(0);
+      // Still one activity indicator per session (flat icon list).
+      expect(screen.getAllByLabelText(/^Activity:/)).toHaveLength(2);
+    });
+
+    it('R7: does not render an empty header once filtering removes every session for a repository', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+      expect(document.querySelector('[aria-controls="session-group-repo-b-list"]')).toBeTruthy();
+      cleanup();
+
+      // Simulate the mine/shared filter (applied upstream in routes/__root.tsx,
+      // BEFORE `sessions` reaches this component) having removed every
+      // repo-b session. Filter-then-group composition (R7): the component
+      // must never fabricate a lingering empty header for repo-b.
+      const filteredSessions = sessions.filter(
+        (s) => s.session.type === 'worktree' && s.session.repositoryId === 'repo-a'
+      );
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={filteredSessions} />);
+
+      expect(document.querySelector('[aria-controls="session-group-repo-b-list"]')).toBeNull();
+      // Down to a single group -> R6 degradation also applies, no header at all.
+      expect(document.querySelectorAll('[aria-controls^="session-group-"]')).toHaveLength(0);
+    });
+
+    it('M5: shows an activity indicator on a collapsed group header when it contains a non-idle session', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'asking'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+      const headerA = document.querySelector('[aria-controls="session-group-repo-a-list"]') as HTMLButtonElement;
+      const headerB = document.querySelector('[aria-controls="session-group-repo-b-list"]') as HTMLButtonElement;
+
+      // Collapse both: repo-a has an attention-worthy (asking) session, repo-b is idle-only.
+      fireEvent.click(headerA);
+      fireEvent.click(headerB);
+
+      expect(headerA.querySelector('[aria-label="Activity: asking"]')).toBeTruthy();
+      expect(headerB.querySelector('[aria-label^="Activity:"]')).toBeNull();
+    });
+
+    it('does not show the collapsed-group activity indicator while the group is expanded', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'asking'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+      const headerA = document.querySelector('[aria-controls="session-group-repo-a-list"]') as HTMLButtonElement;
+      // Still expanded (default) — the session's own indicator is visible
+      // inline; the header itself must not duplicate it.
+      expect(headerA.querySelector('[aria-label="Activity: asking"]')).toBeNull();
+    });
+
+    it('renders quick sessions under a dedicated "Quick sessions" group, ordered after repository groups', async () => {
+      const sessions = [
+        createSessionWithActivity(createMockQuickSession({ id: 'q1' }), 'idle'),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+      ];
+
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={sessions} />);
+
+      const quickHeader = document.querySelector(`[aria-controls="session-group-${QUICK_SESSIONS_GROUP_KEY}-list"]`);
+      expect(quickHeader).toBeTruthy();
+      expect(quickHeader?.textContent).toContain('Quick sessions');
+
+      const headers = Array.from(document.querySelectorAll('[aria-controls^="session-group-"]'));
+      const headerIds = headers.map((h) => h.getAttribute('aria-controls'));
+      expect(headerIds.indexOf('session-group-repo-a-list')).toBeLessThan(
+        headerIds.indexOf(`session-group-${QUICK_SESSIONS_GROUP_KEY}-list`)
+      );
+    });
+
+    it('invariant: the paused section still renders below the grouped session list (grouping does not swallow it)', async () => {
+      const sessions = [
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'a1', repositoryId: 'repo-a', repositoryName: 'Repo A' }),
+          'idle'
+        ),
+        createSessionWithActivity(
+          createMockWorktreeSession({ id: 'b1', repositoryId: 'repo-b', repositoryName: 'Repo B' }),
+          'idle'
+        ),
+      ];
+      const pausedSessions = [
+        createMockWorktreeSession({ pausedAt: new Date().toISOString(), repositoryName: 'paused-repo' }),
+      ];
+
+      await renderWithRouter(
+        <ActiveSessionsSidebar {...defaultProps()} sessions={sessions} pausedSessions={pausedSessions} />
+      );
+
+      // Exactly the 2 repository groups — the paused section is not folded
+      // into the grouped region as a third group.
+      expect(document.querySelectorAll('[aria-controls^="session-group-"]')).toHaveLength(2);
+      expect(screen.getByText('Paused')).toBeTruthy();
+    });
+
+    it('invariant: "No active sessions" still renders when the session list is empty, unaffected by grouping', async () => {
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} sessions={[]} />);
+
+      expect(screen.getByText('No active sessions')).toBeTruthy();
+      expect(document.querySelectorAll('[aria-controls^="session-group-"]')).toHaveLength(0);
     });
   });
 });

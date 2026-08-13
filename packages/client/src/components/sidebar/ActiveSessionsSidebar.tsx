@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from '@tanstack/react-router';
-import { useRef, useCallback, useEffect, useState } from 'react';
+import { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
 import type { SessionFilterMode } from '../../types/session-filter';
@@ -11,6 +11,8 @@ import { ConfirmDialog } from '../ui/confirm-dialog';
 import { Spinner } from '../ui/Spinner';
 import { ActivityIndicator } from './ActivityIndicator';
 import type { SessionWithActivity } from '../../hooks/useActiveSessionsWithActivity';
+import { groupSessionsByRepository, getGroupAggregateActivityState } from './group-sessions-by-repository';
+import { getPersistedGroupCollapsed, persistGroupCollapsed } from './session-group-collapse-storage';
 import {
   SIDEBAR_MIN_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -392,6 +394,28 @@ export function ActiveSessionsSidebar({
   const [isResizing, setIsResizing] = useState(false);
   const [pausedExpanded, setPausedExpanded] = useState(false);
   const sidebarRef = useRef<HTMLDivElement>(null);
+
+  // Repository grouping. `sessions` is already the mine/shared-filtered
+  // list by the time it reaches this component (see routes/__root.tsx), so
+  // grouping here is inherently filter-then-group: a repository with zero
+  // visible sessions never produces a group.
+  const sessionGroups = useMemo(() => groupSessionsByRepository(sessions), [sessions]);
+  const [groupCollapsedOverrides, setGroupCollapsedOverrides] = useState<Record<string, boolean>>({});
+  const isGroupCollapsed = useCallback(
+    (groupKey: string): boolean =>
+      groupKey in groupCollapsedOverrides
+        ? groupCollapsedOverrides[groupKey]
+        : getPersistedGroupCollapsed(groupKey),
+    [groupCollapsedOverrides]
+  );
+  const toggleGroup = useCallback((groupKey: string) => {
+    setGroupCollapsedOverrides((prev) => {
+      const current = groupKey in prev ? prev[groupKey] : getPersistedGroupCollapsed(groupKey);
+      const next = !current;
+      persistGroupCollapsed(groupKey, next);
+      return { ...prev, [groupKey]: next };
+    });
+  }, []);
   const currentWidthRef = useRef(width);
   // Keep ref in sync with prop (no useEffect needed for simple ref sync)
   currentWidthRef.current = width;
@@ -685,7 +709,11 @@ export function ActiveSessionsSidebar({
           !collapsed && (
             <div className="p-3 text-gray-500 text-sm">No active sessions</div>
           )
-        ) : (
+        ) : collapsed || sessionGroups.length <= 1 ? (
+          // R5: collapsed sidebar always renders a flat icon list.
+          // R6: a single group (counting the quick group) degrades to a flat
+          // list with no header, keeping single-repository sidebars
+          // byte-identical to the pre-grouping render.
           sessions.map(({ session, activityState }) => (
             <SessionItem
               key={session.id}
@@ -695,6 +723,57 @@ export function ActiveSessionsSidebar({
               onClick={() => handleSessionClick(session.id)}
             />
           ))
+        ) : (
+          sessionGroups.map((group) => {
+            const groupCollapsed = isGroupCollapsed(group.key);
+            const controlsId = `session-group-${group.key}-list`;
+            // M5: only compute/show the aggregate indicator while collapsed
+            // — expanded groups already show each session's own indicator.
+            const aggregateState = groupCollapsed
+              ? getGroupAggregateActivityState(group.sessions)
+              : null;
+
+            return (
+              <div key={group.key}>
+                <button
+                  onClick={() => toggleGroup(group.key)}
+                  aria-expanded={!groupCollapsed}
+                  aria-controls={controlsId}
+                  className="w-full px-3 py-2 flex items-center justify-between text-gray-500 hover:text-gray-400 transition-colors"
+                >
+                  <span className="flex items-center gap-1.5 min-w-0 text-xs font-medium uppercase tracking-wider">
+                    <span className="truncate">{group.label}</span>
+                    {aggregateState && (
+                      <ActivityIndicator
+                        state={aggregateState}
+                        className="shrink-0"
+                      />
+                    )}
+                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <span className="text-xs bg-slate-800 text-gray-500 px-1.5 py-0.5 rounded">
+                      {group.sessions.length}
+                    </span>
+                    <ChevronDownIcon
+                      className={`w-3.5 h-3.5 transition-transform ${groupCollapsed ? '-rotate-90' : ''}`}
+                    />
+                  </div>
+                </button>
+                <div id={controlsId}>
+                  {!groupCollapsed &&
+                    group.sessions.map(({ session, activityState }) => (
+                      <SessionItem
+                        key={session.id}
+                        sessionWithActivity={{ session, activityState }}
+                        collapsed={collapsed}
+                        isActive={session.id === currentSessionId}
+                        onClick={() => handleSessionClick(session.id)}
+                      />
+                    ))}
+                </div>
+              </div>
+            );
+          })
         )}
         {/* Paused sessions section */}
         {pausedSessions.length > 0 && (
