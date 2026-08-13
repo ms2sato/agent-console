@@ -175,4 +175,12 @@ describe('getGroupAggregateActivityState', () => {
   it('prefers "asking" over "active" when both are present (asking is higher attention priority)', () => {
     expect(getGroupAggregateActivityState([s('active'), s('idle'), s('asking')])).toBe('asking');
   });
+
+  it('returns null for an unknown-only group ("unknown" is a transient initial state, excluded from the attention set)', () => {
+    expect(getGroupAggregateActivityState([s('idle'), s('unknown')])).toBeNull();
+  });
+
+  it('ignores "unknown" sessions when computing the aggregate — "active" still wins over an unknown+active mix', () => {
+    expect(getGroupAggregateActivityState([s('unknown'), s('active')])).toBe('active');
+  });
 });

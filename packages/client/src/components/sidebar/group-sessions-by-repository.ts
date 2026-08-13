@@ -65,16 +65,31 @@ export function groupSessionsByRepository(sessions: SessionWithActivity[]): Sess
   return quickGroup ? [...repoGroups, quickGroup] : repoGroups;
 }
 
-const ATTENTION_PRIORITY: Partial<Record<AgentActivityState, number>> = {
+/**
+ * Exhaustive over AgentActivityState (`satisfies` makes a future state
+ * added to the union a compile error here, instead of silently falling
+ * into either default). Lower number = higher attention priority; `null`
+ * means the state never drives the M5 indicator.
+ * - `idle`: nothing needs attention.
+ * - `unknown`: transient initial state (see worker.ts) that
+ *   useActiveSessionsWithActivity.ts already excludes from the sidebar's
+ *   `sessions` prop before this function ever sees it — currently
+ *   unreachable here, kept explicit rather than silently inherited if
+ *   that upstream filter ever changes.
+ */
+const ATTENTION_PRIORITY = {
   asking: 0,
   active: 1,
-};
+  idle: null,
+  unknown: null,
+} satisfies Record<AgentActivityState, number | null>;
 
 /**
- * Returns the highest-priority non-idle activity state present in a group,
- * or null when every session in the group is idle. Used to surface a
- * minimal aggregate indicator on a collapsed group header (M5) — without
- * it, a session waiting on input becomes invisible behind a header.
+ * Returns the highest-priority attention-worthy activity state present in
+ * a group, or null when none of its sessions are attention-worthy. Used
+ * to surface a minimal aggregate indicator on a collapsed group header
+ * (M5) — without it, a session waiting on input becomes invisible behind
+ * a header.
  */
 export function getGroupAggregateActivityState(
   sessions: SessionWithActivity[]
@@ -84,7 +99,7 @@ export function getGroupAggregateActivityState(
 
   for (const { activityState } of sessions) {
     const priority = ATTENTION_PRIORITY[activityState];
-    if (priority === undefined) continue; // idle (or any future non-attention state)
+    if (priority === null) continue;
     if (priority < bestPriority) {
       best = activityState;
       bestPriority = priority;
