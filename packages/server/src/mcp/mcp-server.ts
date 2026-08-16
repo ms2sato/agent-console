@@ -836,6 +836,13 @@ export function createMcpApp(deps: McpDependencies): Hono {
         // parentSessionId or a legacy parent with no createdBy used to
         // degrade silently to a null-owned, dead-agent session -- the
         // incident this Issue closes.
+        //
+        // Guard order is load-bearing: session-exists -> createdBy-set ->
+        // caller-owns -> worker-resolves. Several tests assert an earlier
+        // guard's error while passing a placeholder parentWorkerId that
+        // would fail the later worker-resolution guard too; hoisting worker
+        // resolution above the createdBy check would flip those tests'
+        // expected error without making the guard itself wrong.
         const parentSession = sessionManager.getSession(parentSessionId);
         if (!parentSession) {
           return errorResult(`Parent session not found: ${parentSessionId}`);
