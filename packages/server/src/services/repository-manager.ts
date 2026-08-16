@@ -283,6 +283,13 @@ export class RepositoryManager {
    * exactly one of the two callbacks (in-memory while still active,
    * persisted-and-deduped-out-of-active once removed from memory) — no gap,
    * no double-count.
+   *
+   * Known gap: this check is point-in-time only. No lock is held between
+   * this read and the `CLEANUP_REPOSITORY` job's execution (which runs
+   * asynchronously via the job queue and can outlive the request that
+   * enqueued it). A worktree session created or resumed for this repository
+   * after this check passes but before the cleanup job runs will have its
+   * directories removed once the job executes.
    */
   async assertRepositoryNotInUse(repositoryId: string): Promise<void> {
     const activeSessions = this.dependencyCallbacks?.getSessionsUsingRepository(repositoryId) ?? [];

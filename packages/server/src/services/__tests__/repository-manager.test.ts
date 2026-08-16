@@ -121,7 +121,7 @@ describe('RepositoryManager', () => {
   async function runLatestCleanupRepositoryJob(): Promise<void> {
     const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
     expect(jobs.length).toBeGreaterThan(0);
-    const payload = JSON.parse(jobs[jobs.length - 1]!.payload) as CleanupRepositoryPayload;
+    const payload = JSON.parse(jobs[0]!.payload) as CleanupRepositoryPayload;
 
     const handlers = new Map<string, JobHandler<unknown>>();
     const fakeQueue = {
