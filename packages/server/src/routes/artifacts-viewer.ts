@@ -71,7 +71,15 @@ function escapeHtmlAttribute(value: string): string {
 }
 
 function buildShellHtml(artifactId: string): string {
-  const escapedId = escapeHtmlAttribute(artifactId);
+  // Two nested contexts, both must be encoded, in this order: the id is a
+  // URL path segment (encodeURIComponent first -- `routes/artifacts.ts`'s
+  // redirect-target construction does the same), and the resulting string
+  // is then interpolated into an HTML attribute (escapeHtmlAttribute
+  // second). Encoding only one leaves the other unprotected -- e.g. an id
+  // containing `?` would otherwise survive HTML-escaping unchanged and
+  // turn `src="/api/artifacts/<id>"` into a request with a query string
+  // the iframe never intended.
+  const escapedId = escapeHtmlAttribute(encodeURIComponent(artifactId));
   return `<!doctype html>
 <html>
 <head><meta charset="utf-8"></head>

@@ -94,7 +94,7 @@ describe('Artifact viewer shell route', () => {
       expect(res.status).toBe(200);
     });
 
-    it('HTML-attribute-escapes an artifact id containing quote/markup characters before interpolating it into the iframe src', async () => {
+    it('percent-encodes then HTML-attribute-escapes an artifact id containing quote/markup characters before interpolating it into the iframe src', async () => {
       const maliciousId = '"><script>alert(1)</script><iframe src="';
       const app = buildApp(OWNER);
       const res = await app.request(`/artifacts/${encodeURIComponent(maliciousId)}`);
@@ -107,8 +107,14 @@ describe('Artifact viewer shell route', () => {
       // UNSANDBOXED top-level document.
       expect(body).not.toContain('<script>alert(1)</script>');
       expect(body).not.toContain('"><script>');
-      // The escaped form must be present instead.
-      expect(body).toContain('&quot;&gt;&lt;script&gt;alert(1)&lt;/script&gt;&lt;iframe src=&quot;');
+      // encodeURIComponent runs first (the id is also a URL path segment --
+      // routes/artifacts.ts's redirect-target construction does the same),
+      // so every HTML-meaningful character is already percent-encoded by
+      // the time escapeHtmlAttribute would otherwise act on it. The
+      // percent-encoded form is what must appear in the iframe src.
+      expect(body).toContain(
+        '<iframe sandbox="allow-scripts" src="/api/artifacts/%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E%3Ciframe%20src%3D%22"',
+      );
     });
   });
 
