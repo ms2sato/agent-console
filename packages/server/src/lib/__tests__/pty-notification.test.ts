@@ -288,8 +288,8 @@ describe('buildPtyNotificationText', () => {
         command: 'claude',
         username: 'testuser',
         exitCode: '127',
-        diagnosis: "usually means 'claude' is not installed or not on PATH for user 'testuser'",
-        remedy: "install and authenticate the agent CLI for user 'testuser'",
+        diagnosis: "usually means a required program is missing for user 'testuser': the spawn shell itself, or the agent command 'claude', is not installed or not on PATH",
+        remedy: "install and authenticate the agent CLI for user 'testuser', or adjust this agent's command template -- check the server log's wrapperCommand field for this event to see which one was actually attempted",
       },
       intent: 'triage',
     });

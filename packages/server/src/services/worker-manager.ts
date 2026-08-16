@@ -928,13 +928,17 @@ export class WorkerManager {
       // already cleared.
       clearSentinelWatchdog();
 
-      // Exit 127 ("command not found") on an agent worker means the shell
-      // could not resolve the agent binary for the spawn user -- surface
-      // this as a synthesized diagnostic message on the worker's own output
-      // stream. Must be awaited BEFORE the rest of teardown:
-      // the delegate path never has a WebSocket client attached to trigger
-      // a flush, so the bytes must be forced to disk here or they are lost
-      // with the pending buffer.
+      // Exit 127 ("command not found") on an agent worker is usually the
+      // spawn-shell chain itself failing to start, not the agent's own
+      // command -- the agent command is TYPED into an already-alive
+      // interactive shell (see sentinel-spawn-command.ts), and an
+      // interactive shell survives its own "command not found" rather
+      // than exiting. Surface this as a synthesized diagnostic message
+      // naming both suspects, hedged (see appendSpawnFailureNotification).
+      // Must be awaited BEFORE the rest of teardown: the delegate path
+      // never has a WebSocket client attached to trigger a flush, so the
+      // bytes must be forced to disk here or they are lost with the
+      // pending buffer.
       if (worker.type === 'agent' && exitCode === 127 && agentSpawnInfo) {
         await this.appendSpawnFailureNotification(worker, sessionId, resolver, agentSpawnInfo, exitCode);
       }
@@ -1039,8 +1043,8 @@ export class WorkerManager {
         command: commandToken,
         username,
         exitCode: String(exitCode),
-        diagnosis: `usually means '${commandToken}' is not installed or not on PATH for user '${username}'`,
-        remedy: `install and authenticate the agent CLI for user '${username}', or adjust this agent's command template`,
+        diagnosis: `usually means a required program is missing for user '${username}': the spawn shell itself, or the agent command '${commandToken}', is not installed or not on PATH`,
+        remedy: `install and authenticate the agent CLI for user '${username}', or adjust this agent's command template -- check the server log's wrapperCommand field for this event to see which one was actually attempted`,
       },
       intent: 'triage',
     });
