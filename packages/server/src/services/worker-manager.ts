@@ -49,6 +49,8 @@ import { expandTemplate } from '../lib/template.js';
 import { computeDefaultBaseSpec } from './git-diff-service.js';
 import { serverConfig } from '../lib/server-config.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
+import { buildPtyNotificationText } from '../lib/pty-notification.js';
+import { extractCommandToken } from '../lib/command-token.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import { writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
@@ -597,8 +599,8 @@ export class WorkerManager {
           // only an operator-opted-in `enforce` would reject them
           // (fail-closed). The worker itself still starts either way.
           logger.warn(
-            { workerId: worker.id, sessionId },
-            'Agent worker activated without session.createdBy; skipping MCP token mint (MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)',
+            { workerId: worker.id, sessionId, username: params.username },
+            `Agent worker activated without session.createdBy; worker will spawn as server-process user '${params.username}' -- command resolution and file access use that identity, so per-user CLI installs will not resolve (skipping MCP token mint; MCP calls from this worker will be rejected if AGENT_CONSOLE_MCP_AUTH=enforce is set; see Issue #1107)`,
           );
         } else if (this.mcpTokenRegistry) {
           // lookupOsUserFn is an injectable seam (LookupOsUserFn); the built-in
@@ -720,7 +722,7 @@ export class WorkerManager {
       worker.activityState = 'idle';
       this.globalActivityCallback?.(sessionId, worker.id, 'idle');
 
-      this.setupWorkerEventHandlers(worker, sessionId, params.resolver);
+      this.setupWorkerEventHandlers(worker, sessionId, params.resolver, { command, username: params.username });
     } catch (err) {
       // Both cleanup calls are null-safe (no-op when nothing was ever set)
       // and never throw (internal failures are logged as warnings) -- see
@@ -789,7 +791,12 @@ export class WorkerManager {
    * Setup event handlers for a PTY worker.
    * Stores disposables on the worker for cleanup when worker is killed.
    */
-  private setupWorkerEventHandlers(worker: InternalPtyWorker, sessionId: string, resolver: SessionDataPathResolver): void {
+  private setupWorkerEventHandlers(
+    worker: InternalPtyWorker,
+    sessionId: string,
+    resolver: SessionDataPathResolver,
+    agentSpawnInfo?: { command: string; username: string },
+  ): void {
     if (!sessionId || sessionId.trim() === '') {
       throw new Error(
         `Cannot setup event handlers: sessionId is required (got: ${sessionId === '' ? 'empty string' : String(sessionId)})`
@@ -908,7 +915,7 @@ export class WorkerManager {
     }
 
     const pty = worker.pty;
-    const onExitDisposable = pty.onExit(({ exitCode, signal }) => {
+    const onExitDisposable = pty.onExit(async ({ exitCode, signal }) => {
       const signalStr = signal !== undefined ? String(signal) : null;
       logger.info({ workerId: worker.id, pid: pty.pid, exitCode, signal: signalStr }, 'Worker exited');
 
@@ -918,6 +925,17 @@ export class WorkerManager {
       // that is already gone. No-op if the watchdog was never armed or
       // already cleared.
       clearSentinelWatchdog();
+
+      // Exit 127 ("command not found") on an agent worker means the shell
+      // could not resolve the agent binary for the spawn user -- surface
+      // this as a synthesized diagnostic message on the worker's own output
+      // stream. Must be awaited BEFORE the rest of teardown:
+      // the delegate path never has a WebSocket client attached to trigger
+      // a flush, so the bytes must be forced to disk here or they are lost
+      // with the pending buffer.
+      if (worker.type === 'agent' && exitCode === 127 && agentSpawnInfo) {
+        await this.appendSpawnFailureNotification(worker, sessionId, resolver, agentSpawnInfo, exitCode);
+      }
 
       // Mark worker as deactivated (PTY no longer running)
       this.detachPty(worker);
@@ -952,6 +970,71 @@ export class WorkerManager {
 
     // Store disposables on worker for cleanup
     worker.disposables = disposables;
+  }
+
+  /**
+   * Append server-authored text directly to a PTY worker's output stream --
+   * advances outputOffset, buffers it for file persistence, and fans out to
+   * currently-attached connections. Mirrors the post-sentinel-gate tail of
+   * the onData handler above, minus the sentinel-detection and
+   * activity-detector steps (irrelevant for synthesized text). Does NOT
+   * write into the PTY itself -- there is no live PTY left once a worker
+   * has exited.
+   */
+  private appendSyntheticOutput(worker: InternalPtyWorker, sessionId: string, resolver: SessionDataPathResolver, text: string): void {
+    worker.outputBuffer += text;
+    const maxBufferSize = serverConfig.WORKER_OUTPUT_BUFFER_SIZE;
+    if (worker.outputBuffer.length > maxBufferSize) {
+      worker.outputBuffer = worker.outputBuffer.slice(-maxBufferSize);
+    }
+    worker.outputOffset += Buffer.byteLength(text, 'utf-8');
+    this.workerOutputFileManager.bufferOutput(sessionId, worker.id, text, resolver, worker.epoch);
+    const callbacksSnapshot = Array.from(worker.connectionCallbacks.values());
+    for (const callbacks of callbacksSnapshot) {
+      callbacks.onData(text, worker.outputOffset, worker.epoch);
+    }
+  }
+
+  /**
+   * Synthesize and deliver the exit-127 diagnostic message for an agent
+   * worker. The command token comes from the EXPANDED
+   * commandTemplate captured at activation time (`agentSpawnInfo.command`),
+   * never from the final sentinel/env-wrapped shell string -- see
+   * `extractCommandToken`'s doc for why. Forces the buffered bytes to disk
+   * before returning: the delegate path (zero attached clients) has no
+   * other trigger that would flush them, and the caller's teardown must not
+   * proceed until this is durable (R-c / S2).
+   */
+  private async appendSpawnFailureNotification(
+    worker: InternalAgentWorker,
+    sessionId: string,
+    resolver: SessionDataPathResolver,
+    agentSpawnInfo: { command: string; username: string },
+    exitCode: number,
+  ): Promise<void> {
+    const commandToken = extractCommandToken(agentSpawnInfo.command);
+    const { username } = agentSpawnInfo;
+
+    logger.warn(
+      { workerId: worker.id, sessionId, command: commandToken, username, exitCode },
+      'Agent worker exited 127 (command not found); synthesizing diagnostic message on worker output stream',
+    );
+
+    const text = buildPtyNotificationText({
+      kind: 'internal-agent-spawn-failed',
+      tag: 'internal:agent-spawn-failed',
+      fields: {
+        command: commandToken,
+        username,
+        exitCode: String(exitCode),
+        diagnosis: `usually means '${commandToken}' is not installed or not on PATH for user '${username}'`,
+        remedy: `install and authenticate the agent CLI for user '${username}', or adjust this agent's command template`,
+      },
+      intent: 'triage',
+    });
+
+    this.appendSyntheticOutput(worker, sessionId, resolver, text);
+    await this.workerOutputFileManager.forceFlush(sessionId, worker.id);
   }
 
   // ========== Worker I/O ==========

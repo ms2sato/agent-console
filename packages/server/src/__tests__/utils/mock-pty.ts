@@ -18,7 +18,7 @@ export class MockPty {
   // Note: Single callback that gets replaced, matching PtyInstance interface contract
   // which specifies "Only one callback is supported. Subsequent calls will replace the previous callback."
   private dataCallback: ((data: string) => void) | null = null;
-  private exitCallback: ((event: { exitCode: number; signal?: number }) => void) | null = null;
+  private exitCallback: ((event: { exitCode: number; signal?: number }) => void | Promise<void>) | null = null;
   killed = false;
   /** Set true when dispose() is called. Mirrors PtyInstance's optional dispose(). */
   disposed = false;
@@ -136,10 +136,8 @@ export class MockPty {
     }
   }
 
-  simulateExit(exitCode: number, signal?: number) {
-    if (this.exitCallback) {
-      this.exitCallback({ exitCode, signal });
-    }
+  async simulateExit(exitCode: number, signal?: number): Promise<void> {
+    await this.exitCallback?.({ exitCode, signal });
   }
 }
 

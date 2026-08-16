@@ -504,6 +504,19 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Force an immediate flush of a worker's buffered output to disk,
+   * bypassing the size/interval-triggered scheduling. Callers that must
+   * guarantee synthesized bytes are durable before proceeding (e.g. the
+   * exit-127 diagnostic append in worker-manager.ts) use this
+   * instead of relying on `bufferOutput`'s deferred flush -- a worker that
+   * already has zero attached WebSocket connections has no other trigger
+   * that would ever flush the pending buffer.
+   */
+  async forceFlush(sessionId: string, workerId: string): Promise<void> {
+    await this.flushBuffer(sessionId, workerId);
+  }
+
+  /**
    * Flush the pending buffer. MUST be called inside the serialization domain.
    * Legacy `.log.gz` files are migrated to `.log` on first write.
    */
