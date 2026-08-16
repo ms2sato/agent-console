@@ -56,7 +56,7 @@ export class MockPty {
     };
   }
 
-  onExit(callback: (event: { exitCode: number; signal?: number }) => void): MockDisposable {
+  onExit(callback: (event: { exitCode: number; signal?: number }) => void | Promise<void>): MockDisposable {
     this.exitCallback = callback;
     return {
       dispose: () => {

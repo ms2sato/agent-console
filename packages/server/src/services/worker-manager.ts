@@ -940,7 +940,22 @@ export class WorkerManager {
       // bytes must be forced to disk here or they are lost with the
       // pending buffer.
       if (worker.type === 'agent' && exitCode === 127 && agentSpawnInfo) {
-        await this.appendSpawnFailureNotification(worker, sessionId, resolver, agentSpawnInfo, exitCode);
+        // This listener is a synchronous PTY event callback that nothing
+        // awaits (same constraint documented on the revokeAndDeleteMcpToken
+        // fire-and-forget call below) -- an unhandled rejection here would
+        // propagate out of the async listener and skip every teardown step
+        // after this block (detachPty, MCP token revoke, prompt file
+        // delete, per-connection and global exit callbacks). Catch and log
+        // instead of letting a failure (e.g. a connected client's onData
+        // throwing during appendSyntheticOutput's fan-out) abort teardown.
+        try {
+          await this.appendSpawnFailureNotification(worker, sessionId, resolver, agentSpawnInfo, exitCode);
+        } catch (err) {
+          logger.error(
+            { workerId: worker.id, sessionId, err },
+            'Failed to synthesize exit-127 diagnostic message; continuing teardown',
+          );
+        }
       }
 
       // Mark worker as deactivated (PTY no longer running)

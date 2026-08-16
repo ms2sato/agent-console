@@ -688,6 +688,9 @@ describe('WorkerManager', () => {
   });
 
   describe('exit-127 diagnostic message (Issue #1294)', () => {
+    // T4 (S3 command-token unit coverage) lives in
+    // packages/server/src/lib/__tests__/command-token.test.ts -- not here,
+    // since it's pure-function coverage with no WorkerManager dependency.
     it('T1: appends a message with the command token, username, and exit code to the worker output stream', async () => {
       const worker = createTestAgentWorker();
       await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
@@ -749,6 +752,37 @@ describe('WorkerManager', () => {
 
       expect(worker.outputBuffer).toBe(before);
       expect(worker.outputBuffer).not.toContain('internal:agent-spawn-failed');
+    });
+
+    // T6 -- CodeRabbit MAJOR regression guard (PR #1315). This is also a
+    // Q14-shaped case (pre-pr-completeness.md): a new resource-acquisition
+    // step (the diagnostic append+flush) was added inside a function whose
+    // existing failure path (the rest of onExit's teardown) predates it, and
+    // the new step must not block that existing rollback.
+    it('T6: teardown still completes (detachPty runs, exit callbacks fire) when a connected client\'s onData throws during the exit-127 fan-out', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      let onExitFired = false;
+      workerManager.attachCallbacks(worker, {
+        // The concrete reachable trigger CodeRabbit named: a connection's
+        // synchronous onData callback throwing during
+        // appendSyntheticOutput's fan-out loop.
+        onData: () => {
+          throw new Error('boom: synchronous onData throws');
+        },
+        onExit: () => {
+          onExitFired = true;
+        },
+      });
+
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+      // Must not throw/reject: the fix wraps the synthesis call in try/catch
+      // so a throwing onData cannot abort the rest of onExit's teardown.
+      await mockPty.simulateExit(127);
+
+      expect(worker.pty).toBeNull();
+      expect(onExitFired).toBe(true);
     });
   });
 

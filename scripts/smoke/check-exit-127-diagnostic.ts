@@ -258,13 +258,16 @@ try {
     console.log(`PASSED: ${passes} assertion(s) passed`);
     exitCode = 0;
   }
-
-  await closeDatabase();
 } catch (err) {
   console.error('Unexpected exception while running the exit-127 diagnostic smoke.');
   console.error(err);
   exitCode = 2;
 } finally {
+  try {
+    await closeDatabase();
+  } catch {
+    // best-effort; do not let a close failure mask the original outcome
+  }
   if (smokeDir) {
     try {
       await rm(smokeDir, { recursive: true, force: true });
