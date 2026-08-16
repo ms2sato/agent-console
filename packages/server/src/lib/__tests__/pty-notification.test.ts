@@ -1,4 +1,4 @@
-import { describe, expect, it, jest, mock, spyOn } from 'bun:test';
+import { describe, expect, it, jest, mock, setSystemTime, spyOn } from 'bun:test';
 import { formatFieldValue, writePtyNotification, buildPtyNotificationText } from '../pty-notification.js';
 
 describe('formatFieldValue', () => {
@@ -245,8 +245,24 @@ describe('buildPtyNotificationText', () => {
       intent: 'triage' as const,
     };
 
-    const built = buildPtyNotificationText(params);
-    const returnedFromWrite = writePtyNotification({ ...params, writeInput: (data) => { written.push(data); } });
+    // Both buildPtyNotificationText and writePtyNotification independently
+    // call `new Date().toISOString()` for the timestamp field. Without a
+    // frozen clock, the two calls below can straddle a millisecond boundary
+    // on a loaded CI runner, producing two different timestamp strings and
+    // failing the exact-equality assertion for a reason that has nothing to
+    // do with whether the two functions actually agree (Issue #1321).
+    // Freezing time makes this a genuine full-string equality check again:
+    // the only variable removed is the wall clock, so any other divergence
+    // between the two call paths still fails the assertion below.
+    setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    let built: string;
+    let returnedFromWrite: string;
+    try {
+      built = buildPtyNotificationText(params);
+      returnedFromWrite = writePtyNotification({ ...params, writeInput: (data) => { written.push(data); } });
+    } finally {
+      setSystemTime();
+    }
 
     expect(written[0]).toBe(built);
     expect(returnedFromWrite).toBe(built);
