@@ -78,6 +78,15 @@ Three descriptions observed, all with `state=success`:
 
 Note the `updated_at` too: the status is re-issued per head SHA, so **updating a PR branch resets it**. A `Review completed` from before a rebase says nothing about the current head.
 
+**This is `workflow.md` Sub-pattern 7 (stale state carried across idle) wearing a CodeRabbit costume, and it is easiest to miss on the *last* push.** Once a genuine review has landed mid-PR, "CodeRabbit is handled for this PR" quietly becomes a background fact, and the next push is evaluated on CI alone. The re-read discipline is not "check the description once per PR" but **"check it for the head you are about to merge"** — including a head whose only change is a test, and including a head you pushed yourself thirty seconds ago.
+
+Two shapes to watch for, both observed on the same PR:
+
+- **The review you remember was of an earlier commit.** Read the walkthrough's own scope line — it states the range explicitly (`Reviewing files that changed from the base of the PR and between <sha> and <sha>`). If that range ends before your current head, the commits in between are unreviewed no matter how thorough the review you are remembering was.
+- **The commits most likely to go unreviewed are the fix commits responding to the review itself** — which is exactly the diff a second pass is worth most on, since it was written under the pressure of a finding.
+
+(Lesson: Sprint 2026-08-16 PR [#1304](https://github.com/ms2sato/agent-console/pull/1304) — a real review landed at `bc418377`; three commits followed, two of them the fixes for that review's own findings. The rollup read `CodeRabbit=SUCCESS` throughout while the description read `Review rate limited`. The delegate had correctly re-read the description after each of the first two pushes and reported honestly, then skipped it on the third after mentally filing CodeRabbit as resolved. Retriggering once the repository-wide window reopened produced a genuine review of exactly that range with no actionable comments — so the gap cost one wait, not a fallback disposition.)
+
 (Sprint 2026-07-18b — three PRs (#1227, #1231, #1229) carried `CodeRabbit=SUCCESS` in the rollup while the description read `Review rate limited`. Reading only the rollup state would have merged all three as "CodeRabbit clean" with no review. #1227 in particular later produced a Major finding that a standards document would otherwise have shipped with.)
 
 ### The review-body surface: findings that live in no inline comment

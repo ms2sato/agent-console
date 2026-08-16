@@ -76,6 +76,20 @@ Do not use `git stash --patch` to separate an added block from the exports it ne
 
 After restoring, confirm the round trip left nothing behind — `git diff --stat` should match what it was before, and `git status` should be clean of stray edits.
 
+**When the polarity subject is a running process rather than an in-process test, revert whole directories instead.** Commenting out a block works when the thing under test is loaded by the test runner in the same process. It does not scale to a dev-instance E2E, where the fix spans several files, the code is already loaded into a live server, and what must be shown is that the *original symptom reproduces* against unmodified code. There, check out the parent commit for the affected trees, run the real end-to-end flow against a throwaway instance, then restore:
+
+```bash
+git checkout HEAD~1 -- packages/server packages/shared   # revert the fix, keep everything else
+# start a throwaway instance, run the full E2E, observe the symptom reproduce
+git checkout HEAD -- packages/server packages/shared     # restore
+```
+
+**The gotcha: `git checkout <ref> -- <dir>` does not delete files that do not exist in `<ref>`.** Files added by the fix are silently left in place. That is usually harmless — nothing imports them once the wiring files are reverted — but it means the reverted tree is "pre-fix plus some orphans", not a clean parent checkout. Know that going in rather than discovering it when an unexpected module loads. If a leftover file *would* change behavior, delete it explicitly for the duration of the run.
+
+Prefer this over `git stash` for anything touching a worktree: **`refs/stash` is shared across all worktrees of the same repository**, so a concurrent agent can pop your stash or you can pop theirs.
+
+(Lesson: Sprint 2026-08-16 PR [#1304](https://github.com/ms2sato/agent-console/pull/1304) — the AC required demonstrating that a repository-unregister leak reproduced end-to-end on unmodified code. Neither documented option fit: the fix spanned two packages and the subject was a live HTTP server, not a test module. The directory-revert round trip reproduced both defects live, then showed both absent after restoring.)
+
 ## Evaluation Criteria
 
 ### Test Validity
