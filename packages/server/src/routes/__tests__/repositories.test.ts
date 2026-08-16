@@ -5,6 +5,7 @@ import {
   CloneNameConflictError,
   CloneValidationError,
 } from '../../services/repository-clone-service.js';
+import { RepositoryInUseError } from '../../services/repository-manager.js';
 import { CLONE_ERROR_CODES, CLONE_JOB_STATUS } from '@agent-console/shared';
 
 const mockGenerateDescription = mock<GenerateRepositoryDescriptionFn>(() =>
@@ -50,6 +51,13 @@ const repositoryManager = {
       opts?: { removeSourceRepo?: boolean },
     ) => Promise<boolean>
   >(() => Promise.resolve(true)),
+  // Issue #1301: single writer for the repository-in-use gate. The route
+  // now delegates entirely to this method instead of duplicating the
+  // active/inactive-session check inline. Defaults to a no-op resolve
+  // (repository not in use); tests that need the 409 path reject with a
+  // real `RepositoryInUseError` instance, mirroring the `CloneNameConflictError`
+  // pattern used below for the clone route.
+  assertRepositoryNotInUse: mock<(id: string) => Promise<void>>(() => Promise.resolve()),
 };
 
 const sessionManager = {
@@ -101,6 +109,8 @@ function resetAllMocks(): void {
   repositoryManager.registerRepository.mockReset();
   repositoryManager.updateRepository.mockReset();
   repositoryManager.unregisterRepository.mockReset();
+  repositoryManager.assertRepositoryNotInUse.mockReset();
+  repositoryManager.assertRepositoryNotInUse.mockImplementation(() => Promise.resolve());
   sessionManager.getSessionsUsingRepository.mockReset();
   sessionManager.getAllPersistedSessions.mockReset();
   repositorySlackIntegrationService.deleteIntegration.mockReset();
@@ -161,10 +171,21 @@ describe('Repositories API', () => {
   // =========================================================================
 
   describe('DELETE /api/repositories/:id', () => {
+    // Issue #1301: the route now delegates the in-use check entirely to
+    // `repositoryManager.assertRepositoryNotInUse` (single writer). These two
+    // tests are INVARIANT-PRESERVATION, not bug-polarity -- the observable
+    // 409 behavior is unchanged from before the consolidation; only the
+    // mechanism moved from an inline route check to the manager method. The
+    // wrong implementation this guards against is the consolidation
+    // accidentally dropping the error-message mapping (RepositoryInUseError
+    // -> ConflictError) or swallowing the manager's rejection.
     it('should return 409 when repository has active sessions', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([{ id: 's1', title: 'Active Session' }]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
+      repositoryManager.assertRepositoryNotInUse.mockImplementation(() =>
+        Promise.reject(
+          new RepositoryInUseError('Repository is in use by 1 session(s) (active): Active Session'),
+        ),
+      );
 
       const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
       expect(res.status).toBe(409);
@@ -175,9 +196,10 @@ describe('Repositories API', () => {
 
     it('should return 409 when repository has persisted (inactive) sessions', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(
-        Promise.resolve([{ id: 's2', title: 'Paused', type: 'worktree', repositoryId: 'repo1' }])
+      repositoryManager.assertRepositoryNotInUse.mockImplementation(() =>
+        Promise.reject(
+          new RepositoryInUseError('Repository is in use by 1 session(s) (inactive): Paused'),
+        ),
       );
 
       const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
@@ -187,10 +209,61 @@ describe('Repositories API', () => {
       expect(body.error).toContain('Repository is in use by 1 session(s) (inactive)');
     });
 
+    it('does not delete the Slack integration when the repository is in use (guard runs before the side effect)', async () => {
+      // Pins the ordering the in-code comment at the route's assertRepositoryNotInUse
+      // call site documents: this check must run BEFORE Slack-integration deletion.
+      // A comment alone cannot defend that ordering from a future edit that removes
+      // the check (CodeRabbit already proposed exactly that removal once on this
+      // PR) -- this test makes the ordering an executable invariant instead.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      repositoryManager.assertRepositoryNotInUse.mockImplementation(() =>
+        Promise.reject(
+          new RepositoryInUseError('Repository is in use by 1 session(s) (active): Active Session'),
+        ),
+      );
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(409);
+
+      expect(repositorySlackIntegrationService.deleteIntegration).not.toHaveBeenCalled();
+      expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
+    });
+
+    it('propagates a non-RepositoryInUseError from assertRepositoryNotInUse instead of mapping it to 409', async () => {
+      // Negative-case coverage for the mechanism itself: an unrelated
+      // failure inside the gate (e.g. a DB error) must not be misreported
+      // as "repository in use".
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      repositoryManager.assertRepositoryNotInUse.mockImplementation(() =>
+        Promise.reject(new Error('unexpected DB failure')),
+      );
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(500);
+      expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
+    });
+
+    it('returns 409 when unregisterRepository itself rejects with RepositoryInUseError (its own internal check firing)', async () => {
+      // The route's own `assertRepositoryNotInUse` call passes here, but
+      // `unregisterRepository`'s independent internal check rejects. This
+      // pins that a RepositoryInUseError from EITHER call site maps to the
+      // same 409 contract, not just the route's own check.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      repositoryManager.unregisterRepository.mockImplementation(() =>
+        Promise.reject(
+          new RepositoryInUseError('Repository is in use by 1 session(s) (active): Active Session'),
+        ),
+      );
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(409);
+
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Repository is in use by 1 session(s) (active)');
+    });
+
     it('should clean up Slack integration and succeed even if cleanup throws', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
       repositorySlackIntegrationService.deleteIntegration.mockImplementation(() => {
         throw new Error('Slack cleanup failed');
       });
@@ -211,8 +284,6 @@ describe('Repositories API', () => {
       // authenticated username. The default test app wires SingleUserMode
       // with TEST_AUTH_USER = 'testuser'.
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
       repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
 
       const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
@@ -230,8 +301,6 @@ describe('Repositories API', () => {
 
     it('forwards removeSourceRepo=true to unregisterRepository (Issue #905)', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
       repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
 
       const res = await app.request('/api/repositories/repo1', {
@@ -251,8 +320,6 @@ describe('Repositories API', () => {
       // default makes the absent value `false`; the manual parse swallows
       // the JSON parse error from an empty body.
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
       repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
 
       const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
@@ -265,8 +332,6 @@ describe('Repositories API', () => {
 
     it('defaults removeSourceRepo=false when body is empty object (Issue #905)', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
       repositoryManager.unregisterRepository.mockReturnValue(Promise.resolve(true));
 
       const res = await app.request('/api/repositories/repo1', {
@@ -283,8 +348,6 @@ describe('Repositories API', () => {
 
     it('rejects invalid removeSourceRepo type with 400 (Issue #905)', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
 
       const res = await app.request('/api/repositories/repo1', {
         method: 'DELETE',
@@ -303,8 +366,6 @@ describe('Repositories API', () => {
       // route differentiates: empty body -> default; non-empty body that
       // fails JSON.parse -> 400.
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
-      sessionManager.getSessionsUsingRepository.mockReturnValue([]);
-      sessionManager.getAllPersistedSessions.mockReturnValue(Promise.resolve([]));
 
       const res = await app.request('/api/repositories/repo1', {
         method: 'DELETE',

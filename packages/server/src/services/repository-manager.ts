@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import { access, lstat } from 'fs/promises';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
-import { getRepositoryDir, getSourceReposDir } from '../lib/config.js';
+import { getConfigDir, getRepositoryDir, getSourceReposDir } from '../lib/config.js';
 import { isUnderSourceReposDir } from '../lib/repository-remote.js';
 import { getOrgRepoFromPath as gitGetOrgRepoFromPath } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
@@ -11,6 +11,7 @@ import type { RepositoryRepository, RepositoryUpdates } from '../repositories/re
 import { SqliteRepositoryRepository } from '../repositories/sqlite-repository-repository.js';
 import { JOB_TYPES, type JobQueue } from '../jobs/index.js';
 import { runAsUser, shellEscape } from './privilege-elevation.js';
+import { buildSessionDataCleanupTargets } from './session-data-cleanup-candidates.js';
 
 const logger = createLogger('service:repository-manager');
 
@@ -75,6 +76,25 @@ export function buildManualFallbackCommands(
  */
 export interface RepositoryDependencyCallbacks {
   getSessionsUsingRepository: (repositoryId: string) => { id: string; title?: string }[];
+  /**
+   * Persisted (paused, or otherwise not currently active in memory) worktree
+   * sessions for the repository. Single writer:
+   * `SessionManager.getInactiveSessionsUsingRepository`.
+   */
+  getInactiveSessionsUsingRepository: (repositoryId: string) => Promise<{ id: string; title?: string }[]>;
+}
+
+/**
+ * Thrown by {@link RepositoryManager.assertRepositoryNotInUse} when a
+ * repository has active and/or inactive (paused) sessions attached to it.
+ * Mirrors `CloneNameConflictError` (`repository-clone-service.ts`) so route
+ * handlers can map it to a `409 Conflict` via a single `instanceof` check.
+ */
+export class RepositoryInUseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RepositoryInUseError';
+  }
 }
 
 /**
@@ -250,6 +270,45 @@ export class RepositoryManager {
   }
 
   /**
+   * Throw {@link RepositoryInUseError} when a repository has any active
+   * (in-memory) or inactive (persisted, e.g. paused) worktree session
+   * attached to it. Single writer for this gate — the
+   * `DELETE /api/repositories/:id` route previously duplicated this exact
+   * logic inline; it now calls this method instead.
+   *
+   * Race safety: `SessionPauseResumeService.pauseSession` persists the DB
+   * row (`sessionRepository.save`) BEFORE removing the session from the
+   * in-memory map (`deleteSession`) — see `session-pause-resume-service.ts`.
+   * So at every instant of the pause transition, the session is counted by
+   * exactly one of the two callbacks (in-memory while still active,
+   * persisted-and-deduped-out-of-active once removed from memory) — no gap,
+   * no double-count.
+   *
+   * Known gap: this check is point-in-time only. No lock is held between
+   * this read and the `CLEANUP_REPOSITORY` job's execution (which runs
+   * asynchronously via the job queue and can outlive the request that
+   * enqueued it). A worktree session created or resumed for this repository
+   * after this check passes but before the cleanup job runs will have its
+   * directories removed once the job executes.
+   */
+  async assertRepositoryNotInUse(repositoryId: string): Promise<void> {
+    const activeSessions = this.dependencyCallbacks?.getSessionsUsingRepository(repositoryId) ?? [];
+    const inactiveSessions = (await this.dependencyCallbacks?.getInactiveSessionsUsingRepository(repositoryId)) ?? [];
+    const totalCount = activeSessions.length + inactiveSessions.length;
+    if (totalCount === 0) return;
+    const activeNames = activeSessions.map((s) => s.title || s.id);
+    const inactiveNames = inactiveSessions.map((s) => s.title || s.id);
+    const allNames = [...activeNames, ...inactiveNames].join(', ');
+    const details =
+      activeSessions.length > 0 && inactiveSessions.length > 0
+        ? ` (${activeSessions.length} active, ${inactiveSessions.length} inactive)`
+        : activeSessions.length > 0
+          ? ' (active)'
+          : ' (inactive)';
+    throw new RepositoryInUseError(`Repository is in use by ${totalCount} session(s)${details}: ${allNames}`);
+  }
+
+  /**
    * Unregister a repository, deleting its data subtree and DB row.
    *
    * @param id Repository ID to unregister.
@@ -271,18 +330,13 @@ export class RepositoryManager {
     const repo = this.repositories.get(id);
     if (!repo) return false;
 
-    // Check if any active sessions are using this repository
-    // Uses callback to avoid circular dependency with SessionManager
-    const activeSessions = this.dependencyCallbacks?.getSessionsUsingRepository(id) ?? [];
-    if (activeSessions.length > 0) {
-      throw new Error(
-        `Cannot unregister repository: ${activeSessions.length} active session(s) are using it. ` +
-        `Delete or close the sessions first.`
-      );
-    }
+    // Check if any active or inactive (paused) sessions are using this
+    // repository. Uses callbacks to avoid circular dependency with
+    // SessionManager. Throws RepositoryInUseError when in use.
+    await this.assertRepositoryNotInUse(id);
 
     // Clean up related directories
-    await this.cleanupRepositoryData(repo.path, requestUsername, opts);
+    await this.cleanupRepositoryData(repo, requestUsername, opts);
 
     this.repositories.delete(id);
     await this.repository.delete(id);
@@ -550,21 +604,24 @@ export class RepositoryManager {
   }
 
   /**
-   * Clean up repository data directory (worktrees and templates)
-   * @param repoPath Absolute path of the registered repository (used to
-   *   resolve the data dir under `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`).
+   * Clean up repository data directory (worktrees and templates), plus the
+   * repository's session-data trees (outputs/messages/memos).
+   * @param repo The repository being unregistered. `repo.path` resolves the
+   *   worktree/templates data dir under
+   *   `<AGENT_CONSOLE_HOME>/repositories/<org/repo>`; `repo.id` / `repo.name`
+   *   drive the session-data cleanup candidate set.
    * @param requestUsername OS username threaded into the CLEANUP_REPOSITORY
    *   payload so the handler can elevate the recursive `rm` to that user
    *   under `AUTH_MODE=multi-user` when the worktree subtree is user-owned.
    *   `null` keeps the historical direct `fs.rm` path.
    * @param opts.removeSourceRepo When `true`, additionally remove the source
-   *   repo clone at `repoPath` itself. Only honoured when `repoPath` lives
+   *   repo clone at `repo.path` itself. Only honoured when `repo.path` lives
    *   under `getSourceReposDir()`; out-of-prefix paths are silently skipped
    *   with a debug log.
    * @throws Error if jobQueue is not available
    */
   private async cleanupRepositoryData(
-    repoPath: string,
+    repo: Repository,
     requestUsername: string | null,
     opts: { removeSourceRepo?: boolean } = {},
   ): Promise<void> {
@@ -572,7 +629,7 @@ export class RepositoryManager {
       throw new Error('JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.');
     }
 
-    const orgRepo = await getOrgRepoFromPath(repoPath);
+    const orgRepo = await getOrgRepoFromPath(repo.path);
     const repoDir = getRepositoryDir(orgRepo);
 
     // When the unregister request opts in to source-repo removal, verify the
@@ -584,21 +641,34 @@ export class RepositoryManager {
     let extraDir: string | null = null;
     if (opts.removeSourceRepo === true) {
       const sourceReposDir = getSourceReposDir();
-      if (isUnderSourceReposDir(repoPath, sourceReposDir)) {
-        extraDir = repoPath;
+      if (isUnderSourceReposDir(repo.path, sourceReposDir)) {
+        extraDir = repo.path;
       } else {
         logger.debug(
-          { repoPath, sourceReposDir },
+          { repoPath: repo.path, sourceReposDir },
           'removeSourceRepo requested but registered path is outside source-repos dir; skipping extra cleanup',
         );
       }
     }
+
+    // Session-data trees (outputs/messages/memos) live under a slug derived
+    // from the repository name, which is independent of `repoDir` (org/repo
+    // derived from the git remote). Build the candidate set of base dirs to
+    // remove alongside `repoDir`.
+    const sessionDataDirs = await buildSessionDataCleanupTargets({
+      configDir: getConfigDir(),
+      repositoryId: repo.id,
+      repoPath: repo.path,
+      repoName: repo.name,
+      getRepositorySlug: (id) => this.getRepositorySlug(id),
+    });
 
     // Clean up entire repository directory via job queue
     await this.jobQueue.enqueue(JOB_TYPES.CLEANUP_REPOSITORY, {
       repoDir,
       requestUsername,
       extraDir,
+      sessionDataDirs,
     });
   }
 

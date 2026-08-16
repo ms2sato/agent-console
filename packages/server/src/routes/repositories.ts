@@ -25,6 +25,7 @@ import {
   CloneValidationError,
   CloneNameConflictError,
 } from '../services/repository-clone-service.js';
+import { RepositoryInUseError } from '../services/repository-manager.js';
 
 const logger = createLogger('api:repositories');
 
@@ -144,7 +145,7 @@ const repositories = new Hono<AppBindings>()
   // Unregister a repository
   .delete('/:id', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager } = c.get('appContext');
+    const { repositoryManager } = c.get('appContext');
     const authUser = c.get('authUser');
 
     // Parse the DELETE body manually because `vValidator` would 400 on a
@@ -177,30 +178,25 @@ const repositories = new Hono<AppBindings>()
       throw new NotFoundError('Repository');
     }
 
-    // Check if any active sessions use this repository
-    const activeSessions = sessionManager.getSessionsUsingRepository(repoId);
-    const activeSessionIds = new Set(activeSessions.map(s => s.id));
-
-    // Also check persisted (inactive) sessions
-    const persistedSessions = await sessionManager.getAllPersistedSessions();
-    const inactiveSessions = persistedSessions.filter(ps =>
-      !activeSessionIds.has(ps.id) &&
-      ps.type === 'worktree' && ps.repositoryId === repoId
-    );
-
-    const totalCount = activeSessions.length + inactiveSessions.length;
-    if (totalCount > 0) {
-      const activeNames = activeSessions.map(s => s.title || s.id);
-      const inactiveNames = inactiveSessions.map(s => s.title || s.id);
-      const allNames = [...activeNames, ...inactiveNames].join(', ');
-
-      const details = activeSessions.length > 0 && inactiveSessions.length > 0
-        ? ` (${activeSessions.length} active, ${inactiveSessions.length} inactive)`
-        : activeSessions.length > 0 ? ' (active)' : ' (inactive)';
-
-      throw new ConflictError(
-        `Repository is in use by ${totalCount} session(s)${details}: ${allNames}`
-      );
+    // Check if any active or inactive (paused) sessions use this repository.
+    // Single writer: RepositoryManager.assertRepositoryNotInUse.
+    //
+    // This check is not redundant with unregisterRepository's own internal
+    // call to the same method below, even though both call it. It must run
+    // BEFORE the Slack-integration cleanup that follows: without it, an
+    // in-use repository would reach the Slack deletion, then fail later
+    // when unregisterRepository rejects, leaving the user with a working
+    // repository whose Slack integration was already removed.
+    // unregisterRepository's internal call exists independently, as
+    // defense-in-depth for any future caller of that method that isn't
+    // this route.
+    try {
+      await repositoryManager.assertRepositoryNotInUse(repoId);
+    } catch (err) {
+      if (err instanceof RepositoryInUseError) {
+        throw new ConflictError(err.message);
+      }
+      throw err;
     }
 
     // Clean up Slack integration before deleting repository
@@ -218,11 +214,19 @@ const repositories = new Hono<AppBindings>()
     // (worktree subtrees are owned by the requesting user). Forward
     // `removeSourceRepo` so the cleanup job optionally removes the
     // source-repo clone in addition to the data subtree.
-    const success = await repositoryManager.unregisterRepository(
-      repoId,
-      authUser.username,
-      { removeSourceRepo: parsed.removeSourceRepo },
-    );
+    let success: boolean;
+    try {
+      success = await repositoryManager.unregisterRepository(
+        repoId,
+        authUser.username,
+        { removeSourceRepo: parsed.removeSourceRepo },
+      );
+    } catch (err) {
+      if (err instanceof RepositoryInUseError) {
+        throw new ConflictError(err.message);
+      }
+      throw err;
+    }
 
     if (!success) {
       // Repository was likely deleted between the check and unregister (race condition)

@@ -419,5 +419,184 @@ describe('cleanup job handlers', () => {
       expect(rmRecursiveAsUserMock.calls[0]!.path).toBe(repoDir);
       expect(rmRecursiveAsUserMock.calls[1]!.path).toBe(extraDir);
     });
+
+    // =========================================================================
+    // Issue #1301: sessionDataDirs removal (S3, never elevated) and
+    // org-parent husk removal (S4, always direct/best-effort).
+    // =========================================================================
+
+    describe('sessionDataDirs removal (Issue #1301, S3)', () => {
+      it('removes sessionDataDirs via plain fs.rm, never via rmRecursiveAsUser, even under AUTH_MODE=multi-user with an elevating requestUsername', async () => {
+        process.env.AUTH_MODE = 'multi-user';
+        const other = pickOtherUser();
+        // repoDir / extraDir are fake elevated paths -- the mock swallows
+        // them without touching the real fs.
+        const repoDir = '/var/lib/agent-console/repositories/org/repo';
+        const extraDir = '/var/lib/agent-console/source-repos/org/repo';
+
+        // sessionDataDirs are REAL directories on disk -- proving the
+        // handler actually removed them via the direct (non-elevated) path,
+        // not merely that it declined to call the elevation helper.
+        const baseDir = path.join(os.tmpdir(), `cleanup-handler-sessiondata-${process.pid}-${Date.now()}`);
+        const sessionDataDir1 = path.join(baseDir, 'outputs');
+        const sessionDataDir2 = path.join(baseDir, 'messages');
+        await fsPromises.mkdir(sessionDataDir1, { recursive: true });
+        await fsPromises.mkdir(sessionDataDir2, { recursive: true });
+        await fsPromises.writeFile(path.join(sessionDataDir1, 'marker'), 'o');
+        await fsPromises.writeFile(path.join(sessionDataDir2, 'marker'), 'm');
+
+        try {
+          await runPayload({
+            repoDir,
+            requestUsername: other,
+            extraDir,
+            sessionDataDirs: [sessionDataDir1, sessionDataDir2],
+          });
+
+          // Only repoDir and extraDir were routed through the elevation
+          // helper -- neither sessionDataDirs path appears.
+          expect(rmRecursiveAsUserMock.calls.length).toBe(2);
+          expect(rmRecursiveAsUserMock.calls.map((c) => c.path)).toEqual([repoDir, extraDir]);
+          expect(rmRecursiveAsUserMock.calls.some((c) => c.path === sessionDataDir1)).toBe(false);
+          expect(rmRecursiveAsUserMock.calls.some((c) => c.path === sessionDataDir2)).toBe(false);
+
+          // Positive proof: both real directories are gone via the direct
+          // fs.rm path.
+          await expect(fsPromises.access(sessionDataDir1)).rejects.toThrow();
+          await expect(fsPromises.access(sessionDataDir2)).rejects.toThrow();
+        } finally {
+          await fsPromises.rm(baseDir, { recursive: true, force: true });
+        }
+      });
+
+      it('isolates a single sessionDataDirs failure -- the remaining targets are still processed and the handler does not throw', async () => {
+        delete process.env.AUTH_MODE;
+        const baseDir = path.join(os.tmpdir(), `cleanup-handler-sessiondata-isolation-${process.pid}-${Date.now()}`);
+        const failingDir = path.join(baseDir, 'failing');
+        const okDir = path.join(baseDir, 'ok');
+        await fsPromises.mkdir(failingDir, { recursive: true });
+        await fsPromises.mkdir(okDir, { recursive: true });
+        await fsPromises.writeFile(path.join(failingDir, 'marker'), 'f');
+        await fsPromises.writeFile(path.join(okDir, 'marker'), 'k');
+
+        // Force a non-ENOENT failure on `failingDir` by revoking read/write
+        // permission, so `fs.rm`'s internal readdir throws EACCES rather
+        // than the idempotent ENOENT path.
+        await fsPromises.chmod(failingDir, 0o000);
+
+        try {
+          await expect(
+            runPayload({
+              repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo',
+              requestUsername: null,
+              extraDir: null,
+              sessionDataDirs: [failingDir, okDir],
+            }),
+          ).resolves.toBeUndefined();
+
+          // The second target was still removed -- the loop did not abort
+          // on the first target's failure.
+          await expect(fsPromises.access(okDir)).rejects.toThrow();
+        } finally {
+          // Restore permissions so cleanup can actually remove failingDir.
+          await fsPromises.chmod(failingDir, 0o755).catch(() => {});
+          await fsPromises.rm(baseDir, { recursive: true, force: true });
+        }
+      });
+
+      it('processes repoDir/extraDir without error when sessionDataDirs is absent from the payload (back-compat)', async () => {
+        delete process.env.AUTH_MODE;
+        await expect(
+          runPayload({
+            repoDir: '/var/lib/agent-console/repositories/no-such-org/no-such-repo-backcompat',
+            requestUsername: null,
+            extraDir: null,
+          }),
+        ).resolves.toBeUndefined();
+      });
+    });
+
+    describe('org-parent husk removal (Issue #1301, S4)', () => {
+      it('removes the now-empty org-parent directory after repoDir is removed', async () => {
+        delete process.env.AUTH_MODE;
+        const baseDir = path.join(os.tmpdir(), `cleanup-handler-orgparent-${process.pid}-${Date.now()}`);
+        const repoDir = path.join(baseDir, 'org', 'repo');
+        await fsPromises.mkdir(repoDir, { recursive: true });
+        await fsPromises.writeFile(path.join(repoDir, 'marker'), 'r');
+
+        try {
+          await runPayload({ repoDir, requestUsername: null, extraDir: null });
+
+          await expect(fsPromises.access(repoDir)).rejects.toThrow();
+          // The org-parent dir is now empty and was removed too.
+          await expect(fsPromises.access(path.join(baseDir, 'org'))).rejects.toThrow();
+        } finally {
+          await fsPromises.rm(baseDir, { recursive: true, force: true });
+        }
+      });
+
+      it('leaves the org-parent directory alone when a sibling repo still lives under it', async () => {
+        delete process.env.AUTH_MODE;
+        const baseDir = path.join(os.tmpdir(), `cleanup-handler-orgparent-sibling-${process.pid}-${Date.now()}`);
+        const repoDir = path.join(baseDir, 'org', 'repo');
+        const siblingDir = path.join(baseDir, 'org', 'other-repo');
+        await fsPromises.mkdir(repoDir, { recursive: true });
+        await fsPromises.mkdir(siblingDir, { recursive: true });
+        await fsPromises.writeFile(path.join(repoDir, 'marker'), 'r');
+        await fsPromises.writeFile(path.join(siblingDir, 'marker'), 's');
+
+        try {
+          await runPayload({ repoDir, requestUsername: null, extraDir: null });
+
+          await expect(fsPromises.access(repoDir)).rejects.toThrow();
+          // The org-parent dir is non-empty (siblingDir still lives under
+          // it) -- ENOTEMPTY is swallowed, no throw, and the dir survives.
+          // Presence-only check (no assertion on the resolved value): a
+          // successful `access()` resolves to `null` on Bun's real fs but
+          // `undefined` under the process-global memfs mock some other test
+          // file may have installed -- awaiting directly and letting a
+          // rejection fail the test avoids depending on that resolved value.
+          await fsPromises.access(path.join(baseDir, 'org'));
+          await fsPromises.access(siblingDir);
+        } finally {
+          await fsPromises.rm(baseDir, { recursive: true, force: true });
+        }
+      });
+
+      it('does not attempt to remove the repositories root itself for a flat-shape repoDir (no org component)', async () => {
+        delete process.env.AUTH_MODE;
+        const baseDir = path.join(os.tmpdir(), `cleanup-handler-flat-${process.pid}-${Date.now()}`);
+        // Point AGENT_CONSOLE_HOME at baseDir so getRepositoriesDir() ===
+        // path.join(baseDir, 'repositories') -- the SAME directory as
+        // repoDir's dirname below. This exercises the
+        // `orgParentDir !== getRepositoriesDir()` guard for real, not
+        // trivially (a mismatched env would make the guard vacuously true).
+        const originalHome = process.env.AGENT_CONSOLE_HOME;
+        process.env.AGENT_CONSOLE_HOME = baseDir;
+        const reposDir = path.join(baseDir, 'repositories');
+        const repoDir = path.join(reposDir, 'just-repo');
+        await fsPromises.mkdir(repoDir, { recursive: true });
+        await fsPromises.writeFile(path.join(repoDir, 'marker'), 'r');
+
+        try {
+          await runPayload({ repoDir, requestUsername: null, extraDir: null });
+
+          await expect(fsPromises.access(repoDir)).rejects.toThrow();
+          // The repositories root itself must survive -- without the guard,
+          // it would now be empty and get removed too, which is exactly
+          // what the guard exists to prevent. Presence-only check -- see
+          // the comment on the sibling test above for why the resolved
+          // value is not asserted.
+          await fsPromises.access(reposDir);
+        } finally {
+          if (originalHome === undefined) {
+            delete process.env.AGENT_CONSOLE_HOME;
+          } else {
+            process.env.AGENT_CONSOLE_HOME = originalHome;
+          }
+          await fsPromises.rm(baseDir, { recursive: true, force: true });
+        }
+      });
+    });
   });
 });
