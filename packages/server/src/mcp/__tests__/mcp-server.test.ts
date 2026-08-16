@@ -2856,10 +2856,20 @@ describe('MCP Server Tools', () => {
     // caught by a handler-level check. These three tests replace the old
     // "returns a custom XOR error" / "silently succeeds without parent IDs"
     // tests, whose premises (reaching the handler with a partial or absent
-    // pair) are no longer reachable. Mirrors the dual-branch assertion the
-    // pre-existing "without repositoryId" schema test above uses, since the
-    // MCP SDK may surface a required-field violation as a JSON-RPC-level
-    // error or as a tool-result isError depending on transport specifics.
+    // pair) are no longer reachable.
+    //
+    // Polarity note: the two "only one id provided" cases below assert on
+    // the SDK's own schema-validation wording ("Invalid arguments for tool
+    // delegate_to_worktree" / naming the specific missing field), NOT just
+    // `isError: true`. A bare `isError: true` check does not discriminate
+    // this fix from the OLD runtime XOR guard, which also produced
+    // `isError: true` (with a different, custom message) for exactly this
+    // "one id present, one missing" shape -- verified empirically by
+    // running these two tests against the pre-fix production code, where
+    // a bare `isError` assertion passed for the wrong reason. Only the
+    // "both omitted" case was reachable-but-successful pre-fix (the XOR
+    // guard is satisfied when both are absent), so it alone needed no
+    // wording assertion to fail pre-fix correctly.
     it('should reject the call when only parentSessionId is provided (parentWorkerId missing) -- schema-required (Issue #1293 T1)', async () => {
       await setupDelegateEnvironment('feat/partial-caller');
 
@@ -2871,11 +2881,13 @@ describe('MCP Server Tools', () => {
         // parentWorkerId is intentionally omitted -- now a schema violation
       }, nextId++);
 
-      if (response.error) {
-        expect(response.error).toBeDefined();
-      } else {
-        expect(response.result?.isError).toBe(true);
-      }
+      // The SDK's schema-rejection text is a plain string, not the tool's
+      // usual `{"error": "..."}` JSON payload -- parseToolResult() would
+      // throw JSON.parse on it, so read the raw content text directly.
+      expect(response.result?.isError).toBe(true);
+      const message = response.result?.content?.[0]?.text ?? '';
+      expect(message).toContain('Invalid arguments for tool delegate_to_worktree');
+      expect(message).toContain('parentWorkerId');
     });
 
     it('should reject the call when only parentWorkerId is provided (parentSessionId missing) -- schema-required (Issue #1293 T1)', async () => {
@@ -2889,11 +2901,10 @@ describe('MCP Server Tools', () => {
         parentWorkerId: 'caller-worker-456',
       }, nextId++);
 
-      if (response.error) {
-        expect(response.error).toBeDefined();
-      } else {
-        expect(response.result?.isError).toBe(true);
-      }
+      expect(response.result?.isError).toBe(true);
+      const message = response.result?.content?.[0]?.text ?? '';
+      expect(message).toContain('Invalid arguments for tool delegate_to_worktree');
+      expect(message).toContain('parentSessionId');
     });
 
     it('should reject the call when both parentSessionId and parentWorkerId are omitted -- schema-required (Issue #1293 T1)', async () => {
