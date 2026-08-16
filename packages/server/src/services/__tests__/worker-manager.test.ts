@@ -94,7 +94,7 @@ describe('WorkerManager', () => {
     username: 'testuser',
     resolver: defaultResolver,
     agentId: CLAUDE_CODE_AGENT_ID,
-    continueConversation: false,
+    startupIntent: 'fresh' as const,
     revived: false,
   };
 
@@ -2394,7 +2394,7 @@ describe('WorkerManager', () => {
       expect(writeCalls.length).toBe(0);
     });
 
-    it('no-op: continueConversation with continueTemplate (no {{prompt}}) does not write a prompt file', async () => {
+    it("no-op: startupIntent 'continue' with continueTemplate (no {{prompt}}) does not write a prompt file", async () => {
       delete process.env.AUTH_MODE;
       const { fake: runAsUserImpl, writeCalls } = createCommandDiscriminatingRunAsUser();
       const wm = buildManagerWithSeams({ lookupOsUserFn: defaultLookupOsUserFn, runAsUserImpl });
@@ -2409,7 +2409,7 @@ describe('WorkerManager', () => {
       await wm.activateAgentWorkerPty(worker, {
         ...defaultAgentActivationParams,
         username: 'testuser',
-        continueConversation: true,
+        startupIntent: 'continue',
         // continueTemplate ('claude -c') has no {{prompt}}; a stray
         // initialPrompt must not cause a write against a templateless target.
         initialPrompt: 'this should be ignored',

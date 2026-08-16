@@ -39,6 +39,7 @@ import { CLAUDE_CODE_AGENT_ID } from './agent-manager.js';
 import type { AgentManager } from './agent-manager.js';
 import type { EmbeddedAgentManager } from './embedded-agent-manager.js';
 import { ValidationError } from '../lib/errors.js';
+import { resolveStartupIntent, type StartupIntentPreference } from './startup-intent.js';
 import type { NotificationManager } from './notifications/notification-manager.js';
 import type { InterSessionMessageService } from './inter-session-message-service.js';
 import type { AnnotationService } from './annotation-service.js';
@@ -135,7 +136,7 @@ export class WorkerLifecycleManager {
   async createWorker(
     sessionId: string,
     request: CreateWorkerParams,
-    continueConversation: boolean = false,
+    startupPreference: StartupIntentPreference = 'fresh',
     initialPrompt?: string,
     templateVars?: Record<string, string>,
   ): Promise<Worker | null> {
@@ -170,14 +171,22 @@ export class WorkerLifecycleManager {
     if (request.type === 'agent') {
       const repositoryEnvVars = await this.deps.getRepositoryEnvVars(sessionId);
       const username = await this.deps.resolveSpawnUsername(session.createdBy);
+      // Only the session's initial agent worker (created with a non-empty
+      // initialPrompt) is eligible for restart re-delivery.
+      const deliverInitialPromptOnActivation = !!initialPrompt?.trim();
       const agentWorker = this.deps.workerManager.initializeAgentWorker({
         id: workerId,
         name: workerName,
         createdAt,
         agentId: request.agentId,
-        // Only the session's initial agent worker (created with a
-        // non-empty initialPrompt) is eligible for restart re-delivery.
-        deliverInitialPromptOnActivation: !!initialPrompt?.trim(),
+        deliverInitialPromptOnActivation,
+      });
+      // Resolved once, before activation; the value below is threaded
+      // straight into activateAgentWorkerPty (which never re-derives it).
+      const startupIntent = resolveStartupIntent(startupPreference, {
+        deliverInitialPromptOnActivation,
+        initialPrompt,
+        initialPromptDelivered: session.initialPromptDelivered,
       });
       await this.deps.workerManager.activateAgentWorkerPty(agentWorker, {
         sessionId,
@@ -186,7 +195,7 @@ export class WorkerLifecycleManager {
         username,
         resolver,
         agentId: agentWorker.agentId,
-        continueConversation,
+        startupIntent,
         initialPrompt,
         repositoryId,
         context: {
@@ -312,6 +321,13 @@ export class WorkerLifecycleManager {
     // Activate PTY based on worker type
     if (worker.type === 'agent') {
       const effectiveAgentId = this.resolveEffectiveAgentId(worker.agentId, { sessionId, workerId });
+      // Reviving an already-existing worker (not a fresh start): the
+      // conversation always continues, same as restoreWorker / resume.
+      const startupIntent = resolveStartupIntent('continue', {
+        deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
+        initialPrompt: session.initialPrompt,
+        initialPromptDelivered: session.initialPromptDelivered,
+      });
       await this.deps.workerManager.activateAgentWorkerPty(worker, {
         sessionId,
         locationPath: session.locationPath,
@@ -319,7 +335,7 @@ export class WorkerLifecycleManager {
         username,
         resolver,
         agentId: effectiveAgentId,
-        continueConversation: true,
+        startupIntent,
         repositoryId,
         context: {
           parentSessionId: session.parentSessionId,
@@ -411,7 +427,7 @@ export class WorkerLifecycleManager {
   async restartAgentWorker(
     sessionId: string,
     workerId: string,
-    continueConversation: boolean,
+    startupPreference: StartupIntentPreference,
     agentId?: string,
     branch?: string
   ): Promise<Worker | null> {
@@ -421,19 +437,16 @@ export class WorkerLifecycleManager {
     const existingWorker = session.workers.get(workerId);
     if (!existingWorker || existingWorker.type !== 'agent') return null;
 
-    // Redelivery gate: only re-inject session.initialPrompt on
-    // this restart when this is the session's eligible initial agent worker,
-    // a prompt actually exists, it was never actually delivered (delivered
-    // here means the sentinel-injected write occurred -- see
-    // WorkerManager.setupWorkerEventHandlers), and the caller isn't asking to
-    // continue the existing conversation (a fresh prompt makes no sense
-    // there). Computed BEFORE the worker is killed/recreated below, from the
-    // still-live existingWorker/session state.
-    const shouldRedeliverInitialPrompt =
-      continueConversation === false &&
-      existingWorker.deliverInitialPromptOnActivation &&
-      !!session.initialPrompt?.trim() &&
-      session.initialPromptDelivered !== true;
+    // Resolve the startup intent once, from the still-live
+    // existingWorker/session state, BEFORE the worker is killed/recreated
+    // below (preserving the pre-refactor shouldRedeliverInitialPrompt gate's
+    // TOCTOU position). The resolved value is threaded to every downstream
+    // consumer of this restart flow; nothing re-derives it.
+    const startupIntent = resolveStartupIntent(startupPreference, {
+      deliverInitialPromptOnActivation: existingWorker.deliverInitialPromptOnActivation,
+      initialPrompt: session.initialPrompt,
+      initialPromptDelivered: session.initialPromptDelivered,
+    });
 
     // Resolve agent ID: use provided agentId or fall back to existing
     const workerAgentId = agentId ?? existingWorker.agentId;
@@ -506,8 +519,8 @@ export class WorkerLifecycleManager {
       agentId: workerAgentId,
       // Eligibility carries over unchanged across restart -- it is a
       // property of "is this the session's initial agent worker", which
-      // restart does not change. NOT recomputed from whether THIS restart
-      // redelivers (see shouldRedeliverInitialPrompt above).
+      // restart does not change. NOT recomputed from the resolved
+      // startupIntent above.
       deliverInitialPromptOnActivation: existingWorker.deliverInitialPromptOnActivation,
     });
     // Adopt the epoch minted by resetWorkerOutput so the manifest and the
@@ -521,11 +534,11 @@ export class WorkerLifecycleManager {
       username,
       resolver,
       agentId: workerAgentId,
-      continueConversation,
-      // Only carries a value when this restart's redelivery gate passed
-      // (see shouldRedeliverInitialPrompt above); otherwise the activation
-      // machinery behaves exactly as before this issue.
-      initialPrompt: shouldRedeliverInitialPrompt ? session.initialPrompt : undefined,
+      startupIntent,
+      // Only carries a value when the resolved intent calls for delivery;
+      // otherwise the activation machinery behaves exactly as before this
+      // issue.
+      initialPrompt: startupIntent === 'deliver-initial-prompt' ? session.initialPrompt : undefined,
       repositoryId,
       context: {
         parentSessionId: session.parentSessionId,
@@ -570,7 +583,7 @@ export class WorkerLifecycleManager {
     }
 
     logger.info(
-      { workerId, sessionId, continueConversation, agentId: workerAgentId, previousAgentId: existingWorker.agentId, branch },
+      { workerId, sessionId, startupPreference, startupIntent, agentId: workerAgentId, previousAgentId: existingWorker.agentId, branch },
       restartReason
     );
 
@@ -664,6 +677,13 @@ export class WorkerLifecycleManager {
 
       if (existingWorker.type === 'agent') {
         const effectiveAgentId = this.resolveEffectiveAgentId(existingWorker.agentId, { sessionId, workerId });
+        // Reviving an already-existing worker (not a fresh start): the
+        // conversation always continues, same as getAvailableWorker / resume.
+        const startupIntent = resolveStartupIntent('continue', {
+          deliverInitialPromptOnActivation: existingWorker.deliverInitialPromptOnActivation,
+          initialPrompt: session.initialPrompt,
+          initialPromptDelivered: session.initialPromptDelivered,
+        });
         await this.deps.workerManager.activateAgentWorkerPty(existingWorker, {
           sessionId,
           locationPath: session.locationPath,
@@ -671,7 +691,7 @@ export class WorkerLifecycleManager {
           username,
           resolver,
           agentId: effectiveAgentId,
-          continueConversation: true,
+          startupIntent,
           repositoryId,
           context: {
             parentSessionId: session.parentSessionId,

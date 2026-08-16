@@ -22,6 +22,7 @@ import {
   GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE,
 } from '../services/embedded-agent-worker-service.js';
 import type { WorkerMessage } from '@agent-console/shared';
+import type { StartupIntentPreference } from '../services/startup-intent.js';
 
 const logger = createLogger('api:workers');
 
@@ -337,10 +338,12 @@ const workers = new Hono<AppBindings>()
 
     // Extract continueConversation (terminal and agent workers carry this flag;
     // embedded-agent and git-diff variants do not declare it in their schema)
+    // and convert it to the caller's startup preference.
     const continueConversation =
       (body.type === 'terminal' || body.type === 'agent') && body.continueConversation === true;
+    const startupPreference: StartupIntentPreference = continueConversation ? 'continue' : 'fresh';
 
-    const worker = await sessionManager.createWorker(sessionId, body, continueConversation);
+    const worker = await sessionManager.createWorker(sessionId, body, startupPreference);
 
     if (!worker) {
       throw new ValidationError('Failed to create worker');
@@ -372,9 +375,10 @@ const workers = new Hono<AppBindings>()
     const workerId = c.req.param('workerId');
     const body = c.req.valid('json');
     const { continueConversation = false, agentId, branch } = body;
+    const startupPreference: StartupIntentPreference = continueConversation ? 'continue' : 'fresh';
 
     const { sessionManager } = c.get('appContext');
-    const worker = await sessionManager.restartAgentWorker(sessionId, workerId, continueConversation, agentId, branch);
+    const worker = await sessionManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
 
     if (!worker) {
       throw new NotFoundError('Worker');

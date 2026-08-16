@@ -1140,6 +1140,10 @@ describe('EmbeddedAgentWorkerService initial-prompt delivery (Issue #1068)', () 
   });
 });
 
+// Scoped to the embedded-agent path only -- the PTY-backed agent-worker
+// path computes the identical rule separately via resolveStartupIntent's
+// `obligated` check in startup-intent.ts. See both functions' JSDoc for
+// why the two are kept as family-scoped single writers rather than merged.
 describe('hasUndeliveredInitialPrompt (Issue #1264)', () => {
   it('is true when all three conditions hold', () => {
     const worker = buildInternalEmbeddedAgentWorker({ deliverInitialPromptOnActivation: true });

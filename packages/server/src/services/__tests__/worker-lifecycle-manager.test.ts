@@ -217,8 +217,8 @@ describe('WorkerLifecycleManager', () => {
         };
 
         // Mirrors SessionManager.createSession's initial-worker call shape:
-        // createWorker(id, request, continueConversation, initialPrompt, templateVars).
-        const worker = await lifecycleManager.createWorker(session.id, request, false, 'Do the thing');
+        // createWorker(id, request, startupPreference, initialPrompt, templateVars).
+        const worker = await lifecycleManager.createWorker(session.id, request, 'fresh', 'Do the thing');
 
         const internal = session.workers.get(worker!.id) as InternalAgentWorker;
         expect(internal.deliverInitialPromptOnActivation).toBe(true);
@@ -238,7 +238,7 @@ describe('WorkerLifecycleManager', () => {
 
       // Mirrors routes/workers.ts's generic add-worker call shape: no
       // initialPrompt argument is passed at all.
-      const worker = await lifecycleManager.createWorker(session.id, request, false);
+      const worker = await lifecycleManager.createWorker(session.id, request, 'fresh');
 
       const internal = session.workers.get(worker!.id) as InternalAgentWorker;
       expect(internal.deliverInitialPromptOnActivation).toBe(false);
@@ -253,7 +253,7 @@ describe('WorkerLifecycleManager', () => {
         agentId: CLAUDE_CODE_AGENT_ID,
       };
 
-      const worker = await lifecycleManager.createWorker(session.id, request, false, '   ');
+      const worker = await lifecycleManager.createWorker(session.id, request, 'fresh', '   ');
 
       const internal = session.workers.get(worker!.id) as InternalAgentWorker;
       expect(internal.deliverInitialPromptOnActivation).toBe(false);
@@ -359,8 +359,8 @@ describe('WorkerLifecycleManager', () => {
       };
 
       // Mirrors SessionManager.createSession's initial-worker call shape:
-      // createWorker(id, request, continueConversation, initialPrompt, templateVars).
-      const worker = await lifecycleManager.createWorker(session.id, request, false, 'Do the thing');
+      // createWorker(id, request, startupPreference, initialPrompt, templateVars).
+      const worker = await lifecycleManager.createWorker(session.id, request, 'fresh', 'Do the thing');
 
       const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
       expect(internal.deliverInitialPromptOnActivation).toBe(true);
@@ -377,7 +377,7 @@ describe('WorkerLifecycleManager', () => {
 
       // Mirrors routes/workers.ts's generic add-worker call shape: no
       // initialPrompt argument is passed at all.
-      const worker = await lifecycleManager.createWorker(session.id, request, false);
+      const worker = await lifecycleManager.createWorker(session.id, request, 'fresh');
 
       const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
       expect(internal.deliverInitialPromptOnActivation).toBe(false);
@@ -392,7 +392,7 @@ describe('WorkerLifecycleManager', () => {
         embeddedAgentId: 'def-1',
       };
 
-      const worker = await lifecycleManager.createWorker(session.id, request, false, '   ');
+      const worker = await lifecycleManager.createWorker(session.id, request, 'fresh', '   ');
 
       const internal = session.workers.get(worker!.id) as InternalEmbeddedAgentWorker;
       expect(internal.deliverInitialPromptOnActivation).toBe(false);
@@ -718,7 +718,7 @@ describe('WorkerLifecycleManager', () => {
       const originalId = worker!.id;
 
       const restarted = await lifecycleManager.restartAgentWorker(
-        session.id, originalId, true
+        session.id, originalId, 'continue'
       );
 
       expect(restarted).not.toBeNull();
@@ -749,7 +749,7 @@ describe('WorkerLifecycleManager', () => {
       // Restart with same agent ID since we only have the built-in one available
       // The key behavior is that it kills old PTY and creates new one
       const restarted = await lifecycleManager.restartAgentWorker(
-        session.id, worker!.id, false, CLAUDE_CODE_AGENT_ID
+        session.id, worker!.id, 'fresh', CLAUDE_CODE_AGENT_ID
       );
 
       expect(restarted).not.toBeNull();
@@ -758,7 +758,7 @@ describe('WorkerLifecycleManager', () => {
 
     it('should return null when session is not found', async () => {
       const result = await lifecycleManager.restartAgentWorker(
-        'non-existent', 'worker-1', true
+        'non-existent', 'worker-1', 'continue'
       );
 
       expect(result).toBeNull();
@@ -769,7 +769,7 @@ describe('WorkerLifecycleManager', () => {
       sessions.set(session.id, session);
 
       const result = await lifecycleManager.restartAgentWorker(
-        session.id, 'non-existent', true
+        session.id, 'non-existent', 'continue'
       );
 
       expect(result).toBeNull();
@@ -784,7 +784,7 @@ describe('WorkerLifecycleManager', () => {
       });
 
       const result = await lifecycleManager.restartAgentWorker(
-        session.id, worker!.id, true
+        session.id, worker!.id, 'continue'
       );
 
       expect(result).toBeNull();
@@ -800,7 +800,7 @@ describe('WorkerLifecycleManager', () => {
       });
       const originalId = worker!.id;
 
-      await lifecycleManager.restartAgentWorker(session.id, originalId, true);
+      await lifecycleManager.restartAgentWorker(session.id, originalId, 'continue');
 
       // First PTY should be killed
       expect(ptyFactory.instances[0].killed).toBe(true);
@@ -842,7 +842,7 @@ describe('WorkerLifecycleManager', () => {
       });
 
       try {
-        await lifecycleManager.restartAgentWorker(session.id, originalId, true);
+        await lifecycleManager.restartAgentWorker(session.id, originalId, 'continue');
       } finally {
         ptyFactory.spawn.mockImplementation(originalSpawnImpl);
       }
@@ -860,7 +860,7 @@ describe('WorkerLifecycleManager', () => {
       });
 
       mockPersistSession.mockClear();
-      await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'continue');
 
       expect(mockPersistSession).toHaveBeenCalled();
     });
@@ -892,7 +892,7 @@ describe('WorkerLifecycleManager', () => {
       }));
 
       const result = await managerWithDelete.restartAgentWorker(
-        session.id, worker!.id, true
+        session.id, worker!.id, 'continue'
       );
 
       expect(result).toBeNull();
@@ -916,7 +916,7 @@ describe('WorkerLifecycleManager', () => {
 
       await expect(
         lifecycleManager.restartAgentWorker(
-          session.id, worker!.id, true, undefined, 'new-branch'
+          session.id, worker!.id, 'continue', undefined, 'new-branch'
         )
       ).rejects.toThrow('git branch rename failed');
 
@@ -943,7 +943,7 @@ describe('WorkerLifecycleManager', () => {
 
       await expect(
         lifecycleManager.restartAgentWorker(
-          session.id, worker!.id, true, undefined, 'new-branch'
+          session.id, worker!.id, 'continue', undefined, 'new-branch'
         )
       ).rejects.toThrow('could not determine current branch');
 
@@ -963,7 +963,7 @@ describe('WorkerLifecycleManager', () => {
         agentId: CLAUDE_CODE_AGENT_ID,
       });
 
-      await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'continue');
 
       expect(mockOnWorkerRestarted).toHaveBeenCalledWith(session.id, worker!.id, expect.any(String));
     });
@@ -979,7 +979,7 @@ describe('WorkerLifecycleManager', () => {
 
       // Restart with same agent ID and no branch change
       await lifecycleManager.restartAgentWorker(
-        session.id, worker!.id, true, CLAUDE_CODE_AGENT_ID
+        session.id, worker!.id, 'continue', CLAUDE_CODE_AGENT_ID
       );
 
       // onWorkerRestarted should be called regardless of agent/branch changes
@@ -1010,7 +1010,7 @@ describe('WorkerLifecycleManager', () => {
       }));
 
       const result = await managerWithDelete.restartAgentWorker(
-        session.id, worker!.id, true
+        session.id, worker!.id, 'continue'
       );
 
       // Should return null since session was deleted
@@ -1041,7 +1041,7 @@ describe('WorkerLifecycleManager', () => {
       mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
 
       await lifecycleManager.restartAgentWorker(
-        session.id, agentWorker!.id, true, undefined, 'new-branch'
+        session.id, agentWorker!.id, 'continue', undefined, 'new-branch'
       );
 
       // The branch-agnostic spec re-resolves on every diff, so it must NOT be
@@ -1071,7 +1071,7 @@ describe('WorkerLifecycleManager', () => {
       mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('old-branch'));
 
       await lifecycleManager.restartAgentWorker(
-        session.id, agentWorker!.id, true, undefined, 'new-branch'
+        session.id, agentWorker!.id, 'continue', undefined, 'new-branch'
       );
 
       // Fires with the unchanged spec so connected clients re-resolve the diff.
@@ -1100,7 +1100,7 @@ describe('WorkerLifecycleManager', () => {
 
       // Restart without branch parameter
       await lifecycleManager.restartAgentWorker(
-        session.id, agentWorker!.id, true
+        session.id, agentWorker!.id, 'continue'
       );
 
       // git-diff worker's baseCommit should remain unchanged
@@ -1140,13 +1140,13 @@ describe('WorkerLifecycleManager', () => {
       return { session, workerId: worker!.id };
     }
 
-    it('redelivers session.initialPrompt on restart when eligible, undelivered, and continueConversation is false [POLARITY]', async () => {
+    it("redelivers session.initialPrompt on restart when eligible, undelivered, and preference is 'fresh' [POLARITY]", async () => {
       const { session, workerId } = await setupEligibleWorker({ initialPrompt: 'Do the important thing' });
       expect(session.initialPromptDelivered).toBeUndefined();
 
       const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
       try {
-        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh');
 
         expect(spy).toHaveBeenCalledTimes(1);
         const params = spy.mock.calls[0][1];
@@ -1162,7 +1162,7 @@ describe('WorkerLifecycleManager', () => {
 
       const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
       try {
-        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh');
 
         expect(spy).toHaveBeenCalledTimes(1);
         expect(spy.mock.calls[0][1].initialPrompt).toBeUndefined();
@@ -1171,24 +1171,24 @@ describe('WorkerLifecycleManager', () => {
       }
     });
 
-    it('does not redeliver when continueConversation is true, and does not consume eligibility for a later restart', async () => {
+    it("does not redeliver when preference is 'continue', and does not consume eligibility for a later restart", async () => {
       const { session, workerId } = await setupEligibleWorker({ initialPrompt: 'Do the important thing' });
 
       const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
       try {
-        await lifecycleManager.restartAgentWorker(session.id, workerId, true);
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'continue');
 
         expect(spy).toHaveBeenCalledTimes(1);
         expect(spy.mock.calls[0][1].initialPrompt).toBeUndefined();
-        // continueConversation:true never flips the delivered flag itself --
+        // preference 'continue' never flips the delivered flag itself --
         // only the injection-time callback (WorkerManager, separately
         // tested) does that.
         expect(session.initialPromptDelivered).not.toBe(true);
 
-        // Same worker restarted again, this time with continueConversation:
-        // false and still undelivered -- the earlier continue-restart must
-        // not have "used up" the eligibility.
-        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+        // Same worker restarted again, this time with preference 'fresh'
+        // and still undelivered -- the earlier continue-restart must not
+        // have "used up" the eligibility.
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh');
 
         expect(spy).toHaveBeenCalledTimes(2);
         expect(spy.mock.calls[1][1].initialPrompt).toBe('Do the important thing');
@@ -1206,7 +1206,7 @@ describe('WorkerLifecycleManager', () => {
 
       const spy = spyOn(workerManager, 'activateAgentWorkerPty').mockImplementation(async () => {});
       try {
-        await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+        await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh');
 
         expect(spy).toHaveBeenCalledTimes(1);
         expect(spy.mock.calls[0][1].initialPrompt).toBeUndefined();
@@ -1221,7 +1221,7 @@ describe('WorkerLifecycleManager', () => {
       // but eligibility itself must still carry over unrecomputed.
       session.initialPromptDelivered = true;
 
-      await lifecycleManager.restartAgentWorker(session.id, workerId, false);
+      await lifecycleManager.restartAgentWorker(session.id, workerId, 'fresh');
 
       const newInternal = session.workers.get(workerId) as InternalAgentWorker;
       expect(newInternal.deliverInitialPromptOnActivation).toBe(true);
@@ -1238,7 +1238,7 @@ describe('WorkerLifecycleManager', () => {
       const before = session.workers.get(worker!.id) as InternalAgentWorker;
       expect(before.deliverInitialPromptOnActivation).toBe(false);
 
-      await lifecycleManager.restartAgentWorker(session.id, worker!.id, false);
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'fresh');
 
       const after = session.workers.get(worker!.id) as InternalAgentWorker;
       expect(after.deliverInitialPromptOnActivation).toBe(false);
@@ -2313,7 +2313,7 @@ describe('WorkerLifecycleManager', () => {
 
       const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty');
 
-      await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'continue');
 
       expect(activateSpy).toHaveBeenCalledTimes(1);
       const params = activateSpy.mock.calls[0][1];
@@ -2405,7 +2405,7 @@ describe('WorkerLifecycleManager', () => {
 
       const activateSpy = spyOn(workerManager, 'activateAgentWorkerPty');
 
-      await lifecycleManager.restartAgentWorker(session.id, worker!.id, true);
+      await lifecycleManager.restartAgentWorker(session.id, worker!.id, 'continue');
 
       expect(activateSpy).toHaveBeenCalledTimes(1);
       const params = activateSpy.mock.calls[0][1];

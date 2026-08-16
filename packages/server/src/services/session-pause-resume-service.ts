@@ -28,6 +28,7 @@ import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.
 import { SessionOrphanedError } from '../lib/errors.js';
 import { createLogger } from '../lib/logger.js';
 import { hasUndeliveredInitialPrompt } from './embedded-agent-worker-service.js';
+import { resolveStartupIntent } from './startup-intent.js';
 
 const logger = createLogger('session-pause-resume');
 
@@ -262,7 +263,7 @@ export class SessionPauseResumeService {
     // subprocess/MCP token (workerManager.killWorker no-ops on non-PTY workers).
     const activatedEmbeddedAgentWorkerIds: string[] = [];
 
-    // Restore all PTY workers with continueConversation: true
+    // Restore all PTY workers, always continuing their conversation.
     const repositoryEnvVars = await this.deps.getRepositoryEnvVars(id);
     const repositoryId = internalSession.type === 'worktree' ? internalSession.repositoryId : undefined;
     const resolver = this.deps.getPathResolverForSession(internalSession);
@@ -270,6 +271,13 @@ export class SessionPauseResumeService {
       const username = await this.deps.resolveSpawnUsername(internalSession.createdBy, this.deps.userRepository);
       for (const worker of workers.values()) {
         if (worker.type === 'agent') {
+          // Reviving an already-existing worker (not a fresh start): the
+          // conversation always continues, same as getAvailableWorker / restoreWorker.
+          const startupIntent = resolveStartupIntent('continue', {
+            deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
+            initialPrompt: internalSession.initialPrompt,
+            initialPromptDelivered: internalSession.initialPromptDelivered,
+          });
           await this.deps.workerManager.activateAgentWorkerPty(worker, {
             sessionId: id,
             locationPath: persisted.locationPath,
@@ -277,7 +285,7 @@ export class SessionPauseResumeService {
             username,
             resolver,
             agentId: worker.agentId,
-            continueConversation: true,
+            startupIntent,
             repositoryId,
             context: {
               parentSessionId: internalSession.parentSessionId,
