@@ -214,9 +214,13 @@ export interface ClaimedSession {
  *
  * The spec sketches the signature as `(caller, claimedSessionId, mode)`; this
  * implementation passes the already-resolved `{ sessionId, createdBy }` (tools
- * resolve the session anyway) plus `null` for tools invoked without a claimed
- * session (e.g. `delegate_to_worktree` without `parentSessionId`), keeping the
- * helper pure and `sessionManager`-free
+ * resolve the session anyway) plus `null` for a tool invoked with no existing
+ * session to claim ownership over, keeping the helper pure and
+ * `sessionManager`-free. Every current call site resolves a real session
+ * first and always passes a non-null `claimed` object, so the `null` branch
+ * has no production call site today -- it remains part of the contract for
+ * a future tool shaped that way, and is exercised directly by unit tests in
+ * `mcp-auth.test.ts`
  * (docs/design/embedded-agent-worker.md § "MCP caller identity").
  *
  * Rules, in order:
