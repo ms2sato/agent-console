@@ -478,6 +478,17 @@ export class WorkerManager {
       ? agent.continueTemplate
       : agent.commandTemplate;
 
+    // NOTE: template selection above and the initialPrompt-injection gate
+    // below are two INDEPENDENT conditions, not one gated decision. A
+    // 'continue' startupIntent selects the continue template but does not
+    // itself suppress prompt injection -- if that template contains
+    // '{{prompt}}', a non-empty initialPrompt still gets written and
+    // injected. Unreachable for the builtin agent (its continueTemplate has
+    // no '{{prompt}}'), but reachable for a custom agent whose continue
+    // template does. This is a known, deliberately deferred design gap, not
+    // an oversight -- do not "fix" it inline without deciding what
+    // 'continue' should mean for such an agent first.
+
     // Everything below can leave a partially-activated worker behind: the
     // prompt-file write and the MCP-token mint/write both attach state to
     // `worker` (promptFile / mcpToken) before `worker.pty` is assigned, and
