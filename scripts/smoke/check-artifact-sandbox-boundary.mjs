@@ -929,10 +929,26 @@ async function main() {
       `count=${postArm6ChildFrames.length}, urls=${JSON.stringify(postArm6ChildFrames.map((f) => f.url()))}`,
     );
     if (postArm6ChildFrames.length === 1) {
+      // Compare the parsed origin, not a string prefix: a substring/prefix
+      // check (`.startsWith('https://example.com')`) would also match an
+      // attacker-controlled lookalike like `https://example.com.evil.com`,
+      // which is exactly the imprecision a probe whose whole value rests on
+      // exact assertions must not carry (CodeQL
+      // js/incomplete-url-substring-sanitization). `new URL(...).origin`
+      // throws on an unparseable value -- the post-block interstitial
+      // (`chrome-error://chromewebdata/`) is exactly such a value and is a
+      // legitimate, already-documented post-block state, so a parse failure
+      // here means "definitely not the target origin" (pass), not an error.
+      let childOrigin = null;
+      try {
+        childOrigin = new URL(postArm6ChildFrames[0].url()).origin;
+      } catch {
+        // unparseable (e.g. chrome-error://chromewebdata/) -- treat as "not the target origin"
+      }
       expect(
-        !postArm6ChildFrames[0].url().startsWith('https://example.com'),
+        childOrigin !== 'https://example.com',
         'arm 6: the artifact iframe never reached the exfiltration target (self-navigation to an external origin did not succeed)',
-        `childFrame.url()=${postArm6ChildFrames[0].url()}`,
+        `childFrame.url()=${postArm6ChildFrames[0].url()}, parsedOrigin=${childOrigin}`,
       );
     }
 
