@@ -45,6 +45,10 @@ An asynchronous server-side job that clones a remote Git URL into the shared [so
 - **Aliases:** clone-and-register job
 - **See:** `packages/shared/src/schemas/repository.ts` (`CloneRepositoryRequestSchema`, `CloneJobStatusResponse`)
 
+### Artifact (HTML Artifact)
+**Design phase (spec: [html-artifacts.md](design/html-artifacts.md)).** A single user-uploaded HTML document stored by the server under `<AGENT_CONSOLE_HOME>/artifacts/<users.id>/`, addressed by a random UUID, owned by the user whose session created it ([created_by](#created_by) of the calling worker's session — never the MCP caller identity, same layering as [Delegation Parent](#delegation-parent--parentsessionid-parentworkerid)), and viewable by **any authenticated user**. Created via one MCP tool reachable from both terminal and embedded agents (no builtin-tool variant — excluded by the [Builtin Tool](#builtin-tool-embedded-agent) narrow-context invariant). Served byte-verbatim behind the **artifact origin boundary**: a `Content-Security-Policy: sandbox allow-scripts` response header giving the document an opaque origin (no cookies, no localStorage, no authenticated app API), plus a resource CSP making v1 artifacts self-contained (no external network). `allow-same-origin` is permanently forbidden. Scripts execute (owner requirement); the sanitizer is deliberately absent from this path.
+- **See:** [html-artifacts.md](design/html-artifacts.md) §3 (boundary, named premises), §6 (surfaces)
+
 ### Session
 A work session tied to a directory location, containing one or more workers.
 - **Aliases:** Work session
