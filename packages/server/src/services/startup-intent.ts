@@ -8,6 +8,17 @@
  * to live at each call site. Every consumer (template selection, the
  * restart redelivery gate) reads the resolved `StartupIntent` value; none
  * re-derive it from raw worker/session state.
+ *
+ * `resolveStartupIntent`'s `obligated` check is the single writer for this
+ * rule ONLY on the PTY-backed agent-worker path. The embedded-agent path
+ * has its own family-scoped single writer for the identical rule --
+ * `hasUndeliveredInitialPrompt` in `embedded-agent-worker-service.ts` --
+ * kept separate deliberately: that function takes typed internal
+ * worker/session and serves delivery plus revival for the embedded path;
+ * this resolver takes a plain input shape and additionally folds in a
+ * caller preference the embedded path has no concept of. A third family
+ * wanting this exact conjunct is the trigger to extract the bare
+ * predicate, not before.
  */
 
 /**

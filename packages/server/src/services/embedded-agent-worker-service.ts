@@ -283,12 +283,23 @@ type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
  * Whether `worker` has an undelivered initial-prompt obligation: it was
  * created with `deliverInitialPromptOnActivation: true`, `session`'s
  * `initialPrompt` is non-empty after trimming, and it has not already been
- * delivered. Single writer (I-2) for this eligibility check -- see Issue
+ * delivered. Single writer (I-2) for the EMBEDDED PATH's eligibility check
+ * -- see Issue
  * #1264. Consumed by both `maybeDeliverInitialPrompt` (below, the normal
  * lazy-activation delivery path) and the revival hook in
  * `session-pause-resume-service.ts` (auto-activates workers with this
  * obligation on server-restart / manual resume so a prompt that was never
  * delivered before the server died is not stranded forever).
+ *
+ * The PTY-backed agent-worker path has the identical rule -- same three
+ * persisted fields, same truth table -- computed separately by
+ * `resolveStartupIntent`'s `obligated` check in `startup-intent.ts`. Kept
+ * as two family-scoped single writers rather than merged into one shared
+ * predicate: this function takes typed internal worker/session; the
+ * PTY-path resolver takes a plain input shape and additionally folds in a
+ * caller preference this path has no concept of. A third family wanting
+ * this exact conjunct is the trigger to extract the bare predicate, not
+ * before.
  */
 export function hasUndeliveredInitialPrompt(
   worker: InternalEmbeddedAgentWorker,
