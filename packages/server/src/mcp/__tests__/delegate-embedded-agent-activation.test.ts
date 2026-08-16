@@ -338,7 +338,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       // by `agentDirectory.resolve()`.
       agentId: embeddedAgentId,
       parentSessionId: parentSession.id,
-      parentWorkerId: 'parent-worker-id',
+      parentWorkerId: parentSession.workers.find((w) => w.type === 'agent' || w.type === 'embedded-agent')!.id,
       skipMessageCallbackPrompt: true,
     }, nextId++);
 
@@ -447,7 +447,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       useRemote: false,
       agentId: embeddedAgentId,
       parentSessionId: parentSession.id,
-      parentWorkerId: 'parent-worker-id',
+      parentWorkerId: parentSession.workers.find((w) => w.type === 'agent' || w.type === 'embedded-agent')!.id,
       skipMessageCallbackPrompt: true,
     }, nextId++);
 
@@ -477,7 +477,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       useRemote: false,
       agentId: CLAUDE_CODE_AGENT_ID,
       parentSessionId: parentSession.id,
-      parentWorkerId: 'parent-worker-id',
+      parentWorkerId: parentSession.workers.find((w) => w.type === 'agent' || w.type === 'embedded-agent')!.id,
       skipMessageCallbackPrompt: true,
     }, nextId++);
 

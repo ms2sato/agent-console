@@ -737,7 +737,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         .string()
         .min(1, 'parentWorkerId must be non-empty')
         .describe(
-          "Required. The parent session's worker ID, from your own AGENT_CONSOLE_WORKER_ID environment variable.",
+          "Required. The parent session's worker ID, from your own AGENT_CONSOLE_WORKER_ID environment variable. " +
+            'Must name an existing worker in that session capable of receiving send_session_message ' +
+            '(an agent or embedded-agent worker).',
         ),
       skipMessageCallbackPrompt: z
         .boolean()
@@ -851,6 +853,24 @@ export function createMcpApp(deps: McpDependencies): Hono {
         );
         if (authError) return errorResult(authError.error);
         const parentCreatedBy = parentSession.createdBy;
+
+        // Resolve parentWorkerId against the PARENT session's own workers
+        // (never a global lookup) and require it to name a worker capable
+        // of receiving send_session_message. Unconditional: the id is
+        // stored on the child session and exported as
+        // AGENT_CONSOLE_PARENT_WORKER_ID regardless of
+        // skipMessageCallbackPrompt, and an unresolvable id poisons every
+        // callback the delegated agent will ever attempt (it is embedded
+        // verbatim into the standing prompt instructions below).
+        const parentWorker = parentSession.workers.find((w) => w.id === parentWorkerId);
+        if (!parentWorker) {
+          return errorResult(`Parent worker not found in session ${parentSessionId}: ${parentWorkerId}`);
+        }
+        if (!canReceiveSessionMessages(parentWorker)) {
+          return errorResult(
+            `Parent worker ${parentWorkerId} cannot receive session messages (type: ${parentWorker.type})`,
+          );
+        }
 
         // Resolve parent's createdBy (a users.id UUID) to its OS username
         // so the suggestion call and `git worktree add` both run as the
