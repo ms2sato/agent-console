@@ -61,6 +61,7 @@ Per the project's premise-naming discipline: these are the claims this boundary 
 - **P2a (adjunct to P2) — the sandbox token set omits `allow-popups` and `allow-top-navigation`, and that omission is load-bearing.** `SameSite=Lax` still sends cookies on top-level GET *navigations*; the missing tokens are what block an artifact from navigating the top-level context or opening windows to mount that route. P2 covers subresource fetches; the token omission covers navigation — two mechanisms, not one. Anyone later adding `allow-popups` (or `allow-top-navigation`) for a legitimate-sounding reason silently reopens the navigation half; that addition requires re-deriving this boundary, not a one-line token append.
 - **P3 — embedded agents reach MCP tools through an unfiltered `tools/list`** (see §6). If a per-caller tool filter is ever introduced, the artifact tool must be explicitly included for embedded callers, or the embedded surface silently loses the feature.
 - **P4 — authentication on the serving route comes from the `/api` mount** (see §4); nothing outside `/api` has auth. Verified by a route-level test: an unauthenticated request to the serving route is rejected; an authenticated one succeeds. This premise exists because a draft of this spec asserted the property as inherited and was wrong for the route shape it proposed.
+- **P5 — the viewer population is a trusted internal team.** This is the premise under requirement 3 ("any logged-in user may view any artifact") and the no-ACL / no-global-browse decisions that follow from it. Unlike P1–P4 it cannot have a probe — no test detects that the organization changed — so its honest form is a **re-derivation trigger**: if the authenticated population grows beyond the current team (new hires outside it, contractors, any request to share an artifact with someone who should NOT see all the others), requirement 3's no-ACL decision must be **re-derived, not extended**, BEFORE more URLs are distributed. Retrofitting per-artifact ACLs after URLs have circulated is materially harder than deciding at the trigger, so the cost of noticing late is asymmetric. The owner accepted no-ACL knowingly, on this premise; this entry is the record of what that acceptance rests on.
 
 ## 4. Serving, authentication, and URL shape
 
@@ -130,6 +131,19 @@ Tool result shape: `{ artifactId, path, url?, note? }` per §4.1 — `url` prese
 
 Expiry and quota automation; CDN/external resources in artifacts (documented knob, trade-off stated in §3.2); path-taking tool params; per-artifact ACLs or sharing outside authenticated users; artifact editing/versioning (re-upload is a new artifact); a builtin-tool variant (§6, invariant); an `AGENT_OPERATIONS` entry (§6); server-side rendering or screenshotting.
 
-## 10. Open items deferred to AC time
+## 10. Accepted risks (consolidated)
+
+Each risk below was accepted as a deliberate decision; the reasoning lives next to the decision it belongs to, and this section exists so the approval question — "what am I accepting?" — has one answer instead of five. Pointers, not duplication:
+
+| Accepted risk | Where decided |
+|---|---|
+| Any authenticated user can view any artifact; no per-artifact ACL, no global browse | §1 req. 3, §7 — resting on premise **P5** (§3.3): trusted internal team, with a stated re-derivation trigger |
+| Artifact scripts run (`'unsafe-inline'`); an artifact can visually imitate anything, including a login form | §3.2 — cannot POST or fetch what it collects anywhere (`form-action 'none'`, no network); visual deception reduced to a social problem |
+| In-frame navigation to external sites remains possible | §3.2 — browsing, not escape |
+| No expiry, no count quota; artifacts accumulate until manually deleted | §1 req. 6, §9 — deliberate v1 cut |
+| Boundary rests on named premises P1–P4 (opaque-origin support, `SameSite=Lax` cookie, unfiltered embedded tools-list, `/api`-mount auth) | §3.3 — each with its probe/test, and each with the consequence of losing it stated |
+| Unconfigured `PUBLIC_ORIGIN` degrades the tool result to a relative path | §4.1 — loud and actionable over silently-wrong absolute URLs |
+
+## 11. Open items deferred to AC time
 
 Phase decomposition (likely server-first then UI, decided with the Orchestrator); exact route paths and table DDL; whether an MCP delete/list tool ships in v1 alongside the UI; the probe's harness wiring into the real-browser runner script.
