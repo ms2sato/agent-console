@@ -1,36 +1,41 @@
 /**
- * E2E (shipping-path) test for the `create_html_artifact` MCP tool reached
- * through an embedded-agent worker (Issue #1312, HTML Artifacts Phase 1,
- * "Embedded: must traverse the real merge" AC).
+ * E2E (shipping-path) test for the embedded-agent worker (Issue #1011, Phase 2).
  *
- * This is goal verification of premise P3
- * (docs/design/html-artifacts.md §3.3, §6): embedded agents reach MCP tools
- * through an UNFILTERED `tools/list`, so `create_html_artifact` must be
- * reachable exactly like any other MCP tool through
- * `CompositeToolExecutor.listTools()` / `.callTool()`. A direct HTTP call
- * from an embedded context would prove nothing about that merge; this test
- * drives a REAL embedded-agent subprocess whose scripted LLM turn invokes
- * the tool, then verifies the artifact out-of-band via the repository/file
- * layer (never trusting only the tool's own JSON self-report).
+ * This exercises the REAL flow end-to-end, with NO mocks of the loop and no
+ * PTY-byte-probe shortcuts:
  *
- * Harness cloned from `embedded-agent-e2e.test.ts` (do not modify that
- * file): real loop subprocess (`bun packages/embedded-agent/src/main.ts`)
- * spawned by the production `EmbeddedAgentWorkerService` activation path,
- * a real `/mcp` endpoint (`createMcpApp` mounted on a real Hono app served
- * via `Bun.serve`), and a scripted stub OpenAI-Chat-Completions-compatible
- * HTTP server standing in for the LLM.
+ *   - The loop subprocess (`bun packages/embedded-agent/src/main.ts`) is spawned
+ *     for real by `EmbeddedAgentWorkerService` (single-user mode -> `spawnAsUser`
+ *     bypasses elevation).
+ *   - The loop talks to a REAL `/mcp` endpoint over HTTP, carrying its per-worker
+ *     bearer token minted at activation (Issue #878 phase 1). A recording
+ *     middleware in front of the real MCP route observes those HTTP requests.
+ *   - The loop talks to a scripted stub OpenAI-compatible provider over HTTP.
  *
- * Spec: docs/design/html-artifacts.md §3.3 (P3), §6 (surfaces), §8
- * ("Per-surface E2E").
+ * The single test drives: REST create definition -> create session + worker ->
+ * activate -> send user message -> poll the replayed NDJSON history -> assert the
+ * full structured-event sequence (user-message, state, deltas, tool-call,
+ * tool-result, final assistant-message, idle), the real bearer token hitting the
+ * real MCP server, the scripted provider round-trip (tool-call turn then final
+ * answer with the tool result fed back), the negative secret assertion against
+ * /proc, and graceful deactivation (exited code 0, token revoked, activated
+ * false).
+ *
+ * Spec: docs/design/embedded-agent-worker.md Part II § "Testing plan" (E2E
+ * bullet) and § "Stdio protocol (v1)".
+ *
+ * NOTE: this file runs under a SEPARATE `bun test` invocation (see
+ * `../e2e-native/setup-native.ts` and `package.json`'s `test` script) that
+ * never registers happy-dom, so it needs no DOM-avoidance mechanism of its
+ * own -- see `setup-native.ts` for why this invocation exists.
  *
  * NOTE: packages/integration uses a FLAT sibling test layout (no __tests__/).
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as v from 'valibot';
 import { Hono } from 'hono';
-import { GlobalRegistrator } from '@happy-dom/global-registrator';
 
 import {
   setupTestEnvironment,
@@ -46,19 +51,17 @@ import { api } from '@agent-console/server/src/routes/api';
 import { createMcpApp } from '@agent-console/server/src/mcp/mcp-server';
 import { createWorktreeWithSession } from '@agent-console/server/src/services/worktree-creation-service';
 import { deleteWorktree } from '@agent-console/server/src/services/worktree-deletion-service';
-import { readArtifactFile } from '@agent-console/server/src/lib/artifact-storage';
 
 import {
   EmbeddedAgentStreamEventSchema,
   type EmbeddedAgentStreamEvent,
 } from '@agent-console/shared';
 
-const USER_TEXT = 'Please publish this HTML snippet as an artifact.';
-const CALL1_TEXT = 'Publishing the artifact now.';
-const FINAL_ANSWER = 'Artifact published.';
-const ARTIFACT_TITLE = 'E2E Artifact Title';
-/** Distinctive HTML content the scripted tool call publishes. */
-const ARTIFACT_CONTENT = `<html><head><title>${ARTIFACT_TITLE}</title></head><body><p>hello from artifact e2e</p></body></html>`;
+const USER_TEXT = 'list the sessions please';
+const CALL1_TEXT = 'Let me check the sessions.';
+const FINAL_ANSWER = 'Sessions listed.';
+/** Content of the real file the scripted first turn asks the builtin Read tool to read. */
+const NOTE_CONTENT = 'hello from e2e';
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -75,15 +78,16 @@ function sseEvent(obj: unknown): string {
 }
 
 /**
- * First provider turn (no role:'tool' message present): a text delta, then a
- * single `create_html_artifact` tool call whose JSON-stringified arguments
- * are delivered in one delta (matches the actual zod param shape read from
- * `mcp-server.ts`: `content`, `title`, `sessionId`), then finish_reason
- * 'tool_calls', then [DONE]. `sessionId` is bound at call time to the real
- * session id created below (the script must know it ahead of time, per the
- * AC).
+ * First provider turn (no role:'tool' message present): a text delta, then
+ * TWO tool calls -- `list_sessions` (MCP-sourced, index 0, whose `{}`
+ * arguments are split across two `data:` events to exercise accumulation) and
+ * `Read` (builtin-sourced, index 1, delivered in a single delta) -- then
+ * finish_reason 'tool_calls', then [DONE]. Requesting both in the same turn is
+ * the proof that `CompositeToolExecutor` actually merges builtin and MCP tools
+ * over the real init -> MCP-connect -> listTools path, not just at the unit
+ * level (Issue #1042 AC).
  */
-function toolCallSse(sessionId: string): string {
+function toolCallSse(): string {
   return (
     sseEvent({ choices: [{ delta: { content: CALL1_TEXT }, finish_reason: null }] }) +
     sseEvent({
@@ -91,17 +95,27 @@ function toolCallSse(sessionId: string): string {
         {
           delta: {
             tool_calls: [
+              { index: 0, id: 'call_1', function: { name: 'list_sessions', arguments: '{' } },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    }) +
+    sseEvent({
+      choices: [
+        { delta: { tool_calls: [{ index: 0, function: { arguments: '}' } }] }, finish_reason: null },
+      ],
+    }) +
+    sseEvent({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
               {
-                index: 0,
-                id: 'call_1',
-                function: {
-                  name: 'create_html_artifact',
-                  arguments: JSON.stringify({
-                    content: ARTIFACT_CONTENT,
-                    title: ARTIFACT_TITLE,
-                    sessionId,
-                  }),
-                },
+                index: 1,
+                id: 'call_2',
+                function: { name: 'Read', arguments: JSON.stringify({ path: 'note.txt' }) },
               },
             ],
           },
@@ -117,8 +131,8 @@ function toolCallSse(sessionId: string): string {
 /** Second provider turn (role:'tool' present): a few text deltas + finish 'stop'. */
 function finalAnswerSse(): string {
   return (
-    sseEvent({ choices: [{ delta: { content: 'Artifact ' }, finish_reason: null }] }) +
-    sseEvent({ choices: [{ delta: { content: 'published.' }, finish_reason: null }] }) +
+    sseEvent({ choices: [{ delta: { content: 'Sessions ' }, finish_reason: null }] }) +
+    sseEvent({ choices: [{ delta: { content: 'listed.' }, finish_reason: null }] }) +
     sseEvent({ choices: [{ delta: {}, finish_reason: 'stop' }] }) +
     'data: [DONE]\n\n'
   );
@@ -159,40 +173,11 @@ function hasIdleAfterAssistant(events: EmbeddedAgentStreamEvent[]): boolean {
   return false;
 }
 
-describe('E2E: create_html_artifact through the embedded-agent shipping path (P3)', () => {
+describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
   let ctx: AppContext | undefined;
   let appServer: ReturnType<typeof Bun.serve> | undefined;
   let stubServer: ReturnType<typeof Bun.serve> | undefined;
   let realCwd: string | undefined;
-  /**
-   * `lib/artifact-storage.ts` deliberately writes via `Bun.write` / `Bun.file`
-   * (native, real filesystem), bypassing this suite's `mock.module('fs/promises')`
-   * memfs interception (`setupTestEnvironment()` points `AGENT_CONSOLE_HOME` at
-   * the virtual `/test/config`, which does not exist on the real disk). Every
-   * OTHER config-dir consumer in this test goes through the mocked `fs/promises`
-   * and does not care whether the path is real, so overriding
-   * `AGENT_CONSOLE_HOME` to a real tmpdir here is safe for both: memfs-backed
-   * writes key off the path string regardless of real existence, and
-   * `writeArtifactFile` gets an actual directory to write into (mirrors
-   * `lib/__tests__/artifact-storage.test.ts` and `create-html-artifact.test.ts`'s
-   * documented same pattern).
-   */
-  let artifactsRealHome: string | undefined;
-
-  // Same happy-dom caveat as the precedent: happy-dom's global Response /
-  // Headers break Bun.serve's real HTTP responses for the loop subprocess's
-  // MCP client. This E2E needs no DOM.
-  beforeAll(async () => {
-    if (GlobalRegistrator.isRegistered) {
-      await GlobalRegistrator.unregister();
-    }
-  });
-
-  afterAll(() => {
-    if (!GlobalRegistrator.isRegistered) {
-      GlobalRegistrator.register();
-    }
-  });
 
   beforeEach(async () => {
     await setupTestEnvironment();
@@ -241,30 +226,37 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
       Bun.spawnSync(['rm', '-rf', realCwd]);
       realCwd = undefined;
     }
-    if (artifactsRealHome) {
-      Bun.spawnSync(['rm', '-rf', artifactsRealHome]);
-      artifactsRealHome = undefined;
-    }
   });
 
   it(
-    'drives create -> activate -> user-message -> create_html_artifact tool-call -> final answer, and verifies the artifact out-of-band via the repository/file layer',
+    'drives create -> activate -> user-message -> tool-call -> final answer -> deactivate through the real loop, MCP, and provider',
     async () => {
-      // Point AGENT_CONSOLE_HOME at a REAL directory so `writeArtifactFile`'s
-      // native `Bun.write` (see the `artifactsRealHome` comment above) has
-      // somewhere to actually write. Must happen before any config-dir-based
-      // path is resolved.
-      artifactsRealHome = path.join(os.tmpdir(), `ac-embedded-artifact-e2e-home-${crypto.randomUUID()}`);
-      Bun.spawnSync(['mkdir', '-p', artifactsRealHome]);
-      process.env.AGENT_CONSOLE_HOME = artifactsRealHome;
+      // --- Fixture 1: scripted stub OpenAI-compatible provider ---
+      const providerRequests: ChatCompletionRequestBody[] = [];
+      stubServer = Bun.serve({
+        port: 0,
+        async fetch(req) {
+          const url = new URL(req.url);
+          if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
+            const body = (await req.json()) as ChatCompletionRequestBody;
+            providerRequests.push(body);
+            const hasToolMsg =
+              Array.isArray(body.messages) && body.messages.some((m) => m.role === 'tool');
+            const sse = hasToolMsg ? finalAnswerSse() : toolCallSse();
+            return new Response(sse, { headers: { 'Content-Type': 'text/event-stream' } });
+          }
+          return new Response('not found', { status: 404 });
+        },
+      });
+      const stubBaseUrl = `http://localhost:${stubServer.port}`;
 
       // --- Test AppContext, with the loop's MCP base URL late-bound to the app port ---
       let mcpBaseUrl = '';
       ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
 
-      // Seed a user; the session's createdBy (and therefore the artifact's
-      // attribution -- docs/design/html-artifacts.md §5.2) references this record.
-      const owner = await ctx.userRepository.upsertByOsUid(65432, 'artifact-owner', '/home/artifact-owner');
+      // Seed a user; the session's createdBy (and therefore the minted MCP
+      // caller identity) references this record.
+      const owner = await ctx.userRepository.upsertByOsUid(54321, 'owner', '/home/owner');
 
       // --- Fixture 2: real app server (real /api router + real /mcp app) ---
       const capturedMcpAuth: string[] = [];
@@ -273,6 +265,8 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
         c.set('appContext', ctx!);
         await next();
       });
+      // Record the Authorization header of every REAL HTTP request to /mcp
+      // (shipping path intact — this observes, does not intercept).
       app.use('*', async (c, next) => {
         if (c.req.path === '/mcp') {
           const auth = c.req.header('authorization');
@@ -309,39 +303,23 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
 
       // The subprocess cwd must exist on the REAL filesystem. Server-side fs is
       // memfs-mocked, so create the dir via a real spawn rather than node fs.
-      realCwd = path.join(os.tmpdir(), `ac-embedded-artifact-e2e-${crypto.randomUUID()}`);
+      realCwd = path.join(os.tmpdir(), `ac-embedded-e2e-${crypto.randomUUID()}`);
       Bun.spawnSync(['mkdir', '-p', realCwd]);
 
-      // --- Step 2: create a quick session owned by the seeded user ---
-      // Created BEFORE the definition/provider stub so the scripted tool-call
-      // arguments below can reference the real sessionId (the AC requires
-      // the script to know it ahead of time).
-      const session = await ctx.sessionManager.createSession(
-        { type: 'quick', locationPath: realCwd, agentId: 'claude-code-builtin' },
-        { createdBy: owner.id },
-      );
-      const sessionId = session.id;
+      // A real file for the builtin Read tool call to read. `Bun.write` is
+      // native (like `Bun.file` used below for the /proc negative assertion)
+      // and bypasses this test process's memfs mock, so it lands on the REAL
+      // filesystem the loop subprocess reads from.
+      await Bun.write(path.join(realCwd, 'note.txt'), NOTE_CONTENT);
 
-      // --- Fixture 1: scripted stub OpenAI-compatible provider ---
-      const providerRequests: ChatCompletionRequestBody[] = [];
-      stubServer = Bun.serve({
-        port: 0,
-        async fetch(req) {
-          const url = new URL(req.url);
-          if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
-            const body = (await req.json()) as ChatCompletionRequestBody;
-            providerRequests.push(body);
-            const hasToolMsg =
-              Array.isArray(body.messages) && body.messages.some((m) => m.role === 'tool');
-            const sse = hasToolMsg ? finalAnswerSse() : toolCallSse(sessionId);
-            return new Response(sse, { headers: { 'Content-Type': 'text/event-stream' } });
-          }
-          return new Response('not found', { status: 404 });
-        },
-      });
-      const stubBaseUrl = `http://localhost:${stubServer.port}`;
-
-      // --- Step 3: create the embedded-agent definition through the REAL REST route ---
+      // --- Step 2: create the embedded-agent definition through the REAL REST route ---
+      // Drive it in-process via `app.fetch` (identical middleware + handler
+      // chain to the served port) rather than a real HTTP round trip -- this
+      // process's global `fetch` is real Bun fetch (this invocation never
+      // registers happy-dom, see setup-native.ts), so `app.fetch` here is a
+      // convenience, not a happy-dom workaround. The real port is still
+      // served for the loop subprocess's MCP HTTP calls, which run in a
+      // separate process.
       const createRes = await app.fetch(
         new Request('http://localhost/api/embedded-agents', {
           method: 'POST',
@@ -356,6 +334,13 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
       const createBody = (await createRes.json()) as { embeddedAgent: { id: string } };
       const embeddedAgentId = createBody.embeddedAgent.id;
       expect(embeddedAgentId).toBeTruthy();
+
+      // --- Step 3: create a quick session owned by the seeded user ---
+      const session = await ctx.sessionManager.createSession(
+        { type: 'quick', locationPath: realCwd, agentId: 'claude-code-builtin' },
+        { createdBy: owner.id },
+      );
+      const sessionId = session.id;
 
       // --- Step 4: add an embedded-agent worker ---
       const worker = await ctx.sessionManager.createWorker(sessionId, {
@@ -434,10 +419,18 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
         { label: 'state active', match: (e) => e.type === 'state' && e.state === 'active' },
         { label: 'assistant-delta', match: (e) => e.type === 'assistant-delta' },
         {
-          label: 'tool-call create_html_artifact',
-          match: (e) => e.type === 'tool-call' && e.name === 'create_html_artifact',
+          label: 'tool-call list_sessions',
+          match: (e) => e.type === 'tool-call' && e.name === 'list_sessions',
         },
         { label: 'tool-result ok', match: (e) => e.type === 'tool-result' && e.ok === true },
+        {
+          label: 'tool-call Read (builtin)',
+          match: (e) => e.type === 'tool-call' && e.name === 'Read',
+        },
+        {
+          label: 'tool-result Read ok with note.txt content',
+          match: (e) => e.type === 'tool-result' && e.ok === true && e.result.includes(NOTE_CONTENT),
+        },
         {
           label: 'final assistant-message',
           match: (e) => e.type === 'assistant-message' && e.text.includes(FINAL_ANSWER),
@@ -445,45 +438,34 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
         { label: 'state idle', match: (e) => e.type === 'state' && e.state === 'idle' },
       ]);
 
-      // --- Assertion: the tool-call/result round-tripped through the real
-      // merged CompositeToolExecutor.listTools()/callTool() path (Issue #1312
-      // / html-artifacts.md premise P3): a single MCP-sourced
-      // `create_html_artifact` tool call succeeding through the same real
-      // init -> MCP-connect -> listTools -> callTool cycle the precedent
-      // (embedded-agent-e2e.test.ts) uses to prove the merge for
-      // `list_sessions` + `Read`. Reachability through the merge is exactly
-      // what a successful invocation demonstrates. ---
-      const toolCall = events.find((e) => e.type === 'tool-call' && e.name === 'create_html_artifact');
-      expect(toolCall).toBeDefined();
+      // --- Assertion: the MCP tool-result carries a non-empty result mentioning the session ---
+      const mcpToolCall = events.find((e) => e.type === 'tool-call' && e.name === 'list_sessions');
+      expect(mcpToolCall).toBeDefined();
       const toolResult =
-        toolCall && toolCall.type === 'tool-call'
-          ? events.find((e) => e.type === 'tool-result' && e.callId === toolCall.callId)
+        mcpToolCall && mcpToolCall.type === 'tool-call'
+          ? events.find((e) => e.type === 'tool-result' && e.callId === mcpToolCall.callId)
           : undefined;
       expect(toolResult).toBeDefined();
-      let reportedArtifactId: string | undefined;
       if (toolResult && toolResult.type === 'tool-result') {
         expect(toolResult.ok).toBe(true);
         expect(toolResult.result.length).toBeGreaterThan(0);
-        const parsedResult = JSON.parse(toolResult.result) as { artifactId?: string };
-        reportedArtifactId = parsedResult.artifactId;
-        expect(reportedArtifactId).toBeTruthy();
+        expect(toolResult.result).toContain(sessionId);
       }
-      expect(reportedArtifactId).toBeTruthy();
 
-      // --- Assertion: the artifact exists, verified INDEPENDENTLY of the
-      // tool's own JSON self-report -- directly via the repository (DB row)
-      // and the on-disk file, the same out-of-band pattern V2-terminal's
-      // round used for attribution (docs/design/html-artifacts.md §8
-      // "Per-surface E2E": "Parity by test, not review"). ---
-      const artifactRecord = await ctx.artifactRepository.findById(reportedArtifactId!);
-      expect(artifactRecord).not.toBeNull();
-      expect(artifactRecord?.title).toBe(ARTIFACT_TITLE);
-      // AC pass condition: "attribution is the embedded session's createdBy".
-      expect(artifactRecord?.userId).toBe(owner.id);
-      expect(artifactRecord?.userId).toBe(session.createdBy);
-
-      const storedContent = await readArtifactFile(artifactRecord!.userId, artifactRecord!.id);
-      expect(storedContent).toBe(ARTIFACT_CONTENT);
+      // --- Assertion: the builtin Read tool-call/result round-tripped through the
+      // real subprocess -> CompositeToolExecutor -> real filesystem, not the MCP
+      // server at all (Issue #1042 AC: builtin + MCP tool in the same turn) ---
+      const readToolCall = events.find((e) => e.type === 'tool-call' && e.name === 'Read');
+      expect(readToolCall).toBeDefined();
+      const readToolResult =
+        readToolCall && readToolCall.type === 'tool-call'
+          ? events.find((e) => e.type === 'tool-result' && e.callId === readToolCall.callId)
+          : undefined;
+      expect(readToolResult).toBeDefined();
+      if (readToolResult && readToolResult.type === 'tool-result') {
+        expect(readToolResult.ok).toBe(true);
+        expect(readToolResult.result).toContain(NOTE_CONTENT);
+      }
 
       // --- Assertion: the REAL bearer token from the init handshake hit /mcp ---
       expect(capturedMcpAuth.length).toBeGreaterThan(0);
@@ -497,40 +479,48 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
       expect(identity?.sessionId).toBe(sessionId);
       expect(identity?.userId).toBe(owner.id);
 
-      // --- Assertion: the scripted provider round-trip, and that
-      // `create_html_artifact` was present in the SAME merged tools list sent
-      // to the provider (proof of `CompositeToolExecutor.listTools()`
-      // reachability over the real init -> MCP-connect -> listTools path,
-      // not just at the unit-test level). ---
+      // --- Assertion: the scripted provider round-trip ---
       expect(providerRequests.length).toBe(2);
       expect(providerRequests[0].stream).toBe(true);
       expect(Array.isArray(providerRequests[0].tools)).toBe(true);
       expect(
-        (providerRequests[0].tools ?? []).some((t) => t.function?.name === 'create_html_artifact'),
+        (providerRequests[0].tools ?? []).some((t) => t.function?.name === 'list_sessions'),
       ).toBe(true);
+      // Both an MCP-sourced tool (list_sessions) AND a builtin-sourced tool (Read)
+      // are present in the SAME tools list sent to the provider -- proof that
+      // CompositeToolExecutor.listTools() merged both sources over the real
+      // init -> MCP-connect -> listTools path (Issue #1042 AC), not just at the
+      // CompositeToolExecutor unit-test level.
+      expect((providerRequests[0].tools ?? []).some((t) => t.function?.name === 'Read')).toBe(true);
       const secondMessages = providerRequests[1].messages ?? [];
       const toolMessage = secondMessages.find((m) => m.role === 'tool');
       expect(toolMessage).toBeDefined();
       expect(typeof toolMessage?.content).toBe('string');
       expect((toolMessage?.content ?? '').length).toBeGreaterThan(0);
-      expect(toolMessage?.content ?? '').toContain(reportedArtifactId!);
+      expect(toolMessage?.content ?? '').toContain(sessionId);
 
       // --- Negative secret assertion (while still activated) ---
-      // On Linux -- the only platform where this repo expects /proc to be
-      // usable -- this check MUST actually execute. `procAssertionRan`
-      // converts a silent skip into a loud Linux failure; on non-Linux the
-      // whole block is skipped gracefully.
+      // On Linux — the only platform where this repo expects /proc to be usable —
+      // this check MUST actually execute. A silently-skipped block (process
+      // already exited, unknown pid, /proc unreadable) would report green while
+      // never comparing the token against the process cmdline/environ, giving
+      // false confidence. `procAssertionRan` converts every such skip into a
+      // loud Linux failure; on non-Linux the whole block is skipped gracefully.
       if (process.platform === 'linux') {
         const internalWorker = ctx.sessionManager.getWorker(sessionId, workerId);
         const pid =
           internalWorker && internalWorker.type === 'embedded-agent'
             ? internalWorker.subprocess?.pid
             : undefined;
+        // The worker is still activated here, so the subprocess is alive and its
+        // pid must be known — a missing pid is a real failure, not a skip.
         expect(pid).toBeDefined();
 
         let procAssertionRan = false;
         if (pid !== undefined) {
           for (const procFile of ['cmdline', 'environ']) {
+            // Bun.file is native and bypasses the server-side memfs mock, so it
+            // reads the REAL /proc entry.
             const file = Bun.file(`/proc/${pid}/${procFile}`);
             if (await file.exists()) {
               const content = await file.text().catch(() => null);
@@ -541,6 +531,7 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
             }
           }
         }
+        // Fail loudly if neither /proc entry was actually read + compared.
         expect(procAssertionRan).toBe(true);
       }
 
