@@ -209,6 +209,26 @@ describe('Repositories API', () => {
       expect(body.error).toContain('Repository is in use by 1 session(s) (inactive)');
     });
 
+    it('does not delete the Slack integration when the repository is in use (guard runs before the side effect)', async () => {
+      // Pins the ordering the in-code comment at the route's assertRepositoryNotInUse
+      // call site documents: this check must run BEFORE Slack-integration deletion.
+      // A comment alone cannot defend that ordering from a future edit that removes
+      // the check (CodeRabbit already proposed exactly that removal once on this
+      // PR) -- this test makes the ordering an executable invariant instead.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      repositoryManager.assertRepositoryNotInUse.mockImplementation(() =>
+        Promise.reject(
+          new RepositoryInUseError('Repository is in use by 1 session(s) (active): Active Session'),
+        ),
+      );
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(409);
+
+      expect(repositorySlackIntegrationService.deleteIntegration).not.toHaveBeenCalled();
+      expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
+    });
+
     it('propagates a non-RepositoryInUseError from assertRepositoryNotInUse instead of mapping it to 409', async () => {
       // Negative-case coverage for the mechanism itself: an unrelated
       // failure inside the gate (e.g. a DB error) must not be misreported
