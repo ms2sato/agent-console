@@ -1,6 +1,7 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact } from '@agent-console/shared';
+import type { ArtifactRecord } from '../repositories/artifact-repository.js';
 import { computeCapabilities } from '@agent-console/shared';
-import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow, NewEmbeddedAgent, EmbeddedAgentRow } from './schema.js';
+import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow, NewEmbeddedAgent, EmbeddedAgentRow, ArtifactRow } from './schema.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -637,5 +638,43 @@ export function toMessageTemplate(row: MessageTemplateRow): MessageTemplate {
     sortOrder: row.sort_order,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+// ========== Artifact Mappers ==========
+
+/**
+ * Convert a database artifact row to the shared `Artifact` wire summary
+ * (id, title, createdAt, sizeBytes). Deliberately excludes `user_id` and
+ * `source_session_id` -- neither belongs in the wire type (see
+ * `packages/shared/src/types/artifact.ts`); content never lives in this row
+ * at all (see `lib/artifact-storage.ts`).
+ *
+ * @param row - The database artifact row
+ * @returns The Artifact object
+ */
+export function toArtifact(row: ArtifactRow): Artifact {
+  return {
+    id: row.id,
+    title: row.title,
+    createdAt: row.created_at,
+    sizeBytes: row.size_bytes,
+  };
+}
+
+/**
+ * Convert a database artifact row to the server-internal `ArtifactRecord`
+ * (the wire `Artifact` summary plus `userId`). Used by route handlers that
+ * need the owning user's id -- e.g. to locate the on-disk file
+ * (`lib/artifact-storage.ts`) or to enforce owner-only deletion -- but MUST
+ * NEVER forward `userId` into a client-visible response.
+ *
+ * @param row - The database artifact row
+ * @returns The ArtifactRecord object
+ */
+export function toArtifactRecord(row: ArtifactRow): ArtifactRecord {
+  return {
+    ...toArtifact(row),
+    userId: row.user_id,
   };
 }

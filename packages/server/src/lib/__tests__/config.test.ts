@@ -1,7 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'os';
 import * as path from 'path';
-import { getConfigDir, getRepositoriesDir, getRepositoryDir, getServerPid } from '../config.js';
+import {
+  getConfigDir,
+  getRepositoriesDir,
+  getRepositoryDir,
+  getServerPid,
+  getArtifactsDir,
+  getUserArtifactsDir,
+  getArtifactFilePath,
+} from '../config.js';
 
 describe('config', () => {
   const originalHome = process.env.AGENT_CONSOLE_HOME;
@@ -106,6 +114,35 @@ describe('config', () => {
       process.env.AGENT_CONSOLE_HOME = '/config';
 
       expect(getRepositoryDir('my-repo')).toBe('/config/repositories/my-repo');
+    });
+  });
+
+  describe('getArtifactsDir', () => {
+    it('should return artifacts subdirectory of config dir', () => {
+      const expected = path.join(os.homedir(), '.agent-console', 'artifacts');
+      expect(getArtifactsDir()).toBe(expected);
+    });
+
+    it('should respect AGENT_CONSOLE_HOME', () => {
+      process.env.AGENT_CONSOLE_HOME = '/custom/path';
+
+      expect(getArtifactsDir()).toBe('/custom/path/artifacts');
+    });
+  });
+
+  describe('getUserArtifactsDir', () => {
+    it('should return the per-user artifacts subdirectory', () => {
+      process.env.AGENT_CONSOLE_HOME = '/config';
+
+      expect(getUserArtifactsDir('user-1')).toBe('/config/artifacts/user-1');
+    });
+  });
+
+  describe('getArtifactFilePath', () => {
+    it('should return the artifact HTML file path', () => {
+      process.env.AGENT_CONSOLE_HOME = '/config';
+
+      expect(getArtifactFilePath('user-1', 'artifact-1')).toBe('/config/artifacts/user-1/artifact-1.html');
     });
   });
 });

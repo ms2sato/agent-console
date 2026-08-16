@@ -24,6 +24,7 @@ import { SqliteAgentRepository } from '@agent-console/server/src/repositories/sq
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { SqliteRepositoryRepository } from '@agent-console/server/src/repositories/sqlite-repository-repository';
 import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
+import { SqliteArtifactRepository } from '@agent-console/server/src/repositories/sqlite-artifact-repository';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { AgentDirectory } from '@agent-console/server/src/services/agent-directory';
 import { InteractiveProcessManager } from '@agent-console/server/src/services/interactive-process-manager';
@@ -194,6 +195,7 @@ describe('update_repository MCP boundary: SQLite round-trip', () => {
       createWorktreeWithSession,
       deleteWorktree,
       userRepository: new SqliteUserRepository(db),
+      artifactRepository: new SqliteArtifactRepository(db),
       broadcastToApp: () => {},
       findOpenPullRequest: mock(async () => null),
       fetchPullRequestUrl: mock(async () => null),

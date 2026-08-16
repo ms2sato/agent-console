@@ -5,6 +5,7 @@ import * as v from 'valibot';
 // exported schemas. Adding a new schemas/*.ts file requires adding it here.
 import * as agent from '../agent.js';
 import * as appServerMessage from '../app-server-message.js';
+import * as artifact from '../artifact.js';
 import * as auth from '../auth.js';
 import * as embeddedAgent from '../embedded-agent.js';
 import * as messageTemplate from '../message-template.js';
@@ -18,6 +19,7 @@ import * as worker from '../worker.js';
 const MODULES: Record<string, Record<string, unknown>> = {
   agent,
   'app-server-message': appServerMessage,
+  artifact,
   auth,
   'embedded-agent': embeddedAgent,
   'message-template': messageTemplate,

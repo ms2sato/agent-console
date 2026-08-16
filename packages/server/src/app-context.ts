@@ -32,6 +32,7 @@ import type { UserMode } from './services/user-mode.js';
 import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
 import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
+import type { ArtifactRepository } from './repositories/artifact-repository.js';
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
 import type { OpenPrInfo } from './services/github-pr-service.js';
 import type { GenerateRepositoryDescriptionFn } from './services/repository-description-generator.js';
@@ -81,6 +82,7 @@ import { generateRepositoryDescription } from './services/repository-description
 import { RepositoryCloneService } from './services/repository-clone-service.js';
 import { getSourceReposDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
+import { SqliteArtifactRepository } from './repositories/sqlite-artifact-repository.js';
 
 const logger = createLogger('app-context');
 
@@ -207,6 +209,9 @@ export interface AppContext {
   /** Message template CRUD repository */
   messageTemplateRepository: MessageTemplateRepository;
 
+  /** HTML artifact metadata + storage repository (see docs/design/html-artifacts.md) */
+  artifactRepository: ArtifactRepository;
+
   /** Branch watcher service for dynamic branch tracking */
   branchWatcherService: BranchWatcherServiceType;
 }
@@ -261,6 +266,7 @@ export async function createAppContext(
   const sessionRepository = new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
+  const artifactRepository = new SqliteArtifactRepository(db);
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
@@ -578,6 +584,7 @@ export async function createAppContext(
     generateRepositoryDescription,
     repositoryCloneService,
     messageTemplateRepository,
+    artifactRepository,
     branchWatcherService,
   };
 }
@@ -649,6 +656,7 @@ export async function createTestContext(
     overrides?.sessionRepository ?? new SqliteSessionRepository(db);
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
+  const artifactRepository = new SqliteArtifactRepository(db);
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
@@ -818,6 +826,7 @@ export async function createTestContext(
     generateRepositoryDescription,
     repositoryCloneService,
     messageTemplateRepository,
+    artifactRepository,
     branchWatcherService: new BranchWatcherService(async () => {}),
   };
 }
