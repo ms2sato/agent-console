@@ -3087,6 +3087,44 @@ describe('MCP Server Tools', () => {
       expect(data.sessionId).toBeDefined();
     });
 
+    // Invariant-preservation, NOT new-mechanism: this does not flip against
+    // pre-fix code (pre-fix had no parentWorkerId validation at all, so it
+    // passed then and passes now too). `canReceiveSessionMessages` already
+    // accepts `embedded-agent` by its own definition (worker.ts:47), so
+    // nothing here can fail today. Its job is prospective: it is the test
+    // that would fail if `canReceiveSessionMessages` were ever narrowed to
+    // agent-only, or if the S3b guard were rewritten to hardcode
+    // `type === 'agent'` instead of consuming the shared predicate --
+    // either mistake would break embedded-agent delegation silently while
+    // every OTHER test in this file (which all use an 'agent'-type parent
+    // worker) kept passing.
+    it('delegates successfully when parentWorkerId names an embedded-agent worker on the parent session (Issue #1293, canReceiveSessionMessages accept-side coverage)', async () => {
+      await setupDelegateEnvironment('feat/embedded-parent-worker');
+
+      const parentSession = await sessionManager.createSession(
+        { type: 'quick', locationPath: TEST_REPO_PATH },
+        { createdBy: 'parent-user-embedded-parent-worker' },
+      );
+      const embeddedParentWorker = await sessionManager.createWorker(parentSession.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      expect(embeddedParentWorker).not.toBeNull();
+      expect(embeddedParentWorker!.type).toBe('embedded-agent');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test embedded-agent parent worker delegation',
+        branch: 'feat/embedded-parent-worker',
+        parentSessionId: parentSession.id,
+        parentWorkerId: embeddedParentWorker!.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      expect(data.sessionId).toBeDefined();
+    });
+
     // -------------------------------------------------------------------------
     // Issue #844: OS username plumbing through delegate_to_worktree
     // -------------------------------------------------------------------------
