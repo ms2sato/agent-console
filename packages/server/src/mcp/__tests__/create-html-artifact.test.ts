@@ -433,6 +433,69 @@ describe('resolveArtifactTitle (title resolution chain)', () => {
     const content = '<html><head><title></title></head><body><h2>Heading</h2></body></html>';
     expect(resolveArtifactTitle(content, undefined)).toBe('Heading');
   });
+
+  // Regression coverage for CodeQL js/incomplete-multi-character-sanitization
+  // (single-pass tag stripping). NOTE: for the generic `/<[^>]*>/g` pattern
+  // used here, a single pass and the fixed-point loop are provably
+  // equivalent -- each `<` is matched all the way to the *next* `>` in the
+  // string regardless of what lies between them, so no leftover fragment can
+  // recombine into a new tag after one pass. This case therefore does not
+  // polarity-flip against the pre-fix single-pass implementation; it pins
+  // the fixed-point loop's output for an adversarial nested-tag input as
+  // defense-in-depth documentation, not as a bypass proof.
+  it('fully strips a nested/overlapping tag construction from an extracted <title> fragment', () => {
+    const content = '<html><head><title><scr<script>ipt>evil</title></head></html>';
+    const resolved = resolveArtifactTitle(content, undefined);
+    expect(resolved).not.toContain('<');
+  });
+
+  // CodeQL js/incomplete-multi-character-sanitization vector: asserts the
+  // safety PROPERTY (no `<` survives in the final resolved title) holds for
+  // the classic nested-construction payload, covering both the <title>
+  // extraction rung and the explicit `title` param rung (the gap this round
+  // closes -- previously the param path bypassed stripping entirely).
+  it('resolves a <title> containing the CodeQL nested-tag vector with no "<" in the output', () => {
+    const content = '<html><head><title><<script>script>evil</title></head></html>';
+    const resolved = resolveArtifactTitle(content, undefined);
+    expect(resolved).not.toContain('<');
+  });
+
+  it('strips markup from an explicit title param instead of passing it through raw', () => {
+    const content = '<html><head><title>Doc Title</title></head></html>';
+    const resolved = resolveArtifactTitle(content, '<<script>script>evil');
+    expect(resolved).not.toContain('<');
+  });
+
+  it('stability: a clean plain-text title passes through unchanged (modulo whitespace collapse)', () => {
+    const content = '<html><head><title>Already Plain Text</title></head></html>';
+    expect(resolveArtifactTitle(content, undefined)).toBe('Already Plain Text');
+    expect(resolveArtifactTitle(content, 'Explicit Plain Text')).toBe('Explicit Plain Text');
+  });
+
+  describe('length cap (MAX_TITLE_LENGTH = 200 characters)', () => {
+    it('leaves a title exactly at the 200-character cap unchanged', () => {
+      const exactlyAtCap = 'a'.repeat(200);
+      const content = `<html><head><title>${exactlyAtCap}</title></head></html>`;
+      const resolved = resolveArtifactTitle(content, undefined);
+      expect(resolved).toBe(exactlyAtCap);
+      expect(resolved.length).toBe(200);
+    });
+
+    it('truncates a title one character over the 200-character cap', () => {
+      const oneOverCap = 'a'.repeat(201);
+      const content = `<html><head><title>${oneOverCap}</title></head></html>`;
+      const resolved = resolveArtifactTitle(content, undefined);
+      expect(resolved).toBe('a'.repeat(200));
+      expect(resolved.length).toBe(200);
+    });
+
+    it('truncates an explicit title param one character over the cap', () => {
+      const oneOverCap = 'b'.repeat(201);
+      const resolved = resolveArtifactTitle('<html></html>', oneOverCap);
+      expect(resolved).toBe('b'.repeat(200));
+      expect(resolved.length).toBe(200);
+    });
+  });
 });
 
 describe('buildArtifactToolResult (§4.1 url/note shape)', () => {
