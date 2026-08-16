@@ -22,18 +22,26 @@ Before merge, confirm the GitHub bot review is APPROVED. If `CHANGES_REQUESTED`,
 | Times out with no result, or replies `authentication_failed` / `automatic_login_failed` | **Headless-worktree auth failure.** `coderabbit review --agent` needs an interactive browser-based login; a delegated worktree session has no browser to complete it. This is a structural limitation of the session, not a quota condition, and will not resolve by waiting or retrying. | Skip the local CLI for this session. Rely on the GitHub-side bot review (per the rate-limit fallback note above), and record the auth-failure reason (not "rate-limited") in the PR body so the distinction is visible later. |
 | Replies with an explicit rate-limit message naming a countdown (e.g. "next review available in: N minutes") | **True rate-limit.** The account's request quota is exhausted; the countdown is the real recovery time. | Follow the existing rate-limit fallback disposition (wait it out, or fall back to the GitHub bot per the sections above). |
 
-**Do not read the exit code — it lies.** The CLI exits **0** on the auth failure while emitting the failure only inside its JSON stream:
+**The auth failure has two different observable shapes, and no exit code identifies either one.** Both were seen on the same day, in different delegated sessions:
 
 ```
+# Shape A — self-reports, then exits 0
 {"type":"status","phase":"auth","status":"automatic_login_failed","message":"Automatic login timed out. ..."}
 {"type":"action_required","phase":"auth","action":"run_interactive_login","command":"coderabbit auth login"}
 {"type":"error","phase":"auth","status":"authentication_failed","message":"Automatic login timed out. ..."}
 [exited with code 0]
+
+# Shape B — never self-reports; hangs on the browser-auth poll until something external kills it
+{"type":"status","phase":"auth","status":"starting_login"}
+{"type":"status","phase":"auth","status":"awaiting_browser_auth","authUrl":"https://..."}
+(no further output; killed by `timeout` at 280s, exit 124)
 ```
 
-Anything that scripts this check must grep the stream for `"status":"authentication_failed"` (or a countdown string for the rate-limit case) and must never branch on `$?` — a wrapper that trusts the exit code reports "CodeRabbit CLI clean" for a run that never authenticated, which is the worst possible failure shape here: a fabricated clean verdict.
+Shape A exits **0** while reporting failure; shape B never reports failure at all and exits with whatever killed it. So the exit code is worse than uninformative — under shape A it actively says "success". Anything scripting this check must read the **status stream** (`"status":"authentication_failed"`, or a countdown string for the rate-limit case) and must never branch on `$?`. A wrapper that trusts the exit code reports "CodeRabbit CLI clean" for a run that never authenticated: a fabricated clean verdict, the worst outcome available here.
 
-**In a delegated worktree session, expect this every time.** The failure is structural — `--agent` needs an interactive browser login the session cannot complete — so it does not vary run to run and retrying only burns minutes. Attempt it once, record the structural reason, and move to the GitHub-side bot. Note also that the timing is not a reliable tell: the same failure has arrived near-instantly and after ~3 minutes of browser-auth polling in the same session on the same PR. **Classify on the status codes, never on how long it took.**
+**Do not pipe the CLI through `head` / `tail` while diagnosing it.** Shape B was first reported as "timed out with *zero output*" — an artifact of the pipe swallowing the stream, not the CLI's actual behavior. The `awaiting_browser_auth` line, which is what identifies the shape, was there all along. Capture the full stream, then read it. (Same trap as `cmd | tail; echo $?` in `workflow.md`'s Verification Checklist: the pipe changes what you are measuring.)
+
+**In a delegated worktree session, expect one of these two shapes every time.** The failure is structural — `--agent` needs an interactive browser login the session cannot complete — so it will not vary with retries or resolve with waiting. Attempt once, record the structural reason, and move to the GitHub-side bot. **Timing is not a tell either**: shape A has arrived near-instantly and after ~3 minutes of polling in the same session on the same PR. Classify on the stream contents alone.
 
 Conflating the two in a PR body misleads whoever reads it later: an auth failure never self-resolves within the session (it needs a different environment, not more time), while a rate-limit does resolve after its countdown. State which one actually happened. (Sprint 2026-07-18b — PRs [#1204](https://github.com/ms2sato/agent-console/pull/1204), [#1207](https://github.com/ms2sato/agent-console/pull/1207), [#1208](https://github.com/ms2sato/agent-console/pull/1208), [#1209](https://github.com/ms2sato/agent-console/pull/1209), and [#1212](https://github.com/ms2sato/agent-console/pull/1212) all hit the headless-auth-failure shape rather than a true rate-limit; each PR body named the auth failure explicitly instead of defaulting to "rate-limited.")
 
