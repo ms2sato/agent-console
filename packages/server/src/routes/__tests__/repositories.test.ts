@@ -223,6 +223,25 @@ describe('Repositories API', () => {
       expect(repositoryManager.unregisterRepository).not.toHaveBeenCalled();
     });
 
+    it('returns 409 when unregisterRepository itself rejects with RepositoryInUseError (its own internal check firing)', async () => {
+      // The route's own `assertRepositoryNotInUse` call passes here, but
+      // `unregisterRepository`'s independent internal check rejects. This
+      // pins that a RepositoryInUseError from EITHER call site maps to the
+      // same 409 contract, not just the route's own check.
+      repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
+      repositoryManager.unregisterRepository.mockImplementation(() =>
+        Promise.reject(
+          new RepositoryInUseError('Repository is in use by 1 session(s) (active): Active Session'),
+        ),
+      );
+
+      const res = await app.request('/api/repositories/repo1', { method: 'DELETE' });
+      expect(res.status).toBe(409);
+
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Repository is in use by 1 session(s) (active)');
+    });
+
     it('should clean up Slack integration and succeed even if cleanup throws', async () => {
       repositoryManager.getRepository.mockReturnValue({ id: 'repo1', path: '/repo' });
       repositorySlackIntegrationService.deleteIntegration.mockImplementation(() => {

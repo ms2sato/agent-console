@@ -180,6 +180,16 @@ const repositories = new Hono<AppBindings>()
 
     // Check if any active or inactive (paused) sessions use this repository.
     // Single writer: RepositoryManager.assertRepositoryNotInUse.
+    //
+    // This check is not redundant with unregisterRepository's own internal
+    // call to the same method below, even though both call it. It must run
+    // BEFORE the Slack-integration cleanup that follows: without it, an
+    // in-use repository would reach the Slack deletion, then fail later
+    // when unregisterRepository rejects, leaving the user with a working
+    // repository whose Slack integration was already removed.
+    // unregisterRepository's internal call exists independently, as
+    // defense-in-depth for any future caller of that method that isn't
+    // this route.
     try {
       await repositoryManager.assertRepositoryNotInUse(repoId);
     } catch (err) {
@@ -204,11 +214,19 @@ const repositories = new Hono<AppBindings>()
     // (worktree subtrees are owned by the requesting user). Forward
     // `removeSourceRepo` so the cleanup job optionally removes the
     // source-repo clone in addition to the data subtree.
-    const success = await repositoryManager.unregisterRepository(
-      repoId,
-      authUser.username,
-      { removeSourceRepo: parsed.removeSourceRepo },
-    );
+    let success: boolean;
+    try {
+      success = await repositoryManager.unregisterRepository(
+        repoId,
+        authUser.username,
+        { removeSourceRepo: parsed.removeSourceRepo },
+      );
+    } catch (err) {
+      if (err instanceof RepositoryInUseError) {
+        throw new ConflictError(err.message);
+      }
+      throw err;
+    }
 
     if (!success) {
       // Repository was likely deleted between the check and unregister (race condition)
