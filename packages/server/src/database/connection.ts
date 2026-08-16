@@ -337,6 +337,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 27) {
     await migrateToV27(database);
   }
+
+  if (currentVersion < 28) {
+    await migrateToV28(database);
+  }
 }
 
 /**
@@ -1543,6 +1547,44 @@ export async function migrateToV27(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 27`.execute(database);
 
   logger.info('Migration to v27 completed');
+}
+
+/**
+ * Migration v28: Create `artifacts` table (HTML Artifacts phase 1).
+ *
+ * Metadata-only table: `id` (TEXT PK), `user_id` (TEXT NOT NULL, FK
+ * users.id, owner), `title` (TEXT NOT NULL), `created_at` (TEXT NOT NULL),
+ * `size_bytes` (INTEGER NOT NULL), `source_session_id` (TEXT, nullable --
+ * provenance only, never used for lookup). The HTML bytes themselves live on
+ * disk (`lib/artifact-storage.ts`), not in this table. See
+ * docs/design/html-artifacts.md §5.1.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV28(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v28: Creating artifacts table');
+
+  await database.schema
+    .createTable('artifacts')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .addColumn('size_bytes', 'integer', (col) => col.notNull())
+    .addColumn('source_session_id', 'text')
+    .execute();
+
+  await database.schema
+    .createIndex('idx_artifacts_user_id')
+    .ifNotExists()
+    .on('artifacts')
+    .column('user_id')
+    .execute();
+
+  await sql`PRAGMA user_version = 28`.execute(database);
+
+  logger.info('Migration to v28 completed');
 }
 
 /**

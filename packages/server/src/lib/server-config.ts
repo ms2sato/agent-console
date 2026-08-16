@@ -188,6 +188,30 @@ export const serverConfig = {
    * elevated commands must not resolve binaries by PATH-only name.
    */
   EMBEDDED_AGENT_BUN_PATH: process.env.EMBEDDED_AGENT_BUN_PATH || 'bun',
+  /**
+   * The origin the server believes it is reachable at by human viewers
+   * (e.g. 'http://192.168.1.12:6340'). Used to mint absolute artifact-viewer
+   * URLs (HTML Artifacts) -- there is no other viewer-facing
+   * base URL in the codebase; `getMcpBaseUrl` is a same-host agent
+   * dial-back address, not a value a human on another machine should open.
+   *
+   * NO SILENT DEFAULT of any kind, and NEVER derived from a request `Host`
+   * header -- MCP tool calls arrive over the localhost dial-back, so the
+   * `Host` header an MCP handler sees names the wrong machine. When unset,
+   * consumers must fall back to a relative path plus an explicit note that
+   * the origin is unconfigured (docs/design/html-artifacts.md §4.1).
+   *
+   * `dev.sh` exports 'http://localhost:<PORT>' for single-user dev
+   * convenience; `scripts/setup-multiuser-for-ubuntu.sh` provisions it as an
+   * operator-supplied opt-in value (it knows the host it installs on).
+   *
+   * Empty string is treated as unset (operator-friendly, same
+   * trim-to-undefined convention as `VSCODE_REMOTE_HOST`).
+   */
+  AGENT_CONSOLE_PUBLIC_ORIGIN: (() => {
+    const raw = process.env.AGENT_CONSOLE_PUBLIC_ORIGIN?.trim();
+    return raw || undefined;
+  })(),
 } as const;
 
 /**
@@ -209,6 +233,20 @@ export function shouldWarnInsecureAuthCookie(
   config: Pick<ServerConfig, 'AUTH_COOKIE_SECURE' | 'NODE_ENV'> = serverConfig,
 ): boolean {
   return config.AUTH_COOKIE_SECURE === false && config.NODE_ENV === 'production';
+}
+
+/**
+ * Whether to emit the informational boot-time log line: `AGENT_CONSOLE_PUBLIC_ORIGIN`
+ * is unset, so artifact-viewer tools will return relative paths instead of
+ * absolute URLs. Deliberately mode-independent (NOT keyed on AUTH_MODE
+ * single-user vs multi-user) -- docs/design/html-artifacts.md §4.1's
+ * "no mode-keyed inference anywhere" is load-bearing; a mode-keyed check
+ * here would silently reintroduce the exact inference the spec forbids.
+ */
+export function shouldLogUnconfiguredPublicOrigin(
+  config: Pick<ServerConfig, 'AGENT_CONSOLE_PUBLIC_ORIGIN'> = serverConfig,
+): boolean {
+  return config.AGENT_CONSOLE_PUBLIC_ORIGIN === undefined;
 }
 
 /**

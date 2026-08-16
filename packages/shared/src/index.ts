@@ -21,6 +21,7 @@ export * from './types/interactive-process.js';
 export * from './types/skill.js';
 export * from './types/message-template.js';
 export * from './types/message-contracts.js';
+export * from './types/artifact.js';
 export * from './utils/ndjson-lines.js';
 export * from './schemas/index.js';
 export * from './constants/index.js';

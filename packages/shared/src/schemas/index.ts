@@ -147,3 +147,9 @@ export {
   type UpdateMessageTemplateRequest,
   type ReorderMessageTemplatesRequest,
 } from './message-template.js';
+
+// Artifact schemas
+export {
+  ArtifactSchema,
+  type ArtifactSchemaOutput,
+} from './artifact.js';

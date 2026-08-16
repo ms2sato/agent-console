@@ -8,7 +8,7 @@ import { createWorktreeWithSession } from './services/worktree-creation-service.
 import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
-import { serverConfig, shouldWarnInsecureAuthCookie } from './lib/server-config.js';
+import { serverConfig, shouldWarnInsecureAuthCookie, shouldLogUnconfiguredPublicOrigin } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
 import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
@@ -150,6 +150,7 @@ const mcpApp = createMcpApp({
   createWorktreeWithSession,
   deleteWorktree,
   userRepository: appContext.userRepository,
+  artifactRepository: appContext.artifactRepository,
   broadcastToApp: appContext.broadcastToApp,
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,
@@ -191,6 +192,14 @@ if (shouldWarnInsecureAuthCookie()) {
     'AUTH_COOKIE_SECURE=false disables the Secure attribute on the auth cookie while NODE_ENV=production. ' +
     'The session cookie will be transmitted over plain HTTP. Only do this on a trusted private network ' +
     '(e.g. Cloudflare WARP / VPN); on an untrusted network this enables session hijack.'
+  );
+}
+
+if (shouldLogUnconfiguredPublicOrigin()) {
+  logger.info(
+    'AGENT_CONSOLE_PUBLIC_ORIGIN is not set. Tools that mint viewer URLs (e.g. create_html_artifact) will ' +
+    'return relative paths only. Set AGENT_CONSOLE_PUBLIC_ORIGIN to the origin humans reach this server at ' +
+    '(e.g. http://192.168.1.12:6340) to also receive absolute URLs.'
   );
 }
 
