@@ -1013,6 +1013,31 @@ describe('Workers API', () => {
       expect(newestPty?.writtenData.join('')).toContain('claude -c');
     });
 
+    // Issue #1299 PR-1: continueConversation omitted (or false) must still
+    // map to the resolver's 'fresh' preference, not silently drift toward
+    // 'continue' -- this is the create-worker mirror of the restart-all
+    // fresh-preservation test.
+    it("should NOT forward the continue template when continueConversation is omitted [POLARITY]", async () => {
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      const res = await app.request(`/api/sessions/${session.id}/workers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'agent',
+          agentId: 'claude-code-builtin',
+        }),
+      });
+
+      expect(res.status).toBe(201);
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty?.writtenData.join('')).not.toContain('claude -c');
+    });
+
     it('should reject continueConversation on the embedded-agent variant (strict union, 400)', async () => {
       // continueConversation is only a field of the terminal variant. The
       // request union is composed of strictObjects, so an embedded-agent body
