@@ -51,6 +51,8 @@ import { serverConfig } from '../lib/server-config.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { buildPtyNotificationText } from '../lib/pty-notification.js';
 import { extractCommandToken } from '../lib/command-token.js';
+import { buildDirectSentinelShellCommand, buildElevatedSentinelCommand } from './sentinel-spawn-command.js';
+import { getUnsetEnvPrefix } from './env-filter.js';
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import { writeUserOwnedSecretFile, rmRecursiveAsUser, shouldElevateForUser, type runAsUser } from './privilege-elevation.js';
 import { lookupOsUser, type LookupOsUserFn } from './os-user-lookup.js';
@@ -722,7 +724,7 @@ export class WorkerManager {
       worker.activityState = 'idle';
       this.globalActivityCallback?.(sessionId, worker.id, 'idle');
 
-      this.setupWorkerEventHandlers(worker, sessionId, params.resolver, { command, username: params.username });
+      this.setupWorkerEventHandlers(worker, sessionId, params.resolver, { command, username: params.username, sentinel });
     } catch (err) {
       // Both cleanup calls are null-safe (no-op when nothing was ever set)
       // and never throw (internal failures are logged as warnings) -- see
@@ -795,7 +797,7 @@ export class WorkerManager {
     worker: InternalPtyWorker,
     sessionId: string,
     resolver: SessionDataPathResolver,
-    agentSpawnInfo?: { command: string; username: string },
+    agentSpawnInfo?: { command: string; username: string; sentinel: string },
   ): void {
     if (!sessionId || sessionId.trim() === '') {
       throw new Error(
@@ -1009,14 +1011,24 @@ export class WorkerManager {
     worker: InternalAgentWorker,
     sessionId: string,
     resolver: SessionDataPathResolver,
-    agentSpawnInfo: { command: string; username: string },
+    agentSpawnInfo: { command: string; username: string; sentinel: string },
     exitCode: number,
   ): Promise<void> {
     const commandToken = extractCommandToken(agentSpawnInfo.command);
     const { username } = agentSpawnInfo;
 
+    // Display-only reuse of the SAME builders production spawns with
+    // (sentinel-spawn-command.ts is the single source of truth both sides
+    // import) -- lets a future investigator immediately tell "wrapper failed
+    // pre-sentinel" from "something else failed post-sentinel" without
+    // reproducing the investigation. This is a structured-log-only field;
+    // the user-facing message built below is unaffected.
+    const wrapperCommand = shouldElevateForUser(username)
+      ? buildElevatedSentinelCommand(agentSpawnInfo.sentinel)
+      : buildDirectSentinelShellCommand(agentSpawnInfo.sentinel, getUnsetEnvPrefix());
+
     logger.warn(
-      { workerId: worker.id, sessionId, command: commandToken, username, exitCode },
+      { workerId: worker.id, sessionId, command: commandToken, username, exitCode, wrapperCommand },
       'Agent worker exited 127 (command not found); synthesizing diagnostic message on worker output stream',
     );
 
