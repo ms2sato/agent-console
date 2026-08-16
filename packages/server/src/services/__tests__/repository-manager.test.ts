@@ -807,6 +807,74 @@ describe('RepositoryManager', () => {
         expect(result).toBe(true);
         expect(manager.getRepository(repo.id)).toBeUndefined();
       });
+
+      // Invariant-preservation: assertRepositoryNotInUse's message composition
+      // (the count, the three-branch "(active)" / "(inactive)" / "(N active, M
+      // inactive)" details ternary, and the name-joining) moved unchanged from
+      // routes/repositories.ts's DELETE handler into RepositoryManager during
+      // the S0 consolidation -- an acceptance-check review found it had no
+      // direct coverage anywhere in that move. A broken implementation here
+      // (a wrong plural, a swapped active/inactive order in the details
+      // branch, or a broken name-join) would still pass every other test in
+      // this file, since those only assert `RepositoryInUseError` type /
+      // rejection and never inspect the composed message content. These four
+      // tests call `assertRepositoryNotInUse` directly (not through
+      // `unregisterRepository`) and pin the exact string for each branch.
+      it('composes "(active)" details with a single active session', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        manager.setDependencyCallbacks({
+          getSessionsUsingRepository: () => [{ id: 's1', title: 'Active Session' }],
+          getInactiveSessionsUsingRepository: async () => [],
+        });
+
+        await expect(manager.assertRepositoryNotInUse(repo.id)).rejects.toThrow(
+          'Repository is in use by 1 session(s) (active): Active Session',
+        );
+      });
+
+      it('composes "(inactive)" details with a single inactive session', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        manager.setDependencyCallbacks({
+          getSessionsUsingRepository: () => [],
+          getInactiveSessionsUsingRepository: async () => [{ id: 's2', title: 'Paused' }],
+        });
+
+        await expect(manager.assertRepositoryNotInUse(repo.id)).rejects.toThrow(
+          'Repository is in use by 1 session(s) (inactive): Paused',
+        );
+      });
+
+      it('composes "(N active, M inactive)" details when both are present', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        manager.setDependencyCallbacks({
+          getSessionsUsingRepository: () => [{ id: 's1', title: 'Active Session' }],
+          getInactiveSessionsUsingRepository: async () => [{ id: 's2', title: 'Paused' }],
+        });
+
+        await expect(manager.assertRepositoryNotInUse(repo.id)).rejects.toThrow(
+          'Repository is in use by 2 session(s) (1 active, 1 inactive): Active Session, Paused',
+        );
+      });
+
+      it('falls back to the session id when title is absent', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        manager.setDependencyCallbacks({
+          getSessionsUsingRepository: () => [{ id: 'no-title-id' }],
+          getInactiveSessionsUsingRepository: async () => [],
+        });
+
+        await expect(manager.assertRepositoryNotInUse(repo.id)).rejects.toThrow(
+          'Repository is in use by 1 session(s) (active): no-title-id',
+        );
+      });
     });
 
     // =========================================================================

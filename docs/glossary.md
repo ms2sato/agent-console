@@ -40,6 +40,10 @@ The stored configuration for an AI agent, including command templates and activi
 A registered Git repository available for session creation. Code reference: `repositoryId` (UUID).
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)
 
+### RepositoryInUseError
+The single-writer rule for whether a [Repository](#repository) is currently in use by any session. Enforced by `RepositoryManager.assertRepositoryNotInUse`, which combines the in-memory active-session check with a check over persisted session rows that are not currently active in memory — a repository with a paused [WorktreeSession](#worktreesession) counts as in-use, not only one with active sessions. The `DELETE /api/repositories/:id` route maps a thrown `RepositoryInUseError` to `409 Conflict`.
+- **See:** `packages/server/src/services/repository-manager.ts`
+
 ### Clone Job
 An asynchronous server-side job that clones a remote Git URL into the shared [source-repos directory](#source-repos-directory) and registers the result as a [Repository](#repository) (Issue [#834](https://github.com/ms2sato/agent-console/issues/834)). The HTTP endpoint `POST /api/repositories/clone` returns `202 Accepted` with a `jobId`; the client polls `GET /api/repositories/clone/:jobId` for status (`pending` / `cloning` / `succeeded` / `failed`). On failure, a classified `CloneErrorCode` (`auth_failed` / `network_error` / `repo_not_found` / `permission_denied` / `name_conflict` / `timeout` / `validation_error` / `unknown`) lets the UI render actionable copy. In multi-user mode, the clone subprocess runs as the requesting user via the privilege-elevation pattern ([Issue #837](https://github.com/ms2sato/agent-console/issues/837)).
 - **Aliases:** clone-and-register job
@@ -57,6 +61,10 @@ A work unit within a session (agent, terminal, diff viewer, etc.).
 ### Worktree
 A Git worktree representing a physical working directory.
 - **See:** [Core concepts in session-worker-design.md](design/session-worker-design.md#key-concepts)
+
+### Session Data Address (dataScope / dataScopeSlug)
+The filesystem location for a [Session](#session)'s data (worker outputs, memos, inter-session messages) — distinct from its [Worktree](#worktree)'s location. Resolved exclusively through `computeSessionDataBaseDir(configDir, scope, slug)`, which accepts two scopes: `'quick'` (fixed `_quick/` directory, no slug) and `'repository'` (`repositories/<slug>/`, slug required). The scope and slug (`dataScope` / `dataScopeSlug`) are captured once at session creation and stay frozen for the session's lifetime — they do not change on repository rename or on later changes to how the slug is derived. Two slug shapes currently coexist for `'repository'` scope: `org/repo` (git-remote derived, the shape used by [Worktree](#worktree) locations via `getRepositoryDir`) and a flat `repo.name` (the session-data slug from `getRepositorySlug`). The two diverge for any repository with a git remote, which is why repository-unregister cleanup must resolve session-data targets independently of the worktree/templates directory rather than deriving one from the other. Issue #1300 tracks unifying the derivation; this entry describes current (pre-#1300) behavior.
+- **See:** [Session Data Path design](design/session-data-path.md)
 
 ## Session Types
 
