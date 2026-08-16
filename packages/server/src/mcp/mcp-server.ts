@@ -186,9 +186,35 @@ const MAX_ARTIFACT_CONTENT_BYTES = 5 * 1024 * 1024;
 const HTML_TITLE_TAG_RE = /<title[^>]*>([\s\S]*?)<\/title>/i;
 const HTML_HEADING_TAG_RE = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i;
 
-/** Strip HTML tags from an already-extracted fragment and collapse whitespace, for title display only. */
+/**
+ * Cap on a resolved artifact title's length, in characters, applied after
+ * stripping/collapsing (never before -- truncating raw markup could sever a
+ * tag mid-span and leave an unclosed `<`). 200 is a generous bound for
+ * display metadata (sidebar/tab labels) while still bounding worst-case
+ * storage/render cost for a caller-supplied title with no natural limit.
+ */
+const MAX_TITLE_LENGTH = 200;
+
+/**
+ * Strip HTML tags from an already-extracted fragment and collapse whitespace,
+ * for title display only. Repeats the tag-strip pass to a fixed point (rather
+ * than a single pass) so that any tag-like span exposed by a previous
+ * removal is also stripped -- this closes CodeQL's
+ * `js/incomplete-multi-character-sanitization` finding for this call site.
+ */
 function stripHtmlTagsAndCollapseWhitespace(fragment: string): string {
-  return fragment.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+  let stripped = fragment;
+  let previous: string;
+  do {
+    previous = stripped;
+    stripped = stripped.replace(/<[^>]*>/g, '');
+  } while (stripped !== previous);
+  return stripped.replace(/\s+/g, ' ').trim();
+}
+
+/** Truncate an already-stripped title to MAX_TITLE_LENGTH characters. */
+function truncateTitle(title: string): string {
+  return title.length > MAX_TITLE_LENGTH ? title.slice(0, MAX_TITLE_LENGTH) : title;
 }
 
 /**
@@ -196,6 +222,15 @@ function stripHtmlTagsAndCollapseWhitespace(fragment: string): string {
  * docs/design/html-artifacts.md §5.3: explicit `title` param -> the
  * document's `<title>` -> its first heading (`<h1>`..`<h6>`) -> the literal
  * fallback "Untitled" (an artifact id is never used as a display title).
+ *
+ * Resolved titles are always plain text: every rung of the chain -- the
+ * explicit `title` param included, since it is caller-supplied and equally
+ * capable of carrying markup as the extracted `<title>`/heading text -- is
+ * passed through `stripHtmlTagsAndCollapseWhitespace` and capped at
+ * MAX_TITLE_LENGTH characters before being returned. Only the literal
+ * "Untitled" fallback is exempt, being a fixed string. This makes the DB
+ * value safe for every consumer that reads it back (UI, MCP tool results,
+ * etc.), not merely the ones fed by markup extraction.
  *
  * Regex-based on purpose: this extracts metadata for display only and never
  * mutates the stored bytes (the artifact is served byte-verbatim per §3), so
@@ -207,19 +242,20 @@ function stripHtmlTagsAndCollapseWhitespace(fragment: string): string {
 export function resolveArtifactTitle(content: string, titleParam: string | undefined): string {
   const trimmedParam = titleParam?.trim();
   if (trimmedParam) {
-    return trimmedParam;
+    const stripped = stripHtmlTagsAndCollapseWhitespace(trimmedParam);
+    if (stripped) return truncateTitle(stripped);
   }
 
   const titleMatch = HTML_TITLE_TAG_RE.exec(content);
   if (titleMatch) {
     const extracted = stripHtmlTagsAndCollapseWhitespace(titleMatch[1]);
-    if (extracted) return extracted;
+    if (extracted) return truncateTitle(extracted);
   }
 
   const headingMatch = HTML_HEADING_TAG_RE.exec(content);
   if (headingMatch) {
     const extracted = stripHtmlTagsAndCollapseWhitespace(headingMatch[1]);
-    if (extracted) return extracted;
+    if (extracted) return truncateTitle(extracted);
   }
 
   return 'Untitled';
@@ -1897,7 +1933,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
       ),
       title: z.string().optional().describe(
         'Optional display title. When omitted, derived from the document\'s <title>, then its first heading, ' +
-          'then falls back to the literal "Untitled".',
+          'then falls back to the literal "Untitled". Markup is stripped and the result is capped at ' +
+          `${MAX_TITLE_LENGTH} characters; titles are always plain text.`,
       ),
       sessionId: z.string().describe(
         "The calling session's ID, used to attribute the artifact to that session's owner (session.createdBy). " +

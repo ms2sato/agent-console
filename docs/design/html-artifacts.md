@@ -116,7 +116,7 @@ Tool result shape: `{ artifactId, path, url?, note? }` per §4.1 — `url` prese
 ## 7. UI
 
 - **History page**: the authenticated user's own artifacts, newest first — title, created-at, size, view link, delete. Others' artifacts are reachable by URL (requirement 3) but v1 has no global browse; that is a deliberate v1 cut, not an oversight.
-- **Viewer page**: the sandboxed-iframe wrapper (§4), with title and owner shown outside the frame so artifact content cannot spoof the chrome around it.
+- **Viewer page**: the sandboxed-iframe wrapper (§4), with title and owner shown outside the frame so artifact content cannot spoof the chrome around it — rendered **as a text node, never HTML-interpolated into markup or an attribute sink**, both in the viewer chrome and the history page's title column. The stored title is already stripped to plain text at write time (§5.3's title-resolution chain runs the fragment through a fixed-point tag-strip, closing the storage-time half of this obligation), but the render site must not rely on that alone: a future title write path (a rename API, an import) could bypass the strip, and this sentence is the boundary claim for the chrome specifically — it is either true or false at the render site, independent of what wrote the value. Required test: a `<script>`-bearing title injected directly at the storage layer (bypassing the strip, so the raw unstripped value is what's in the DB) must not execute when rendered in the history or viewer chrome.
 
 ## 8. Verification floor
 
