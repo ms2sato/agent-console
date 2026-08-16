@@ -52,6 +52,26 @@ describe('ArtifactSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects an empty id string (this repo\'s id-field convention, e.g. schemas/agent.ts / embedded-agent.ts, requires minLength(1))', () => {
+    const result = v.safeParse(ArtifactSchema, {
+      id: '',
+      title: 'My Dashboard',
+      createdAt: '2026-08-16T00:00:00.000Z',
+      sizeBytes: 1234,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an empty title string (production always resolves a non-empty title -- resolveArtifactTitle falls back to \'Untitled\' -- so an empty title is never a valid wire value)', () => {
+    const result = v.safeParse(ArtifactSchema, {
+      id: 'artifact-1',
+      title: '',
+      createdAt: '2026-08-16T00:00:00.000Z',
+      sizeBytes: 1234,
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects an unknown key (strict-parse contract, e.g. an accidentally-leaked content field)', () => {
     const result = v.safeParse(ArtifactSchema, {
       id: 'artifact-1',

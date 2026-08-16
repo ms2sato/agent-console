@@ -213,6 +213,22 @@ describe('server-config', () => {
 
       expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:3457');
     });
+
+    it('should strip a trailing slash from AGENT_CONSOLE_PUBLIC_ORIGIN (avoids a double slash when concatenated with a leading-slash path)', async () => {
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = 'http://localhost:6340/';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:6340');
+    });
+
+    it('should strip multiple trailing slashes from AGENT_CONSOLE_PUBLIC_ORIGIN', async () => {
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = 'http://localhost:6340///';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:6340');
+    });
   });
 
   describe('resolveAuthCookieSecure', () => {

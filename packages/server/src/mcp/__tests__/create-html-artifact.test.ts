@@ -68,6 +68,17 @@ describe('create_html_artifact', () => {
   let nextId: number;
   let worktreeService: WorktreeService;
   let agentDirectory: AgentDirectory;
+  const originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
+  /**
+   * Real (non-memfs) directory this suite points `AGENT_CONSOLE_HOME` at
+   * (see the file header for why). `fs/promises` is memfs-mocked in this
+   * suite, so cleanup must use a real-filesystem removal mechanism
+   * (`Bun.spawnSync(['rm', '-rf', ...])`, matching
+   * `embedded-agent-artifact-e2e.test.ts`'s same pattern) -- `fs/promises`'s
+   * `rm` would hit the mock instead of real disk and leave the directory
+   * (including any 5 MiB test payloads written into it) behind on disk.
+   */
+  let testConfigDir: string | undefined;
 
   /**
    * (Re)create the MCP app and initialize a new MCP session, optionally
@@ -119,7 +130,7 @@ describe('create_html_artifact', () => {
     await closeDatabase();
     // Real disk for AGENT_CONSOLE_HOME (see file header): SqliteArtifactRepository's
     // writes bypass the memfs mock the session/repository JSON stores below rely on.
-    const testConfigDir = path.join(os.tmpdir(), `${TEST_CONFIG_DIR_PREFIX}${randomUUID()}`);
+    testConfigDir = path.join(os.tmpdir(), `${TEST_CONFIG_DIR_PREFIX}${randomUUID()}`);
     setupMemfs({
       [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
     });
@@ -182,6 +193,15 @@ describe('create_html_artifact', () => {
     await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
+    if (testConfigDir) {
+      Bun.spawnSync(['rm', '-rf', testConfigDir]);
+      testConfigDir = undefined;
+    }
+    if (originalAgentConsoleHome !== undefined) {
+      process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+    } else {
+      delete process.env.AGENT_CONSOLE_HOME;
+    }
   });
 
   async function createOwnedSession(

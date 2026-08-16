@@ -28,6 +28,16 @@ describe('SqliteArtifactRepository', () => {
     process.env.AGENT_CONSOLE_HOME = path.join(os.tmpdir(), `agent-console-artifact-repo-test-${randomUUID()}`);
     db = await createDatabaseForTest();
     repository = new SqliteArtifactRepository(db);
+
+    // `artifacts.user_id` carries a real FK to `users.id` -- seed the two
+    // synthetic users this file's tests attribute artifacts to.
+    const now = new Date().toISOString();
+    for (const id of ['user-1', 'user-2']) {
+      await db
+        .insertInto('users')
+        .values({ id, os_uid: null, username: id, home_dir: `/home/${id}`, created_at: now, updated_at: now })
+        .execute();
+    }
   });
 
   afterEach(async () => {
@@ -81,6 +91,38 @@ describe('SqliteArtifactRepository', () => {
 
       expect(artifact.sizeBytes).toBe(Buffer.byteLength(content, 'utf-8'));
       expect(artifact.sizeBytes).not.toBe(content.length);
+    });
+
+    it('cleans up the file it just wrote when the DB insert fails, and propagates the original insert error', async () => {
+      // Force an insert failure via a primary-key conflict: seed a raw row
+      // for this id directly (bypassing the repository, so no file is
+      // written for it), then call create() with the same id. The
+      // repository's own insertInto will violate the PK constraint.
+      await db
+        .insertInto('artifacts')
+        .values({
+          id: 'artifact-dup',
+          user_id: 'user-1',
+          title: 'Pre-existing row',
+          created_at: new Date().toISOString(),
+          size_bytes: 1,
+          source_session_id: null,
+        })
+        .execute();
+
+      await expect(
+        repository.create({
+          id: 'artifact-dup',
+          userId: 'user-1',
+          title: 'Should not persist',
+          content: '<p>should be cleaned up</p>',
+          sourceSessionId: null,
+        })
+      ).rejects.toThrow(/UNIQUE constraint failed|constraint/i);
+
+      // The file the failed create() wrote before the insert must not
+      // remain on disk -- the recovery path deletes it.
+      expect(await readArtifactFile('user-1', 'artifact-dup')).toBeNull();
     });
   });
 

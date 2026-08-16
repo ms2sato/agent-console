@@ -54,7 +54,7 @@
  */
 
 import { Database as BunDatabase } from 'bun:sqlite';
-import { mkdirSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, rmSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -319,6 +319,20 @@ async function main() {
     expect(deleteRes.status === 200, 'V3 delete: DELETE /api/artifacts/:id is HTTP 200', `status=${deleteRes.status}`);
     const deleteBody = await deleteRes.json();
     expect(deleteBody.success === true, 'V3 delete: response body reports success:true', JSON.stringify(deleteBody));
+
+    // Direct filesystem check: a route that deletes the DB row but leaks
+    // the on-disk file would still pass the HTTP-only assertions above (the
+    // route's own readArtifactFile lookup would 404 the SAME way whether
+    // the DB row or the file is what's actually missing). Import the
+    // production path-resolution helper directly (no manual replication)
+    // so this check can never drift from what the server itself writes to.
+    const { getArtifactFilePath } = await import('../../packages/server/src/lib/config.ts');
+    const artifactFilePath = getArtifactFilePath(session.createdBy, artifactId);
+    expect(
+      !existsSync(artifactFilePath),
+      'V3 delete: the backing artifact file is actually gone from disk (not just the DB row)',
+      `artifactFilePath=${artifactFilePath}, existsSync=${existsSync(artifactFilePath)}`,
+    );
 
     const serveAfterDeleteRes = await fetch(artifactUrl, { headers: { Cookie: cookieHeader } });
     expect(

@@ -7,7 +7,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test --preload ./src/setup.ts --path-ignore-patterns '**/e2e-native/**' src/ && bun test --preload ./src/e2e-native/setup-native.ts src/e2e-native/",
     "test:coverage": "bun test --coverage --preload ./src/setup.ts --path-ignore-patterns '**/e2e-native/**' src/ && bun test --coverage --preload ./src/e2e-native/setup-native.ts src/e2e-native/",
-    "test:watch": "bun test --watch --preload ./src/setup.ts --path-ignore-patterns '**/e2e-native/**' src/ && bun test --watch --preload ./src/e2e-native/setup-native.ts src/e2e-native/"
+    "test:watch": "bun test --watch --preload ./src/setup.ts --path-ignore-patterns '**/e2e-native/**' src/",
+    "test:watch:native": "bun test --watch --preload ./src/e2e-native/setup-native.ts src/e2e-native/"
   },
   "devDependencies": {
     "@agent-console/client": "*",

@@ -1553,11 +1553,22 @@ export async function migrateToV27(database: Kysely<Database>): Promise<void> {
  * Migration v28: Create `artifacts` table (HTML Artifacts phase 1).
  *
  * Metadata-only table: `id` (TEXT PK), `user_id` (TEXT NOT NULL, FK
- * users.id, owner), `title` (TEXT NOT NULL), `created_at` (TEXT NOT NULL),
- * `size_bytes` (INTEGER NOT NULL), `source_session_id` (TEXT, nullable --
- * provenance only, never used for lookup). The HTML bytes themselves live on
- * disk (`lib/artifact-storage.ts`), not in this table. See
+ * `users.id` ON DELETE CASCADE -- cascade rather than sessions.created_by's
+ * `SET NULL` because `user_id` is NOT NULL here: an artifact has no
+ * meaningful existence without its owner, unlike a session which can
+ * survive as an ownerless/legacy row, owner), `title` (TEXT NOT NULL),
+ * `created_at` (TEXT NOT NULL), `size_bytes` (INTEGER NOT NULL),
+ * `source_session_id` (TEXT, nullable -- provenance only, never used for
+ * lookup). The HTML bytes themselves live on disk
+ * (`lib/artifact-storage.ts`), not in this table -- cascading the row does
+ * NOT delete the file; a future user-deletion path must also sweep
+ * `<AGENT_CONSOLE_HOME>/artifacts/<userId>/`. See
  * docs/design/html-artifacts.md §5.1.
+ *
+ * Unlike `sessions.created_by` (added nullable in v14, then given its FK
+ * constraint later in v19 via SQLite's table-recreation dance), `artifacts`
+ * is a brand-new table as of this migration, so the FK is declared directly
+ * in `createTable` -- no recreation needed.
  *
  * @internal Exported for testing.
  */
@@ -1568,7 +1579,9 @@ export async function migrateToV28(database: Kysely<Database>): Promise<void> {
     .createTable('artifacts')
     .ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('user_id', 'text', (col) =>
+      col.notNull().references('users.id').onDelete('cascade')
+    )
     .addColumn('title', 'text', (col) => col.notNull())
     .addColumn('created_at', 'text', (col) => col.notNull())
     .addColumn('size_bytes', 'integer', (col) => col.notNull())

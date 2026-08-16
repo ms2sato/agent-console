@@ -207,10 +207,15 @@ export const serverConfig = {
    *
    * Empty string is treated as unset (operator-friendly, same
    * trim-to-undefined convention as `VSCODE_REMOTE_HOST`).
+   *
+   * Trailing slash(es) are stripped: `buildArtifactToolResult` (mcp-server.ts)
+   * concatenates this value directly with a leading-slash relative path, so
+   * an operator-supplied trailing slash (e.g. `http://host:6340/`) would
+   * otherwise produce a double slash in the minted artifact URL.
    */
   AGENT_CONSOLE_PUBLIC_ORIGIN: (() => {
     const raw = process.env.AGENT_CONSOLE_PUBLIC_ORIGIN?.trim();
-    return raw || undefined;
+    return raw ? raw.replace(/\/+$/, '') : undefined;
   })(),
 } as const;
 

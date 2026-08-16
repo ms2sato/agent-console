@@ -233,16 +233,31 @@ if [ -n "$PTY_PROVIDER" ]; then
 fi
 # PUBLIC_ORIGIN is opt-in: unset = no env entry in the rendered unit (tools
 # that mint viewer URLs return relative paths only). When set, must be an
-# absolute http(s) origin with no trailing slash (matches how the value is
+# EXACT http(s) origin with no trailing slash (matches how the value is
 # concatenated with a leading-slash relative path at the tool-call site --
-# packages/server/src/lib/server-config.ts's AGENT_CONSOLE_PUBLIC_ORIGIN).
+# packages/server/src/lib/server-config.ts's AGENT_CONSOLE_PUBLIC_ORIGIN):
+# scheme://host[:port] and nothing else. No path, query, fragment, userinfo
+# (`user:pass@`), whitespace, or control characters -- the previous
+# case-glob match (`http://*`) accepted all of those, which is exploitable
+# once the value is substituted into the sed replacement in
+# render_systemd_unit() below: an embedded '|' breaks the sed delimiter,
+# and an embedded '&' expands to the whole matched placeholder text.
+# IPv6 literal hosts (`http://[::1]:8080`) are deliberately NOT supported by
+# this pattern; this codebase has no other host-accepting validation to
+# match conventions with, and a plain hostname/IPv4 pattern is the simplest
+# correct subset. Extend the character class if IPv6 support is needed.
+PUBLIC_ORIGIN_REGEX='^https?://[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[0-9]{1,5})?$'
 if [ -n "$PUBLIC_ORIGIN" ]; then
   case "$PUBLIC_ORIGIN" in
     http://*/|https://*/)
       err "invalid --public-origin '$PUBLIC_ORIGIN' (must not have a trailing slash)" ;;
-    http://*|https://*) ;;
-    *) err "invalid --public-origin '$PUBLIC_ORIGIN' (must start with http:// or https://)" ;;
   esac
+  # [[ =~ ]] matches the ENTIRE variable as one string against the anchored
+  # pattern (unlike `grep`, which matches per-line and would let an
+  # embedded newline followed by a valid origin slip through as a match).
+  if [[ ! "$PUBLIC_ORIGIN" =~ $PUBLIC_ORIGIN_REGEX ]]; then
+    err "invalid --public-origin '$PUBLIC_ORIGIN' (must be an exact http(s) origin: scheme://host[:port] only -- no path, query, fragment, userinfo, or whitespace)"
+  fi
 fi
 case "$DATA_ROOT" in
   /*) ;;
@@ -337,6 +352,17 @@ heading() {
   echo "==> $*"
 }
 
+# Escape a value for safe use as sed replacement text when the pattern
+# delimiter is '|': backslash (sed escape introducer), '&' (whole-match
+# backreference), and the delimiter itself all need a literal backslash
+# prefix. Defense-in-depth alongside the PUBLIC_ORIGIN_REGEX validation
+# above -- the regex already excludes these characters from a valid origin,
+# but this keeps the sed substitution itself safe even if a future caller
+# feeds an unvalidated value through render_systemd_unit().
+sed_escape_replacement() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
 # Render the systemd unit to stdout from the template.
 render_systemd_unit() {
   local service_home
@@ -363,7 +389,7 @@ render_systemd_unit() {
   # that never passed --public-origin.
   local public_origin_sed
   if [ -n "$PUBLIC_ORIGIN" ]; then
-    public_origin_sed="s|^# PUBLIC_ORIGIN_BLOCK_PLACEHOLDER\$|Environment=AGENT_CONSOLE_PUBLIC_ORIGIN=$PUBLIC_ORIGIN|"
+    public_origin_sed="s|^# PUBLIC_ORIGIN_BLOCK_PLACEHOLDER\$|Environment=AGENT_CONSOLE_PUBLIC_ORIGIN=$(sed_escape_replacement "$PUBLIC_ORIGIN")|"
   else
     public_origin_sed="/^# PUBLIC_ORIGIN_BLOCK_PLACEHOLDER\$/d"
   fi

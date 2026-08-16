@@ -33,6 +33,14 @@ function extractEmbeddedAgentBunPath(unitText) {
   return m[1];
 }
 
+// Runs --dry-run expecting a non-zero exit (validation rejection), and
+// returns { status, stderr } instead of throwing -- the inverse of
+// renderDryRunUnit()'s "expect success" contract above.
+function runDryRunExpectingFailure(extraArgs = []) {
+  const r = spawnSync('bash', [SCRIPT, '--dry-run', ...extraArgs], { encoding: 'utf-8' });
+  return { status: r.status, stderr: r.stderr, stdout: r.stdout };
+}
+
 // Issue #1222 -- the load-bearing in-house assertion: render_systemd_unit()
 // must derive ExecStart and Environment=EMBEDDED_AGENT_BUN_PATH= from ONE
 // variable, so the two rendered lines are compared to EACH OTHER here, never
@@ -66,5 +74,70 @@ describe('setup-multiuser-for-ubuntu.sh: single-writer unified bun path (Issue #
     const embeddedAgentPath = extractEmbeddedAgentBunPath(unit);
     expect(execStartPath).toBe(embeddedAgentPath);
     expect(unit).toContain('Environment=PORT=9123');
+  });
+});
+
+// --public-origin validation (Issue #1312 §4.1, CodeRabbit review on
+// PR #1318 -- the previous case-glob match accepted `|`/`&`/whitespace,
+// which is exploitable once the value reaches the sed replacement in
+// render_systemd_unit()). PUBLIC_ORIGIN_REGEX must accept an exact
+// scheme://host[:port] origin and reject everything else.
+describe('setup-multiuser-for-ubuntu.sh: --public-origin validation', () => {
+  it('accepts an exact http(s) origin with a port and renders it verbatim', () => {
+    const unit = renderDryRunUnit(['--public-origin', 'http://good.example.com:8080']);
+    expect(unit).toContain('Environment=AGENT_CONSOLE_PUBLIC_ORIGIN=http://good.example.com:8080');
+  });
+
+  it('accepts an exact https origin with no port', () => {
+    const unit = renderDryRunUnit(['--public-origin', 'https://good.example.com']);
+    expect(unit).toContain('Environment=AGENT_CONSOLE_PUBLIC_ORIGIN=https://good.example.com');
+  });
+
+  it('rejects a trailing slash with the dedicated error message', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://good.example.com/']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('must not have a trailing slash');
+  });
+
+  it('rejects a scheme other than http/https', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'ftp://good.example.com']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('invalid --public-origin');
+  });
+
+  it('rejects an embedded pipe character (sed delimiter injection)', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://host|d']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('invalid --public-origin');
+  });
+
+  it('rejects an embedded ampersand / query string (sed backreference injection)', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://host?a=1&b=2']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('invalid --public-origin');
+  });
+
+  it('rejects an embedded space', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://host name']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('invalid --public-origin');
+  });
+
+  it('rejects a path component', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://host.com/path']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('invalid --public-origin');
+  });
+
+  it('rejects a fragment component', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://host.com#frag']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('invalid --public-origin');
+  });
+
+  it('rejects userinfo (user:pass@)', () => {
+    const { status, stderr } = runDryRunExpectingFailure(['--public-origin', 'http://user:pass@host.com']);
+    expect(status).not.toBe(0);
+    expect(stderr).toContain('invalid --public-origin');
   });
 });

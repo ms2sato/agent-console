@@ -89,6 +89,16 @@ describe('Artifact routes', () => {
     process.env.AGENT_CONSOLE_HOME = path.join(os.tmpdir(), `agent-console-artifact-routes-test-${randomUUID()}`);
     db = await createDatabaseForTest();
     repository = new SqliteArtifactRepository(db);
+
+    // `artifacts.user_id` carries a real FK to `users.id` -- seed the two
+    // test users this file's tests attribute artifacts to.
+    const now = new Date().toISOString();
+    for (const user of [OWNER, OTHER]) {
+      await db
+        .insertInto('users')
+        .values({ id: user.id, os_uid: null, username: user.username, home_dir: user.homeDir, created_at: now, updated_at: now })
+        .execute();
+    }
   });
 
   afterEach(async () => {

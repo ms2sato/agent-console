@@ -182,6 +182,15 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
    * documented same pattern).
    */
   let artifactsRealHome: string | undefined;
+  /**
+   * Saved BEFORE the test overwrites `process.env.AGENT_CONSOLE_HOME` (see
+   * below), so `afterEach` can restore the process-global env var to
+   * whatever `setupTestEnvironment()` had set it to. Without this, the env
+   * var is left pointing at `artifactsRealHome` after this test's own
+   * cleanup deletes that directory -- a dangling path that would corrupt
+   * `embedded-agent-e2e.test.ts`, which runs in the same process.
+   */
+  let originalAgentConsoleHome: string | undefined;
 
   beforeEach(async () => {
     await setupTestEnvironment();
@@ -234,6 +243,12 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
       Bun.spawnSync(['rm', '-rf', artifactsRealHome]);
       artifactsRealHome = undefined;
     }
+    if (originalAgentConsoleHome !== undefined) {
+      process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
+    } else {
+      delete process.env.AGENT_CONSOLE_HOME;
+    }
+    originalAgentConsoleHome = undefined;
   });
 
   it(
@@ -245,6 +260,7 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
       // path is resolved.
       artifactsRealHome = path.join(os.tmpdir(), `ac-embedded-artifact-e2e-home-${crypto.randomUUID()}`);
       Bun.spawnSync(['mkdir', '-p', artifactsRealHome]);
+      originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
       process.env.AGENT_CONSOLE_HOME = artifactsRealHome;
 
       // --- Test AppContext, with the loop's MCP base URL late-bound to the app port ---

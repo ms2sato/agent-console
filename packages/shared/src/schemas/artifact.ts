@@ -8,8 +8,8 @@ import * as v from 'valibot';
  * `.claude/rules/pre-pr-completeness.md` Q10, the #926 lesson).
  */
 export const ArtifactSchema = v.strictObject({
-  id: v.string(),
-  title: v.string(),
+  id: v.pipe(v.string(), v.minLength(1)),
+  title: v.pipe(v.string(), v.minLength(1)),
   createdAt: v.string(),
   sizeBytes: v.pipe(v.number(), v.integer(), v.minValue(0)),
 });

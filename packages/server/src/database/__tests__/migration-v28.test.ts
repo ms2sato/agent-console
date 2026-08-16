@@ -24,6 +24,40 @@ interface PragmaTableInfoRow {
   pk: number;
 }
 
+interface PragmaForeignKeyListRow {
+  id: number;
+  seq: number;
+  table: string;
+  from: string;
+  to: string;
+  on_update: string;
+  on_delete: string;
+  match: string;
+}
+
+/**
+ * `artifacts.user_id` carries a real FK constraint (`REFERENCES users.id`),
+ * so every seeded artifact needs a matching `users` row first -- otherwise
+ * the insert below violates the constraint (`PRAGMA foreign_keys = ON` is
+ * always set, see `connection.ts`'s `doInitializeDatabase`).
+ */
+async function seedUser(
+  db: Awaited<ReturnType<typeof initializeDatabase>>,
+  id: string
+): Promise<void> {
+  await db
+    .insertInto('users')
+    .values({
+      id,
+      os_uid: null,
+      username: id,
+      home_dir: `/home/${id}`,
+      created_at: '2026-08-16T00:00:00.000Z',
+      updated_at: '2026-08-16T00:00:00.000Z',
+    })
+    .execute();
+}
+
 async function seedArtifact(
   db: Awaited<ReturnType<typeof initializeDatabase>>,
   overrides: { id: string; source_session_id?: string | null }
@@ -100,6 +134,7 @@ describe('migration v28 (artifacts table)', () => {
 
   it('round-trips a non-null source_session_id', async () => {
     const db = await initializeDatabase(':memory:');
+    await seedUser(db, 'user-1');
     await seedArtifact(db, { id: 'artifact-with-source', source_session_id: 'session-1' });
 
     const row = await db
@@ -116,6 +151,7 @@ describe('migration v28 (artifacts table)', () => {
 
   it('round-trips a null source_session_id (provenance-unavailable case)', async () => {
     const db = await initializeDatabase(':memory:');
+    await seedUser(db, 'user-1');
     await seedArtifact(db, { id: 'artifact-no-source' });
 
     const row = await db
@@ -135,5 +171,37 @@ describe('migration v28 (artifacts table)', () => {
 
     const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(artifacts)`.execute(db);
     expect(columns.rows.some((c) => c.name === 'id')).toBe(true);
+  });
+
+  it('declares a real FK constraint on user_id referencing users(id) ON DELETE CASCADE', async () => {
+    const db = await initializeDatabase(':memory:');
+
+    const fks = await sql<PragmaForeignKeyListRow>`PRAGMA foreign_key_list(artifacts)`.execute(db);
+    expect(fks.rows).toHaveLength(1);
+    expect(fks.rows[0]?.table).toBe('users');
+    expect(fks.rows[0]?.from).toBe('user_id');
+    expect(fks.rows[0]?.to).toBe('id');
+    expect(fks.rows[0]?.on_delete.toUpperCase()).toBe('CASCADE');
+  });
+
+  it('rejects inserting an artifact whose user_id has no matching users row', async () => {
+    const db = await initializeDatabase(':memory:');
+
+    await expect(seedArtifact(db, { id: 'artifact-orphan-user' })).rejects.toThrow();
+  });
+
+  it('cascade-deletes artifact rows when their owning user is deleted', async () => {
+    const db = await initializeDatabase(':memory:');
+    await seedUser(db, 'user-1');
+    await seedArtifact(db, { id: 'artifact-cascade-target' });
+
+    await db.deleteFrom('users').where('id', '=', 'user-1').execute();
+
+    const row = await db
+      .selectFrom('artifacts')
+      .where('id', '=', 'artifact-cascade-target')
+      .selectAll()
+      .executeTakeFirst();
+    expect(row).toBeUndefined();
   });
 });

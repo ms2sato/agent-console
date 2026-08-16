@@ -483,356 +483,397 @@ async function main() {
   await waitForServerReady(baseUrl);
   console.log('==> disposable server is ready');
 
+  // -----------------------------------------------------------------
+  // Real login: this script's own real OS user, real everything except
+  // the password check (see CREDENTIAL-ISSUANCE SUBSTITUTION above).
+  // -----------------------------------------------------------------
+  const osUsername = os.userInfo().username;
+  const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: osUsername, password: 'unused-password-check-is-bypassed' }),
+  });
+  if (!loginRes.ok) {
+    throw new Error(`Login failed unexpectedly (status ${loginRes.status}): ${await loginRes.text()}`);
+  }
+  const setCookieHeader = loginRes.headers.get('set-cookie');
+  if (!setCookieHeader) {
+    throw new Error('Login succeeded but no Set-Cookie header was returned');
+  }
+  const authCookie = parseSetCookie(setCookieHeader);
+  console.log(
+    `==> real login succeeded for OS user '${osUsername}'; cookie attrs: SameSite=${authCookie.sameSite}, ` +
+      `HttpOnly=${authCookie.httpOnly}, Secure=${authCookie.secure}`,
+  );
+  expect(
+    authCookie.sameSite && authCookie.sameSite.toLowerCase() === 'lax',
+    'auth cookie carries SameSite=Lax (premise P2 dependency)',
+    `observed SameSite=${authCookie.sameSite}`,
+  );
+
+  // -----------------------------------------------------------------
+  // Real session + real MCP tool call to create the probe artifact.
+  // -----------------------------------------------------------------
+  const cookieHeader = `${authCookie.name}=${authCookie.value}`;
+  const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
+    body: JSON.stringify({ type: 'quick', locationPath: disposableHome }),
+  });
+  if (!sessionRes.ok) {
+    throw new Error(`Session creation failed (status ${sessionRes.status}): ${await sessionRes.text()}`);
+  }
+  const { session } = await sessionRes.json();
+  console.log(`==> real session created: ${session.id} (createdBy=${session.createdBy})`);
+
+  const mcpSessionId = await initializeMcp(baseUrl);
+  const toolResult = await callMcpTool(baseUrl, mcpSessionId, 'create_html_artifact', {
+    content: buildProbeArtifactHtml(),
+    title: 'artifact-sandbox-boundary-probe',
+    sessionId: session.id,
+  });
+  console.log(`==> artifact created via real MCP call: ${JSON.stringify(toolResult)}`);
+  const artifactUrl = `${baseUrl}/api${toolResult.path}`;
+
+  // -----------------------------------------------------------------
+  // Browser probing.
+  // -----------------------------------------------------------------
+  const browser = await chromium.launch({
+    executablePath,
+    headless: true,
+    // Chromium's own OS-level process sandbox, unrelated to the CSP
+    // `sandbox` directive under test -- disabled for portability across
+    // CI/containerized/root environments, standard practice for headless
+    // automation (see #1162 precedent for the same note).
+    args: ['--no-sandbox'],
+  });
+
   try {
-    // -----------------------------------------------------------------
-    // Real login: this script's own real OS user, real everything except
-    // the password check (see CREDENTIAL-ISSUANCE SUBSTITUTION above).
-    // -----------------------------------------------------------------
-    const osUsername = os.userInfo().username;
-    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: osUsername, password: 'unused-password-check-is-bypassed' }),
+    const context = await browser.newContext();
+    // Seed the real auth cookie into the browser's cookie jar for this
+    // origin -- the SAME cookie routes/auth.ts issued via the real login
+    // above, with its real SameSite/HttpOnly/Secure attributes intact.
+    // ALSO seed a second, non-HttpOnly marker cookie for the
+    // document.cookie positive control below: the real auth cookie is
+    // HttpOnly by production design (routes/auth.ts), so `document.cookie`
+    // never exposes it on ANY page, sandboxed or not -- that is ordinary
+    // HttpOnly semantics, not the sandbox boundary. Without a
+    // JS-readable cookie, the positive control cannot distinguish
+    // "environment blocks document.cookie" from "sandbox blocks it".
+    const cookieControlName = 'artifact-probe-control';
+    const cookieControlValue = 'control-value';
+    await context.addCookies([
+      {
+        name: authCookie.name,
+        value: authCookie.value,
+        domain: '127.0.0.1',
+        path: authCookie.path,
+        httpOnly: authCookie.httpOnly,
+        secure: authCookie.secure,
+        // Normalize case ONCE before mapping to Playwright's expected
+        // capitalization: the server may emit a lowercase `SameSite=lax`
+        // attribute (the parser at attrs.sameSite above preserves
+        // whatever case the server sent), and an exact-case comparison
+        // here would silently fall through to 'None' -- seeding the
+        // probe's cookie with a DIFFERENT SameSite policy than what the
+        // server actually emits, changing what this probe tests without
+        // any visible failure.
+        sameSite: (() => {
+          const normalized = authCookie.sameSite?.toLowerCase();
+          if (normalized === 'lax') return 'Lax';
+          if (normalized === 'strict') return 'Strict';
+          return 'None';
+        })(),
+      },
+      {
+        name: cookieControlName,
+        value: cookieControlValue,
+        domain: '127.0.0.1',
+        path: '/',
+        httpOnly: false,
+        secure: false,
+        sameSite: 'Lax',
+      },
+    ]);
+
+    // ---------------------------------------------------------------
+    // Harness self-test (mirrors the #1162 precedent): prove the
+    // postMessage-bridge detection mechanism actually observes messages
+    // BEFORE trusting a "no messages received" result for the real probe.
+    // ---------------------------------------------------------------
+    console.log('\n==> harness self-test (confirms the postMessage bridge actually observes messages)');
+    const harnessPage = await context.newPage();
+    await harnessPage.setContent('<!doctype html><html><body></body></html>');
+    await harnessPage.evaluate(() => {
+      window.__probeMessages = [];
+      window.addEventListener('message', (e) => window.__probeMessages.push(e.data));
     });
-    if (!loginRes.ok) {
-      throw new Error(`Login failed unexpectedly (status ${loginRes.status}): ${await loginRes.text()}`);
-    }
-    const setCookieHeader = loginRes.headers.get('set-cookie');
-    if (!setCookieHeader) {
-      throw new Error('Login succeeded but no Set-Cookie header was returned');
-    }
-    const authCookie = parseSetCookie(setCookieHeader);
-    console.log(
-      `==> real login succeeded for OS user '${osUsername}'; cookie attrs: SameSite=${authCookie.sameSite}, ` +
-        `HttpOnly=${authCookie.httpOnly}, Secure=${authCookie.secure}`,
-    );
-    expect(
-      authCookie.sameSite && authCookie.sameSite.toLowerCase() === 'lax',
-      'auth cookie carries SameSite=Lax (premise P2 dependency)',
-      `observed SameSite=${authCookie.sameSite}`,
-    );
-
-    // -----------------------------------------------------------------
-    // Real session + real MCP tool call to create the probe artifact.
-    // -----------------------------------------------------------------
-    const cookieHeader = `${authCookie.name}=${authCookie.value}`;
-    const sessionRes = await fetch(`${baseUrl}/api/sessions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Cookie: cookieHeader },
-      body: JSON.stringify({ type: 'quick', locationPath: disposableHome }),
+    await harnessPage.evaluate(() => {
+      const iframe = document.createElement('iframe');
+      // No escaping needed here: this string literal lives in a plain
+      // .mjs source file, not inside an actual HTML <script> tag of THIS
+      // file, so a literal </script> in the string is syntactically
+      // inert JS text -- unlike the reverse case (embedding this content
+      // inside an HTML <script> block), which WOULD need `<\/script>` to
+      // avoid the HTML parser prematurely closing the enclosing tag.
+      iframe.src = "data:text/html,<script>parent.postMessage({type:'self-test'},'*')</script>";
+      document.body.appendChild(iframe);
     });
-    if (!sessionRes.ok) {
-      throw new Error(`Session creation failed (status ${sessionRes.status}): ${await sessionRes.text()}`);
-    }
-    const { session } = await sessionRes.json();
-    console.log(`==> real session created: ${session.id} (createdBy=${session.createdBy})`);
-
-    const mcpSessionId = await initializeMcp(baseUrl);
-    const toolResult = await callMcpTool(baseUrl, mcpSessionId, 'create_html_artifact', {
-      content: buildProbeArtifactHtml(),
-      title: 'artifact-sandbox-boundary-probe',
-      sessionId: session.id,
-    });
-    console.log(`==> artifact created via real MCP call: ${JSON.stringify(toolResult)}`);
-    const artifactUrl = `${baseUrl}/api${toolResult.path}`;
-
-    // -----------------------------------------------------------------
-    // Browser probing.
-    // -----------------------------------------------------------------
-    const browser = await chromium.launch({
-      executablePath,
-      headless: true,
-      // Chromium's own OS-level process sandbox, unrelated to the CSP
-      // `sandbox` directive under test -- disabled for portability across
-      // CI/containerized/root environments, standard practice for headless
-      // automation (see #1162 precedent for the same note).
-      args: ['--no-sandbox'],
-    });
-
-    try {
-      const context = await browser.newContext();
-      // Seed the real auth cookie into the browser's cookie jar for this
-      // origin -- the SAME cookie routes/auth.ts issued via the real login
-      // above, with its real SameSite/HttpOnly/Secure attributes intact.
-      // ALSO seed a second, non-HttpOnly marker cookie for the
-      // document.cookie positive control below: the real auth cookie is
-      // HttpOnly by production design (routes/auth.ts), so `document.cookie`
-      // never exposes it on ANY page, sandboxed or not -- that is ordinary
-      // HttpOnly semantics, not the sandbox boundary. Without a
-      // JS-readable cookie, the positive control cannot distinguish
-      // "environment blocks document.cookie" from "sandbox blocks it".
-      const cookieControlName = 'artifact-probe-control';
-      const cookieControlValue = 'control-value';
-      await context.addCookies([
-        {
-          name: authCookie.name,
-          value: authCookie.value,
-          domain: '127.0.0.1',
-          path: authCookie.path,
-          httpOnly: authCookie.httpOnly,
-          secure: authCookie.secure,
-          sameSite: authCookie.sameSite === 'Lax' ? 'Lax' : authCookie.sameSite === 'Strict' ? 'Strict' : 'None',
-        },
-        {
-          name: cookieControlName,
-          value: cookieControlValue,
-          domain: '127.0.0.1',
-          path: '/',
-          httpOnly: false,
-          secure: false,
-          sameSite: 'Lax',
-        },
-      ]);
-
-      // ---------------------------------------------------------------
-      // Harness self-test (mirrors the #1162 precedent): prove the
-      // postMessage-bridge detection mechanism actually observes messages
-      // BEFORE trusting a "no messages received" result for the real probe.
-      // ---------------------------------------------------------------
-      console.log('\n==> harness self-test (confirms the postMessage bridge actually observes messages)');
-      const harnessPage = await context.newPage();
-      await harnessPage.setContent('<!doctype html><html><body></body></html>');
-      await harnessPage.evaluate(() => {
-        window.__probeMessages = [];
-        window.addEventListener('message', (e) => window.__probeMessages.push(e.data));
-      });
-      await harnessPage.evaluate(() => {
-        const iframe = document.createElement('iframe');
-        // No escaping needed here: this string literal lives in a plain
-        // .mjs source file, not inside an actual HTML <script> tag of THIS
-        // file, so a literal </script> in the string is syntactically
-        // inert JS text -- unlike the reverse case (embedding this content
-        // inside an HTML <script> block), which WOULD need `<\/script>` to
-        // avoid the HTML parser prematurely closing the enclosing tag.
-        iframe.src = "data:text/html,<script>parent.postMessage({type:'self-test'},'*')</script>";
-        document.body.appendChild(iframe);
-      });
-      await harnessPage.waitForTimeout(500);
-      const selfTestMessages = await harnessPage.evaluate(() => window.__probeMessages);
-      if (!selfTestMessages.some((m) => m.type === 'self-test')) {
-        console.error(
-          '  FAIL  self-test: the postMessage bridge did not observe a known-firing test message. ' +
-            'The detection mechanism itself is broken -- aborting without reporting probe results (unreliable).',
-        );
-        await browser.close();
-        cleanupAndExit(disposableHome, 2);
-      }
-      console.log('  OK    self-test: postMessage bridge correctly observed the test message');
-      await harnessPage.close();
-
-      // ---------------------------------------------------------------
-      // Real probe: harness parent page + iframe pointed at the REAL
-      // artifact-serving endpoint over real HTTP.
-      // ---------------------------------------------------------------
-      console.log(`\n==> loading probe artifact via real HTTP: ${artifactUrl}`);
-      const probePage = await context.newPage();
-      // The harness wrapper page MUST be navigated to the disposable
-      // server's OWN origin (not left at page.setContent()'s about:blank),
-      // mirroring the production viewer page (`/artifacts/:id`), which
-      // wraps the same-origin `<iframe src="/api/artifacts/:id">`. This is
-      // not cosmetic: a SameSite=Lax cookie is withheld from a cross-site
-      // SUBFRAME navigation (an iframe's own request is not a top-level
-      // navigation, so Lax's top-level-navigation carve-out does not apply
-      // to it) -- an about:blank parent makes the artifact iframe's own GET
-      // cross-site and 401s before the probe script ever runs, which would
-      // be a harness-design bug, not the P2 boundary this arm exists to
-      // observe. `/health` is unauthenticated and same-origin, so it is a
-      // safe, real, same-site anchor page to navigate to first.
-      await probePage.goto(`${baseUrl}/health`);
-      await probePage.evaluate(() => {
-        window.__probeMessages = [];
-        window.addEventListener('message', (e) => window.__probeMessages.push(e.data));
-      });
-      await probePage.evaluate((url) => {
-        const iframe = document.createElement('iframe');
-        iframe.src = url;
-        document.body.appendChild(iframe);
-      }, artifactUrl);
-
-      // Wait for all arms to report (form arm has its own 500ms internal
-      // delay before posting; give generous headroom).
-      await probePage.waitForTimeout(2000);
-      const messages = await probePage.evaluate(() => window.__probeMessages);
-      const byType = Object.fromEntries(messages.map((m) => [m.type, m.detail]));
-
-      console.log(`\n==> arm results (${messages.length} message(s) received)`);
-
-      // Arm 0, gating.
-      expect('script-ran' in byType, 'arm 0 (gating): probe artifact script executed', 'no script-ran message received');
-      if (!('script-ran' in byType)) {
-        console.error('  Aborting remaining assertions -- arm 0 did not fire, so every other result would be vacuous.');
-        await browser.close();
-        cleanupAndExit(disposableHome, 1);
-      }
-
-      // Arm 1: cookie.
-      const cookieResult = byType['cookie-result'];
-      expect(!!cookieResult, 'arm 1: cookie-result message received');
-      if (cookieResult) {
-        // Blocked means EITHER document.cookie threw (the spec-correct
-        // opaque-origin behavior), OR it returned a value that does not
-        // include the JS-readable marker cookie (some engines may return
-        // '' without throwing). Checking for the marker specifically
-        // (rather than bare emptiness) also confirms this isn't a false
-        // pass caused by HttpOnly hiding the OTHER cookie -- the marker is
-        // deliberately non-HttpOnly, so its absence here is attributable
-        // only to the sandbox's opaque origin.
-        const cookieBlocked = cookieResult.threw || !(cookieResult.value ?? '').includes(cookieControlName);
-        expect(
-          cookieBlocked,
-          'arm 1: document.cookie is inaccessible from the sandboxed artifact (opaque origin)',
-          `threw=${cookieResult.threw}, value=${JSON.stringify(cookieResult.value)}`,
-        );
-      }
-
-      // Arm 2: localStorage.
-      const lsResult = byType['localstorage-result'];
-      expect(!!lsResult, 'arm 2: localstorage-result message received');
-      if (lsResult) {
-        expect(
-          lsResult.threw === true,
-          'arm 2: localStorage is inaccessible from the sandboxed artifact (opaque origin)',
-          `threw=${lsResult.threw}, value=${JSON.stringify(lsResult.value)}`,
-        );
-      }
-
-      // Arm 3 (connect wall, layer 2): credentialed same-origin fetch. See
-      // header comment "ARM 3 -- THE CONNECT WALL (layer 2), NOT P2" for
-      // the two-wall structure this arm does and does not prove.
-      const credFetchResult = byType['credentialed-fetch-result'];
-      expect(!!credFetchResult, 'arm 3: credentialed-fetch-result message received');
-      if (credFetchResult) {
-        console.log(`  DETAIL credentialed-fetch-result: ${JSON.stringify(credFetchResult)}`);
-
-        // (a) Client-side: the fetch() call must reject with a TypeError
-        // specifically -- the network-level-block failure mode. A bare
-        // "did not return a successful body" is not the same failure and
-        // would not distinguish a CSP connect-block from, say, a 401.
-        expect(
-          credFetchResult.networkOk === false && credFetchResult.errorName === 'TypeError',
-          'arm 3 (connect wall): client-side fetch() rejected with a TypeError (CSP network-level block)',
-          `networkOk=${credFetchResult.networkOk}, errorName=${credFetchResult.errorName}, message=${credFetchResult.message}`,
-        );
-
-        // (b) Server-side non-observation: zero requests to the target
-        // route (GET /api/auth/me) recorded during the sandboxed
-        // artifact's execution window, via the pathname-specific
-        // requestLog populated by the Bun.serve monkey-patch above (the
-        // real network entry point). Deliberately NOT asserted in
-        // isolation -- see the positive-control attribution assertion
-        // below, which proves the SAME log correctly records exactly one
-        // entry when the identical request is actually made immediately
-        // afterward, ruling out "logging silently broke" or "wrong route
-        // name" as a false-pass cause for this zero-count.
-        const authMeRequestsDuringSandboxWindow = requestLog.filter((r) => r.pathname === '/api/auth/me');
-        expect(
-          authMeRequestsDuringSandboxWindow.length === 0,
-          "arm 3 (connect wall): server recorded ZERO requests to /api/auth/me during the sandboxed artifact's execution window",
-          `observed ${authMeRequestsDuringSandboxWindow.length} request(s): ${JSON.stringify(authMeRequestsDuringSandboxWindow)}`,
-        );
-      }
-
-      // Arm 4: external fetch (CSP resource restriction).
-      const extFetchResult = byType['external-fetch-result'];
-      expect(!!extFetchResult, 'arm 4: external-fetch-result message received');
-      if (extFetchResult) {
-        expect(
-          extFetchResult.networkOk === false,
-          'arm 4: external fetch is blocked (CSP default-src \'none\')',
-          `networkOk=${extFetchResult.networkOk}, detail=${JSON.stringify(extFetchResult)}`,
-        );
-      }
-
-      // Arm 5: external form POST (form-action 'none').
-      const extFormResult = byType['external-form-result'];
-      expect(!!extFormResult, 'arm 5: external-form-result message received');
-      if (extFormResult) {
-        expect(
-          extFormResult.formActionViolationObserved === true || extFormResult.navigatedAway === false,
-          'arm 5: external form POST is blocked (CSP form-action \'none\')',
-          `detail=${JSON.stringify(extFormResult)}`,
-        );
-      }
-      await probePage.close();
-
-      // ---------------------------------------------------------------
-      // Positive controls -- SAME run, SAME browser context (same cookie
-      // jar). "No control, no pass": these prove the walls above are the
-      // SANDBOX's, not the environment's, and that the echo route + cookie
-      // auth genuinely work (so arm 3's rejection, when observed, is
-      // attributable to the boundary).
-      // ---------------------------------------------------------------
-      console.log('\n==> positive controls (same run, non-sandboxed page on the same server)');
-      const controlPage = await context.newPage();
-      // /health is served by the real disposable server (not gated by
-      // /api's authMiddleware), so it is a normal, non-sandboxed page at
-      // the artifact's own origin -- exactly what the controls need.
-      await controlPage.goto(`${baseUrl}/health`);
-
-      const controlCookie = await controlPage.evaluate(() => document.cookie);
-      // Checked against the non-HttpOnly marker cookie, NOT the real auth
-      // cookie: the auth cookie is HttpOnly by production design
-      // (routes/auth.ts), so it is invisible to document.cookie on EVERY
-      // page regardless of sandboxing -- asserting on it here would not
-      // distinguish the sandbox's opaque-origin block from ordinary
-      // HttpOnly semantics.
-      expect(
-        controlCookie.includes(cookieControlName),
-        'control: document.cookie IS readable from a normal (non-sandboxed) page',
-        `value=${JSON.stringify(controlCookie)}`,
+    await harnessPage.waitForTimeout(500);
+    const selfTestMessages = await harnessPage.evaluate(() => window.__probeMessages);
+    if (!selfTestMessages.some((m) => m.type === 'self-test')) {
+      console.error(
+        '  FAIL  self-test: the postMessage bridge did not observe a known-firing test message. ' +
+          'The detection mechanism itself is broken -- aborting without reporting probe results (unreliable).',
       );
-
-      const controlLs = await controlPage.evaluate(() => {
-        try {
-          localStorage.setItem('control', '1');
-          return { threw: false, value: localStorage.getItem('control') };
-        } catch (err) {
-          return { threw: true, message: String(err) };
-        }
-      });
-      expect(
-        controlLs.threw === false,
-        'control: localStorage IS accessible from a normal (non-sandboxed) page',
-        JSON.stringify(controlLs),
-      );
-
-      const controlFetch = await controlPage.evaluate(async () => {
-        const res = await fetch('/api/auth/me', { credentials: 'include' });
-        return { status: res.status, body: await res.json() };
-      });
-      expect(
-        controlFetch.body?.user != null,
-        'control: credentialed fetch from a normal (non-sandboxed) page IS authenticated ' +
-          '(proves the echo route + cookie auth work, so arm 3\'s rejection -- when observed -- is ' +
-          'attributable to the sandbox boundary, not a broken route)',
-        JSON.stringify(controlFetch),
-      );
-
-      // Server-side attribution for arm 3 (connect wall): the SAME
-      // requestLog now shows EXACTLY ONE request to /api/auth/me across
-      // the whole probe window -- and by construction it can only be this
-      // control fetch, since the sandboxed artifact's window (checked
-      // above, before this control ran) recorded zero. The zero-then-one
-      // sequence is what attributes the one entry to the control rather
-      // than the sandbox, and rules out "logging silently broke" or
-      // "wrong route name" as a false-pass cause for arm 3's zero-count.
-      const authMeRequestsAfterControl = requestLog.filter((r) => r.pathname === '/api/auth/me');
-      expect(
-        authMeRequestsAfterControl.length === 1,
-        'arm 3 (connect wall) attribution: server recorded EXACTLY ONE request to /api/auth/me across the ' +
-          "whole probe window, attributable to this control fetch (not the sandboxed artifact's)",
-        `observed ${authMeRequestsAfterControl.length} request(s): ${JSON.stringify(authMeRequestsAfterControl)}`,
-      );
-      await controlPage.close();
-    } finally {
       await browser.close();
+      cleanupAndExit(disposableHome, 2);
     }
+    console.log('  OK    self-test: postMessage bridge correctly observed the test message');
+    await harnessPage.close();
+
+    // ---------------------------------------------------------------
+    // Real probe: harness parent page + iframe pointed at the REAL
+    // artifact-serving endpoint over real HTTP.
+    // ---------------------------------------------------------------
+    console.log(`\n==> loading probe artifact via real HTTP: ${artifactUrl}`);
+    const probePage = await context.newPage();
+    // Arm 5 detection, second signal (see the arm-5 assertion below for
+    // why): a blocked `<form>` submission inside a sandboxed iframe that
+    // lacks `allow-forms` is NOT a CSP violation at all -- it is blocked by
+    // the iframe sandbox itself, BEFORE CSP's `form-action` directive is
+    // ever consulted, and Chromium reports it only via a `console.error`
+    // ("Blocked form submission to '...' because the form's frame is
+    // sandboxed and the 'allow-forms' permission is not set."), never via
+    // `securitypolicyviolation`. Page-level `console` events capture
+    // messages from child iframes too (confirmed empirically), so this
+    // listener sees the sandboxed artifact iframe's own console output.
+    const sandboxConsoleMessages = [];
+    probePage.on('console', (msg) => {
+      if (msg.type() === 'error') sandboxConsoleMessages.push(msg.text());
+    });
+    // The harness wrapper page MUST be navigated to the disposable
+    // server's OWN origin (not left at page.setContent()'s about:blank),
+    // mirroring the production viewer page (`/artifacts/:id`), which
+    // wraps the same-origin `<iframe src="/api/artifacts/:id">`. This is
+    // not cosmetic: a SameSite=Lax cookie is withheld from a cross-site
+    // SUBFRAME navigation (an iframe's own request is not a top-level
+    // navigation, so Lax's top-level-navigation carve-out does not apply
+    // to it) -- an about:blank parent makes the artifact iframe's own GET
+    // cross-site and 401s before the probe script ever runs, which would
+    // be a harness-design bug, not the P2 boundary this arm exists to
+    // observe. `/health` is unauthenticated and same-origin, so it is a
+    // safe, real, same-site anchor page to navigate to first.
+    await probePage.goto(`${baseUrl}/health`);
+    await probePage.evaluate(() => {
+      window.__probeMessages = [];
+      window.addEventListener('message', (e) => window.__probeMessages.push(e.data));
+    });
+    await probePage.evaluate((url) => {
+      const iframe = document.createElement('iframe');
+      iframe.src = url;
+      document.body.appendChild(iframe);
+    }, artifactUrl);
+
+    // Wait for all arms to report (form arm has its own 500ms internal
+    // delay before posting; give generous headroom).
+    await probePage.waitForTimeout(2000);
+    const messages = await probePage.evaluate(() => window.__probeMessages);
+    const byType = Object.fromEntries(messages.map((m) => [m.type, m.detail]));
+
+    console.log(`\n==> arm results (${messages.length} message(s) received)`);
+
+    // Arm 0, gating.
+    expect('script-ran' in byType, 'arm 0 (gating): probe artifact script executed', 'no script-ran message received');
+    if (!('script-ran' in byType)) {
+      console.error('  Aborting remaining assertions -- arm 0 did not fire, so every other result would be vacuous.');
+      await browser.close();
+      cleanupAndExit(disposableHome, 1);
+    }
+
+    // Arm 1: cookie.
+    const cookieResult = byType['cookie-result'];
+    expect(!!cookieResult, 'arm 1: cookie-result message received');
+    if (cookieResult) {
+      // Blocked means EITHER document.cookie threw (the spec-correct
+      // opaque-origin behavior), OR it returned a value that does not
+      // include the JS-readable marker cookie (some engines may return
+      // '' without throwing). Checking for the marker specifically
+      // (rather than bare emptiness) also confirms this isn't a false
+      // pass caused by HttpOnly hiding the OTHER cookie -- the marker is
+      // deliberately non-HttpOnly, so its absence here is attributable
+      // only to the sandbox's opaque origin.
+      const cookieBlocked = cookieResult.threw || !(cookieResult.value ?? '').includes(cookieControlName);
+      expect(
+        cookieBlocked,
+        'arm 1: document.cookie is inaccessible from the sandboxed artifact (opaque origin)',
+        `threw=${cookieResult.threw}, value=${JSON.stringify(cookieResult.value)}`,
+      );
+    }
+
+    // Arm 2: localStorage.
+    const lsResult = byType['localstorage-result'];
+    expect(!!lsResult, 'arm 2: localstorage-result message received');
+    if (lsResult) {
+      expect(
+        lsResult.threw === true,
+        'arm 2: localStorage is inaccessible from the sandboxed artifact (opaque origin)',
+        `threw=${lsResult.threw}, value=${JSON.stringify(lsResult.value)}`,
+      );
+    }
+
+    // Arm 3 (connect wall, layer 2): credentialed same-origin fetch. See
+    // header comment "ARM 3 -- THE CONNECT WALL (layer 2), NOT P2" for
+    // the two-wall structure this arm does and does not prove.
+    const credFetchResult = byType['credentialed-fetch-result'];
+    expect(!!credFetchResult, 'arm 3: credentialed-fetch-result message received');
+    if (credFetchResult) {
+      console.log(`  DETAIL credentialed-fetch-result: ${JSON.stringify(credFetchResult)}`);
+
+      // (a) Client-side: the fetch() call must reject with a TypeError
+      // specifically -- the network-level-block failure mode. A bare
+      // "did not return a successful body" is not the same failure and
+      // would not distinguish a CSP connect-block from, say, a 401.
+      expect(
+        credFetchResult.networkOk === false && credFetchResult.errorName === 'TypeError',
+        'arm 3 (connect wall): client-side fetch() rejected with a TypeError (CSP network-level block)',
+        `networkOk=${credFetchResult.networkOk}, errorName=${credFetchResult.errorName}, message=${credFetchResult.message}`,
+      );
+
+      // (b) Server-side non-observation: zero requests to the target
+      // route (GET /api/auth/me) recorded during the sandboxed
+      // artifact's execution window, via the pathname-specific
+      // requestLog populated by the Bun.serve monkey-patch above (the
+      // real network entry point). Deliberately NOT asserted in
+      // isolation -- see the positive-control attribution assertion
+      // below, which proves the SAME log correctly records exactly one
+      // entry when the identical request is actually made immediately
+      // afterward, ruling out "logging silently broke" or "wrong route
+      // name" as a false-pass cause for this zero-count.
+      const authMeRequestsDuringSandboxWindow = requestLog.filter((r) => r.pathname === '/api/auth/me');
+      expect(
+        authMeRequestsDuringSandboxWindow.length === 0,
+        "arm 3 (connect wall): server recorded ZERO requests to /api/auth/me during the sandboxed artifact's execution window",
+        `observed ${authMeRequestsDuringSandboxWindow.length} request(s): ${JSON.stringify(authMeRequestsDuringSandboxWindow)}`,
+      );
+    }
+
+    // Arm 4: external fetch (CSP resource restriction).
+    const extFetchResult = byType['external-fetch-result'];
+    expect(!!extFetchResult, 'arm 4: external-fetch-result message received');
+    if (extFetchResult) {
+      expect(
+        extFetchResult.networkOk === false,
+        'arm 4: external fetch is blocked (CSP default-src \'none\')',
+        `networkOk=${extFetchResult.networkOk}, detail=${JSON.stringify(extFetchResult)}`,
+      );
+    }
+
+    // Arm 5: external form POST (blocked by the sandbox missing
+    // `allow-forms`, and/or by CSP's `form-action 'none'`).
+    const extFormResult = byType['external-form-result'];
+    expect(!!extFormResult, 'arm 5: external-form-result message received');
+    if (extFormResult) {
+      // Score formActionViolationObserved OR a genuine positive-evidence
+      // console signal -- NOT navigatedAway (the sandbox token set already
+      // omits `allow-top-navigation`, so `navigatedAway` is near-always
+      // false regardless of whether the form submission was actually
+      // blocked; that branch doesn't prove what it claims to and is kept
+      // in the failure detail only).
+      //
+      // Empirically (verified against real Chromium), form.submit() inside
+      // this sandbox is blocked at the iframe-sandbox layer -- missing
+      // `allow-forms` disables ALL form submission unconditionally, BEFORE
+      // CSP's form-action directive is ever consulted -- so
+      // formActionViolationObserved is reliably false here and would make
+      // this assertion fail deterministically if scored alone. Chromium
+      // reports the sandbox-layer block only via a console.error, captured
+      // page-side above into sandboxConsoleMessages. Either signal is
+      // real, unambiguous positive evidence that the submission was
+      // blocked (never a same-status-regardless-of-outcome fallback like
+      // navigatedAway was).
+      const sandboxFormBlockObserved = sandboxConsoleMessages.some(
+        (m) => /sandboxed/i.test(m) && /allow-forms/i.test(m),
+      );
+      expect(
+        extFormResult.formActionViolationObserved === true || sandboxFormBlockObserved,
+        'arm 5: external form POST is blocked (sandbox missing allow-forms, and/or CSP form-action \'none\')',
+        `detail=${JSON.stringify(extFormResult)}, sandboxConsoleMessages=${JSON.stringify(sandboxConsoleMessages)}`,
+      );
+    }
+    await probePage.close();
+
+    // ---------------------------------------------------------------
+    // Positive controls -- SAME run, SAME browser context (same cookie
+    // jar). "No control, no pass": these prove the walls above are the
+    // SANDBOX's, not the environment's, and that the echo route + cookie
+    // auth genuinely work (so arm 3's rejection, when observed, is
+    // attributable to the boundary).
+    // ---------------------------------------------------------------
+    console.log('\n==> positive controls (same run, non-sandboxed page on the same server)');
+    const controlPage = await context.newPage();
+    // /health is served by the real disposable server (not gated by
+    // /api's authMiddleware), so it is a normal, non-sandboxed page at
+    // the artifact's own origin -- exactly what the controls need.
+    await controlPage.goto(`${baseUrl}/health`);
+
+    const controlCookie = await controlPage.evaluate(() => document.cookie);
+    // Checked against the non-HttpOnly marker cookie, NOT the real auth
+    // cookie: the auth cookie is HttpOnly by production design
+    // (routes/auth.ts), so it is invisible to document.cookie on EVERY
+    // page regardless of sandboxing -- asserting on it here would not
+    // distinguish the sandbox's opaque-origin block from ordinary
+    // HttpOnly semantics.
+    expect(
+      controlCookie.includes(cookieControlName),
+      'control: document.cookie IS readable from a normal (non-sandboxed) page',
+      `value=${JSON.stringify(controlCookie)}`,
+    );
+
+    const controlLs = await controlPage.evaluate(() => {
+      try {
+        localStorage.setItem('control', '1');
+        return { threw: false, value: localStorage.getItem('control') };
+      } catch (err) {
+        return { threw: true, message: String(err) };
+      }
+    });
+    expect(
+      controlLs.threw === false,
+      'control: localStorage IS accessible from a normal (non-sandboxed) page',
+      JSON.stringify(controlLs),
+    );
+
+    const controlFetch = await controlPage.evaluate(async () => {
+      const res = await fetch('/api/auth/me', { credentials: 'include' });
+      return { status: res.status, body: await res.json() };
+    });
+    expect(
+      controlFetch.body?.user != null,
+      'control: credentialed fetch from a normal (non-sandboxed) page IS authenticated ' +
+        '(proves the echo route + cookie auth work, so arm 3\'s rejection -- when observed -- is ' +
+        'attributable to the sandbox boundary, not a broken route)',
+      JSON.stringify(controlFetch),
+    );
+
+    // Server-side attribution for arm 3 (connect wall): the SAME
+    // requestLog now shows EXACTLY ONE request to /api/auth/me across
+    // the whole probe window -- and by construction it can only be this
+    // control fetch, since the sandboxed artifact's window (checked
+    // above, before this control ran) recorded zero. The zero-then-one
+    // sequence is what attributes the one entry to the control rather
+    // than the sandbox, and rules out "logging silently broke" or
+    // "wrong route name" as a false-pass cause for arm 3's zero-count.
+    const authMeRequestsAfterControl = requestLog.filter((r) => r.pathname === '/api/auth/me');
+    expect(
+      authMeRequestsAfterControl.length === 1,
+      'arm 3 (connect wall) attribution: server recorded EXACTLY ONE request to /api/auth/me across the ' +
+        "whole probe window, attributable to this control fetch (not the sandboxed artifact's)",
+      `observed ${authMeRequestsAfterControl.length} request(s): ${JSON.stringify(authMeRequestsAfterControl)}`,
+    );
+    await controlPage.close();
   } finally {
-    // Best-effort shutdown of the in-process server + DB handle. There is
-    // no exported shutdown hook reachable from here (index.ts's `appContext`
-    // is module-private), so this script exits the whole process instead of
-    // trying to tear the server down gracefully in place -- acceptable for
-    // a short-lived, disposable, single-run smoke script.
+    await browser.close();
   }
 
   console.log();
@@ -850,7 +891,16 @@ async function main() {
   cleanupAndExit(disposableHome, 0);
 }
 
-/** Remove the disposable AGENT_CONSOLE_HOME tree (never rm -rf per the sandbox guard's convention) and exit. */
+/**
+ * Remove the disposable AGENT_CONSOLE_HOME tree (never rm -rf per the
+ * sandbox guard's convention) and exit.
+ *
+ * This is a best-effort shutdown of the disposable server + DB handle: there
+ * is no exported shutdown hook reachable from here (index.ts's `appContext`
+ * is module-private), so this script exits the whole process instead of
+ * trying to tear the in-process server down gracefully in place --
+ * acceptable for a short-lived, disposable, single-run smoke script.
+ */
 function cleanupAndExit(disposableHome, code) {
   try {
     rmSync(disposableHome, { recursive: true, force: true });
