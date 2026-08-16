@@ -238,6 +238,11 @@ Database field identifying the authenticated user who actually created the sessi
 - **Contrast:** [created_by](#created_by)  
 - **See:** [Schema notes in shared-orchestrator-session.md](design/shared-orchestrator-session.md#schema-notes)
 
+### Delegation Parent — `parentSessionId`, `parentWorkerId`
+The ownership-inheritance chain for a session created via `delegate_to_worktree`: `parentSessionId` and `parentWorkerId` identify the calling session and worker, and are required as of Issue [#1293](https://github.com/ms2sato/agent-console/issues/1293) (previously optional, documented only as a reporting convenience so the delegated agent could call back via `send_session_message`). The parent session's [created_by](#created_by) is inherited as the delegated session's own `created_by` — this is what makes the pair identity-determining rather than a courtesy: a `parentSessionId` that does not resolve to any session, or one that resolves but has no `created_by` (an ownerless/legacy parent), is a hard error at delegation time, because neither can produce a working `created_by` → [requestUsername](#requestusername) chain for the child. `parentWorkerId` is separately resolved against the PARENT session's own workers (never a global lookup) and must name one capable of receiving `send_session_message`.
+- **Contrast:** the verified MCP caller identity ([MCP Caller Token](#mcp-caller-token)'s `userId`) is never the source of `created_by` — it authorizes (`checkCallerOwnsSession`: may this caller act on the claimed session?), the parent session determines ownership. These are deliberately separate questions.
+- **See:** [created_by](#created_by), [requestUsername](#requestusername), [MCP Caller Token](#mcp-caller-token); Issue [#1293](https://github.com/ms2sato/agent-console/issues/1293)
+
 ### Service User
 The dedicated OS account (typically `agentconsole`) that runs the server process.
 - **Aliases:** Server service user, agentconsole service user, server process user

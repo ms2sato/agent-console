@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'bun:test';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   McpTokenRegistry,
   resolveMcpAuthMode,
@@ -329,5 +331,59 @@ describe('checkCallerOwnsSession', () => {
       ctx,
     );
     expect(result?.error).toContain('identity mismatch');
+  });
+});
+
+/**
+ * Grep-based containment check for Issue #1293 R1/S4: `McpCallerIdentity`
+ * is consumed for authorization only (`checkCallerOwnsSession`); ownership
+ * (a session's `createdBy`) must always derive from the parent session,
+ * never from the caller's own identity. See `McpCallerIdentity`'s JSDoc in
+ * ../mcp-auth.ts for the full rationale. This scans production source for
+ * the regression shape a future PR could introduce: assigning
+ * `createdBy` directly from a `.userId` field (the caller identity's own
+ * field name).
+ */
+describe('McpCallerIdentity containment (Issue #1293 S4, grep-based)', () => {
+  const SERVER_SRC = path.resolve(__dirname, '../..');
+
+  function walkFiles(dir: string, acc: string[] = []): string[] {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return acc;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === '__tests__') continue;
+        if (entry.name === 'node_modules') continue;
+        walkFiles(fullPath, acc);
+      } else if (entry.isFile() && /\.ts$/.test(entry.name)) {
+        acc.push(fullPath);
+      }
+    }
+    return acc;
+  }
+
+  it('no production file derives a session createdBy from an MCP caller identity userId', () => {
+    const offenders: Array<{ file: string; line: number; text: string }> = [];
+    // Matches `createdBy: foo.userId` / `createdBy = foo.userId` -- the
+    // shape of assigning ownership from the caller identity's own field.
+    const pattern = /createdBy\s*[:=]\s*[\w.]*\.userId\b/;
+
+    for (const file of walkFiles(SERVER_SRC)) {
+      const content = fs.readFileSync(file, 'utf-8');
+      if (!pattern.test(content)) continue;
+      const lines = content.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        if (pattern.test(lines[i])) {
+          offenders.push({ file: path.relative(SERVER_SRC, file), line: i + 1, text: lines[i].trim() });
+        }
+      }
+    }
+
+    expect(offenders).toEqual([]);
   });
 });

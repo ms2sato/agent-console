@@ -644,6 +644,47 @@ describe('MCP Server Tools', () => {
     await remountMcpApp();
   }
 
+  /**
+   * Create a real, owned parent session and return the ids `delegate_to_worktree`
+   * now requires (Issue #1293 S1/S3/S3b). `createdBy` only needs to be a
+   * non-empty string -- it does not need to resolve in `userRepository` --
+   * since S3(b) only rejects an UNSET `createdBy`, not an orphan UUID.
+   * `parentWorkerId` must be the REAL id of an agent worker on the created
+   * session (S3b resolves it against `parentSession.workers` and requires
+   * `canReceiveSessionMessages`) -- a fabricated placeholder string is no
+   * longer accepted. Tests that specifically exercise parent-resolution
+   * edge cases (missing session, no createdBy, orphan UUID, missing/wrong
+   * worker) create their own parent session inline instead of using this
+   * helper.
+   */
+  async function createValidDelegateParent(
+    createdBy = 'delegate-test-parent-user',
+  ): Promise<{ parentSessionId: string; parentWorkerId: string }> {
+    const parent = await sessionManager.createSession(
+      { type: 'quick', locationPath: TEST_REPO_PATH },
+      { createdBy },
+    );
+    const agentWorker = parent.workers.find((w) => w.type === 'agent' || w.type === 'embedded-agent');
+    if (!agentWorker) {
+      throw new Error('createValidDelegateParent: created session has no agent worker');
+    }
+    return { parentSessionId: parent.id, parentWorkerId: agentWorker.id };
+  }
+
+  /**
+   * Find a real message-capable worker id on an already-created session
+   * (Issue #1293 S3b), for tests that construct their own parent session
+   * inline (e.g. to control `createdBy`) rather than using
+   * `createValidDelegateParent`.
+   */
+  function firstAgentWorkerId(session: Awaited<ReturnType<typeof sessionManager.createSession>>): string {
+    const worker = session.workers.find((w) => w.type === 'agent' || w.type === 'embedded-agent');
+    if (!worker) {
+      throw new Error('firstAgentWorkerId: session has no agent worker');
+    }
+    return worker.id;
+  }
+
   afterEach(async () => {
     // Issue #1260 PR-1: deactivate any embedded-agent worker `delegate_to_worktree`
     // activated during the test (mirrors routes-embedded-agent.test.ts's afterEach)
@@ -2086,6 +2127,7 @@ describe('MCP Server Tools', () => {
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'non-existent-repo',
         prompt: 'Implement feature X',
+        ...(await createValidDelegateParent()),
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2111,6 +2153,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Do something',
         agentId: 'non-existent-agent',
+        ...(await createValidDelegateParent()),
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2126,6 +2169,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Implement feature X',
         branch: 'feat/my-feature',
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2182,6 +2226,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Implement automatic branch generation',
         // branch is intentionally omitted
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2205,6 +2250,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Do some work',
         branch: 'my-explicit-branch',
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2225,6 +2271,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Add dark mode support',
         branch: 'feat/titled-task',
         title: 'Dark Mode Feature',
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2250,13 +2297,15 @@ describe('MCP Server Tools', () => {
         prompt: 'Work on remote-based feature',
         branch: 'feat/remote-branch',
         // useRemote is intentionally omitted — should default to true
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
 
       // Verify fetchRemote was called (the baseBranch defaults to 'main').
-      // The 3rd arg is `requestUsername` — null here because no parent
-      // session context is provided in this test (Issue #912).
+      // The 3rd arg is `requestUsername` — null here because the parent
+      // session created by createValidDelegateParent() has a createdBy
+      // that does not resolve in userRepository (Issue #912 / #1293).
       expect(mockGit.fetchRemote).toHaveBeenCalledWith('main', TEST_REPO_PATH, null);
     });
 
@@ -2268,6 +2317,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Work on local-only feature',
         branch: 'feat/local-branch',
         useRemote: false,
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2306,6 +2356,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Try to create duplicate worktree',
         branch: 'existing-branch',
+        ...(await createValidDelegateParent()),
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2344,6 +2395,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Test orphaned worktree lookup via DB',
         branch: 'feat/ghost-worktree',
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2359,6 +2411,13 @@ describe('MCP Server Tools', () => {
     it('should rollback worktree when session is deleted before delegation completes', async () => {
       await setupDelegateEnvironment('feat/deleted-session');
 
+      // Create the valid parent session BEFORE installing the createSession
+      // override below -- otherwise the override would also delete the
+      // parent session created by createValidDelegateParent(), and the
+      // delegate call would fail at the S3(a) parent-lookup check instead
+      // of reaching the race condition this test actually exercises.
+      const parent = await createValidDelegateParent();
+
       // Intercept createSession: after it creates the session, immediately delete it
       // to simulate a concurrent deletion race condition
       const originalCreateSession = sessionManager.createSession.bind(sessionManager);
@@ -2373,6 +2432,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Test session deleted during delegation',
         branch: 'feat/deleted-session',
+        ...parent,
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2403,6 +2463,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test repo default agent selection',
         branch: 'feat/repo-default',
         // agentId is intentionally omitted
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2418,6 +2479,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test fallback to claude-code-builtin',
         branch: 'feat/no-default',
         // agentId is intentionally omitted
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       // Success proves claude-code-builtin was used (the only registered agent)
@@ -2446,6 +2508,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test explicit agentId overrides repo default',
         branch: 'feat/explicit-override',
         agentId: explicitAgent.id,
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2473,6 +2536,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test deleted default agent',
         branch: 'feat/deleted-default',
         // agentId is intentionally omitted so the stale defaultAgentId is used
+        ...(await createValidDelegateParent()),
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2497,6 +2561,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test agentName resolution',
         branch: 'feat/agent-name-test',
         agentName: 'My Custom Agent',
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2511,6 +2576,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test non-existent agentName',
         branch: 'feat/no-match',
         agentName: 'Non-Existent Agent',
+        ...(await createValidDelegateParent()),
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2535,6 +2601,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test ambiguous agentName',
         branch: 'feat/ambiguous',
         agentName: 'Ambiguous Agent',
+        ...(await createValidDelegateParent()),
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2561,6 +2628,7 @@ describe('MCP Server Tools', () => {
         branch: 'feat/both-params',
         agentId: agentById.id,
         agentName: 'Agent By Name',
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2594,7 +2662,7 @@ describe('MCP Server Tools', () => {
         branch: 'feat/embedded-by-id',
         agentId: TEST_EMBEDDED_AGENT_DEF.id,
         parentSessionId: parentSession.id,
-        parentWorkerId: 'parent-worker-id',
+        parentWorkerId: firstAgentWorkerId(parentSession),
         skipMessageCallbackPrompt: true,
       }, nextId++);
 
@@ -2628,7 +2696,7 @@ describe('MCP Server Tools', () => {
         branch: 'feat/embedded-by-name',
         agentName: TEST_EMBEDDED_AGENT_DEF.name,
         parentSessionId: parentSession.id,
-        parentWorkerId: 'parent-worker-id',
+        parentWorkerId: firstAgentWorkerId(parentSession),
         skipMessageCallbackPrompt: true,
       }, nextId++);
 
@@ -2670,6 +2738,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test cross-registry ambiguous agentName',
         branch: 'feat/cross-registry-ambiguous',
         agentName: sharedName,
+        ...(await createValidDelegateParent()),
       }, nextId++);
       const data = parseToolResult(response) as { error: string };
 
@@ -2723,13 +2792,14 @@ describe('MCP Server Tools', () => {
     it('should append callback instructions to prompt when parent IDs are provided', async () => {
       await setupDelegateEnvironment('feat/callback-test');
 
+      const parent = await createValidDelegateParent();
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Implement callback feature',
         branch: 'feat/callback-test',
-        parentSessionId: 'caller-session-123',
-        parentWorkerId: 'caller-worker-456',
+        parentSessionId: parent.parentSessionId,
+        parentWorkerId: parent.parentWorkerId,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2739,8 +2809,8 @@ describe('MCP Server Tools', () => {
 
       // Should contain both the original prompt and callback instructions
       expect(agentPrompt).toContain('Implement callback feature');
-      expect(agentPrompt).toContain('toSessionId: "caller-session-123"');
-      expect(agentPrompt).toContain('toWorkerId: "caller-worker-456"');
+      expect(agentPrompt).toContain(`toSessionId: "${parent.parentSessionId}"`);
+      expect(agentPrompt).toContain(`toWorkerId: "${parent.parentWorkerId}"`);
       expect(agentPrompt).toContain('[Message Callback Instructions]');
 
       // Verify structure includes separator and all required fields
@@ -2779,13 +2849,14 @@ describe('MCP Server Tools', () => {
     it('should NOT append callback instructions when skipMessageCallbackPrompt is true', async () => {
       await setupDelegateEnvironment('feat/skip-callback');
 
+      const parent = await createValidDelegateParent();
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Implement feature without callback',
         branch: 'feat/skip-callback',
-        parentSessionId: 'caller-session-123',
-        parentWorkerId: 'caller-worker-456',
+        parentSessionId: parent.parentSessionId,
+        parentWorkerId: parent.parentWorkerId,
         skipMessageCallbackPrompt: true,
       }, nextId++);
 
@@ -2800,7 +2871,28 @@ describe('MCP Server Tools', () => {
       expect(agentPrompt).not.toContain('toWorkerId');
     });
 
-    it('should return validation error when only parentSessionId is provided', async () => {
+    // -----------------------------------------------------------------------
+    // Issue #1293 T1: parentSessionId/parentWorkerId are now schema-required
+    // (S1), and the old runtime XOR guard is deleted (S2) -- an invalid
+    // combination is unrepresentable at the schema layer instead of being
+    // caught by a handler-level check. These three tests replace the old
+    // "returns a custom XOR error" / "silently succeeds without parent IDs"
+    // tests, whose premises (reaching the handler with a partial or absent
+    // pair) are no longer reachable.
+    //
+    // Polarity note: the two "only one id provided" cases below assert on
+    // the SDK's own schema-validation wording ("Invalid arguments for tool
+    // delegate_to_worktree" / naming the specific missing field), NOT just
+    // `isError: true`. A bare `isError: true` check does not discriminate
+    // this fix from the OLD runtime XOR guard, which also produced
+    // `isError: true` (with a different, custom message) for exactly this
+    // "one id present, one missing" shape -- verified empirically by
+    // running these two tests against the pre-fix production code, where
+    // a bare `isError` assertion passed for the wrong reason. Only the
+    // "both omitted" case was reachable-but-successful pre-fix (the XOR
+    // guard is satisfied when both are absent), so it alone needed no
+    // wording assertion to fail pre-fix correctly.
+    it('should reject the call when only parentSessionId is provided (parentWorkerId missing) -- schema-required (Issue #1293 T1)', async () => {
       await setupDelegateEnvironment('feat/partial-caller');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
@@ -2808,49 +2900,50 @@ describe('MCP Server Tools', () => {
         prompt: 'Test partial parent IDs',
         branch: 'feat/partial-caller',
         parentSessionId: 'caller-session-123',
-        // parentWorkerId is intentionally omitted
+        // parentWorkerId is intentionally omitted -- now a schema violation
       }, nextId++);
 
+      // The SDK's schema-rejection text is a plain string, not the tool's
+      // usual `{"error": "..."}` JSON payload -- parseToolResult() would
+      // throw JSON.parse on it, so read the raw content text directly.
       expect(response.result?.isError).toBe(true);
-      const data = parseToolResult(response) as { error: string };
-      expect(data.error).toContain('parentSessionId and parentWorkerId must be provided together');
+      const message = response.result?.content?.[0]?.text ?? '';
+      expect(message).toContain('Invalid arguments for tool delegate_to_worktree');
+      expect(message).toContain('parentWorkerId');
     });
 
-    it('should return validation error when only parentWorkerId is provided', async () => {
+    it('should reject the call when only parentWorkerId is provided (parentSessionId missing) -- schema-required (Issue #1293 T1)', async () => {
       await setupDelegateEnvironment('feat/partial-worker');
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test partial parent IDs',
         branch: 'feat/partial-worker',
-        // parentSessionId is intentionally omitted
+        // parentSessionId is intentionally omitted -- now a schema violation
         parentWorkerId: 'caller-worker-456',
       }, nextId++);
 
       expect(response.result?.isError).toBe(true);
-      const data = parseToolResult(response) as { error: string };
-      expect(data.error).toContain('parentSessionId and parentWorkerId must be provided together');
+      const message = response.result?.content?.[0]?.text ?? '';
+      expect(message).toContain('Invalid arguments for tool delegate_to_worktree');
+      expect(message).toContain('parentSessionId');
     });
 
-    it('should NOT include callback instructions when parent IDs are not provided', async () => {
+    it('should reject the call when both parentSessionId and parentWorkerId are omitted -- schema-required (Issue #1293 T1)', async () => {
       await setupDelegateEnvironment('feat/no-caller');
-
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Normal delegation without caller IDs',
         branch: 'feat/no-caller',
+        // parentSessionId and parentWorkerId are both intentionally omitted
       }, nextId++);
 
-      expect(response.result?.isError).toBeUndefined();
-
-      const data = parseToolResult(response) as { sessionId: string };
-      const agentPrompt = getAgentPromptForSession(data.sessionId);
-
-      expect(agentPrompt).toContain('Normal delegation without caller IDs');
-      expect(agentPrompt).not.toContain('[Message Callback Instructions]');
-      expect(agentPrompt).not.toContain('toSessionId');
-      expect(agentPrompt).not.toContain('toWorkerId');
+      if (response.error) {
+        expect(response.error).toBeDefined();
+      } else {
+        expect(response.result?.isError).toBe(true);
+      }
     });
 
     it('should inherit createdBy from parent session', async () => {
@@ -2869,7 +2962,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test createdBy inheritance',
         branch: 'feat/inherit-created-by',
         parentSessionId: parentSession.id,
-        parentWorkerId: 'dummy-worker-id',
+        parentWorkerId: firstAgentWorkerId(parentSession),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -2880,6 +2973,156 @@ describe('MCP Server Tools', () => {
       const childSession = sessionManager.getSession(data.sessionId);
       expect(childSession).toBeDefined();
       expect(childSession!.createdBy).toBe('parent-user-abc');
+    });
+
+    it('errors (S3a) naming the id when parentSessionId does not resolve to any session (Issue #1293 T2)', async () => {
+      await setupDelegateEnvironment('feat/stale-parent');
+
+      const createWorktreeSpy = jest.spyOn(worktreeService, 'createWorktree');
+
+      // Before Issue #1293, a stale/fabricated parentSessionId silently
+      // degraded to a null-owned, dead-agent session -- the incident this
+      // Issue closes. It must now error naming the id, with zero worktree
+      // side effect (the check runs before createWorktree is reached).
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test stale parentSessionId',
+        branch: 'feat/stale-parent',
+        parentSessionId: 'fabricated-parent-session-id',
+        parentWorkerId: 'parent-worker-id',
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('fabricated-parent-session-id');
+      expect(data.error).toContain('Parent session not found');
+      expect(createWorktreeSpy).not.toHaveBeenCalled();
+    });
+
+    // -------------------------------------------------------------------------
+    // Issue #1293 S3b (Architect ruling, bundled per CodeRabbit finding on
+    // PR #1302): parentWorkerId must resolve against the PARENT session's
+    // own workers (never a global lookup) and must name a worker capable of
+    // receiving send_session_message. Validation is UNCONDITIONAL --
+    // skipMessageCallbackPrompt does not exempt it, because the id is
+    // stored on the child session and exported as
+    // AGENT_CONSOLE_PARENT_WORKER_ID regardless of the prompt append, and
+    // an unresolvable id is embedded verbatim into the delegated agent's
+    // standing callback instructions (buildMessageCallbackPrompt) when the
+    // prompt IS appended.
+    // -------------------------------------------------------------------------
+    it('errors naming the id when parentWorkerId does not resolve to any worker in the parent session (Issue #1293 T2b)', async () => {
+      await setupDelegateEnvironment('feat/stale-worker');
+
+      const parentSession = await sessionManager.createSession(
+        { type: 'quick', locationPath: TEST_REPO_PATH },
+        { createdBy: 'parent-user-stale-worker' },
+      );
+      const createWorktreeSpy = jest.spyOn(worktreeService, 'createWorktree');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test stale parentWorkerId',
+        branch: 'feat/stale-worker',
+        parentSessionId: parentSession.id,
+        parentWorkerId: 'fabricated-worker-id-not-in-session',
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain('fabricated-worker-id-not-in-session');
+      expect(data.error).toContain(parentSession.id);
+      expect(data.error).toContain('Parent worker not found');
+      expect(createWorktreeSpy).not.toHaveBeenCalled();
+    });
+
+    it('errors naming the type when parentWorkerId names a worker that cannot receive session messages (Issue #1293 T2b)', async () => {
+      await setupDelegateEnvironment('feat/wrong-worker-type');
+
+      const parentSession = await sessionManager.createSession(
+        { type: 'quick', locationPath: TEST_REPO_PATH },
+        { createdBy: 'parent-user-wrong-worker-type' },
+      );
+      // Every quick session also gets a git-diff worker, which cannot
+      // receive send_session_message (canReceiveSessionMessages is
+      // agent/embedded-agent only).
+      const gitDiffWorker = parentSession.workers.find((w) => w.type === 'git-diff');
+      expect(gitDiffWorker).toBeDefined();
+      const createWorktreeSpy = jest.spyOn(worktreeService, 'createWorktree');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test wrong-type parentWorkerId',
+        branch: 'feat/wrong-worker-type',
+        parentSessionId: parentSession.id,
+        parentWorkerId: gitDiffWorker!.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      const data = parseToolResult(response) as { error: string };
+      expect(data.error).toContain(gitDiffWorker!.id);
+      expect(data.error).toContain('cannot receive session messages');
+      expect(data.error).toContain('git-diff');
+      expect(createWorktreeSpy).not.toHaveBeenCalled();
+    });
+
+    it('delegates successfully when parentWorkerId names a real agent worker on the parent session (Issue #1293 T3 extension)', async () => {
+      await setupDelegateEnvironment('feat/valid-own-worker');
+
+      // The self-referential case every legitimate caller exercises: a
+      // worker passing its OWN session/worker ids (AGENT_CONSOLE_SESSION_ID
+      // / AGENT_CONSOLE_WORKER_ID) as the delegate's parent.
+      const parent = await createValidDelegateParent();
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test valid own-worker delegation',
+        branch: 'feat/valid-own-worker',
+        parentSessionId: parent.parentSessionId,
+        parentWorkerId: parent.parentWorkerId,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      expect(data.sessionId).toBeDefined();
+    });
+
+    // Invariant-preservation, NOT new-mechanism: this does not flip against
+    // pre-fix code (pre-fix had no parentWorkerId validation at all, so it
+    // passed then and passes now too). `canReceiveSessionMessages` already
+    // accepts `embedded-agent` by its own definition (worker.ts:47), so
+    // nothing here can fail today. Its job is prospective: it is the test
+    // that would fail if `canReceiveSessionMessages` were ever narrowed to
+    // agent-only, or if the S3b guard were rewritten to hardcode
+    // `type === 'agent'` instead of consuming the shared predicate --
+    // either mistake would break embedded-agent delegation silently while
+    // every OTHER test in this file (which all use an 'agent'-type parent
+    // worker) kept passing.
+    it('delegates successfully when parentWorkerId names an embedded-agent worker on the parent session (Issue #1293, canReceiveSessionMessages accept-side coverage)', async () => {
+      await setupDelegateEnvironment('feat/embedded-parent-worker');
+
+      const parentSession = await sessionManager.createSession(
+        { type: 'quick', locationPath: TEST_REPO_PATH },
+        { createdBy: 'parent-user-embedded-parent-worker' },
+      );
+      const embeddedParentWorker = await sessionManager.createWorker(parentSession.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: TEST_EMBEDDED_AGENT_DEF.id,
+      });
+      expect(embeddedParentWorker).not.toBeNull();
+      expect(embeddedParentWorker!.type).toBe('embedded-agent');
+
+      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
+        repositoryId: 'test-repo',
+        prompt: 'Test embedded-agent parent worker delegation',
+        branch: 'feat/embedded-parent-worker',
+        parentSessionId: parentSession.id,
+        parentWorkerId: embeddedParentWorker!.id,
+      }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { sessionId: string };
+      expect(data.sessionId).toBeDefined();
     });
 
     // -------------------------------------------------------------------------
@@ -2895,9 +3138,13 @@ describe('MCP Server Tools', () => {
     // The tests below spy on `worktreeService.createWorktree` to capture the
     // exact `requestUsername` argument the MCP path passes through, covering:
     //   1. Resolved username path (parent user exists in userRepository)
-    //   2. No parentSessionId -> null
-    //   3. Parent exists but createdBy is null/undefined -> null
-    //   4. Parent createdBy is a UUID that does not resolve -> null
+    //   2. Parent exists but createdBy is null/undefined -> S3(b) error (Issue #1293)
+    //   3. Parent createdBy is a UUID that does not resolve -> null
+    //
+    // A fourth case existed here previously ("no parentSessionId -> null");
+    // it is now unreachable (parentSessionId is schema-required, Issue #1293
+    // S1) and is covered instead by the "Issue #1293 T1" schema-rejection
+    // tests above.
     describe('Issue #844: OS username plumbing', () => {
       /**
        * Spy on `worktreeService.createWorktree` and return the spy so tests
@@ -2930,7 +3177,7 @@ describe('MCP Server Tools', () => {
           prompt: 'Test username plumbing',
           branch: 'feat/username-resolved',
           parentSessionId: parentSession.id,
-          parentWorkerId: 'parent-worker-id',
+          parentWorkerId: firstAgentWorkerId(parentSession),
         }, nextId++);
 
         expect(response.result?.isError).toBeUndefined();
@@ -2941,30 +3188,14 @@ describe('MCP Server Tools', () => {
         expect(callArgs[4]).toBe('alice');
       });
 
-      it('passes null requestUsername when delegate_to_worktree is called without parentSessionId', async () => {
-        await setupDelegateEnvironment('feat/no-parent-username');
-
-        const createWorktreeSpy = spyCreateWorktree();
-
-        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
-          repositoryId: 'test-repo',
-          prompt: 'Direct delegation with no parent context',
-          branch: 'feat/no-parent-username',
-          // parentSessionId intentionally omitted
-        }, nextId++);
-
-        expect(response.result?.isError).toBeUndefined();
-
-        expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
-        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
-        expect(callArgs[4]).toBeNull();
-      });
-
-      it('passes null requestUsername when parent session has no createdBy (legacy)', async () => {
+      it('errors (S3b) instead of resolving requestUsername when parent session has no createdBy (legacy)', async () => {
         await setupDelegateEnvironment('feat/legacy-parent');
 
         // Create a parent session WITHOUT createdBy - legacy / pre-multi-user
-        // sessions saved before `sessions.created_by` was populated.
+        // sessions saved before `sessions.created_by` was populated. Before
+        // Issue #1293, this silently produced a null requestUsername and a
+        // dead, ownerless delegated session (the incident this Issue
+        // closes); now it must error before ever reaching createWorktree.
         const parentSession = await sessionManager.createSession({
           type: 'quick',
           locationPath: TEST_REPO_PATH,
@@ -2980,11 +3211,12 @@ describe('MCP Server Tools', () => {
           parentWorkerId: 'parent-worker-id',
         }, nextId++);
 
-        expect(response.result?.isError).toBeUndefined();
+        expect(response.result?.isError).toBe(true);
+        const data = parseToolResult(response) as { error: string };
+        expect(data.error).toContain(parentSession.id);
+        expect(data.error).toContain('no createdBy');
 
-        expect(createWorktreeSpy).toHaveBeenCalledTimes(1);
-        const callArgs = createWorktreeSpy.mock.calls[0] as unknown[];
-        expect(callArgs[4]).toBeNull();
+        expect(createWorktreeSpy).not.toHaveBeenCalled();
       });
 
       it('passes null requestUsername when parent createdBy UUID does not resolve to a user', async () => {
@@ -3006,7 +3238,7 @@ describe('MCP Server Tools', () => {
           prompt: 'Delegation from an orphan parent',
           branch: 'feat/orphan-uuid',
           parentSessionId: parentSession.id,
-          parentWorkerId: 'parent-worker-id',
+          parentWorkerId: firstAgentWorkerId(parentSession),
         }, nextId++);
 
         expect(response.result?.isError).toBeUndefined();
@@ -3053,7 +3285,7 @@ describe('MCP Server Tools', () => {
           prompt: 'Test SSH_AUTH_SOCK fallback propagation',
           branch: 'feat/ssh-fallback',
           parentSessionId: parentSession.id,
-          parentWorkerId: 'parent-worker-id',
+          parentWorkerId: firstAgentWorkerId(parentSession),
         }, nextId++);
 
         expect(response.result?.isError).toBeUndefined();
@@ -3065,32 +3297,12 @@ describe('MCP Server Tools', () => {
         expect(context?.sshAuthSockFallback).toBe('/home/alice918/.1password/agent.sock');
       });
 
-      it('does NOT populate sshAuthSockFallback when parentSessionId is omitted', async () => {
-        await setupDelegateEnvironment('feat/ssh-no-parent');
-
-        const spy = spyCreateSession();
-
-        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
-          repositoryId: 'test-repo',
-          prompt: 'Direct delegation with no parent context',
-          branch: 'feat/ssh-no-parent',
-        }, nextId++);
-
-        expect(response.result?.isError).toBeUndefined();
-
-        // Assert the spy was actually invoked before reading the captured
-        // arg, so an accidental refactor that no longer goes through
-        // createSession does not silently vacuous-pass this negative test.
-        expect(spy).toHaveBeenCalled();
-        const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
-        const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
-        expect(context?.sshAuthSockFallback).toBeUndefined();
-      });
-
-      it('does NOT populate sshAuthSockFallback when parent has no createdBy (legacy session)', async () => {
+      it('errors (S3b) instead of creating a session when parent has no createdBy (legacy session)', async () => {
         await setupDelegateEnvironment('feat/ssh-legacy');
 
-        // Legacy parent: no createdBy.
+        // Legacy parent: no createdBy. Before Issue #1293 this proceeded
+        // with sshAuthSockFallback left undefined; now S3(b) rejects the
+        // call before createSession is ever reached.
         const parentSession = await sessionManager.createSession({
           type: 'quick',
           locationPath: TEST_REPO_PATH,
@@ -3106,12 +3318,8 @@ describe('MCP Server Tools', () => {
           parentWorkerId: 'parent-worker-id',
         }, nextId++);
 
-        expect(response.result?.isError).toBeUndefined();
-
-        expect(spy).toHaveBeenCalled();
-        const lastCall = spy.mock.calls[spy.mock.calls.length - 1] as unknown[];
-        const context = lastCall[1] as { sshAuthSockFallback?: string } | undefined;
-        expect(context?.sshAuthSockFallback).toBeUndefined();
+        expect(response.result?.isError).toBe(true);
+        expect(spy).not.toHaveBeenCalled();
       });
 
       it('does NOT populate sshAuthSockFallback when parent createdBy UUID does not resolve', async () => {
@@ -3129,7 +3337,7 @@ describe('MCP Server Tools', () => {
           prompt: 'Delegation from orphan parent',
           branch: 'feat/ssh-orphan',
           parentSessionId: parentSession.id,
-          parentWorkerId: 'parent-worker-id',
+          parentWorkerId: firstAgentWorkerId(parentSession),
         }, nextId++);
 
         expect(response.result?.isError).toBeUndefined();
@@ -3153,10 +3361,13 @@ describe('MCP Server Tools', () => {
     // `task-<timestamp>` branch names). The tests below assert the argument
     // shape `suggestSessionMetadata` is called with, covering:
     //   1. Resolved username -> passed through; LLM-suggested branch is used.
-    //   2. No parentSessionId -> requestUser is null; LLM suggestion still
-    //      succeeds via the default mock and the suggested branch is used.
-    //   3. Orphan parent createdBy -> requestUser is null; suggestion failure
+    //   2. Orphan parent createdBy -> requestUser is null; suggestion failure
     //      falls back to `task-<timestamp>`.
+    //
+    // A third case existed here previously ("no parentSessionId -> requestUser
+    // is null"); it is now unreachable (parentSessionId is schema-required,
+    // Issue #1293 S1) and is covered instead by the "Issue #1293 T1"
+    // schema-rejection tests in the delegate_to_worktree block above.
     describe('Issue #876: suggestSessionMetadata receives resolved OS username', () => {
       // Read the captured `requestUser` argument from the first
       // suggestion call (typed via the top-of-file mock parameter).
@@ -3191,7 +3402,7 @@ describe('MCP Server Tools', () => {
           prompt: 'Fix diff worker elevation',
           // branch intentionally omitted -> exercises the suggestion path
           parentSessionId: parentSession.id,
-          parentWorkerId: 'parent-worker-id',
+          parentWorkerId: firstAgentWorkerId(parentSession),
         }, nextId++);
 
         expect(response.result?.isError).toBeUndefined();
@@ -3201,25 +3412,6 @@ describe('MCP Server Tools', () => {
 
         const data = parseToolResult(response) as { branch: string };
         expect(data.branch).toBe('fix/diff-worker-elevation');
-      });
-
-      it('passes null requestUser to suggestSessionMetadata when delegate_to_worktree is called without parentSessionId', async () => {
-        // Default mockSuggestSessionMetadata returns 'feat/auto-generated-branch';
-        // no need to override.
-        await setupDelegateEnvironment('feat/auto-generated-branch');
-
-        const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
-          repositoryId: 'test-repo',
-          prompt: 'Direct delegation with no parent context',
-          // branch and parentSessionId both intentionally omitted
-        }, nextId++);
-
-        expect(response.result?.isError).toBeUndefined();
-
-        expect(readSuggestRequestUser()).toBeNull();
-
-        const data = parseToolResult(response) as { branch: string };
-        expect(data.branch).toBe('feat/auto-generated-branch');
       });
 
       it('passes null requestUser to suggestSessionMetadata when parent createdBy UUID does not resolve to a user', async () => {
@@ -3249,7 +3441,7 @@ describe('MCP Server Tools', () => {
             prompt: 'Delegation from an orphan parent',
             // branch intentionally omitted -> exercises the suggestion path
             parentSessionId: parentSession.id,
-            parentWorkerId: 'parent-worker-id',
+            parentWorkerId: firstAgentWorkerId(parentSession),
           }, nextId++);
 
           expect(response.result?.isError).toBeUndefined();
@@ -3271,6 +3463,7 @@ describe('MCP Server Tools', () => {
         prompt: 'Test with template variables',
         branch: 'feat/template-vars',
         templateVars: { model: 'gpt-4' },
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -3381,13 +3574,14 @@ describe('MCP Server Tools', () => {
     it('should persist parentSessionId and parentWorkerId when delegate_to_worktree is called with them', async () => {
       await setupParentMetadataEnvironment('feat/persist-parent');
 
+      const parent = await createValidDelegateParent();
 
       const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test parent metadata persistence',
         branch: 'feat/persist-parent',
-        parentSessionId: 'parent-sess-abc',
-        parentWorkerId: 'parent-wkr-xyz',
+        parentSessionId: parent.parentSessionId,
+        parentWorkerId: parent.parentWorkerId,
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
@@ -3403,20 +3597,21 @@ describe('MCP Server Tools', () => {
         parentWorkerId?: string;
       };
 
-      expect(statusData.parentSessionId).toBe('parent-sess-abc');
-      expect(statusData.parentWorkerId).toBe('parent-wkr-xyz');
+      expect(statusData.parentSessionId).toBe(parent.parentSessionId);
+      expect(statusData.parentWorkerId).toBe(parent.parentWorkerId);
     });
 
     it('should return parentSessionId and parentWorkerId in list_sessions response', async () => {
       await setupParentMetadataEnvironment('feat/list-parent');
 
+      const parent = await createValidDelegateParent();
 
       const delegateResponse = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
         repositoryId: 'test-repo',
         prompt: 'Test parent metadata in list_sessions',
         branch: 'feat/list-parent',
-        parentSessionId: 'parent-sess-list',
-        parentWorkerId: 'parent-wkr-list',
+        parentSessionId: parent.parentSessionId,
+        parentWorkerId: parent.parentWorkerId,
       }, nextId++);
 
       expect(delegateResponse.result?.isError).toBeUndefined();
@@ -3435,35 +3630,14 @@ describe('MCP Server Tools', () => {
 
       const delegatedSession = listData.sessions.find((s) => s.id === delegateData.sessionId);
       expect(delegatedSession).toBeDefined();
-      expect(delegatedSession!.parentSessionId).toBe('parent-sess-list');
-      expect(delegatedSession!.parentWorkerId).toBe('parent-wkr-list');
+      expect(delegatedSession!.parentSessionId).toBe(parent.parentSessionId);
+      expect(delegatedSession!.parentWorkerId).toBe(parent.parentWorkerId);
     });
 
-    it('should not include parentSessionId/parentWorkerId when not provided', async () => {
-      await setupParentMetadataEnvironment('feat/no-parent-meta');
-
-
-      const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
-        repositoryId: 'test-repo',
-        prompt: 'Delegate without parent metadata',
-        branch: 'feat/no-parent-meta',
-      }, nextId++);
-
-      expect(response.result?.isError).toBeUndefined();
-
-      const data = parseToolResult(response) as { sessionId: string };
-
-      const statusResponse = await callTool(app, mcpSessionId, 'get_session_status', {
-        sessionId: data.sessionId,
-      }, nextId++);
-      const statusData = parseToolResult(statusResponse) as {
-        parentSessionId?: string;
-        parentWorkerId?: string;
-      };
-
-      expect(statusData.parentSessionId).toBeUndefined();
-      expect(statusData.parentWorkerId).toBeUndefined();
-    });
+    // Issue #1293: a "not provided" variant existed here previously; it is
+    // now unreachable (parentSessionId/parentWorkerId are schema-required)
+    // and is covered instead by the "Issue #1293 T1" schema-rejection tests
+    // in the delegate_to_worktree block above.
   });
 
   // ===========================================================================
@@ -3524,6 +3698,7 @@ describe('MCP Server Tools', () => {
         repositoryId: 'test-repo',
         prompt: 'Test env var injection',
         branch: 'feat/env-test',
+        ...(await createValidDelegateParent()),
       }, nextId++);
 
       expect(response.result?.isError).toBeUndefined();
