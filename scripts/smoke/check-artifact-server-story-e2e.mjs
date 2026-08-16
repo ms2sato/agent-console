@@ -285,7 +285,11 @@ async function main() {
       `row.user_id=${row?.user_id}, session.createdBy=${session.createdBy}`,
     );
 
-    const v2ServeRes = await fetch(artifactUrl, { headers: { Cookie: cookieHeader } });
+    // Sec-Fetch-Dest: iframe simulates a legitimate iframe-embedded load
+    // (what the production viewer shell's <iframe src="..."> actually
+    // sends) -- required to reach the byte-serving path now that the
+    // navigation-jail P6 gate redirects everything else to the shell.
+    const v2ServeRes = await fetch(artifactUrl, { headers: { Cookie: cookieHeader, 'Sec-Fetch-Dest': 'iframe' } });
     expect(v2ServeRes.status === 200, 'V2: fetch() of the returned artifact URL is HTTP 200', `status=${v2ServeRes.status}`);
     // Drain the body so this response doesn't linger as an open connection.
     await v2ServeRes.text();
@@ -296,7 +300,7 @@ async function main() {
     console.log('\n==> V3: real HTTP round trip (create already done above; serve -> list -> delete -> serve)');
 
     const routesModule = await import('../../packages/server/src/routes/artifacts.ts');
-    const serveRes = await fetch(artifactUrl, { headers: { Cookie: cookieHeader } });
+    const serveRes = await fetch(artifactUrl, { headers: { Cookie: cookieHeader, 'Sec-Fetch-Dest': 'iframe' } });
     expect(serveRes.status === 200, 'V3 serve: GET /api/artifacts/:id is HTTP 200', `status=${serveRes.status}`);
     expect(
       serveRes.headers.get('Content-Security-Policy') === routesModule.ARTIFACT_SERVING_CSP,
@@ -304,6 +308,26 @@ async function main() {
       `observed=${JSON.stringify(serveRes.headers.get('Content-Security-Policy'))}`,
     );
     await serveRes.text();
+
+    // New coverage (P6, navigation jail): the SAME raw endpoint, without
+    // Sec-Fetch-Dest: iframe, must redirect to the viewer shell rather than
+    // ever serving bytes at the top level -- the fail-closed default that
+    // makes the header's absence safe. Real HTTP round trip against the
+    // real disposable server, `redirect: 'manual'` so this script observes
+    // the 302 itself instead of `fetch()` transparently following it.
+    const topLevelServeRes = await fetch(artifactUrl, { headers: { Cookie: cookieHeader }, redirect: 'manual' });
+    expect(
+      topLevelServeRes.status === 302 || topLevelServeRes.type === 'opaqueredirect',
+      'V3 P6: GET /api/artifacts/:id WITHOUT Sec-Fetch-Dest: iframe redirects instead of serving bytes',
+      `status=${topLevelServeRes.status}, type=${topLevelServeRes.type}`,
+    );
+    if (topLevelServeRes.status === 302) {
+      expect(
+        topLevelServeRes.headers.get('Location') === toolResult.path,
+        'V3 P6: the redirect Location is the viewer shell path returned by the tool result',
+        `Location=${topLevelServeRes.headers.get('Location')}, expected=${toolResult.path}`,
+      );
+    }
 
     const listRes = await fetch(`${baseUrl}/api/artifacts`, { headers: { Cookie: cookieHeader } });
     expect(listRes.status === 200, 'V3 list: GET /api/artifacts is HTTP 200', `status=${listRes.status}`);
@@ -334,7 +358,9 @@ async function main() {
       `artifactFilePath=${artifactFilePath}, existsSync=${existsSync(artifactFilePath)}`,
     );
 
-    const serveAfterDeleteRes = await fetch(artifactUrl, { headers: { Cookie: cookieHeader } });
+    const serveAfterDeleteRes = await fetch(artifactUrl, {
+      headers: { Cookie: cookieHeader, 'Sec-Fetch-Dest': 'iframe' },
+    });
     expect(
       serveAfterDeleteRes.status === 404,
       'V3 serve-after-delete: GET /api/artifacts/:id is HTTP 404',

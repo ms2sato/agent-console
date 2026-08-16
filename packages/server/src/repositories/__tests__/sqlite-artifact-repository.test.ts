@@ -23,9 +23,11 @@ describe('SqliteArtifactRepository', () => {
   const originalHome = process.env.AGENT_CONSOLE_HOME;
   let db: Kysely<Database>;
   let repository: SqliteArtifactRepository;
+  let testHome: string;
 
   beforeEach(async () => {
-    process.env.AGENT_CONSOLE_HOME = path.join(os.tmpdir(), `agent-console-artifact-repo-test-${randomUUID()}`);
+    testHome = path.join(os.tmpdir(), `agent-console-artifact-repo-test-${randomUUID()}`);
+    process.env.AGENT_CONSOLE_HOME = testHome;
     db = await createDatabaseForTest();
     repository = new SqliteArtifactRepository(db);
 
@@ -42,6 +44,17 @@ describe('SqliteArtifactRepository', () => {
 
   afterEach(async () => {
     await db.destroy();
+    // Remove the real on-disk temp directory this test wrote artifact
+    // bytes into -- otherwise these accumulate under os.tmpdir() across
+    // every test run (this suite deliberately uses the real filesystem,
+    // not memfs, per the file header comment). `fs`/`fs/promises` may be
+    // memfs-mocked by OTHER test files sharing this bun:test process
+    // (`mock.module` is process-global and irreversible -- see
+    // `.claude/rules/testing.md` Anti-Pattern #2), so cleanup goes through
+    // a real subprocess instead, matching the established pattern in
+    // `mcp/__tests__/create-html-artifact.test.ts` and
+    // `embedded-agent-artifact-e2e.test.ts`.
+    Bun.spawnSync(['rm', '-rf', testHome]);
     if (originalHome !== undefined) {
       process.env.AGENT_CONSOLE_HOME = originalHome;
     } else {

@@ -143,7 +143,15 @@ describe('Artifact routes', () => {
       });
 
       const app = buildApp(repository, OWNER);
-      const res = await app.request(`/api/artifacts/${created.id}`);
+      // Sec-Fetch-Dest: iframe simulates a legitimate iframe-embedded fetch
+      // (what the production viewer shell's <iframe src="..."> load sends
+      // per spec) -- this test asserts the byte-serving path specifically,
+      // gated by the P6 check added alongside the navigation-jail shell.
+      // See the "Sec-Fetch-Dest gating (P6)" describe block below for the
+      // gate's own coverage.
+      const res = await app.request(`/api/artifacts/${created.id}`, {
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
+      });
 
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Security-Policy')).toBe(ARTIFACT_SERVING_CSP);
@@ -157,7 +165,9 @@ describe('Artifact routes', () => {
 
     it('returns 404 for a nonexistent artifact id', async () => {
       const app = buildApp(repository, OWNER);
-      const res = await app.request('/api/artifacts/does-not-exist');
+      const res = await app.request('/api/artifacts/does-not-exist', {
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
+      });
       expect(res.status).toBe(404);
     });
 
@@ -185,9 +195,69 @@ describe('Artifact routes', () => {
       });
 
       const app = buildApp(repository, OTHER);
-      const res = await app.request(`/api/artifacts/${created.id}`);
+      const res = await app.request(`/api/artifacts/${created.id}`, {
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
+      });
       expect(res.status).toBe(200);
       expect(await res.text()).toBe('<p>owned by owner</p>');
+    });
+  });
+
+  // =========================================================================
+  // GET /api/artifacts/:id -- Sec-Fetch-Dest gating (P6, navigation jail)
+  // =========================================================================
+
+  describe('GET /api/artifacts/:id -- Sec-Fetch-Dest gating (P6)', () => {
+    it('serves raw bytes when Sec-Fetch-Dest is exactly "iframe"', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}`, {
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('<p>x</p>');
+    });
+
+    it('redirects (302) to the viewer shell when Sec-Fetch-Dest is "document" (a top-level browser navigation)', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}`, {
+        headers: { 'Sec-Fetch-Dest': 'document' },
+        redirect: 'manual',
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+    });
+
+    it('redirects (302) to the viewer shell when Sec-Fetch-Dest is ABSENT -- the fail-closed default for old browsers / non-browser clients (curl, plain fetch)', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(repository, OWNER);
+      // No Sec-Fetch-Dest header at all -- this is the case that matters
+      // most: it must NEVER fall through to serving raw bytes.
+      const res = await app.request(`/api/artifacts/${created.id}`, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
     });
   });
 

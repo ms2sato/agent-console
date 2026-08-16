@@ -68,6 +68,26 @@ const artifacts = new Hono<AppBindings>()
     const id = c.req.param('id');
     const { artifactRepository } = c.get('appContext');
 
+    // P6 gate (docs/design/html-artifacts.md §3.3): only a genuine
+    // iframe-embedded load gets raw bytes. `Sec-Fetch-Dest` is a Fetch
+    // Metadata header modern browsers attach automatically per the
+    // requesting context -- `iframe` for a subresource load inside an
+    // <iframe>, `document` for a top-level navigation, and it is simply
+    // ABSENT for older browsers and non-browser HTTP clients (curl,
+    // fetch() from a script, etc.). Anything other than exactly `iframe`
+    // -- INCLUDING the header's absence -- redirects to the viewer shell
+    // instead of serving bytes. Fail CLOSED: this is what makes the
+    // header's absence safe rather than a bypass -- an old browser or a
+    // headless client never gets raw bytes at the top level, only ever the
+    // jailed shell. This is a UX premise (which client gets which
+    // experience), not a safety premise -- safety holds either way because
+    // of this fail-closed default. See §3.3 P6 and the shell's
+    // `frame-src` (P7, `routes/artifacts-viewer.ts`) for the mechanism
+    // that actually blocks a jailed artifact from escaping.
+    if (c.req.header('Sec-Fetch-Dest') !== 'iframe') {
+      return c.redirect(`/artifacts/${encodeURIComponent(id)}`, 302);
+    }
+
     const artifact = await artifactRepository.findById(id);
     if (!artifact) {
       throw new NotFoundError('Artifact');
