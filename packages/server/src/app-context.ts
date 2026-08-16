@@ -516,6 +516,8 @@ export async function createAppContext(
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
       sessionManager.getSessionsUsingRepository(repoId),
+    getInactiveSessionsUsingRepository: (repoId) =>
+      sessionManager.getInactiveSessionsUsingRepository(repoId),
   });
 
   // 7.1. Construct the clone-and-register service. Singleton so
@@ -733,6 +735,8 @@ export async function createTestContext(
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
       sessionManager.getSessionsUsingRepository(repoId),
+    getInactiveSessionsUsingRepository: (repoId) =>
+      sessionManager.getInactiveSessionsUsingRepository(repoId),
   });
 
   // Clone-and-register service for the test context.

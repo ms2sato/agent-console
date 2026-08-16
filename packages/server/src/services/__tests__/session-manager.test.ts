@@ -180,6 +180,79 @@ describe('SessionManager', () => {
     });
   });
 
+  // ===========================================================================
+  // Issue #1301: single writer for the "inactive" half of the
+  // unregister-repository in-use gate. Excludes sessions active in memory,
+  // includes persisted worktree sessions for the repository (paused, or any
+  // other row not currently active), excludes quick sessions and sessions
+  // for other repositories.
+  // ===========================================================================
+
+  describe('getInactiveSessionsUsingRepository (Issue #1301)', () => {
+    it('returns only the persisted worktree session, excluding the active one and sessions from other repos/types', async () => {
+      const manager = await getSessionManager();
+
+      // Active (in-memory) worktree session for repo-1 -- must be excluded.
+      const activeSession = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/active',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      // Directly persist a second, PAUSED worktree session for repo-1 --
+      // not in memory, must be included.
+      await manager.getSessionRepository().save({
+        id: 'paused-session-1',
+        type: 'worktree',
+        locationPath: '/test/paused',
+        repositoryId: 'repo-1',
+        worktreeId: 'main',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        serverPid: null,
+        pausedAt: '2026-01-01T00:05:00.000Z',
+      });
+
+      // Persisted quick session -- wrong type, must be excluded.
+      await manager.getSessionRepository().save({
+        id: 'quick-session-1',
+        type: 'quick',
+        locationPath: '/test/quick',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        serverPid: null,
+      });
+
+      // Persisted worktree session for a DIFFERENT repository -- must be
+      // excluded.
+      await manager.getSessionRepository().save({
+        id: 'other-repo-session-1',
+        type: 'worktree',
+        locationPath: '/test/other-repo',
+        repositoryId: 'repo-2',
+        worktreeId: 'main',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        workers: [],
+        serverPid: null,
+      });
+
+      const inactive = await manager.getInactiveSessionsUsingRepository('repo-1');
+
+      expect(inactive.map((s: Session) => s.id)).toEqual(['paused-session-1']);
+      expect(inactive.every((s: Session) => s.id !== activeSession.id)).toBe(true);
+    });
+
+    it('returns an empty array when there are no inactive sessions for the repository', async () => {
+      const manager = await getSessionManager();
+
+      const inactive = await manager.getInactiveSessionsUsingRepository('repo-1');
+
+      expect(inactive).toEqual([]);
+    });
+  });
+
   describe('createSession', () => {
     it('should create a new worktree session with correct properties', async () => {
       const manager = await getSessionManager();

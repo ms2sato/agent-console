@@ -5,6 +5,7 @@
  * See job-types.ts for available job types and their payloads.
  */
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import type { JobQueue } from './job-queue.js';
 import {
   JOB_TYPES,
@@ -18,7 +19,7 @@ import {
   computeSessionDataBaseDir,
   InvalidSessionDataScopeError,
 } from '../lib/session-data-path.js';
-import { getConfigDir } from '../lib/config.js';
+import { getConfigDir, getRepositoriesDir } from '../lib/config.js';
 import { createLogger } from '../lib/logger.js';
 import {
   rmRecursiveAsUser as defaultRmRecursiveAsUser,
@@ -127,10 +128,10 @@ export function registerJobHandlers(
   // encapsulates git command construction.
   jobQueue.registerHandler<CleanupRepositoryPayload>(
     JOB_TYPES.CLEANUP_REPOSITORY,
-    async ({ repoDir, requestUsername, extraDir }) => {
+    async ({ repoDir, requestUsername, extraDir, sessionDataDirs }) => {
       const elevate = shouldElevateForUser(requestUsername);
       logger.debug(
-        { repoDir, requestUsername, elevate, extraDir },
+        { repoDir, requestUsername, elevate, extraDir, sessionDataDirs },
         'Executing cleanup:repository job',
       );
 
@@ -207,6 +208,58 @@ export function registerJobHandlers(
       await removeOne(repoDir);
       if (extraDir != null) {
         await removeOne(extraDir);
+      }
+
+      // S1301 S4: best-effort removal of the now-possibly-empty org-parent
+      // directory (`<repositories>/<org>/`). Runs regardless of whether the
+      // removal above was elevated -- the org-parent dir is created by the
+      // server process itself (`fsPromises.mkdir(..., { recursive: true })`
+      // in worktree-service.ts), never user-owned, so a plain, non-elevated
+      // `fs.rmdir` is always the right tool here. Bounded to exactly one
+      // level (never `{ recursive: true }`): fails closed (ENOTEMPTY) when
+      // sibling repos still live under the same org, and must never throw --
+      // this is cosmetic cleanup, not part of the job's success contract.
+      const orgParentDir = path.dirname(repoDir);
+      if (orgParentDir !== getRepositoriesDir()) {
+        try {
+          await fs.rmdir(orgParentDir);
+          logger.info({ orgParentDir }, 'cleanup:repository removed empty org-parent directory');
+        } catch (error) {
+          const code = error instanceof Error && 'code' in error ? (error as NodeJS.ErrnoException).code : undefined;
+          if (code === 'ENOENT' || code === 'ENOTEMPTY') {
+            logger.debug(
+              { orgParentDir, code },
+              'cleanup:repository org-parent directory not removed (missing or not empty)',
+            );
+          } else {
+            logger.warn({ orgParentDir, err: error }, 'cleanup:repository failed to remove org-parent directory');
+          }
+        }
+      }
+
+      // S1301 S3: remove session-data trees (outputs/messages/memos) built by
+      // `buildSessionDataCleanupTargets`. These directories are ALWAYS
+      // server-owned (see docs/design/session-data-path.md), so removal is
+      // UNCONDITIONAL direct `fs.rm` -- it must never consult `elevate` /
+      // `requestUsername`, even though `repoDir` / `extraDir` in the SAME job
+      // invocation may be elevating. Per-target isolation: one target's
+      // failure must not abort the loop or the whole job.
+      for (const dir of sessionDataDirs ?? []) {
+        try {
+          await fs.rm(dir, { recursive: true });
+          logger.info({ dir }, 'cleanup:repository removed session-data directory');
+        } catch (error) {
+          if (error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT') {
+            logger.debug({ dir }, 'cleanup:repository session-data directory does not exist, skipping');
+            continue;
+          }
+          logger.error(
+            { dir, err: error },
+            'cleanup:repository session-data removal failed for target; continuing with remaining targets',
+          );
+          // Do NOT rethrow -- one bad target must not abort the rest of the
+          // loop or trigger a full-job retry.
+        }
       }
     }
   );

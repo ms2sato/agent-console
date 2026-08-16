@@ -2,10 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
+import type { CleanupRepositoryPayload } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockGit } from '../../__tests__/utils/mock-git-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { JobQueue } from '../../jobs/index.js';
+import type { JobHandler } from '../../jobs/job-queue.js';
+import { registerJobHandlers } from '../../jobs/handlers.js';
+import { WorkerOutputFileManager } from '../../lib/worker-output-file.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../database/connection.js';
 import { SqliteRepositoryRepository } from '../../repositories/index.js';
 import type { RunAsUserOpts, RunAsUserResult } from '../privilege-elevation.js';
@@ -103,6 +107,32 @@ describe('RepositoryManager', () => {
       jobQueue: testJobQueue,
       runAsUserImpl: runAsUserMock.runAsUserImpl,
     });
+  }
+
+  /**
+   * Run the enqueued CLEANUP_REPOSITORY job's payload through the REAL job
+   * handler (mirrors the harness in `jobs/__tests__/handlers.test.ts`).
+   * `testJobQueue` is never `.start()`ed in this file's `beforeEach`, so
+   * enqueued jobs stay pending -- this pulls the handler function directly
+   * via a capture-only fake queue and invokes it, exercising the production
+   * `handlers.ts` code (not a re-implementation) against the payload that
+   * was actually persisted.
+   */
+  async function runLatestCleanupRepositoryJob(): Promise<void> {
+    const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+    expect(jobs.length).toBeGreaterThan(0);
+    const payload = JSON.parse(jobs[jobs.length - 1]!.payload) as CleanupRepositoryPayload;
+
+    const handlers = new Map<string, JobHandler<unknown>>();
+    const fakeQueue = {
+      registerHandler: <T>(type: string, handler: JobHandler<T>) => {
+        handlers.set(type, handler as JobHandler<unknown>);
+      },
+    } as unknown as JobQueue;
+    registerJobHandlers(fakeQueue, new WorkerOutputFileManager());
+
+    const handler = handlers.get('cleanup:repository')!;
+    await handler(payload);
   }
 
   describe('registerRepository', () => {
@@ -726,6 +756,124 @@ describe('RepositoryManager', () => {
           extraDir: string | null;
         };
         expect(payload.extraDir).toBeNull();
+      });
+    });
+
+    // =========================================================================
+    // Issue #1301: consolidated repository-in-use gate (S0). The direct-call
+    // bug-polarity test (T0a) proves `unregisterRepository` itself refuses
+    // when a PERSISTED (not in-memory) worktree session is attached -- this
+    // is the gap the route's independently-written duplicate check used to
+    // shield. See `RepositoryManager.assertRepositoryNotInUse`.
+    // =========================================================================
+
+    describe('repository-in-use gate for persisted sessions (Issue #1301)', () => {
+      it('refuses to unregister when a persisted (inactive) session is attached, and enqueues no cleanup job', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        // No in-memory session; only the "inactive" callback reports a
+        // persisted worktree session for this repo. Before the S0 fix,
+        // `unregisterRepository` only consulted `getSessionsUsingRepository`
+        // (active/in-memory) and would proceed straight to cleanup.
+        manager.setDependencyCallbacks({
+          getSessionsUsingRepository: () => [],
+          getInactiveSessionsUsingRepository: async () => [
+            { id: 'paused-1', title: 'Paused worktree' },
+          ],
+        });
+
+        await expect(manager.unregisterRepository(repo.id)).rejects.toMatchObject({
+          name: 'RepositoryInUseError',
+        });
+
+        // The repository must still be registered (no destructive cleanup
+        // was enqueued or applied).
+        expect(manager.getRepository(repo.id)).toBeDefined();
+        const jobs = await testJobQueue!.getJobs({ type: 'cleanup:repository' });
+        expect(jobs.length).toBe(0);
+      });
+
+      it('proceeds when neither active nor inactive callbacks report any session', async () => {
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        manager.setDependencyCallbacks({
+          getSessionsUsingRepository: () => [],
+          getInactiveSessionsUsingRepository: async () => [],
+        });
+
+        const result = await manager.unregisterRepository(repo.id);
+        expect(result).toBe(true);
+        expect(manager.getRepository(repo.id)).toBeUndefined();
+      });
+    });
+
+    // =========================================================================
+    // Issue #1301: session-data cleanup targets (S1-S4). Verifies the
+    // CLEANUP_REPOSITORY payload carries `sessionDataDirs` and that the real
+    // job handler removes the flat-shape session-data tree alongside the
+    // org/repo worktree directory (the orphan-leak bug).
+    // =========================================================================
+
+    describe('session-data cleanup (Issue #1301)', () => {
+      it('removes the flat-shape session-data dir alongside the org/repo dir when they differ (bug-polarity)', async () => {
+        // beforeEach() already mocks getOrgRepoFromPath -> 'test-org/repo',
+        // which differs from repo.name ('repo', the basename of
+        // TEST_REPO_DIR) -- reproducing the remote-backed-repo divergence
+        // between repoDir (org/repo shape) and the session-data slug
+        // (repo.name shape).
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        expect(repo.name).toBe('repo');
+
+        // Pre-existing flat-shape session-data tree at the canonical slug
+        // (repo.name = 'repo'), simulating an orphaned outputs/ dir left
+        // over from prior sessions against this repository.
+        const sessionDataDir = path.join(TEST_CONFIG_DIR, 'repositories', 'repo', 'outputs');
+        fs.mkdirSync(sessionDataDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDataDir, 'marker'), 'x');
+
+        // Also populate the org/repo worktree dir (repoDir) with a marker so
+        // its removal assertion below is a positive proof, not a vacuous
+        // pass against a directory that never existed.
+        const repoWorktreeDir = path.join(TEST_CONFIG_DIR, 'repositories', 'test-org', 'repo');
+        fs.mkdirSync(repoWorktreeDir, { recursive: true });
+        fs.writeFileSync(path.join(repoWorktreeDir, 'marker'), 'y');
+
+        await manager.unregisterRepository(repo.id);
+        await runLatestCleanupRepositoryJob();
+
+        // The org/repo worktree dir is gone (repoDir).
+        expect(fs.existsSync(repoWorktreeDir)).toBe(false);
+        // The flat-shape session-data dir is ALSO gone -- this is the fix;
+        // before it, this directory was never referenced by the payload and
+        // would survive unregistration forever.
+        expect(fs.existsSync(sessionDataDir)).toBe(false);
+        // The now-empty org-parent dir is removed too (S4).
+        expect(fs.existsSync(path.join(TEST_CONFIG_DIR, 'repositories', 'test-org'))).toBe(false);
+      });
+
+      it('does not double-delete or error when the org/repo dir and session-data slug coincide (local-only repo)', async () => {
+        // Local-only repo: getOrgRepoFromPath falls back to path.basename,
+        // so repoDir's basename equals repo.name -- the canonical
+        // session-data slug and the repoDir org-component collapse to the
+        // same directory.
+        mockGit.getOrgRepoFromPath.mockReset();
+        mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve(null));
+
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+        expect(repo.name).toBe('repo');
+
+        const sessionDataDir = path.join(TEST_CONFIG_DIR, 'repositories', 'repo', 'outputs');
+        fs.mkdirSync(sessionDataDir, { recursive: true });
+        fs.writeFileSync(path.join(sessionDataDir, 'marker'), 'x');
+
+        await manager.unregisterRepository(repo.id);
+        await expect(runLatestCleanupRepositoryJob()).resolves.toBeUndefined();
+
+        expect(fs.existsSync(path.join(TEST_CONFIG_DIR, 'repositories', 'repo'))).toBe(false);
       });
     });
   });

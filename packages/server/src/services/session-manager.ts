@@ -1057,6 +1057,23 @@ export class SessionManager {
     return matchingSessions;
   }
 
+  /**
+   * Get all persisted worktree sessions for a repository that are NOT
+   * currently active in memory — paused sessions, plus any zombie row that
+   * is neither active nor cleanly paused. This is the single writer for
+   * the "inactive" half of the unregister-repository in-use gate; it
+   * replaces a duplicate check that used to live in the
+   * DELETE /api/repositories/:id route handler.
+   */
+  async getInactiveSessionsUsingRepository(repositoryId: string): Promise<Session[]> {
+    const activeSessions = this.getSessionsUsingRepository(repositoryId);
+    const activeIds = new Set(activeSessions.map((s) => s.id));
+    const persisted = await this.sessionRepository.findAll();
+    return persisted
+      .filter((ps) => !activeIds.has(ps.id) && ps.type === 'worktree' && ps.repositoryId === repositoryId)
+      .map((ps) => this.persistedToPublicSession(ps));
+  }
+
   // ========== Worker Operations (delegated to WorkerLifecycleManager) ==========
 
   /** Create a worker in the session. Delegates to WorkerLifecycleManager. */

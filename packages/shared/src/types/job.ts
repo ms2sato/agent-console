@@ -111,6 +111,15 @@ export interface CleanupRepositoryPayload {
    * into one job preserves the existing single-retry / atomicity contract.
    */
   extraDir: string | null;
+  /**
+   * Absolute base directories of session-data trees (outputs/messages/memos)
+   * to remove alongside `repoDir`. Built by `buildSessionDataCleanupTargets`.
+   * Server-owned — removed WITHOUT elevation regardless of
+   * `requestUsername`. Optional for backward compatibility: jobs enqueued
+   * before this field existed have it as `undefined`, which the handler
+   * treats as an empty array.
+   */
+  sessionDataDirs?: string[];
 }
 
 /**
