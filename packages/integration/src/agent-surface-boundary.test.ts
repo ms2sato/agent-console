@@ -37,7 +37,6 @@ import { AgentDirectory } from '@agent-console/server/src/services/agent-directo
 import { JsonSessionRepository } from '@agent-console/server/src/repositories/index';
 import { SqliteRepositoryRepository } from '@agent-console/server/src/repositories/sqlite-repository-repository';
 import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
-import { SqliteArtifactRepository } from '@agent-console/server/src/repositories/sqlite-artifact-repository';
 import { AnnotationService } from '@agent-console/server/src/services/annotation-service';
 import { InterSessionMessageService } from '@agent-console/server/src/services/inter-session-message-service';
 import { TimerManager } from '@agent-console/server/src/services/timer-manager';
@@ -185,7 +184,6 @@ describe('Agent surface boundary: list_agents wire-level shape (Issue #1160 PR-A
       createWorktreeWithSession,
       deleteWorktree,
       userRepository,
-      artifactRepository: new SqliteArtifactRepository(db),
       broadcastToApp: () => {},
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,
