@@ -30,6 +30,11 @@ function makeRecordingLogger(): {
   };
 }
 
+// Note: `checkCallerOwnsSession` (tested via `evaluateMcpAuthGate` below and
+// its own call sites elsewhere) is now referenced by mcp-auth.ts's JSDoc as
+// having 6 existing call sites -- `create_html_artifact` (HTML Artifacts
+// Phase 1, Issue #1312) is the sixth session-claiming MCP tool.
+
 const identityA: McpCallerIdentity = {
   sessionId: 'session-a',
   workerId: 'worker-a',
