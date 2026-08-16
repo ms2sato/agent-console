@@ -22,6 +22,19 @@ const logger = createLogger('mcp-auth');
 /**
  * Verified identity of an MCP caller. `userId` is a `users.id` UUID,
  * directly comparable to `Session.createdBy`.
+ *
+ * This identity is consumed for AUTHORIZATION only, via
+ * `checkCallerOwnsSession` ("may this caller act on that session?").
+ * Ownership (a delegated session's `createdBy`) deliberately derives from
+ * the parent session instead -- never from this identity -- because a
+ * fallback to the caller's own identity would silently rescue a caller
+ * who omitted `parentSessionId` / `parentWorkerId`, defeating the point
+ * of requiring them. In `enforce` mode,
+ * `checkCallerOwnsSession`'s mismatch check guarantees this identity's
+ * `userId` and the claimed session's `createdBy` already agree whenever
+ * both exist, so there is no second source to arbitrate. No code in this
+ * codebase should consume `McpCallerIdentity.userId` to derive a
+ * session's `createdBy`.
  */
 export interface McpCallerIdentity {
   sessionId: string;

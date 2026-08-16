@@ -681,7 +681,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
       'Use this to delegate work to a new agent running in an isolated worktree. ' +
       'Note: once started, the worktree and session persist on the server even if the MCP client disconnects. ' +
       'To delegate to a repository other than your own, use list_repositories to discover available repositories. ' +
-      'Optionally pass parentSessionId and parentWorkerId to have the delegated agent report results back via send_session_message.',
+      'Requires parentSessionId and parentWorkerId, from your own AGENT_CONSOLE_SESSION_ID / AGENT_CONSOLE_WORKER_ID ' +
+      'environment variables (every legitimate caller holds both). The parent session determines the delegated ' +
+      "session's ownership (createdBy inheritance) -- this is not a reporting convenience. By default, callback " +
+      'instructions are appended to the prompt so the delegated agent reports results back via send_session_message; ' +
+      'set skipMessageCallbackPrompt to suppress that.',
     {
       repositoryId: z.string().describe(
         'The repository ID. The calling agent can get this from the AGENT_CONSOLE_REPOSITORY_ID environment variable. ' +
@@ -723,19 +727,17 @@ export function createMcpApp(deps: McpDependencies): Hono {
       parentSessionId: z
         .string()
         .min(1, 'parentSessionId must be non-empty')
-        .optional()
         .describe(
-          "The parent session's ID, from the AGENT_CONSOLE_SESSION_ID environment variable. " +
-            'When provided together with parentWorkerId, callback instructions are appended to the prompt ' +
-            'so the delegated agent reports results back via send_session_message.',
+          "Required. The parent session's ID, from your own AGENT_CONSOLE_SESSION_ID environment variable. " +
+            "The parent session determines the delegated session's ownership (createdBy is inherited from it) -- " +
+            'this is not just a reporting convenience. Callback instructions are appended to the prompt (unless ' +
+            'skipMessageCallbackPrompt is set) so the delegated agent reports results back via send_session_message.',
         ),
       parentWorkerId: z
         .string()
         .min(1, 'parentWorkerId must be non-empty')
-        .optional()
         .describe(
-          "The parent session's worker ID, from the AGENT_CONSOLE_WORKER_ID environment variable. " +
-            'Must be provided together with parentSessionId.',
+          "Required. The parent session's worker ID, from your own AGENT_CONSOLE_WORKER_ID environment variable.",
         ),
       skipMessageCallbackPrompt: z
         .boolean()
@@ -778,16 +780,14 @@ export function createMcpApp(deps: McpDependencies): Hono {
       templateVars,
     }) => {
       try {
-        // Validate parent IDs: both must be provided together
-        if (!!parentSessionId !== !!parentWorkerId) {
-          return errorResult('parentSessionId and parentWorkerId must be provided together');
-        }
-
-        // Build effective prompt with optional callback instructions
-        const effectivePrompt =
-          parentSessionId && parentWorkerId && !skipMessageCallbackPrompt
-            ? buildMessageCallbackPrompt(prompt, parentSessionId, parentWorkerId)
-            : prompt;
+        // Build effective prompt with optional callback instructions.
+        // parentSessionId/parentWorkerId are required by the schema, so the
+        // only thing gating the append is skipMessageCallbackPrompt -- the
+        // old truthy check on both ids is now dead code since the schema
+        // makes their absence unrepresentable.
+        const effectivePrompt = skipMessageCallbackPrompt
+          ? prompt
+          : buildMessageCallbackPrompt(prompt, parentSessionId, parentWorkerId);
 
         // Validate repository
         const repo = repositoryManager.getRepository(repositoryId);
@@ -827,25 +827,38 @@ export function createMcpApp(deps: McpDependencies): Hono {
           return errorResult(`Agent not found: ${suggestionAgentId}`);
         }
 
-        // Inherit createdBy from parent session (if delegated)
-        const parentSession = parentSessionId ? sessionManager.getSession(parentSessionId) : undefined;
+        // Resolve the parent session and inherit its createdBy for
+        // ownership. Both checks below are required-but-unresolvable
+        // errors: the schema only guarantees the ids are non-empty
+        // strings, not that they name a real, owned session. A stale
+        // parentSessionId or a legacy parent with no createdBy used to
+        // degrade silently to a null-owned, dead-agent session -- the
+        // incident this Issue closes.
+        const parentSession = sessionManager.getSession(parentSessionId);
+        if (!parentSession) {
+          return errorResult(`Parent session not found: ${parentSessionId}`);
+        }
+        if (!parentSession.createdBy) {
+          return errorResult(
+            `Parent session ${parentSessionId} has no createdBy; delegation from an ownerless (legacy) session is not possible`,
+          );
+        }
         const authError = checkCallerOwnsSession(
           getMcpCallerIdentity(),
-          parentSessionId ? { sessionId: parentSessionId, createdBy: parentSession?.createdBy } : null,
+          { sessionId: parentSessionId, createdBy: parentSession.createdBy },
           mcpAuthMode,
           { toolName: 'delegate_to_worktree' },
         );
         if (authError) return errorResult(authError.error);
-        const parentCreatedBy = parentSession?.createdBy;
+        const parentCreatedBy = parentSession.createdBy;
 
         // Resolve parent's createdBy (a users.id UUID) to its OS username
         // so the suggestion call and `git worktree add` both run as the
-        // requesting user in multi-user mode. When `parentCreatedBy` is
-        // unset, or the UUID does not resolve (legacy / orphan sessions),
-        // `requestUsername` is null and `runAsUser` bypasses elevation —
-        // current behaviour preserved. Resolution shared with `run_process`
-        // / `create_conditional_wakeup` via `resolveRequestUsername` (see
-        // `.claude/rules/elevation-helpers.md`).
+        // requesting user in multi-user mode. When the UUID does not resolve
+        // (orphan sessions), `requestUsername` is null and `runAsUser`
+        // bypasses elevation — current behaviour preserved. Resolution
+        // shared with `run_process` / `create_conditional_wakeup` via
+        // `resolveRequestUsername` (see `.claude/rules/elevation-helpers.md`).
         const requestUsername = await resolveRequestUsername(
           parentCreatedBy,
           userRepository,

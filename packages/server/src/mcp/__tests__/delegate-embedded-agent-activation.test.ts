@@ -398,9 +398,16 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
     expect(fake.captured.length).toBe(0);
   });
 
-  it('activation failure (missing session.createdBy, marker-classified) fails the tool call verbatim; worktree/session persist (no rollback)', async () => {
+  it('parentSessionId is schema-required, closing the route that used to reach the "no createdBy" activation failure (Issue #1293)', async () => {
     const embeddedAgentId = await createEmbeddedAgentDef();
 
+    // Before Issue #1293, omitting parentSessionId let a session get created
+    // with createdBy left undefined, and the mint step in
+    // EmbeddedAgentWorkerService.runActivation threw
+    // EmbeddedAgentActivationError('...has no createdBy...') (marker) --
+    // AFTER the worktree/session already existed. parentSessionId is now
+    // schema-required, so this route is closed before the handler runs at
+    // all: no worktree, no session, no spawn attempt.
     const response = await callTool(app, mcpSessionId, 'delegate_to_worktree', {
       repositoryId: TEST_REPO_ID,
       prompt: 'Do the thing',
@@ -408,19 +415,18 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       baseBranch: 'main',
       useRemote: false,
       agentId: embeddedAgentId,
-      // No parentSessionId -> session.createdBy stays undefined -> the mint
-      // step in EmbeddedAgentWorkerService.runActivation throws
-      // EmbeddedAgentActivationError('...has no createdBy...') (marker).
     }, nextId++);
 
-    expect(response.result?.isError).toBe(true);
-    const data = parseToolResult(response) as { error: string };
-    expect(data.error).toContain('has no createdBy');
+    if (response.error) {
+      expect(response.error).toBeDefined();
+    } else {
+      expect(response.result?.isError).toBe(true);
+    }
     expect(fake.captured.length).toBe(0); // never reached the spawn step
 
-    expect(sessionManager.getAllSessions().length).toBe(1);
+    expect(sessionManager.getAllSessions().length).toBe(0);
     const worktrees = await worktreeService.listWorktrees(TEST_REPO_PATH, TEST_REPO_ID);
-    expect(worktrees.length).toBe(1);
+    expect(worktrees.length).toBe(0);
   });
 
   it('activation failure (spawn throws, non-marker) fails the tool call with the generic message, not the raw error', async () => {
@@ -450,9 +456,9 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
     expect(data.error).not.toContain('ENOENT');
     expect(data.error).toContain('Embedded-agent activation failed');
 
-    // Unlike the "missing createdBy" test above (no parentSessionId, so only
-    // the delegated session exists), this test creates a parent session
-    // (bob's) in addition to the delegated session -- 2 total.
+    // Unlike the "no createdBy" test above (which now rejects before any
+    // session is created), this test creates a parent session (bob's) in
+    // addition to the delegated session -- 2 total.
     expect(sessionManager.getAllSessions().length).toBe(2);
   });
 
