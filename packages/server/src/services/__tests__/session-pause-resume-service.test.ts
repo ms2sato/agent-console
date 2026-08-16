@@ -318,6 +318,47 @@ describe('SessionPauseResumeService', () => {
       expect(onSessionResumed).toHaveBeenCalledTimes(1);
     });
 
+    // Issue #1299 AC required test #3: resume maps to explicit 'continue',
+    // NOT 'system'. A worker eligible for initial-prompt delivery whose
+    // prompt was never delivered still must NOT redeliver on resume --
+    // mapping resume to 'system' would (wrongly) redeliver here, since
+    // 'system' falls back to 'deliver-initial-prompt' under obligation.
+    // 'continue' is honored unconditionally, so resume must always continue.
+    it("resumes an agent worker with an undelivered initial-prompt obligation as 'continue', never redelivering [POLARITY]", async () => {
+      const agentWorker = buildInternalAgentWorker({ id: 'w1', deliverInitialPromptOnActivation: true });
+      const restoredWorkers = new Map([['w1', agentWorker]]);
+      const persisted = buildPersistedWorktreeSession({
+        id: 'session-1',
+        serverPid: null,
+        pausedAt: '2026-01-01T00:00:00.000Z',
+        workers: [buildPersistedAgentWorker({ id: 'w1', agentId: 'test-agent', deliverInitialPromptOnActivation: true })],
+        initialPrompt: 'Please summarize the repo',
+        initialPromptDelivered: false,
+      });
+
+      const deps = createMockDeps({
+        sessionRepository: {
+          ...createMockDeps().sessionRepository,
+          findById: mock(async () => persisted),
+          update: mock(async () => true),
+        },
+        workerManager: {
+          killWorker: mock(async () => {}),
+          restoreWorkersFromPersistence: mock(() => restoredWorkers),
+          activateAgentWorkerPty: mock(async () => {}),
+          activateTerminalWorkerPty: mock(async () => {}),
+        } satisfies SessionPauseResumeDeps['workerManager'],
+      });
+      const service = new SessionPauseResumeService(deps);
+
+      const result = await service.resumeSession('session-1');
+
+      expect(result).not.toBeNull();
+      expect(deps.workerManager.activateAgentWorkerPty).toHaveBeenCalledTimes(1);
+      const params = (deps.workerManager.activateAgentWorkerPty as ReturnType<typeof mock>).mock.calls[0][1];
+      expect(params.startupIntent).toBe('continue');
+    });
+
     it('should include embedded-agent worker activity states in the onSessionResumed callback', async () => {
       const embeddedWorker = buildInternalEmbeddedAgentWorker({ id: 'w1' });
       const restoredWorkers = new Map([['w1', embeddedWorker]]);

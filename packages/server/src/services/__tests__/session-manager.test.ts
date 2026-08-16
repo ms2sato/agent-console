@@ -3338,7 +3338,7 @@ describe('SessionManager', () => {
 
       const ptyCountBefore = ptyFactory.instances.length;
 
-      const restarted = await manager.restartAgentWorker(session.id, originalWorkerId, false);
+      const restarted = await manager.restartAgentWorker(session.id, originalWorkerId, 'fresh');
 
       expect(restarted).not.toBeNull();
       expect(restarted?.id).toBe(originalWorkerId);
@@ -3364,7 +3364,7 @@ describe('SessionManager', () => {
       // Wait a bit to ensure time passes
       await new Promise(resolve => setTimeout(resolve, 10));
 
-      const restarted = await manager.restartAgentWorker(session.id, originalWorkerId, false);
+      const restarted = await manager.restartAgentWorker(session.id, originalWorkerId, 'fresh');
 
       expect(restarted).not.toBeNull();
       // createdAt should be preserved (not updated to current time)
@@ -3398,7 +3398,7 @@ describe('SessionManager', () => {
       expect(workerOrderBefore).toContain(terminalWorker!.id);
 
       // Restart agent worker
-      await manager.restartAgentWorker(session.id, agentWorkerId, false);
+      await manager.restartAgentWorker(session.id, agentWorkerId, 'fresh');
 
       // Worker order should be preserved (sorted by createdAt)
       const sessionAfter = manager.getSession(session.id)!;
@@ -3409,7 +3409,7 @@ describe('SessionManager', () => {
     it('should return null for non-existent session', async () => {
       const manager = await getSessionManager();
 
-      const result = await manager.restartAgentWorker('non-existent', 'worker-1', false);
+      const result = await manager.restartAgentWorker('non-existent', 'worker-1', 'fresh');
       expect(result).toBeNull();
     });
 
@@ -3422,7 +3422,7 @@ describe('SessionManager', () => {
         agentId: 'claude-code',
       });
 
-      const result = await manager.restartAgentWorker(session.id, 'non-existent', false);
+      const result = await manager.restartAgentWorker(session.id, 'non-existent', 'fresh');
       expect(result).toBeNull();
     });
 
@@ -3440,7 +3440,7 @@ describe('SessionManager', () => {
         name: 'Shell',
       });
 
-      const result = await manager.restartAgentWorker(session.id, terminalWorker!.id, false);
+      const result = await manager.restartAgentWorker(session.id, terminalWorker!.id, 'fresh');
       expect(result).toBeNull();
     });
 
@@ -3462,7 +3462,7 @@ describe('SessionManager', () => {
       const originalAgentId = agentWorker.agentId;
       expect(originalAgentId).not.toBe(customAgent.id);
 
-      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, customAgent.id);
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', customAgent.id);
 
       expect(restarted).not.toBeNull();
       expect(restarted?.id).toBe(agentWorker.id);
@@ -3485,7 +3485,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, customAgent.id);
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', customAgent.id);
 
       expect(restarted).not.toBeNull();
       expect(restarted?.name).toBe('Custom Agent');
@@ -3503,7 +3503,7 @@ describe('SessionManager', () => {
       const originalAgentId = agentWorker.agentId;
       const originalName = agentWorker.name;
 
-      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false);
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh');
 
       expect(restarted).not.toBeNull();
       expect(restarted?.agentId).toBe(originalAgentId);
@@ -3520,7 +3520,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      const result = await manager.restartAgentWorker(session.id, agentWorker.id, false, 'non-existent-agent');
+      const result = await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', 'non-existent-agent');
       expect(result).toBeNull();
     });
 
@@ -3543,7 +3543,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      await manager.restartAgentWorker(session.id, agentWorker.id, false, customAgent.id);
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', customAgent.id);
 
       // onSessionUpdated should be called for agent switch
       expect(onSessionUpdated).toHaveBeenCalledTimes(1);
@@ -3567,7 +3567,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      await manager.restartAgentWorker(session.id, agentWorker.id, false);
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh');
 
       // onSessionUpdated should NOT be called when agent stays the same
       expect(onSessionUpdated).not.toHaveBeenCalled();
@@ -3589,7 +3589,7 @@ describe('SessionManager', () => {
 
       const ptyCountBefore = ptyFactory.instances.length;
 
-      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 
       expect(restarted).not.toBeNull();
       expect(restarted?.id).toBe(agentWorker.id);
@@ -3619,7 +3619,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'same-branch');
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'same-branch');
 
       // renameBranch should NOT be called when branch name matches
       expect(mockGit.renameBranch).not.toHaveBeenCalled();
@@ -3642,7 +3642,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 
       // onSessionUpdated should be called for branch rename
       expect(onSessionUpdated).toHaveBeenCalledTimes(1);
@@ -3664,7 +3664,7 @@ describe('SessionManager', () => {
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
       // Passing branch to a quick session should not cause errors
-      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+      const restarted = await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 
       expect(restarted).not.toBeNull();
       // Git operations should NOT be called for quick sessions
@@ -3694,7 +3694,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'new-branch');
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'new-branch');
 
       // renameBranch should NOT be called since git branch already matches
       expect(mockGit.renameBranch).not.toHaveBeenCalled();
@@ -3732,7 +3732,7 @@ describe('SessionManager', () => {
       });
       const agentWorker = session.workers.find((w: Worker) => w.type === 'agent')!;
 
-      await manager.restartAgentWorker(session.id, agentWorker.id, false, undefined, 'final-branch');
+      await manager.restartAgentWorker(session.id, agentWorker.id, 'fresh', undefined, 'final-branch');
 
       // renameBranch should be called to rename from the actual git branch to the requested name
       expect(mockGit.renameBranch).toHaveBeenCalledWith('intermediate-branch', 'final-branch', '/test/path');
@@ -5320,6 +5320,29 @@ describe('SessionManager', () => {
       const sessionIds = result.results.map((r: { sessionId: string }) => r.sessionId);
       expect(sessionIds).toContain(session1.id);
       expect(sessionIds).toContain(session2.id);
+    });
+
+    // Issue #1299 AC required test #1: Restart All still restarts fresh in
+    // PR-1. This catches PR-2's continue-by-default flip ('system') leaking
+    // in early -- a mis-implementation that passes 'system' instead of
+    // 'fresh' would select the continue template ('claude -c') here instead
+    // of the fresh command template.
+    it("restarts with the fresh command template, not the continue template ('claude -c') [POLARITY]", async () => {
+      const manager = await getSessionManager();
+      await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+
+      await manager.restartAllAgentWorkers();
+
+      const newestPty = ptyFactory.instances.at(-1);
+      expect(newestPty).toBeDefined();
+      // The built-in agent's continueTemplate is exactly 'claude -c'; the
+      // commandTemplate ('claude {{model:+--model}}{{prompt}}') never
+      // produces that literal string.
+      expect(newestPty!.writtenData.join('')).not.toContain('claude -c');
     });
 
     it('should only restart agent workers, not terminal workers', async () => {

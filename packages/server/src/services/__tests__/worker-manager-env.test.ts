@@ -64,7 +64,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         revived: false,
       });
 
@@ -84,7 +84,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         revived: false,
       });
 
@@ -102,7 +102,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         revived: false,
       });
 
@@ -120,7 +120,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         repositoryId: 'repo-456',
         revived: false,
       });
@@ -139,7 +139,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         // repositoryId is not provided (quick session)
         revived: false,
       });
@@ -158,7 +158,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         repositoryId: 'repo-all-four',
         revived: false,
       });
@@ -180,7 +180,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         revived: false,
       });
 
@@ -201,7 +201,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         repositoryId: 'org/repo-name',
         revived: false,
       });
@@ -224,7 +224,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         repositoryId: 'repo-1',
         revived: false,
       });
@@ -248,7 +248,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         context: { parentSessionId: 'parent-sess-abc' },
         revived: false,
       });
@@ -267,7 +267,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         context: { parentWorkerId: 'parent-wkr-xyz' },
         revived: false,
       });
@@ -286,7 +286,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         // context is intentionally omitted
         revived: false,
       });
@@ -310,7 +310,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
         username: 'testuser',
         resolver: new SessionDataPathResolver('/test/config/_quick'),
         agentId: 'claude-code',
-        continueConversation: false,
+        startupIntent: 'fresh',
         context: {
           parentSessionId: 'real-parent-session',
           parentWorkerId: 'real-parent-worker',
@@ -386,7 +386,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
           username: 'testuser',
           resolver: new SessionDataPathResolver('/test/config/_quick'),
           agentId: 'claude-code',
-          continueConversation: false,
+          startupIntent: 'fresh',
           context: {
             sshAuthSockFallback: '/home/testuser/.1password/agent.sock',
           },
@@ -421,7 +421,7 @@ describe('WorkerManager - AgentConsole env var injection', () => {
           username: 'testuser',
           resolver: new SessionDataPathResolver('/test/config/_quick'),
           agentId: 'claude-code',
-          continueConversation: false,
+          startupIntent: 'fresh',
           // No context.sshAuthSockFallback
           revived: false,
         });

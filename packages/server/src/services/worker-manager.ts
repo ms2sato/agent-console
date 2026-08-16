@@ -39,6 +39,7 @@ import type {
   Disposable,
 } from './worker-types.js';
 import type { SessionCreationContext } from './internal-types.js';
+import type { StartupIntent } from './startup-intent.js';
 import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
 import type { UserMode, AgentConsoleContext } from './user-mode.js';
 import { ActivityDetector } from './activity-detector.js';
@@ -152,7 +153,13 @@ export interface GitDiffWorkerInitParams {
  */
 export interface AgentActivationParams extends WorkerContext {
   agentId: string;
-  continueConversation: boolean;
+  /**
+   * The already-resolved startup decision for this activation (see
+   * `startup-intent.ts`). Callers resolve this once, before this PTY is
+   * spawned; this method reads it directly and never re-derives it from
+   * `initialPrompt` / worker or session state.
+   */
+  startupIntent: StartupIntent;
   initialPrompt?: string;
   /** Repository ID for worktree sessions. Omit for quick sessions. */
   repositoryId?: string;
@@ -432,7 +439,7 @@ export class WorkerManager {
       return;
     }
 
-    const { sessionId, locationPath, agentId, continueConversation, initialPrompt, repositoryEnvVars, repositoryId, context } = params;
+    const { sessionId, locationPath, agentId, startupIntent, initialPrompt, repositoryEnvVars, repositoryId, context } = params;
 
     // Align outputOffset with file-absolute semantic on revived
     // activation. Must run BEFORE PTY spawn so the very first onData chunk
@@ -467,7 +474,7 @@ export class WorkerManager {
       );
     }
 
-    const template = continueConversation && agent.continueTemplate
+    const template = startupIntent === 'continue' && agent.continueTemplate
       ? agent.continueTemplate
       : agent.commandTemplate;
 

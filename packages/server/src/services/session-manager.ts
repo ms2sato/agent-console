@@ -72,6 +72,7 @@ import { SessionPauseResumeService } from './session-pause-resume-service.js';
 import { SessionConverterService, type SharedAccountLookup } from './session-converter-service.js';
 import { NULL_USERNAME_LOOKUP, type UsernameLookup, UsernameLookupService } from './username-lookup.js';
 import type { RepositoryLookup, RepositoryEnvLookup } from './repository-lookup-types.js';
+import type { StartupIntentPreference } from './startup-intent.js';
 
 /**
  * Callbacks for WebSocket operations.
@@ -873,7 +874,7 @@ export class SessionManager {
       this.createWorker(
         id,
         initialWorkerParams,
-        request.continueConversation ?? false,
+        request.continueConversation ? 'continue' : 'fresh',
         request.initialPrompt,
         request.templateVars ?? context?.templateVars,
       ),
@@ -1063,11 +1064,11 @@ export class SessionManager {
   async createWorker(
     sessionId: string,
     request: CreateWorkerParams,
-    continueConversation: boolean = false,
+    startupPreference: StartupIntentPreference = 'fresh',
     initialPrompt?: string,
     templateVars?: Record<string, string>
   ): Promise<Worker | null> {
-    return this.workerLifecycleManager.createWorker(sessionId, request, continueConversation, initialPrompt, templateVars);
+    return this.workerLifecycleManager.createWorker(sessionId, request, startupPreference, initialPrompt, templateVars);
   }
 
   /** Get a worker by session and worker ID. */
@@ -1163,11 +1164,11 @@ export class SessionManager {
   async restartAgentWorker(
     sessionId: string,
     workerId: string,
-    continueConversation: boolean,
+    startupPreference: StartupIntentPreference,
     agentId?: string,
     branch?: string
   ): Promise<Worker | null> {
-    return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, continueConversation, agentId, branch);
+    return this.workerLifecycleManager.restartAgentWorker(sessionId, workerId, startupPreference, agentId, branch);
   }
 
   /** Restore a PTY worker, activating its PTY if needed after server restart. */
@@ -1436,7 +1437,11 @@ export class SessionManager {
         if (worker.type !== 'agent') continue;
 
         try {
-          const restarted = await this.restartAgentWorker(session.id, worker.id, false);
+          // 'fresh' matches this bulk operation's existing behaviour exactly
+          // (previously the hardcoded boolean `false`). A future
+          // continue-by-default change belongs behind its own preference
+          // value, not here.
+          const restarted = await this.restartAgentWorker(session.id, worker.id, 'fresh');
           if (restarted) {
             results.push({ sessionId: session.id, workerId: worker.id, success: true });
           } else {
