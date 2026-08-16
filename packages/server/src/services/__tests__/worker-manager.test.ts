@@ -36,6 +36,7 @@ import type { LookupOsUserFn } from '../os-user-lookup.js';
 import type { runAsUser, RunAsUserOpts } from '../privilege-elevation.js';
 import type { listDescendantPids, signalPids } from '../../lib/process-tree.js';
 import * as os from 'node:os';
+import * as fs from 'fs/promises';
 
 const TEST_CONFIG_DIR = '/test/config';
 
@@ -683,6 +684,105 @@ describe('WorkerManager', () => {
         errorSpy.mockRestore();
         jest.useRealTimers();
       }
+    });
+  });
+
+  describe('exit-127 diagnostic message (Issue #1294)', () => {
+    // T4 (S3 command-token unit coverage) lives in
+    // packages/server/src/lib/__tests__/command-token.test.ts -- not here,
+    // since it's pure-function coverage with no WorkerManager dependency.
+    it('T1: appends a message with the command token, username, and exit code to the worker output stream', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+      await mockPty.simulateExit(127);
+
+      expect(worker.outputBuffer).toContain('[internal:agent-spawn-failed]');
+      expect(worker.outputBuffer).toContain('command=claude');
+      expect(worker.outputBuffer).toContain('username=testuser');
+      expect(worker.outputBuffer).toContain('exitCode=127');
+    });
+
+    it('T2: flushes the message to the output file on disk even with zero clients ever attached (delegate-path shape)', async () => {
+      const outputFileManager = new WorkerOutputFileManager();
+      const userMode = new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' });
+      const wm = new WorkerManager(userMode, agentManager, outputFileManager);
+
+      const worker = wm.initializeAgentWorker({
+        id: 'agent-127-t2',
+        name: 'Test Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+      // NOTE: never call attachCallbacks on this worker anywhere in this test --
+      // that's the point (zero clients ever attached).
+      await wm.activateAgentWorkerPty(worker, { ...defaultAgentActivationParams, sessionId: 'session-t2' });
+
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+      await mockPty.simulateExit(127);
+
+      const filePath = defaultResolver.getOutputFilePath('session-t2', worker.id);
+      const onDisk = await fs.readFile(filePath, 'utf-8');
+      expect(onDisk).toContain('[internal:agent-spawn-failed]');
+      expect(onDisk).toContain('command=claude');
+      expect(onDisk).toContain('username=testuser');
+
+      const history = await outputFileManager.readHistoryWithOffset('session-t2', worker.id, defaultResolver);
+      expect(history.data).toContain('[internal:agent-spawn-failed]');
+    });
+
+    it('T3: does not append a synthetic message on a non-127 exit', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+      await mockPty.simulateExit(1);
+
+      expect(worker.outputBuffer).not.toContain('internal:agent-spawn-failed');
+    });
+
+    it('T5: healthy exit (0) leaves the output stream byte-identical -- guards against firing on every exit', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const before = worker.outputBuffer;
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+      await mockPty.simulateExit(0);
+
+      expect(worker.outputBuffer).toBe(before);
+      expect(worker.outputBuffer).not.toContain('internal:agent-spawn-failed');
+    });
+
+    // T6 -- CodeRabbit MAJOR regression guard (PR #1315). This is also a
+    // Q14-shaped case (pre-pr-completeness.md): a new resource-acquisition
+    // step (the diagnostic append+flush) was added inside a function whose
+    // existing failure path (the rest of onExit's teardown) predates it, and
+    // the new step must not block that existing rollback.
+    it('T6: teardown still completes (detachPty runs, exit callbacks fire) when a connected client\'s onData throws during the exit-127 fan-out', async () => {
+      const worker = createTestAgentWorker();
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      let onExitFired = false;
+      workerManager.attachCallbacks(worker, {
+        // The concrete reachable trigger CodeRabbit named: a connection's
+        // synchronous onData callback throwing during
+        // appendSyntheticOutput's fan-out loop.
+        onData: () => {
+          throw new Error('boom: synchronous onData throws');
+        },
+        onExit: () => {
+          onExitFired = true;
+        },
+      });
+
+      const mockPty = ptyFactory.instances[ptyFactory.instances.length - 1];
+      // Must not throw/reject: the fix wraps the synthesis call in try/catch
+      // so a throwing onData cannot abort the rest of onExit's teardown.
+      await mockPty.simulateExit(127);
+
+      expect(worker.pty).toBeNull();
+      expect(onExitFired).toBe(true);
     });
   });
 

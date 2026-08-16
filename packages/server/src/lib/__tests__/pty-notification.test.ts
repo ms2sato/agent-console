@@ -279,4 +279,25 @@ describe('buildPtyNotificationText', () => {
     expect(result).toContain('type=ci:failed');
     expect(result).toContain('intent=triage');
   });
+
+  it('builds an internal-agent-spawn-failed notification with command, username, and exitCode (Issue #1294)', () => {
+    const result = buildPtyNotificationText({
+      kind: 'internal-agent-spawn-failed',
+      tag: 'internal:agent-spawn-failed',
+      fields: {
+        command: 'claude',
+        username: 'testuser',
+        exitCode: '127',
+        diagnosis: "usually means a required program is missing for user 'testuser': the spawn shell itself, or the agent command 'claude', is not installed or not on PATH",
+        remedy: "install and authenticate the agent CLI for user 'testuser', or adjust this agent's command template -- check the server log's wrapperCommand field for this event to see which one was actually attempted",
+      },
+      intent: 'triage',
+    });
+
+    expect(result).toContain('[internal:agent-spawn-failed]');
+    expect(result).toContain('command=claude');
+    expect(result).toContain('username=testuser');
+    expect(result).toContain('exitCode=127');
+    expect(result).toContain('intent=triage');
+  });
 });

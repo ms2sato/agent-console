@@ -120,6 +120,19 @@ export interface InternalConditionalWakeupPtyNotification extends BasePtyNotific
   intent: PtyNotificationIntent;
 }
 
+export interface InternalAgentSpawnFailedPtyNotification extends BasePtyNotificationParams {
+  kind: 'internal-agent-spawn-failed';
+  tag: 'internal:agent-spawn-failed';
+  fields: {
+    command: string;
+    username: string;
+    exitCode: string;
+    diagnosis: string;
+    remedy: string;
+  };
+  intent: PtyNotificationIntent;
+}
+
 export type WritePtyNotificationParams =
   | InboundEventPtyNotification
   | InternalMessagePtyNotification
@@ -127,7 +140,8 @@ export type WritePtyNotificationParams =
   | InternalReviewCommentPtyNotification
   | InternalReviewedPtyNotification
   | InternalProcessPtyNotification
-  | InternalConditionalWakeupPtyNotification;
+  | InternalConditionalWakeupPtyNotification
+  | InternalAgentSpawnFailedPtyNotification;
 
 /**
  * Build the structured notification text (`\n[tag] key1=val1 key2=val2

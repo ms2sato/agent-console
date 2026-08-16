@@ -138,6 +138,28 @@ describe('WorkerOutputFileManager', () => {
     });
   });
 
+  describe('forceFlush (Issue #1294)', () => {
+    it('flushes buffered data below the threshold to the live file immediately', async () => {
+      manager.bufferOutput('session-force-flush', 'worker-force-flush', 'below threshold', quickResolver);
+
+      const filePath = manager.getOutputFilePath('session-force-flush', 'worker-force-flush', quickResolver);
+      // Below the 256-byte threshold and before the interval fires: not yet on disk.
+      expect(vol.existsSync(filePath)).toBe(false);
+
+      await manager.forceFlush('session-force-flush', 'worker-force-flush');
+
+      expect(vol.existsSync(filePath)).toBe(true);
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('below threshold');
+    });
+
+    it('is a no-op when nothing is pending', async () => {
+      await expect(manager.forceFlush('session-force-flush-noop', 'worker-force-flush-noop')).resolves.toBeUndefined();
+
+      const filePath = manager.getOutputFilePath('session-force-flush-noop', 'worker-force-flush-noop', quickResolver);
+      expect(vol.existsSync(filePath)).toBe(false);
+    });
+  });
+
   describe('readHistoryWithOffset', () => {
     it('should read full history when no offset specified', async () => {
       // Create file with content
