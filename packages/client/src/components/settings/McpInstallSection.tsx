@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { getServerPort } from '../../lib/server-info';
 import { buildMcpInstallCommand } from '../../lib/mcp-install-url';
 import { logger } from '../../lib/logger';
+import { copyToClipboard } from '../../lib/clipboard';
 
 /**
  * Settings-page section that shows the exact `claude mcp add ...` command
@@ -33,7 +34,7 @@ export function McpInstallSection() {
 
   const handleCopy = async () => {
     try {
-      await navigator.clipboard.writeText(command);
+      await copyToClipboard(command);
       setCopied(true);
       if (timeoutRef.current !== null) {
         clearTimeout(timeoutRef.current);

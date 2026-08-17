@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { createWorktreeAsync } from '../lib/api';
-import { generateTaskId } from '../lib/id';
+import { generateClientId } from '../lib/id';
 import { useWorktreeCreationTasksContext } from '../routes/__root';
 import type { CreateWorktreeFormRequest } from '../components/worktrees/CreateWorktreeForm';
 
@@ -22,7 +22,7 @@ export function useCreateWorktree({ repositoryId, repositoryName }: UseCreateWor
   const clearError = useCallback(() => setError(null), []);
 
   const handleCreateWorktree = useCallback(async (formRequest: CreateWorktreeFormRequest) => {
-    const taskId = generateTaskId();
+    const taskId = generateClientId();
     const request = { ...formRequest, taskId };
 
     try {
