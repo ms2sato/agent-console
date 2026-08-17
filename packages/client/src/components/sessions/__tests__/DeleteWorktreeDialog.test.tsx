@@ -49,7 +49,7 @@ function createMockDeletionContext(
   };
 }
 
-async function renderDialog(ctx?: UseWorktreeDeletionTasksReturn) {
+async function renderDialog(ctx?: UseWorktreeDeletionTasksReturn, initialPath = '/') {
   const onOpenChange = mock(() => {});
   const context = ctx ?? createMockDeletionContext();
   const result = await renderWithRouter(
@@ -62,7 +62,8 @@ async function renderDialog(ctx?: UseWorktreeDeletionTasksReturn) {
         sessionId="session-1"
         sessionTitle="My Session"
       />
-    </WorktreeDeletionTasksContext.Provider>
+    </WorktreeDeletionTasksContext.Provider>,
+    initialPath
   );
   return { ...result, onOpenChange, context };
 }
@@ -106,12 +107,12 @@ describe('DeleteWorktreeDialog', () => {
     expect(url).not.toContain('taskId=');
   });
 
-  it('does not add a task when the API call fails immediately, and surfaces the error instead (invariant-preservation: no task exists to attach the failure to)', async () => {
+  it('does not add a task when the API call fails immediately, and surfaces the error instead (bug-polarity: prior code navigated away before the failure could be shown, unmounting the ErrorDialog)', async () => {
     const user = userEvent.setup();
     mockFetch.mockResolvedValue(
       jsonResponse({ error: 'Network unreachable' }, { ok: false, status: 500 })
     );
-    const { context } = await renderDialog();
+    const { context, router } = await renderDialog(undefined, '/session/session-1');
 
     await user.click(screen.getByRole('button', { name: 'Delete Worktree' }));
 
@@ -119,5 +120,8 @@ describe('DeleteWorktreeDialog', () => {
       expect(screen.getByText('Network unreachable')).toBeTruthy();
     });
     expect(context.addTask).not.toHaveBeenCalled();
+    // The component must still be mounted for the error to be visible above,
+    // which requires that navigation did NOT happen on an immediate failure.
+    expect(router.state.location.pathname).not.toBe('/');
   });
 });

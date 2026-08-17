@@ -167,9 +167,12 @@ describe('AppContext', () => {
       await appContext.jobQueue.enqueue(JOB_TYPES.WORKTREE_DELETE, payload, { jobId, maxAttempts: 1 });
 
       // createTestContext() starts the job queue by default; poll for the
-      // job to reach a terminal state (async processing).
+      // job to reach a terminal state (async processing). Stops on ANY
+      // terminal status (not just 'stalled') so an unexpected 'completed'
+      // doesn't burn the whole poll budget before the assertion below
+      // fails fast with a clear mismatch.
       let job = await appContext.jobQueue.getJob(jobId);
-      for (let i = 0; i < 20 && job?.status !== 'stalled'; i++) {
+      for (let i = 0; i < 100 && job?.status !== 'stalled' && job?.status !== 'completed'; i++) {
         await new Promise((resolve) => setTimeout(resolve, 20));
         job = await appContext.jobQueue.getJob(jobId);
       }

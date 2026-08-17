@@ -108,11 +108,24 @@ export function WorktreeDeletionTaskPageContent({ taskId }: { taskId: string }) 
   // Recovery path: only fetch when there is no live in-memory task. The
   // in-memory context (populated by this tab witnessing the deletion, or by
   // a live WebSocket broadcast) is always preferred when present.
+  //
+  // Poll while the recovered job is still non-terminal: a plain missed
+  // broadcast (not a reconnect -- the WS can stay connected the whole time)
+  // would otherwise leave this page showing "deleting" forever, since a
+  // one-shot fetch has no other way to observe the job reaching a terminal
+  // status. Polling only ever applies to the recovery path (`enabled`
+  // already gates the fetch itself on `!liveTask`) -- a live in-memory task
+  // doesn't need it, since the broadcast IS the live push for that path.
   const jobQuery = useQuery({
     queryKey: jobKeys.detail(taskId),
     queryFn: () => fetchJob(taskId),
     enabled: !liveTask,
     retry: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      if (status === JOB_STATUS.COMPLETED || status === JOB_STATUS.STALLED) return false;
+      return 5000;
+    },
   });
 
   // Re-derive the recovery-path read after an app-WS reconnect, in case the

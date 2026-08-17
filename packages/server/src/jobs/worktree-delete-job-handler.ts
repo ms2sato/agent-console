@@ -60,6 +60,22 @@ export interface WorktreeDeleteHandlerDeps {
  * with `last_error` set (`maxAttempts: 1` at enqueue time means this happens
  * on the very first failure, no retry).
  */
+/**
+ * Broadcasts a message, swallowing any error the broadcast itself throws.
+ *
+ * Used at every `broadcastToApp` call site in this handler so a broadcast
+ * failure never corrupts the job's own success/failure outcome -- e.g.
+ * replacing the deletion error being thrown right after it, or turning a
+ * successful deletion into a thrown/stalled job.
+ */
+function safeBroadcast(broadcastToApp: (msg: AppServerMessage) => void, msg: AppServerMessage): void {
+  try {
+    broadcastToApp(msg);
+  } catch {
+    // If broadcast fails, we've already logged the error above
+  }
+}
+
 export function registerWorktreeDeleteJobHandler(
   jobQueue: JobQueue,
   deps: WorktreeDeleteHandlerDeps,
@@ -77,23 +93,19 @@ export function registerWorktreeDeleteJobHandler(
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
         logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
-        try {
-          deps.broadcastToApp({
-            type: 'worktree-deletion-failed',
-            taskId,
-            sessionIds: [],
-            error: errorMessage,
-          });
-        } catch {
-          // If broadcast fails, we've already logged the error above
-        }
+        safeBroadcast(deps.broadcastToApp, {
+          type: 'worktree-deletion-failed',
+          taskId,
+          sessionIds: [],
+          error: errorMessage,
+        });
         throw error instanceof Error ? error : new Error(errorMessage);
       }
 
       const sessionIds = result.sessionIds ?? [];
 
       if (!result.success) {
-        deps.broadcastToApp({
+        safeBroadcast(deps.broadcastToApp, {
           type: 'worktree-deletion-failed',
           taskId,
           sessionIds,
@@ -106,7 +118,7 @@ export function registerWorktreeDeleteJobHandler(
         throw new Error(result.error || 'Failed to remove worktree');
       }
 
-      deps.broadcastToApp({
+      safeBroadcast(deps.broadcastToApp, {
         type: 'worktree-deletion-completed',
         taskId,
         sessionIds,

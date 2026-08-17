@@ -1870,7 +1870,7 @@ describe('API Routes Integration', () => {
       }
 
       /**
-       * Fetch the single enqueued `worktree:delete` job's payload and run it
+       * Fetch the enqueued `worktree:delete` job's payload by id and run it
        * through the REAL `registerWorktreeDeleteJobHandler` handler (not a
        * re-implementation) -- same harness shape as
        * `jobs/__tests__/handlers.test.ts` and
@@ -1878,11 +1878,17 @@ describe('API Routes Integration', () => {
        * `.start()`ed in this file's `beforeEach`, so the enqueued job stays
        * `pending` until driven explicitly here -- deterministic, no timer
        * race (Issue #1327).
+       *
+       * Selects by `jobId` (rather than `getJobs({type}).jobs[0]`, ordered by
+       * `created_at desc`) because `testJobQueue` is shared across tests in
+       * this file and can accumulate rows with the same millisecond
+       * timestamp -- picking by insertion order can silently grab the wrong
+       * job.
        */
-      async function driveEnqueuedWorktreeDeleteJob(): Promise<void> {
-        const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
-        expect(jobs.length).toBeGreaterThan(0);
-        const payload = JSON.parse(jobs[0]!.payload) as WorktreeDeletePayload;
+      async function driveEnqueuedWorktreeDeleteJob(jobId: string): Promise<void> {
+        const job = await testJobQueue!.getJob(jobId);
+        expect(job).not.toBeNull();
+        const payload = JSON.parse(job!.payload) as WorktreeDeletePayload;
 
         const handlers = new Map<string, JobHandler<unknown>>();
         const fakeQueue = {
@@ -2040,7 +2046,7 @@ describe('API Routes Integration', () => {
           expect(typeof body.jobId).toBe('string');
 
           // Drive the enqueued job deterministically (no background timer).
-          await driveEnqueuedWorktreeDeleteJob();
+          await driveEnqueuedWorktreeDeleteJob(body.jobId);
 
           // Verify the cleanup command was executed via Bun.spawn
           expect(bunSpawnCalls.length).toBe(1);
@@ -2155,9 +2161,10 @@ describe('API Routes Integration', () => {
           { method: 'DELETE' }
         );
         expect(res.status).toBe(202);
+        const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
         // Drive the enqueued job deterministically (no background timer).
-        await driveEnqueuedWorktreeDeleteJob();
+        await driveEnqueuedWorktreeDeleteJob(jobId);
 
         // Verify exact 3-step order: killSessionWorkers -> removeWorktree -> deleteSession
         expect(operationOrder).toEqual(['killSessionWorkers', 'removeWorktree', 'deleteSession']);
@@ -2265,7 +2272,7 @@ describe('API Routes Integration', () => {
         const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
         // Drive the enqueued job deterministically (no background timer).
-        await driveEnqueuedWorktreeDeleteJob();
+        await driveEnqueuedWorktreeDeleteJob(jobId);
 
         // Workers were killed (to release directory handles)
         expect(killSpy).toHaveBeenCalled();
@@ -2334,7 +2341,7 @@ describe('API Routes Integration', () => {
         const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
         // Drive the enqueued job deterministically (no background timer).
-        await driveEnqueuedWorktreeDeleteJob();
+        await driveEnqueuedWorktreeDeleteJob(jobId);
 
         // Verify broadcastToApp was called exactly once with worktree-deletion-completed,
         // and the payload contains ALL deleted session IDs.
@@ -2370,7 +2377,7 @@ describe('API Routes Integration', () => {
         const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
         // Drive the enqueued job deterministically (no background timer).
-        await driveEnqueuedWorktreeDeleteJob();
+        await driveEnqueuedWorktreeDeleteJob(jobId);
 
         // Verify broadcastToApp WAS called exactly once with worktree-deletion-completed
         // and sessionIds is an empty array (one-broadcast-per-task contract).
@@ -2433,7 +2440,7 @@ describe('API Routes Integration', () => {
         const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
         // Drive the enqueued job deterministically (no background timer).
-        await driveEnqueuedWorktreeDeleteJob();
+        await driveEnqueuedWorktreeDeleteJob(jobId);
 
         // Verify broadcastToApp was called exactly once with worktree-deletion-failed,
         // and the payload contains ALL associated session IDs.
@@ -2548,7 +2555,7 @@ describe('API Routes Integration', () => {
         const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
         // Drive the enqueued job deterministically (no background timer).
-        await driveEnqueuedWorktreeDeleteJob();
+        await driveEnqueuedWorktreeDeleteJob(jobId);
 
         const broadcastSpy = mockBroadcastToApp;
 

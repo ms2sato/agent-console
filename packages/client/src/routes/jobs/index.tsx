@@ -199,6 +199,9 @@ function JobsPage() {
             <option value={JOB_TYPES.CLEANUP_REPOSITORY}>
               {JOB_TYPE_LABELS[JOB_TYPES.CLEANUP_REPOSITORY]}
             </option>
+            <option value={JOB_TYPES.WORKTREE_DELETE}>
+              {JOB_TYPE_LABELS[JOB_TYPES.WORKTREE_DELETE]}
+            </option>
             <option value={JOB_TYPES.INBOUND_EVENT_PROCESS}>
               {JOB_TYPE_LABELS[JOB_TYPES.INBOUND_EVENT_PROCESS]}
             </option>

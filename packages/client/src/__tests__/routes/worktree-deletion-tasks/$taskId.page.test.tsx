@@ -1,6 +1,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { screen, cleanup, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { JOB_STATUS, JOB_TYPES } from '@agent-console/shared';
 import type { Job } from '@agent-console/shared';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { WorktreeDeletionTasksContext } from '../../../contexts/root-contexts';
@@ -66,7 +67,7 @@ function createMockDeletionContext(
 function makeJob(overrides: Partial<Job> = {}): Job {
   return {
     id: 'job-1',
-    type: 'worktree:delete',
+    type: JOB_TYPES.WORKTREE_DELETE,
     payload: {
       jobId: 'job-1',
       repoId: 'repo-1',
@@ -74,7 +75,7 @@ function makeJob(overrides: Partial<Job> = {}): Job {
       force: false,
       requestUsername: null,
     },
-    status: 'completed',
+    status: JOB_STATUS.COMPLETED,
     priority: 0,
     attempts: 1,
     maxAttempts: 1,
@@ -102,7 +103,7 @@ describe('WorktreeDeletionTaskPageContent', () => {
   // completed" card whenever no in-memory task exists, regardless of
   // whether the deletion actually succeeded.
   it('T1 (bug-polarity): renders the completed terminal state for a completed job with no in-memory task, not the not-found card', async () => {
-    mockFetch.mockResolvedValue(jsonResponse(makeJob({ status: 'completed' })));
+    mockFetch.mockResolvedValue(jsonResponse(makeJob({ status: JOB_STATUS.COMPLETED })));
 
     await renderPage('job-1');
 
@@ -116,7 +117,7 @@ describe('WorktreeDeletionTaskPageContent', () => {
 
   it('T2 (new-mechanism contract): a stalled job renders the failed state with job.lastError as the error text', async () => {
     mockFetch.mockResolvedValue(
-      jsonResponse(makeJob({ status: 'stalled', lastError: 'Uncommitted changes in worktree' }))
+      jsonResponse(makeJob({ status: JOB_STATUS.STALLED, lastError: 'Uncommitted changes in worktree' }))
     );
 
     await renderPage('job-2');
@@ -131,7 +132,7 @@ describe('WorktreeDeletionTaskPageContent', () => {
   });
 
   it('T3 (new-mechanism contract): a pending/processing job with no in-memory task renders the deleting state', async () => {
-    mockFetch.mockResolvedValue(jsonResponse(makeJob({ status: 'processing' })));
+    mockFetch.mockResolvedValue(jsonResponse(makeJob({ status: JOB_STATUS.PROCESSING })));
 
     await renderPage('job-3');
 
@@ -219,9 +220,62 @@ describe('WorktreeDeletionTaskPageContent', () => {
     expect(screen.getByText('Checking task status...')).toBeTruthy();
     expect(screen.queryByText('No Record of This Task')).toBeNull();
 
-    resolveFetch(jsonResponse(makeJob({ status: 'completed' })));
+    resolveFetch(jsonResponse(makeJob({ status: JOB_STATUS.COMPLETED })));
     await waitFor(() => {
       expect(screen.getByText('Worktree Deleted')).toBeTruthy();
     });
   });
+
+  // M1 (bug-polarity): a plain missed completion broadcast -- not a
+  // reconnect, the WS stays connected the whole time -- must not leave the
+  // page stuck showing "deleting" forever. Must fail against the
+  // pre-`refetchInterval` code, which fetches the recovery-path job exactly
+  // once and therefore never observes a later status change.
+  //
+  // This test uses real timers rather than faked ones: this codebase has no
+  // established fake-timer harness for bun:test, and the assertions below
+  // exercise the actual `refetchInterval` timer firing (or not firing),
+  // which faking would only simulate. `it`'s numeric third argument raises
+  // the per-test timeout past the wall-clock waits below (see the sibling
+  // `process-tree.test.ts` / `routes-history.test.ts` pattern for the same
+  // `it(name, fn, timeoutMs)` shape).
+  it(
+    'M1: polls the recovery-path job every 5s while non-terminal, and stops once it reaches a terminal status',
+    async () => {
+      let callCount = 0;
+      mockFetch.mockImplementation(() => {
+        callCount += 1;
+        // First fetch observes the job still in progress; every fetch after
+        // that observes it completed -- simulates the completion happening
+        // between the first fetch and the next poll tick.
+        const status = callCount === 1 ? JOB_STATUS.PROCESSING : JOB_STATUS.COMPLETED;
+        return Promise.resolve(jsonResponse(makeJob({ status })));
+      });
+
+      await renderPage('job-polling');
+
+      await waitFor(() => {
+        expect(screen.getByText('Deleting worktree...')).toBeTruthy();
+      });
+      expect(callCount).toBe(1);
+
+      // Nothing else re-renders this component (no in-memory task, no WS
+      // broadcast) -- reaching the completed view is only possible if the
+      // `refetchInterval` timer actually fires a second fetch on its own.
+      await waitFor(
+        () => {
+          expect(screen.getByText('Worktree Deleted')).toBeTruthy();
+        },
+        { timeout: 7000 }
+      );
+      expect(callCount).toBe(2);
+
+      // The job is now terminal (`completed`) -- confirm polling actually
+      // stopped by waiting past another full interval window and checking
+      // no third fetch happened.
+      await new Promise((resolve) => setTimeout(resolve, 6000));
+      expect(callCount).toBe(2);
+    },
+    15000
+  );
 });

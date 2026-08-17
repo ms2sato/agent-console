@@ -35,12 +35,10 @@ export function DeleteWorktreeDialog({
   const { errorDialogProps, showError } = useErrorDialog();
 
   const handleDeleteWorktree = async (force: boolean = false) => {
-    // Close dialog and navigate immediately -- UX stays snappy, not blocked
-    // on the network round trip. Session removal from the UI is handled by
-    // the WebSocket broadcast from the server (no optimistic update, to
-    // avoid a race condition / flicker).
+    // Close the dialog immediately -- UX stays snappy. Do NOT navigate yet:
+    // navigating away would unmount this component (and its ErrorDialog)
+    // before an immediate API failure could be surfaced to the user.
     onOpenChange(false);
-    navigate({ to: '/' });
 
     try {
       // Call async API. The server generates and owns the job id -- task
@@ -54,12 +52,13 @@ export function DeleteWorktreeDialog({
         worktreePath,
       });
       // Further progress is handled via WebSocket (or the recovery-read
-      // path on the task detail page).
+      // path on the task detail page). Only navigate away once the task
+      // actually exists to track.
+      navigate({ to: '/' });
     } catch (err) {
       // No task was ever created, so there's nothing to mark as failed.
-      // This component navigates away immediately above, so a local error
-      // dialog may already be unmounted by the time this resolves; log as
-      // a fallback so the failure is never silently dropped.
+      // The component stays mounted (we didn't navigate away), so the
+      // local ErrorDialog can actually surface this failure.
       const message = err instanceof Error ? err.message : 'Failed to delete worktree';
       logger.error('Failed to delete worktree:', err);
       showError('Failed to Delete Worktree', message);
