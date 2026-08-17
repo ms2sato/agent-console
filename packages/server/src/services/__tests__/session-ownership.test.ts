@@ -75,7 +75,7 @@ describe('Session Ownership (createdBy)', () => {
       jobQueue: testJobQueue,
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,

@@ -162,7 +162,7 @@ describe('create_html_artifact', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
       userRepository,
-      repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);

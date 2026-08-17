@@ -21,6 +21,10 @@ import {
   type RunAsUserResult,
 } from '../services/privilege-elevation.js';
 import { isErrnoException } from './type-guards.js';
+import { isValidSlug } from './session-data-path.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('git');
 
 /** Default timeout for local git operations (30 seconds) */
 const DEFAULT_GIT_TIMEOUT_MS = 30000;
@@ -737,6 +741,21 @@ export function parseOrgRepo(remoteUrl: string): string | null {
 
 /**
  * Get org/repo from a repository path by reading its remote URL.
+ *
+ * Distinct from {@link deriveRepositorySlug}, which serves a different
+ * downstream contract on the same underlying remote-URL parse:
+ *
+ * - {@link getOrgRepoFromPath} returns `Promise<string | null>` with no
+ *   fallback. Right for callers that need to *identify* whether a
+ *   repository has a resolvable GitHub-shaped remote at all (`routes/
+ *   sessions.ts`'s PR-link resolution, `services/inbound/
+ *   resolve-targets.ts`'s webhook target matching) -- `null` is a real,
+ *   meaningful answer they branch on.
+ * - {@link deriveRepositorySlug} returns `Promise<string>`, is total
+ *   (never throws), and always produces an *addressable* slug by falling
+ *   back to a caller-supplied value. Right for callers deriving a
+ *   filesystem path (worktree/template placement, session-data path
+ *   resolution) where "no remote" must still resolve to *something*.
  */
 export async function getOrgRepoFromPath(repoPath: string): Promise<string | null> {
   const remoteUrl = await getRemoteUrl(repoPath);
@@ -744,6 +763,102 @@ export async function getOrgRepoFromPath(repoPath: string): Promise<string | nul
     return null;
   }
   return parseOrgRepo(remoteUrl);
+}
+
+/**
+ * Reduce a remote URL to a credential-safe diagnostic shape for logging.
+ *
+ * A remote URL can embed HTTP(S) credentials (`https://user:token@host/...`),
+ * and this is used specifically on the branch that sees URLs which failed
+ * to parse as `org/repo` -- the branch most likely to see an unusual or
+ * malformed URL, which is also the shape most likely to carry embedded
+ * userinfo. Never returns the raw value.
+ *
+ * When `remoteUrl` parses as a WHATWG URL, returns `protocol//hostname`
+ * only -- `URL`'s `.protocol`/`.hostname` accessors are userinfo-free by
+ * construction, so this is safe even when the input had a `user:pass@`
+ * component. Falls back to a fixed marker for scp-style SSH shapes
+ * (`git@host:org/repo`, not a valid WHATWG URL) or any other shape that
+ * doesn't parse -- both carry no credential-leak risk either way, but a
+ * fixed marker avoids guessing at ad-hoc redaction for a shape too
+ * malformed to reason about structurally.
+ *
+ * @internal Exported for testing.
+ */
+export function describeRemoteUrlShapeForLogging(remoteUrl: string): string {
+  try {
+    const parsed = new URL(remoteUrl);
+    return `${parsed.protocol}//${parsed.hostname}`;
+  } catch {
+    return '<non-URL remote shape>';
+  }
+}
+
+/**
+ * Single writer for deriving a repository's canonical `org/repo` slug from
+ * its remote (see `docs/design/session-data-path.md`).
+ *
+ * See {@link getOrgRepoFromPath}'s doc comment for why that sibling helper
+ * is not redundant with this one — different downstream contract
+ * (nullable, no fallback, remote-identification) on the same underlying
+ * remote-URL parse.
+ *
+ * Total: never throws. Every branch that cannot produce a valid `org/repo`
+ * value returns `fallback` instead:
+ *   - no remote configured (the common case for local-only repositories)
+ *   - a remote URL that does not match a recognized SSH/HTTPS shape
+ *   - a parsed `org/repo` value that fails `isValidSlug` (traversal
+ *     segments, disallowed characters)
+ *   - any unexpected exception (defense-in-depth; `getRemoteUrl` already
+ *     swallows git-command failures via `gitSafe`, so this branch is not
+ *     currently reachable in production, but keeps the function total if
+ *     that chain changes in the future)
+ *
+ * Totality is load-bearing: this function is called from inside session
+ * creation (`SessionManager.createSession`), which has an existing
+ * failure-rollback path. A never-throws helper means the call cannot
+ * introduce a new rejection route there.
+ *
+ * A missing remote is expected/common and is not logged. An unparseable
+ * remote URL or a slug-validation failure is surprising and logged at WARN.
+ *
+ * @param repoPath Absolute path to the repository's working tree.
+ * @param fallback Value to return when no valid `org/repo` can be derived.
+ *   Callers must pass `path.basename(repoPath)` — never a display name —
+ *   so address derivation never depends on user-editable metadata.
+ */
+export async function deriveRepositorySlug(
+  repoPath: string,
+  fallback: string,
+): Promise<string> {
+  try {
+    const remoteUrl = await getRemoteUrl(repoPath);
+    if (!remoteUrl) {
+      // No origin remote configured (or the underlying git command failed,
+      // which getRemoteUrl/gitSafe already swallow) -- expected for
+      // local-only repositories, not worth a warning.
+      return fallback;
+    }
+    const orgRepo = parseOrgRepo(remoteUrl);
+    if (!orgRepo) {
+      logger.warn(
+        { repoPath, remoteUrlShape: describeRemoteUrlShapeForLogging(remoteUrl) },
+        'Remote URL did not match a parseable org/repo shape; using fallback slug',
+      );
+      return fallback;
+    }
+    if (!isValidSlug(orgRepo)) {
+      logger.warn(
+        { repoPath, orgRepo },
+        'Derived org/repo slug failed validation; using fallback slug',
+      );
+      return fallback;
+    }
+    return orgRepo;
+  } catch (err) {
+    logger.warn({ err, repoPath }, 'Repository slug derivation threw unexpectedly; using fallback slug');
+    return fallback;
+  }
 }
 
 // ============================================================

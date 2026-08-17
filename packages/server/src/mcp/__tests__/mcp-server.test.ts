@@ -546,7 +546,7 @@ describe('MCP Server Tools', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       runAsUserImpl: fakeRunAsUserAlwaysSuccess,
       spawnAsUserFn: fakeEmbeddedSpawn.fn,
-      repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);
@@ -1745,11 +1745,18 @@ describe('MCP Server Tools', () => {
     });
 
     it('should resolve target path via SessionManager (uses persisted slug, not display name)', async () => {
-      // Register a repository whose persisted slug ('test-repo') is exposed by
-      // SessionManager via repositoryLookup.getRepositorySlug. Send a message
-      // to a worktree session and verify the message file path lands under
-      // the repository scope dir, not the `_quick/` fallback that the previous
-      // implementation would have produced.
+      // Register a repository. SessionManager resolves the session's data
+      // path via repositoryLookup.getRepositorySlug -> RepositoryManager's
+      // deriveRepositorySlug-backed derivation (Issue #1300), NOT the
+      // repository's display name. Pin the mocked derivation to 'test-repo'
+      // so this test can assert the resolved path independent of what the
+      // derivation itself returns (that behavior is covered by
+      // git.test.ts's deriveRepositorySlug suite and
+      // repository-manager.test.ts's getRepositorySlug suite). Send a
+      // message to a worktree session and verify the message file path
+      // lands under the repository scope dir, not the `_quick/` fallback
+      // that the previous implementation would have produced.
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('test-repo'));
       await registerTestRepo('repo-1', 'test-repo', '/test/repo');
 
       const targetSession = await sessionManager.createSession({

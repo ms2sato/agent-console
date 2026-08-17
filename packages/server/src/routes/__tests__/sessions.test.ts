@@ -71,7 +71,7 @@ describe('Sessions API - Pause/Resume', () => {
       jobQueue: testJobQueue,
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,
@@ -372,7 +372,7 @@ describe('Sessions API - POST /api/sessions (repository_not_found)', () => {
       mcpTokenRegistry: new McpTokenRegistry(),
       // Repository lookup never resolves any id — every worktree-session create
       // must therefore fail fast with RepositoryNotFoundError.
-      repositoryLookup: { getRepositorySlug: () => undefined },
+      repositoryLookup: { getRepositorySlug: async () => undefined },
       repositoryEnvLookup: {
         getRepositoryInfo: () => undefined,
         getWorktreeIndexNumber: async () => 0,
@@ -465,7 +465,7 @@ describe('Sessions API - POST /api/sessions (embeddedAgentId pre-validation)', (
       sessionRepository,
       jobQueue: testJobQueue,
       agentManager: agentMgr,
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,
@@ -574,7 +574,7 @@ describe('Sessions API - GET /api/sessions/:id (orphaned visibility)', () => {
       jobQueue: testJobQueue,
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,
@@ -708,7 +708,7 @@ describe('Sessions API - POST /api/sessions (shared sessions)', () => {
       jobQueue: testJobQueue,
       agentManager: agentMgr,
       mcpTokenRegistry: new McpTokenRegistry(),
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,

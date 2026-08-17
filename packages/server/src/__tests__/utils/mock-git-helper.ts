@@ -67,6 +67,9 @@ export const mockGit = {
     return null;
   }) as Mock<(remoteUrl: string) => string | null>,
   getOrgRepoFromPath: mock(() => Promise.resolve('owner/repo')) as Mock<AsyncStringNullFn>,
+  deriveRepositorySlug: mock(() => Promise.resolve('owner/repo')) as Mock<
+    (repoPath: string, fallback: string) => Promise<string>
+  >,
 
   // Remote fetch operations
   fetchRemote: mock(() => Promise.resolve()) as Mock<
@@ -123,6 +126,7 @@ export function resetGitMocks(): void {
   mockGit.removeWorktree.mockReset();
   mockGit.parseOrgRepo.mockReset();
   mockGit.getOrgRepoFromPath.mockReset();
+  mockGit.deriveRepositorySlug.mockReset();
   mockGit.fetchRemote.mockReset();
   mockGit.fetchAllRemote.mockReset();
   mockGit.getCommitsBehind.mockReset();
@@ -162,6 +166,7 @@ export function resetGitMocks(): void {
     return null;
   });
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/repo'));
+  mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('owner/repo'));
   mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
   mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
   mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));

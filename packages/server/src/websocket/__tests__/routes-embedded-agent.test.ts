@@ -210,7 +210,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
       embeddedAgentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
       userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,

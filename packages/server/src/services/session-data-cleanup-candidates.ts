@@ -4,6 +4,7 @@ import {
   computeSessionDataBaseDir,
   InvalidSessionDataScopeError,
 } from '../lib/session-data-path.js';
+import { deriveRepositorySlug } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 
 const logger = createLogger('service:session-data-cleanup-candidates');
@@ -13,11 +14,11 @@ export interface BuildSessionDataCleanupTargetsParams {
   repositoryId: string;
   repoPath: string;
   repoName: string;
-  /** MUST be the real `RepositoryManager.getRepositorySlug` accessor (or an
-   *  equivalent) — never a re-implementation of its derivation. If a future
-   *  dedicated slug-derivation helper lands, this call site follows
-   *  automatically. */
-  getRepositorySlug: (id: string) => string | undefined;
+  /** MUST be the real `deriveRepositorySlug` (`lib/git.ts`) — never a
+   *  re-implementation of its derivation. Defaults to the real function;
+   *  injectable so tests can stub the derivation without touching the git
+   *  filesystem. */
+  deriveSlug?: (repoPath: string, fallback: string) => Promise<string>;
   /** Injectable for tests; defaults to a real `fs/promises.access` check. */
   pathExists?: (p: string) => Promise<boolean>;
 }
@@ -36,12 +37,13 @@ const defaultPathExists = async (p: string): Promise<boolean> => {
  * roots) to remove when a repository is unregistered.
  *
  * Candidate slugs, deduplicated:
- *   1. The canonical slug from `getRepositorySlug(repositoryId)` (current
- *      session-creation derivation).
+ *   1. The canonical slug from `deriveSlug(repoPath, basename(repoPath))`
+ *      (the same derivation now used at session-creation time). Never
+ *      falsy: `deriveRepositorySlug` is total.
  *   2. `path.basename(repoPath)` — closed legacy-flat set.
  *   3. `repoName` — closed legacy-flat set.
  * Do NOT extend the legacy set with new derivations; only #1's canonical
- * accessor should change as the codebase evolves.
+ * derivation should change as the codebase evolves.
  *
  * Each candidate is converted to a path EXCLUSIVELY via
  * `computeSessionDataBaseDir` (the validating single writer). A candidate
@@ -53,10 +55,11 @@ export async function buildSessionDataCleanupTargets(
   params: BuildSessionDataCleanupTargetsParams,
 ): Promise<string[]> {
   const pathExists = params.pathExists ?? defaultPathExists;
+  const deriveSlug = params.deriveSlug ?? deriveRepositorySlug;
   const candidateSlugs = new Set<string>();
 
-  const canonicalSlug = params.getRepositorySlug(params.repositoryId);
-  if (canonicalSlug) candidateSlugs.add(canonicalSlug);
+  const canonicalSlug = await deriveSlug(params.repoPath, path.basename(params.repoPath));
+  candidateSlugs.add(canonicalSlug);
   candidateSlugs.add(path.basename(params.repoPath));
   candidateSlugs.add(params.repoName);
 

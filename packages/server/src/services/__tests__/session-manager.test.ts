@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import { JOB_TYPES } from '@agent-console/shared';
 import type { CreateSessionRequest, CreateWorkerParams, Session, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
-import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from '../../__tests__/utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { defaultRepositoryLookup, defaultRepositoryEnvLookup, makeRepositoryEnvLookup } from '../../__tests__/utils/repository-lookup-mock.js';
@@ -161,7 +161,7 @@ describe('SessionManager', () => {
         agentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
         // Lookup returns undefined for every id — creation must fail fast.
-        repositoryLookup: { getRepositorySlug: () => undefined },
+        repositoryLookup: { getRepositorySlug: async () => undefined },
         repositoryEnvLookup: defaultRepositoryEnvLookup,
       });
 
@@ -177,6 +177,180 @@ describe('SessionManager', () => {
 
       const sessionsAfter = await manager.getSessionRepository().findAll();
       expect(sessionsAfter.length).toBe(sessionsBefore.length);
+    });
+  });
+
+  // ===========================================================================
+  // Issue #1300: session creation's frozen dataScopeSlug converges with the
+  // worktree/template placement derivation (org/repo from the repository's
+  // git remote). Wired through the REAL RepositoryManager.getRepositorySlug
+  // -> deriveRepositorySlug chain (not a test-only stub), so these tests
+  // exercise the production single-writer chain end to end -- this is the
+  // I-2 fix itself (S2 item 3).
+  // ===========================================================================
+
+  describe('createSession dataScopeSlug derivation (Issue #1300)', () => {
+    const REMOTE_REPO_DIR = '/test/remote-repo';
+
+    async function getRepositoryManagerForTest() {
+      const module = await import(`../repository-manager.js?v=${++importCounter}`);
+      return module.RepositoryManager.create({ jobQueue: testJobQueue });
+    }
+
+    async function getSessionManagerWithRealRepositoryLookup(repositoryManager: {
+      getRepositorySlug: (id: string) => Promise<string | undefined>;
+    }) {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager.getRepositorySlug(id) },
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+    }
+
+    // T1 (bug-polarity): fails against today's unmodified code, which
+    // freezes dataScopeSlug as the flat repository name (`repo.name`)
+    // regardless of whether the repository has a remote.
+    it('freezes dataScopeSlug as org/repo for a remote-backed repository (bug-polarity)', async () => {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        ...createMockGitRepoFiles(REMOTE_REPO_DIR),
+      });
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('acme/remote-repo'));
+
+      const repositoryManager = await getRepositoryManagerForTest();
+      const repo = await repositoryManager.registerRepository(REMOTE_REPO_DIR);
+      // The bug this test guards against: repo.name is the flat basename,
+      // NOT the org/repo shape -- if createSession derived from repo.name
+      // (today's behavior) instead of calling deriveRepositorySlug, this
+      // assertion's premise (they differ) would be vacuous.
+      expect(repo.name).toBe('remote-repo');
+
+      const manager = await getSessionManagerWithRealRepositoryLookup(repositoryManager);
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: repo.id,
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted!.dataScopeSlug).toBe('acme/remote-repo');
+    });
+
+    // T2 (invariant): local-only repo -> basename slug, byte-identical to
+    // today's behavior. Catches the helper's fallback accidentally becoming
+    // something other than path.basename, or the derivation throwing when
+    // no remote is configured.
+    it('freezes dataScopeSlug as the repository basename for a local-only repository (invariant)', async () => {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        ...createMockGitRepoFiles(REMOTE_REPO_DIR),
+      });
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation((_repoPath: string, fallback: string) => Promise.resolve(fallback));
+
+      const repositoryManager = await getRepositoryManagerForTest();
+      const repo = await repositoryManager.registerRepository(REMOTE_REPO_DIR);
+      expect(repo.name).toBe('remote-repo');
+
+      const manager = await getSessionManagerWithRealRepositoryLookup(repositoryManager);
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: repo.id,
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      expect(persisted!.dataScopeSlug).toBe('remote-repo');
+    });
+
+    // T4 (S1 totality + sanitization polarity): even though
+    // deriveRepositorySlug itself is total and never returns a hostile
+    // value in production, createSession's own isValidSlug guard
+    // (session-manager.ts, pre-existing) must still reject a hostile value
+    // rather than silently persist a traversal-shaped slug, if the
+    // repositoryLookup ever returned one. This proves the async migration
+    // introduced no new rejection route AROUND that guard (Q14): the
+    // rejection is still a controlled InvalidSessionDataScopeError, not an
+    // unhandled exception or a persisted traversal path.
+    it('rejects session creation via the existing slug validator when the resolved slug is hostile', async () => {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        ...createMockGitRepoFiles(REMOTE_REPO_DIR),
+      });
+      mockGit.deriveRepositorySlug.mockReset();
+      // Simulates a hostile value reaching the repositoryLookup boundary
+      // (never happens with the real deriveRepositorySlug, which validates
+      // internally) to confirm createSession's own guard still catches it.
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('../etc'));
+
+      const repositoryManager = await getRepositoryManagerForTest();
+      const repo = await repositoryManager.registerRepository(REMOTE_REPO_DIR);
+
+      const manager = await getSessionManagerWithRealRepositoryLookup(repositoryManager);
+      const sessionsBefore = await manager.getSessionRepository().findAll();
+
+      await expect(manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: repo.id,
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      })).rejects.toThrow();
+
+      const sessionsAfter = await manager.getSessionRepository().findAll();
+      expect(sessionsAfter.length).toBe(sessionsBefore.length);
+    });
+
+    // T3 (invariant -- the frozen-slug property the forward-only ruling
+    // rests on): once a session's dataScopeSlug is persisted at creation
+    // time, its resolved data directory never re-derives from the
+    // repository's current remote state. This is what makes the
+    // forward-only fix safe -- draining flat directories naturally as
+    // their sessions are deleted, rather than migrating them, depends on
+    // existing sessions never picking up a new derivation on a later read.
+    it('resolves an existing session\'s data directory from its frozen slug, never re-deriving on read', async () => {
+      setupMemfs({
+        [`${TEST_CONFIG_DIR}/.keep`]: '',
+        ...createMockGitRepoFiles(REMOTE_REPO_DIR),
+      });
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('org-a/remote-repo'));
+
+      const repositoryManager = await getRepositoryManagerForTest();
+      const repo = await repositoryManager.registerRepository(REMOTE_REPO_DIR);
+      const manager = await getSessionManagerWithRealRepositoryLookup(repositoryManager);
+
+      const session = await manager.createSession({
+        type: 'worktree',
+        locationPath: '/test/path',
+        repositoryId: repo.id,
+        worktreeId: 'main',
+        agentId: 'claude-code',
+      });
+
+      const resolverBefore = manager.getPathResolverForSessionId(session.id);
+      expect(resolverBefore?.getOutputsDir()).toContain('org-a/remote-repo');
+
+      // Simulate the repository's remote changing after session creation
+      // (e.g. the remote was reconfigured, or the repo was re-registered
+      // pointing at a different org). Per the forward-only ruling, this
+      // MUST NOT affect the already-created session's resolved path.
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('org-b/remote-repo'));
+
+      const resolverAfter = manager.getPathResolverForSessionId(session.id);
+      expect(resolverAfter?.getOutputsDir()).toContain('org-a/remote-repo');
+      expect(resolverAfter?.getOutputsDir()).not.toContain('org-b/remote-repo');
     });
   });
 
@@ -4980,7 +5154,7 @@ describe('SessionManager', () => {
         jobQueue: testJobQueue,
         agentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
-        repositoryLookup: { getRepositorySlug: (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
+        repositoryLookup: { getRepositorySlug: async (id: string) => (id === 'repo-1' ? 'my-repo' : undefined) },
         repositoryEnvLookup: envLookup,
       });
 

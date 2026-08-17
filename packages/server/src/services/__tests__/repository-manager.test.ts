@@ -75,8 +75,8 @@ describe('RepositoryManager', () => {
     mockProcess.markAlive(process.pid);
 
     // Reset git mocks
-    mockGit.getOrgRepoFromPath.mockReset();
-    mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('test-org/repo'));
+    mockGit.deriveRepositorySlug.mockReset();
+    mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('test-org/repo'));
 
     // Create production repository backed by in-memory SQLite
     // This tests the actual production code path instead of a mock
@@ -923,12 +923,12 @@ describe('RepositoryManager', () => {
       });
 
       it('does not double-delete or error when the org/repo dir and session-data slug coincide (local-only repo)', async () => {
-        // Local-only repo: getOrgRepoFromPath falls back to path.basename,
+        // Local-only repo: deriveRepositorySlug falls back to path.basename,
         // so repoDir's basename equals repo.name -- the canonical
         // session-data slug and the repoDir org-component collapse to the
         // same directory.
-        mockGit.getOrgRepoFromPath.mockReset();
-        mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve(null));
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation((_repoPath: string, fallback: string) => Promise.resolve(fallback));
 
         const manager = await getRepositoryManager();
         const repo = await manager.registerRepository(TEST_REPO_DIR);
@@ -942,6 +942,30 @@ describe('RepositoryManager', () => {
         await expect(runLatestCleanupRepositoryJob()).resolves.toBeUndefined();
 
         expect(fs.existsSync(path.join(TEST_CONFIG_DIR, 'repositories', 'repo'))).toBe(false);
+      });
+
+      // CodeRabbit finding on PR #1328: cleanupRepositoryData derived the
+      // slug once for `repoDir` and buildSessionDataCleanupTargets derived
+      // it again independently for `sessionDataDirs` -- two reads of the
+      // same value, and a chance for them to disagree if git state changed
+      // between the two. This is the exact defect Issue #1300 exists to
+      // fix, surviving inside the fix. Assert single-derivation directly:
+      // the already-captured orgRepo is threaded through the builder's
+      // `deriveSlug` injection point, so the underlying helper is called
+      // exactly once per unregister, not twice.
+      it('derives the org/repo slug exactly once per unregister, threading it into both cleanup targets', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('test-org/repo'));
+
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        mockGit.deriveRepositorySlug.mockClear();
+
+        await manager.unregisterRepository(repo.id);
+
+        expect(mockGit.deriveRepositorySlug).toHaveBeenCalledTimes(1);
+        expect(mockGit.deriveRepositorySlug).toHaveBeenCalledWith(repo.path, path.basename(repo.path));
       });
     });
   });
@@ -965,17 +989,50 @@ describe('RepositoryManager', () => {
   });
 
   describe('getRepositorySlug', () => {
-    it('returns the repository name as slug for registered id', async () => {
-      const manager = await getRepositoryManager();
-      const registered = await manager.registerRepository(TEST_REPO_DIR);
-
-      expect(manager.getRepositorySlug(registered.id)).toBe(registered.name);
-    });
-
     it('returns undefined for unknown id', async () => {
       const manager = await getRepositoryManager();
 
-      expect(manager.getRepositorySlug('unknown-id')).toBeUndefined();
+      expect(await manager.getRepositorySlug('unknown-id')).toBeUndefined();
+    });
+
+    // Issue #1300: getRepositorySlug no longer returns the bare repository
+    // name -- it derives org/repo from the git remote via
+    // deriveRepositorySlug, falling back to path.basename when no remote
+    // resolves.
+    it('returns the derived org/repo slug when the repository has a resolvable remote', async () => {
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('test-org/repo'));
+
+      const manager = await getRepositoryManager();
+      const registered = await manager.registerRepository(TEST_REPO_DIR);
+
+      expect(await manager.getRepositorySlug(registered.id)).toBe('test-org/repo');
+    });
+
+    it('falls back to the repository basename when no remote resolves', async () => {
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation((_repoPath: string, fallback: string) => Promise.resolve(fallback));
+
+      const manager = await getRepositoryManager();
+      const registered = await manager.registerRepository(TEST_REPO_DIR);
+
+      expect(registered.name).toBe('repo');
+      expect(await manager.getRepositorySlug(registered.id)).toBe('repo');
+    });
+
+    it('passes repo.path and path.basename(repo.path) to deriveRepositorySlug', async () => {
+      const calls: Array<{ repoPath: string; fallback: string }> = [];
+      mockGit.deriveRepositorySlug.mockReset();
+      mockGit.deriveRepositorySlug.mockImplementation((repoPath: string, fallback: string) => {
+        calls.push({ repoPath, fallback });
+        return Promise.resolve(fallback);
+      });
+
+      const manager = await getRepositoryManager();
+      const registered = await manager.registerRepository(TEST_REPO_DIR);
+      await manager.getRepositorySlug(registered.id);
+
+      expect(calls).toEqual([{ repoPath: TEST_REPO_DIR, fallback: 'repo' }]);
     });
   });
 

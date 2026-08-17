@@ -88,7 +88,7 @@ describe('createWorktreeWithSession: embedded-agent worker creation boundary', (
       mcpTokenRegistry: new McpTokenRegistry(),
       annotationService: new AnnotationService(),
       repositoryLookup: {
-        getRepositorySlug: (id) => (id === TEST_REPO_ID ? 'test-repo' : undefined),
+        getRepositorySlug: async (id) => (id === TEST_REPO_ID ? 'test-repo' : undefined),
       },
       repositoryEnvLookup: {
         getRepositoryInfo: () => undefined,

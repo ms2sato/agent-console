@@ -12,8 +12,12 @@
  * (i.e. the slug used in `computeSessionDataBaseDir`).
  */
 export interface RepositoryLookup {
-  /** Returns the slug for path purposes, or undefined if the repository is not found. */
-  getRepositorySlug(repositoryId: string): string | undefined;
+  /**
+   * Returns the slug for path purposes, or undefined if the repository is
+   * not found. Async because the derivation may read the repository's git
+   * remote (see `deriveRepositorySlug` in `lib/git.ts`).
+   */
+  getRepositorySlug(repositoryId: string): Promise<string | undefined>;
 }
 
 /**
