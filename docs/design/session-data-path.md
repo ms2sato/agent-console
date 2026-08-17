@@ -176,9 +176,18 @@ SessionManager.create({
 
 ```ts
 interface RepositoryLookup {
-  getRepositorySlug(repositoryId: string): string | undefined;
+  getRepositorySlug(repositoryId: string): Promise<string | undefined>;
 }
 ```
+
+`getRepositorySlug` is async because its production implementation
+(`RepositoryManager.getRepositorySlug`) derives the slug from the
+repository's git remote (`org/repo` when a remote resolves to a valid slug,
+else `path.basename(repo.path)`) via the single-writer `deriveRepositorySlug`
+helper in `lib/git.ts`. This is what makes both slug shapes from §1 actually
+reachable: earlier, `getRepositorySlug` returned the repository's flat
+display name unconditionally, so the `org/repo` shape was documented but
+never produced by any code path.
 
 `setRepositoryCallbacks()` and the `isInitialized()` check are deleted. Construction in `app-context.ts` is:
 
@@ -192,7 +201,7 @@ This makes "uninitialized state" unrepresentable. Scenario B is eliminated struc
 
 At creation of a `type === 'worktree'` session:
 
-1. Look up `slug = repositoryLookup.getRepositorySlug(repositoryId)`.
+1. Look up `slug = await repositoryLookup.getRepositorySlug(repositoryId)`.
 2. If `slug === undefined`: throw `RepositoryNotFoundError`. No DB row is inserted.
 3. Validate `slug` via `computeSessionDataBaseDir`'s invariants (see §2).
 4. Persist `(data_scope='repository', data_scope_slug=slug)` atomically with the rest of the session.

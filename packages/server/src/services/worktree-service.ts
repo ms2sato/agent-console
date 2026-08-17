@@ -4,8 +4,7 @@ import type { Worktree, HookCommandResult } from '@agent-console/shared';
 import { getRepositoryDir } from '../lib/config.js';
 import {
   git,
-  getRemoteUrl,
-  parseOrgRepo,
+  deriveRepositorySlug,
   listWorktrees as gitListWorktrees,
   removeWorktree as gitRemoveWorktree,
   removeWorktreeWithFallback,
@@ -238,20 +237,6 @@ function extractErrorMessage(error: unknown): string {
 }
 
 /**
- * Extract org/repo from git remote URL
- * Examples:
- *   git@github.com:owner/repo-name.git -> owner/repo-name
- *   https://github.com/anthropics/claude-code.git -> anthropics/claude-code
- */
-async function getOrgRepoFromRemote(repoPath: string): Promise<string | null> {
-  const remoteUrl = await getRemoteUrl(repoPath);
-  if (!remoteUrl) {
-    return null;
-  }
-  return parseOrgRepo(remoteUrl);
-}
-
-/**
  * Type of the privilege-elevation helper, exposed for dependency injection
  * in tests. Production code uses the real `runAsUser` import.
  */
@@ -479,7 +464,7 @@ export class WorktreeService {
   ): Promise<{ worktreePath: string; index?: number; copiedFiles?: string[]; error?: string }> {
     // Generate worktree path: repositories/{org}/{repo}/worktrees/wt-{index}-{suffix}
     // Directory name is independent of branch name to avoid path issues with branch names containing slashes
-    const orgRepo = (await getOrgRepoFromRemote(repoPath)) || path.basename(repoPath);
+    const orgRepo = await deriveRepositorySlug(repoPath, path.basename(repoPath));
     const repoWorktreeDir = path.join(getRepositoryDir(orgRepo), 'worktrees');
 
     // Ensure base directory exists

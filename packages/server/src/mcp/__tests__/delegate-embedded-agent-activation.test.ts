@@ -230,7 +230,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       runAsUserImpl: fakeRunAsUserAlwaysSuccess,
       spawnAsUserFn: fake.fn,
       userRepository,
-      repositoryLookup: { getRepositorySlug: (id: string) => repositoryManager?.getRepositorySlug(id) },
+      repositoryLookup: { getRepositorySlug: async (id: string) => repositoryManager?.getRepositorySlug(id) },
       repositoryEnvLookup: {
         getRepositoryInfo: (id: string) => {
           const r = repositoryManager?.getRepository(id);

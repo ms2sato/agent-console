@@ -1016,4 +1016,82 @@ index abc1234..def5678 100644
       }
     });
   });
+
+  // =========================================================================
+  // deriveRepositorySlug (Issue #1300): the single writer for the canonical
+  // org/repo slug used by worktree/template placement, repository-data
+  // cleanup, and (as of this Issue) session-creation's frozen dataScopeSlug.
+  // Total by contract: every branch below returns `fallback` instead of
+  // throwing.
+  // =========================================================================
+  describe('deriveRepositorySlug (Issue #1300)', () => {
+    it('returns org/repo parsed from an SSH remote URL', async () => {
+      setMockSpawnResult('git@github.com:owner/repo-name.git\n');
+      const { deriveRepositorySlug } = await getGitModule();
+
+      const result = await deriveRepositorySlug('/repo', 'repo-name');
+
+      expect(result).toBe('owner/repo-name');
+    });
+
+    it('returns org/repo parsed from an HTTPS remote URL', async () => {
+      setMockSpawnResult('https://github.com/anthropics/claude-code.git\n');
+      const { deriveRepositorySlug } = await getGitModule();
+
+      const result = await deriveRepositorySlug('/repo', 'claude-code');
+
+      expect(result).toBe('anthropics/claude-code');
+    });
+
+    it('returns the fallback verbatim when no remote is configured (local-only repo)', async () => {
+      // `git remote get-url origin` exits non-zero when no such remote
+      // exists -- gitSafe swallows the GitError and getRemoteUrl returns
+      // null.
+      setMockSpawnResult('', 128, "fatal: No such remote 'origin'");
+      const { deriveRepositorySlug } = await getGitModule();
+
+      const result = await deriveRepositorySlug('/repo', 'my-local-repo');
+
+      expect(result).toBe('my-local-repo');
+    });
+
+    it('returns the fallback when the remote URL does not match a parseable org/repo shape', async () => {
+      setMockSpawnResult('some-nonstandard-remote-format\n');
+      const { deriveRepositorySlug } = await getGitModule();
+
+      const result = await deriveRepositorySlug('/repo', 'my-repo');
+
+      expect(result).toBe('my-repo');
+    });
+
+    it('returns the fallback, never a throw, when the parsed org/repo contains a traversal segment', async () => {
+      // Captures group 'owner/..' -- parseOrgRepo has no traversal
+      // awareness (it is a pure regex extraction), so isValidSlug is the
+      // gate that must catch this.
+      setMockSpawnResult('git@github.com:owner/..\n');
+      const { deriveRepositorySlug } = await getGitModule();
+
+      const result = await deriveRepositorySlug('/repo', 'safe-fallback');
+
+      expect(result).toBe('safe-fallback');
+    });
+
+    it('returns the fallback, never a throw, when the parsed org/repo contains characters outside the slug grammar', async () => {
+      setMockSpawnResult('git@github.com:owner/repo name.git\n');
+      const { deriveRepositorySlug } = await getGitModule();
+
+      const result = await deriveRepositorySlug('/repo', 'safe-fallback');
+
+      expect(result).toBe('safe-fallback');
+    });
+
+    it('passes the caller-supplied fallback through unchanged (never repo.name / a display name)', async () => {
+      setMockSpawnResult('', 128, "fatal: No such remote 'origin'");
+      const { deriveRepositorySlug } = await getGitModule();
+
+      const result = await deriveRepositorySlug('/repo', 'exact-fallback-value');
+
+      expect(result).toBe('exact-fallback-value');
+    });
+  });
 });

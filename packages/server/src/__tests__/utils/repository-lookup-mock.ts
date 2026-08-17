@@ -20,7 +20,7 @@ export function makeRepositoryLookup(
     ? mapping
     : (id: string) => mapping[id];
   return {
-    getRepositorySlug: fn,
+    getRepositorySlug: async (id: string) => fn(id),
   };
 }
 

@@ -90,7 +90,7 @@ describe('Worker History File Initialization', () => {
       jobQueue: testJobQueue,
       agentManager,
       mcpTokenRegistry: new McpTokenRegistry(),
-      repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+      repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
       repositoryEnvLookup: {
         getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
         getWorktreeIndexNumber: async () => 0,

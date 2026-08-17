@@ -129,6 +129,7 @@ branch refs/heads/main
   mockGit.getCurrentBranch.mockImplementation(() => Promise.resolve('main'));
   mockGit.renameBranch.mockImplementation(() => Promise.resolve());
   mockGit.getOrgRepoFromPath.mockImplementation(() => Promise.resolve('owner/test-repo'));
+  mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('owner/test-repo'));
   mockGit.fetchRemote.mockImplementation(() => Promise.resolve());
   mockGit.fetchAllRemote.mockImplementation(() => Promise.resolve());
   mockGit.getCommitsBehind.mockImplementation(() => Promise.resolve(0));
@@ -197,6 +198,7 @@ describe('API Routes Integration', () => {
     mockGit.getCurrentBranch.mockReset();
     mockGit.renameBranch.mockReset();
     mockGit.getOrgRepoFromPath.mockReset();
+    mockGit.deriveRepositorySlug.mockReset();
     mockGit.fetchRemote.mockReset();
     mockGit.fetchAllRemote.mockReset();
     mockGit.getCommitsBehind.mockReset();
@@ -272,7 +274,7 @@ describe('API Routes Integration', () => {
         jobQueue: testJobQueue,
         agentManager: testAgentManager,
         mcpTokenRegistry: new McpTokenRegistry(),
-        repositoryLookup: { getRepositorySlug: () => 'test-repo' },
+        repositoryLookup: { getRepositorySlug: async () => 'test-repo' },
         repositoryEnvLookup: {
           getRepositoryInfo: () => ({ name: 'test-repo', path: '/test/repo' }),
           getWorktreeIndexNumber: async () => 0,

@@ -21,6 +21,10 @@ import {
   type RunAsUserResult,
 } from '../services/privilege-elevation.js';
 import { isErrnoException } from './type-guards.js';
+import { isValidSlug } from './session-data-path.js';
+import { createLogger } from './logger.js';
+
+const logger = createLogger('git');
 
 /** Default timeout for local git operations (30 seconds) */
 const DEFAULT_GIT_TIMEOUT_MS = 30000;
@@ -744,6 +748,68 @@ export async function getOrgRepoFromPath(repoPath: string): Promise<string | nul
     return null;
   }
   return parseOrgRepo(remoteUrl);
+}
+
+/**
+ * Single writer for deriving a repository's canonical `org/repo` slug from
+ * its remote (see `docs/design/session-data-path.md`).
+ *
+ * Total: never throws. Every branch that cannot produce a valid `org/repo`
+ * value returns `fallback` instead:
+ *   - no remote configured (the common case for local-only repositories)
+ *   - a remote URL that does not match a recognized SSH/HTTPS shape
+ *   - a parsed `org/repo` value that fails `isValidSlug` (traversal
+ *     segments, disallowed characters)
+ *   - any unexpected exception (defense-in-depth; `getRemoteUrl` already
+ *     swallows git-command failures via `gitSafe`, so this branch is not
+ *     currently reachable in production, but keeps the function total if
+ *     that chain changes in the future)
+ *
+ * Totality is load-bearing: this function is called from inside session
+ * creation (`SessionManager.createSession`), which has an existing
+ * failure-rollback path. A never-throws helper means the call cannot
+ * introduce a new rejection route there.
+ *
+ * A missing remote is expected/common and is not logged. An unparseable
+ * remote URL or a slug-validation failure is surprising and logged at WARN.
+ *
+ * @param repoPath Absolute path to the repository's working tree.
+ * @param fallback Value to return when no valid `org/repo` can be derived.
+ *   Callers must pass `path.basename(repoPath)` — never a display name —
+ *   so address derivation never depends on user-editable metadata.
+ */
+export async function deriveRepositorySlug(
+  repoPath: string,
+  fallback: string,
+): Promise<string> {
+  try {
+    const remoteUrl = await getRemoteUrl(repoPath);
+    if (!remoteUrl) {
+      // No origin remote configured (or the underlying git command failed,
+      // which getRemoteUrl/gitSafe already swallow) -- expected for
+      // local-only repositories, not worth a warning.
+      return fallback;
+    }
+    const orgRepo = parseOrgRepo(remoteUrl);
+    if (!orgRepo) {
+      logger.warn(
+        { repoPath, remoteUrl },
+        'Remote URL did not match a parseable org/repo shape; using fallback slug',
+      );
+      return fallback;
+    }
+    if (!isValidSlug(orgRepo)) {
+      logger.warn(
+        { repoPath, orgRepo },
+        'Derived org/repo slug failed validation; using fallback slug',
+      );
+      return fallback;
+    }
+    return orgRepo;
+  } catch (err) {
+    logger.warn({ err, repoPath }, 'Repository slug derivation threw unexpectedly; using fallback slug');
+    return fallback;
+  }
 }
 
 // ============================================================

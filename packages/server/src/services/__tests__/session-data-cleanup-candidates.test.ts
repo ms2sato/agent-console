@@ -11,7 +11,7 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/repo-1',
       repoName: 'repo-1',
-      getRepositorySlug: () => 'repo-1',
+      deriveSlug: async () => 'repo-1',
       pathExists: async () => true,
     });
 
@@ -24,7 +24,7 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       repositoryId: 'repo-a',
       repoPath: '/source/repos/owner/repo-a',
       repoName: 'repo-a',
-      getRepositorySlug: () => 'repo-a',
+      deriveSlug: async () => 'repo-a',
       pathExists: async () => true,
     });
 
@@ -40,7 +40,7 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/basename-slug',
       repoName: 'reponame-slug',
-      getRepositorySlug: () => 'canonical-slug',
+      deriveSlug: async () => 'canonical-slug',
       pathExists: async (p) => {
         seenPaths.push(p);
         return true;
@@ -64,27 +64,11 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/repo-1',
       repoName: 'repo-1',
-      getRepositorySlug: () => 'repo-1',
+      deriveSlug: async () => 'repo-1',
       pathExists: async () => false,
     });
 
     expect(targets).toEqual([]);
-  });
-
-  it('omits the canonical-slug candidate entirely when getRepositorySlug returns undefined (unregistered repo)', async () => {
-    const targets = await buildSessionDataCleanupTargets({
-      configDir: CONFIG_DIR,
-      repositoryId: 'repo-1',
-      repoPath: '/source/repos/owner/repo-1',
-      repoName: 'repo-1',
-      getRepositorySlug: () => undefined,
-      pathExists: async () => true,
-    });
-
-    // basename(repoPath) === repoName === 'repo-1' here, so the only
-    // resulting target is the deduped 'repo-1' candidate -- proving the
-    // canonical slug was not silently coerced to some other value.
-    expect(targets).toEqual([computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'repo-1')]);
   });
 
   // ===========================================================================
@@ -100,11 +84,15 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
       repositoryId: 'repo-1',
       // basename('/source/repos/owner/../etc') resolves to 'etc' via
       // path.basename (no traversal semantics at that layer), so we drive
-      // the hostile candidate through the canonical-slug callback instead,
-      // which is passed through verbatim.
+      // the hostile candidate through the injected `deriveSlug` instead,
+      // which is passed through verbatim. Production `deriveRepositorySlug`
+      // itself never returns a hostile value (it validates via
+      // `isValidSlug` before returning); this test exercises
+      // `buildSessionDataCleanupTargets`'s own defense-in-depth handling,
+      // independent of what the derivation returns.
       repoPath: '/source/repos/owner/repo-1',
       repoName: 'repo-1',
-      getRepositorySlug: () => '../etc',
+      deriveSlug: async () => '../etc',
       pathExists: async () => true,
     });
 
@@ -124,31 +112,57 @@ describe('buildSessionDataCleanupTargets (Issue #1301)', () => {
         // normalize '..' away).
         repoPath: '/source/repos/..',
         repoName: '..',
-        getRepositorySlug: () => '../etc',
+        deriveSlug: async () => '../etc',
         pathExists: async () => true,
       }),
     ).resolves.toEqual([]);
   });
 
   // ===========================================================================
-  // T4: structural-coupling lock. Proves the coupling to the repository slug
-  // is a CALL to `getRepositorySlug`, not a re-derivation -- so a future
-  // change to what that accessor returns (Issue #1300) keeps this test
-  // correct without modification.
+  // T4/T5: structural-coupling lock. Proves the coupling to the repository
+  // slug is a CALL to the injected derivation, not a re-derivation -- so a
+  // future change to what that derivation returns (Issue #1300) keeps this
+  // test correct without modification.
+  //
+  // Updated for Issue #1300's new single writer: the injected function was
+  // renamed from `getRepositorySlug(id)` to `deriveSlug(repoPath, fallback)`
+  // (mirroring `deriveRepositorySlug`'s signature in `lib/git.ts`), and the
+  // production default changed from `RepositoryManager.getRepositorySlug`
+  // to `deriveRepositorySlug` directly. The assertion is UNCHANGED: a
+  // sentinel value returned by the injected function must land in the
+  // target set. This is the structural-coupling receipt for the new writer,
+  // not a weakening of the original #1301 lock.
   // ===========================================================================
 
-  it('is driven by a call to getRepositorySlug, not an independent re-derivation of the canonical slug', async () => {
+  it('is driven by a call to the injected deriveSlug, not an independent re-derivation of the canonical slug', async () => {
     const targets = await buildSessionDataCleanupTargets({
       configDir: CONFIG_DIR,
       repositoryId: 'repo-1',
       repoPath: '/source/repos/owner/basename-not-sentinel',
       repoName: 'reponame-not-sentinel',
-      getRepositorySlug: () => 'sentinel-canonical-slug',
+      deriveSlug: async () => 'sentinel-canonical-slug',
       pathExists: async (p) => p.includes('sentinel-canonical-slug'),
     });
 
     expect(targets).toEqual([
       computeSessionDataBaseDir(CONFIG_DIR, 'repository', 'sentinel-canonical-slug'),
     ]);
+  });
+
+  it('forwards repoPath and the basename fallback verbatim to deriveSlug', async () => {
+    const calls: Array<{ repoPath: string; fallback: string }> = [];
+    await buildSessionDataCleanupTargets({
+      configDir: CONFIG_DIR,
+      repositoryId: 'repo-1',
+      repoPath: '/source/repos/owner/repo-1',
+      repoName: 'repo-1',
+      deriveSlug: async (repoPath, fallback) => {
+        calls.push({ repoPath, fallback });
+        return 'repo-1';
+      },
+      pathExists: async () => true,
+    });
+
+    expect(calls).toEqual([{ repoPath: '/source/repos/owner/repo-1', fallback: 'repo-1' }]);
   });
 });

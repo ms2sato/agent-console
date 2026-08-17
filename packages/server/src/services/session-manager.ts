@@ -802,7 +802,7 @@ export class SessionManager {
     let dataScope: 'quick' | 'repository';
     let dataScopeSlug: string | null;
     if (request.type === 'worktree') {
-      const slug = this.repositoryLookup.getRepositorySlug(request.repositoryId);
+      const slug = await this.repositoryLookup.getRepositorySlug(request.repositoryId);
       if (!slug) {
         throw new RepositoryNotFoundError(request.repositoryId);
       }

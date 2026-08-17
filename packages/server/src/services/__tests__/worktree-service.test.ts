@@ -111,8 +111,7 @@ describe('WorktreeService', () => {
     // Reset mocks. `createWorktree` is no longer mocked at the lib/git layer
     // because the service now routes through `runAsUser` -- the
     // `runAsUserMock` defined above is the capture point for the create path.
-    mockGit.getRemoteUrl.mockReset();
-    mockGit.parseOrgRepo.mockReset();
+    mockGit.deriveRepositorySlug.mockReset();
     mockGit.listWorktrees.mockReset();
     mockGit.removeWorktree.mockReset();
     mockGit.listLocalBranches.mockReset();
@@ -120,8 +119,7 @@ describe('WorktreeService', () => {
     mockGit.getDefaultBranch.mockReset();
 
     // Default implementations
-    mockGit.getRemoteUrl.mockImplementation(() => Promise.resolve('git@github.com:owner/repo-name.git'));
-    mockGit.parseOrgRepo.mockImplementation(() => 'owner/repo-name');
+    mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('owner/repo-name'));
     mockGit.listWorktrees.mockImplementation(() => Promise.resolve(`worktree /repo/main
 HEAD abc123
 branch refs/heads/main

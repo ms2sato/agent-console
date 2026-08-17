@@ -4,7 +4,7 @@ import * as path from 'path';
 import type { Repository } from '@agent-console/shared';
 import { getConfigDir, getRepositoryDir, getSourceReposDir } from '../lib/config.js';
 import { isUnderSourceReposDir } from '../lib/repository-remote.js';
-import { getOrgRepoFromPath as gitGetOrgRepoFromPath } from '../lib/git.js';
+import { deriveRepositorySlug } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { initializeDatabase } from '../database/connection.js';
 import type { RepositoryRepository, RepositoryUpdates } from '../repositories/repository-repository.js';
@@ -95,15 +95,6 @@ export class RepositoryInUseError extends Error {
     super(message);
     this.name = 'RepositoryInUseError';
   }
-}
-
-/**
- * Extract org/repo from git remote URL
- * Falls back to directory name if no remote
- */
-async function getOrgRepoFromPath(repoPath: string): Promise<string> {
-  const orgRepo = await gitGetOrgRepoFromPath(repoPath);
-  return orgRepo ?? path.basename(repoPath);
 }
 
 export interface RepositoryLifecycleCallbacks {
@@ -629,7 +620,7 @@ export class RepositoryManager {
       throw new Error('JobQueue not available for repository cleanup. Ensure RepositoryManager.create() was called with jobQueue.');
     }
 
-    const orgRepo = await getOrgRepoFromPath(repo.path);
+    const orgRepo = await deriveRepositorySlug(repo.path, path.basename(repo.path));
     const repoDir = getRepositoryDir(orgRepo);
 
     // When the unregister request opts in to source-repo removal, verify the
@@ -651,16 +642,15 @@ export class RepositoryManager {
       }
     }
 
-    // Session-data trees (outputs/messages/memos) live under a slug derived
-    // from the repository name, which is independent of `repoDir` (org/repo
-    // derived from the git remote). Build the candidate set of base dirs to
-    // remove alongside `repoDir`.
+    // Session-data trees (outputs/messages/memos) live under the same
+    // `deriveRepositorySlug`-derived slug as `repoDir` above, plus the
+    // closed legacy-flat candidate set for pre-existing sessions.
+    // Build the candidate set of base dirs to remove alongside `repoDir`.
     const sessionDataDirs = await buildSessionDataCleanupTargets({
       configDir: getConfigDir(),
       repositoryId: repo.id,
       repoPath: repo.path,
       repoName: repo.name,
-      getRepositorySlug: (id) => this.getRepositorySlug(id),
     });
 
     // Clean up entire repository directory via job queue
@@ -677,14 +667,23 @@ export class RepositoryManager {
   }
 
   /**
-   * Return the slug used for session-data path resolution.
-   * Currently the slug is the repository name — keep this accessor distinct
-   * from `getRepository` so callers that only need path-purposes data can
-   * depend on a narrow `RepositoryLookup` interface.
-   * Returns undefined if the repository is not registered.
+   * Resolve the canonical `org/repo` slug frozen into a new session's
+   * `dataScopeSlug` at creation time (see `SessionManager.createSession`).
+   * Delegates to `deriveRepositorySlug`, which returns
+   * `org/repo` when the repository's remote resolves to a valid slug, and
+   * falls back to `path.basename(repo.path)` otherwise (no remote, an
+   * unparseable remote URL, or a parsed value that fails slug validation).
+   *
+   * Kept distinct from `getRepository` so callers that only need
+   * path-purposes data can depend on the narrow `RepositoryLookup`
+   * interface. Async because the derivation reads the repository's git
+   * remote. Returns undefined if the repository is not registered — this is
+   * a real "repository not found" signal callers must not paper over.
    */
-  getRepositorySlug(id: string): string | undefined {
-    return this.repositories.get(id)?.name;
+  async getRepositorySlug(id: string): Promise<string | undefined> {
+    const repo = this.repositories.get(id);
+    if (!repo) return undefined;
+    return deriveRepositorySlug(repo.path, path.basename(repo.path));
   }
 
   getAllRepositories(): Repository[] {
