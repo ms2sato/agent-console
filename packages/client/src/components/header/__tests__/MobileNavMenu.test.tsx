@@ -13,6 +13,9 @@ describe('MobileNavMenu', () => {
       await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />);
       expect(screen.getByText('Jobs')).toBeTruthy();
       expect(screen.getByText('Agents')).toBeTruthy();
+      const artifacts = screen.getByText('Artifacts');
+      expect(artifacts).toBeTruthy();
+      expect(artifacts.closest('a')!.getAttribute('href')).toBe('/artifacts');
       expect(screen.getByText('Repositories')).toBeTruthy();
       const settings = screen.getByText('Settings');
       expect(settings).toBeTruthy();
@@ -23,8 +26,19 @@ describe('MobileNavMenu', () => {
       await renderWithRouter(<MobileNavMenu open={false} onClose={() => {}} />);
       expect(screen.queryByText('Jobs')).toBeNull();
       expect(screen.queryByText('Agents')).toBeNull();
+      expect(screen.queryByText('Artifacts')).toBeNull();
       expect(screen.queryByText('Repositories')).toBeNull();
       expect(screen.queryByText('Settings')).toBeNull();
+    });
+
+    it('should mark Artifacts active on any /artifacts sub-path', async () => {
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/artifacts/artifact-1');
+      expect(screen.getByText('Artifacts').className).toContain('bg-white/10');
+    });
+
+    it('should mark Artifacts active on the exact /artifacts path', async () => {
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/artifacts');
+      expect(screen.getByText('Artifacts').className).toContain('bg-white/10');
     });
 
     it('should mark Settings active only on the exact /settings path, not /settings/repositories', async () => {

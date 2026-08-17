@@ -152,4 +152,6 @@ export {
 export {
   ArtifactSchema,
   type ArtifactSchemaOutput,
+  ArtifactsListResponseSchema,
+  type ArtifactsListResponse,
 } from './artifact.js';

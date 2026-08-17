@@ -42,6 +42,22 @@ export function AgentsNavLink() {
   );
 }
 
+export function ArtifactsNavLink() {
+  const location = useLocation();
+  const isActive = location.pathname === '/artifacts' || location.pathname.startsWith('/artifacts/');
+
+  return (
+    <Link
+      to="/artifacts"
+      className={`text-sm py-1 px-2 rounded no-underline ${
+        isActive ? 'text-white bg-white/10' : 'text-slate-400'
+      }`}
+    >
+      Artifacts
+    </Link>
+  );
+}
+
 export function RepositoriesNavLink() {
   const location = useLocation();
   const isActive = location.pathname === '/settings/repositories';

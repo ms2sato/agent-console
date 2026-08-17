@@ -4,7 +4,7 @@ import { resumeSession } from '../lib/api';
 import { ChevronRightIcon, PlusIcon } from '../components/Icons';
 import { QuickWorktreeDialog } from '../components/worktrees';
 import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
-import { JobsNavLink, AgentsNavLink, RepositoriesNavLink, SettingsNavLink, ReviewNavLink, LogoutButton, ValidationWarningIndicator } from '../components/header/NavLinks';
+import { JobsNavLink, AgentsNavLink, ArtifactsNavLink, RepositoriesNavLink, SettingsNavLink, ReviewNavLink, LogoutButton, ValidationWarningIndicator } from '../components/header/NavLinks';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { SchemaVersionBanner } from '../components/ui/SchemaVersionBanner';
@@ -225,6 +225,7 @@ function RootLayout() {
               <ReviewNavLink />
               <JobsNavLink />
               <AgentsNavLink />
+              <ArtifactsNavLink />
               <RepositoriesNavLink />
               <SettingsNavLink />
               {isMultiUser && <LogoutButton />}
