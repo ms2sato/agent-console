@@ -204,18 +204,57 @@ describe('Artifact viewer shell route', () => {
       expect(body).not.toContain('<script>alert(1)</script>');
     });
 
-    it('percent-encodes then HTML-attribute-escapes an artifact id containing quote/markup characters before interpolating it into the iframe src', async () => {
+    it('percent-encodes then HTML-attribute-escapes a NONEXISTENT artifact id containing quote/markup characters before it ever reaches buildShellHtml -- 404s first, confirming the raw payload never reaches any response body, escaped or not', async () => {
       const maliciousId = '"><script>alert(1)</script><iframe src="';
       const app = buildApp(OWNER);
       const res = await app.request(`/artifacts/${encodeURIComponent(maliciousId)}`);
 
-      // The id doesn't resolve to a real artifact, so this now 404s before
-      // ever reaching buildShellHtml -- confirming the raw payload never
-      // reaches ANY response body, escaped or not, is still meaningful.
+      // The id doesn't resolve to a real artifact, so this 404s before ever
+      // reaching buildShellHtml. This test alone would NOT catch a future
+      // regression in the id-escape path itself -- see the next test, which
+      // exercises that path live via a REAL artifact whose id is malicious.
       expect(res.status).toBe(404);
       const body = await res.text();
       expect(body).not.toContain('<script>alert(1)</script>');
       expect(body).not.toContain('"><script>');
+    });
+
+    it('percent-encodes then HTML-attribute-escapes a REAL artifact id containing quote/markup characters before interpolating it into the iframe src (200 path, exercises the escape live)', async () => {
+      // Since S2 (#1313) made the shell 404-first on a nonexistent id, the
+      // above test alone no longer exercises the id-escape path on a
+      // response body that actually renders -- restoring that coverage
+      // here via a REAL artifact whose `id` itself is the malicious
+      // string (the repository layer accepts any id verbatim; this
+      // mirrors how the malicious-title test at the top of this describe
+      // block bypasses the MCP-layer title strip by inserting directly at
+      // the repository).
+      const maliciousId = '"><script>alert(1)</script><iframe src="';
+      const created = await artifactRepository.create({
+        id: maliciousId,
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(OWNER);
+      const res = await app.request(`/artifacts/${encodeURIComponent(created.id)}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.text();
+
+      // The raw payload must never appear unescaped -- if it did, the
+      // attribute would be broken out of and new markup injected into this
+      // UNSANDBOXED top-level document.
+      expect(body).not.toContain('<script>alert(1)</script>');
+      expect(body).not.toContain('"><script>');
+      // encodeURIComponent runs first (the id is also a URL path segment),
+      // so every HTML-meaningful character is already percent-encoded by
+      // the time escapeHtmlAttribute would otherwise act on it. The
+      // percent-encoded form is what must appear in the iframe src.
+      expect(body).toContain(
+        '<iframe sandbox="allow-scripts" src="/api/artifacts/%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E%3Ciframe%20src%3D%22"',
+      );
     });
   });
 

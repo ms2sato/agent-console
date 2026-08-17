@@ -44,7 +44,7 @@ export function AgentsNavLink() {
 
 export function ArtifactsNavLink() {
   const location = useLocation();
-  const isActive = location.pathname.startsWith('/artifacts');
+  const isActive = location.pathname === '/artifacts' || location.pathname.startsWith('/artifacts/');
 
   return (
     <Link

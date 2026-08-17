@@ -27,6 +27,7 @@ export function ArtifactsPage() {
   const {
     data: artifacts,
     isLoading,
+    isFetching,
     error,
     refetch,
   } = useQuery({
@@ -69,10 +70,10 @@ export function ArtifactsPage() {
         <h1 className="text-2xl font-semibold">Artifacts</h1>
         <button
           onClick={() => refetch()}
-          disabled={isLoading}
+          disabled={isFetching}
           className="btn text-sm bg-slate-700 hover:bg-slate-600"
         >
-          {isLoading ? 'Refreshing...' : 'Refresh'}
+          {isFetching ? 'Refreshing...' : 'Refresh'}
         </button>
       </div>
 

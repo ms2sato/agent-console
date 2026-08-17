@@ -36,6 +36,7 @@ describe('Client-Server Boundary: GET /api/artifacts', () => {
   let app: Hono<AppBindings>;
   let bridge: ReturnType<typeof createFetchBridge>;
   let repository: SqliteArtifactRepository;
+  let testHome: string;
   const originalHome = process.env.AGENT_CONSOLE_HOME;
 
   beforeEach(async () => {
@@ -47,7 +48,8 @@ describe('Client-Server Boundary: GET /api/artifacts', () => {
     // that file's own header comment). Point AGENT_CONSOLE_HOME at a real,
     // writable tmpdir for this test, same convention as
     // `routes/__tests__/artifacts.test.ts`.
-    process.env.AGENT_CONSOLE_HOME = path.join(os.tmpdir(), `agent-console-artifact-list-boundary-${randomUUID()}`);
+    testHome = path.join(os.tmpdir(), `agent-console-artifact-list-boundary-${randomUUID()}`);
+    process.env.AGENT_CONSOLE_HOME = testHome;
 
     repository = new SqliteArtifactRepository(getDatabase());
     app = await createTestApp({ artifactRepository: repository });
@@ -57,6 +59,11 @@ describe('Client-Server Boundary: GET /api/artifacts', () => {
   afterEach(async () => {
     bridge.restore();
     await cleanupTestEnvironment();
+    // Remove the real on-disk temp directory this test wrote artifact bytes
+    // into -- `cleanupTestEnvironment()` only resets memfs, it never touches
+    // the real filesystem this suite deliberately writes to. Same pattern as
+    // `repositories/__tests__/sqlite-artifact-repository.test.ts`.
+    Bun.spawnSync(['rm', '-rf', testHome]);
     if (originalHome !== undefined) {
       process.env.AGENT_CONSOLE_HOME = originalHome;
     } else {

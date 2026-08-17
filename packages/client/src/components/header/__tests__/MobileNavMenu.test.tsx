@@ -32,6 +32,11 @@ describe('MobileNavMenu', () => {
     });
 
     it('should mark Artifacts active on any /artifacts sub-path', async () => {
+      await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/artifacts/artifact-1');
+      expect(screen.getByText('Artifacts').className).toContain('bg-white/10');
+    });
+
+    it('should mark Artifacts active on the exact /artifacts path', async () => {
       await renderWithRouter(<MobileNavMenu open={true} onClose={() => {}} />, '/artifacts');
       expect(screen.getByText('Artifacts').className).toContain('bg-white/10');
     });

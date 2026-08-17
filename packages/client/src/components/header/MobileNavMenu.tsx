@@ -48,7 +48,7 @@ export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
         </NavMenuItem>
         <NavMenuItem
           to="/artifacts"
-          active={isActive('/artifacts')}
+          active={isExact('/artifacts') || location.pathname.startsWith('/artifacts/')}
           onClick={onClose}
         >
           Artifacts
