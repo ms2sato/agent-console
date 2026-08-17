@@ -41,4 +41,14 @@ export const claudeSdkAgent: EmbeddedAgentDefinition = {
   createdBy: CLAUDE_SDK_AGENT_CREATED_BY,
   createdAt: new Date(0).toISOString(), // Epoch time for built-in, matching claude-code.ts's convention
   updatedAt: new Date(0).toISOString(),
+  // The ONLY way (Phase 1) CLAUDE.md content reaches this engine's context:
+  // the SDK's own native CLAUDE.md auto-discovery is disabled via
+  // `settingSources: []` (see docs/design/embedded-agent-sdk-engine.md §4.2),
+  // so this opt-in `instructions[]` entry is what main.ts's `claude-sdk` init
+  // arm resolves (via `loadOptInInstructions`, confined to the worker's cwd)
+  // and composes into `systemPrompt.append`. A worktree with no CLAUDE.md is
+  // handled gracefully -- `loadOptInInstructions` skips a missing file with a
+  // warning, not an error. AGENTS.md is deliberately NOT included here; it
+  // can be added later if requested.
+  instructions: ['CLAUDE.md'],
 };

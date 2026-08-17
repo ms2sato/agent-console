@@ -30,4 +30,8 @@ describe('claudeSdkAgent', () => {
   it('has a non-empty display name', () => {
     expect(claudeSdkAgent.name.length).toBeGreaterThan(0);
   });
+
+  it('opts into CLAUDE.md via instructions[] (the only Phase-1 path into the SDK engine\'s context, since settingSources: [] disables native auto-discovery)', () => {
+    expect(claudeSdkAgent.instructions).toEqual(['CLAUDE.md']);
+  });
 });

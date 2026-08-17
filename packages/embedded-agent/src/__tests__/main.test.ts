@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { join } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema, type EmbeddedAgentEvent } from '@agent-console/shared';
 import {
@@ -17,8 +19,22 @@ import type {
 import type { ToolCallOutcome } from '../mcp.js';
 import type { Engine } from '../engine-types.js';
 import type { SdkEngineDeps } from '../sdk-engine.js';
+import { loadOptInInstructions } from '../system-prompt.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
+
+// Temp-dir helper for tests that need a real filesystem `cwd` (mirrors
+// system-prompt.test.ts's makeTempDir -- kept local rather than shared, since
+// the two test files aren't otherwise coupled).
+const tempDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+async function makeTempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'embedded-agent-main-claude-md-'));
+  tempDirs.push(dir);
+  return dir;
+}
 
 const initCommand = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
@@ -511,6 +527,65 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
 
     expect(await runLoop(io, factories)).toBe(0);
     expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
+  });
+});
+
+// Phase 1's builtin claude-sdk definition (claude-sdk-builtin.ts) bakes
+// `instructions: ['CLAUDE.md']` -- this is the ONLY way CLAUDE.md content
+// reaches this engine's context (settingSources: [] disables the SDK's own
+// native auto-discovery; see docs/design/embedded-agent-sdk-engine.md §4.2).
+// Unlike the block above (which stubs `loadOptInInstructions` to prove the
+// composition/ordering contract), this block wires in the REAL production
+// `loadOptInInstructions` against a real temp-dir CLAUDE.md file, proving the
+// builtin's configured value actually resolves end-to-end into
+// `systemPromptAppend` -- not just that the composition function honors
+// whatever segments it's handed.
+describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin definition\'s instructions: ["CLAUDE.md"])', () => {
+  const claudeSdkInitCommand = (cwd: string, overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd },
+      maxToolIterations: 5,
+      instructions: ['CLAUDE.md'],
+      ...overrides,
+    });
+
+  it('reads a real CLAUDE.md file at cwd via the real loadOptInInstructions and composes its content into systemPromptAppend', async () => {
+    const dir = await makeTempDir();
+    await writeFile(join(dir, 'CLAUDE.md'), 'PROJECT_CLAUDE_MD_MARKER');
+    const { io } = makeIo([claudeSdkInitCommand(dir)]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadOptInInstructions, // real production implementation, not a stub
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toContain('PROJECT_CLAUDE_MD_MARKER');
+  });
+
+  it('polarity: with instructions: [] (no CLAUDE.md opt-in), systemPromptAppend omits the CLAUDE.md content even though the same file exists on disk', async () => {
+    const dir = await makeTempDir();
+    await writeFile(join(dir, 'CLAUDE.md'), 'PROJECT_CLAUDE_MD_MARKER');
+    const { io } = makeIo([claudeSdkInitCommand(dir, { instructions: [] })]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadOptInInstructions, // real production implementation, not a stub
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toBeUndefined();
   });
 });
 
