@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { join } from 'path';
 import { vol } from 'memfs';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import {
@@ -95,6 +96,31 @@ describe('InterSessionMessageService', () => {
       const files = vol.readdirSync(dirPath) as string[];
       const tmpFiles = files.filter((f) => f.startsWith('.tmp-'));
       expect(tmpFiles).toHaveLength(0);
+    });
+
+    // NOTE: `lib/logger.js`'s pino instance is disabled (level: 'silent') for
+    // NODE_ENV==='test' (see `logger.test.ts`), so `logger.debug(...)` and
+    // `logger.info(...)` are both no-ops at test runtime and cannot be told
+    // apart by spying on the real logger. Mocking `lib/logger.js` itself is
+    // also not viable: it is imported by many other production files, and
+    // `mock.module()` is process-global in bun:test (see `testing.md`
+    // Anti-Pattern #2). Instead, this test reads the production source
+    // directly (same technique as `build-output.test.ts`) and asserts on
+    // the literal log-call shape for the 'Message file written' event,
+    // guarding the Issue #1330 diagnosability hardening (debug -> info) by
+    // regression-testing the log level rather than the (unobservable in
+    // tests) logger behavior. `Bun.file()` is used instead of `node:fs`
+    // because this suite's `setupMemfs()` mocks the `fs`/`fs/promises`
+    // module specifiers process-wide (see `mock-fs-helper.ts`); `Bun.file()`
+    // is a Bun-native API that does not go through those specifiers, so it
+    // reads the real file from disk rather than the in-memory test volume.
+    it("logs the message-file-written event at 'info' level, not 'debug'", async () => {
+      const sourcePath = join(import.meta.dir, '..', 'inter-session-message-service.ts');
+      const source = await Bun.file(sourcePath).text();
+
+      const call = source.match(/logger\.(info|debug)\([^)]*?'Message file written'/s);
+
+      expect(call?.[1]).toBe('info');
     });
 
     it('should reject message content exceeding 64 KB', async () => {

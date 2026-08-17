@@ -100,7 +100,7 @@ export class InterSessionMessageService {
       throw err;
     }
 
-    logger.debug(
+    logger.info(
       { toSessionId, toWorkerId, fromSessionId, messageId },
       'Message file written',
     );
