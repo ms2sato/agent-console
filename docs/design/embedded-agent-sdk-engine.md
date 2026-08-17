@@ -98,3 +98,43 @@ A raw Messages adapter behind `ProviderAdapter` (Q5; the seam stays shaped for i
 - **Discriminant exhaustiveness**: compile-level (`satisfies`), plus a test that an OpenAI-compatible definition never dispatches the SDK engine (the #1291-shape containment).
 - **H2 regression**: the retry-with-settle path has a test; an SDK upgrade that removes the race makes the retry a no-op, an upgrade that worsens it fails loudly.
 - Standard suite/typecheck/preflight; per-file sibling tests per `test-trigger.md`; phasing and per-phase ACs decided with the Orchestrator after this document merges.
+
+## Appendix A — event-mapping table (Gate 0, authored 2026-08-17)
+
+This table is the pre-implementation gate named in §7: every native NDJSON command and event, classified against the SDK's stream BEFORE any engine code exists, so no implementer writes the contract while building against it. Source of the native vocabulary: `packages/shared/src/types/embedded-agent.ts` (`EmbeddedAgentCommand` / `EmbeddedAgentEvent` / `EmbeddedAgentServerEvent`), read at `a8d04fa3`.
+
+**Verification split, honoring Q12 without another probe round**: this table pre-commits the TARGET (which native event each SDK signal becomes). The SOURCE side (exact SDK type/flag names) is typed surface on 2.1.233 — Phase 1's implementer CONFIRMS each `verify` -marked row against the real stream before coding that mapping; any mismatch is STOP-and-consult and the table is amended with a correction trail, never silently diverged from.
+
+### A.1 Commands (stdin → engine)
+
+| Native command | SDK engine handling | Class |
+|---|---|---|
+| `init` | Construct the `query()` options: system-prompt append, allowed-tools from `enabledTools` (§4.1 exclusions), MCP dial-back as an SDK MCP server, `settings.autoCompactEnabled: false`, `executable: 'bun'`, no `resume` (PS4 gate). `provider.apiKey` absent by construction (§3.2) | mapped |
+| `user-message` | Next user turn into the live SDK session | mapped — `verify`: the streaming-input mechanism for a follow-up turn on 2.1.233 |
+| `cancel` | SDK interrupt | mapped — `verify`: the interrupt call's behavior on partial output (what the stream emits after an interrupt) |
+| `handoff` | Engine-level: distill → terminate session → seed successor (PS3 mechanism; Phase 2) | reimplemented |
+| `shutdown` | Terminate the SDK session and child process; stdin-sink teardown per the feeding-consumer rules | mapped |
+
+### A.2 Events (engine → stdout)
+
+| Native event | SDK source | Class |
+|---|---|---|
+| `ready` | Emitted after the SDK session's init/system message is received (session is accepting input) | mapped |
+| `state` (`active`/`idle`) | Derived: `active` on the first stream signal of a turn, `idle` on the turn's `result` | mapped (derived) |
+| `assistant-delta` | Partial-message stream: text delta blocks | mapped — `verify`: the partial-messages option name and delta event shape |
+| `assistant-thinking-delta` | Partial-message stream: thinking delta blocks | mapped — same `verify`; additionally model-config-dependent (absent when the model emits no thinking), which matches the native event's own no-terminal-counterpart caveat |
+| `assistant-message` | The assistant message's final text content | mapped |
+| `tool-call` | Assistant-message `tool_use` block (id, name, input) | mapped, with a SEMANTIC note: in the native engine this event precedes OUR executor running the tool; in the SDK engine the SDK executes the tool itself and the event is observational. Downstream consumers only render, so the contract holds — but no host code may treat it as a request to execute |
+| `tool-result` | User-message `tool_result` block (`ok` = not `is_error`; result stringified, native length caps applied) | mapped |
+| `turn-error` | The turn's `result` in an error subtype, or an SDK-raised turn failure | approximated — the error-classification granularity differs; Phase 1 maps the enumerable subtypes and folds the rest into a generic `turn-error`, listing the observed subtypes in the PR body |
+| `fatal` | Transport/process-level failure (spawn failure, transport closed unexpectedly, H2's race exhausting its retries) | mapped |
+| `context-usage` | NOT the per-turn `result` usage: polled via `getContextUsage()` post-turn with retry-with-settle (H2); `promptTokens` ← `totalTokens`, `estimated: false` | mapped (Phase 2) |
+| `context-handoff` | Engine-authored at handoff execution, exactly as the native engine authors its own | identical (engine-authored, never SDK-derived) |
+
+### A.3 Server-side events (engine-agnostic)
+
+`user-message` (server echo) and `exited` are appended by the SERVER, not the subprocess — unchanged for both engines by construction. No row needed beyond this note; listing them here prevents a future reader from hunting for their SDK mapping.
+
+### A.4 Coverage statement
+
+Every member of `EmbeddedAgentCommand` and `EmbeddedAgentEvent` at `a8d04fa3` appears above; nothing is classified `unavailable`. The two `approximated` degrees of freedom (turn-error granularity; thinking-delta model dependence) carry their consequences in place. If the shared union gains a member, this table gains a row in the same PR — the union and the table are a mirror pair.
