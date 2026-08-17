@@ -741,6 +741,21 @@ export function parseOrgRepo(remoteUrl: string): string | null {
 
 /**
  * Get org/repo from a repository path by reading its remote URL.
+ *
+ * Distinct from {@link deriveRepositorySlug}, which serves a different
+ * downstream contract on the same underlying remote-URL parse:
+ *
+ * - {@link getOrgRepoFromPath} returns `Promise<string | null>` with no
+ *   fallback. Right for callers that need to *identify* whether a
+ *   repository has a resolvable GitHub-shaped remote at all (`routes/
+ *   sessions.ts`'s PR-link resolution, `services/inbound/
+ *   resolve-targets.ts`'s webhook target matching) -- `null` is a real,
+ *   meaningful answer they branch on.
+ * - {@link deriveRepositorySlug} returns `Promise<string>`, is total
+ *   (never throws), and always produces an *addressable* slug by falling
+ *   back to a caller-supplied value. Right for callers deriving a
+ *   filesystem path (worktree/template placement, session-data path
+ *   resolution) where "no remote" must still resolve to *something*.
  */
 export async function getOrgRepoFromPath(repoPath: string): Promise<string | null> {
   const remoteUrl = await getRemoteUrl(repoPath);
@@ -753,6 +768,11 @@ export async function getOrgRepoFromPath(repoPath: string): Promise<string | nul
 /**
  * Single writer for deriving a repository's canonical `org/repo` slug from
  * its remote (see `docs/design/session-data-path.md`).
+ *
+ * See {@link getOrgRepoFromPath}'s doc comment for why that sibling helper
+ * is not redundant with this one — different downstream contract
+ * (nullable, no fallback, remote-identification) on the same underlying
+ * remote-URL parse.
  *
  * Total: never throws. Every branch that cannot produce a valid `org/repo`
  * value returns `fallback` instead:
