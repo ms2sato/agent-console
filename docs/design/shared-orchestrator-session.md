@@ -35,7 +35,7 @@ The **session class** here is "shared" (distinguished from "personal" by whose O
 1. **Multi-human access through the PTY UI.** Any authenticated user can open a shared session's worker and type into its PTY. No additional inbound-routing machinery is introduced; the session list and PTY terminal already in Agent Console are the interaction surface.
 2. **No change to existing storage model.** The single server-side `data.db` and the `sessions.created_by` column already support the distinction.
 3. **Clean OS account separation.** The shared account is distinct from the server's service user (`agentconsole`) — no privilege conflation, no credential sharing between the server process and the spawned CLI processes.
-4. **API-key authentication for shared accounts.** The shared account authenticates to the LLM vendor via an organisation-owned API key (Commercial Terms), independent of any individual user's subscription. Personal sessions continue to use subscription authentication in each user's own OS account.
+4. **Vendor authentication stays outside the system.** A shared account authenticates to its LLM vendor using whatever its own home is configured with, exactly as a personal session does from the user's home. Agent Console neither supplies nor inspects those credentials — see [Authentication model](#authentication-model) for why this is a deliberate boundary rather than an unfinished one.
 5. **No user-side impersonation burden.** End users click a button; the server handles OS-level impersonation via the existing `agentconsole` sudo privilege. No `sudo` or account switching from end-user terminals.
 
 ## Non-Goals
@@ -78,16 +78,30 @@ userA, userB, ...     (authenticated users)      personal sessions spawn
                                                   team-frontend-shared, etc.)
 ```
 
-A shared account is a normal OS user with its own `$HOME`, its own credential storage, and an entry in the `users` table. Exactly like any authenticated user in structure — the only distinction is that its PTY is reachable by all authenticated users (by policy), and its authentication to the LLM vendor is API-key-based rather than subscription-based.
+A shared account is a normal OS user with its own `$HOME`, its own credential storage, and an entry in the `users` table. Exactly like any authenticated user in structure — the only distinction is that its PTY is reachable by all authenticated users (by policy). Its vendor credentials live in its own home and are configured by the operator, structurally the same as a personal account's; the difference is who configures them, not what form they take.
 
 ### Authentication model
 
-| Session type | PTY runs as | Auth method |
-|---|---|---|
-| Personal session | Authenticated OS user | Subscription (individual `claude login` in that user's home) |
-| Shared session | Shared account | **API key** configured in the shared account's home |
+**Agent Console does not participate in, constrain, or observe how an agent CLI authenticates to its vendor.** This is a deliberate scope boundary, not an omission. The server never holds, injects, or reads vendor credentials for terminal agents: it spawns the CLI as an OS identity, and whatever that identity's own home is configured with is what the CLI uses.
 
-Rationale for API keys on shared accounts: a shared account serves multiple people, which fits organisation-level (Commercial Terms) access rather than individual subscription terms. API keys also rotate cleanly and do not break when any one individual's subscription lapses. This is compatible with vendor offerings that provide organisation-level API access.
+| Session type | PTY runs as | Where credentials live |
+|---|---|---|
+| Personal session | Authenticated OS user | That user's own home — configured by that user |
+| Shared session | Shared account | The shared account's own home — configured by the operator |
+
+The distinction between the two rows is **whose home the CLI reads**, not which authentication method is used. Both rows are identical in mechanism.
+
+#### Why the system takes no position
+
+Agent Console hosts arbitrary agent CLIs, not one vendor's. Encoding any particular vendor's licensing terms as a system-enforced constraint would impose that vendor's rules on every agent the host runs, including agents those rules do not govern — a general-purpose host paying an ongoing cost for a specific vendor's policy. Compliance with a given CLI's terms is therefore resolved where that CLI is configured: locally, by whoever configures it.
+
+`scripts/setup-shared-account.sh` reflects this — it provisions the account and prints operator next steps, but **deliberately writes no secrets** ("they are the operator's to place"), and its worked example is AWS Bedrock rather than any single vendor's key.
+
+#### Operator guidance (not a system constraint)
+
+For operators choosing what to place in a shared account's home, the licensing consideration is real and worth stating: a shared account serves multiple people, which fits organisation-level (Commercial Terms) access rather than individual subscription terms. An organisation-owned API key also rotates cleanly and does not break when any one individual's subscription lapses.
+
+**This is guidance for the operator's own compliance decision, and the system does not check or enforce it.** Any credential form the CLI accepts will work, because Agent Console is not in that path.
 
 ## Session Creation Flow
 
@@ -100,7 +114,7 @@ End user `userA` clicks "Create shared session" in the UI. If the server is conf
    - `sessions.created_by` = shared account's `users.id`
    - `sessions.initiated_by` = `userA.id` (records the authenticated user who clicked "Create shared session"; persisted for audit — see Schema Notes)
 5. When the session's PTY is spawned, the server uses `sudo -u <shared-account-name> -i sh -c '...'`. The existing `agentconsole ALL=(ALL) NOPASSWD: /bin/sh, /bin/bash, /bin/zsh` sudoers rule covers this — no additional sudoers configuration.
-6. The PTY runs with the shared account's environment: `$HOME` points to the shared account's home, which contains the API-key credentials. The `claude` CLI (or any LLM CLI) authenticates using those credentials.
+6. The PTY runs with the shared account's environment: `$HOME` points to the shared account's home, which contains whatever vendor credentials the operator placed there. The `claude` CLI (or any LLM CLI) authenticates using those credentials — the server neither supplies nor inspects them.
 
 End-user perspective: a shared session appears in the session list. Any authenticated user can click it, open its worker's PTY, and type into it — exactly like a personal session, except the PTY process is running as the shared account and the participants include the whole team.
 
@@ -112,7 +126,7 @@ Shared sessions have two REST entry points, not one. The flow above describes th
 
 1. **Ownership consistency.** The session's PTY runs as the shared account, so the worktree files it operates on should be owned by the same identity. This is the "Identity × filesystem boundary" invariant below — no process writes into a user's `$HOME` unless it is running as that user — applied to the shared account's own filesystem scope.
 2. **Consistency with the MCP path.** `delegate_to_worktree` already resolves `requestUsername` from the parent session's `created_by`, so a worktree delegated from a shared session is already created as the shared account. The REST entry point behaves the same way rather than introducing a second ownership rule.
-3. **Billing / auth consistency.** The prompt mode's headless branch-name suggestion invokes the LLM CLI; running it as the shared account uses the shared account's API-key credentials (per the Authentication model above) rather than the initiating human's personal subscription.
+3. **Billing / auth consistency.** The prompt mode's headless branch-name suggestion invokes the LLM CLI; running it as the shared account draws on the shared account's own credentials (per the Authentication model above) rather than the initiating human's. Which credentials those are is the operator's configuration, not the system's concern — what matters here is only that the identity is consistent.
 
 **Operational prerequisite — remote access for the shared account.** Because the `useRemote` fetch runs as the shared account, the shared account needs its own git access to the repository remote (an SSH key or credential helper in its own home), in addition to the LLM credentials from Operational Setup step 2. Without it, worktree creation still succeeds — the existing `fetchFailed` fallback creates the branch from the local ref and surfaces the failed fetch to the user — but subsequent pulls from inside the session will fail until access is provisioned.
 
@@ -355,19 +369,21 @@ sudo createhomedir -c -u agent-console-shared
 sudo useradd -m -s /bin/bash agent-console-shared
 ```
 
-### 2. Configure the LLM CLI with an API key
+### 2. Configure the LLM CLI's credentials
 
-The server operator becomes the shared account and sets up credentials once.
+The server operator becomes the shared account and sets up credentials once, **in whatever form that CLI accepts**. Agent Console is not in this path and does not care which form is used; see [Authentication model](#authentication-model).
 
 ```bash
 sudo -u agent-console-shared -i
-  # Configure the LLM CLI with an organisation-level API key.
-  # Exact command depends on the CLI. For Claude Code:
-  #   (interactive) claude login           # select API-key option when prompted
-  # or environment-variable based:
+  # Configure the CLI however it expects. Exact command depends on the CLI.
+  # For Claude Code, either the interactive login or an env-var export works:
+  #   (interactive) claude login
   #   echo 'export ANTHROPIC_API_KEY=<your-api-key>' >> ~/.zshrc
+  # For other vendors, their own mechanism (e.g. ~/.aws/credentials for Bedrock).
   exit
 ```
+
+Which of these is appropriate for a *shared* account is a licensing question for the operator, not a system requirement — see the guidance under [Authentication model](#authentication-model).
 
 ### 3. Configure the server
 
@@ -422,12 +438,16 @@ The server's service user (`agentconsole`) runs the Hono process and has `NOPASS
 
 Keeping the shared account distinct from the service user preserves defense-in-depth: the service process only spawns PTYs; the LLM process only runs the LLM.
 
-### Why API key, not subscription, for shared accounts
+### Why an operator would choose an API key for a shared account
+
+**Not a system requirement** — Agent Console enforces nothing here (see [Authentication model](#authentication-model)). These are the considerations an operator weighs when deciding what to put in the shared account's home:
 
 - **Commercial compliance** — personal subscription terms typically preclude multi-user business use. An organisation-owned API key (Commercial Terms) is the appropriate authentication form for shared infrastructure.
 - **Operational independence** — the shared account does not break when any individual's subscription lapses.
 - **Credential rotation** — API keys rotate cleanly; subscription login flows are awkward to rotate without human interaction.
 - **Billing attribution** — API-key usage is attributed to the organisation via the vendor's billing dashboard.
+
+Each of these is a reason the *operator* may find persuasive. None of them is checked, and a deployment that chooses otherwise works identically as far as the server is concerned.
 
 ### Stdin to a shared session
 
