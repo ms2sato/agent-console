@@ -1568,6 +1568,22 @@ describe('EmbeddedAgentWorkerView', () => {
 
         expect(execCommandMock).toHaveBeenCalledWith('copy');
         expect(consoleErrorSpy).toHaveBeenCalled();
+        // Pin the exact error shape thrown by the shared copyToClipboard
+        // helper (lib/clipboard.ts) now that the extraction moved this
+        // construction out of this component -- guards against the
+        // extraction silently changing what handleCopy logs (#1345).
+        // logger.error('Failed to copy markdown:', err) forwards args
+        // straight through to console.error, so the error is the second
+        // positional arg. Locate the call by its message rather than
+        // assuming index 0 -- React/testing-library may emit unrelated
+        // console.error calls (e.g. dev warnings) earlier in the spy.
+        const copyErrorCall = (consoleErrorSpy.mock.calls as unknown[][]).find(
+          (call) => call[0] === 'Failed to copy markdown:'
+        );
+        expect(copyErrorCall).toBeDefined();
+        const loggedError = copyErrorCall?.[1];
+        expect(loggedError).toBeInstanceOf(Error);
+        expect((loggedError as Error).message).toBe('execCommand("copy") returned false');
         expect(screen.getByRole('button', { name: 'Copy as markdown' })).toBeTruthy();
         expect(screen.queryByRole('button', { name: 'Copied!' })).toBeNull();
       } finally {
