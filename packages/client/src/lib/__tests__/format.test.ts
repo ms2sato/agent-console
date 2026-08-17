@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { formatTimestamp, formatAbsoluteTimestamp } from '../format';
+import { formatTimestamp, formatAbsoluteTimestamp, formatBytes } from '../format';
 
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -85,5 +85,39 @@ describe('formatAbsoluteTimestamp', () => {
     const result1 = formatAbsoluteTimestamp(timestamp);
     const result2 = formatAbsoluteTimestamp(timestamp);
     expect(result1).toBe(result2);
+  });
+});
+
+describe('formatBytes', () => {
+  it('returns "0 B" for zero bytes (boundary)', () => {
+    expect(formatBytes(0)).toBe('0 B');
+  });
+
+  it('returns a plain byte count under 1024', () => {
+    expect(formatBytes(512)).toBe('512 B');
+  });
+
+  it('returns "1023 B" at exactly one byte under the KB threshold (boundary)', () => {
+    expect(formatBytes(1023)).toBe('1023 B');
+  });
+
+  it('scales to KB at exactly 1024 bytes (boundary)', () => {
+    expect(formatBytes(1024)).toBe('1.0 KB');
+  });
+
+  it('formats a mid-range KB value with one decimal place', () => {
+    expect(formatBytes(1234)).toBe('1.2 KB');
+  });
+
+  it('scales to MB at exactly 1024 * 1024 bytes (boundary)', () => {
+    expect(formatBytes(1024 * 1024)).toBe('1.0 MB');
+  });
+
+  it('scales to GB at exactly 1024 ** 3 bytes (boundary)', () => {
+    expect(formatBytes(1024 ** 3)).toBe('1.0 GB');
+  });
+
+  it('formats a large multi-GB value without overflowing past GB', () => {
+    expect(formatBytes(5 * 1024 ** 3)).toBe('5.0 GB');
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { ArtifactSchema } from '../artifact.js';
+import { ArtifactSchema, ArtifactsListResponseSchema } from '../artifact.js';
 import type { Artifact } from '../../types/artifact.js';
 
 describe('ArtifactSchema', () => {
@@ -83,6 +83,49 @@ describe('ArtifactSchema', () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(JSON.stringify(result.issues)).toContain('content');
+    }
+  });
+});
+
+describe('ArtifactsListResponseSchema', () => {
+  it('accepts a well-formed { artifacts: [...] } response', () => {
+    const artifacts: Artifact[] = [
+      { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+      { id: 'artifact-2', title: 'Report', createdAt: '2026-08-15T00:00:00.000Z', sizeBytes: 42 },
+    ];
+
+    const result = v.safeParse(ArtifactsListResponseSchema, { artifacts });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({ artifacts });
+    }
+  });
+
+  it('accepts an empty artifacts array (boundary case)', () => {
+    const result = v.safeParse(ArtifactsListResponseSchema, { artifacts: [] });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({ artifacts: [] });
+    }
+  });
+
+  it('rejects a response missing the artifacts field', () => {
+    const result = v.safeParse(ArtifactsListResponseSchema, {});
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a response whose array contains an invalid artifact', () => {
+    const result = v.safeParse(ArtifactsListResponseSchema, {
+      artifacts: [{ id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z' /* sizeBytes omitted */ }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown top-level key (strict-parse contract)', () => {
+    const result = v.safeParse(ArtifactsListResponseSchema, { artifacts: [], total: 0 });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(JSON.stringify(result.issues)).toContain('total');
     }
   });
 });

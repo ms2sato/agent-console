@@ -37,7 +37,10 @@ import type {
   ReviewComment,
   SkillDefinition,
   MessageTemplate,
+  Artifact,
 } from '@agent-console/shared';
+import { ArtifactsListResponseSchema } from '@agent-console/shared';
+import * as v from 'valibot';
 
 export type { ConfigResponse } from '@agent-console/shared';
 import { api } from './api-client';
@@ -1118,4 +1121,31 @@ export async function reorderMessageTemplates(orderedIds: string[]): Promise<{ s
     await handleApiError(res, 'Failed to reorder message templates');
   }
   return res.json() as Promise<{ success: boolean }>;
+}
+
+// ===========================================================================
+// HTML Artifacts (history page, phase 2)
+// ===========================================================================
+
+/**
+ * Fetch the caller's own HTML artifacts, newest first (server contract --
+ * do not client-side re-sort). Parsed through `ArtifactsListResponseSchema`
+ * at the wire boundary rather than blindly cast, so a server/client field
+ * drift fails loudly instead of silently dropping data (see
+ * `.claude/rules/pre-pr-completeness.md` Q10).
+ */
+export async function fetchArtifacts(): Promise<Artifact[]> {
+  const res = await api.artifacts.$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch artifacts');
+  }
+  const parsed = v.parse(ArtifactsListResponseSchema, await res.json());
+  return parsed.artifacts;
+}
+
+export async function deleteArtifact(id: string): Promise<void> {
+  const res = await api.artifacts[':id'].$delete({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to delete artifact');
+  }
 }

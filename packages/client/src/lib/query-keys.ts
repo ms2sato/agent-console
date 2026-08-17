@@ -111,3 +111,10 @@ export const messageTemplateKeys = {
   /** All message templates list */
   all: () => ['message-templates'] as const,
 } as const;
+
+export const artifactKeys = {
+  /** Root key for invalidating all artifact queries */
+  root: () => ['artifacts'] as const,
+  /** Artifacts list */
+  list: () => ['artifacts', 'list'] as const,
+} as const;

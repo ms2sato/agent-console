@@ -15,3 +15,16 @@ export const ArtifactSchema = v.strictObject({
 });
 
 export type ArtifactSchemaOutput = v.InferOutput<typeof ArtifactSchema>;
+
+/**
+ * Wire schema for `GET /api/artifacts`'s list response (HTML Artifacts
+ * phase 2). Parsed at the client fetch boundary so a server response that
+ * silently drops/adds a field fails to parse instead of failing silently
+ * at the client (see `.claude/rules/pre-pr-completeness.md` Q10, the #926
+ * lesson).
+ */
+export const ArtifactsListResponseSchema = v.strictObject({
+  artifacts: v.array(ArtifactSchema),
+});
+
+export type ArtifactsListResponse = v.InferOutput<typeof ArtifactsListResponseSchema>;
