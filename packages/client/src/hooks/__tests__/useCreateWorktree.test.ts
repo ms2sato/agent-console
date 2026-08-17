@@ -147,6 +147,39 @@ describe('useCreateWorktree', () => {
     expect(result.current.error).toBe('Unknown error');
   });
 
+  it('should still call addTask with a valid taskId when crypto.randomUUID is unavailable (non-secure context, #1345)', async () => {
+    // Simulate non-secure context: crypto exists but without randomUUID
+    // (same technique as lib/__tests__/id.test.ts's "non-secure context
+    // fallback" block). This proves the renamed generateClientId import at
+    // this call site actually routes through the guarded fallback, not
+    // just that the helper itself works in isolation.
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      value: { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) },
+      writable: true,
+      configurable: true,
+    });
+
+    try {
+      const { result } = renderHook(() => useCreateWorktree(defaultParams), { wrapper: createWrapper() });
+
+      await act(async () => {
+        await result.current.handleCreateWorktree(mockFormRequest);
+      });
+
+      expect(mockAddTask).toHaveBeenCalledTimes(1);
+      const addTaskArg = (mockAddTask.mock.calls as unknown as Array<[{ id: string }]>)[0][0];
+      expect(typeof addTaskArg.id).toBe('string');
+      expect(addTaskArg.id.length).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {
+        value: originalCrypto,
+        writable: true,
+        configurable: true,
+      });
+    }
+  });
+
   it('clearError should reset error to null', async () => {
     // Mock fetch to fail
     mockFetch.mockRejectedValue(new Error('Some error'));
