@@ -278,4 +278,66 @@ describe('WorktreeDeletionTaskPageContent', () => {
     },
     15000
   );
+
+  // R2 (bug-polarity): a genuine 404 ("no record of this task") is
+  // permanent for that id -- a job row is always created before the 202
+  // response the client received, so a 404 here can never later become a
+  // real record. Must fail against the pre-fix `refetchInterval`, which
+  // reads `query.state.data?.status` only: on a 404 there is never any
+  // `data`, so the callback falls through to `return 5000` forever and the
+  // honest not-found card polls in the background indefinitely.
+  it(
+    'R2 (bug-polarity): stops polling once the recovery fetch 404s, instead of polling forever behind the not-found card',
+    async () => {
+      let callCount = 0;
+      mockFetch.mockImplementation(() => {
+        callCount += 1;
+        return Promise.resolve(jsonResponse({ error: 'Job not found' }, { ok: false, status: 404 }));
+      });
+
+      await renderPage('job-404-polling');
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'No Record of This Task' })).toBeTruthy();
+      });
+      expect(callCount).toBe(1);
+
+      // Wait past a full interval window -- if `refetchInterval` failed to
+      // stop on the 404, a second fetch would fire here.
+      await new Promise((resolve) => setTimeout(resolve, 6000));
+      expect(callCount).toBe(1);
+    },
+    15000
+  );
+
+  // R2 (invariant-preservation): a transient, non-404 error (network
+  // failure, 500, etc.) must keep polling so the page recovers once the
+  // network/server comes back -- only the permanent-404 case should stop.
+  // Would fail against an over-broad fix that stops polling on ANY error
+  // rather than specifically a 404 `ApiError`.
+  it(
+    'R2 (invariant-preservation): keeps polling on a transient non-404 error, preserving the recovery-retry behavior',
+    async () => {
+      let callCount = 0;
+      mockFetch.mockImplementation(() => {
+        callCount += 1;
+        return Promise.resolve(jsonResponse({ error: 'Internal error' }, { ok: false, status: 500 }));
+      });
+
+      await renderPage('job-500-polling');
+
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'Unable to Check Task Status' })).toBeTruthy();
+      });
+      expect(callCount).toBe(1);
+
+      await waitFor(
+        () => {
+          expect(callCount).toBe(2);
+        },
+        { timeout: 7000 }
+      );
+    },
+    15000
+  );
 });

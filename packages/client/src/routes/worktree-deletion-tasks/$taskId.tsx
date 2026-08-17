@@ -124,6 +124,13 @@ export function WorktreeDeletionTaskPageContent({ taskId }: { taskId: string }) 
     refetchInterval: (query) => {
       const status = query.state.data?.status;
       if (status === JOB_STATUS.COMPLETED || status === JOB_STATUS.STALLED) return false;
+      // Genuine "no record" (404) is permanent for this id -- a job row is
+      // always created before the 202 response the client received, so a
+      // 404 here can never later become a real record. Stop polling.
+      // Transient errors (network failure, 500, etc.) keep polling so the
+      // page recovers once the network/server comes back.
+      const error = query.state.error;
+      if (error instanceof ApiError && error.status === 404) return false;
       return 5000;
     },
   });

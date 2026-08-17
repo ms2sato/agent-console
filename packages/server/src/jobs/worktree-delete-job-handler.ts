@@ -66,13 +66,21 @@ export interface WorktreeDeleteHandlerDeps {
  * Used at every `broadcastToApp` call site in this handler so a broadcast
  * failure never corrupts the job's own success/failure outcome -- e.g.
  * replacing the deletion error being thrown right after it, or turning a
- * successful deletion into a thrown/stalled job.
+ * successful deletion into a thrown/stalled job. The broadcast failure
+ * itself is still logged (at `warn`, not `error`) so it isn't silently
+ * dropped -- unlike the deletion outcome, whether this specific `warn`
+ * duplicates an already-logged error depends on the call site (the
+ * exception-catch branch logs the deletion error before broadcasting; the
+ * `!result.success` and success branches do not log anything beforehand).
  */
 function safeBroadcast(broadcastToApp: (msg: AppServerMessage) => void, msg: AppServerMessage): void {
   try {
     broadcastToApp(msg);
-  } catch {
-    // If broadcast fails, we've already logged the error above
+  } catch (err) {
+    logger.warn(
+      { err, msgType: msg.type, taskId: 'taskId' in msg ? msg.taskId : undefined },
+      'worktree:delete broadcastToApp failed; job outcome unaffected',
+    );
   }
 }
 
