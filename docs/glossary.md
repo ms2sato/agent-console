@@ -7,6 +7,22 @@ This document defines canonical terminology used throughout the Agent Console pr
 ### Agent
 A general term for AI-powered tools like Claude Code. See also: [AgentDefinition](#agentdefinition), [AgentWorker](#agentworker).
 
+### Vendor Authentication (agent → LLM provider)
+**How an agent authenticates to its LLM vendor, and Agent Console's deliberate non-involvement in it.** Three distinct cases are routinely conflated; they are not the same mechanism and only one of them involves the server at all.
+
+| Case | Who holds the credential | Server's role |
+|---|---|---|
+| **Terminal agent, personal session** | The OS user's own home (e.g. Claude Code's own login state) | **None.** The server spawns the CLI as that OS identity; the CLI reads its own home. |
+| **Terminal agent, [SharedSession](#sharedsession)** | The shared account's own home, placed by the operator | **None.** Structurally identical to the personal case — only *whose* home differs. |
+| **[EmbeddedAgentWorker](#embeddedagentworker) provider key** | The server, delivered over stdin at activation | **Holds and delivers it.** See [McpToken](#mcptoken) neighbours and the init handshake. |
+
+**The first two cases are the reason this entry exists.** For terminal agents, Agent Console does not supply, inspect, constrain, or observe vendor credentials — it spawns a process as an OS identity and that identity's home decides everything. This is a scope boundary, not an unimplemented feature: the host runs arbitrary agent CLIs, so encoding one vendor's licensing terms as a system-enforced constraint would impose that vendor's rules on agents those rules do not govern. Compliance with a given CLI's terms is resolved locally, by whoever configures that CLI.
+
+**The third case is genuinely different** and is the one place a credential crosses the server. It exists because an embedded agent has no CLI of its own to carry credentials — `EmbeddedAgentDefinition.provider` names an OpenAI-compatible endpoint, and the key travels as the first stdin message specifically so it touches neither argv nor env. **It is not the Claude path**: an embedded agent pointed at Claude via the Agent SDK would carry no `provider.apiKey` at all, because the SDK picks up the executing user's own auth like any other CLI (Issue [#1324](https://github.com/ms2sato/agent-console/issues/1324)).
+
+- **Common misreading:** that Agent Console handles Anthropic API keys generally. It does not — for terminal agents it handles none, and the embedded provider key is for OpenAI-compatible providers.
+- **See:** [Authentication model in shared-orchestrator-session.md](design/shared-orchestrator-session.md#authentication-model); [Credentials in embedded-agent-worker.md](design/embedded-agent-worker.md#credentials-provider-keys--the-init-handshake); `scripts/setup-shared-account.sh` (provisions the account, deliberately writes no secrets)
+
 ### AgentDefinition
 The stored configuration for an AI agent, including command templates and activity patterns. Referenced by `agentId` in [AgentWorker](#agentworker).
 - **Aliases:** Agent configuration, Agent preset
