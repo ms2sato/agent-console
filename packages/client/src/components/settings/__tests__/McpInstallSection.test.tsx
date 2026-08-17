@@ -37,14 +37,35 @@ function restoreClipboard() {
   }
 }
 
+// happy-dom does not implement `window.isSecureContext` (it is
+// `undefined`, i.e. falsy) regardless of the test host. Real browsers treat
+// `http://localhost` as a secure context, so we stub `true` here to match
+// real-browser behavior for the happy-path tests below, mirroring the
+// EmbeddedAgentWorkerView copy-markdown test pattern (#1159).
+const originalIsSecureContextDescriptor = Object.getOwnPropertyDescriptor(window, 'isSecureContext');
+
+function installSecureContext() {
+  Object.defineProperty(window, 'isSecureContext', { value: true, writable: true, configurable: true });
+}
+
+function restoreSecureContext() {
+  if (originalIsSecureContextDescriptor) {
+    Object.defineProperty(window, 'isSecureContext', originalIsSecureContextDescriptor);
+  } else {
+    Reflect.deleteProperty(window, 'isSecureContext');
+  }
+}
+
 beforeEach(() => {
   resetServerInfo();
   installClipboardMock();
+  installSecureContext();
 });
 
 afterEach(() => {
   cleanup();
   restoreClipboard();
+  restoreSecureContext();
 });
 
 describe('McpInstallSection', () => {
@@ -103,5 +124,45 @@ describe('McpInstallSection', () => {
 
     // After the click resolves, the button label should reflect the "copied" state.
     expect(screen.getByRole('button', { name: 'Copy install command' }).textContent).toBe('Copied!');
+  });
+
+  it('falls back to document.execCommand("copy") and shows "Copied!" when navigator.clipboard is unavailable (non-secure context, #1345)', async () => {
+    setServerPort(3457);
+
+    // navigator.clipboard is only defined in a secure context (HTTPS or
+    // localhost/127.0.0.1). Dev-server access over plain-HTTP LAN
+    // (e.g. http://192.168.1.12:5173/) leaves it undefined, so the primary
+    // path must fall back to the legacy execCommand('copy') technique
+    // instead of silently failing (#1345).
+    Object.defineProperty(navigator, 'clipboard', {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(window, 'isSecureContext', { value: false, writable: true, configurable: true });
+
+    const execCommandMock = mock(() => true);
+    // happy-dom does not implement execCommand, so assign it directly
+    // rather than spyOn-wrapping a nonexistent method.
+    Object.defineProperty(document, 'execCommand', {
+      value: execCommandMock,
+      configurable: true,
+    });
+
+    try {
+      render(<McpInstallSection />);
+      const copyButton = screen.getByRole('button', { name: 'Copy install command' });
+
+      await act(async () => {
+        fireEvent.click(copyButton);
+        await Promise.resolve();
+      });
+
+      expect(execCommandMock).toHaveBeenCalledWith('copy');
+      expect(writeTextMock).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Copy install command' }).textContent).toBe('Copied!');
+    } finally {
+      Reflect.deleteProperty(document, 'execCommand');
+    }
   });
 });

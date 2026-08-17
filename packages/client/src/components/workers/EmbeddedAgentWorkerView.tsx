@@ -15,6 +15,7 @@ import { ContextUsageBar } from './ContextUsageBar';
 import { crossedThreshold } from './context-usage-threshold';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
+import { copyToClipboard } from '../../lib/clipboard';
 
 /** Defaults when `EmbeddedAgentDefinition.handoff.softRatio`/`hardRatio` are unset -- see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI. */
 const DEFAULT_SOFT_RATIO = 0.75;
@@ -420,30 +421,6 @@ function PreviewablePre(props: JSX.IntrinsicElements['pre'] & ExtraProps) {
 const COPY_MARKDOWN_FEEDBACK_MS = 1500;
 
 /**
- * Legacy clipboard-copy technique via a temporary hidden textarea + the
- * deprecated `document.execCommand('copy')` API. Used as a fallback when
- * `navigator.clipboard` is unavailable, which happens whenever the page is
- * served from a non-secure context (plain HTTP, e.g. LAN dev-server access
- * at http://192.168.x.x:5173/) -- `navigator.clipboard` is undefined outside
- * HTTPS/localhost, so the modern API silently cannot be used there (#1159).
- */
-function copyViaExecCommand(text: string): boolean {
-  const textarea = document.createElement('textarea');
-  textarea.value = text;
-  // Keep off-screen so it never affects layout or scroll position.
-  textarea.style.position = 'fixed';
-  textarea.style.left = '-9999px';
-  document.body.appendChild(textarea);
-  try {
-    textarea.focus();
-    textarea.select();
-    return document.execCommand('copy');
-  } finally {
-    document.body.removeChild(textarea);
-  }
-}
-
-/**
  * Icon-only button pinned to the bottom-right of an assistant message
  * bubble. Copies the message's raw markdown SOURCE (the `text` prop, as
  * received from the agent) to the clipboard -- never the rendered HTML the
@@ -461,32 +438,10 @@ function CopyMarkdownButton({ text }: { text: string }) {
   }, []);
 
   const handleCopy = async () => {
-    let ok = false;
-    let lastError: unknown;
-
-    if (navigator.clipboard && window.isSecureContext) {
-      try {
-        await navigator.clipboard.writeText(text);
-        ok = true;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-
-    // Fall back to the legacy execCommand('copy') technique when the
-    // Clipboard API is unavailable (non-secure context, e.g. LAN access
-    // over plain HTTP) or when it threw above.
-    if (!ok) {
-      try {
-        ok = copyViaExecCommand(text);
-        if (!ok) lastError = new Error('execCommand("copy") returned false');
-      } catch (err) {
-        lastError = err;
-      }
-    }
-
-    if (!ok) {
-      logger.error('Failed to copy markdown:', lastError);
+    try {
+      await copyToClipboard(text);
+    } catch (err) {
+      logger.error('Failed to copy markdown:', err);
       return;
     }
 

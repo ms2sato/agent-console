@@ -20,7 +20,7 @@ import {
 import { useAppWsEvent } from '../hooks/useAppWs';
 import { useCreateWorktree } from '../hooks/useCreateWorktree';
 import { emitSessionDeleted } from '../lib/app-websocket';
-import { generateTaskId } from '../lib/id';
+import { generateClientId } from '../lib/id';
 import { formatPath } from '../lib/path';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../components/ui/error-dialog';
@@ -312,7 +312,7 @@ export function DashboardPage() {
 
   // Handle pull worktree request from WorktreeRow
   const handlePullWorktree = useCallback(async (repositoryId: string, worktreePath: string) => {
-    const taskId = generateTaskId();
+    const taskId = generateClientId();
     // Set a timeout to auto-remove the entry if WebSocket never responds
     const timeoutId = setTimeout(() => {
       logger.warn(`[Pull] Timeout: ${worktreePath} (${PULL_TIMEOUT_MS}ms elapsed)`);
@@ -879,7 +879,7 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
 
   const executeDelete = async (force: boolean) => {
     // Generate task ID
-    const taskId = generateTaskId();
+    const taskId = generateClientId();
 
     // Use session ID if available, otherwise generate a synthetic one for the task
     const effectiveSessionId = session?.id ?? `no-session-${taskId}`;
