@@ -753,4 +753,55 @@ describe('composeSdkSystemPromptAppend', () => {
     );
     expect(result).toBe('--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER');
   });
+
+  describe('aggregate 48 KiB cap (#1342 CodeRabbit follow-up: the SDK-only composition path had no aggregate cap)', () => {
+    it('drops segments last-to-first once the combined total exceeds the aggregate cap, warn-logs the drop, and keeps definitionSystemPrompt outside the cap', () => {
+      const capContent = 'x'.repeat(INSTRUCTION_PER_FILE_CAP_BYTES);
+      // 4 segments x 16384 bytes = 65536 bytes; cap = 49152. Dropping the
+      // last one ("d") brings the total to 49152 <= cap.
+      const segments = [
+        { origin: '/a.md', content: capContent },
+        { origin: '/b.md', content: capContent },
+        { origin: '/c.md', content: capContent },
+        { origin: '/d.md', content: capContent },
+      ];
+
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = composeSdkSystemPromptAppend(segments, 'OPERATOR_MARKER');
+
+        expect(result).toContain('--- Instructions: /a.md ---');
+        expect(result).toContain('--- Instructions: /b.md ---');
+        expect(result).toContain('--- Instructions: /c.md ---');
+        expect(result).not.toContain('--- Instructions: /d.md ---');
+        // definitionSystemPrompt is never subject to the cap.
+        expect(result).toContain('OPERATOR_MARKER');
+
+        expect(warnSpy).toHaveBeenCalled();
+        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('/d.md'))).toBe(true);
+        expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('/c.md'))).toBe(false);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('does not drop or warn when segments are comfortably under the aggregate cap', () => {
+      const segments = [
+        { origin: '/a.md', content: 'small content a' },
+        { origin: '/b.md', content: 'small content b' },
+      ];
+
+      const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const result = composeSdkSystemPromptAppend(segments, 'OPERATOR_MARKER');
+
+        expect(result).toContain('--- Instructions: /a.md ---\nsmall content a');
+        expect(result).toContain('--- Instructions: /b.md ---\nsmall content b');
+        expect(result).toContain('OPERATOR_MARKER');
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+  });
 });

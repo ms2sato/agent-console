@@ -108,22 +108,46 @@ export function assembleSystemPrompt(params: AssembleSystemPromptParams): string
  * `claude-sdk` init arm): opt-in instruction segments, formatted the same way
  * `assembleSystemPrompt` renders them, followed by the definition system
  * prompt if present -- mirroring `assembleSystemPrompt`'s section-join
- * convention, minus the preamble (the SDK engine uses the SDK's own
- * `claude_code` preset preamble instead of ours, so `buildPreamble` must not
- * run here). Returns `undefined` when there is nothing to append, so callers
- * can omit `Options.systemPrompt` entirely rather than passing an empty
- * string (see docs/design/embedded-agent-sdk-engine.md §4's "Instruction
- * loader" row correction).
+ * convention (including the aggregate-cap-with-warn behavior below), minus
+ * the preamble (the SDK engine uses the SDK's own `claude_code` preset
+ * preamble instead of ours, so `buildPreamble` must not run here). Returns
+ * `undefined` when there is nothing to append, so callers can omit
+ * `Options.systemPrompt` entirely rather than passing an empty string (see
+ * docs/design/embedded-agent-sdk-engine.md §4's "Instruction loader" row
+ * correction).
  */
 export function composeSdkSystemPromptAppend(
   segments: InstructionSegment[],
   definitionSystemPrompt: string | undefined,
 ): string | undefined {
-  const sections = formatInstructionSegments(segments);
+  // Aggregate cap governs the instruction segments only, mirroring
+  // assembleSystemPrompt/loadInstructions -- definitionSystemPrompt is never
+  // subject to it, below or here.
+  const cappedSegments = capAggregateInstructions(segments);
+  const sections = formatInstructionSegments(cappedSegments);
   if (definitionSystemPrompt !== undefined && definitionSystemPrompt.length > 0) {
     sections.push(definitionSystemPrompt);
   }
   return sections.length > 0 ? sections.join('\n\n') : undefined;
+}
+
+/**
+ * Applies `INSTRUCTION_AGGREGATE_CAP_BYTES` to a single flat list of
+ * instruction segments, dropping from the end (last-to-first) until the
+ * total is under the cap -- the same drop policy `loadInstructions` applies
+ * to its own `instructionsList` layer. Used by `composeSdkSystemPromptAppend`
+ * for the SDK engine's opt-in-only instruction path, which (unlike
+ * `loadInstructions`) has no global/chain layers to weigh against, so a
+ * single last-to-first pass over the whole list is the complete policy here.
+ */
+function capAggregateInstructions(segments: InstructionSegment[]): InstructionSegment[] {
+  const surviving = [...segments];
+  const total = (): number => surviving.reduce((sum, s) => sum + segmentByteLength(s), 0);
+  while (total() > INSTRUCTION_AGGREGATE_CAP_BYTES && surviving.length > 0) {
+    const dropped = surviving.pop();
+    if (dropped !== undefined) logAggregateDrop(dropped);
+  }
+  return surviving;
 }
 
 type ReadTextResult =
