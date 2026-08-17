@@ -285,7 +285,7 @@ export type McpAuthGateResult =
  * any tool dispatch (including `initialize` / `tools/list`). This is a
  * separate, earlier question than `checkCallerOwnsSession`'s authZ check
  * ("does this caller own the claimed session?"), which stays unchanged at
- * its 5 existing call sites.
+ * its 6 existing call sites.
  *
  * Deliberately takes ONLY the already-resolved caller identity and the
  * mode — no request/header/source-address parameter of any kind — so there

@@ -11,6 +11,7 @@ import { Hono } from 'hono';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPTransport } from '@hono/mcp';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 
 import type { SessionManager } from '../services/session-manager.js';
 import type { RepositoryManager } from '../services/repository-manager.js';
@@ -27,6 +28,7 @@ import type { CreateWorktreeWithSessionFn } from '../services/worktree-creation-
 import type { OpenPrInfo } from '../services/github-pr-service.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import type { RepositoryUpdates } from '../repositories/repository-repository.js';
+import type { ArtifactRepository } from '../repositories/artifact-repository.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
@@ -178,6 +180,115 @@ When to send a message:
    - content: Clearly describe the question or concern, the options you've considered, and what you recommend (if applicable). Then wait for a response before proceeding.`;
 }
 
+/** 5 MiB, measured on the raw received `content` string's UTF-8 byte length (docs/design/html-artifacts.md §1 req. 5). */
+const MAX_ARTIFACT_CONTENT_BYTES = 5 * 1024 * 1024;
+
+const HTML_TITLE_TAG_RE = /<title[^>]*>([\s\S]*?)<\/title>/i;
+const HTML_HEADING_TAG_RE = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i;
+
+/**
+ * Cap on a resolved artifact title's length, in characters, applied after
+ * stripping/collapsing (never before -- truncating raw markup could sever a
+ * tag mid-span and leave an unclosed `<`). 200 is a generous bound for
+ * display metadata (sidebar/tab labels) while still bounding worst-case
+ * storage/render cost for a caller-supplied title with no natural limit.
+ */
+const MAX_TITLE_LENGTH = 200;
+
+/**
+ * Strip HTML tags from an already-extracted fragment and collapse whitespace,
+ * for title display only. Repeats the tag-strip pass to a fixed point (rather
+ * than a single pass) so that any tag-like span exposed by a previous
+ * removal is also stripped -- this closes CodeQL's
+ * `js/incomplete-multi-character-sanitization` finding for this call site.
+ */
+function stripHtmlTagsAndCollapseWhitespace(fragment: string): string {
+  let stripped = fragment;
+  let previous: string;
+  do {
+    previous = stripped;
+    stripped = stripped.replace(/<[^>]*>/g, '');
+  } while (stripped !== previous);
+  return stripped.replace(/\s+/g, ' ').trim();
+}
+
+/** Truncate an already-stripped title to MAX_TITLE_LENGTH characters. */
+function truncateTitle(title: string): string {
+  return title.length > MAX_TITLE_LENGTH ? title.slice(0, MAX_TITLE_LENGTH) : title;
+}
+
+/**
+ * Resolve an artifact's display title per the chain in
+ * docs/design/html-artifacts.md §5.3: explicit `title` param -> the
+ * document's `<title>` -> its first heading (`<h1>`..`<h6>`) -> the literal
+ * fallback "Untitled" (an artifact id is never used as a display title).
+ *
+ * Resolved titles are always plain text: every rung of the chain -- the
+ * explicit `title` param included, since it is caller-supplied and equally
+ * capable of carrying markup as the extracted `<title>`/heading text -- is
+ * passed through `stripHtmlTagsAndCollapseWhitespace` and capped at
+ * MAX_TITLE_LENGTH characters before being returned. Only the literal
+ * "Untitled" fallback is exempt, being a fixed string. This makes the DB
+ * value safe for every consumer that reads it back (UI, MCP tool results,
+ * etc.), not merely the ones fed by markup extraction.
+ *
+ * Regex-based on purpose: this extracts metadata for display only and never
+ * mutates the stored bytes (the artifact is served byte-verbatim per §3), so
+ * a lightweight heuristic is sufficient here -- a full HTML parser
+ * dependency is not warranted for this single call site.
+ *
+ * @internal Exported for testing.
+ */
+export function resolveArtifactTitle(content: string, titleParam: string | undefined): string {
+  const trimmedParam = titleParam?.trim();
+  if (trimmedParam) {
+    const stripped = stripHtmlTagsAndCollapseWhitespace(trimmedParam);
+    if (stripped) return truncateTitle(stripped);
+  }
+
+  const titleMatch = HTML_TITLE_TAG_RE.exec(content);
+  if (titleMatch) {
+    const extracted = stripHtmlTagsAndCollapseWhitespace(titleMatch[1]);
+    if (extracted) return truncateTitle(extracted);
+  }
+
+  const headingMatch = HTML_HEADING_TAG_RE.exec(content);
+  if (headingMatch) {
+    const extracted = stripHtmlTagsAndCollapseWhitespace(headingMatch[1]);
+    if (extracted) return truncateTitle(extracted);
+  }
+
+  return 'Untitled';
+}
+
+/**
+ * Build the `create_html_artifact` tool result shape per
+ * docs/design/html-artifacts.md §4.1: `url` present only when
+ * `publicOrigin` is configured; `note` explains its absence otherwise.
+ * Extracted as a pure function so both branches are directly
+ * unit-testable without depending on the `serverConfig` module-singleton's
+ * import-time environment-variable evaluation (which cannot be toggled
+ * mid-test-process).
+ *
+ * @internal Exported for testing.
+ */
+export function buildArtifactToolResult(
+  artifactId: string,
+  publicOrigin: string | undefined,
+): { artifactId: string; path: string; url?: string; note?: string } {
+  const path = `/artifacts/${artifactId}`;
+  if (publicOrigin) {
+    return { artifactId, path, url: `${publicOrigin}${path}` };
+  }
+  return {
+    artifactId,
+    path,
+    note:
+      'AGENT_CONSOLE_PUBLIC_ORIGIN is not configured on this server; only a relative path is available. ' +
+      'Set AGENT_CONSOLE_PUBLIC_ORIGIN to also receive an absolute URL.',
+  };
+}
+
 /**
  * Build concise reply instructions appended to PTY notifications,
  * so the receiving agent knows how to respond via send_session_message.
@@ -220,6 +331,8 @@ export interface McpDependencies {
    * that `git worktree add` runs as the requesting user in multi-user mode.
    */
   userRepository: UserRepository;
+  /** HTML artifact metadata + storage repository, backing `create_html_artifact` (see docs/design/html-artifacts.md). */
+  artifactRepository: ArtifactRepository;
   broadcastToApp: (msg: AppServerMessage) => void;
   /**
    * Fetch PR URL for a branch. 3rd arg is `requestUsername`, threaded by
@@ -258,7 +371,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp, findOpenPullRequest } = deps;
+  const { sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, broadcastToApp, findOpenPullRequest } = deps;
 
   // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
   // caller identity"). The registry defaults to empty and the mode resolves
@@ -1803,6 +1916,94 @@ export function createMcpApp(deps: McpDependencies): Hono {
     },
   );
 
+  // ---------- Tool: create_html_artifact ----------
+
+  // Sixth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, and run_process. No mechanical registry
+  // enumerates these tools; this comment is the convention-only marker.
+  mcpServer.tool(
+    'create_html_artifact',
+    'Upload an HTML document (optionally with inline JavaScript/CSS) and receive a URL to view it in a browser. ' +
+      'Artifacts are stored per-user and persist until manually deleted. ' +
+      `Content is capped at ${MAX_ARTIFACT_CONTENT_BYTES} bytes (5 MiB), measured on the raw content string.`,
+    {
+      content: z.string().min(1, 'Content is required').describe(
+        'The HTML document content (max 5 MiB, measured as raw UTF-8 bytes). Served byte-verbatim.',
+      ),
+      title: z.string().optional().describe(
+        'Optional display title. When omitted, derived from the document\'s <title>, then its first heading, ' +
+          'then falls back to the literal "Untitled". Markup is stripped and the result is capped at ' +
+          `${MAX_TITLE_LENGTH} characters; titles are always plain text.`,
+      ),
+      sessionId: z.string().describe(
+        "The calling session's ID, used to attribute the artifact to that session's owner (session.createdBy). " +
+          'Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+      ),
+    },
+    async ({ content, title, sessionId }) => {
+      try {
+        const contentByteLength = Buffer.byteLength(content, 'utf-8');
+        if (contentByteLength > MAX_ARTIFACT_CONTENT_BYTES) {
+          return errorResult(
+            `Content exceeds the maximum artifact size of ${MAX_ARTIFACT_CONTENT_BYTES} bytes (5 MiB); ` +
+              `received ${contentByteLength} bytes`,
+          );
+        }
+
+        // Resolve the calling session. Attribution below MUST derive from
+        // session.createdBy, NEVER from getMcpCallerIdentity() -- the same
+        // layering McpCallerIdentity's JSDoc in mcp-auth.ts documents:
+        // MCP caller identity authorizes, the session ownership chain
+        // attributes. getMcpCallerIdentity() is used ONLY for
+        // checkCallerOwnsSession below.
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; creating an artifact from an ownerless (legacy) session is not possible`,
+          );
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'create_html_artifact' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const resolvedTitle = resolveArtifactTitle(content, title);
+        const artifact = await artifactRepository.create({
+          id: randomUUID(),
+          userId: session.createdBy,
+          title: resolvedTitle,
+          content,
+          sourceSessionId: sessionId,
+        });
+
+        logger.info(
+          { artifactId: artifact.id, sessionId, userId: session.createdBy, sizeBytes: artifact.sizeBytes },
+          'HTML artifact created',
+        );
+
+        // AGENT_CONSOLE_PUBLIC_ORIGIN is the ONLY source for an absolute
+        // URL here. MCP tool calls arrive over the localhost dial-back
+        // connection, so the /mcp request's Host header (if any) names the
+        // wrong machine for a human viewer opening this link from
+        // elsewhere -- deliberately never read here
+        // (docs/design/html-artifacts.md §4.1).
+        return textResult(buildArtifactToolResult(artifact.id, serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'create_html_artifact failed');
+        return errorResult(message);
+      }
+    },
+  );
+
   // ---------- Hono app ----------
 
   const mcpApp = new Hono();
@@ -1822,7 +2023,7 @@ export function createMcpApp(deps: McpDependencies): Hono {
   // in this file where a request reaches a tool body, and this middleware
   // sits in front of it. This answers "is this caller anyone at all?"
   // (authentication); the existing `checkCallerOwnsSession` call sites in
-  // the 5 tools above still separately answer "does this caller own the
+  // the 6 tools above still separately answer "does this caller own the
   // claimed session?" (authorization) and are unchanged by this gate.
   mcpApp.use('/mcp', createMcpAuthMiddleware({ mcpTokenRegistry, mcpAuthMode }));
 

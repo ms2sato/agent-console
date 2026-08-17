@@ -6,6 +6,7 @@ import type { ConfigResponse, SkillDefinition } from '@agent-console/shared';
 import type { MessageTemplateRepository } from '../../repositories/message-template-repository.js';
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
+import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { createMockSystemCapabilities } from '../../__tests__/utils/mock-system-capabilities-helper.js';
@@ -50,6 +51,17 @@ describe('API route mounting', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { templates: unknown[] };
     expect(Array.isArray(body.templates)).toBe(true);
+  });
+
+  it('should mount artifacts route at /api/artifacts', async () => {
+    app = await createTestApp({
+      artifactRepository: { findByUserId: async () => [] } as Pick<ArtifactRepository, 'findByUserId'> as ArtifactRepository,
+    });
+    const res = await app.request('/api/artifacts');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { artifacts: unknown[] };
+    expect(Array.isArray(body.artifacts)).toBe(true);
   });
 });
 

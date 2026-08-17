@@ -33,12 +33,11 @@
  *
  * Spec: docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
  */
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as v from 'valibot';
 import { Hono } from 'hono';
-import { GlobalRegistrator } from '@happy-dom/global-registrator';
 
 import {
   setupTestEnvironment,
@@ -89,20 +88,6 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
   let appServer: ReturnType<typeof Bun.serve> | undefined;
   let stubServer: ReturnType<typeof Bun.serve> | undefined;
   let realCwd: string | undefined;
-
-  // Same happy-dom caveat as embedded-agent-e2e.test.ts: the loop
-  // subprocess's real HTTP calls to /mcp need real Response/Headers.
-  beforeAll(async () => {
-    if (GlobalRegistrator.isRegistered) {
-      await GlobalRegistrator.unregister();
-    }
-  });
-
-  afterAll(() => {
-    if (!GlobalRegistrator.isRegistered) {
-      GlobalRegistrator.register();
-    }
-  });
 
   beforeEach(async () => {
     await setupTestEnvironment();
@@ -191,6 +176,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
         createWorktreeWithSession,
         deleteWorktree,
         userRepository: ctx.userRepository,
+        artifactRepository: ctx.artifactRepository,
         broadcastToApp: ctx.broadcastToApp,
         fetchPullRequestUrl: ctx.fetchPullRequestUrl,
         findOpenPullRequest: ctx.findOpenPullRequest,

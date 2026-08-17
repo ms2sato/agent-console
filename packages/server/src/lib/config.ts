@@ -76,6 +76,38 @@ export function getRepositoryDir(orgRepo: string): string {
 }
 
 /**
+ * Get the artifacts base directory.
+ * Structure: <config-dir>/artifacts/
+ *
+ * A new top-level namespace, deliberately parallel to (not inside)
+ * `repositories/`: artifacts are user-scoped (per-user history), not
+ * session-scoped, so their lifetime is independent of any session's.
+ * See docs/design/html-artifacts.md §5.1.
+ */
+export function getArtifactsDir(): string {
+  return path.join(getConfigDir(), 'artifacts');
+}
+
+/**
+ * Get the per-user artifacts directory.
+ * Structure: <config-dir>/artifacts/{userId}/
+ * @param userId - The owning user's `users.id`
+ */
+export function getUserArtifactsDir(userId: string): string {
+  return path.join(getArtifactsDir(), userId);
+}
+
+/**
+ * Get the filesystem path for a specific artifact's HTML file.
+ * Structure: <config-dir>/artifacts/{userId}/{artifactId}.html
+ * @param userId - The owning user's `users.id`
+ * @param artifactId - The artifact's id
+ */
+export function getArtifactFilePath(userId: string, artifactId: string): string {
+  return path.join(getUserArtifactsDir(userId), `${artifactId}.html`);
+}
+
+/**
  * Get the path to the SQLite database file.
  * Structure: <config-dir>/data.db
  */

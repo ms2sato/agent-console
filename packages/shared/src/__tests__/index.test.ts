@@ -123,6 +123,26 @@ describe('shared index exports', () => {
     ]);
   });
 
+  it('should export Artifact type and the ArtifactSchema runtime schema', async () => {
+    const mod = await import('../index.js');
+
+    // Artifact is a type-only export from Issue #1312 (HTML Artifacts phase
+    // 1) -- verify the module loads successfully.
+    expect(mod).toBeDefined();
+
+    // ArtifactSchema is a real runtime value, re-exported transitively via
+    // `export * from './schemas/index.js'` in the same barrel -- verify it
+    // is actually present and parses a well-formed artifact.
+    expect(mod.ArtifactSchema).toBeDefined();
+    const accepted = v.safeParse(mod.ArtifactSchema, {
+      id: 'artifact-id',
+      title: 'My Artifact',
+      createdAt: '2026-04-27T00:00:00.000Z',
+      sizeBytes: 1024,
+    });
+    expect(accepted.success).toBe(true);
+  });
+
   it('should export ConditionalWakeupInfo type', async () => {
     const mod = await import('../index.js');
 

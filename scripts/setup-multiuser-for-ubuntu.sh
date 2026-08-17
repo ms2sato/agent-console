@@ -54,6 +54,11 @@
 #   (whitespace-separated list of usernames; equivalent to repeated --add-user),
 #   AGENT_CONSOLE_PTY_PROVIDER (opt-in PTY backend override; unset = server
 #   default; valid values: 'bun-pty' | 'bun-terminal'; Issues #832 / #824).
+#   AGENT_CONSOLE_PUBLIC_ORIGIN (opt-in viewer-facing origin, e.g.
+#   'http://192.168.1.12:8080'; unset = tools that mint viewer URLs (e.g.
+#   create_html_artifact) return relative paths only; Issue #1312 §4.1 --
+#   this value is never inferred, so an operator who wants absolute artifact
+#   URLs must supply it explicitly).
 #
 # Documentation: docs/multi-user-setup-guide.md
 
@@ -84,6 +89,13 @@ AUTH_COOKIE_SECURE="${AGENT_CONSOLE_AUTH_COOKIE_SECURE:-$DEFAULT_AUTH_COOKIE_SEC
 # stage-2 default flip (Issues #832 / #824 / #827). The macOS deploy script
 # (update-and-deploy-for-mac.sh) provides the analogous slot.
 PTY_PROVIDER="${AGENT_CONSOLE_PTY_PROVIDER:-}"
+# Opt-in viewer-facing origin (Issue #1312 §4.1). Unset (default) -> rendered
+# unit omits the env entry entirely; tools that mint viewer URLs (e.g.
+# create_html_artifact) return relative paths only. There is deliberately no
+# built-in default and no inference from the host -- an operator who wants
+# absolute artifact URLs supplies the origin they know this host is reachable
+# at (e.g. 'http://192.168.1.12:8080').
+PUBLIC_ORIGIN="${AGENT_CONSOLE_PUBLIC_ORIGIN:-}"
 
 # Initial users: env var holds a whitespace-separated list; CLI --add-user
 # extends it (repeatable).
@@ -127,6 +139,12 @@ Options:
                          PTY_PROVIDER entry; the server uses its compiled
                          default ('bun-pty'). Used for dogfooding the
                          alternative provider (Issues #832 / #824).
+  --public-origin <url>  Opt-in viewer-facing origin (e.g.
+                         http://192.168.1.12:8080), used to mint absolute
+                         viewer URLs for tools like create_html_artifact.
+                         Unset (default) leaves the rendered unit without an
+                         AGENT_CONSOLE_PUBLIC_ORIGIN entry; those tools then
+                         return relative paths only (Issue #1312 §4.1).
   --add-user <username>  OS user to add to the shared group (repeatable)
   --repo-source <ref>    Local path or git URL to install from
                          (default: https://github.com/ms2sato/agent-console.git)
@@ -140,7 +158,7 @@ Environment overrides (env vars are used when the matching flag is omitted):
   AGENT_CONSOLE_DATA_ROOT, AGENT_CONSOLE_SOURCE_REPOS_DIR,
   AGENT_CONSOLE_PORT,
   AGENT_CONSOLE_AUTH_COOKIE_SECURE, AGENT_CONSOLE_INITIAL_USERS,
-  AGENT_CONSOLE_PTY_PROVIDER
+  AGENT_CONSOLE_PTY_PROVIDER, AGENT_CONSOLE_PUBLIC_ORIGIN
 EOF
 }
 
@@ -167,6 +185,9 @@ while [ "$#" -gt 0 ]; do
     --pty-provider)
       [ "$#" -ge 2 ] || err "--pty-provider requires an argument"
       PTY_PROVIDER="$2"; shift 2 ;;
+    --public-origin)
+      [ "$#" -ge 2 ] || err "--public-origin requires an argument"
+      PUBLIC_ORIGIN="$2"; shift 2 ;;
     --add-user)
       [ "$#" -ge 2 ] || err "--add-user requires an argument"
       INITIAL_USERS+=("$2"); shift 2 ;;
@@ -209,6 +230,34 @@ if [ -n "$PTY_PROVIDER" ]; then
     bun-pty|bun-terminal) ;;
     *) err "invalid --pty-provider '$PTY_PROVIDER' (must be 'bun-pty' or 'bun-terminal')" ;;
   esac
+fi
+# PUBLIC_ORIGIN is opt-in: unset = no env entry in the rendered unit (tools
+# that mint viewer URLs return relative paths only). When set, must be an
+# EXACT http(s) origin with no trailing slash (matches how the value is
+# concatenated with a leading-slash relative path at the tool-call site --
+# packages/server/src/lib/server-config.ts's AGENT_CONSOLE_PUBLIC_ORIGIN):
+# scheme://host[:port] and nothing else. No path, query, fragment, userinfo
+# (`user:pass@`), whitespace, or control characters -- the previous
+# case-glob match (`http://*`) accepted all of those, which is exploitable
+# once the value is substituted into the sed replacement in
+# render_systemd_unit() below: an embedded '|' breaks the sed delimiter,
+# and an embedded '&' expands to the whole matched placeholder text.
+# IPv6 literal hosts (`http://[::1]:8080`) are deliberately NOT supported by
+# this pattern; this codebase has no other host-accepting validation to
+# match conventions with, and a plain hostname/IPv4 pattern is the simplest
+# correct subset. Extend the character class if IPv6 support is needed.
+PUBLIC_ORIGIN_REGEX='^https?://[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*(:[0-9]{1,5})?$'
+if [ -n "$PUBLIC_ORIGIN" ]; then
+  case "$PUBLIC_ORIGIN" in
+    http://*/|https://*/)
+      err "invalid --public-origin '$PUBLIC_ORIGIN' (must not have a trailing slash)" ;;
+  esac
+  # [[ =~ ]] matches the ENTIRE variable as one string against the anchored
+  # pattern (unlike `grep`, which matches per-line and would let an
+  # embedded newline followed by a valid origin slip through as a match).
+  if [[ ! "$PUBLIC_ORIGIN" =~ $PUBLIC_ORIGIN_REGEX ]]; then
+    err "invalid --public-origin '$PUBLIC_ORIGIN' (must be an exact http(s) origin: scheme://host[:port] only -- no path, query, fragment, userinfo, or whitespace)"
+  fi
 fi
 case "$DATA_ROOT" in
   /*) ;;
@@ -303,6 +352,17 @@ heading() {
   echo "==> $*"
 }
 
+# Escape a value for safe use as sed replacement text when the pattern
+# delimiter is '|': backslash (sed escape introducer), '&' (whole-match
+# backreference), and the delimiter itself all need a literal backslash
+# prefix. Defense-in-depth alongside the PUBLIC_ORIGIN_REGEX validation
+# above -- the regex already excludes these characters from a valid origin,
+# but this keeps the sed substitution itself safe even if a future caller
+# feeds an unvalidated value through render_systemd_unit().
+sed_escape_replacement() {
+  printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
 # Render the systemd unit to stdout from the template.
 render_systemd_unit() {
   local service_home
@@ -323,6 +383,16 @@ render_systemd_unit() {
   else
     pty_provider_sed="/^# PTY_PROVIDER_BLOCK_PLACEHOLDER\$/d"
   fi
+  # PUBLIC_ORIGIN opt-in slot (Issue #1312 §4.1), same placeholder idiom as
+  # PTY_PROVIDER above: set -> a real Environment= entry; unset -> delete the
+  # placeholder line so the rendered unit stays byte-equivalent with installs
+  # that never passed --public-origin.
+  local public_origin_sed
+  if [ -n "$PUBLIC_ORIGIN" ]; then
+    public_origin_sed="s|^# PUBLIC_ORIGIN_BLOCK_PLACEHOLDER\$|Environment=AGENT_CONSOLE_PUBLIC_ORIGIN=$(sed_escape_replacement "$PUBLIC_ORIGIN")|"
+  else
+    public_origin_sed="/^# PUBLIC_ORIGIN_BLOCK_PLACEHOLDER\$/d"
+  fi
   sed \
     -e "s|{{SERVICE_USER}}|$SERVICE_USER|g" \
     -e "s|{{SERVICE_GROUP}}|$SERVICE_GROUP|g" \
@@ -332,6 +402,7 @@ render_systemd_unit() {
     -e "s|{{PORT}}|$PORT|g" \
     -e "s|{{AUTH_COOKIE_SECURE}}|$AUTH_COOKIE_SECURE|g" \
     -e "$pty_provider_sed" \
+    -e "$public_origin_sed" \
     "$SYSTEMD_TEMPLATE"
 }
 
@@ -351,6 +422,11 @@ if [ -n "$PTY_PROVIDER" ]; then
   echo "  PTY_PROVIDER        : $PTY_PROVIDER"
 else
   echo "  PTY_PROVIDER        : (unset, server default)"
+fi
+if [ -n "$PUBLIC_ORIGIN" ]; then
+  echo "  PUBLIC_ORIGIN       : $PUBLIC_ORIGIN"
+else
+  echo "  PUBLIC_ORIGIN       : (unset, viewer URL tools return relative paths only)"
 fi
 if [ "${#INITIAL_USERS[@]}" -gt 0 ]; then
   echo "  initial users       : ${INITIAL_USERS[*]}"

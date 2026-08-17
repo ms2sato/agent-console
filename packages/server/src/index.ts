@@ -3,12 +3,13 @@ import { Hono } from 'hono';
 import { pinoLogger } from 'hono-pino';
 import { api } from './routes/api.js';
 import { webhooks } from './routes/webhooks.js';
+import { artifactsViewer } from './routes/artifacts-viewer.js';
 import { createMcpApp } from './mcp/mcp-server.js';
 import { createWorktreeWithSession } from './services/worktree-creation-service.js';
 import { deleteWorktree } from './services/worktree-deletion-service.js';
 import { setupWebSocketRoutes, broadcastToApp } from './websocket/routes.js';
 import { onApiError } from './lib/error-handler.js';
-import { serverConfig, shouldWarnInsecureAuthCookie } from './lib/server-config.js';
+import { serverConfig, shouldWarnInsecureAuthCookie, shouldLogUnconfiguredPublicOrigin } from './lib/server-config.js';
 import { rootLogger, createLogger } from './lib/logger.js';
 import { getConfigDir } from './lib/config.js';
 import { createAppContext, shutdownAppContext, type AppContext, type AppBindings } from './app-context.js';
@@ -134,6 +135,15 @@ app.route('/api', api);
 // Mount webhook routes for inbound integrations (e.g., GitHub webhooks)
 app.route('/webhooks', webhooks);
 
+// Mount the HTML artifact viewer shell (navigation jail).
+// Deliberately top-level, NOT under `/api` (docs/design/html-artifacts.md
+// §4) -- carries its own explicit authMiddleware since it doesn't inherit
+// `/api`'s. MUST be registered BEFORE the SPA catch-all (`app.get('*', ...)`
+// below): Hono matches routes in registration order, and `/artifacts/:id`
+// would otherwise be silently shadowed by the SPA fallback in production,
+// serving index.html instead of the jail shell.
+app.route('/artifacts', artifactsViewer);
+
 // Mount MCP endpoint (Streamable HTTP transport for AI agent tool integration)
 const mcpApp = createMcpApp({
   sessionManager: appContext.sessionManager,
@@ -150,6 +160,7 @@ const mcpApp = createMcpApp({
   createWorktreeWithSession,
   deleteWorktree,
   userRepository: appContext.userRepository,
+  artifactRepository: appContext.artifactRepository,
   broadcastToApp: appContext.broadcastToApp,
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,
@@ -191,6 +202,14 @@ if (shouldWarnInsecureAuthCookie()) {
     'AUTH_COOKIE_SECURE=false disables the Secure attribute on the auth cookie while NODE_ENV=production. ' +
     'The session cookie will be transmitted over plain HTTP. Only do this on a trusted private network ' +
     '(e.g. Cloudflare WARP / VPN); on an untrusted network this enables session hijack.'
+  );
+}
+
+if (shouldLogUnconfiguredPublicOrigin()) {
+  logger.info(
+    'AGENT_CONSOLE_PUBLIC_ORIGIN is not set. Tools that mint viewer URLs (e.g. create_html_artifact) will ' +
+    'return relative paths only. Set AGENT_CONSOLE_PUBLIC_ORIGIN to the origin humans reach this server at ' +
+    '(e.g. http://192.168.1.12:6340) to also receive absolute URLs.'
   );
 }
 

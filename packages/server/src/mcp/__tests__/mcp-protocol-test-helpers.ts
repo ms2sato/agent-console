@@ -10,12 +10,13 @@ import type { Hono } from 'hono';
  * Initialize MCP session by sending the initialize request and
  * notifications/initialized. Returns the Mcp-Session-Id header value.
  */
-export async function initializeMcp(app: Hono): Promise<string> {
+export async function initializeMcp(app: Hono, extraHeaders?: Record<string, string>): Promise<string> {
   const res = await app.request('/mcp', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
+      ...extraHeaders,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -37,6 +38,7 @@ export async function initializeMcp(app: Hono): Promise<string> {
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
       'Mcp-Session-Id': sessionId,
+      ...extraHeaders,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',
@@ -54,6 +56,7 @@ export async function callTool(
   name: string,
   args: Record<string, unknown>,
   id: number = 2,
+  extraHeaders?: Record<string, string>,
 ): Promise<{ result?: { content: Array<{ type: string; text: string }>; isError?: boolean }; error?: unknown }> {
   const res = await app.request('/mcp', {
     method: 'POST',
@@ -61,6 +64,7 @@ export async function callTool(
       'Content-Type': 'application/json',
       'Accept': 'application/json, text/event-stream',
       'Mcp-Session-Id': sessionId,
+      ...extraHeaders,
     },
     body: JSON.stringify({
       jsonrpc: '2.0',

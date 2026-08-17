@@ -21,6 +21,7 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SqliteWorktreeRepository } from '../../repositories/sqlite-worktree-repository.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
+import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
 import { WorktreeService } from '../../services/worktree-service.js';
 import type { PtySpawnOptions } from '../../lib/pty-provider.js';
 import { extractPromptFromSpawnCommand } from '../../__tests__/utils/extract-prompt-from-command.js';
@@ -393,6 +394,7 @@ describe('MCP Server Tools', () => {
   let worktreeService: WorktreeService;
   let annotationService: AnnotationService;
   let userRepository: SqliteUserRepository;
+  let artifactRepository: SqliteArtifactRepository;
   let testJobQueue: JobQueue;
   let mcpSessionId: string;
   // Track unique IDs for tool calls to avoid collisions in the shared transport
@@ -428,7 +430,7 @@ describe('MCP Server Tools', () => {
     authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry },
   ): Promise<void> {
     const agentDirectory = new AgentDirectory({ terminal: agentManager, embedded: testEmbeddedAgentManagerStub });
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
     app = new Hono();
     app.route('', mcpApp);
 
@@ -522,6 +524,7 @@ describe('MCP Server Tools', () => {
     // `userRepository.upsertByOsUid(...)`; tests that exercise the null
     // fallback rely on findById returning null for unknown UUIDs.
     userRepository = new SqliteUserRepository(db);
+    artifactRepository = new SqliteArtifactRepository(db);
 
     // Create AnnotationService
     annotationService = new AnnotationService();
@@ -5198,6 +5201,7 @@ describe('MCP Server Tools', () => {
         createWorktreeWithSession,
         deleteWorktree,
         userRepository,
+        artifactRepository,
         broadcastToApp: () => {},
         findOpenPullRequest: mockFindOpenPullRequest,
         fetchPullRequestUrl: mockFetchPullRequestUrl,

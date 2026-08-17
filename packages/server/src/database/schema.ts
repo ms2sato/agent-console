@@ -18,6 +18,7 @@ export interface Database {
   users: UsersTable;
   timers: TimersTable;
   message_templates: MessageTemplatesTable;
+  artifacts: ArtifactsTable;
 }
 
 /**
@@ -443,3 +444,33 @@ export type MessageTemplateRow = Selectable<MessageTemplatesTable>;
 export type NewMessageTemplate = Insertable<MessageTemplatesTable>;
 /** Message template data for UPDATE queries */
 export type MessageTemplateUpdate = Updateable<MessageTemplatesTable>;
+
+/**
+ * Artifacts table schema (HTML Artifacts phase 1).
+ * Stores metadata for user-uploaded HTML artifacts; the HTML bytes
+ * themselves live on disk at `<AGENT_CONSOLE_HOME>/artifacts/<user_id>/<id>.html`
+ * (see `lib/artifact-storage.ts`), not in this table.
+ * See docs/design/html-artifacts.md §5.1.
+ */
+export interface ArtifactsTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Foreign key reference to users.id (owner) */
+  user_id: string;
+  /** Display title, resolved per docs/design/html-artifacts.md §5.3 */
+  title: string;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+  /** Size of the stored HTML file in bytes */
+  size_bytes: number;
+  /**
+   * Provenance only -- the session that created this artifact. Nullable,
+   * and NEVER used for lookup: an artifact outlives its source session.
+   */
+  source_session_id: string | null;
+}
+
+/** Artifact row as returned from SELECT queries */
+export type ArtifactRow = Selectable<ArtifactsTable>;
+/** Artifact data for INSERT queries */
+export type NewArtifact = Insertable<ArtifactsTable>;

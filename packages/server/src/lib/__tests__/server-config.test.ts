@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import {
   resolveAuthCookieSecure,
   shouldWarnInsecureAuthCookie,
+  shouldLogUnconfiguredPublicOrigin,
 } from '../server-config.js';
 
 describe('server-config', () => {
@@ -180,6 +181,54 @@ describe('server-config', () => {
         /Invalid AUTH_COOKIE_SECURE: Expected 'true', 'false', or unset, got: '1'/
       );
     });
+
+    it('should default AGENT_CONSOLE_PUBLIC_ORIGIN to undefined when not set', async () => {
+      delete process.env.AGENT_CONSOLE_PUBLIC_ORIGIN;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBeUndefined();
+    });
+
+    it('should treat empty AGENT_CONSOLE_PUBLIC_ORIGIN as unset (operator-friendly)', async () => {
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = '';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBeUndefined();
+    });
+
+    it('should trim whitespace around a configured AGENT_CONSOLE_PUBLIC_ORIGIN', async () => {
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = '  http://192.168.1.12:6340  ';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://192.168.1.12:6340');
+    });
+
+    it('should expose AGENT_CONSOLE_PUBLIC_ORIGIN when set to a non-empty string', async () => {
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = 'http://localhost:3457';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:3457');
+    });
+
+    it('should strip a trailing slash from AGENT_CONSOLE_PUBLIC_ORIGIN (avoids a double slash when concatenated with a leading-slash path)', async () => {
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = 'http://localhost:6340/';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:6340');
+    });
+
+    it('should strip multiple trailing slashes from AGENT_CONSOLE_PUBLIC_ORIGIN', async () => {
+      process.env.AGENT_CONSOLE_PUBLIC_ORIGIN = 'http://localhost:6340///';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.AGENT_CONSOLE_PUBLIC_ORIGIN).toBe('http://localhost:6340');
+    });
   });
 
   describe('resolveAuthCookieSecure', () => {
@@ -254,6 +303,18 @@ describe('server-config', () => {
     it('undefined + development -> false', () => {
       expect(
         shouldWarnInsecureAuthCookie({ AUTH_COOKIE_SECURE: undefined, NODE_ENV: 'development' })
+      ).toBe(false);
+    });
+  });
+
+  describe('shouldLogUnconfiguredPublicOrigin', () => {
+    it('unset -> true (deliberately mode-independent, no AUTH_MODE input)', () => {
+      expect(shouldLogUnconfiguredPublicOrigin({ AGENT_CONSOLE_PUBLIC_ORIGIN: undefined })).toBe(true);
+    });
+
+    it('configured -> false', () => {
+      expect(
+        shouldLogUnconfiguredPublicOrigin({ AGENT_CONSOLE_PUBLIC_ORIGIN: 'http://localhost:3457' })
       ).toBe(false);
     });
   });

@@ -1,2 +1,21 @@
-[test]
-preload = ["./src/setup.ts"]
+# Intentionally empty `[test]` section.
+#
+# Do NOT add a `[test].preload` default here. `bun test`'s `--preload`
+# CLI flag is ADDITIVE to any preload configured in bunfig.toml, not a
+# replacement for it -- a bunfig-level default preload runs alongside
+# whatever `--preload` is passed on the command line. `package.json`'s
+# `test` / `test:coverage` / `test:watch` scripts run TWO separate `bun
+# test` invocations against this package, each with its OWN explicit
+# `--preload` (one registers happy-dom for boundary tests via
+# `src/setup.ts`, the other deliberately does NOT via
+# `src/e2e-native/setup-native.ts`, for the reasons documented in that
+# file). A bunfig-level default preload here would silently run in BOTH
+# invocations and defeat the second invocation's whole purpose -- which is
+# exactly the bug this comment exists to prevent someone from
+# reintroducing (found while removing the `GlobalRegistrator` toggle
+# pattern from the two e2e test files).
+#
+# Always invoke tests in this package via the `package.json` scripts
+# (`bun run test`), which supply the correct explicit `--preload` for each
+# invocation. An ad-hoc `bun test <file>` run in this directory has no
+# preload and will not have happy-dom / the `open` mock registered.
