@@ -943,6 +943,30 @@ describe('RepositoryManager', () => {
 
         expect(fs.existsSync(path.join(TEST_CONFIG_DIR, 'repositories', 'repo'))).toBe(false);
       });
+
+      // CodeRabbit finding on PR #1328: cleanupRepositoryData derived the
+      // slug once for `repoDir` and buildSessionDataCleanupTargets derived
+      // it again independently for `sessionDataDirs` -- two reads of the
+      // same value, and a chance for them to disagree if git state changed
+      // between the two. This is the exact defect Issue #1300 exists to
+      // fix, surviving inside the fix. Assert single-derivation directly:
+      // the already-captured orgRepo is threaded through the builder's
+      // `deriveSlug` injection point, so the underlying helper is called
+      // exactly once per unregister, not twice.
+      it('derives the org/repo slug exactly once per unregister, threading it into both cleanup targets', async () => {
+        mockGit.deriveRepositorySlug.mockReset();
+        mockGit.deriveRepositorySlug.mockImplementation(() => Promise.resolve('test-org/repo'));
+
+        const manager = await getRepositoryManager();
+        const repo = await manager.registerRepository(TEST_REPO_DIR);
+
+        mockGit.deriveRepositorySlug.mockClear();
+
+        await manager.unregisterRepository(repo.id);
+
+        expect(mockGit.deriveRepositorySlug).toHaveBeenCalledTimes(1);
+        expect(mockGit.deriveRepositorySlug).toHaveBeenCalledWith(repo.path, path.basename(repo.path));
+      });
     });
   });
 

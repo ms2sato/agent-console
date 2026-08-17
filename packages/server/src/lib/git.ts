@@ -766,6 +766,35 @@ export async function getOrgRepoFromPath(repoPath: string): Promise<string | nul
 }
 
 /**
+ * Reduce a remote URL to a credential-safe diagnostic shape for logging.
+ *
+ * A remote URL can embed HTTP(S) credentials (`https://user:token@host/...`),
+ * and this is used specifically on the branch that sees URLs which failed
+ * to parse as `org/repo` -- the branch most likely to see an unusual or
+ * malformed URL, which is also the shape most likely to carry embedded
+ * userinfo. Never returns the raw value.
+ *
+ * When `remoteUrl` parses as a WHATWG URL, returns `protocol//hostname`
+ * only -- `URL`'s `.protocol`/`.hostname` accessors are userinfo-free by
+ * construction, so this is safe even when the input had a `user:pass@`
+ * component. Falls back to a fixed marker for scp-style SSH shapes
+ * (`git@host:org/repo`, not a valid WHATWG URL) or any other shape that
+ * doesn't parse -- both carry no credential-leak risk either way, but a
+ * fixed marker avoids guessing at ad-hoc redaction for a shape too
+ * malformed to reason about structurally.
+ *
+ * @internal Exported for testing.
+ */
+export function describeRemoteUrlShapeForLogging(remoteUrl: string): string {
+  try {
+    const parsed = new URL(remoteUrl);
+    return `${parsed.protocol}//${parsed.hostname}`;
+  } catch {
+    return '<non-URL remote shape>';
+  }
+}
+
+/**
  * Single writer for deriving a repository's canonical `org/repo` slug from
  * its remote (see `docs/design/session-data-path.md`).
  *
@@ -813,7 +842,7 @@ export async function deriveRepositorySlug(
     const orgRepo = parseOrgRepo(remoteUrl);
     if (!orgRepo) {
       logger.warn(
-        { repoPath, remoteUrl },
+        { repoPath, remoteUrlShape: describeRemoteUrlShapeForLogging(remoteUrl) },
         'Remote URL did not match a parseable org/repo shape; using fallback slug',
       );
       return fallback;

@@ -1094,4 +1094,48 @@ index abc1234..def5678 100644
       expect(result).toBe('exact-fallback-value');
     });
   });
+
+  // =========================================================================
+  // describeRemoteUrlShapeForLogging (CodeRabbit finding on Issue #1300's
+  // PR #1328): the credential-safe diagnostic used on deriveRepositorySlug's
+  // unparseable-URL branch, which is the branch most likely to see a URL
+  // carrying embedded credentials (a URL that deviates from the ordinary
+  // SSH/HTTPS shapes is exactly the shape a `user:pass@host` URL would take
+  // here). Never returns the raw value.
+  // =========================================================================
+  describe('describeRemoteUrlShapeForLogging', () => {
+    it('strips embedded HTTPS credentials, returning only protocol + hostname', async () => {
+      const { describeRemoteUrlShapeForLogging } = await getGitModule();
+
+      const result = describeRemoteUrlShapeForLogging('https://user:s3cr3t-token@example.com/org/repo.git');
+
+      expect(result).toBe('https://example.com');
+      expect(result).not.toContain('user');
+      expect(result).not.toContain('s3cr3t-token');
+    });
+
+    it('returns protocol + hostname for a credential-free URL', async () => {
+      const { describeRemoteUrlShapeForLogging } = await getGitModule();
+
+      const result = describeRemoteUrlShapeForLogging('https://gitlab.example.com/org/repo.git');
+
+      expect(result).toBe('https://gitlab.example.com');
+    });
+
+    it('returns a fixed marker for an scp-style SSH shape (not a WHATWG URL)', async () => {
+      const { describeRemoteUrlShapeForLogging } = await getGitModule();
+
+      const result = describeRemoteUrlShapeForLogging('git@github.com:owner/repo.git');
+
+      expect(result).toBe('<non-URL remote shape>');
+    });
+
+    it('returns a fixed marker for a garbage, unparseable value rather than echoing it', async () => {
+      const { describeRemoteUrlShapeForLogging } = await getGitModule();
+
+      const result = describeRemoteUrlShapeForLogging('not a url at all');
+
+      expect(result).toBe('<non-URL remote shape>');
+    });
+  });
 });

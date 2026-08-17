@@ -644,13 +644,19 @@ export class RepositoryManager {
 
     // Session-data trees (outputs/messages/memos) live under the same
     // `deriveRepositorySlug`-derived slug as `repoDir` above, plus the
-    // closed legacy-flat candidate set for pre-existing sessions.
-    // Build the candidate set of base dirs to remove alongside `repoDir`.
+    // closed legacy-flat candidate set for pre-existing sessions. Thread the
+    // already-computed `orgRepo` through the builder's `deriveSlug`
+    // injection point instead of letting it re-derive independently -- two
+    // separate derivations of the same value is exactly the two-writer
+    // defect this Issue exists to fix, surviving inside the fix if git
+    // state changes between the two reads. Build the candidate set of base
+    // dirs to remove alongside `repoDir`.
     const sessionDataDirs = await buildSessionDataCleanupTargets({
       configDir: getConfigDir(),
       repositoryId: repo.id,
       repoPath: repo.path,
       repoName: repo.name,
+      deriveSlug: () => Promise.resolve(orgRepo),
     });
 
     // Clean up entire repository directory via job queue
