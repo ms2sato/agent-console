@@ -204,7 +204,7 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
     ...EmbeddedAgentInitCommandBaseFields,
     engine: v.literal('claude-sdk'),
     provider: v.strictObject({
-      model: v.string(),
+      model: v.pipe(v.string(), v.minLength(1)),
     }),
   }),
 ]);

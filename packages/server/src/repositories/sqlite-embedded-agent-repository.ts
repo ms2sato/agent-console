@@ -3,7 +3,7 @@ import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { EmbeddedAgentRepository } from './embedded-agent-repository.js';
 import type { Database } from '../database/schema.js';
 import { createLogger } from '../lib/logger.js';
-import { toEmbeddedAgentRow, toEmbeddedAgentDefinition } from '../database/mappers.js';
+import { toEmbeddedAgentRow, toEmbeddedAgentDefinition, DataIntegrityError } from '../database/mappers.js';
 
 const logger = createLogger('sqlite-embedded-agent-repository');
 
@@ -12,7 +12,25 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
 
   async findAll(): Promise<EmbeddedAgentDefinition[]> {
     const rows = await this.db.selectFrom('embedded_agents').selectAll().execute();
-    return rows.map((row) => toEmbeddedAgentDefinition(row));
+
+    // Skip corrupted rows rather than letting one bad row fail the whole
+    // call -- EmbeddedAgentManager.initialize() calls findAll() during
+    // server startup, so a single corrupted row must not take down every
+    // other healthy embedded-agent definition. Mirrors
+    // SqliteSessionRepository.findAll()'s DataIntegrityError containment.
+    const results: EmbeddedAgentDefinition[] = [];
+    for (const row of rows) {
+      try {
+        results.push(toEmbeddedAgentDefinition(row));
+      } catch (error) {
+        if (error instanceof DataIntegrityError) {
+          logger.warn({ embeddedAgentId: row.id, err: error }, 'Skipping corrupted embedded agent row');
+          continue;
+        }
+        throw error;
+      }
+    }
+    return results;
   }
 
   async findById(id: string): Promise<EmbeddedAgentDefinition | null> {

@@ -764,6 +764,12 @@ describe('EmbeddedAgentCommandSchema', () => {
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
     });
+
+    it('rejects a claude-sdk init command whose provider carries an empty-string model', () => {
+      const init = { ...baseFields, engine: 'claude-sdk', provider: { model: '' } };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
   });
 
   describe('restoredConversation (Transcript Restore #1123)', () => {

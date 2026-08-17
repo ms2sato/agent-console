@@ -85,6 +85,84 @@ describe('SqliteEmbeddedAgentRepository', () => {
     });
   });
 
+  describe('data integrity handling', () => {
+    // `engine` is typed as a literal union ('native-loop' | 'claude-sdk') by
+    // the Kysely schema; a corrupted row's actual value is deliberately
+    // outside that union (this is what `toEmbeddedAgentDefinition`'s
+    // default-arm consistency guard exists to catch), so the insert needs a
+    // single, documented, narrowly-scoped cast to bypass the compile-time
+    // guarantee that real corrupted data would not honor either.
+    const BOGUS_ENGINE = 'bogus-engine' as 'native-loop' | 'claude-sdk';
+
+    it('skips a row with an unknown engine value in findAll, returning healthy definitions', async () => {
+      await repository.save(buildDefinition({ id: 'healthy' }));
+
+      // Insert a corrupted row directly (unknown `engine` value -- the
+      // `toEmbeddedAgentDefinition` mapper's default-arm consistency guard).
+      await db
+        .insertInto('embedded_agents')
+        .values({
+          id: 'corrupted-unknown-engine',
+          name: 'Corrupted',
+          engine: BOGUS_ENGINE,
+          provider_base_url: 'http://localhost:11434/v1',
+          provider_model: 'm',
+          is_built_in: 0,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      const all = await repository.findAll();
+
+      expect(all.map((d) => d.id)).toEqual(['healthy']);
+    });
+
+    it('skips a native-loop row with a null provider_base_url in findAll, returning healthy definitions', async () => {
+      await repository.save(buildDefinition({ id: 'healthy' }));
+
+      // Insert a corrupted row directly (native-loop engine requires a
+      // non-null provider_base_url).
+      await db
+        .insertInto('embedded_agents')
+        .values({
+          id: 'corrupted-null-base-url',
+          name: 'Corrupted',
+          engine: 'native-loop',
+          provider_base_url: null,
+          provider_model: 'm',
+          is_built_in: 0,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      const all = await repository.findAll();
+
+      expect(all.map((d) => d.id)).toEqual(['healthy']);
+    });
+
+    it('lets a DataIntegrityError propagate uncaught from findById, which has no containment wrapper', async () => {
+      // findById has no per-row try/catch (unlike findAll's containment
+      // loop) -- a single corrupted row looked up directly still surfaces
+      // the mapper's DataIntegrityError uncaught, same as before this fix.
+      await db
+        .insertInto('embedded_agents')
+        .values({
+          id: 'corrupted-only',
+          name: 'Corrupted',
+          engine: BOGUS_ENGINE,
+          provider_base_url: 'http://localhost:11434/v1',
+          provider_model: 'm',
+          is_built_in: 0,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      await expect(repository.findById('corrupted-only')).rejects.toThrow(
+        "Data integrity error: embedded-agent 'corrupted-only' has invalid engine (unexpected value: bogus-engine)"
+      );
+    });
+  });
+
   describe('save / findById round-trip', () => {
     it('round-trips a full definition including optional fields', async () => {
       const def = buildDefinition({
