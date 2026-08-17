@@ -6,7 +6,7 @@ interface MobileNavMenuProps {
   onClose: () => void;
 }
 
-/** Mobile navigation dropdown for Jobs, Agents, Repositories, and Settings links. */
+/** Mobile navigation dropdown for Jobs, Agents, Artifacts, Repositories, and Settings links. */
 export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
   const location = useLocation();
 
@@ -45,6 +45,13 @@ export function MobileNavMenu({ open, onClose }: MobileNavMenuProps) {
           onClick={onClose}
         >
           Agents
+        </NavMenuItem>
+        <NavMenuItem
+          to="/artifacts"
+          active={isExact('/artifacts') || location.pathname.startsWith('/artifacts/')}
+          onClick={onClose}
+        >
+          Artifacts
         </NavMenuItem>
         <NavMenuItem
           to="/settings/repositories"

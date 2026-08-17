@@ -15,6 +15,7 @@ import { getWorkerWsUrl } from '../../lib/websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
 import { subscribe as subscribeApp } from '../../lib/app-websocket.js';
 import { logger } from '../../lib/logger.js';
+import { generateClientId } from '../../lib/id.js';
 
 /**
  * Module-level store for embedded-agent workers, mirroring
@@ -266,7 +267,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // practice (MessagePanel disables Send while a prior send is pending)
     // but avoids leaking an unsettled promise if it ever does.
     this.rejectPendingSend('Superseded by a newer send');
-    const clientMessageId = crypto.randomUUID();
+    const clientMessageId = generateClientId();
     return new Promise((resolve, reject) => {
       const sent = this.send({ type: 'embedded-user-message', text, clientMessageId });
       if (!sent) {

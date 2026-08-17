@@ -6,6 +6,7 @@ import { setCurrentUser, _reset as resetAuth } from '../../../lib/auth';
 import {
   JobsNavLink,
   AgentsNavLink,
+  ArtifactsNavLink,
   RepositoriesNavLink,
   SettingsNavLink,
   ReviewNavLink,
@@ -108,6 +109,35 @@ describe('AgentsNavLink', () => {
     await renderWithRouter(<AgentsNavLink />, '/');
     const link = screen.getByText('Agents');
     expect(link.className).toContain('text-slate-400');
+  });
+});
+
+describe('ArtifactsNavLink', () => {
+  it('should render a link with text "Artifacts"', async () => {
+    await renderWithRouter(<ArtifactsNavLink />);
+    const link = screen.getByText('Artifacts');
+    expect(link).toBeTruthy();
+    expect(link.getAttribute('href')).toBe('/artifacts');
+  });
+
+  it('should have active styling when on /artifacts path', async () => {
+    await renderWithRouter(<ArtifactsNavLink />, '/artifacts');
+    const link = screen.getByText('Artifacts');
+    expect(link.className).toContain('text-white');
+    expect(link.className).toContain('bg-white/10');
+  });
+
+  it('should have inactive styling when on a different path', async () => {
+    await renderWithRouter(<ArtifactsNavLink />, '/jobs');
+    const link = screen.getByText('Artifacts');
+    expect(link.className).toContain('text-slate-400');
+    expect(link.className).not.toContain('bg-white/10');
+  });
+
+  it('should be active on sub-paths like /artifacts/123', async () => {
+    await renderWithRouter(<ArtifactsNavLink />, '/artifacts/123');
+    const link = screen.getByText('Artifacts');
+    expect(link.className).toContain('text-white');
   });
 });
 

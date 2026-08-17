@@ -17,6 +17,7 @@ import { openPath, openInVSCode, fetchSessionPrLink } from '../../lib/api';
 import { sessionKeys } from '../../lib/query-keys';
 import { hasVSCode } from '../../lib/capabilities';
 import { logger } from '../../lib/logger';
+import { copyToClipboard } from '../../lib/clipboard';
 
 export type MenuAction = 'edit' | 'restart' | 'delete-worktree' | 'pause' | 'view-initial-prompt';
 
@@ -98,7 +99,7 @@ export function SessionSettingsMenu({
 
   const handleCopyPath = async () => {
     try {
-      await navigator.clipboard.writeText(worktreePath);
+      await copyToClipboard(worktreePath);
       setCopySuccess(true);
       setTimeout(() => setCopySuccess(false), 2000);
     } catch (err) {

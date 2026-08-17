@@ -16,6 +16,8 @@ import {
   generateRepositoryDescription,
   resumeSession,
   openInVSCode,
+  fetchArtifacts,
+  deleteArtifact,
   ServerUnavailableError,
   ApiError,
 } from '../api';
@@ -1115,6 +1117,64 @@ describe('API Client', () => {
         'vscode://vscode-remote/ssh-remote+fallback.local/tmp/x.ts'
       );
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('fetchArtifacts', () => {
+    it('fetches artifacts and parses the response through the wire schema', async () => {
+      const mockArtifacts = {
+        artifacts: [
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+        ],
+      };
+      mockFetch.mockResolvedValue(createMockResponse(mockArtifacts));
+
+      const result = await fetchArtifacts();
+
+      expect((mockFetch.mock.calls as unknown[][])[0]?.[0]).toBe('/api/artifacts');
+      expect(result).toEqual(mockArtifacts.artifacts);
+    });
+
+    it('throws when the response fails schema validation (e.g. a dropped field)', async () => {
+      // sizeBytes is missing -- ArtifactsListResponseSchema must reject this,
+      // not silently pass through `undefined` (the #926 silent-drop gap).
+      mockFetch.mockResolvedValue(
+        createMockResponse({ artifacts: [{ id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z' }] })
+      );
+
+      await expect(fetchArtifacts()).rejects.toThrow();
+    });
+
+    it('throws error on failure', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({}, { status: 500, ok: false })
+      );
+
+      await expect(fetchArtifacts()).rejects.toThrow('Failed to fetch artifacts');
+    });
+  });
+
+  describe('deleteArtifact', () => {
+    it('should delete artifact successfully', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ success: true }));
+
+      await deleteArtifact('artifact-1');
+
+      expect(getLastFetchUrl()).toContain('/api/artifacts/artifact-1');
+      expect(getLastFetchMethod()).toBe('DELETE');
+    });
+
+    it('throws error on failure', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 403,
+        statusText: 'Forbidden',
+        json: mock(() => Promise.resolve({ error: 'Only the owner can delete this artifact' })),
+      } as unknown as Response);
+
+      await expect(deleteArtifact('artifact-1')).rejects.toThrow(
+        'Only the owner can delete this artifact'
+      );
     });
   });
 });

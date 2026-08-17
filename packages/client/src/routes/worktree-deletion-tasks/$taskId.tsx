@@ -4,7 +4,7 @@ import { AlertCircleIcon, CheckIcon } from '../../components/Icons';
 import { Spinner } from '../../components/ui/Spinner';
 import { useWorktreeDeletionTasksContext } from '../__root';
 import { deleteWorktreeAsync } from '../../lib/api';
-import { generateTaskId } from '../../lib/id';
+import { generateClientId } from '../../lib/id';
 import { logger } from '../../lib/logger';
 
 export const Route = createFileRoute('/worktree-deletion-tasks/$taskId')({
@@ -38,7 +38,7 @@ function useWorktreeDeletionTask(taskId: string): {
     if (!task) return;
 
     // Generate a new task ID for the retry
-    const newTaskId = generateTaskId();
+    const newTaskId = generateClientId();
 
     // Remove the failed task
     removeTaskFromContext(taskId);

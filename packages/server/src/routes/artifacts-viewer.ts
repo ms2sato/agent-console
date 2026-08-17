@@ -1,19 +1,23 @@
 /**
  * HTML artifact viewer shell (HTML Artifacts phase 1 -- navigation-jail
- * addendum).
+ * addendum -- plus phase 2 (#1313) chrome).
  *
  * Mounted OUTSIDE the `/api` mount, at the top level (`GET /artifacts/:id`),
  * matching the path `mcp-server.ts`'s `buildArtifactToolResult` already
  * returns and `docs/design/html-artifacts.md` §4 already promises. Because
  * this route sits outside `/api`, it does NOT inherit `authMiddleware` for
  * free (see `docs/design/html-artifacts.md` §4 / premise P4) -- it applies
- * the middleware explicitly below.
+ * the middleware explicitly to the `/:id` route below (NOT to the whole
+ * sub-app via `.use('*', ...)`: a bare `GET /artifacts` with no id must
+ * fall through to the SPA catch-all registered later in `index.ts`, not get
+ * intercepted and 401 in multi-user mode).
  *
  * This is the mandatory top-level entry point for viewing an artifact. It
- * renders nothing but a sandboxed iframe pointed at the raw-bytes endpoint
- * (`GET /api/artifacts/:id`) and carries its own response CSP:
+ * renders a small server-rendered chrome (artifact title + owner username,
+ * both HTML-escaped) above a sandboxed iframe pointed at the raw-bytes
+ * endpoint (`GET /api/artifacts/:id`), and carries its own response CSP:
  *
- *   Content-Security-Policy: default-src 'none'; frame-src 'self'
+ *   Content-Security-Policy: default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'
  *
  * `frame-src 'self'` is the mechanism that closes the self-navigation
  * exfiltration hole a sandboxed-but-scriptable artifact would otherwise
@@ -26,40 +30,45 @@
  * other resource type this shell itself might otherwise fetch; it fetches
  * nothing, so the fallback is simply "nothing else is allowed".
  *
- * The shell intentionally carries NO inline `style` attribute/block: adding
- * one would require `style-src 'unsafe-inline'` in the CSP above, which is
- * unnecessary surface for a two-line wrapper page. Layout is done via the
- * iframe's own `width`/`height` HTML attributes (not CSS), which CSP's
- * `style-src` does not govern.
+ * `style-src 'unsafe-inline'` was added in phase 2 for the chrome's own
+ * `<style>` block (basic layout/typography so the title/owner line and the
+ * iframe are legible). The shell still carries NO `script-src` directive
+ * and no inline `<script>` -- it stays script-free; only the `style-src`
+ * exception was added.
  *
- * This route does NOT validate that the artifact id exists -- that is the
- * nested iframe's problem (its own request to `GET /api/artifacts/:id`
- * 404s independently), the same way a plain `<img src>` wrapper page does
- * not pre-check the image exists. Phase 2 (#1313) owns styling/enriching
- * this shell and a separate history page; it must NOT replace this
- * server-rendered route with an SPA route at the same path, since an
+ * This route validates that the artifact id exists (404s via
+ * `NotFoundError` when `artifactRepository.findById` returns null), unlike
+ * phase 1 where the nested iframe's own request was the only 404 check.
+ * Validating here is what lets the shell render the artifact's actual
+ * title/owner rather than blind placeholder chrome. `routes/artifacts.ts`
+ * (raw byte-serving, `ARTIFACT_SERVING_CSP`) is untouched by this file --
+ * phase 2 fronts phase 1, it does not modify it. This file must NOT be
+ * replaced with, or duplicated as, an SPA route at the same path, since an
  * SPA-served page cannot carry this per-route `frame-src` response header
  * the jail depends on.
  */
 import { Hono } from 'hono';
 import type { AppBindings } from '../app-context.js';
 import { authMiddleware } from '../middleware/auth.js';
+import { NotFoundError } from '../lib/errors.js';
 
 /**
  * Exact-match tested (see sibling test) so any future silent change to
  * this string shows up as a loud diff, same discipline as
  * `routes/artifacts.ts`'s `ARTIFACT_SERVING_CSP`.
  */
-export const ARTIFACT_SHELL_CSP = "default-src 'none'; frame-src 'self'";
+export const ARTIFACT_SHELL_CSP = "default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'";
 
 /**
- * HTML-attribute-escapes the artifact id before interpolating it into the
- * iframe's `src="..."` attribute. The id is an attacker-controllable URL
- * path segment (this route never validates it against the repository), so
- * an unescaped id could break out of the attribute and inject markup into
- * this TOP-LEVEL document -- unlike the artifact itself, this shell page is
- * not sandboxed by anything, so that would be a real injection, not merely
- * a jailed one.
+ * HTML-escapes a value before interpolating it into the shell document --
+ * used both for the iframe's `src="..."` attribute (the artifact id) and
+ * for the title/owner text nodes rendered above it (the artifact's stored
+ * title, an attacker-controllable string per docs/design/html-artifacts.md
+ * §7, and the resolved owner username). Escaping quotes in a text-node
+ * context is unnecessary but harmless -- one escape function safely covers
+ * both sinks. Unlike the artifact itself, this shell page is not sandboxed
+ * by anything, so an unescaped interpolation here would be a real
+ * injection into the TOP-LEVEL document, not merely a jailed one.
  */
 function escapeHtmlAttribute(value: string): string {
   return value
@@ -70,7 +79,7 @@ function escapeHtmlAttribute(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function buildShellHtml(artifactId: string): string {
+function buildShellHtml(params: { artifactId: string; title: string; ownerUsername: string }): string {
   // Two nested contexts, both must be encoded, in this order: the id is a
   // URL path segment (encodeURIComponent first -- `routes/artifacts.ts`'s
   // redirect-target construction does the same), and the resulting string
@@ -79,23 +88,50 @@ function buildShellHtml(artifactId: string): string {
   // containing `?` would otherwise survive HTML-escaping unchanged and
   // turn `src="/api/artifacts/<id>"` into a request with a query string
   // the iframe never intended.
-  const escapedId = escapeHtmlAttribute(encodeURIComponent(artifactId));
+  const escapedId = escapeHtmlAttribute(encodeURIComponent(params.artifactId));
+  const escapedTitle = escapeHtmlAttribute(params.title);
+  const escapedOwner = escapeHtmlAttribute(params.ownerUsername);
   return `<!doctype html>
 <html>
-<head><meta charset="utf-8"></head>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; font-family: system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { padding: 0.5rem 1rem; border-bottom: 1px solid #ddd; }
+  h1 { font-size: 1.1rem; margin: 0 0 0.25rem 0; }
+  .owner { font-size: 0.85rem; color: #555; margin: 0; }
+  iframe { flex: 1; border: 0; width: 100%; }
+</style>
+</head>
 <body>
+<header>
+<h1>${escapedTitle}</h1>
+<p class="owner">Created by ${escapedOwner}</p>
+</header>
 <iframe sandbox="allow-scripts" src="/api/artifacts/${escapedId}" width="100%" height="100%" frameborder="0"></iframe>
 </body>
 </html>`;
 }
 
 const artifactsViewer = new Hono<AppBindings>()
-  .use('*', authMiddleware)
-  .get('/:id', (c) => {
+  .get('/:id', authMiddleware, async (c) => {
     const id = c.req.param('id');
-    return c.html(buildShellHtml(id), 200, {
-      'Content-Security-Policy': ARTIFACT_SHELL_CSP,
-    });
+    const { artifactRepository, userRepository } = c.get('appContext');
+
+    const artifact = await artifactRepository.findById(id);
+    if (!artifact) {
+      throw new NotFoundError('Artifact');
+    }
+
+    const owner = await userRepository.findById(artifact.userId);
+    const ownerUsername = owner?.username ?? 'Unknown user';
+
+    return c.html(
+      buildShellHtml({ artifactId: id, title: artifact.title, ownerUsername }),
+      200,
+      { 'Content-Security-Policy': ARTIFACT_SHELL_CSP },
+    );
   });
 
 export { artifactsViewer };

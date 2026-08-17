@@ -42,6 +42,14 @@ export default defineConfig({
           });
         },
       },
+      // Regex form matches only id-carrying paths (/artifacts/:id), not bare
+      // /artifacts (the history page). A bare '/artifacts' prefix key would
+      // also proxy the history page itself to the backend, whose SPA
+      // catch-all doesn't serve the vite dev bundle.
+      '^/artifacts/.+': {
+        target: `http://127.0.0.1:${serverPort}`,
+        changeOrigin: true,
+      },
     },
   },
 });

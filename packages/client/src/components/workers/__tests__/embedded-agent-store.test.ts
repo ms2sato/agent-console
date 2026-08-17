@@ -527,6 +527,42 @@ describe('embedded-agent-store', () => {
     expect(sent.clientMessageId?.length).toBeGreaterThan(0);
   });
 
+  it('sendUserMessage still produces a valid clientMessageId when crypto.randomUUID is unavailable (non-secure context, #1345)', () => {
+    // Simulate non-secure context: crypto exists but without randomUUID
+    // (same technique as lib/__tests__/id.test.ts's "non-secure context
+    // fallback" block). This proves the call site routes through
+    // generateClientId()'s guarded fallback rather than calling
+    // crypto.randomUUID() directly.
+    const originalCrypto = globalThis.crypto;
+    Object.defineProperty(globalThis, 'crypto', {
+      value: { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) },
+      writable: true,
+      configurable: true,
+    });
+
+    try {
+      const instance = getOrCreateEmbeddedAgentWorker('s14b', 'w14b');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      expect(() => {
+        instance.sendUserMessage('hello agent').catch(() => {});
+      }).not.toThrow();
+
+      const sent = (
+        lastSentMessages(ws!) as { type: string; text?: string; clientMessageId?: string }[]
+      ).find((m) => m.type === 'embedded-user-message')!;
+      expect(typeof sent.clientMessageId).toBe('string');
+      expect(sent.clientMessageId?.length).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', {
+        value: originalCrypto,
+        writable: true,
+        configurable: true,
+      });
+    }
+  });
+
   describe('sendUserMessage confirmation (#1024: preserve draft on reject)', () => {
     it('resolves once the server echoes the message back as a user-message event carrying the SAME clientMessageId (correlated, not "any echo")', async () => {
       const instance = getOrCreateEmbeddedAgentWorker('s30', 'w30');

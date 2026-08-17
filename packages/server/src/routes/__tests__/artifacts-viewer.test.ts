@@ -1,11 +1,11 @@
 /**
- * Sibling test for the HTML artifact viewer shell (Issue #1312, HTML
- * Artifacts phase 1 -- navigation-jail addendum, `routes/artifacts-viewer.ts`).
+ * Sibling test for the HTML artifact viewer shell (Issue #1312 phase 1 +
+ * Issue #1313 phase 2 chrome, `routes/artifacts-viewer.ts`).
  *
- * This route never touches `artifactRepository` (the shell does not
- * validate the artifact id exists -- see the production file's header
- * comment), so no database/filesystem fixture is needed here, unlike
- * `artifacts.test.ts`.
+ * Built on top of the REAL `SqliteArtifactRepository` + `SqliteUserRepository`
+ * (real in-memory sqlite db), mirroring `artifacts.test.ts`'s pattern: the
+ * shell now resolves both the artifact and its owning user, so a
+ * mock-only `appContext` (phase 1's approach) can no longer exercise it.
  *
  * The "route registration order" describe block below reads
  * `../../index.ts`'s own source text via `Bun.file()` rather than
@@ -17,10 +17,17 @@
  * is Bun-native and bypasses that interception, matching the same pattern
  * `lib/artifact-storage.ts` uses for the same reason.
  */
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
 import * as path from 'path';
+import * as os from 'os';
+import { randomUUID } from 'crypto';
+import { sql, type Kysely } from 'kysely';
 import type { AuthUser } from '@agent-console/shared';
+import type { Database } from '../../database/schema.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
+import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { artifactsViewer, ARTIFACT_SHELL_CSP } from '../artifacts-viewer.js';
 import { onApiError } from '../../lib/error-handler.js';
 import type { AppBindings, AppContext } from '../../app-context.js';
@@ -39,65 +46,199 @@ function mockUserMode(authenticateResult: AuthUser | null): UserMode {
   };
 }
 
-/**
- * Builds a Hono app that mirrors production layering for `/artifacts`:
- * appContext -> the route's OWN authMiddleware (it doesn't inherit `/api`'s,
- * per P4) -> route. `authenticateResult` controls whether the simulated
- * request is authenticated.
- */
-function buildApp(authenticateResult: AuthUser | null): Hono<AppBindings> {
-  const partialContext: Partial<AppContext> = {
-    userMode: mockUserMode(authenticateResult),
-  };
-  const app = new Hono<AppBindings>();
-  app.use('*', async (c, next) => {
-    c.set('appContext', partialContext as AppContext);
-    await next();
-  });
-  app.onError(onApiError);
-  app.route('/artifacts', artifactsViewer);
-  return app;
-}
-
 describe('Artifact viewer shell route', () => {
+  const originalHome = process.env.AGENT_CONSOLE_HOME;
+  let db: Kysely<Database>;
+  let artifactRepository: SqliteArtifactRepository;
+  let userRepository: SqliteUserRepository;
+
+  beforeEach(async () => {
+    process.env.AGENT_CONSOLE_HOME = path.join(os.tmpdir(), `agent-console-artifact-viewer-test-${randomUUID()}`);
+    db = await createDatabaseForTest();
+    artifactRepository = new SqliteArtifactRepository(db);
+    userRepository = new SqliteUserRepository(db);
+
+    // `artifacts.user_id` carries a real FK to `users.id` -- seed the test
+    // user this file's tests attribute artifacts to.
+    const now = new Date().toISOString();
+    await db
+      .insertInto('users')
+      .values({ id: OWNER.id, os_uid: null, username: OWNER.username, home_dir: OWNER.homeDir, created_at: now, updated_at: now })
+      .execute();
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+    if (originalHome !== undefined) {
+      process.env.AGENT_CONSOLE_HOME = originalHome;
+    } else {
+      delete process.env.AGENT_CONSOLE_HOME;
+    }
+  });
+
+  /**
+   * Builds a Hono app that mirrors production layering for `/artifacts`:
+   * appContext -> the route's OWN authMiddleware, scoped to `/:id` (it
+   * doesn't inherit `/api`'s, per P4) -> route. `authenticateResult`
+   * controls whether the simulated request is authenticated.
+   */
+  function buildApp(authenticateResult: AuthUser | null): Hono<AppBindings> {
+    const partialContext: Partial<AppContext> = {
+      artifactRepository,
+      userRepository,
+      userMode: mockUserMode(authenticateResult),
+    };
+    const app = new Hono<AppBindings>();
+    app.use('*', async (c, next) => {
+      c.set('appContext', partialContext as AppContext);
+      await next();
+    });
+    app.onError(onApiError);
+    app.route('/artifacts', artifactsViewer);
+    return app;
+  }
+
   describe('ARTIFACT_SHELL_CSP', () => {
     it('is the exact fixed string from docs/design/html-artifacts.md §3', () => {
-      expect(ARTIFACT_SHELL_CSP).toBe("default-src 'none'; frame-src 'self'");
+      expect(ARTIFACT_SHELL_CSP).toBe("default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'");
+    });
+
+    it('retains the load-bearing frame-src and default-src tokens', () => {
+      expect(ARTIFACT_SHELL_CSP).toContain("frame-src 'self'");
+      expect(ARTIFACT_SHELL_CSP).toContain("default-src 'none'");
     });
   });
 
   describe('GET /artifacts/:id', () => {
-    it('returns the shell HTML with the exact CSP header for an authenticated request', async () => {
+    it('returns the shell HTML with the exact CSP header, chrome, and iframe for an authenticated request', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'My Artifact',
+        content: '<p>hi</p>',
+        sourceSessionId: null,
+      });
+
       const app = buildApp(OWNER);
-      const res = await app.request('/artifacts/some-id');
+      const res = await app.request(`/artifacts/${created.id}`);
 
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Security-Policy')).toBe(ARTIFACT_SHELL_CSP);
       expect(res.headers.get('Content-Type')).toContain('text/html');
 
       const body = await res.text();
-      expect(body).toContain('<iframe sandbox="allow-scripts" src="/api/artifacts/some-id"');
+      expect(body).toContain('My Artifact');
+      expect(body).toContain('Created by owner');
+      expect(body).toContain(`<iframe sandbox="allow-scripts" src="/api/artifacts/${created.id}"`);
     });
 
     it('rejects an unauthenticated request with 401 (this route does not inherit /api auth)', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
       const app = buildApp(null);
-      const res = await app.request('/artifacts/some-id');
+      const res = await app.request(`/artifacts/${created.id}`);
       expect(res.status).toBe(401);
     });
 
-    it('does NOT validate that the artifact id exists -- the nested iframe is responsible for its own 404', async () => {
-      // No artifactRepository is even present in this test's appContext;
-      // if the route touched it, this request would throw rather than
-      // return 200.
+    it('returns 404 for a nonexistent artifact id (the shell now validates existence)', async () => {
       const app = buildApp(OWNER);
       const res = await app.request('/artifacts/definitely-does-not-exist');
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
     });
 
-    it('percent-encodes then HTML-attribute-escapes an artifact id containing quote/markup characters before interpolating it into the iframe src', async () => {
+    it('renders "Unknown user" when the owning user row cannot be resolved, without throwing', async () => {
+      // `artifacts.user_id` carries a real FK (ON DELETE CASCADE) to
+      // `users.id`, so this partially-consistent state (an artifact row
+      // whose owning user no longer exists) cannot arise through the
+      // repository's own `create`/`delete` methods in this schema -- it is
+      // constructed here directly at the DB layer, with FK enforcement
+      // temporarily suspended for the single insert, purely to exercise the
+      // shell's defensive fallback.
+      const artifactId = randomUUID();
+      await sql`PRAGMA foreign_keys = OFF`.execute(db);
+      await db
+        .insertInto('artifacts')
+        .values({
+          id: artifactId,
+          user_id: 'a-user-id-with-no-row',
+          title: 'Orphaned artifact',
+          created_at: new Date().toISOString(),
+          size_bytes: 0,
+          source_session_id: null,
+        })
+        .execute();
+      await sql`PRAGMA foreign_keys = ON`.execute(db);
+
+      const app = buildApp(OWNER);
+      const res = await app.request(`/artifacts/${artifactId}`);
+
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(body).toContain('Created by Unknown user');
+    });
+
+    it('HTML-escapes an artifact title containing a live <script> tag (T1a, must fail against an unescaped implementation)', async () => {
+      // Inserted DIRECTLY at the repository layer to bypass any write-time
+      // title-stripping elsewhere -- the raw unstripped value is what must
+      // be escaped at render time.
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'Evil <script>alert(1)</script>',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(OWNER);
+      const res = await app.request(`/artifacts/${created.id}`);
+      expect(res.status).toBe(200);
+
+      const body = await res.text();
+      expect(body).toContain('Evil &lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(body).not.toContain('<script>alert(1)</script>');
+    });
+
+    it('percent-encodes then HTML-attribute-escapes a NONEXISTENT artifact id containing quote/markup characters before it ever reaches buildShellHtml -- 404s first, confirming the raw payload never reaches any response body, escaped or not', async () => {
       const maliciousId = '"><script>alert(1)</script><iframe src="';
       const app = buildApp(OWNER);
       const res = await app.request(`/artifacts/${encodeURIComponent(maliciousId)}`);
+
+      // The id doesn't resolve to a real artifact, so this 404s before ever
+      // reaching buildShellHtml. This test alone would NOT catch a future
+      // regression in the id-escape path itself -- see the next test, which
+      // exercises that path live via a REAL artifact whose id is malicious.
+      expect(res.status).toBe(404);
+      const body = await res.text();
+      expect(body).not.toContain('<script>alert(1)</script>');
+      expect(body).not.toContain('"><script>');
+    });
+
+    it('percent-encodes then HTML-attribute-escapes a REAL artifact id containing quote/markup characters before interpolating it into the iframe src (200 path, exercises the escape live)', async () => {
+      // Since S2 (#1313) made the shell 404-first on a nonexistent id, the
+      // above test alone no longer exercises the id-escape path on a
+      // response body that actually renders -- restoring that coverage
+      // here via a REAL artifact whose `id` itself is the malicious
+      // string (the repository layer accepts any id verbatim; this
+      // mirrors how the malicious-title test at the top of this describe
+      // block bypasses the MCP-layer title strip by inserting directly at
+      // the repository).
+      const maliciousId = '"><script>alert(1)</script><iframe src="';
+      const created = await artifactRepository.create({
+        id: maliciousId,
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(OWNER);
+      const res = await app.request(`/artifacts/${encodeURIComponent(created.id)}`);
 
       expect(res.status).toBe(200);
       const body = await res.text();
@@ -107,14 +248,60 @@ describe('Artifact viewer shell route', () => {
       // UNSANDBOXED top-level document.
       expect(body).not.toContain('<script>alert(1)</script>');
       expect(body).not.toContain('"><script>');
-      // encodeURIComponent runs first (the id is also a URL path segment --
-      // routes/artifacts.ts's redirect-target construction does the same),
+      // encodeURIComponent runs first (the id is also a URL path segment),
       // so every HTML-meaningful character is already percent-encoded by
       // the time escapeHtmlAttribute would otherwise act on it. The
       // percent-encoded form is what must appear in the iframe src.
       expect(body).toContain(
         '<iframe sandbox="allow-scripts" src="/api/artifacts/%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E%3Ciframe%20src%3D%22"',
       );
+    });
+  });
+
+  // ===========================================================================
+  // Auth scoping (S1) -- the shell's authMiddleware is scoped to `/:id`
+  // only, so a bare `GET /artifacts` (no id) falls through to whatever is
+  // registered after it (the SPA catch-all in production), rather than
+  // being intercepted and 401'd.
+  // ===========================================================================
+  describe('auth scoping (S1) -- bare GET /artifacts falls through, not intercepted', () => {
+    function buildAppWithCatchAll(authenticateResult: AuthUser | null): Hono<AppBindings> {
+      const partialContext: Partial<AppContext> = {
+        artifactRepository,
+        userRepository,
+        userMode: mockUserMode(authenticateResult),
+      };
+      const app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', partialContext as AppContext);
+        await next();
+      });
+      app.onError(onApiError);
+      app.route('/artifacts', artifactsViewer);
+      // Mirrors index.ts's production SPA fallback shape: `app.get('*', ...)`.
+      app.get('*', (c) => c.html('<html>SPA index.html</html>'));
+      return app;
+    }
+
+    it('bare GET /artifacts hits the SPA catch-all for an AUTHENTICATED simulated request', async () => {
+      const app = buildAppWithCatchAll(OWNER);
+      const res = await app.request('/artifacts');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Content-Security-Policy')).not.toBe(ARTIFACT_SHELL_CSP);
+      expect(await res.text()).toBe('<html>SPA index.html</html>');
+    });
+
+    it('bare GET /artifacts hits the SPA catch-all for an UNAUTHENTICATED simulated request (not a 401)', async () => {
+      const app = buildAppWithCatchAll(null);
+      const res = await app.request('/artifacts');
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('<html>SPA index.html</html>');
+    });
+
+    it('GET /artifacts/:id is still gated by auth (the scoped middleware still applies to the :id route)', async () => {
+      const app = buildAppWithCatchAll(null);
+      const res = await app.request('/artifacts/some-id');
+      expect(res.status).toBe(401);
     });
   });
 
@@ -133,7 +320,11 @@ describe('Artifact viewer shell route', () => {
   // ===========================================================================
   describe('route registration order', () => {
     function buildAppWithOrder(order: 'shell-first' | 'catch-all-first'): Hono<AppBindings> {
-      const partialContext: Partial<AppContext> = { userMode: mockUserMode(OWNER) };
+      const partialContext: Partial<AppContext> = {
+        artifactRepository,
+        userRepository,
+        userMode: mockUserMode(OWNER),
+      };
       const app = new Hono<AppBindings>();
       app.use('*', async (c, next) => {
         c.set('appContext', partialContext as AppContext);
@@ -156,8 +347,16 @@ describe('Artifact viewer shell route', () => {
     }
 
     it('shell wins when registered BEFORE the SPA catch-all (matches production index.ts order)', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
       const app = buildAppWithOrder('shell-first');
-      const res = await app.request('/artifacts/some-id');
+      const res = await app.request(`/artifacts/${created.id}`);
       expect(res.status).toBe(200);
       expect(res.headers.get('Content-Security-Policy')).toBe(ARTIFACT_SHELL_CSP);
       const body = await res.text();
@@ -165,8 +364,16 @@ describe('Artifact viewer shell route', () => {
     });
 
     it('SPA catch-all wins when registered BEFORE the shell (proves this test has real polarity, i.e. it would fail on an accidental reorder)', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
       const app = buildAppWithOrder('catch-all-first');
-      const res = await app.request('/artifacts/some-id');
+      const res = await app.request(`/artifacts/${created.id}`);
       expect(res.status).toBe(200);
       // The wrong order shadows the jail shell entirely -- no CSP, no iframe.
       expect(res.headers.get('Content-Security-Policy')).not.toBe(ARTIFACT_SHELL_CSP);
