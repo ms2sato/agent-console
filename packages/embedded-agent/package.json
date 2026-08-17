@@ -11,8 +11,10 @@
   },
   "dependencies": {
     "@agent-console/shared": "*",
-    "@modelcontextprotocol/sdk": "^1.26.0",
-    "valibot": "^1.2.0"
+    "@anthropic-ai/claude-agent-sdk": "^0.3.226",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "valibot": "^1.2.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",

@@ -162,7 +162,9 @@ describe('Workers API', () => {
             ? {
                 id: 'agent-def-1',
                 name: 'Test Embedded',
+                engine: 'native-loop' as const,
                 provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+                isBuiltIn: false,
                 createdBy: 'test-user-id',
                 createdAt: '2024-01-01T00:00:00.000Z',
                 updatedAt: '2024-01-01T00:00:00.000Z',

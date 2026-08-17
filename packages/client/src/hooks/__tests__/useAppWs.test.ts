@@ -460,7 +460,9 @@ describe('useAppWsEvent', () => {
     const makeEmbeddedAgent = () => ({
       id: 'embedded-agent-1',
       name: 'Local GPT',
+      engine: 'native-loop',
       provider: { baseUrl: 'https://api.example.com/v1', model: 'gpt-4o' },
+      isBuiltIn: false,
       createdBy: 'alice',
       createdAt: '2024-01-01',
       updatedAt: '2024-01-01',

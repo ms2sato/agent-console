@@ -12,7 +12,9 @@ afterEach(() => {
 const embeddedAgent: EmbeddedAgentDefinition = {
   id: 'embedded-1',
   name: 'Ollama qwen3',
+  engine: 'native-loop',
   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+  isBuiltIn: false,
   createdBy: 'user-1',
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',

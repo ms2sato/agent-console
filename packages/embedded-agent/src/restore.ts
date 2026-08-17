@@ -160,7 +160,11 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
       case 'exited':
       case 'turn-error':
       case 'fatal':
+      case 'sdk-session-id':
         // Noise: replay-only, contributes nothing to the conversation array.
+        // sdk-session-id (SDK Engine Phase 1) carries no conversational
+        // content -- it is a bookkeeping marker for the worker's current SDK
+        // session id, unrelated to transcript reconstruction.
         break;
       case 'context-handoff':
         // Boundary: unreachable here -- 4b already excluded it from `events`.

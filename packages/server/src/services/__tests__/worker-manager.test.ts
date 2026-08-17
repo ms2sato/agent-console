@@ -1402,6 +1402,38 @@ describe('WorkerManager', () => {
         expect(persisted.deliverInitialPromptOnActivation).toBe(false);
       }
     });
+
+    it('persists sdkSessionId through to PersistedEmbeddedAgentWorker (SDK Engine Phase 1)', () => {
+      const worker = buildInternalEmbeddedAgentWorker({
+        id: 'embedded-sdk-session',
+        embeddedAgentId: 'def-sdk-1',
+        subprocess: null,
+        sdkSessionId: 'sdk-sess-abc',
+      });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') {
+        expect(persisted.sdkSessionId).toBe('sdk-sess-abc');
+      }
+    });
+
+    it('persists a null sdkSessionId through to PersistedEmbeddedAgentWorker (native-loop engine)', () => {
+      const worker = buildInternalEmbeddedAgentWorker({
+        id: 'embedded-no-sdk-session',
+        embeddedAgentId: 'def-1',
+        subprocess: null,
+        sdkSessionId: null,
+      });
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') {
+        expect(persisted.sdkSessionId).toBeNull();
+      }
+    });
   });
 
   // ========== initializeEmbeddedAgentWorker ==========
@@ -1422,6 +1454,9 @@ describe('WorkerManager', () => {
       expect(worker.activityState).toBe('unknown');
       expect(worker.outputOffset).toBe(0);
       expect(worker.connectionCallbacks.size).toBe(0);
+      // SDK Engine Phase 1: a freshly-initialized worker never carries an SDK
+      // session id -- it is only set later by the sdk-session-id event.
+      expect(worker.sdkSessionId).toBeNull();
     });
 
     it('defaults deliverInitialPromptOnActivation to false when omitted', () => {
@@ -1558,6 +1593,25 @@ describe('WorkerManager', () => {
         // Core regression-guard for Issue #1074: the eligibility marker now
         // round-trips from the persisted row instead of being hard-coded false.
         expect(worker.deliverInitialPromptOnActivation).toBe(true);
+      }
+    });
+
+    it('should restore embedded-agent workers with sdkSessionId round-tripped from the persisted row (SDK Engine Phase 1)', () => {
+      const persistedWorkers = [
+        buildPersistedEmbeddedAgentWorker({
+          id: 'restored-embedded-sdk-session',
+          embeddedAgentId: 'def-sdk-1',
+          pid: null,
+          sdkSessionId: 'sdk-sess-restored',
+        }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-embedded-sdk-session')!;
+      expect(worker.type).toBe('embedded-agent');
+      if (worker.type === 'embedded-agent') {
+        expect(worker.sdkSessionId).toBe('sdk-sess-restored');
       }
     });
 

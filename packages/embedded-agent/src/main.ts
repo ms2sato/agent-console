@@ -12,10 +12,12 @@ import { NdjsonLineSplitter, type EmbeddedAgentEvent } from '@agent-console/shar
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
+import type { Engine } from './engine-types.js';
 import { loadHandoffPrompt } from './handoff-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
+import { SdkEngine } from './sdk-engine.js';
 import {
   assembleSystemPrompt,
   loadInstructions,
@@ -66,7 +68,7 @@ function delay(ms: number): Promise<void> {
  * with exit code 1.
  */
 export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<number> {
-  let loop: AgentLoop | null = null;
+  let loop: Engine | null = null;
   let currentTurn: Promise<void> | null = null;
   let turnActive = false;
 
@@ -164,98 +166,128 @@ async function initializeLoop(
   io: LoopIO,
   factories: LoopFactories,
   init: InitCommand,
-): Promise<AgentLoop | null> {
-  const instructions = await factories.loadInstructions({
-    cwd: init.context.cwd,
-    instructionsList: init.instructions,
-  });
-  const systemPrompt = assembleSystemPrompt({
-    context: init.context,
-    instructions,
-    definitionSystemPrompt: init.systemPrompt,
-  });
-
-  const mcp = factories.createMcpClient();
-  let tools: ToolDefinition[];
-  let executor: ToolExecutor;
-  try {
-    await mcp.connect(init.mcp.baseUrl, init.mcp.token);
-    const builtins = resolveEnabledBuiltinTools(init.enabledTools);
-    const composite = new CompositeToolExecutor({
-      mcp,
-      builtins,
-      ctx: { locationPath: init.context.cwd },
-      onNameCollision: (name) =>
-        io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
+): Promise<Engine | null> {
+  if (init.engine === 'native-loop') {
+    const instructions = await factories.loadInstructions({
+      cwd: init.context.cwd,
+      instructionsList: init.instructions,
     });
-    tools = await composite.listTools();
-    executor = composite;
-  } catch (err) {
-    const message = `MCP connection failed: ${err instanceof Error ? err.message : String(err)}`;
-    io.writeEvent({ v: 1, type: 'fatal', message });
-    io.logError(message);
-    return null;
-  }
+    const systemPrompt = assembleSystemPrompt({
+      context: init.context,
+      instructions,
+      definitionSystemPrompt: init.systemPrompt,
+    });
 
-  const adapter = factories.createAdapter({
-    baseUrl: init.provider.baseUrl,
-    apiKey: init.provider.apiKey,
-  });
-
-  let restoredConversation = init.restoredConversation;
-  if (restoredConversation && restoredConversation.length > 0) {
-    const [first, ...rest] = restoredConversation;
-    if (first.role === 'system') {
-      // The server-side restore reconstruction reads AGENTS.md/instructions
-      // AS THE SERVER PROCESS'S OWN OS USER, which silently degrades in
-      // multi-user mode (worktree not readable by that user). The loop runs
-      // as the REQUESTING user and already computed a
-      // correctly-permissioned `systemPrompt` above -- use it instead of the
-      // server's placeholder, for both restore shapes (fresh system-prompt
-      // seed and the context-handoff seed pair both start with a system
-      // message at index 0).
-      restoredConversation = [{ ...first, content: systemPrompt }, ...rest];
+    const mcp = factories.createMcpClient();
+    let tools: ToolDefinition[];
+    let executor: ToolExecutor;
+    try {
+      await mcp.connect(init.mcp.baseUrl, init.mcp.token);
+      const builtins = resolveEnabledBuiltinTools(init.enabledTools);
+      const composite = new CompositeToolExecutor({
+        mcp,
+        builtins,
+        ctx: { locationPath: init.context.cwd },
+        onNameCollision: (name) =>
+          io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
+      });
+      tools = await composite.listTools();
+      executor = composite;
+    } catch (err) {
+      const message = `MCP connection failed: ${err instanceof Error ? err.message : String(err)}`;
+      io.writeEvent({ v: 1, type: 'fatal', message });
+      io.logError(message);
+      return null;
     }
+
+    const adapter = factories.createAdapter({
+      baseUrl: init.provider.baseUrl,
+      apiKey: init.provider.apiKey,
+    });
+
+    let restoredConversation = init.restoredConversation;
+    if (restoredConversation && restoredConversation.length > 0) {
+      const [first, ...rest] = restoredConversation;
+      if (first.role === 'system') {
+        // The server-side restore reconstruction reads AGENTS.md/instructions
+        // AS THE SERVER PROCESS'S OWN OS USER, which silently degrades in
+        // multi-user mode (worktree not readable by that user). The loop runs
+        // as the REQUESTING user and already computed a
+        // correctly-permissioned `systemPrompt` above -- use it instead of the
+        // server's placeholder, for both restore shapes (fresh system-prompt
+        // seed and the context-handoff seed pair both start with a system
+        // message at index 0).
+        restoredConversation = [{ ...first, content: systemPrompt }, ...rest];
+      }
+    }
+
+    const loop = new AgentLoop({
+      adapter,
+      model: init.provider.model,
+      tools,
+      executor,
+      emit: (event) => io.writeEvent(event),
+      systemPrompt,
+      maxToolIterations: init.maxToolIterations,
+      restoredConversation,
+      reassembleSystemPrompt: async () => {
+        const reloadedInstructions = await factories.loadInstructions({
+          cwd: init.context.cwd,
+          instructionsList: init.instructions,
+        });
+        return assembleSystemPrompt({
+          context: init.context,
+          instructions: reloadedInstructions,
+          definitionSystemPrompt: init.systemPrompt,
+        });
+      },
+      loadHandoffPrompt: async () => {
+        const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
+        return content;
+      },
+    });
+
+    io.writeEvent({ v: 1, type: 'ready' });
+    return loop;
   }
 
-  const loop = new AgentLoop({
-    adapter,
+  // SDK Engine Phase 1 (docs/design/embedded-agent-sdk-engine.md §4): the
+  // claude-sdk engine talks to MCP and builtin tools entirely differently
+  // from the native loop -- it does NOT go through McpToolClient /
+  // resolveEnabledBuiltinTools / restore-conversation reconstruction.
+  // Transcript Restore is out of scope for this engine in v1 (S7: "fresh
+  // session on revival"); `init.restoredConversation`, if somehow present on
+  // a claude-sdk init command, is intentionally ignored/unused here.
+  // SdkEngine's own constructor emits `ready` (via the injected `emit`
+  // callback below) synchronously, immediately after starting its
+  // background stream consumer -- NEVER gated on the SDK's own system:init
+  // handshake. See SdkEngine's constructor comment and
+  // docs/design/embedded-agent-sdk-engine.md Appendix A.2's `ready` row for
+  // the live-probed finding this decouples from. Unlike the native-loop
+  // branch above, this function does not emit `ready` itself for this arm.
+  const engine = new SdkEngine({
+    cwd: init.context.cwd,
     model: init.provider.model,
-    tools,
-    executor,
+    systemPromptAppend: init.systemPrompt,
+    enabledTools: init.enabledTools,
+    mcp: init.mcp,
     emit: (event) => io.writeEvent(event),
-    systemPrompt,
-    maxToolIterations: init.maxToolIterations,
-    restoredConversation,
-    reassembleSystemPrompt: async () => {
-      const reloadedInstructions = await factories.loadInstructions({
-        cwd: init.context.cwd,
-        instructionsList: init.instructions,
-      });
-      return assembleSystemPrompt({
-        context: init.context,
-        instructions: reloadedInstructions,
-        definitionSystemPrompt: init.systemPrompt,
-      });
-    },
-    loadHandoffPrompt: async () => {
-      const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
-      return content;
-    },
   });
-
-  io.writeEvent({ v: 1, type: 'ready' });
-  return loop;
+  return engine;
 }
 
 async function gracefulExit(
-  loop: AgentLoop | null,
+  loop: Engine | null,
   currentTurn: Promise<void> | null,
 ): Promise<number> {
   if (loop !== null && currentTurn !== null) {
     loop.cancel();
     await Promise.race([currentTurn, delay(TURN_DRAIN_TIMEOUT_MS)]);
   }
+  // Releases any resources the engine holds outside process memory (e.g. the
+  // SDK engine's Query/child claude process). A no-op for the native engine
+  // (dispose is optional on Engine; AgentLoop does not implement it).
+  loop?.dispose?.();
   return EXIT_OK;
 }
 

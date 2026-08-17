@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { join } from 'node:path';
-import type { EmbeddedAgentEvent } from '@agent-console/shared';
+import * as v from 'valibot';
+import { EmbeddedAgentCommandSchema, type EmbeddedAgentEvent } from '@agent-console/shared';
 import {
   runLoop,
   type LoopFactories,
@@ -21,6 +22,7 @@ const initCommand = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
     v: 1,
     type: 'init',
+    engine: 'native-loop',
     mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
     provider: { baseUrl: 'http://provider/v1', model: 'm' },
     context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -353,6 +355,51 @@ describe('runLoop — restoredConversation threading (Transcript Restore #1123)'
     expect(systemMessage.content).not.toContain('STALE_SERVER_PROMPT');
     expect(systemMessage.content).toContain('LOOP_SIDE_INSTRUCTION_MARKER');
     expect(secondMessage).toEqual({ role: 'user', content: 'earlier question' });
+  });
+});
+
+describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () => {
+  // `initializeLoop` narrows `init.engine` at runtime
+  // (`if (init.engine === 'native-loop') { ... } else { new SdkEngine(...) }`)
+  // and TypeScript enforces the SAME split at compile time via
+  // `EmbeddedAgentCommand`'s discriminated union: a `native-loop`-shaped
+  // `init.provider` (baseUrl/model/apiKey?) is structurally incompatible
+  // with the `claude-sdk` arm's `provider: { model: string }`, so code that
+  // narrows to one arm cannot read the other arm's fields. This test proves
+  // the WIRE-LEVEL half of that containment: the shared schema rejects a
+  // native-loop-shaped init command carrying `engine: 'claude-sdk'` (an
+  // apiKey field the claude-sdk arm's strictObject provider must never
+  // accept -- see docs/design/embedded-agent-sdk-engine.md §3.2 and §7's
+  // "Auth property test").
+  it('rejects a claude-sdk init command whose provider carries an apiKey (native-loop-shaped payload misdeclared as claude-sdk)', () => {
+    const command = {
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5', apiKey: 'sk-leaked' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, command);
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a claude-sdk init command whose provider carries only `model` (no apiKey field to leak)', () => {
+    const command = {
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, command);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+      expect('apiKey' in result.output.provider).toBe(false);
+    }
   });
 });
 

@@ -340,9 +340,17 @@ function EmbeddedAgentsSection() {
                 initialData={{
                   name: embeddedAgent.name,
                   description: embeddedAgent.description ?? '',
-                  baseUrl: embeddedAgent.provider.baseUrl,
+                  // SDK Engine Phase 1: the claude-sdk engine's provider carries
+                  // no baseUrl/apiKeyRef (docs/design/embedded-agent-sdk-engine.md
+                  // §3.2); this form only ever edits native-loop definitions in
+                  // practice (the built-in claude-sdk definition's edit
+                  // affordance is gated off via the `!embeddedAgent.isBuiltIn`
+                  // check below, independent of ownership), narrowed here for
+                  // type safety.
+                  baseUrl: embeddedAgent.engine === 'native-loop' ? embeddedAgent.provider.baseUrl : '',
                   model: embeddedAgent.provider.model,
-                  apiKeyRef: embeddedAgent.provider.apiKeyRef ?? '',
+                  apiKeyRef:
+                    embeddedAgent.engine === 'native-loop' ? (embeddedAgent.provider.apiKeyRef ?? '') : '',
                   systemPrompt: embeddedAgent.systemPrompt ?? '',
                   maxToolIterationsInput: embeddedAgent.maxToolIterations?.toString() ?? '',
                   enabledTools: embeddedAgent.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS.slice(),
@@ -358,7 +366,10 @@ function EmbeddedAgentsSection() {
               <EmbeddedAgentCard
                 key={embeddedAgent.id}
                 embeddedAgent={embeddedAgent}
-                canManage={canManageEmbeddedAgent(embeddedAgent.createdBy, currentUser?.id, isMultiUser)}
+                canManage={
+                  !embeddedAgent.isBuiltIn &&
+                  canManageEmbeddedAgent(embeddedAgent.createdBy, currentUser?.id, isMultiUser)
+                }
                 onEdit={() => setEditingAgentId(embeddedAgent.id)}
                 onDelete={() => setAgentToDelete(embeddedAgent)}
                 isDeleting={deleteMutation.isPending && agentToDelete?.id === embeddedAgent.id}
@@ -409,10 +420,18 @@ function EmbeddedAgentCard({ embeddedAgent, canManage, onEdit, onDelete, isDelet
     <div className="card">
       <div className="flex items-start gap-4">
         <div className="flex-1 min-w-0">
-          <div className="text-lg font-medium mb-1">{embeddedAgent.name}</div>
+          <div className="text-lg font-medium flex items-center gap-2 mb-1">
+            {embeddedAgent.name}
+            {embeddedAgent.isBuiltIn && (
+              <span className="text-xs px-1.5 py-0.5 bg-blue-500/20 text-blue-400 rounded">
+                built-in
+              </span>
+            )}
+          </div>
 
           <div className="text-sm text-gray-400 font-mono mb-2">
-            {embeddedAgent.provider.baseUrl} &middot; {embeddedAgent.provider.model}
+            {embeddedAgent.engine === 'native-loop' ? `${embeddedAgent.provider.baseUrl} · ` : ''}
+            {embeddedAgent.provider.model}
           </div>
 
           {embeddedAgent.description && (

@@ -38,7 +38,9 @@ const TEST_CONFIG_DIR = '/test/config';
 const EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   id: 'def-1',
   name: 'My Local Model',
+  engine: 'native-loop',
   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+  isBuiltIn: false,
   createdBy: 'user-1',
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
@@ -1809,6 +1811,7 @@ describe('WorkerLifecycleManager', () => {
         epoch: 1,
         connectionCallbacks: new Map(),
         deliverInitialPromptOnActivation: false,
+        sdkSessionId: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 
@@ -1892,6 +1895,7 @@ describe('WorkerLifecycleManager', () => {
         epoch: 1,
         connectionCallbacks: new Map(),
         deliverInitialPromptOnActivation: false,
+        sdkSessionId: null,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 

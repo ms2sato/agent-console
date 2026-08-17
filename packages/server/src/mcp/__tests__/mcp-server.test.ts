@@ -211,7 +211,9 @@ const TEST_REPO_PATH = '/test/repo';
 const TEST_EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   id: 'def-1',
   name: 'My Local Model',
+  engine: 'native-loop',
   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+  isBuiltIn: false,
   createdBy: 'user-1',
   createdAt: '2024-01-01T00:00:00.000Z',
   updatedAt: '2024-01-01T00:00:00.000Z',
@@ -2734,7 +2736,9 @@ describe('MCP Server Tools', () => {
       const embeddedDef: EmbeddedAgentDefinition = {
         id: 'def-shared-name',
         name: sharedName,
+        engine: 'native-loop',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        isBuiltIn: false,
         createdBy: 'user-1',
         createdAt: '2024-01-01T00:00:00.000Z',
         updatedAt: '2024-01-01T00:00:00.000Z',

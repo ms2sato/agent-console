@@ -84,6 +84,7 @@ export function buildPersistedEmbeddedAgentWorker(
     embeddedAgentId: 'test-embedded-agent-def-id',
     pid: null,
     deliverInitialPromptOnActivation: false,
+    sdkSessionId: null,
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -207,6 +208,7 @@ export function buildInternalEmbeddedAgentWorker(
     epoch: 1_700_000_000_000,
     connectionCallbacks: new Map(),
     deliverInitialPromptOnActivation: false,
+    sdkSessionId: null,
     ...overrides,
   };
 }

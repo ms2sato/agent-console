@@ -30,11 +30,15 @@ const API_KEY = 'sk-provider-secret';
 const NEW_EPOCH = 4242;
 const USERNAME = 'alice';
 
-function buildDefinition(overrides?: Partial<EmbeddedAgentDefinition>): EmbeddedAgentDefinition {
+function buildDefinition(
+  overrides?: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>>
+): EmbeddedAgentDefinition {
   return {
     id: 'def-1',
     name: 'Ollama qwen',
+    engine: 'native-loop',
     provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai' },
+    isBuiltIn: false,
     createdBy: 'user-1',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -397,6 +401,7 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     const first = JSON.parse(h.fake.stdinWrites[0]);
     expect(first.v).toBe(1);
     expect(first.type).toBe('init');
+    expect(first.engine).toBe('native-loop');
     expect(first.mcp).toEqual({ baseUrl: MCP_BASE_URL, token: TOKEN });
     expect(first.provider).toEqual({
       baseUrl: 'http://localhost:11434/v1',
@@ -410,6 +415,28 @@ describe('EmbeddedAgentWorkerService.activate', () => {
       cwd: '/test/worktree',
     });
     expect(first.maxToolIterations).toBe(25);
+  });
+
+  it('writes a claude-sdk init command whose provider carries only model (no apiKey field, structural absence)', async () => {
+    const h = setup({
+      definition: {
+        id: 'def-sdk',
+        name: 'Claude',
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5' },
+        isBuiltIn: true,
+        createdBy: 'system',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.engine).toBe('claude-sdk');
+    expect(first.provider).toEqual({ model: 'claude-sonnet-5' });
+    expect('apiKey' in first.provider).toBe(false);
+    expect('baseUrl' in first.provider).toBe(false);
   });
 
   it('uses the definition maxToolIterations when set', async () => {
@@ -1137,6 +1164,37 @@ describe('EmbeddedAgentWorkerService initial-prompt delivery (Issue #1068)', () 
 
     expect(h.session.initialPromptDelivered).toBeUndefined();
     expect(h.persistSession).not.toHaveBeenCalled();
+  });
+});
+
+describe('EmbeddedAgentWorkerService sdk-session-id event handling (SDK Engine Phase 1)', () => {
+  it('updates worker.sdkSessionId and persists the session', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
+
+    expect(h.worker.sdkSessionId).toBeNull();
+
+    h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"sdk-sess-abc"}\n');
+    await waitFor(() => h.worker.sdkSessionId === 'sdk-sess-abc');
+
+    expect(h.worker.sdkSessionId).toBe('sdk-sess-abc');
+    expect(h.persistSession).toHaveBeenCalledWith(h.session);
+  });
+
+  it('last-write-wins on a second sdk-session-id event (session-replacement reseed)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"sdk-sess-first"}\n');
+    await waitFor(() => h.worker.sdkSessionId === 'sdk-sess-first');
+
+    h.persistSession.mockClear();
+    h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"sdk-sess-second"}\n');
+    await waitFor(() => h.worker.sdkSessionId === 'sdk-sess-second');
+
+    expect(h.worker.sdkSessionId).toBe('sdk-sess-second');
+    expect(h.persistSession).toHaveBeenCalledWith(h.session);
   });
 });
 

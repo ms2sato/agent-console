@@ -5,6 +5,7 @@ import {
   EmbeddedAgentManager,
   type EmbeddedAgentLifecycleCallbacks,
 } from '../embedded-agent-manager.js';
+import { claudeSdkAgent, CLAUDE_SDK_AGENT_ID } from '../embedded-agents/claude-sdk-builtin.js';
 
 /**
  * In-memory mock implementation of EmbeddedAgentRepository for testing.
@@ -70,25 +71,41 @@ describe('EmbeddedAgentManager', () => {
   }
 
   describe('initialization', () => {
-    it('starts empty when the repository has no definitions', async () => {
+    it('registers only the built-in claude-sdk definition when the repository has no custom definitions', async () => {
       const manager = await getManager();
-      expect(manager.getAllEmbeddedAgents()).toEqual([]);
+      expect(manager.getAllEmbeddedAgents()).toEqual([claudeSdkAgent]);
     });
 
-    it('loads existing definitions from the repository', async () => {
+    it('loads existing definitions from the repository alongside the built-in', async () => {
       const now = '2024-01-01T00:00:00.000Z';
       await repository.save({
         id: 'preloaded',
         name: 'Preloaded',
+        engine: 'native-loop',
         provider: VALID_PROVIDER,
+        isBuiltIn: false,
         createdBy: 'user-1',
         createdAt: now,
         updatedAt: now,
       });
 
       const manager = await getManager();
-      expect(manager.getAllEmbeddedAgents()).toHaveLength(1);
+      expect(manager.getAllEmbeddedAgents()).toHaveLength(2);
       expect(manager.getEmbeddedAgent('preloaded')?.name).toBe('Preloaded');
+      expect(manager.getEmbeddedAgent(CLAUDE_SDK_AGENT_ID)).toEqual(claudeSdkAgent);
+    });
+
+    it('upserts the built-in definition to the repository on every startup', async () => {
+      await getManager();
+      expect(repository.getAllSaved()).toEqual([claudeSdkAgent]);
+    });
+
+    it('is present in findAll() / getAllEmbeddedAgents() even when the repository already persisted it from a prior startup (upsert idempotency)', async () => {
+      await getManager(); // first startup: upserts claudeSdkAgent
+
+      const manager = await getManager(); // second startup: repository.findAll() now also returns it
+      expect(manager.getAllEmbeddedAgents()).toEqual([claudeSdkAgent]);
+      expect(repository.getAllSaved()).toEqual([claudeSdkAgent]);
     });
   });
 
@@ -108,8 +125,9 @@ describe('EmbeddedAgentManager', () => {
       expect(def.provider).toEqual(VALID_PROVIDER);
 
       // Retrievable from the in-memory map and persisted in the repository
+      // (alongside the built-in, upserted at startup).
       expect(manager.getEmbeddedAgent(def.id)).toEqual(def);
-      expect(repository.getAllSaved()).toHaveLength(1);
+      expect(repository.getAllSaved()).toHaveLength(2);
     });
 
     it('ignores any createdBy carried on the request object (server-side only)', async () => {
@@ -222,7 +240,7 @@ describe('EmbeddedAgentManager', () => {
         manager.createEmbeddedAgent({ name: 'Fail', provider: VALID_PROVIDER }, 'user-1')
       ).rejects.toThrow('save failed');
 
-      expect(manager.getAllEmbeddedAgents()).toEqual([]);
+      expect(manager.getAllEmbeddedAgents()).toEqual([claudeSdkAgent]);
       expect(created).toHaveLength(0);
     });
   });
@@ -374,6 +392,15 @@ describe('EmbeddedAgentManager', () => {
       expect(manager.getEmbeddedAgent(created.id)?.name).toBe('Original');
       expect(updated).toHaveLength(0);
     });
+
+    it('returns null and does not modify the built-in claude-sdk definition', async () => {
+      const manager = await getManager();
+
+      const result = await manager.updateEmbeddedAgent(CLAUDE_SDK_AGENT_ID, { name: 'Renamed' });
+
+      expect(result).toBeNull();
+      expect(manager.getEmbeddedAgent(CLAUDE_SDK_AGENT_ID)).toEqual(claudeSdkAgent);
+    });
   });
 
   describe('deleteEmbeddedAgent', () => {
@@ -388,7 +415,8 @@ describe('EmbeddedAgentManager', () => {
 
       expect(result).toBe(true);
       expect(manager.getEmbeddedAgent(created.id)).toBeUndefined();
-      expect(repository.getAllSaved()).toHaveLength(0);
+      // The built-in survives deletion of the custom definition.
+      expect(repository.getAllSaved()).toEqual([claudeSdkAgent]);
     });
 
     it('returns false for an unknown id', async () => {
@@ -410,6 +438,15 @@ describe('EmbeddedAgentManager', () => {
 
       expect(deleted).toEqual([created.id]);
     });
+
+    it('returns false and does not delete the built-in claude-sdk definition', async () => {
+      const manager = await getManager();
+
+      const result = await manager.deleteEmbeddedAgent(CLAUDE_SDK_AGENT_ID);
+
+      expect(result).toBe(false);
+      expect(manager.getEmbeddedAgent(CLAUDE_SDK_AGENT_ID)).toEqual(claudeSdkAgent);
+    });
   });
 
   describe('AgentSurface<"embedded"> conformance', () => {
@@ -420,11 +457,14 @@ describe('EmbeddedAgentManager', () => {
 
     it('list() wraps getAllEmbeddedAgents() entries with kind "embedded"', async () => {
       const manager = await getManager();
-      await manager.createEmbeddedAgent({ name: 'Listed', provider: VALID_PROVIDER }, 'user-1');
+      const created = await manager.createEmbeddedAgent({ name: 'Listed', provider: VALID_PROVIDER }, 'user-1');
 
+      // The built-in claude-sdk definition is always present alongside the
+      // newly-created custom one.
       const entries = manager.list();
-      expect(entries).toHaveLength(1);
-      expect(entries[0]).toEqual({ kind: 'embedded', agent: manager.getAllEmbeddedAgents()[0] });
+      expect(entries).toHaveLength(2);
+      expect(entries).toContainEqual({ kind: 'embedded', agent: created });
+      expect(entries).toContainEqual({ kind: 'embedded', agent: claudeSdkAgent });
     });
 
     it('get(id) wraps getEmbeddedAgent(id) with kind "embedded", or returns undefined', async () => {

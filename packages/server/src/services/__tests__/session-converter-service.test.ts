@@ -98,6 +98,7 @@ describe('SessionConverterService', () => {
             embeddedAgentId: w.embeddedAgentId,
             pid: w.subprocess?.pid ?? null,
             deliverInitialPromptOnActivation: w.deliverInitialPromptOnActivation,
+            sdkSessionId: w.sdkSessionId,
           };
         }
       },

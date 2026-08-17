@@ -64,15 +64,18 @@ export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolNam
   'Grep',
 ];
 
-export interface EmbeddedAgentDefinition {
+/**
+ * Fields shared by both engine arms of {@link EmbeddedAgentDefinition}. See
+ * docs/design/embedded-agent-sdk-engine.md §3.1 "Engine selection: a
+ * structural discriminant, never inference" — the discriminant lives on the
+ * definition, and each arm's `provider` shape is intentionally different
+ * (the `claude-sdk` arm carries no `baseUrl`/`apiKeyRef`: §3.2 "no provider
+ * secret crosses the server at all" in that engine).
+ */
+interface EmbeddedAgentDefinitionBase {
   id: string;                 // uuid
   name: string;               // display name, e.g. "Ollama qwen3:32b"
   description?: string;
-  provider: {
-    baseUrl: string;          // OpenAI-compatible root, e.g. "http://localhost:11434/v1"
-    model: string;            // model id passed in the chat.completions request
-    apiKeyRef?: string;       // name of a key in the server-side key store; absent = no auth (local LLMs)
-  };
   systemPrompt?: string;      // prepended to every conversation
   maxToolIterations?: number; // per user turn; default 25
   // undefined = default read-only set (Read/Glob/Grep), [] = all builtin tools off, explicit array = exact set
@@ -83,10 +86,56 @@ export interface EmbeddedAgentDefinition {
   instructions?: string[];
   contextWindowTokens?: number;  // Context Handoff (Phase A); operator-declared model context window, denominator for the usage ratio
   handoff?: { softRatio?: number; hardRatio?: number; auto?: boolean }; // Context Handoff (Phase A); auto is accepted/persisted but NOT read until Phase B
+  isBuiltIn: boolean;          // mirrors AgentDefinition.isBuiltIn (types/agent.ts); true only for the claude-sdk builtin (Phase 1) -- see services/embedded-agents/claude-sdk-builtin.ts
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
   updatedAt: string;
 }
+
+/**
+ * Definition of an agent that owns its own LLM loop. Discriminated on
+ * `engine` (docs/design/embedded-agent-sdk-engine.md §3.1): `native-loop` is
+ * the existing OpenAI-compatible custom loop (`agent-loop.ts` +
+ * `providers/` + `tools/` + `mcp.ts`); `claude-sdk` hosts a Claude Agent SDK
+ * session in the same subprocess harness. User-facing creation via the REST
+ * route always produces a `native-loop` definition (hardcoded server-side,
+ * `EmbeddedAgentManager.createEmbeddedAgent`) -- the `claude-sdk` engine is
+ * registered as a builtin only in Phase 1, never user-created.
+ */
+export type EmbeddedAgentDefinition =
+  | (EmbeddedAgentDefinitionBase & {
+      engine: 'native-loop';
+      provider: {
+        baseUrl: string;       // OpenAI-compatible root, e.g. "http://localhost:11434/v1"
+        model: string;         // model id passed in the chat.completions request
+        apiKeyRef?: string;    // name of a key in the server-side key store; absent = no auth (local LLMs)
+      };
+    })
+  | (EmbeddedAgentDefinitionBase & {
+      engine: 'claude-sdk';
+      // No baseUrl, no apiKeyRef -- the SDK subprocess runs as the executing
+      // OS user and uses that user's own claude authentication; no provider
+      // secret ever crosses the server (§3.2).
+      provider: { model: string };
+    });
+
+/**
+ * Fields shared by both engine arms of the `init` command. Mirrors
+ * {@link EmbeddedAgentDefinition}'s base/engine-arm split -- see
+ * docs/design/embedded-agent-sdk-engine.md §3.1.
+ */
+type EmbeddedAgentInitCommandBase = {
+  v: 1;
+  type: 'init';
+  mcp: { baseUrl: string; token: string };
+  context: { sessionId: string; workerId: string; repositoryId?: string; cwd: string };
+  systemPrompt?: string;
+  // undefined = apply the loop's own default tool set, [] = no builtin tools, explicit array = exact set
+  enabledTools?: EmbeddedAgentToolName[];
+  instructions?: string[];
+  maxToolIterations: number;
+  restoredConversation?: EmbeddedAgentRestoredMessage[]; // Transcript Restore (#1123); absent = fresh conversation (today's v1 behavior)
+};
 
 /**
  * Commands the server writes to the subprocess stdin (one single-line JSON per
@@ -94,19 +143,15 @@ export interface EmbeddedAgentDefinition {
  * with code 2 if the first parsed line is not a valid `init`.
  */
 export type EmbeddedAgentCommand =
-  | {
-      v: 1;
-      type: 'init';
-      mcp: { baseUrl: string; token: string };
+  | (EmbeddedAgentInitCommandBase & {
+      engine: 'native-loop';
       provider: { baseUrl: string; model: string; apiKey?: string };
-      context: { sessionId: string; workerId: string; repositoryId?: string; cwd: string };
-      systemPrompt?: string;
-      // undefined = apply the loop's own default tool set, [] = no builtin tools, explicit array = exact set
-      enabledTools?: EmbeddedAgentToolName[];
-      instructions?: string[];
-      maxToolIterations: number;
-      restoredConversation?: EmbeddedAgentRestoredMessage[]; // Transcript Restore (#1123); absent = fresh conversation (today's v1 behavior)
-    }
+    })
+  | (EmbeddedAgentInitCommandBase & {
+      engine: 'claude-sdk';
+      // No apiKey -- absent by construction, not merely optional (§3.2).
+      provider: { model: string };
+    })
   | { v: 1; type: 'user-message'; id: string; text: string }
   | { v: 1; type: 'cancel' }
   | { v: 1; type: 'handoff' }  // Context Handoff (Phase A); manual trigger
@@ -128,7 +173,26 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'turn-error'; turnId: string; message: string }
   | { v: 1; type: 'fatal'; message: string }
   | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean }  // Context Handoff (Phase A); emitted after every turn/handoff attempt that produced a usable value
-  | { v: 1; type: 'context-handoff'; distillation: string };  // Context Handoff (Phase A); persisted marker, emitted immediately before the atomic conversation reset
+  | { v: 1; type: 'context-handoff'; distillation: string }  // Context Handoff (Phase A); persisted marker, emitted immediately before the atomic conversation reset
+  /**
+   * SDK engine only; native engine never emits this. Emitted on activation
+   * and on every SDK-session replacement (e.g. Phase 2's context-handoff
+   * reseed) — the worker's CURRENT SDK session id is X, last-write-wins.
+   * See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
+   *
+   * IMPORTANT: because `ready` is decoupled from the SDK's own
+   * `system:init` handshake (a live probe against SDK 2.1.233 found
+   * `system:init` does not arrive until the first prompt is yielded — see
+   * that same design doc's Appendix A.2 `ready` row), this event is NOT
+   * emitted at activation time; it arrives only once the first turn's
+   * `system:init` lands. A freshly-activated worker legitimately has no
+   * `sdk-session-id` yet — a missing/null `sdkSessionId` on a
+   * freshly-activated worker is a LEGITIMATE "no session to resume yet"
+   * state, never a fault condition. Any persistence-layer reader or future
+   * consumer (e.g. Phase E's resume logic) must treat its absence
+   * accordingly, not as an error.
+   */
+  | { v: 1; type: 'sdk-session-id'; sdkSessionId: string };
 
 /**
  * Events the SERVER (not the loop) appends into the persisted stream so the

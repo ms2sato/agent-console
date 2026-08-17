@@ -392,6 +392,7 @@ export class WorkerManager {
       epoch: Date.now(),
       connectionCallbacks: new Map(),
       deliverInitialPromptOnActivation: params.deliverInitialPromptOnActivation ?? false,
+      sdkSessionId: null,
     };
 
     return worker;
@@ -1199,6 +1200,10 @@ export class WorkerManager {
             // written at create time by toPersistedWorker, so eligibility
             // survives a server restart.
             deliverInitialPromptOnActivation: pw.deliverInitialPromptOnActivation,
+            // Round-trips from PersistedEmbeddedAgentWorker.sdkSessionId so a
+            // restored SDK-engine worker retains its session id across a
+            // server restart, even though `subprocess`/`stdin` restart null.
+            sdkSessionId: pw.sdkSessionId,
           };
           break;
         default: {
@@ -1279,6 +1284,7 @@ export class WorkerManager {
           embeddedAgentId: worker.embeddedAgentId,
           pid: worker.subprocess?.pid ?? null,
           deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
+          sdkSessionId: worker.sdkSessionId,
         };
         return persistedEmbeddedAgent;
       }

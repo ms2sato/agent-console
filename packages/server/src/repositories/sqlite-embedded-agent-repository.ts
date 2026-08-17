@@ -35,6 +35,11 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
         oc.column('id').doUpdateSet({
           name: row.name,
           description: row.description,
+          // `engine` is included for consistency with the "upsert built-in
+          // on every startup" pattern (EmbeddedAgentManager.initialize) --
+          // in practice no caller ever flips a definition's engine post-
+          // creation, so this is a no-op update in every real invocation.
+          engine: row.engine,
           provider_base_url: row.provider_base_url,
           provider_model: row.provider_model,
           provider_api_key_ref: row.provider_api_key_ref,
@@ -46,6 +51,7 @@ export class SqliteEmbeddedAgentRepository implements EmbeddedAgentRepository {
           handoff_soft_ratio: row.handoff_soft_ratio,
           handoff_hard_ratio: row.handoff_hard_ratio,
           handoff_auto: row.handoff_auto,
+          is_built_in: row.is_built_in,
           // Note: created_at and created_by are intentionally NOT updated
           // (they must never change after the initial insert).
           updated_at: row.updated_at,

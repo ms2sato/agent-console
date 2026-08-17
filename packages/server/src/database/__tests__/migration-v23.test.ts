@@ -42,7 +42,7 @@ describe('migration v23 (embedded_agents.enabled_tools)', () => {
     // chain and the final version is the current latest.
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(28);
+    expect(versionRes.rows[0]?.user_version).toBe(30);
   });
 
   it('adds the enabled_tools column to embedded_agents, nullable with no default', async () => {
@@ -64,12 +64,14 @@ describe('migration v23 (embedded_agents.enabled_tools)', () => {
         id: 'def-1',
         name: 'Ollama',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'qwen3:32b',
         provider_api_key_ref: null,
         system_prompt: null,
         max_tool_iterations: null,
         enabled_tools: '["Read","Glob"]',
+        is_built_in: 0,
         created_by: 'user-1',
         created_at: '2024-01-01T00:00:00.000Z',
         updated_at: '2024-01-01T00:00:00.000Z',
