@@ -80,18 +80,50 @@ function buildPreamble(context: SystemPromptContext): string {
   return lines.join('\n');
 }
 
+/**
+ * Formats instruction segments the way `assembleSystemPrompt` renders them --
+ * `--- Instructions: <origin> ---\n<content>` per segment, in given order.
+ * Extracted so the SDK engine's `systemPrompt.append` composition (see
+ * `composeSdkSystemPromptAppend` below) can reuse the exact same rendering
+ * instead of reinventing it.
+ */
+export function formatInstructionSegments(segments: InstructionSegment[]): string[] {
+  return segments.map((segment) => `--- Instructions: ${segment.origin} ---\n${segment.content}`);
+}
+
 export function assembleSystemPrompt(params: AssembleSystemPromptParams): string {
   const sections: string[] = [buildPreamble(params.context)];
 
-  for (const segment of params.instructions.segments) {
-    sections.push(`--- Instructions: ${segment.origin} ---\n${segment.content}`);
-  }
+  sections.push(...formatInstructionSegments(params.instructions.segments));
 
   if (params.definitionSystemPrompt !== undefined && params.definitionSystemPrompt.length > 0) {
     sections.push(params.definitionSystemPrompt);
   }
 
   return sections.join('\n\n');
+}
+
+/**
+ * Composes the SDK engine's `systemPrompt.append` string (main.ts's
+ * `claude-sdk` init arm): opt-in instruction segments, formatted the same way
+ * `assembleSystemPrompt` renders them, followed by the definition system
+ * prompt if present -- mirroring `assembleSystemPrompt`'s section-join
+ * convention, minus the preamble (the SDK engine uses the SDK's own
+ * `claude_code` preset preamble instead of ours, so `buildPreamble` must not
+ * run here). Returns `undefined` when there is nothing to append, so callers
+ * can omit `Options.systemPrompt` entirely rather than passing an empty
+ * string (see docs/design/embedded-agent-sdk-engine.md §4's "Instruction
+ * loader" row correction).
+ */
+export function composeSdkSystemPromptAppend(
+  segments: InstructionSegment[],
+  definitionSystemPrompt: string | undefined,
+): string | undefined {
+  const sections = formatInstructionSegments(segments);
+  if (definitionSystemPrompt !== undefined && definitionSystemPrompt.length > 0) {
+    sections.push(definitionSystemPrompt);
+  }
+  return sections.length > 0 ? sections.join('\n\n') : undefined;
 }
 
 type ReadTextResult =
@@ -212,6 +244,38 @@ function capSegment(segment: InstructionSegment): InstructionSegment {
   return { origin: segment.origin, content: text };
 }
 
+/**
+ * Reads the opt-in `instructions[]` layer only -- confined-path-resolved
+ * against `cwd`, capped per-file. No global (~/.config/agent-console) or
+ * chain (AGENTS.md/CLAUDE.md auto-discovery) layers. Shared by
+ * `loadInstructions` (which composes this with the other two layers for the
+ * native-loop engine) and the SDK engine (which uses ONLY this layer --
+ * AGENTS.md auto-discovery is deliberately out of scope for that engine, see
+ * docs/design/embedded-agent-sdk-engine.md §4).
+ */
+export async function loadOptInInstructions(
+  cwd: string,
+  instructionsList: string[] | undefined,
+): Promise<InstructionSegment[]> {
+  const instructionsRaw: InstructionSegment[] = [];
+  for (const rawEntry of instructionsList ?? []) {
+    const confinement = await resolveConfinedPath(rawEntry, cwd);
+    if (!confinement.ok) {
+      console.warn(`Skipping instructions[] entry "${rawEntry}": ${confinement.message}`);
+      continue;
+    }
+    const read = await tryReadTextFile(confinement.resolvedPath);
+    if (!read.ok) {
+      console.warn(
+        `Skipping instructions[] entry "${rawEntry}" (resolved ${confinement.resolvedPath}): ${read.message}`,
+      );
+      continue;
+    }
+    instructionsRaw.push({ origin: confinement.resolvedPath, content: read.content });
+  }
+  return instructionsRaw.map(capSegment);
+}
+
 function segmentByteLength(segment: InstructionSegment): number {
   return encoder.encode(segment.content).length;
 }
@@ -242,28 +306,15 @@ export async function loadInstructions(
   );
   const chainRaw = chainResults.filter((s): s is InstructionSegment => s !== null);
 
-  // instructions[] layer (opt-in, confined to cwd).
-  const instructionsRaw: InstructionSegment[] = [];
-  for (const rawEntry of params.instructionsList ?? []) {
-    const confinement = await resolveConfinedPath(rawEntry, cwd);
-    if (!confinement.ok) {
-      console.warn(`Skipping instructions[] entry "${rawEntry}": ${confinement.message}`);
-      continue;
-    }
-    const read = await tryReadTextFile(confinement.resolvedPath);
-    if (!read.ok) {
-      console.warn(
-        `Skipping instructions[] entry "${rawEntry}" (resolved ${confinement.resolvedPath}): ${read.message}`,
-      );
-      continue;
-    }
-    instructionsRaw.push({ origin: confinement.resolvedPath, content: read.content });
-  }
+  // instructions[] layer (opt-in, confined to cwd, capped per-file) --
+  // delegated to loadOptInInstructions, the single confined reader shared
+  // with the SDK engine (main.ts's claude-sdk arm).
+  const instructionSegments = await loadOptInInstructions(cwd, params.instructionsList);
 
-  // Per-file cap.
+  // Per-file cap (global/chain only -- instructionSegments is already capped
+  // by loadOptInInstructions above).
   const globalSegment = globalRaw !== null ? capSegment(globalRaw) : null;
   const chainSegments = chainRaw.map(capSegment);
-  const instructionSegments = instructionsRaw.map(capSegment);
 
   // Aggregate cap + overflow drop: general side first (global, then chain
   // root-to-leaf, then instructions[] last-to-first), preserving the

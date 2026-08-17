@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   assembleSystemPrompt,
+  composeSdkSystemPromptAppend,
   loadInstructions,
+  loadOptInInstructions,
   INSTRUCTION_PER_FILE_CAP_BYTES,
   INSTRUCTION_AGGREGATE_CAP_BYTES,
   type SystemPromptContext,
@@ -611,5 +613,144 @@ describe('loadInstructions — routine absence is silent (l, anti-noise)', () =>
       debugSpy.mockRestore();
       warnSpy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// loadOptInInstructions -- the extracted opt-in-only reader, now directly
+// callable (shared by loadInstructions above and the SDK engine's main.ts
+// claude-sdk arm). loadInstructions's own confinement/cap tests above (h-k,
+// f) already exercise this code path indirectly; these tests exercise the
+// function DIRECTLY, as its own independently-testable unit.
+// ---------------------------------------------------------------------------
+
+describe('loadOptInInstructions', () => {
+  it('returns an empty array when instructionsList is undefined', async () => {
+    const cwd = await makeTempDir();
+    const result = await loadOptInInstructions(cwd, undefined);
+    expect(result).toEqual([]);
+  });
+
+  it('resolves and loads a legitimate relative path inside cwd', async () => {
+    const cwd = await makeTempDir();
+    await mkdir(join(cwd, 'docs'));
+    await writeFile(join(cwd, 'docs', 'note.md'), 'NOTE_CONTENT');
+
+    const result = await loadOptInInstructions(cwd, ['docs/note.md']);
+
+    expect(result).toEqual([{ origin: join(cwd, 'docs', 'note.md'), content: 'NOTE_CONTENT' }]);
+  });
+
+  it('rejects+skips+warn-logs a path that resolves outside cwd (confinement)', async () => {
+    const cwd = await makeTempDir();
+    await writeFile(join(cwd, 'inside.md'), 'INSIDE_CONTENT');
+    const outside = await makeTempDir();
+    await writeFile(join(outside, 'secret.md'), 'SECRET_CONTENT');
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadOptInInstructions(cwd, ['inside.md', join(outside, 'secret.md')]);
+
+      expect(result).toEqual([{ origin: join(cwd, 'inside.md'), content: 'INSIDE_CONTENT' }]);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).includes(join(outside, 'secret.md'))),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('rejects a symlink inside cwd that points outside cwd (realpath escape)', async () => {
+    const cwd = await makeTempDir();
+    const outside = await makeTempDir();
+    await writeFile(join(outside, 'secret.md'), 'SECRET_CONTENT');
+    await symlink(join(outside, 'secret.md'), join(cwd, 'link.md'));
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadOptInInstructions(cwd, ['link.md']);
+
+      expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('link.md'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('warn-logs and skips a missing entry', async () => {
+    const cwd = await makeTempDir();
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadOptInInstructions(cwd, ['does-not-exist.md']);
+
+      expect(result).toEqual([]);
+      expect(warnSpy).toHaveBeenCalled();
+      expect(
+        warnSpy.mock.calls.some((call) => String(call[0]).includes('does-not-exist.md')),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('truncates an oversized entry to <= the per-file cap and warn-logs, without appending a marker', async () => {
+    const cwd = await makeTempDir();
+    const oversized = 'x'.repeat(INSTRUCTION_PER_FILE_CAP_BYTES + 5000);
+    await writeFile(join(cwd, 'big.md'), oversized);
+
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await loadOptInInstructions(cwd, ['big.md']);
+
+      expect(result).toHaveLength(1);
+      const content = result[0].content;
+      expect(new TextEncoder().encode(content).length).toBeLessThanOrEqual(
+        INSTRUCTION_PER_FILE_CAP_BYTES,
+      );
+      expect(content).toBe('x'.repeat(content.length));
+      expect(warnSpy).toHaveBeenCalled();
+      expect(warnSpy.mock.calls.some((call) => String(call[0]).includes('big.md'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composeSdkSystemPromptAppend -- the SDK engine's systemPrompt.append
+// composition (instruction segments, formatted the same way
+// assembleSystemPrompt renders them, followed by the definition system
+// prompt if present; no preamble).
+// ---------------------------------------------------------------------------
+
+describe('composeSdkSystemPromptAppend', () => {
+  it('returns undefined when there are no segments and no definition system prompt', () => {
+    expect(composeSdkSystemPromptAppend([], undefined)).toBeUndefined();
+  });
+
+  it('returns only the definition system prompt when there are no segments', () => {
+    expect(composeSdkSystemPromptAppend([], 'OPERATOR_PROMPT')).toBe('OPERATOR_PROMPT');
+  });
+
+  it('renders segments using the same "--- Instructions: <origin> ---" delimiter as assembleSystemPrompt, ordered before the definition system prompt', () => {
+    const result = composeSdkSystemPromptAppend(
+      [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }],
+      'OPERATOR_MARKER',
+    );
+    expect(result).toContain('--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER');
+    const repoIdx = result!.indexOf('REPO_MARKER');
+    const operatorIdx = result!.indexOf('OPERATOR_MARKER');
+    expect(operatorIdx).toBeGreaterThan(repoIdx);
+  });
+
+  it('omits the definition system prompt section when it is an empty string (matches assembleSystemPrompt)', () => {
+    const result = composeSdkSystemPromptAppend(
+      [{ origin: '/repo/AGENTS.md', content: 'REPO_MARKER' }],
+      '',
+    );
+    expect(result).toBe('--- Instructions: /repo/AGENTS.md ---\nREPO_MARKER');
   });
 });

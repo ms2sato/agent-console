@@ -13,6 +13,35 @@ import { join } from 'node:path';
 import type { EmbeddedAgentEvent } from '@agent-console/shared';
 import type { Options, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { SdkEngine, spawnClaudeCodeProcess, type SdkEngineDeps } from '../sdk-engine.js';
+import { composeSdkSystemPromptAppend } from '../system-prompt.js';
+
+// ---------------------------------------------------------------------------
+// Fixture cast escape hatches
+// ---------------------------------------------------------------------------
+
+/**
+ * The single, documented `as unknown as SDKMessage` escape hatch for this
+ * file's fixture builders. The real `SDKMessage` union carries dozens of
+ * required fields per variant that this engine never reads; fixtures
+ * intentionally populate only the fields the engine's mapping logic actually
+ * consumes. Every fixture builder below routes its return value through this
+ * helper instead of casting inline, so the escape hatch exists in exactly one
+ * place.
+ */
+function asSdkMessage(value: Record<string, unknown>): SDKMessage {
+  return value as unknown as SDKMessage;
+}
+
+/**
+ * The single, documented `as unknown as Query` escape hatch for
+ * `makeFakeQuery`'s returned fake. The real `Query` interface is an
+ * `AsyncGenerator` intersected with SDK-internal methods this fake does not
+ * need to fully replicate; `makeFakeQuery` only implements the subset
+ * (`interrupt`, `close`, iteration) that `SdkEngine` actually calls.
+ */
+function asQuery(value: object): Query {
+  return value as unknown as Query;
+}
 
 // ---------------------------------------------------------------------------
 // Test doubles
@@ -49,6 +78,14 @@ function makeFakeQuery(source: SDKMessage[] | (() => AsyncGenerator<SDKMessage, 
         ? source()
         : (async function* (): AsyncGenerator<SDKMessage, void> {
             for (const m of source) yield m;
+            // The real Query stays alive for the engine's whole lifetime
+            // (see sdk-engine.ts's module doc comment) -- it never exhausts
+            // on its own. Block forever after replaying the canned messages
+            // so a finite fixture array doesn't spuriously trip the "clean
+            // stream end" fatal path (see the "clean stream end" describe
+            // block below) unless a test opts into that behavior via a
+            // custom generator function passed as `source` instead.
+            await new Promise<never>(() => {});
           })();
     const fake = Object.assign(gen, {
       interrupt: async () => {
@@ -59,7 +96,7 @@ function makeFakeQuery(source: SDKMessage[] | (() => AsyncGenerator<SDKMessage, 
         closed = true;
       },
     });
-    return fake as unknown as Query;
+    return asQuery(fake);
   };
 
   return {
@@ -104,12 +141,13 @@ const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
 
 // ---------------------------------------------------------------------------
 // SDKMessage fixture builders -- minimally populated (only the fields this
-// engine actually reads), cast through `unknown` since the real SDK types
-// carry dozens of unrelated required fields this codebase does not own.
+// engine actually reads), routed through `asSdkMessage` (see "Fixture cast
+// escape hatches" above) since the real SDK types carry dozens of unrelated
+// required fields this codebase does not own.
 // ---------------------------------------------------------------------------
 
 function systemInit(overrides: { sessionId?: string; tools?: string[] } = {}): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'system',
     subtype: 'init',
     apiKeySource: 'user',
@@ -125,21 +163,21 @@ function systemInit(overrides: { sessionId?: string; tools?: string[] } = {}): S
     plugins: [],
     uuid: '11111111-1111-1111-1111-111111111111',
     session_id: overrides.sessionId ?? '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function textDeltaEvent(text: string): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'stream_event',
     event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } },
     parent_tool_use_id: null,
     uuid: '11111111-1111-1111-1111-111111111112',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function thinkingDeltaEvent(thinking: string): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'stream_event',
     event: {
       type: 'content_block_delta',
@@ -149,31 +187,31 @@ function thinkingDeltaEvent(thinking: string): SDKMessage {
     parent_tool_use_id: null,
     uuid: '11111111-1111-1111-1111-111111111113',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function inputJsonDeltaEvent(partialJson: string): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'stream_event',
     event: { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: partialJson } },
     parent_tool_use_id: null,
     uuid: '11111111-1111-1111-1111-111111111114',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function messageStopEvent(): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'stream_event',
     event: { type: 'message_stop' },
     parent_tool_use_id: null,
     uuid: '11111111-1111-1111-1111-111111111115',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function assistantToolUseMessage(callId: string, name: string, input: unknown): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'assistant',
     message: {
       id: 'msg_1',
@@ -192,11 +230,11 @@ function assistantToolUseMessage(callId: string, name: string, input: unknown): 
     parent_tool_use_id: null,
     uuid: '11111111-1111-1111-1111-111111111116',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function userToolResultMessage(toolUseId: string, content: string, isError = false): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'user',
     message: {
       role: 'user',
@@ -205,11 +243,11 @@ function userToolResultMessage(toolUseId: string, content: string, isError = fal
     parent_tool_use_id: null,
     uuid: '11111111-1111-1111-1111-111111111117',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function userToolResultMessageWithBlockContent(toolUseId: string, content: unknown[]): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'user',
     message: {
       role: 'user',
@@ -218,11 +256,11 @@ function userToolResultMessageWithBlockContent(toolUseId: string, content: unkno
     parent_tool_use_id: null,
     uuid: '11111111-1111-1111-1111-111111111118',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function resultSuccess(): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'result',
     subtype: 'success',
     duration_ms: 1,
@@ -237,14 +275,14 @@ function resultSuccess(): SDKMessage {
     permission_denials: [],
     uuid: '11111111-1111-1111-1111-111111111119',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 function resultError(
   subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries',
   errors: string[] = [],
 ): SDKMessage {
-  return {
+  return asSdkMessage({
     type: 'result',
     subtype,
     duration_ms: 1,
@@ -259,7 +297,7 @@ function resultError(
     errors,
     uuid: '11111111-1111-1111-1111-111111111120',
     session_id: '22222222-2222-2222-2222-222222222222',
-  } as unknown as SDKMessage;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +369,44 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, enabledTools: [] }));
     expect(captured.options?.tools).toEqual([]);
+  });
+
+  // Instruction loader forwarding (CodeRabbit finding, docs/design/embedded-
+  // agent-sdk-engine.md §4's corrected "Instruction loader" row): the
+  // definition's opt-in `instructions[]` is composed into `systemPromptAppend`
+  // by main.ts's `initializeLoop` (via `composeSdkSystemPromptAppend`) BEFORE
+  // `SdkEngine` is constructed -- this engine itself never reads instruction
+  // files. These two tests exercise the real composition helper's output as
+  // the deps value, proving the round trip: composed instruction content
+  // actually reaches `options.systemPrompt.append`, ordered before the
+  // definition system prompt, and the no-configuration case still omits
+  // `systemPrompt` entirely (no regression from the "omits systemPrompt
+  // entirely" test above).
+  it('carries composed opt-in instruction content into options.systemPrompt.append, ordered before the definition system prompt', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    const segments = [{ origin: '/tmp/work/NOTES.md', content: 'INSTRUCTION_CONTENT' }];
+    const systemPromptAppend = composeSdkSystemPromptAppend(segments, 'Be terse.');
+    new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
+
+    expect(captured.options?.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: systemPromptAppend,
+    });
+    const append = (captured.options?.systemPrompt as { append: string }).append;
+    const instructionIdx = append.indexOf('INSTRUCTION_CONTENT');
+    const definitionIdx = append.indexOf('Be terse.');
+    expect(instructionIdx).toBeGreaterThanOrEqual(0);
+    expect(definitionIdx).toBeGreaterThan(instructionIdx);
+  });
+
+  it('omits systemPrompt.append when neither instructions nor a definition system prompt are configured (no regression)', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    const systemPromptAppend = composeSdkSystemPromptAppend([], undefined);
+    expect(systemPromptAppend).toBeUndefined();
+
+    new SdkEngine(baseDeps({ queryFn, systemPromptAppend }));
+    expect('systemPrompt' in (captured.options ?? {})).toBe(false);
   });
 });
 
@@ -861,6 +937,81 @@ describe('SdkEngine — fatal path (transport/process failure)', () => {
     expect(fatalEvents).toHaveLength(1);
     expect(fatalEvents[0].message).toContain('transport exploded');
     expect(isClosed()).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Clean stream end (CodeRabbit fix, PR #1342) -- distinguishing an
+// UNEXPECTED clean end (no throw, but also no `result` message -- e.g. the
+// child `claude` process exited on its own) from a DELIBERATE one
+// (`dispose()` closing the query, which also ends the stream).
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — clean stream end (unexpected vs deliberate)', () => {
+  function cleanEndGenerator(): AsyncGenerator<SDKMessage, void> {
+    async function* gen(): AsyncGenerator<SDKMessage, void> {
+      yield systemInit();
+      // Returns without throwing and without ever yielding a `result`
+      // message -- models the SDK's message stream ending unexpectedly
+      // (e.g. the child `claude` process exited on its own).
+    }
+    return gen();
+  }
+
+  it('emits fatal, marks the engine dead, and settles a pending turn when the message stream ends cleanly with no result message', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, isClosed } = makeFakeQuery(cleanEndGenerator);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    const turnPromise = engine.runTurn('u1', 'hi');
+    await turnPromise; // must resolve (not hang) once handleFatal settles it
+
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toBe('SDK message stream ended unexpectedly');
+    expect(isClosed()).toBe(true);
+
+    // `dead` became true: a later runTurn is rejected loudly rather than
+    // hanging (same re-fatal contract as the Pin 2 containment test above).
+    events.length = 0;
+    await engine.runTurn('u2', 'hello again');
+    expect(events).toEqual([
+      { v: 1, type: 'fatal', message: 'SDK engine session already terminated; cannot start a new turn' },
+    ]);
+  });
+
+  it('does not emit an extra fatal when dispose() is called and the underlying query then also ends its stream (real close-triggers-stream-end sequence)', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    let resolveClose: (() => void) | null = null;
+    const closeSignal = new Promise<void>((resolve) => {
+      resolveClose = resolve;
+    });
+    let closeCallCount = 0;
+
+    const queryFn: QueryFn = () => {
+      const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        // Blocks here until dispose() -> query.close() resolves this --
+        // mirrors the real SDK's stream ending as a direct consequence of
+        // close(), not independently of it.
+        await closeSignal;
+      })();
+      const fake = Object.assign(gen, {
+        interrupt: async () => undefined,
+        close: () => {
+          closeCallCount++;
+          resolveClose?.();
+        },
+      });
+      return asQuery(fake);
+    };
+
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+    await flush();
+    engine.dispose();
+    await flush(); // let closeSignal resolve, the generator return, and consumeLoop's for-await exit
+
+    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
+    expect(closeCallCount).toBe(1);
   });
 });
 

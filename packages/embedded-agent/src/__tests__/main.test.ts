@@ -15,6 +15,8 @@ import type {
   ToolDefinition,
 } from '../providers/types.js';
 import type { ToolCallOutcome } from '../mcp.js';
+import type { Engine } from '../engine-types.js';
+import type { SdkEngineDeps } from '../sdk-engine.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
 
@@ -50,6 +52,15 @@ class CapturingAdapter implements ProviderAdapter {
     yield { type: 'text-delta', text: 'hi' };
     yield { type: 'done', finishReason: 'stop' };
   }
+}
+
+/** Default `createSdkEngine` stub for tests that don't exercise the
+ * claude-sdk init arm -- a no-op Engine that satisfies the interface without
+ * driving any real (or fake) SDK query stream. */
+class NoopEngine implements Engine {
+  async runTurn(): Promise<void> {}
+  cancel(): void {}
+  async handoff(): Promise<void> {}
 }
 
 class StubMcpClient implements McpClientLike {
@@ -89,7 +100,9 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     createMcpClient: () => new StubMcpClient(),
     createAdapter: () => new StubAdapter(),
     loadInstructions: async () => ({ segments: [] }),
+    loadOptInInstructions: async () => [],
     loadHandoffPrompt: async () => ({ content: 'DEFAULT_HANDOFF_PROMPT_STUB', origin: 'bundled-default' }),
+    createSdkEngine: () => new NoopEngine(),
     ...overrides,
   };
 }
@@ -400,6 +413,104 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
       expect('apiKey' in result.output.provider).toBe(false);
     }
+  });
+
+  // Mirrors the native-loop branch's "emits a fatal event and exits 1 when
+  // MCP connection fails" test above: `SdkEngine`'s constructor calls the
+  // real SDK's `query()` synchronously, so a throw there must be caught and
+  // surfaced the same way the native branch's MCP-connect failure is,
+  // instead of propagating uncaught out of `initializeLoop`/`runLoop`.
+  it('emits a fatal event and exits 1 when SdkEngine construction throws synchronously', async () => {
+    const claudeSdkInitCommand = JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    });
+    const { io, events, errors } = makeIo([claudeSdkInitCommand]);
+    const factories = makeFactories({
+      createSdkEngine: () => {
+        throw new Error('malformed options rejected by the SDK');
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(1);
+    const fatalEvents = events.filter(
+      (e): e is Extract<EmbeddedAgentEvent, { type: 'fatal' }> => e.type === 'fatal',
+    );
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('malformed options rejected by the SDK');
+    expect(errors.some((e) => e.includes('malformed options rejected by the SDK'))).toBe(true);
+  });
+});
+
+describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
+  const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+      ...overrides,
+    });
+
+  it('loads the definition instructions[] list via loadOptInInstructions and composes it into systemPromptAppend, ordered before the definition system prompt', async () => {
+    const { io } = makeIo([
+      claudeSdkInitCommand({ instructions: ['docs/local-note.md'], systemPrompt: 'OPERATOR_PROMPT' }),
+    ]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadOptInInstructions: async (cwd, instructionsList) => {
+        expect(cwd).toBe('/tmp');
+        expect(instructionsList).toEqual(['docs/local-note.md']);
+        return [{ origin: '/tmp/docs/local-note.md', content: 'INSTRUCTION_MARKER' }];
+      },
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toContain('INSTRUCTION_MARKER');
+    expect(capturedDeps?.systemPromptAppend).toContain('OPERATOR_PROMPT');
+    const instructionIdx = capturedDeps!.systemPromptAppend!.indexOf('INSTRUCTION_MARKER');
+    const operatorIdx = capturedDeps!.systemPromptAppend!.indexOf('OPERATOR_PROMPT');
+    expect(operatorIdx).toBeGreaterThan(instructionIdx);
+  });
+
+  it('omits systemPromptAppend entirely when neither instructions[] nor a definition system prompt are configured (no regression)', async () => {
+    const { io } = makeIo([claudeSdkInitCommand()]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toBeUndefined();
+  });
+
+  it('systemPromptAppend contains only the definition system prompt when instructions[] is unconfigured (no regression)', async () => {
+    const { io } = makeIo([claudeSdkInitCommand({ systemPrompt: 'OPERATOR_ONLY' })]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
   });
 });
 

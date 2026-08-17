@@ -239,8 +239,14 @@ export class SdkEngine implements Engine {
 
   /** Closes the underlying SDK query, which terminates its child `claude`
    * process -- otherwise it leaks when our own process exits (no OS
-   * process-group magic guarantees the child dies with us). */
+   * process-group magic guarantees the child dies with us). Marks the engine
+   * dead BEFORE calling `close()`: `close()` causes `consumeLoop`'s `for
+   * await` to end (a deliberate shutdown, not an unexpected one), and
+   * `handleFatal`'s early-return guard on `this.dead` relies on this
+   * ordering to distinguish that from the genuinely-unexpected clean-end
+   * case `consumeLoop` guards against below. */
   dispose(): void {
+    this.dead = true;
     try {
       this.query.close();
     } catch {
@@ -254,6 +260,15 @@ export class SdkEngine implements Engine {
         this.handleMessage(message);
         if (this.dead) break;
       }
+      // The `for await` loop exited WITHOUT throwing -- the SDK's message
+      // stream ended cleanly. Outside of a deliberate `dispose()` (which
+      // already set `this.dead = true` before triggering this), this is
+      // unexpected: the child `claude` process exited, or the SDK ended the
+      // stream, with no `result` message ever settling the pending turn.
+      // Treat it exactly like the throwing case below -- `handleFatal`'s own
+      // `if (this.dead) return;` guard makes this a no-op on the deliberate
+      // `dispose()` path.
+      this.handleFatal('SDK message stream ended unexpectedly');
     } catch (err) {
       this.handleFatal(`SDK transport error: ${err instanceof Error ? err.message : String(err)}`);
     }
