@@ -824,7 +824,7 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
   // Delete confirmation state: null = closed, 'normal' = regular delete, 'force' = force delete
   const [deleteConfirmType, setDeleteConfirmType] = useState<'normal' | 'force' | null>(null);
   const { errorDialogProps, showError } = useErrorDialog();
-  const { tasks: deletionTasks, addTask, markAsFailed } = useWorktreeDeletionTasksContext();
+  const { tasks: deletionTasks, addTask } = useWorktreeDeletionTasksContext();
   const isDeleting = deletionTasks.some(
     (t) => t.worktreePath === worktree.path && t.status === 'deleting'
   );
@@ -878,38 +878,40 @@ export function WorktreeRow({ worktree, session, pausedSession, repositoryId, is
   };
 
   const executeDelete = async (force: boolean) => {
-    // Generate task ID
-    const taskId = generateTaskId();
-
-    // Use session ID if available, otherwise generate a synthetic one for the task
-    const effectiveSessionId = session?.id ?? `no-session-${taskId}`;
     const sessionTitle = session?.title || worktree.branch;
 
-    // Add task to sidebar
-    addTask({
-      id: taskId,
-      sessionId: effectiveSessionId,
-      sessionTitle,
-      repositoryId,
-      worktreePath: worktree.path,
-    });
-
-    // Close the dialog
+    // Close the dialog immediately -- don't block on the network round trip
     setDeleteConfirmType(null);
 
     try {
-      // Call async API
-      await deleteWorktreeAsync(repositoryId, worktree.path, taskId, force);
+      // Call async API. The server generates and owns the job id -- task
+      // creation is keyed off the id it returns, not a client-generated one.
+      const { jobId } = await deleteWorktreeAsync(repositoryId, worktree.path, force);
+
+      // Use session ID if available, otherwise generate a synthetic one for the task
+      const effectiveSessionId = session?.id ?? `no-session-${jobId}`;
+
+      // Add task to sidebar
+      addTask({
+        id: jobId,
+        sessionId: effectiveSessionId,
+        sessionTitle,
+        repositoryId,
+        worktreePath: worktree.path,
+      });
+
       // Emit session-deleted locally for immediate UI update only after API succeeds
       if (session) {
         emitSessionDeleted(session.id);
       }
       // Further success/failure of the async operation will be handled via WebSocket events
     } catch (err) {
-      // If API call fails immediately (network error), mark task as failed
-      // Session remains visible in the UI since we did not emit session-deleted
+      // If the API call fails immediately (network error), no task was ever
+      // created. Session remains visible in the UI since we did not emit
+      // session-deleted. Reuse this component's existing error-dialog
+      // convention since there's no task id to attach the failure to.
       const message = err instanceof Error ? err.message : 'Failed to delete worktree';
-      markAsFailed(taskId, message);
+      showError('Delete Failed', message);
     }
   };
 

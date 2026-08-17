@@ -8,9 +8,10 @@ import {
   AlertDialogFooter,
   AlertDialogCancel,
 } from '../ui/alert-dialog';
+import { ErrorDialog, useErrorDialog } from '../ui/error-dialog';
 import { deleteWorktreeAsync } from '../../lib/api';
-import { generateTaskId } from '../../lib/id';
 import { useWorktreeDeletionTasksContext } from '../../routes/__root';
+import { logger } from '../../lib/logger';
 
 export interface DeleteWorktreeDialogProps {
   open: boolean;
@@ -30,68 +31,73 @@ export function DeleteWorktreeDialog({
   sessionTitle,
 }: DeleteWorktreeDialogProps) {
   const navigate = useNavigate();
-  const { addTask, markAsFailed } = useWorktreeDeletionTasksContext();
+  const { addTask } = useWorktreeDeletionTasksContext();
+  const { errorDialogProps, showError } = useErrorDialog();
 
   const handleDeleteWorktree = async (force: boolean = false) => {
-    // Generate task ID
-    const taskId = generateTaskId();
-
-    // Add task to sidebar with retry info
-    addTask({
-      id: taskId,
-      sessionId,
-      sessionTitle: sessionTitle || 'Worktree Session',
-      repositoryId,
-      worktreePath,
-    });
-
-    // Close dialog and navigate immediately
+    // Close dialog and navigate immediately -- UX stays snappy, not blocked
+    // on the network round trip. Session removal from the UI is handled by
+    // the WebSocket broadcast from the server (no optimistic update, to
+    // avoid a race condition / flicker).
     onOpenChange(false);
     navigate({ to: '/' });
 
-    // Session will be removed from UI when WebSocket broadcast arrives from server
-    // (no optimistic update to avoid race condition/flicker)
-
     try {
-      // Call async API
-      await deleteWorktreeAsync(repositoryId, worktreePath, taskId, force);
-      // Success will be handled via WebSocket
+      // Call async API. The server generates and owns the job id -- task
+      // creation is keyed off the id it returns, not a client-generated one.
+      const { jobId } = await deleteWorktreeAsync(repositoryId, worktreePath, force);
+      addTask({
+        id: jobId,
+        sessionId,
+        sessionTitle: sessionTitle || 'Worktree Session',
+        repositoryId,
+        worktreePath,
+      });
+      // Further progress is handled via WebSocket (or the recovery-read
+      // path on the task detail page).
     } catch (err) {
-      // If API call fails immediately (network error), mark task as failed
+      // No task was ever created, so there's nothing to mark as failed.
+      // This component navigates away immediately above, so a local error
+      // dialog may already be unmounted by the time this resolves; log as
+      // a fallback so the failure is never silently dropped.
       const message = err instanceof Error ? err.message : 'Failed to delete worktree';
-      markAsFailed(taskId, message);
+      logger.error('Failed to delete worktree:', err);
+      showError('Failed to Delete Worktree', message);
     }
   };
 
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle className="text-red-400">Delete Worktree</AlertDialogTitle>
-          <AlertDialogDescription asChild>
-            <div className="space-y-2">
-              <p>Are you sure you want to delete this worktree?</p>
-              <p className="text-xs text-gray-500">
-                This will permanently delete the worktree directory and all its contents.
-              </p>
-              <p className="text-xs text-red-400">
-                This action cannot be undone.
-              </p>
-            </div>
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>
-            Cancel
-          </AlertDialogCancel>
-          <button
-            onClick={() => handleDeleteWorktree(false)}
-            className="btn btn-danger"
-          >
-            Delete Worktree
-          </button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <>
+      <AlertDialog open={open} onOpenChange={onOpenChange}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle className="text-red-400">Delete Worktree</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="space-y-2">
+                <p>Are you sure you want to delete this worktree?</p>
+                <p className="text-xs text-gray-500">
+                  This will permanently delete the worktree directory and all its contents.
+                </p>
+                <p className="text-xs text-red-400">
+                  This action cannot be undone.
+                </p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>
+              Cancel
+            </AlertDialogCancel>
+            <button
+              onClick={() => handleDeleteWorktree(false)}
+              className="btn btn-danger"
+            >
+              Delete Worktree
+            </button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <ErrorDialog {...errorDialogProps} />
+    </>
   );
 }

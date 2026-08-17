@@ -1,10 +1,16 @@
+import { useEffect, useRef } from 'react';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
-import type { WorktreeDeletionTask } from '@agent-console/shared';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { JOB_STATUS } from '@agent-console/shared';
+import type { WorktreeDeletionStatus, HookCommandResult, Job } from '@agent-console/shared';
 import { AlertCircleIcon, CheckIcon } from '../../components/Icons';
 import { Spinner } from '../../components/ui/Spinner';
+import { PagePendingFallback } from '../../components/PagePendingFallback';
+import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { useWorktreeDeletionTasksContext } from '../__root';
-import { deleteWorktreeAsync } from '../../lib/api';
-import { generateTaskId } from '../../lib/id';
+import { useAppWsState } from '../../hooks/useAppWs';
+import { deleteWorktreeAsync, fetchJob, ApiError } from '../../lib/api';
+import { jobKeys } from '../../lib/query-keys';
 import { logger } from '../../lib/logger';
 
 export const Route = createFileRoute('/worktree-deletion-tasks/$taskId')({
@@ -12,84 +18,226 @@ export const Route = createFileRoute('/worktree-deletion-tasks/$taskId')({
 });
 
 /**
- * Hook to access and manage a worktree deletion task from context.
+ * Render-able subset of a worktree deletion task's state, sourced either
+ * from the live in-memory `WorktreeDeletionTasksContext` (the fast path --
+ * populated when this tab witnessed the deletion start) or derived from a
+ * `GET /api/jobs/:id` read (the recovery path -- used when the in-memory
+ * task is absent, e.g. after a reload, in another tab, or when the
+ * completion broadcast was missed).
+ *
+ * Structured result extras (`cleanupCommandResult`, `killErrors`,
+ * `gitStatus`) are broadcast-only and are not recoverable from the job
+ * record (an accepted cut, documented in the PR description) -- the
+ * derived path only ever sets `error`.
  */
-function useWorktreeDeletionTask(taskId: string): {
-  task: WorktreeDeletionTask | undefined;
-  removeTask: () => void;
-  forceDelete: () => Promise<void>;
-} {
-  const navigate = useNavigate();
-  const {
-    getTask,
-    removeTask: removeTaskFromContext,
-    addTask,
-    markAsFailed,
-  } = useWorktreeDeletionTasksContext();
+interface DeletionTaskView {
+  status: WorktreeDeletionStatus;
+  sessionTitle: string;
+  error?: string;
+  gitStatus?: string;
+  cleanupCommandResult?: HookCommandResult;
+  killErrors?: Array<{ sessionId: string; error: string }>;
+  createdAt: string;
+}
 
-  const task = getTask(taskId);
+/** Context needed to act on a task (force delete / dismiss) regardless of source. */
+interface DeletionTaskActionContext {
+  repositoryId: string;
+  worktreePath: string;
+  sessionId: string;
+  sessionTitle: string;
+}
+
+/**
+ * Derive a render-able view + action context from a fetched `Job` row.
+ * Returns `null` when the payload cannot be narrowed as a worktree-delete
+ * payload (a `JobPayloadParseError`, or an unexpected shape) -- callers
+ * treat that the same as "no usable record".
+ */
+function deriveFromJob(job: Job): { view: DeletionTaskView; action: Omit<DeletionTaskActionContext, 'sessionId'> } | null {
+  const payload = job.payload;
+  if (
+    typeof payload !== 'object' ||
+    payload === null ||
+    !('repoId' in payload) ||
+    !('worktreePath' in payload) ||
+    typeof payload.repoId !== 'string' ||
+    typeof payload.worktreePath !== 'string'
+  ) {
+    return null;
+  }
+
+  const { repoId: repositoryId, worktreePath } = payload;
+  const status: WorktreeDeletionStatus =
+    job.status === JOB_STATUS.COMPLETED
+      ? 'completed'
+      : job.status === JOB_STATUS.STALLED
+        ? 'failed'
+        : 'deleting';
+  const sessionTitle = worktreePath.split('/').filter(Boolean).pop() || worktreePath;
+
+  return {
+    view: {
+      status,
+      sessionTitle,
+      error: job.lastError ?? undefined,
+      createdAt: new Date(job.createdAt).toISOString(),
+    },
+    action: { repositoryId, worktreePath, sessionTitle },
+  };
+}
+
+function WorktreeDeletionTaskPage() {
+  const { taskId } = Route.useParams();
+  return <WorktreeDeletionTaskPageContent taskId={taskId} />;
+}
+
+/**
+ * @internal Exported for testing -- lets tests render the page's actual
+ * data-fetch + derivation logic with an explicit taskId, without needing to
+ * drive a matching TanStack Router route tree just to reach `Route.useParams()`.
+ */
+export function WorktreeDeletionTaskPageContent({ taskId }: { taskId: string }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { getTask, removeTask: removeTaskFromContext, addTask } = useWorktreeDeletionTasksContext();
+  const { errorDialogProps, showError } = useErrorDialog();
+
+  const liveTask = getTask(taskId);
+
+  // Recovery path: only fetch when there is no live in-memory task. The
+  // in-memory context (populated by this tab witnessing the deletion, or by
+  // a live WebSocket broadcast) is always preferred when present.
+  const jobQuery = useQuery({
+    queryKey: jobKeys.detail(taskId),
+    queryFn: () => fetchJob(taskId),
+    enabled: !liveTask,
+    retry: false,
+  });
+
+  // Re-derive the recovery-path read after an app-WS reconnect, in case the
+  // stale response was fetched while the job was still in flight. Skips the
+  // initial mount value: `everDisconnectedRef` only flips on an observed
+  // `connected -> false` transition, so the first render (whatever its
+  // initial `connected` value) never triggers an invalidate on its own.
+  const connected = useAppWsState((s) => s.connected);
+  const everDisconnectedRef = useRef(false);
+  useEffect(() => {
+    if (!liveTask) {
+      if (!connected) {
+        everDisconnectedRef.current = true;
+      } else if (everDisconnectedRef.current) {
+        everDisconnectedRef.current = false;
+        queryClient.invalidateQueries({ queryKey: jobKeys.detail(taskId) });
+      }
+    }
+  }, [connected, liveTask, queryClient, taskId]);
+
+  let view: DeletionTaskView | undefined;
+  let action: DeletionTaskActionContext | undefined;
+
+  if (liveTask) {
+    view = {
+      status: liveTask.status,
+      sessionTitle: liveTask.sessionTitle,
+      error: liveTask.error,
+      gitStatus: liveTask.gitStatus,
+      cleanupCommandResult: liveTask.cleanupCommandResult,
+      killErrors: liveTask.killErrors,
+      createdAt: liveTask.createdAt,
+    };
+    action = {
+      repositoryId: liveTask.repositoryId,
+      worktreePath: liveTask.worktreePath,
+      sessionId: liveTask.sessionId,
+      sessionTitle: liveTask.sessionTitle,
+    };
+  } else if (jobQuery.data) {
+    const derived = deriveFromJob(jobQuery.data);
+    if (derived) {
+      view = derived.view;
+      action = { ...derived.action, sessionId: `no-session-${taskId}` };
+    }
+  }
+
+  const forceDelete = async () => {
+    if (!action) return;
+    try {
+      const { jobId } = await deleteWorktreeAsync(action.repositoryId, action.worktreePath, true);
+      removeTaskFromContext(taskId);
+      addTask({
+        id: jobId,
+        sessionId: action.sessionId,
+        sessionTitle: action.sessionTitle,
+        repositoryId: action.repositoryId,
+        worktreePath: action.worktreePath,
+      });
+      navigate({ to: '/worktree-deletion-tasks/$taskId', params: { taskId: jobId } });
+    } catch (err) {
+      // Stay on the current page -- the old task record is still valid and
+      // no new one was created, so there's nothing to navigate to.
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      logger.error('Failed to force delete worktree:', err);
+      showError('Failed to Force Delete', message);
+    }
+  };
 
   const removeTask = () => {
     removeTaskFromContext(taskId);
     navigate({ to: '/' });
   };
 
-  const forceDelete = async () => {
-    if (!task) return;
-
-    // Generate a new task ID for the retry
-    const newTaskId = generateTaskId();
-
-    // Remove the failed task
-    removeTaskFromContext(taskId);
-
-    // Add a new task
-    addTask({
-      id: newTaskId,
-      sessionId: task.sessionId,
-      sessionTitle: task.sessionTitle,
-      repositoryId: task.repositoryId,
-      worktreePath: task.worktreePath,
-    });
-
-    // Navigate to the new task's detail page
-    navigate({ to: '/worktree-deletion-tasks/$taskId', params: { taskId: newTaskId } });
-
-    // Call the API with force=true
-    try {
-      await deleteWorktreeAsync(task.repositoryId, task.worktreePath, newTaskId, true);
-      // Success will be handled via WebSocket
-    } catch (error) {
-      // Update the new task to failed state
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      markAsFailed(newTaskId, errorMessage);
-      logger.error('Failed to force delete worktree:', error);
-    }
-  };
-
-  return { task, removeTask, forceDelete };
-}
-
-function WorktreeDeletionTaskPage() {
-  const { taskId } = Route.useParams();
-  const { task, removeTask, forceDelete } = useWorktreeDeletionTask(taskId);
-
-  if (!task) {
+  // Live task present, or a usable job-derived view: render the task detail.
+  if (view && action) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="card text-center max-w-md">
-          <h2 className="text-xl font-semibold mb-4">Task Not Found</h2>
-          <p className="text-gray-400 mb-6">
-            This task no longer exists or has been completed.
-          </p>
-          <Link to="/" className="btn btn-primary no-underline">
-            Go to Dashboard
-          </Link>
-        </div>
-      </div>
+      <TaskDetail
+        view={view}
+        onForceDelete={forceDelete}
+        onDismiss={removeTask}
+        errorDialogProps={errorDialogProps}
+      />
     );
   }
 
+  // No live task, and the recovery fetch is still in flight.
+  if (!liveTask && jobQuery.isPending) {
+    return <PagePendingFallback message="Checking task status..." />;
+  }
+
+  // No live task, and the recovery fetch failed with a genuine "no record"
+  // (404) or resolved to a job whose payload could not be parsed as a
+  // worktree-delete payload. Honest copy only -- never imply completion,
+  // since the client cannot know that from an absent record.
+  const is404 = jobQuery.error instanceof ApiError && jobQuery.error.status === 404;
+  const isGenericError = jobQuery.isError && !is404;
+
+  return (
+    <div className="flex-1 flex items-center justify-center">
+      <div className="card text-center max-w-md">
+        <h2 className="text-xl font-semibold mb-4">
+          {isGenericError ? 'Unable to Check Task Status' : 'No Record of This Task'}
+        </h2>
+        <p className="text-gray-400 mb-6">
+          {isGenericError
+            ? 'Something went wrong while checking this task. Try reloading the page.'
+            : 'No record of this task. It may be an old or invalid link.'}
+        </p>
+        <Link to="/" className="btn btn-primary no-underline">
+          Go to Dashboard
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+interface TaskDetailProps {
+  view: DeletionTaskView;
+  onForceDelete: () => void;
+  onDismiss: () => void;
+  errorDialogProps: ReturnType<typeof useErrorDialog>['errorDialogProps'];
+}
+
+function TaskDetail({ view: task, onForceDelete, onDismiss, errorDialogProps }: TaskDetailProps) {
   const isFailed = task.status === 'failed';
   const isDeleting = task.status === 'deleting';
   const isCompleted = task.status === 'completed';
@@ -208,12 +356,12 @@ function WorktreeDeletionTaskPage() {
         {/* Actions */}
         <div className="flex gap-3">
           {isFailed && (
-            <button onClick={forceDelete} className="btn btn-danger text-sm">
+            <button onClick={onForceDelete} className="btn btn-danger text-sm">
               Force Delete
             </button>
           )}
           <button
-            onClick={removeTask}
+            onClick={onDismiss}
             className={`btn text-sm ${
               isCompleted ? 'btn-primary' : 'bg-slate-600 hover:bg-slate-500'
             }`}
@@ -223,6 +371,8 @@ function WorktreeDeletionTaskPage() {
           </button>
         </div>
       </div>
+
+      <ErrorDialog {...errorDialogProps} />
     </div>
   );
 }

@@ -8,6 +8,7 @@ import type {
   AgentDefinition,
   Worker,
   HookCommandResult,
+  WorktreeDeletePayload,
 } from '@agent-console/shared';
 import { setupMemfs, cleanupMemfs, createMockGitRepoFiles } from './utils/mock-fs-helper.js';
 import { mockProcess, resetProcessMock } from './utils/mock-process-helper.js';
@@ -87,11 +88,13 @@ import { createSessionRepository } from '../repositories/index.js';
 import { AgentManager } from '../services/agent-manager.js';
 import { SqliteAgentRepository } from '../repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../database/connection.js';
-import { JobQueue } from '../jobs/job-queue.js';
+import { JobQueue, type JobHandler } from '../jobs/job-queue.js';
 import { registerJobHandlers } from '../jobs/handlers.js';
+import { registerWorktreeDeleteJobHandler } from '../jobs/worktree-delete-job-handler.js';
 import { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { SystemCapabilitiesService } from '../services/system-capabilities-service.js';
 import { WorktreeService } from '../services/worktree-service.js';
+import { getCurrentBranch } from '../lib/git.js';
 import type { AppBindings } from '../app-context.js';
 import { asAppContext, TEST_AUTH_USER, ensureTestAuthUser, mockOpen } from './test-utils.js';
 import { SingleUserMode } from '../services/user-mode.js';
@@ -1866,6 +1869,51 @@ describe('API Routes Integration', () => {
         return { worktreePath };
       }
 
+      /**
+       * Fetch the single enqueued `worktree:delete` job's payload and run it
+       * through the REAL `registerWorktreeDeleteJobHandler` handler (not a
+       * re-implementation) -- same harness shape as
+       * `jobs/__tests__/handlers.test.ts` and
+       * `routes/__tests__/worktrees.test.ts`. `testJobQueue` is never
+       * `.start()`ed in this file's `beforeEach`, so the enqueued job stays
+       * `pending` until driven explicitly here -- deterministic, no timer
+       * race (Issue #1327).
+       */
+      async function driveEnqueuedWorktreeDeleteJob(): Promise<void> {
+        const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
+        expect(jobs.length).toBeGreaterThan(0);
+        const payload = JSON.parse(jobs[0]!.payload) as WorktreeDeletePayload;
+
+        const handlers = new Map<string, JobHandler<unknown>>();
+        const fakeQueue = {
+          registerHandler: <T>(type: string, handler: JobHandler<T>) => {
+            handlers.set(type, handler as JobHandler<unknown>);
+          },
+        } as unknown as JobQueue;
+
+        registerWorktreeDeleteJobHandler(fakeQueue, {
+          deletionDeps: {
+            worktreeService: new WorktreeService({ db: getDatabase() }),
+            sessionManager: testSessionManager!,
+            repositoryManager: testRepositoryManager!,
+            findOpenPullRequest: mockFindOpenPullRequest,
+            getCurrentBranch,
+          },
+          broadcastToApp: mockBroadcastToApp,
+        });
+
+        const handler = handlers.get('worktree:delete')!;
+        // Mirror the real JobQueue's `processJob`: a handler throw (failure
+        // path) is caught and turned into a stalled job with `last_error`
+        // set, not an unhandled rejection. Tests assert on the broadcast,
+        // not on this promise's rejection.
+        try {
+          await handler(payload);
+        } catch {
+          // Expected on the failure path -- see comment above.
+        }
+      }
+
       it('should delete worktree without cleanupCommandResult when no cleanup command is configured', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
@@ -1960,7 +2008,7 @@ describe('API Routes Integration', () => {
         }
       });
 
-      it('should execute cleanup command in async deletion path (with taskId)', async () => {
+      it('should execute cleanup command in async deletion path (?async=true)', async () => {
         const app = await createApp();
         const { repo, repoPath } = await registerTestRepo(app);
 
@@ -1981,17 +2029,18 @@ describe('API Routes Integration', () => {
         try {
           const encodedPath = encodeURIComponent(worktreePath);
           const res = await app.request(
-            `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-task-id&force=true`,
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true&force=true`,
             { method: 'DELETE' }
           );
 
-          // Async path returns 202 Accepted immediately
+          // Async path returns 202 Accepted immediately with a server-generated jobId
           expect(res.status).toBe(202);
-          const body = (await res.json()) as { accepted: boolean };
+          const body = (await res.json()) as { accepted: boolean; jobId: string };
           expect(body.accepted).toBe(true);
+          expect(typeof body.jobId).toBe('string');
 
-          // Wait for the background async operation to complete
-          await new Promise((resolve) => setTimeout(resolve, 200));
+          // Drive the enqueued job deterministically (no background timer).
+          await driveEnqueuedWorktreeDeleteJob();
 
           // Verify the cleanup command was executed via Bun.spawn
           expect(bunSpawnCalls.length).toBe(1);
@@ -2099,16 +2148,16 @@ describe('API Routes Integration', () => {
           return originalDeleteSession(id);
         });
 
-        // Delete worktree via async path (with taskId)
+        // Delete worktree via async path (?async=true)
         const encodedPath = encodeURIComponent(worktreePath);
         const res = await app.request(
-          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-order-task&force=true`,
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true&force=true`,
           { method: 'DELETE' }
         );
         expect(res.status).toBe(202);
 
-        // Wait for background operation to complete
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Drive the enqueued job deterministically (no background timer).
+        await driveEnqueuedWorktreeDeleteJob();
 
         // Verify exact 3-step order: killSessionWorkers -> removeWorktree -> deleteSession
         expect(operationOrder).toEqual(['killSessionWorkers', 'removeWorktree', 'deleteSession']);
@@ -2204,18 +2253,19 @@ describe('API Routes Integration', () => {
         // Spy on deleteSession to verify it is NOT called
         const deleteSpy = spyOn(testSessionManager!, 'deleteSession');
 
-        // Delete worktree via async path (with taskId)
+        // Delete worktree via async path (?async=true)
         const encodedPath = encodeURIComponent(worktreePath);
         const res = await app.request(
-          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-fail-task&force=true`,
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true&force=true`,
           { method: 'DELETE' }
         );
 
-        // Async path returns 202 immediately
+        // Async path returns 202 immediately with a server-generated jobId
         expect(res.status).toBe(202);
+        const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
-        // Wait for background operation to complete
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Drive the enqueued job deterministically (no background timer).
+        await driveEnqueuedWorktreeDeleteJob();
 
         // Workers were killed (to release directory handles)
         expect(killSpy).toHaveBeenCalled();
@@ -2228,7 +2278,7 @@ describe('API Routes Integration', () => {
         const failedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
-            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-fail-task';
+            return message.type === 'worktree-deletion-failed' && message.taskId === jobId;
           }
         );
         expect(failedCalls.length).toBe(1);
@@ -2274,16 +2324,17 @@ describe('API Routes Integration', () => {
         expect(sessionRes2.status).toBe(201);
         const { session: session2 } = (await sessionRes2.json()) as { session: Session };
 
-        // Delete worktree via async path (with taskId)
+        // Delete worktree via async path (?async=true)
         const encodedPath = encodeURIComponent(worktreePath);
         const res = await app.request(
-          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-broadcast-all&force=true`,
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true&force=true`,
           { method: 'DELETE' }
         );
         expect(res.status).toBe(202);
+        const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
-        // Wait for background operation to complete
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Drive the enqueued job deterministically (no background timer).
+        await driveEnqueuedWorktreeDeleteJob();
 
         // Verify broadcastToApp was called exactly once with worktree-deletion-completed,
         // and the payload contains ALL deleted session IDs.
@@ -2291,7 +2342,7 @@ describe('API Routes Integration', () => {
         const completedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
-            return message.type === 'worktree-deletion-completed' && message.taskId === 'test-broadcast-all';
+            return message.type === 'worktree-deletion-completed' && message.taskId === jobId;
           }
         );
         expect(completedCalls.length).toBe(1);
@@ -2309,16 +2360,17 @@ describe('API Routes Integration', () => {
 
         // Do NOT create any sessions for this worktree path
 
-        // Delete worktree via async path (with taskId)
+        // Delete worktree via async path (?async=true)
         const encodedPath = encodeURIComponent(worktreePath);
         const res = await app.request(
-          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-no-sessions&force=true`,
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true&force=true`,
           { method: 'DELETE' }
         );
         expect(res.status).toBe(202);
+        const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
-        // Wait for background operation to complete
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Drive the enqueued job deterministically (no background timer).
+        await driveEnqueuedWorktreeDeleteJob();
 
         // Verify broadcastToApp WAS called exactly once with worktree-deletion-completed
         // and sessionIds is an empty array (one-broadcast-per-task contract).
@@ -2326,7 +2378,7 @@ describe('API Routes Integration', () => {
         const completedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
-            return message.type === 'worktree-deletion-completed' && message.taskId === 'test-no-sessions';
+            return message.type === 'worktree-deletion-completed' && message.taskId === jobId;
           }
         );
         expect(completedCalls.length).toBe(1);
@@ -2371,16 +2423,17 @@ describe('API Routes Integration', () => {
           new GitError('worktree has uncommitted changes', 1, 'worktree has uncommitted changes')
         );
 
-        // Delete worktree via async path (with taskId)
+        // Delete worktree via async path (?async=true)
         const encodedPath = encodeURIComponent(worktreePath);
         const res = await app.request(
-          `/api/repositories/${repo.id}/worktrees/${encodedPath}?taskId=test-fail-broadcast-all&force=true`,
+          `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true&force=true`,
           { method: 'DELETE' }
         );
         expect(res.status).toBe(202);
+        const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
-        // Wait for background operation to complete
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Drive the enqueued job deterministically (no background timer).
+        await driveEnqueuedWorktreeDeleteJob();
 
         // Verify broadcastToApp was called exactly once with worktree-deletion-failed,
         // and the payload contains ALL associated session IDs.
@@ -2388,7 +2441,7 @@ describe('API Routes Integration', () => {
         const failedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
-            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-fail-broadcast-all';
+            return message.type === 'worktree-deletion-failed' && message.taskId === jobId;
           }
         );
         expect(failedCalls.length).toBe(1);
@@ -2486,15 +2539,16 @@ describe('API Routes Integration', () => {
         const worktreePath = `${TEST_CONFIG_DIR}/repositories/orphan-repo/worktrees/wt-1`;
 
         const res = await app.request(
-          `/api/repositories/${missingRepoId}/worktrees/${encodeURIComponent(worktreePath)}?taskId=test-orphan-repo&force=true`,
+          `/api/repositories/${missingRepoId}/worktrees/${encodeURIComponent(worktreePath)}?async=true&force=true`,
           { method: 'DELETE' }
         );
 
         // Async path returns 202 Accepted immediately, even when the repo is missing.
         expect(res.status).toBe(202);
+        const { jobId } = (await res.json()) as { accepted: boolean; jobId: string };
 
-        // Wait for background operation to complete
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        // Drive the enqueued job deterministically (no background timer).
+        await driveEnqueuedWorktreeDeleteJob();
 
         const broadcastSpy = mockBroadcastToApp;
 
@@ -2502,7 +2556,7 @@ describe('API Routes Integration', () => {
         const completedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
-            return message.type === 'worktree-deletion-completed' && message.taskId === 'test-orphan-repo';
+            return message.type === 'worktree-deletion-completed' && message.taskId === jobId;
           }
         );
         expect(completedCalls.length).toBe(1);
@@ -2513,10 +2567,58 @@ describe('API Routes Integration', () => {
         const failedCalls = broadcastSpy.mock.calls.filter(
           (call: unknown[]) => {
             const message = call[0] as { type: string; taskId?: string };
-            return message.type === 'worktree-deletion-failed' && message.taskId === 'test-orphan-repo';
+            return message.type === 'worktree-deletion-failed' && message.taskId === jobId;
           }
         );
         expect(failedCalls.length).toBe(0);
+      });
+
+      it('should return 409 when deletion already in progress in async mode and must not enqueue a job (Issue #1327)', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
+
+        const { _getDeletionsInProgress } = await import('../routes/worktrees.js');
+        const deletionsInProgress = _getDeletionsInProgress();
+        deletionsInProgress.add(worktreePath);
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true`,
+            { method: 'DELETE' }
+          );
+
+          expect(res.status).toBe(409);
+          const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
+          expect(jobs.length).toBe(0);
+        } finally {
+          deletionsInProgress.clear();
+        }
+      });
+
+      it('should return 409 when pull is in progress in async mode and must not enqueue a job (Issue #1327)', async () => {
+        const app = await createApp();
+        const { repo } = await registerTestRepo(app);
+        const worktreePath = `${TEST_CONFIG_DIR}/repositories/owner/test-repo/worktrees/feature-1`;
+
+        const { _getPullsInProgress } = await import('../routes/worktrees.js');
+        const pullsInProgress = _getPullsInProgress();
+        pullsInProgress.add(worktreePath);
+
+        try {
+          const encodedPath = encodeURIComponent(worktreePath);
+          const res = await app.request(
+            `/api/repositories/${repo.id}/worktrees/${encodedPath}?async=true`,
+            { method: 'DELETE' }
+          );
+
+          expect(res.status).toBe(409);
+          const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
+          expect(jobs.length).toBe(0);
+        } finally {
+          pullsInProgress.clear();
+        }
       });
     });
 

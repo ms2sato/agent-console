@@ -3,6 +3,7 @@ import { resolve as resolvePath, sep as pathSep } from 'node:path';
 import { stat } from 'node:fs/promises';
 import type {
   BranchNameFallback,
+  WorktreeDeletePayload,
 } from '@agent-console/shared';
 import { CreateWorktreeRequestSchema, PullWorktreeRequestSchema } from '@agent-console/shared';
 import type { AppBindings } from '../app-context.js';
@@ -12,6 +13,7 @@ import { InternalError, NotFoundError, ValidationError } from '../lib/errors.js'
 import { vValidator } from '../middleware/validation.js';
 import { getCurrentBranch, isWorkingDirectoryClean, pullFastForward } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
+import { JOB_TYPES } from '../jobs/index.js';
 import {
   _getDeletionsInProgress,
   isDeletionInProgress,
@@ -358,7 +360,7 @@ const worktrees = new Hono<AppBindings>()
   // Optionally accepts taskId query parameter for async WebSocket notification
   .delete('/:id/worktrees/*', async (c) => {
     const repoId = c.req.param('id');
-    const { repositoryManager, sessionManager, worktreeService, broadcastToApp, findOpenPullRequest } = c.get('appContext');
+    const { repositoryManager, sessionManager, worktreeService, jobQueue, findOpenPullRequest } = c.get('appContext');
     // Thread the authenticated OS username down to the deletion service so
     // multi-user installs (a) delete the worktree as the worktree-owning
     // user — fixing the `Permission denied` failure when `agentconsole`
@@ -386,12 +388,13 @@ const worktrees = new Hono<AppBindings>()
     }
 
     const force = c.req.query('force') === 'true';
-    const taskId = c.req.query('taskId');
+    const asyncMode = c.req.query('async') === 'true';
 
     // Pre-check concurrency guard before branching into async/sync paths.
     // The service also acquires the guard internally (defense in depth),
     // but this check preserves the original behavior of returning HTTP 409
-    // for the async path instead of accepting and then broadcasting failure.
+    // for the async path instead of accepting and then enqueuing a job that
+    // would fail anyway.
     if (isDeletionInProgress(worktreePath)) {
       return c.json({ error: 'Deletion already in progress' }, 409);
     }
@@ -399,55 +402,17 @@ const worktrees = new Hono<AppBindings>()
     const deletionDeps = { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch };
     const requestUsername = authUser.username;
 
-    // If taskId is provided, handle deletion asynchronously
-    if (taskId) {
-      // Execute deletion in background (fire-and-forget)
-      (async () => {
-        try {
-          const result = await deleteWorktree({ repoId, worktreePath, force, requestUsername }, deletionDeps);
-          const sessionIds = result.sessionIds ?? [];
-
-          if (!result.success) {
-            broadcastToApp({
-              type: 'worktree-deletion-failed',
-              taskId,
-              sessionIds,
-              error: result.error || 'Failed to remove worktree',
-              gitStatus: result.gitStatus,
-            });
-            logger.error({ taskId, repoId, worktreePath, error: result.error }, 'Worktree deletion failed');
-            return;
-          }
-
-          broadcastToApp({
-            type: 'worktree-deletion-completed',
-            taskId,
-            sessionIds,
-            cleanupCommandResult: result.cleanupCommandResult,
-            killErrors: result.killErrors,
-          });
-          logger.info({ taskId, repoId, worktreePath, sessionIds }, 'Worktree and session deletion completed');
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error during worktree deletion';
-          logger.error({ taskId, repoId, worktreePath, error: errorMessage }, 'Worktree deletion failed');
-
-          try {
-            broadcastToApp({
-              type: 'worktree-deletion-failed',
-              taskId,
-              sessionIds: [],
-              error: errorMessage,
-            });
-          } catch {
-            // If broadcast fails, we've already logged the error above
-          }
-        }
-      })().catch((err) => {
-        logger.error({ err, taskId, repoId, worktreePath }, 'Unhandled error in worktree deletion');
-      });
-
-      // Return accepted immediately (do not wait for deletion)
-      return c.json({ accepted: true }, 202);
+    // Async mode: enqueue a durable job instead of running fire-and-forget.
+    // GET /api/jobs/:id becomes the recovery path for a client that
+    // reloads, misses the broadcast, or opens the task in another tab.
+    // maxAttempts: 1 -- deletion must not be silently retried: force
+    // semantics, the open-PR check, and a watching user all make a silent
+    // second attempt wrong.
+    if (asyncMode) {
+      const jobId = crypto.randomUUID();
+      const payload: WorktreeDeletePayload = { jobId, repoId, worktreePath, force, requestUsername };
+      await jobQueue.enqueue(JOB_TYPES.WORKTREE_DELETE, payload, { jobId, maxAttempts: 1 });
+      return c.json({ accepted: true, jobId }, 202);
     }
 
     // Synchronous deletion (backward compatible)

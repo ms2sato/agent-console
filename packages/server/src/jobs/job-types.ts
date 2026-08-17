@@ -11,5 +11,6 @@ export {
   type CleanupSessionOutputsPayload,
   type CleanupWorkerOutputPayload,
   type CleanupRepositoryPayload,
+  type WorktreeDeletePayload,
   type InboundEventJobPayload,
 } from '@agent-console/shared';
