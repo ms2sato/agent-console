@@ -78,6 +78,22 @@ describe('copyToClipboard', () => {
     }
   });
 
+  it('falls back to document.execCommand("copy") when writeText rejects', async () => {
+    const writeTextMock = mock(() => Promise.reject(new Error('Clipboard denied')));
+    installClipboard(writeTextMock);
+    installSecureContext(true);
+    const execCommandMock = installExecCommand(true);
+    try {
+      await expect(copyToClipboard('fallback text')).resolves.toBeUndefined();
+      expect(writeTextMock).toHaveBeenCalledWith('fallback text');
+      expect(execCommandMock).toHaveBeenCalledWith('copy');
+    } finally {
+      restoreClipboard();
+      restoreSecureContext();
+      restoreExecCommand();
+    }
+  });
+
   it('falls back to document.execCommand("copy") when navigator.clipboard is unavailable (non-secure context)', async () => {
     installUndefinedClipboard();
     installSecureContext(false);

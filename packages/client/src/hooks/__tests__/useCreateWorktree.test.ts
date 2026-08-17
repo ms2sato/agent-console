@@ -11,8 +11,8 @@ import type { CreateWorktreeFormRequest } from '../../components/worktrees/Creat
 // WorktreeCreationTasksContext.Provider instead of `mock.module`-ing routes/__root --
 // mock.module is process-global in bun:test and would poison every other test file
 // that real-imports routes/__root in the same process (testing.md Anti-Pattern #2).
-const mockAddTask = mock(() => {});
-const mockRemoveTask = mock(() => {});
+const mockAddTask = mock<UseWorktreeCreationTasksReturn['addTask']>(() => {});
+const mockRemoveTask = mock<UseWorktreeCreationTasksReturn['removeTask']>(() => {});
 
 function createWrapper(): ({ children }: { children: ReactNode }) => ReactNode {
   const contextValue: UseWorktreeCreationTasksReturn = {
@@ -73,12 +73,7 @@ describe('useCreateWorktree', () => {
 
     // addTask should be called once with repository info and a generated taskId
     expect(mockAddTask).toHaveBeenCalledTimes(1);
-    const addTaskArg = (mockAddTask.mock.calls as unknown as Array<[{
-      id: string;
-      repositoryId: string;
-      repositoryName: string;
-      request: Record<string, unknown>;
-    }]>)[0][0];
+    const addTaskArg = mockAddTask.mock.calls[0][0];
     expect(addTaskArg.repositoryId).toBe('repo-1');
     expect(addTaskArg.repositoryName).toBe('Test Repository');
     expect(typeof addTaskArg.id).toBe('string');
@@ -121,8 +116,8 @@ describe('useCreateWorktree', () => {
 
     // removeTask should be called with the same taskId that was passed to addTask
     expect(mockRemoveTask).toHaveBeenCalledTimes(1);
-    const addTaskId = ((mockAddTask.mock.calls as unknown as Array<[{ id: string }]>)[0][0]).id;
-    expect((mockRemoveTask.mock.calls as unknown as Array<[string]>)[0][0]).toBe(addTaskId);
+    const addTaskId = mockAddTask.mock.calls[0][0].id;
+    expect(mockRemoveTask.mock.calls[0][0]).toBe(addTaskId);
 
     // Error should be set
     expect(result.current.error).toBeTruthy();
@@ -168,7 +163,7 @@ describe('useCreateWorktree', () => {
       });
 
       expect(mockAddTask).toHaveBeenCalledTimes(1);
-      const addTaskArg = (mockAddTask.mock.calls as unknown as Array<[{ id: string }]>)[0][0];
+      const addTaskArg = mockAddTask.mock.calls[0][0];
       expect(typeof addTaskArg.id).toBe('string');
       expect(addTaskArg.id.length).toBeGreaterThan(0);
     } finally {
