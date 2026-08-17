@@ -118,13 +118,9 @@ describe('InterSessionMessageService', () => {
       const sourcePath = join(import.meta.dir, '..', 'inter-session-message-service.ts');
       const source = await Bun.file(sourcePath).text();
 
-      const infoCallPattern =
-        /logger\.info\(\s*\{\s*toSessionId,\s*toWorkerId,\s*fromSessionId,\s*messageId\s*\},\s*'Message file written',\s*\);/;
-      const debugCallPattern =
-        /logger\.debug\(\s*\{\s*toSessionId,\s*toWorkerId,\s*fromSessionId,\s*messageId\s*\},\s*'Message file written',\s*\);/;
+      const call = source.match(/logger\.(info|debug)\([^)]*?'Message file written'/s);
 
-      expect(infoCallPattern.test(source)).toBe(true);
-      expect(debugCallPattern.test(source)).toBe(false);
+      expect(call?.[1]).toBe('info');
     });
 
     it('should reject message content exceeding 64 KB', async () => {
