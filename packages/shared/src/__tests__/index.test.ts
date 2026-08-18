@@ -143,6 +143,35 @@ describe('shared index exports', () => {
     expect(accepted.success).toBe(true);
   });
 
+  it('should export NotificationItem type and the NotificationItemSchema/NotificationsResponseSchema runtime schemas', async () => {
+    const mod = await import('../index.js');
+
+    // NotificationItem is a type-only export (Notification Center Phase 1,
+    // Issue #1353) -- verify the module loads successfully.
+    expect(mod).toBeDefined();
+
+    // NotificationItemSchema / NotificationsResponseSchema are real runtime
+    // values, re-exported transitively via `export * from './schemas/index.js'`
+    // in the same barrel -- verify they are actually present and parse a
+    // well-formed payload.
+    expect(mod.NotificationItemSchema).toBeDefined();
+    expect(mod.NotificationsResponseSchema).toBeDefined();
+
+    const item = {
+      kind: 'artifact-created',
+      id: 'artifact-1',
+      occurredAt: '2026-08-18T00:00:00.000Z',
+      title: 'My Dashboard',
+      link: '/artifacts/artifact-1',
+    };
+    const accepted = v.safeParse(mod.NotificationsResponseSchema, {
+      items: [item],
+      lastSeenAt: null,
+      unreadCount: 1,
+    });
+    expect(accepted.success).toBe(true);
+  });
+
   it('should export ConditionalWakeupInfo type', async () => {
     const mod = await import('../index.js');
 
