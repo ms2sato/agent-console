@@ -63,7 +63,18 @@ function isWorktreeDeletePayload(payload: unknown): payload is WorktreeDeletePay
 }
 
 async function composeWorktreeDeletionFinished(identity: FeedIdentity, deps: NotificationServiceDeps): Promise<NotificationItem[]> {
-  const jobs = await deps.jobs.getJobs({ type: JOB_TYPES.WORKTREE_DELETE, limit: PER_SOURCE_FETCH_LIMIT });
+  // R-3 fix: unlike the artifact composer's `findByUserId` (already
+  // user-scoped, so PER_SOURCE_FETCH_LIMIT-slicing afterward is safe), the
+  // job queue has NO per-user scoping -- `getJobs` returns the N most recent
+  // jobs of this type ACROSS ALL USERS. Fetching by type with a tight limit
+  // and filtering by username afterward would evict the caller's own
+  // (possibly older) job from the fetch window before the username filter
+  // ever runs, once other users collectively produced more than the limit's
+  // worth of more-recent worktree:delete jobs. worktree:delete is a
+  // low-frequency job type, so fetching without a limit is acceptable in v1;
+  // the final FEED_CAP slice in getFeed (applied AFTER merge+sort across all
+  // sources) is what bounds the response size, not this fetch.
+  const jobs = await deps.jobs.getJobs({ type: JOB_TYPES.WORKTREE_DELETE });
   const items: NotificationItem[] = [];
 
   for (const job of jobs) {
@@ -82,9 +93,12 @@ async function composeWorktreeDeletionFinished(identity: FeedIdentity, deps: Not
       continue;
     }
 
-    // R3: deletion jobs filter by username (requestUsername is an
-    // attribution proxy, not a durable identity — see PR body residual
-    // note). null requestUsername matches nobody (legacy/edge rows).
+    // R3: deletion jobs filter by username. requestUsername is an
+    // attribution PROXY -- it exists for privilege elevation, not identity
+    // attribution. The durable fix (future job payloads carrying the
+    // initiating users.id) triggers when a THIRD username-keyed source
+    // appears, or any username-remapping feature lands. null requestUsername
+    // matches nobody (legacy/edge rows).
     if (payload.requestUsername === null || payload.requestUsername !== identity.username) continue;
 
     const occurredAtMs = job.completed_at ?? job.started_at ?? job.created_at;

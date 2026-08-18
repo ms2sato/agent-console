@@ -110,6 +110,19 @@ function buildService(overrides: {
 // N1 containment
 // ---------------------------------------------------------------------------
 
+// R-1: a compile-time-only assertion pinning `keyof NotificationServiceDeps`
+// to EXACTLY this key union. A runtime `Object.keys` check on one constructed
+// test object (below) only catches a member that is both added to the
+// interface AND omitted from that one object -- it says nothing about a new
+// OPTIONAL member (e.g. `broadcastToApp?: () => void`), which type-checks and
+// runs fine without ever being provided (optional members still appear in
+// `keyof`, so they still widen this union and still fail the cast below).
+type AssertExactKeys<T, K extends string> = [K] extends [keyof T]
+  ? [keyof T] extends [K]
+    ? true
+    : false
+  : false;
+
 describe('NotificationServiceDeps shape (N1 containment)', () => {
   it('has EXACTLY the three read-only members -- no broadcast/WS/event key can sneak in', () => {
     const deps: NotificationServiceDeps = {
@@ -118,6 +131,13 @@ describe('NotificationServiceDeps shape (N1 containment)', () => {
       cursorRepository: makeCursorRepo(),
     };
     expect(Object.keys(deps).sort()).toEqual(['artifactRepository', 'cursorRepository', 'jobs']);
+
+    // Compile-time-only: if NotificationServiceDeps gains or loses a key
+    // (required or optional), AssertExactKeys resolves to `false` and this
+    // cast fails TYPECHECK (TS2352), not just the runtime assertion above.
+    expect(
+      true as AssertExactKeys<NotificationServiceDeps, 'artifactRepository' | 'cursorRepository' | 'jobs'>
+    ).toBe(true);
   });
 });
 
@@ -319,6 +339,28 @@ describe('NotificationService.getFeed', () => {
       const result = await service.getFeed(IDENTITY);
       expect(result.items).toHaveLength(1);
       expect(result.items[0]?.id).toBe('job-1');
+    });
+
+    it("R-3 fix: caller's own job is not evicted by a fetch-window limit when 51+ OTHER users' newer jobs exist", async () => {
+      // 51 jobs belonging to a DIFFERENT user, all newer (higher completed_at)
+      // than the caller's own job below. In multi-user mode the job queue has
+      // no per-user scoping, so a tight pre-filter fetch limit would evict the
+      // caller's own row before the username filter ever runs.
+      const otherUsersJobs: JobRecord[] = Array.from({ length: 51 }, (_, i) =>
+        makeWorktreeDeleteJob({
+          id: `other-job-${i}`,
+          requestUsername: 'bob',
+          completed_at: 100_000 + i, // all newer than the caller's job below
+        })
+      );
+      const ownJob = makeWorktreeDeleteJob({
+        id: 'own-job',
+        requestUsername: 'alice',
+        completed_at: 1, // older than all 51 of bob's jobs
+      });
+      const service = buildService({ jobs: [...otherUsersJobs, ownJob] });
+      const result = await service.getFeed(IDENTITY);
+      expect(result.items.some((i) => i.id === 'own-job')).toBe(true);
     });
   });
 
