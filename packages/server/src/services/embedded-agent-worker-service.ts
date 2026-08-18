@@ -33,6 +33,7 @@ import {
   type EmbeddedAgentDefinition,
   type EmbeddedAgentCommand,
   type EmbeddedAgentServerEvent,
+  type EmbeddedAgentServerNotification,
   type EmbeddedAgentRestoredMessage,
   type AgentActivityState,
   type ExitReason,
@@ -46,6 +47,12 @@ import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
 import { loadProviderKey, ProviderKeyStoreError, PROVIDER_KEY_STORE_UI_MESSAGES } from './provider-key-store.js';
+import {
+  buildPtyNotificationText,
+  buildReplyInstructions,
+  extractNotificationSummary,
+  type PtyNotificationParams,
+} from '../lib/pty-notification.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
 import * as path from 'node:path';
@@ -663,6 +670,47 @@ export class EmbeddedAgentWorkerService {
     text: string,
     clientMessageId?: string,
   ): Promise<SendUserMessageResult> {
+    return this.deliverUserTurn(sessionId, workerId, text, { clientMessageId });
+  }
+
+  /**
+   * Deliver a system-originated internal notification to the loop as an
+   * ordinary user turn, but persist it with a `notification` marker so the
+   * client can render it distinctly from a real
+   * human/API-caller message. `params` is the structured PTY-notification
+   * params type -- composition (buildPtyNotificationText, and
+   * buildReplyInstructions when `opts.replyToSessionId` is set) happens
+   * internally; callers never hand over a pre-composed string. See
+   * SessionManager.sendEmbeddedAgentSystemNotification.
+   */
+  async sendSystemNotification(
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts: { replyToSessionId?: string } = {},
+  ): Promise<SendUserMessageResult> {
+    const text =
+      buildPtyNotificationText(params) +
+      (opts.replyToSessionId !== undefined ? buildReplyInstructions(opts.replyToSessionId) : '');
+    const summary = extractNotificationSummary(params);
+    return this.deliverUserTurn(sessionId, workerId, text, {
+      notification: { kind: params.kind, ...(summary !== undefined ? { summary } : {}) },
+    });
+  }
+
+  /**
+   * Shared admission/write/append logic for both `sendUserMessage` and
+   * `sendSystemNotification` (a pure extraction -- no behavior change to the
+   * pre-existing sendUserMessage path). Admission is
+   * a SYNCHRONOUS check-and-set (before any await) so two concurrent callers
+   * cannot double-admit.
+   */
+  private async deliverUserTurn(
+    sessionId: string,
+    workerId: string,
+    text: string,
+    opts: { clientMessageId?: string; notification?: EmbeddedAgentServerNotification } = {},
+  ): Promise<SendUserMessageResult> {
     const session = this.deps.getSession(sessionId);
     const worker = session?.workers.get(workerId);
     const runtime = this.runtimes.get(workerId);
@@ -687,17 +735,19 @@ export class EmbeddedAgentWorkerService {
 
     const id = crypto.randomUUID();
     // Two separate objects: `command` (stdin, loop protocol -- unchanged
-    // shape) and `event` (persisted stream, may carry `clientMessageId`).
-    // The loop protocol is correlation-agnostic; only the persisted/broadcast
-    // event carries the client's correlation id. Do NOT reuse one object for
-    // both -- see docs/design/embedded-agent-worker.md.
+    // shape) and `event` (persisted stream, may carry `clientMessageId` /
+    // `notification`). The loop protocol is correlation-agnostic; only the
+    // persisted/broadcast event carries the client's correlation id or the
+    // notification marker. Do NOT reuse one object for both -- see
+    // docs/design/embedded-agent-worker.md.
     const command: EmbeddedAgentCommand = { v: 1, type: 'user-message', id, text };
     const event: EmbeddedAgentServerEvent = {
       v: 1,
       type: 'user-message',
       id,
       text,
-      ...(clientMessageId !== undefined ? { clientMessageId } : {}),
+      ...(opts.clientMessageId !== undefined ? { clientMessageId: opts.clientMessageId } : {}),
+      ...(opts.notification !== undefined ? { notification: opts.notification } : {}),
     };
     // Forward BEFORE appending: both calls are synchronous (no await between
     // them, nothing else can interleave), so ordering doesn't affect replay

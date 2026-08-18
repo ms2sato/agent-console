@@ -10,6 +10,7 @@ import {
   type WorkerErrorCode,
   type AgentActivityState,
   type AppServerMessage,
+  type EmbeddedAgentServerNotification,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from '../../lib/websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
@@ -41,7 +42,17 @@ export interface EmbeddedAgentToolResult {
  * lists don't remount mid-stream.
  */
 export type EmbeddedAgentChatEntry =
-  | { key: string; kind: 'user-message'; id: string; text: string }
+  | {
+      key: string;
+      kind: 'user-message';
+      id: string;
+      text: string;
+      // Present iff this row is a system-originated internal notification
+      // rather than a real human/API-caller message -- mirrors
+      // EmbeddedAgentServerEvent's `notification` field one-to-one; see that
+      // field's doc comment for the discriminator rationale.
+      notification?: EmbeddedAgentServerNotification;
+    }
   | { key: string; kind: 'assistant-message'; turnId: string; text: string; streaming: boolean }
   | { key: string; kind: 'assistant-thinking'; turnId: string; text: string; streaming: boolean }
   | {
@@ -812,7 +823,13 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         this.closeAllOpenThinking();
         return true;
       case 'user-message':
-        this.pushEntry({ key: `user-${event.id}`, kind: 'user-message', id: event.id, text: event.text });
+        this.pushEntry({
+          key: `user-${event.id}`,
+          kind: 'user-message',
+          id: event.id,
+          text: event.text,
+          ...(event.notification !== undefined ? { notification: event.notification } : {}),
+        });
         // Confirms THIS client's own sendUserMessage() was accepted -- correlated
         // by clientMessageId, not "any user-message event", so a different
         // client's (or a different tab's) echo cannot falsely resolve our

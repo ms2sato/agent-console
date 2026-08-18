@@ -59,6 +59,27 @@ export type InboundSystemEvent = SystemEvent & { type: InboundEventType };
 /** Intent classification for PTY notifications */
 export type PtyNotificationIntent = 'triage' | 'inform';
 
+/**
+ * Notification kinds deliverable via buildPtyNotificationText
+ * (packages/server/src/lib/pty-notification.ts). Duplicated here (not
+ * imported) because that module is server-internal and the wire-protocol
+ * EmbeddedAgentServerEvent.notification field (shared) must not depend on
+ * it -- see EmbeddedAgentRestoredToolCall in types/embedded-agent.ts for
+ * the same layering rationale. Keep in sync when a new PTY notification
+ * kind is added to pty-notification.ts's WritePtyNotificationParams union.
+ */
+export const PTY_NOTIFICATION_KINDS = [
+  'inbound-event',
+  'internal-message',
+  'internal-timer',
+  'internal-review-comment',
+  'internal-reviewed',
+  'internal-process',
+  'internal-conditional-wakeup',
+  'internal-agent-spawn-failed',
+] as const;
+export type PtyNotificationKind = (typeof PTY_NOTIFICATION_KINDS)[number];
+
 /** Summary payload for WebSocket notifications */
 export interface InboundEventSummary {
   type: InboundEventType;

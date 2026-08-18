@@ -1072,6 +1072,82 @@ describe('EmbeddedAgentServerEventSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('parses a user-message event with a notification field carrying kind and summary (Issue #1351)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: '\n[internal:message] source=session',
+      notification: { kind: 'internal-message', summary: 'Message from session foo' },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({
+        v: 1,
+        type: 'user-message',
+        id: 'm1',
+        text: '\n[internal:message] source=session',
+        notification: { kind: 'internal-message', summary: 'Message from session foo' },
+      });
+    }
+  });
+
+  it('parses a user-message event WITHOUT notification (legacy replay -- old rows keep rendering as user bubbles)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('notification' in result.output).toBe(false);
+    }
+  });
+
+  it('parses a notification with kind only (no summary)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: '\n[internal:timer] timerId=t1',
+      notification: { kind: 'internal-timer' },
+    });
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'user-message') {
+      expect(result.output.notification).toEqual({ kind: 'internal-timer' });
+      expect('summary' in (result.output.notification ?? {})).toBe(false);
+    }
+  });
+
+  it('rejects an unknown notification kind', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'hi',
+      notification: { kind: 'not-a-real-kind' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a non-string notification summary', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'hi',
+      notification: { kind: 'internal-message', summary: 42 },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a notification with an unknown extra field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+      v: 1,
+      type: 'user-message',
+      id: 'm1',
+      text: 'hi',
+      notification: { kind: 'internal-message', summary: 'hi', unexpectedField: 'leaked' },
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('EmbeddedAgentStreamEventSchema', () => {
@@ -1084,6 +1160,18 @@ describe('EmbeddedAgentStreamEventSchema', () => {
       v.safeParse(EmbeddedAgentStreamEventSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' }).success
     ).toBe(true);
     expect(v.safeParse(EmbeddedAgentStreamEventSchema, { v: 1, type: 'exited', code: null }).success).toBe(true);
+  });
+
+  it('parses a user-message event with a notification field (Issue #1351)', () => {
+    expect(
+      v.safeParse(EmbeddedAgentStreamEventSchema, {
+        v: 1,
+        type: 'user-message',
+        id: 'm1',
+        text: 'hi',
+        notification: { kind: 'internal-message', summary: 'Message from session foo' },
+      }).success
+    ).toBe(true);
   });
 
   it('parses context-usage and context-handoff events', () => {

@@ -33,7 +33,7 @@ import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
 import type { InterSessionMessageService } from '../services/inter-session-message-service.js';
-import { writePtyNotification, buildPtyNotificationText } from '../lib/pty-notification.js';
+import { writePtyNotification, buildReplyInstructions } from '../lib/pty-notification.js';
 import { getRemoteUrl, GitError } from '../lib/git.js';
 import { createLogger } from '../lib/logger.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -287,17 +287,6 @@ export function buildArtifactToolResult(
       'AGENT_CONSOLE_PUBLIC_ORIGIN is not configured on this server; only a relative path is available. ' +
       'Set AGENT_CONSOLE_PUBLIC_ORIGIN to also receive an absolute URL.',
   };
-}
-
-/**
- * Build concise reply instructions appended to PTY notifications,
- * so the receiving agent knows how to respond via send_session_message.
- */
-function buildReplyInstructions(senderSessionId: string): string {
-  const safeId = JSON.stringify(senderSessionId);
-  return `\n[Reply Instructions] To reply, use the send_session_message MCP tool with:
-- toSessionId: ${safeId}
-- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable`;
 }
 
 // ---------- Dependencies ----------
@@ -704,10 +693,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
         if (resolvedWorker?.type === 'embedded-agent') {
           // Embedded branch: activate-on-delivery, then deliver the SAME
           // notification template a PTY-backed worker would receive, via
-          // sendEmbeddedAgentUserMessage instead of a PTY write. Unlike the
-          // PTY branch below, this is a HARD failure -- no best-effort
-          // try/catch -- the tool call fails with a classified message
-          // rather than silently dropping the notification.
+          // sendEmbeddedAgentSystemNotification instead of a PTY write.
+          // Unlike the PTY branch below, this is a HARD failure -- no
+          // best-effort try/catch -- the tool call fails with a classified
+          // message rather than silently dropping the notification.
           try {
             await sessionManager.activateEmbeddedAgentWorker(toSessionId, resolvedWorkerId);
           } catch (err) {
@@ -720,8 +709,10 @@ export function createMcpApp(deps: McpDependencies): Hono {
             return errorResult(`Failed to deliver message to embedded agent: ${message}`);
           }
 
-          const notificationText =
-            buildPtyNotificationText({
+          const deliveryResult = await sessionManager.sendEmbeddedAgentSystemNotification(
+            toSessionId,
+            resolvedWorkerId,
+            {
               kind: 'internal-message',
               tag: 'internal:message',
               fields: {
@@ -731,12 +722,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
                 path: result.path,
               },
               intent: 'triage',
-            }) + buildReplyInstructions(fromSessionId);
-
-          const deliveryResult = await sessionManager.sendEmbeddedAgentUserMessage(
-            toSessionId,
-            resolvedWorkerId,
-            notificationText,
+            },
+            { replyToSessionId: fromSessionId },
           );
           if (!deliveryResult.ok) {
             logger.warn(
