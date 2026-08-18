@@ -2321,6 +2321,26 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
+      // Push a restore-info with a non-empty messageCount WHILE the
+      // `/api/embedded-agents` fetch is still pending, so
+      // hadPriorTranscriptThisIncarnation is true but the engine is still
+      // unresolved -- this is what makes the assertions below non-vacuous:
+      // without this push, restoredMessageCount stays null and the
+      // divergence-notice assertion would pass regardless of whether the
+      // engine-unresolved guard does anything at all.
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 3,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
+        );
+      });
+      await flush();
+
       // The `/api/embedded-agents` fetch is still pending -- embeddedAgentDefinition
       // is undefined, so the engine is genuinely unknown (not yet confirmed
       // native-loop). Neither banner may render a claim about an engine we
