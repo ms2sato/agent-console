@@ -81,7 +81,7 @@ describe('EmbeddedAgentManager', () => {
       await repository.save({
         id: 'preloaded',
         name: 'Preloaded',
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider: VALID_PROVIDER,
         isBuiltIn: false,
         createdBy: 'user-1',

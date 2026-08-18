@@ -46,7 +46,7 @@ function embeddedAgentFixture(overrides: Record<string, unknown> = {}) {
   return {
     id: 'ea-1',
     name: 'Test Embedded Agent',
-    engine: 'native-loop',
+    engine: 'openai-api',
     provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
     isBuiltIn: false,
     createdBy: 'user-1',
@@ -162,7 +162,7 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.queryByText('Working...')).toBeNull();
   });
 
-  it('renders the persistent transcript-restore note once the worker definition resolves to native-loop', async () => {
+  it('renders the persistent transcript-restore note once the worker definition resolves to openai-api', async () => {
     globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
     renderView({ sessionId: 's1', workerId: 'w1', embeddedAgentId: 'ea-1' });
     await act(async () => {
@@ -2174,7 +2174,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('Loading 3 previous messages...')).toBeTruthy();
     });
 
-    it('still shows the neutral "Loading N previous messages..." progress wording for a native-loop engine worker while restoring is true', async () => {
+    it('still shows the neutral "Loading N previous messages..." progress wording for an openai-api engine worker while restoring is true', async () => {
       globalThis.fetch = Object.assign(
         mock(makeEmbeddedViewFetch([embeddedAgentFixture()])),
         { preconnect: () => {} },
@@ -2241,7 +2241,7 @@ describe('EmbeddedAgentWorkerView', () => {
       ).toBeNull();
     });
 
-    it('does not show the divergence notice for a native-loop engine worker, and still shows the generic restore banner', async () => {
+    it('does not show the divergence notice for an openai-api engine worker, and still shows the generic restore banner', async () => {
       globalThis.fetch = Object.assign(
         mock(makeEmbeddedViewFetch([embeddedAgentFixture()])),
         { preconnect: () => {} },
@@ -2298,7 +2298,7 @@ describe('EmbeddedAgentWorkerView', () => {
       ).toBeNull();
     });
 
-    it('renders neither banner while the embedded-agents registry is still loading (unresolved engine, not yet known to be native-loop)', async () => {
+    it('renders neither banner while the embedded-agents registry is still loading (unresolved engine, not yet known to be openai-api)', async () => {
       let resolveEmbeddedAgents: (response: Response) => void = () => {};
       const embeddedAgentsPromise = new Promise<Response>((resolve) => {
         resolveEmbeddedAgents = resolve;
@@ -2343,7 +2343,7 @@ describe('EmbeddedAgentWorkerView', () => {
 
       // The `/api/embedded-agents` fetch is still pending -- embeddedAgentDefinition
       // is undefined, so the engine is genuinely unknown (not yet confirmed
-      // native-loop). Neither banner may render a claim about an engine we
+      // openai-api). Neither banner may render a claim about an engine we
       // haven't resolved.
       expect(
         screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),

@@ -211,16 +211,16 @@ export function EmbeddedAgentWorkerView({
   // `claude-sdk` engine workers do not reconstruct their live SDK session
   // from the persisted transcript on revival (v1 limitation, see
   // docs/design/embedded-agent-worker.md) -- the generic restore banner
-  // below is only accurate for `native-loop` engine workers. `engine` is
-  // genuinely three-valued here ('native-loop' / 'claude-sdk' / unresolved),
+  // below is only accurate for `openai-api` engine workers. `engine` is
+  // genuinely three-valued here ('openai-api' / 'claude-sdk' / unresolved),
   // where "unresolved" covers both the registry still loading and a
   // dangling/unmatched embeddedAgentId -- so the generic banner uses an
-  // explicit positive `=== 'native-loop'` check rather than `!isSdkEngine`.
-  // Negating a two-valued check collapses "confirmed native-loop" and
-  // "unresolved" into the same branch, which would show the native-loop-only
+  // explicit positive `=== 'openai-api'` check rather than `!isSdkEngine`.
+  // Negating a two-valued check collapses "confirmed openai-api" and
+  // "unresolved" into the same branch, which would show the openai-api-only
   // claim while the engine is still unknown.
   const isSdkEngine = embeddedAgentDefinition?.engine === 'claude-sdk';
-  const isNativeLoopEngine = embeddedAgentDefinition?.engine === 'native-loop';
+  const isOpenaiApiEngine = embeddedAgentDefinition?.engine === 'openai-api';
   // `restoredMessageCount` is not reset to null when `restoring` flips
   // false (see its doc comment in embedded-agent-store.ts), so this is a
   // reliable "this activation/incarnation restored a non-empty prior
@@ -238,13 +238,13 @@ export function EmbeddedAgentWorkerView({
 
       {/* Persistent, non-dismissable transcript-restore notice (Transcript
           Restore #1123). This is a permanent fixture of the view, not a
-          toast -- it has no close button. Only accurate for `native-loop`
+          toast -- it has no close button. Only accurate for `openai-api`
           engine workers, whose live conversation IS reconstructed from the
           persisted transcript on revival -- gated on the confirmed
-          `=== 'native-loop'` check, not `!isSdkEngine`, so it makes no claim
+          `=== 'openai-api'` check, not `!isSdkEngine`, so it makes no claim
           while the engine is still unresolved (registry loading, or a
           dangling/unmatched embeddedAgentId). */}
-      {isNativeLoopEngine && (
+      {isOpenaiApiEngine && (
         <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
           Conversation is restored automatically after a worker or server restart; it only resets if the
           saved transcript can't be recovered.
@@ -287,7 +287,7 @@ export function EmbeddedAgentWorkerView({
       {/* Transient loading indicator (#1123/#1205). Wording is deliberately
           engine-neutral -- must not use "conversation"/"restoring" or any
           other memory-continuity word, since this same string renders for
-          both native-loop (whose live session really is reconstructed, see
+          both openai-api (whose live session really is reconstructed, see
           the generic banner above) and claude-sdk (whose live session is
           NOT reconstructed, see the divergence notice above) workers. This
           block only reports that prior transcript content is loading into

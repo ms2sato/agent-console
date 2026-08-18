@@ -12,7 +12,7 @@ afterEach(() => {
 const embeddedAgent: EmbeddedAgentDefinition = {
   id: 'embedded-1',
   name: 'Ollama qwen3',
-  engine: 'native-loop',
+  engine: 'openai-api',
   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
   isBuiltIn: false,
   createdBy: 'user-1',

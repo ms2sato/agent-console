@@ -2,6 +2,11 @@
  * Migration v29 tests — embedded_agents.engine/is_built_in table rebuild
  * (SDK Engine Phase 1, consulted with the Architect 2026-08-17).
  *
+ * This test asserts v29's actual (frozen) historical behavior: the
+ * `'native-loop'` values below are historical -- v29's DEFAULT/backfill
+ * value, later renamed to `'openai-api'` by migration v32 (#1364). Do not
+ * rename them; doing so would make this test assert something v29 never did.
+ *
  * Strategy mirrors migration-v19.test.ts (the other table-rebuild
  * migration): a v28-shaped `embedded_agents` table is seeded directly
  * against a raw Bun SQLite instance, then the production `migrateToV29` is
@@ -123,7 +128,12 @@ describe('migration v29 (embedded_agents.engine/is_built_in)', () => {
       .selectAll()
       .executeTakeFirstOrThrow();
 
-    expect(row.engine).toBe('native-loop');
+    // `row.engine`'s TS type follows the CURRENT schema.ts union
+    // ('openai-api' | 'claude-sdk', post-#1364), but this is v29's own
+    // frozen historical behavior -- it genuinely wrote 'native-loop' at
+    // runtime. String() sidesteps the type/runtime-value mismatch without
+    // an `as` cast.
+    expect(String(row.engine)).toBe('native-loop');
     expect(row.is_built_in).toBe(0);
     expect(row.provider_base_url).toBe('http://localhost:11434/v1');
     expect(row.provider_model).toBe('qwen3:32b');
@@ -258,7 +268,8 @@ describe('migration v29 (embedded_agents.engine/is_built_in)', () => {
 
     const rows = await db.selectFrom('embedded_agents').selectAll().execute();
     expect(rows).toHaveLength(1);
-    expect(rows[0].engine).toBe('native-loop');
+    // See the `String()` note above -- frozen historical value, current type.
+    expect(String(rows[0].engine)).toBe('native-loop');
     expect(rows[0].is_built_in).toBe(0);
 
     await db.destroy();

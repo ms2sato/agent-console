@@ -7,7 +7,7 @@
  * startup, never user-created and never modifiable/deletable
  * (`EmbeddedAgentManager.updateEmbeddedAgent`/`deleteEmbeddedAgent` reject
  * when `isBuiltIn`). This is the ONLY `claude-sdk` engine definition in
- * Phase 1 -- the REST create route always produces `engine: 'native-loop'`
+ * Phase 1 -- the REST create route always produces `engine: 'openai-api'`
  * (`EmbeddedAgentManager.createEmbeddedAgent`), so the SDK engine is
  * reachable exclusively through this builtin.
  *

@@ -630,7 +630,7 @@ describe('AppServerMessageSchema', () => {
     const embeddedAgentDefinition = {
       id: 'def-1',
       name: 'Ollama qwen3:32b',
-      engine: 'native-loop',
+      engine: 'openai-api',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
       isBuiltIn: false,
       createdBy: 'user-uuid',

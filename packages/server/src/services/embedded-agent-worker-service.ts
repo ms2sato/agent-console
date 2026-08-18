@@ -424,7 +424,7 @@ export class EmbeddedAgentWorkerService {
     // converted. Any other error from this seam (including a misbehaving
     // injected loadProviderKeyFn) propagates unwrapped.
     let apiKey: string | undefined;
-    if (definition.engine === 'native-loop' && definition.provider.apiKeyRef) {
+    if (definition.engine === 'openai-api' && definition.provider.apiKeyRef) {
       try {
         apiKey = await this.loadProviderKeyFn(definition.provider.apiKeyRef);
       } catch (err) {
@@ -580,10 +580,10 @@ export class EmbeddedAgentWorkerService {
         ...(restoredConversation !== undefined ? { restoredConversation } : {}),
       };
       const initCommand: EmbeddedAgentCommand =
-        definition.engine === 'native-loop'
+        definition.engine === 'openai-api'
           ? {
               ...initCommandShared,
-              engine: 'native-loop',
+              engine: 'openai-api',
               provider: {
                 baseUrl: definition.provider.baseUrl,
                 model: definition.provider.model,

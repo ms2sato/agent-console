@@ -38,12 +38,12 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 function makeEmbeddedAgent(
-  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>> = {}
+  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'openai-api' }>> = {}
 ): EmbeddedAgentDefinition {
   return {
     id: 'embedded-1',
     name: 'Ollama qwen3',
-    engine: 'native-loop',
+    engine: 'openai-api',
     provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
     isBuiltIn: false,
     createdBy: 'creator-1',

@@ -32,12 +32,12 @@ const NEW_EPOCH = 4242;
 const USERNAME = 'alice';
 
 function buildDefinition(
-  overrides?: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>>
+  overrides?: Partial<Extract<EmbeddedAgentDefinition, { engine: 'openai-api' }>>
 ): EmbeddedAgentDefinition {
   return {
     id: 'def-1',
     name: 'Ollama qwen',
-    engine: 'native-loop',
+    engine: 'openai-api',
     provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b', apiKeyRef: 'openai' },
     isBuiltIn: false,
     createdBy: 'user-1',
@@ -402,7 +402,7 @@ describe('EmbeddedAgentWorkerService.activate', () => {
     const first = JSON.parse(h.fake.stdinWrites[0]);
     expect(first.v).toBe(1);
     expect(first.type).toBe('init');
-    expect(first.engine).toBe('native-loop');
+    expect(first.engine).toBe('openai-api');
     expect(first.mcp).toEqual({ baseUrl: MCP_BASE_URL, token: TOKEN });
     expect(first.provider).toEqual({
       baseUrl: 'http://localhost:11434/v1',

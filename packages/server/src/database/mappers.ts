@@ -524,13 +524,13 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     name: def.name,
     description: def.description ?? null,
     engine: def.engine,
-    // native-loop writes its real baseUrl; claude-sdk writes null -- no
+    // openai-api writes its real baseUrl; claude-sdk writes null -- no
     // provider secret crosses the server for that engine (SDK Engine Phase
     // 1, docs/design/embedded-agent-sdk-engine.md §3.2). Both engines write
     // provider_model (every engine carries a model).
-    provider_base_url: def.engine === 'native-loop' ? def.provider.baseUrl : null,
+    provider_base_url: def.engine === 'openai-api' ? def.provider.baseUrl : null,
     provider_model: def.provider.model,
-    provider_api_key_ref: def.engine === 'native-loop' ? (def.provider.apiKeyRef ?? null) : null,
+    provider_api_key_ref: def.engine === 'openai-api' ? (def.provider.apiKeyRef ?? null) : null,
     system_prompt: def.systemPrompt ?? null,
     max_tool_iterations: def.maxToolIterations ?? null,
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
@@ -631,17 +631,17 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
   // above (`toSessionRow`/`toPersistedSession`). A row failing this check is
   // corrupted data, not a recoverable shape -- throw rather than silently
   // picking an arm.
-  if (row.engine === 'native-loop') {
+  if (row.engine === 'openai-api') {
     if (row.provider_base_url === null) {
       throw new DataIntegrityError(
         'embedded-agent',
         row.id,
-        'provider_base_url (missing required field for native-loop engine)'
+        'provider_base_url (missing required field for openai-api engine)'
       );
     }
     return {
       ...base,
-      engine: 'native-loop',
+      engine: 'openai-api',
       provider: {
         baseUrl: row.provider_base_url,
         model: row.provider_model,

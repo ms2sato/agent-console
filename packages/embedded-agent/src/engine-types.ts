@@ -11,7 +11,7 @@
  * one back to `engine.ts`.
  *
  * The engine contract `main.ts`'s dispatch loop drives, implemented by both
- * `AgentLoop` (native-loop engine, agent-loop.ts) and `SdkEngine`
+ * `AgentLoop` (openai-api engine, agent-loop.ts) and `SdkEngine`
  * (claude-sdk engine, sdk-engine.ts). See
  * docs/design/embedded-agent-sdk-engine.md §3 "The seam" -- both engines
  * emit the same NDJSON event vocabulary upward; `main.ts` only needs this
