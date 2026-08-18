@@ -87,30 +87,37 @@ describe('SqliteNotificationCursorRepository', () => {
     });
 
     it('two concurrent-shaped advances (simulated sequentially, either order) converge to the max value', async () => {
+      const now = new Date().toISOString();
+
       // Order A: older then newer.
       const dbA = await createDatabaseForTest();
-      const repoA = new SqliteNotificationCursorRepository(dbA);
-      const now = new Date().toISOString();
-      await dbA
-        .insertInto('users')
-        .values({ id: 'user-a', os_uid: null, username: 'user-a', home_dir: '/home/user-a', created_at: now, updated_at: now })
-        .execute();
-      await repoA.advance('user-a', '2026-08-18T00:00:00.000Z');
-      await repoA.advance('user-a', '2026-08-18T05:00:00.000Z');
-      expect(await repoA.getCursor('user-a')).toBe('2026-08-18T05:00:00.000Z');
-      await dbA.destroy();
+      try {
+        const repoA = new SqliteNotificationCursorRepository(dbA);
+        await dbA
+          .insertInto('users')
+          .values({ id: 'user-a', os_uid: null, username: 'user-a', home_dir: '/home/user-a', created_at: now, updated_at: now })
+          .execute();
+        await repoA.advance('user-a', '2026-08-18T00:00:00.000Z');
+        await repoA.advance('user-a', '2026-08-18T05:00:00.000Z');
+        expect(await repoA.getCursor('user-a')).toBe('2026-08-18T05:00:00.000Z');
+      } finally {
+        await dbA.destroy();
+      }
 
       // Order B: newer then older -- same max, opposite call order.
       const dbB = await createDatabaseForTest();
-      const repoB = new SqliteNotificationCursorRepository(dbB);
-      await dbB
-        .insertInto('users')
-        .values({ id: 'user-b', os_uid: null, username: 'user-b', home_dir: '/home/user-b', created_at: now, updated_at: now })
-        .execute();
-      await repoB.advance('user-b', '2026-08-18T05:00:00.000Z');
-      await repoB.advance('user-b', '2026-08-18T00:00:00.000Z');
-      expect(await repoB.getCursor('user-b')).toBe('2026-08-18T05:00:00.000Z');
-      await dbB.destroy();
+      try {
+        const repoB = new SqliteNotificationCursorRepository(dbB);
+        await dbB
+          .insertInto('users')
+          .values({ id: 'user-b', os_uid: null, username: 'user-b', home_dir: '/home/user-b', created_at: now, updated_at: now })
+          .execute();
+        await repoB.advance('user-b', '2026-08-18T05:00:00.000Z');
+        await repoB.advance('user-b', '2026-08-18T00:00:00.000Z');
+        expect(await repoB.getCursor('user-b')).toBe('2026-08-18T05:00:00.000Z');
+      } finally {
+        await dbB.destroy();
+      }
     });
   });
 });
