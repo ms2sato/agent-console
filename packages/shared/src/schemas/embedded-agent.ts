@@ -1,5 +1,6 @@
 import * as v from 'valibot';
 import { EMBEDDED_AGENT_TOOL_NAMES } from '../types/embedded-agent.js';
+import { PTY_NOTIFICATION_KINDS } from '../types/system-events.js';
 
 /**
  * Valibot schemas for embedded agent definitions and the stdio protocol.
@@ -288,6 +289,18 @@ export const EmbeddedAgentEventSchema = v.union([
   }),
 ]);
 
+/**
+ * Wire schema for {@link EmbeddedAgentServerNotification}. `kind` is
+ * validated against the shared PTY-notification-kind enum;
+ * `summary` is only present for kinds whose `fields` shape carries one
+ * (internal-message, inbound-event) -- see extractNotificationSummary in
+ * packages/server/src/lib/pty-notification.ts.
+ */
+const EmbeddedAgentServerNotificationSchema = v.strictObject({
+  kind: v.picklist(PTY_NOTIFICATION_KINDS),
+  summary: v.optional(v.string()),
+});
+
 export const EmbeddedAgentServerEventSchema = v.union([
   v.strictObject({
     v: v.literal(1),
@@ -295,6 +308,7 @@ export const EmbeddedAgentServerEventSchema = v.union([
     id: v.string(),
     text: v.string(),
     clientMessageId: v.optional(v.string()),
+    notification: v.optional(EmbeddedAgentServerNotificationSchema),
   }),
   v.strictObject({
     v: v.literal(1),

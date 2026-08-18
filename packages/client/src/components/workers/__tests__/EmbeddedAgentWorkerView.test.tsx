@@ -392,6 +392,123 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.queryByRole('alert')).toBeNull();
   });
 
+  describe('internal notifications (Issue #1351)', () => {
+    it('renders a system-originated notification as a muted collapsed row (NOT a blue bubble), collapsed by default, while a genuinely typed user-message in the SAME transcript keeps its blue bubble unchanged and fully visible', async () => {
+      const { container } = renderView({ sessionId: 's-notif-1', workerId: 'w-notif-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson(
+        {
+          v: 1,
+          type: 'user-message',
+          id: 'u1',
+          text:
+            '[internal:message] timestamp=2026-08-18T00:00:00.000Z source=session from=other-session summary="Message from session X" path=/tmp/foo intent=triage\n[Reply Instructions]\nReply via send_session_message.',
+          notification: { kind: 'internal-message', summary: 'Message from session X' },
+        },
+        { v: 1, type: 'user-message', id: 'u2', text: 'a genuinely typed user message' },
+        { v: 1, type: 'assistant-message', turnId: 't1', text: 'an assistant reply' },
+      );
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Bug-polarity assertion: exactly ONE blue bubble exists, and it belongs
+      // to the genuinely typed message -- the notification row does not use
+      // the bubble treatment anywhere in its subtree.
+      const blueBubbles = container.querySelectorAll('.bg-blue-600\\/80');
+      expect(blueBubbles).toHaveLength(1);
+      expect(blueBubbles[0].textContent).toBe('a genuinely typed user message');
+
+      // The notification row is rendered (humanized label + summary preview),
+      // collapsed by default -- <details>/<summary> is the same closed-by-default
+      // mechanism as the context-handoff/restore-repair rows (see those tests):
+      // native `details.open` is the collapse signal, not DOM text absence
+      // (happy-dom keeps closed <details> content in the tree, matching real
+      // browser semantics where it exists but has no layout box).
+      expect(screen.getByText('Message')).toBeTruthy();
+      const summary = screen.getByText('Message from session X').closest('summary')!;
+      const details = summary.closest('details') as HTMLDetailsElement;
+      expect(details).toBeTruthy();
+      expect(details.open).toBe(false);
+
+      // The plain user-message stays completely unchanged: immediately visible, full text.
+      expect(screen.getByText('a genuinely typed user message')).toBeTruthy();
+    });
+
+    it('expands to reveal the full raw text on click, and stays collapsed until then', async () => {
+      renderView({ sessionId: 's-notif-2', workerId: 'w-notif-2' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text:
+          '[internal:message] timestamp=2026-08-18T00:00:00.000Z source=session from=other-session summary="short summary"\n[Reply Instructions]\nFull raw notification body only visible when expanded.',
+        notification: { kind: 'internal-message', summary: 'short summary' },
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      const summary = screen.getByText('short summary').closest('summary')!;
+      const details = summary.closest('details') as HTMLDetailsElement;
+      // Collapsed by default -- native `details.open` is the collapse signal
+      // here (see the context-handoff/restore-repair precedents above): a
+      // closed <details>'s content stays in the DOM tree (no layout box,
+      // same as a real browser) rather than being removed, so `details.open`
+      // is what this suite asserts against, not DOM-text absence.
+      expect(details.open).toBe(false);
+
+      fireEvent.click(summary);
+
+      expect(details.open).toBe(true);
+      expect(screen.getByText(/Full raw notification body only visible when expanded/)).toBeTruthy();
+    });
+
+    it('falls back to a capped first-line preview of the raw text for a notification kind with no `summary` field on the wire', async () => {
+      renderView({ sessionId: 's-notif-3', workerId: 'w-notif-3' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({
+        v: 1,
+        type: 'user-message',
+        id: 'u1',
+        text: '[internal:timer] timestamp=2026-08-18T00:00:00.000Z name=my-timer',
+        notification: { kind: 'internal-timer' },
+      });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('Timer')).toBeTruthy();
+      // The fallback preview is derived from entry.text (its first line), not
+      // a literal "undefined" placeholder for the absent summary field. Scope
+      // to the <summary> element specifically -- for this single-line-text
+      // fixture the preview and the (also-present, closed) expanded-body copy
+      // share identical text, so an unscoped screen.getByText would be
+      // ambiguous.
+      const summary = document.querySelector('summary')!;
+      expect(summary.textContent).not.toContain('undefined');
+      expect(summary.textContent).toContain(
+        '[internal:timer] timestamp=2026-08-18T00:00:00.000Z name=my-timer',
+      );
+    });
+  });
+
   it('renders an ACTIVATION_FAILED error with a Retry action instead of Dismiss', async () => {
     renderView({ sessionId: 's6', workerId: 'w6' });
     const ws = MockWebSocket.getLastInstance();

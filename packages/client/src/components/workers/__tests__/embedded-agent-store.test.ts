@@ -385,6 +385,44 @@ describe('embedded-agent-store', () => {
     expect(entries[0]).toMatchObject({ kind: 'user-message', id: 'u1', text: 'hi' });
   });
 
+  it('folds a user-message carrying a `notification` field (Issue #1351: system-originated internal notification)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5c', 'w5c');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({
+      v: 1,
+      type: 'user-message',
+      id: 'u1',
+      text: '[internal:message] timestamp=2026-08-18T00:00:00.000Z source=session from=other-session summary="Message from session X"',
+      notification: { kind: 'internal-message', summary: 'Message from session X' },
+    });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      kind: 'user-message',
+      id: 'u1',
+      notification: { kind: 'internal-message', summary: 'Message from session X' },
+    });
+  });
+
+  it('a user-message with NO `notification` field folds into an entry where the key is genuinely absent, not merely undefined', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5d', 'w5d');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'a real human message' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect('notification' in entries[0]).toBe(false);
+  });
+
   it('ignores state events (recognized but not rendered) without adding an entry', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s6', 'w6');
     const ws = MockWebSocket.getLastInstance();

@@ -5,7 +5,7 @@
  * key=value formatted messages into agent worker terminals.
  */
 
-import type { InboundEventType, PtyNotificationIntent } from '@agent-console/shared';
+import type { InboundEventType, PtyNotificationIntent, PtyNotificationKind } from '@agent-console/shared';
 
 /**
  * Sanitize and quote a string value for use in a key=value PTY notification field.
@@ -37,7 +37,7 @@ interface BasePtyNotificationParams {
 }
 
 export interface InboundEventPtyNotification extends BasePtyNotificationParams {
-  kind: 'inbound-event';
+  kind: Extract<PtyNotificationKind, 'inbound-event'>;
   tag: `inbound:${InboundEventType}`;
   fields: {
     type: InboundEventType;
@@ -51,7 +51,7 @@ export interface InboundEventPtyNotification extends BasePtyNotificationParams {
 }
 
 export interface InternalMessagePtyNotification extends BasePtyNotificationParams {
-  kind: 'internal-message';
+  kind: Extract<PtyNotificationKind, 'internal-message'>;
   tag: 'internal:message';
   fields: {
     source: string;
@@ -63,7 +63,7 @@ export interface InternalMessagePtyNotification extends BasePtyNotificationParam
 }
 
 export interface InternalTimerPtyNotification extends BasePtyNotificationParams {
-  kind: 'internal-timer';
+  kind: Extract<PtyNotificationKind, 'internal-timer'>;
   tag: 'internal:timer';
   fields: {
     timerId: string;
@@ -74,7 +74,7 @@ export interface InternalTimerPtyNotification extends BasePtyNotificationParams 
 }
 
 export interface InternalReviewCommentPtyNotification extends BasePtyNotificationParams {
-  kind: 'internal-review-comment';
+  kind: Extract<PtyNotificationKind, 'internal-review-comment'>;
   tag: 'internal:review-comment';
   fields: {
     session: string;
@@ -86,7 +86,7 @@ export interface InternalReviewCommentPtyNotification extends BasePtyNotificatio
 }
 
 export interface InternalReviewedPtyNotification extends BasePtyNotificationParams {
-  kind: 'internal-reviewed';
+  kind: Extract<PtyNotificationKind, 'internal-reviewed'>;
   tag: 'internal:reviewed';
   fields: {
     session: string;
@@ -98,7 +98,7 @@ export interface InternalReviewedPtyNotification extends BasePtyNotificationPara
 }
 
 export interface InternalProcessPtyNotification extends BasePtyNotificationParams {
-  kind: 'internal-process';
+  kind: Extract<PtyNotificationKind, 'internal-process'>;
   tag: 'internal:process';
   fields: {
     processId: string;
@@ -109,7 +109,7 @@ export interface InternalProcessPtyNotification extends BasePtyNotificationParam
 }
 
 export interface InternalConditionalWakeupPtyNotification extends BasePtyNotificationParams {
-  kind: 'internal-conditional-wakeup';
+  kind: Extract<PtyNotificationKind, 'internal-conditional-wakeup'>;
   tag: 'internal:conditional-wakeup';
   fields: {
     wakeupId: string;
@@ -121,7 +121,7 @@ export interface InternalConditionalWakeupPtyNotification extends BasePtyNotific
 }
 
 export interface InternalAgentSpawnFailedPtyNotification extends BasePtyNotificationParams {
-  kind: 'internal-agent-spawn-failed';
+  kind: Extract<PtyNotificationKind, 'internal-agent-spawn-failed'>;
   tag: 'internal:agent-spawn-failed';
   fields: {
     command: string;
@@ -144,13 +144,22 @@ export type WritePtyNotificationParams =
   | InternalAgentSpawnFailedPtyNotification;
 
 /**
+ * Structured PTY-notification params, without the PTY-only `writeInput`
+ * callback -- what {@link buildPtyNotificationText} accepts. Named alias
+ * used by non-PTY delivery channels (e.g.
+ * SessionManager.sendEmbeddedAgentSystemNotification) so callers don't
+ * repeat the `Omit<WritePtyNotificationParams, 'writeInput'>` shape inline.
+ */
+export type PtyNotificationParams = Omit<WritePtyNotificationParams, 'writeInput'>;
+
+/**
  * Build the structured notification text (`\n[tag] key1=val1 key2=val2
  * intent=...`) without writing it anywhere. Pure string-building extracted
  * from {@link writePtyNotification} so non-PTY delivery channels (e.g. an
  * embedded-agent worker's sendUserMessage) can reuse the exact same
  * notification template instead of duplicating it.
  */
-export function buildPtyNotificationText(params: Omit<WritePtyNotificationParams, 'writeInput'>): string {
+export function buildPtyNotificationText(params: PtyNotificationParams): string {
   const { tag, fields, intent } = params;
   const allFields: Record<string, string> = { timestamp: new Date().toISOString(), ...fields, intent };
 
@@ -185,4 +194,30 @@ export function writePtyNotification(params: WritePtyNotificationParams): string
   }, 150);
 
   return notification;
+}
+
+/**
+ * Extract the `summary` field from a PTY notification's params, when the
+ * kind's `fields` shape carries one (internal-message, inbound-event).
+ * Used to populate EmbeddedAgentServerNotification.summary -- kinds
+ * without a summary field legitimately produce `undefined` here; the
+ * client falls back to the raw notification text in that case.
+ */
+export function extractNotificationSummary(params: PtyNotificationParams): string | undefined {
+  const fields = params.fields as Record<string, string>;
+  return typeof fields.summary === 'string' ? fields.summary : undefined;
+}
+
+/**
+ * Build concise reply instructions appended to PTY notifications, so the
+ * receiving agent knows how to respond via send_session_message. Single
+ * writer of this block (both the PTY-write path in
+ * mcp-server.ts and EmbeddedAgentWorkerService.sendSystemNotification
+ * compose the delivered/persisted text via this helper).
+ */
+export function buildReplyInstructions(senderSessionId: string): string {
+  const safeId = JSON.stringify(senderSessionId);
+  return `\n[Reply Instructions] To reply, use the send_session_message MCP tool with:
+- toSessionId: ${safeId}
+- fromSessionId: Use your AGENT_CONSOLE_SESSION_ID environment variable`;
 }

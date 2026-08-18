@@ -1,4 +1,4 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, setSystemTime } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
+import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
 import {
   buildInternalEmbeddedAgentWorker,
   buildInternalWorktreeSession,
@@ -1450,6 +1451,22 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
   });
 
+  it('a plain sendUserMessage call never sets a notification marker on the appended event (Issue #1351 invariant)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
+    expect(res.ok).toBe(true);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect('notification' in appended).toBe(false);
+  });
+
   it('rejects with code WRITE_FAILED when the stdin write throws, without persisting/broadcasting a phantom echo', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
@@ -1486,6 +1503,158 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
 
     const third = await h.service.sendUserMessage(h.sessionId, h.workerId, 'three');
     expect(third.ok).toBe(true);
+  });
+});
+
+describe('EmbeddedAgentWorkerService.sendSystemNotification (Issue #1351)', () => {
+  const NOTIFICATION_PARAMS: PtyNotificationParams = {
+    kind: 'internal-message',
+    tag: 'internal:message',
+    fields: {
+      source: 'session',
+      from: 'sender-session-id',
+      summary: 'Message from session sender-title',
+      path: '/data/messages/m1.json',
+    },
+    intent: 'triage',
+  };
+
+  const TIMER_PARAMS: PtyNotificationParams = {
+    kind: 'internal-timer',
+    tag: 'internal:timer',
+    fields: {
+      timerId: 't1',
+      action: 'wake up and check the build',
+      fireCount: '1',
+    },
+    intent: 'inform',
+  };
+
+  it('delivers text to stdin and persists text IDENTICAL to buildPtyNotificationText(params) when no replyToSessionId is given', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const initWrites = h.fake.stdinWrites.length;
+    h.bufferOutput.mockClear();
+
+    // buildPtyNotificationText independently calls `new Date().toISOString()`
+    // for the timestamp field both inside the production call and in this
+    // test's own `expectedText` computation below. Without a frozen clock,
+    // the two calls can straddle a millisecond boundary on a loaded CI
+    // runner, producing two different timestamps and failing the
+    // exact-equality assertion for a reason unrelated to whether the two
+    // call paths actually agree (see pty-notification.test.ts, Issue #1321,
+    // for the identical pattern this mirrors).
+    setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    let res: Awaited<ReturnType<typeof h.service.sendSystemNotification>>;
+    let expectedText: string;
+    try {
+      res = await h.service.sendSystemNotification(h.sessionId, h.workerId, NOTIFICATION_PARAMS);
+      expectedText = buildPtyNotificationText(NOTIFICATION_PARAMS);
+    } finally {
+      setSystemTime();
+    }
+    expect(res.ok).toBe(true);
+
+    const forwarded = JSON.parse(h.fake.stdinWrites[initWrites]);
+    expect(forwarded.type).toBe('user-message');
+    expect(forwarded.text).toBe(expectedText);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    expect(userMessageLine).toBeDefined();
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.text).toBe(expectedText);
+  });
+
+  it('appends buildReplyInstructions(id) as a suffix when replyToSessionId is set, without changing notification.kind/summary', async () => {
+    const hNoReply = setup();
+    await hNoReply.service.activate(hNoReply.sessionId, hNoReply.workerId);
+    hNoReply.bufferOutput.mockClear();
+
+    const hReply = setup();
+    await hReply.service.activate(hReply.sessionId, hReply.workerId);
+    hReply.bufferOutput.mockClear();
+
+    // This test compares the persisted TEXT of two independent
+    // sendSystemNotification calls byte-for-byte (modulo the reply-
+    // instructions suffix). Each call independently stamps a
+    // `new Date().toISOString()` timestamp via buildPtyNotificationText, so
+    // without a frozen clock the two calls could straddle a millisecond
+    // boundary and produce two different timestamps, failing the equality
+    // assertion below for a reason unrelated to what's under test (same
+    // pattern as pty-notification.test.ts, Issue #1321).
+    setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    let resNoReply: Awaited<ReturnType<typeof hNoReply.service.sendSystemNotification>>;
+    let resReply: Awaited<ReturnType<typeof hReply.service.sendSystemNotification>>;
+    try {
+      resNoReply = await hNoReply.service.sendSystemNotification(
+        hNoReply.sessionId,
+        hNoReply.workerId,
+        NOTIFICATION_PARAMS,
+      );
+      resReply = await hReply.service.sendSystemNotification(
+        hReply.sessionId,
+        hReply.workerId,
+        NOTIFICATION_PARAMS,
+        { replyToSessionId: 'sender-session-id' },
+      );
+    } finally {
+      setSystemTime();
+    }
+    expect(resNoReply.ok).toBe(true);
+    expect(resReply.ok).toBe(true);
+
+    const lineNoReply = appendedLines(hNoReply.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    const appendedNoReply = JSON.parse(lineNoReply!);
+    const lineReply = appendedLines(hReply.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    const appendedReply = JSON.parse(lineReply!);
+
+    // Persisted text ends with the exact reply-instructions suffix.
+    expect(appendedReply.text.endsWith(buildReplyInstructions('sender-session-id'))).toBe(true);
+    // The base text (without the suffix) is unchanged from the no-reply case.
+    expect(appendedReply.text).toBe(appendedNoReply.text + buildReplyInstructions('sender-session-id'));
+
+    // notification.kind/summary are byte-identical between the two cases --
+    // the reply-instructions suffix must never leak into the collapsed-row
+    // fields (architect ruling).
+    expect(appendedReply.notification).toEqual(appendedNoReply.notification);
+  });
+
+  it('sets notification.summary from fields.summary for a kind whose fields carry one (internal-message)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    await h.service.sendSystemNotification(h.sessionId, h.workerId, NOTIFICATION_PARAMS);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.notification).toEqual({
+      kind: 'internal-message',
+      summary: 'Message from session sender-title',
+    });
+  });
+
+  it('omits the summary key entirely (not merely undefined) for a kind whose fields carry no summary (internal-timer)', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    h.bufferOutput.mockClear();
+
+    await h.service.sendSystemNotification(h.sessionId, h.workerId, TIMER_PARAMS);
+
+    const userMessageLine = appendedLines(h.bufferOutput).find(
+      (line) => JSON.parse(line).type === 'user-message',
+    );
+    const appended = JSON.parse(userMessageLine!);
+    expect(appended.notification).toEqual({ kind: 'internal-timer' });
+    expect('summary' in appended.notification).toBe(false);
   });
 });
 

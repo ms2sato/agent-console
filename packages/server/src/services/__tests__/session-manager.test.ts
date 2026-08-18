@@ -1233,6 +1233,87 @@ describe('SessionManager', () => {
       simulateExit(0);
       await deactivatePromise;
     });
+
+    it('sendEmbeddedAgentSystemNotification threads params/opts through to the persisted notification marker (facade pass-through, Issue #1351)', async () => {
+      // SessionManager.sendEmbeddedAgentSystemNotification is a one-line
+      // pass-through to EmbeddedAgentWorkerService.sendSystemNotification.
+      // There is no injectable test double for that internal service, so
+      // this test proves the pass-through via the public interface: read
+      // the persisted transcript back through getWorkerOutputHistory (the
+      // same read path the client uses on reconnect) and confirm the
+      // structured params/opts survived the facade call unchanged.
+      const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+      let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+      const stdout = new ReadableStream<Uint8Array>({ start(c) { stdoutCtrl = c; } });
+      const stderr = new ReadableStream<Uint8Array>({ start(c) { stderrCtrl = c; } });
+      let resolveExited!: (code: number) => void;
+      const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+      let exitSimulated = false;
+      const simulateExit = (code: number) => {
+        if (exitSimulated) return;
+        exitSimulated = true;
+        resolveExited(code);
+        stdoutCtrl.close();
+        stderrCtrl.close();
+      };
+      const subprocess = { pid: 4445, exited, stdin, stdout, stderr, kill: () => {} };
+      const fakeSpawnAsUserFn = mock(() => ({ subprocess, stdin, elevated: false }));
+
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      const manager = await module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+        spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+      });
+
+      const session = await manager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await manager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'stub-def',
+      });
+      expect(worker).not.toBeNull();
+
+      await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+
+      const res = await manager.sendEmbeddedAgentSystemNotification(
+        session.id,
+        worker!.id,
+        {
+          kind: 'internal-message',
+          tag: 'internal:message',
+          fields: { source: 'session', from: 'sender-id', summary: 'Message from session Sender', path: '/x/m1.json' },
+          intent: 'triage',
+        },
+        { replyToSessionId: 'sender-id' },
+      );
+      expect(res).toEqual({ ok: true, id: expect.any(String) });
+
+      const history = await manager.getWorkerOutputHistory(session.id, worker!.id, 0);
+      expect(history).not.toBeNull();
+      const userMessageLine = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; text?: string; notification?: { kind: string; summary?: string } })
+        .find((event) => event.type === 'user-message');
+      expect(userMessageLine?.notification).toEqual({ kind: 'internal-message', summary: 'Message from session Sender' });
+      expect(userMessageLine?.text).toContain('[internal:message]');
+      expect(userMessageLine?.text).toContain('[Reply Instructions]');
+
+      // Teardown (mirrors the sibling tests in this describe block).
+      const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+      simulateExit(0);
+      await deactivatePromise;
+    });
   });
 
   describe('MCP token registry sharing (Phase 4)', () => {
