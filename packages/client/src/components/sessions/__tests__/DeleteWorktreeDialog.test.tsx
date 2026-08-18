@@ -1,42 +1,42 @@
-import { describe, it, expect, mock, afterEach, afterAll } from 'bun:test';
-import { screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
-import { DeleteWorktreeDialog, type DeleteWorktreeDialogProps } from '../DeleteWorktreeDialog';
-import { WorktreeDeletionTasksContext } from '../../../contexts/root-contexts';
-import type { UseWorktreeDeletionTasksReturn } from '../../../hooks/useWorktreeDeletionTasks';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { screen, cleanup, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
+import { WorktreeDeletionTasksContext } from '../../../contexts/root-contexts';
+import { DeleteWorktreeDialog } from '../DeleteWorktreeDialog';
+import type { UseWorktreeDeletionTasksReturn } from '../../../hooks/useWorktreeDeletionTasks';
 
-// DeleteWorktreeDialog resolves addTask/markAsFailed from
-// WorktreeDeletionTasksContext (re-exported by routes/__root) and navigate
-// from @tanstack/react-router. Mirrors PauseSessionDialog.test.tsx's pattern
-// (a real router via renderWithRouter + a real Context.Provider fed a mock
-// return value) instead of `mock.module`-ing routes/__root or the router
-// package -- mock.module is process-global in bun:test and would poison
-// every other test file that real-imports those modules in the same process
-// (testing.md Anti-Pattern #2).
+// deleteWorktreeAsync uses manual fetch (wildcard route), so mock at the
+// network boundary per testing.md rather than mocking lib/api.
 const originalFetch = globalThis.fetch;
-let resolveDeleteWorktree: (() => void) | null = null;
-let rejectDeleteWorktree: ((err: Error) => void) | null = null;
-const mockFetch = mock(
-  (_input: RequestInfo | URL, _init?: RequestInit) =>
-    new Promise<Response>((resolve, reject) => {
-      resolveDeleteWorktree = () => resolve(new Response(JSON.stringify({ accepted: true }), { status: 200 }));
-      rejectDeleteWorktree = (err) => reject(err);
-    })
-);
-globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
+const mockFetch = mock(() => Promise.resolve(new Response()));
+
+beforeEach(() => {
+  globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
+  mockFetch.mockReset();
+});
+
+afterEach(() => {
+  cleanup();
+});
 
 afterAll(() => {
   globalThis.fetch = originalFetch;
 });
 
-afterEach(() => {
-  cleanup();
-  mockFetch.mockClear();
-  resolveDeleteWorktree = null;
-  rejectDeleteWorktree = null;
-});
+function jsonResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
+  const { status = 200, ok = true } = options;
+  return {
+    ok,
+    status,
+    statusText: ok ? 'OK' : 'Error',
+    json: () => Promise.resolve(body),
+  } as unknown as Response;
+}
 
-function createMockDeletionTasks(overrides: Partial<UseWorktreeDeletionTasksReturn> = {}): UseWorktreeDeletionTasksReturn {
+function createMockDeletionContext(
+  overrides?: Partial<UseWorktreeDeletionTasksReturn>
+): UseWorktreeDeletionTasksReturn {
   return {
     tasks: [],
     addTask: mock(() => {}),
@@ -49,112 +49,79 @@ function createMockDeletionTasks(overrides: Partial<UseWorktreeDeletionTasksRetu
   };
 }
 
-async function renderDialog(
-  props: Partial<DeleteWorktreeDialogProps> = {},
-  deletionTasks: UseWorktreeDeletionTasksReturn = createMockDeletionTasks(),
-  initialPath = '/some-session-page'
-) {
-  const defaultProps: DeleteWorktreeDialogProps = {
-    open: true,
-    onOpenChange: mock(() => {}),
-    repositoryId: 'repo-1',
-    worktreePath: '/tmp/worktrees/repo-1/feature-branch',
-    sessionId: 'session-1',
-  };
-
-  return renderWithRouter(
-    <WorktreeDeletionTasksContext.Provider value={deletionTasks}>
-      <DeleteWorktreeDialog {...defaultProps} {...props} />
+async function renderDialog(ctx?: UseWorktreeDeletionTasksReturn, initialPath = '/') {
+  const onOpenChange = mock(() => {});
+  const context = ctx ?? createMockDeletionContext();
+  const result = await renderWithRouter(
+    <WorktreeDeletionTasksContext.Provider value={context}>
+      <DeleteWorktreeDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        repositoryId="repo-1"
+        worktreePath="/path/to/worktree"
+        sessionId="session-1"
+        sessionTitle="My Session"
+      />
     </WorktreeDeletionTasksContext.Provider>,
     initialPath
   );
+  return { ...result, onOpenChange, context };
 }
 
 describe('DeleteWorktreeDialog', () => {
-  it('adds a deletion task, closes the dialog, navigates home, and calls the delete API on confirm', async () => {
-    const onOpenChange = mock(() => {});
-    const deletionTasks = createMockDeletionTasks();
-    const { router } = await renderDialog({ onOpenChange }, deletionTasks);
+  it('addTask is keyed off the server-generated jobId, not a client-generated id (new-mechanism contract)', async () => {
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValue(jsonResponse({ accepted: true, jobId: 'server-job-999' }));
+    const { context, onOpenChange } = await renderDialog();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Worktree' }));
+    await user.click(screen.getByRole('button', { name: 'Delete Worktree' }));
 
-    // Assert synchronously (before resolving the mocked fetch promise) --
-    // addTask/onOpenChange/navigate all happen before the API call is
-    // awaited, matching PauseSessionDialog's Issue #1247 pattern.
-    expect(deletionTasks.addTask).toHaveBeenCalledTimes(1);
-    const addTaskArg = (deletionTasks.addTask as ReturnType<typeof mock>).mock.calls[0]?.[0] as {
-      id: string;
-      sessionId: string;
-      sessionTitle: string;
-      repositoryId: string;
-      worktreePath: string;
-    };
-    expect(typeof addTaskArg.id).toBe('string');
-    expect(addTaskArg.id.length).toBeGreaterThan(0);
-    expect(addTaskArg.sessionId).toBe('session-1');
-    expect(addTaskArg.repositoryId).toBe('repo-1');
-    expect(addTaskArg.worktreePath).toBe('/tmp/worktrees/repo-1/feature-branch');
-
+    // Dialog closes and navigates immediately, before the network call resolves.
     expect(onOpenChange).toHaveBeenCalledWith(false);
-    expect(router.state.location.pathname).toBe('/');
-
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const requestedUrl = (mockFetch.mock.calls[0]?.[0] as string | URL).toString();
-    expect(requestedUrl).toContain(`taskId=${addTaskArg.id}`);
-
-    resolveDeleteWorktree?.();
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
-    expect(deletionTasks.markAsFailed).not.toHaveBeenCalled();
-  });
-
-  it('marks the task as failed with the error message when the delete API call rejects', async () => {
-    const deletionTasks = createMockDeletionTasks();
-    await renderDialog({}, deletionTasks);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Delete Worktree' }));
-
-    const addTaskArg = (deletionTasks.addTask as ReturnType<typeof mock>).mock.calls[0]?.[0] as { id: string };
-
-    rejectDeleteWorktree?.(new Error('Network error'));
 
     await waitFor(() => {
-      expect(deletionTasks.markAsFailed).toHaveBeenCalledWith(addTaskArg.id, 'Network error');
+      expect(context.addTask).toHaveBeenCalledTimes(1);
+    });
+    expect(context.addTask).toHaveBeenCalledWith({
+      id: 'server-job-999',
+      sessionId: 'session-1',
+      sessionTitle: 'My Session',
+      repositoryId: 'repo-1',
+      worktreePath: '/path/to/worktree',
     });
   });
 
-  it('still produces a valid taskId and calls addTask/deleteWorktreeAsync when crypto.randomUUID is unavailable (non-secure context, #1345)', async () => {
-    // Simulate non-secure context: crypto exists but without randomUUID
-    // (same technique as lib/__tests__/id.test.ts's "non-secure context
-    // fallback" block). This proves the renamed generateClientId import at
-    // this call site actually routes through the guarded fallback, not
-    // just that the helper itself works in isolation.
-    const originalCrypto = globalThis.crypto;
-    Object.defineProperty(globalThis, 'crypto', {
-      value: { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) },
-      writable: true,
-      configurable: true,
-    });
+  it('sends the async=true query param (bug-polarity: old taskId param must be gone)', async () => {
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValue(jsonResponse({ accepted: true, jobId: 'job-1' }));
+    await renderDialog();
 
-    try {
-      const deletionTasks = createMockDeletionTasks();
+    await user.click(screen.getByRole('button', { name: 'Delete Worktree' }));
 
-      await renderDialog({}, deletionTasks);
-      // No try/catch here: if handleDeleteWorktree threw synchronously (the
-      // pre-fix crypto.randomUUID() call would throw when crypto lacks
-      // randomUUID), fireEvent.click would surface it and fail the test.
-      fireEvent.click(screen.getByRole('button', { name: 'Delete Worktree' }));
-
-      expect(deletionTasks.addTask).toHaveBeenCalled();
-      const addTaskArg = (deletionTasks.addTask as ReturnType<typeof mock>).mock.calls[0]?.[0] as { id: string };
-      expect(typeof addTaskArg.id).toBe('string');
-      expect(addTaskArg.id.length).toBeGreaterThan(0);
+    await waitFor(() => {
       expect(mockFetch).toHaveBeenCalled();
-    } finally {
-      Object.defineProperty(globalThis, 'crypto', {
-        value: originalCrypto,
-        writable: true,
-        configurable: true,
-      });
-    }
+    });
+    const calls = mockFetch.mock.calls as unknown[][];
+    const url = String(calls[calls.length - 1]?.[0]);
+    expect(url).toContain('async=true');
+    expect(url).not.toContain('taskId=');
+  });
+
+  it('does not add a task when the API call fails immediately, and surfaces the error instead (bug-polarity: prior code navigated away before the failure could be shown, unmounting the ErrorDialog)', async () => {
+    const user = userEvent.setup();
+    mockFetch.mockResolvedValue(
+      jsonResponse({ error: 'Network unreachable' }, { ok: false, status: 500 })
+    );
+    const { context, router } = await renderDialog(undefined, '/session/session-1');
+
+    await user.click(screen.getByRole('button', { name: 'Delete Worktree' }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Network unreachable')).toBeTruthy();
+    });
+    expect(context.addTask).not.toHaveBeenCalled();
+    // The component must still be mounted for the error to be visible above,
+    // which requires that navigation did NOT happen on an immediate failure.
+    expect(router.state.location.pathname).not.toBe('/');
   });
 });

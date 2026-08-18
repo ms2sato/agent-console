@@ -535,6 +535,45 @@ describe('API Client', () => {
     });
   });
 
+  describe('deleteWorktreeAsync', () => {
+    // NOTE: deleteWorktreeAsync still uses manual fetch because the server uses a wildcard route
+    it('sends ?async=true and returns the server-generated jobId', async () => {
+      const { deleteWorktreeAsync } = await import('../api');
+      mockFetch.mockResolvedValue(createMockResponse({ accepted: true, jobId: 'job-123' }));
+
+      const result = await deleteWorktreeAsync('repo-id', '/path/to/worktree');
+
+      expect(getLastFetchUrl()).toBe('/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree?async=true');
+      expect(getLastFetchMethod()).toBe('DELETE');
+      expect(result).toEqual({ accepted: true, jobId: 'job-123' });
+    });
+
+    it('includes force flag alongside async when specified', async () => {
+      const { deleteWorktreeAsync } = await import('../api');
+      mockFetch.mockResolvedValue(createMockResponse({ accepted: true, jobId: 'job-456' }));
+
+      await deleteWorktreeAsync('repo-id', '/path/to/worktree', true);
+
+      expect(getLastFetchUrl()).toBe(
+        '/api/repositories/repo-id/worktrees/%2Fpath%2Fto%2Fworktree?force=true&async=true'
+      );
+    });
+
+    it('throws error on failure', async () => {
+      const { deleteWorktreeAsync } = await import('../api');
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 409,
+        statusText: 'Conflict',
+        json: mock(() => Promise.resolve({ error: 'Deletion already in progress' })),
+      } as unknown as Response);
+
+      await expect(deleteWorktreeAsync('repo-id', '/path')).rejects.toThrow(
+        'Deletion already in progress'
+      );
+    });
+  });
+
   describe('fetchAgents', () => {
     it('should fetch agents successfully', async () => {
       const { fetchAgents } = await import('../api');

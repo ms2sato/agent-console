@@ -6,7 +6,7 @@ import type { AppBindings } from '../../app-context.js';
 import type { WorktreeService } from '../../services/worktree-service.js';
 import type { RepositoryManager } from '../../services/repository-manager.js';
 import type { SessionManager } from '../../services/session-manager.js';
-import type { AppServerMessage, Repository } from '@agent-console/shared';
+import type { AppServerMessage, Repository, WorktreeDeletePayload } from '@agent-console/shared';
 import { asAppContext, TEST_AUTH_USER } from '../../__tests__/test-utils.js';
 import { mockGit, resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -15,6 +15,11 @@ import { CLAUDE_CODE_AGENT_ID } from '../../services/agent-manager.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import type { AuthUser } from '@agent-console/shared';
+import { JobQueue, type JobHandler } from '../../jobs/index.js';
+import { registerWorktreeDeleteJobHandler } from '../../jobs/worktree-delete-job-handler.js';
+import { createDatabaseForTest } from '../../database/connection.js';
+import type { Kysely } from 'kysely';
+import type { Database } from '../../database/schema.js';
 
 // ---------------------------------------------------------------------------
 // Test constants
@@ -1391,73 +1396,201 @@ describe('Worktrees API', () => {
       expect(requestUsername).toBe('testuser');
     });
 
-    it('should broadcast worktree-deletion-completed with empty sessionIds when repository is unregistered (orphan async path, refs #815)', async () => {
-      // Refs #815. When the repository row is missing from the in-memory
-      // registry (e.g., the primary repo dir was deleted out-of-band so
-      // RepositoryManager.initialize() skipped it), the worktree has lost
-      // its anchor. The deletion service routes into git-less orphan
-      // cleanup and the route must emit a SUCCESS broadcast — not failure
-      // — with the worktree's session IDs (here: [] because no sessions
-      // were registered against this orphaned worktree).
-      //
-      // This replaces an earlier regression test (PR #816) that asserted
-      // a worktree-deletion-failed broadcast. That contract is obsolete:
-      // the deletion service no longer gives up partway when the repo is
-      // unregistered.
-      const broadcasts: AppServerMessage[] = [];
+    // =======================================================================
+    // Async mode (?async=true), driven through a real JobQueue (Issue #1327)
+    // =======================================================================
+    //
+    // The route no longer processes anything in the background -- it just
+    // enqueues a `worktree:delete` job and returns. `testJobQueue` is backed
+    // by a standalone in-memory database and is NEVER `.start()`ed, so
+    // enqueued jobs stay `pending`; tests drive the handler deterministically
+    // via `driveEnqueuedWorktreeDeleteJob` instead of racing a background
+    // timer (mirrors `repository-manager.test.ts`'s
+    // `runLatestCleanupRepositoryJob` pattern).
+    describe('async mode (?async=true) via job queue (Issue #1327)', () => {
+      let testDb: Kysely<Database> | null = null;
+      let testJobQueue: JobQueue | null = null;
 
-      const mockSessionManager = {
-        getAllSessions: () => [],
-        killSessionWorkers: mock(() => Promise.resolve()),
-        deleteSession: mock(() => Promise.resolve(true)),
-      } as unknown as SessionManager;
-
-      app = new Hono<AppBindings>();
-      app.use('*', async (c, next) => {
-        c.set('appContext', asAppContext({
-          repositoryManager: mockRepositoryManager,
-          worktreeService: mockWorktreeService,
-          sessionManager: mockSessionManager,
-          broadcastToApp: (msg) => { broadcasts.push(msg); },
-        }));
-        await next();
+      beforeEach(async () => {
+        testDb = await createDatabaseForTest();
+        testJobQueue = new JobQueue(testDb);
       });
-      app.onError(onApiError);
-      app.route('/api', api);
 
-      const unknownRepoId = 'non-existent-repo-id';
-      const res = await app.request(
-        `/api/repositories/${unknownRepoId}/worktrees/${encodedPath(WORKTREE_PATH)}?taskId=test-orphan-task`,
-        { method: 'DELETE' },
-      );
+      afterEach(async () => {
+        if (testJobQueue) {
+          await testJobQueue.stop();
+          testJobQueue = null;
+        }
+        if (testDb) {
+          await testDb.destroy();
+          testDb = null;
+        }
+      });
 
-      // Async path returns 202 immediately even when the repo is missing
-      expect(res.status).toBe(202);
+      /**
+       * Fetch the single enqueued `worktree:delete` job's payload and run it
+       * through the REAL `registerWorktreeDeleteJobHandler` handler (not a
+       * re-implementation), via a capture-only fake queue -- same harness
+       * shape as `jobs/__tests__/handlers.test.ts` and
+       * `repository-manager.test.ts`'s `runLatestCleanupRepositoryJob`.
+       */
+      async function driveEnqueuedWorktreeDeleteJob(
+        sessionManager: SessionManager,
+        broadcastToApp: (msg: AppServerMessage) => void,
+      ): Promise<void> {
+        const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
+        expect(jobs.length).toBe(1);
+        const payload = JSON.parse(jobs[0]!.payload) as WorktreeDeletePayload;
 
-      // Wait for the background fire-and-forget task to complete
-      await new Promise((resolve) => setTimeout(resolve, 100));
+        const handlers = new Map<string, JobHandler<unknown>>();
+        const fakeQueue = {
+          registerHandler: <T>(type: string, handler: JobHandler<T>) => {
+            handlers.set(type, handler as JobHandler<unknown>);
+          },
+        } as unknown as JobQueue;
 
-      const completedBroadcasts = broadcasts.filter(
-        (b): b is Extract<AppServerMessage, { type: 'worktree-deletion-completed' }> =>
-          b.type === 'worktree-deletion-completed' && b.taskId === 'test-orphan-task',
-      );
-      expect(completedBroadcasts.length).toBe(1);
-      expect(completedBroadcasts[0].sessionIds).toEqual([]);
+        registerWorktreeDeleteJobHandler(fakeQueue, {
+          deletionDeps: {
+            worktreeService: mockWorktreeService,
+            sessionManager,
+            repositoryManager: mockRepositoryManager,
+            findOpenPullRequest: async () => null,
+            getCurrentBranch: async () => 'feature-branch',
+          },
+          broadcastToApp,
+        });
 
-      // No failure should be emitted for the orphan path.
-      const failedBroadcasts = broadcasts.filter(
-        (b) => b.type === 'worktree-deletion-failed' && b.taskId === 'test-orphan-task',
-      );
-      expect(failedBroadcasts.length).toBe(0);
+        const handler = handlers.get('worktree:delete')!;
+        await handler(payload);
+      }
 
-      // The git-less helper must be the one that ran (not the git-bound removeWorktree).
-      // The route threads `authUser.username` ('testuser' in the test fixture)
-      // down to the helper for Issue #882 multi-user elevation. In single-user
-      // mode `runAsUser` ignores the value, but the route still passes it
-      // — this assertion is the boundary test that proves the route closes
-      // the threading gap end-to-end.
-      expect(mockWorktreeService.removeOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, 'testuser');
-      expect(mockWorktreeService.removeWorktree).not.toHaveBeenCalled();
+      it('should return 409 when deletion already in progress and must not enqueue a job', async () => {
+        _getDeletionsInProgress().add(WORKTREE_PATH);
+
+        app = new Hono<AppBindings>();
+        app.use('*', async (c, next) => {
+          c.set('appContext', asAppContext({
+            repositoryManager: mockRepositoryManager,
+            worktreeService: mockWorktreeService,
+            jobQueue: testJobQueue!,
+          }));
+          await next();
+        });
+        app.onError(onApiError);
+        app.route('/api', api);
+
+        const res = await app.request(
+          `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}?async=true`,
+          { method: 'DELETE' },
+        );
+
+        expect(res.status).toBe(409);
+        const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
+        expect(jobs.length).toBe(0);
+      });
+
+      it('should return 409 when pull is in progress and must not enqueue a job', async () => {
+        _getPullsInProgress().add(WORKTREE_PATH);
+
+        app = new Hono<AppBindings>();
+        app.use('*', async (c, next) => {
+          c.set('appContext', asAppContext({
+            repositoryManager: mockRepositoryManager,
+            worktreeService: mockWorktreeService,
+            jobQueue: testJobQueue!,
+          }));
+          await next();
+        });
+        app.onError(onApiError);
+        app.route('/api', api);
+
+        const res = await app.request(
+          `/api/repositories/${TEST_REPO.id}/worktrees/${encodedPath(WORKTREE_PATH)}?async=true`,
+          { method: 'DELETE' },
+        );
+
+        expect(res.status).toBe(409);
+        const jobs = await testJobQueue!.getJobs({ type: 'worktree:delete' });
+        expect(jobs.length).toBe(0);
+      });
+
+      it('should broadcast worktree-deletion-completed with empty sessionIds when repository is unregistered (orphan async path, refs #815, #1327)', async () => {
+        // Refs #815. When the repository row is missing from the in-memory
+        // registry (e.g., the primary repo dir was deleted out-of-band so
+        // RepositoryManager.initialize() skipped it), the worktree has lost
+        // its anchor. The deletion service routes into git-less orphan
+        // cleanup and the handler must emit a SUCCESS broadcast — not
+        // failure — with the worktree's session IDs (here: [] because no
+        // sessions were registered against this orphaned worktree).
+        const broadcasts: AppServerMessage[] = [];
+
+        const mockSessionManager = {
+          getAllSessions: () => [],
+          killSessionWorkers: mock(() => Promise.resolve()),
+          deleteSession: mock(() => Promise.resolve(true)),
+        } as unknown as SessionManager;
+
+        app = new Hono<AppBindings>();
+        app.use('*', async (c, next) => {
+          c.set('appContext', asAppContext({
+            repositoryManager: mockRepositoryManager,
+            worktreeService: mockWorktreeService,
+            sessionManager: mockSessionManager,
+            jobQueue: testJobQueue!,
+          }));
+          await next();
+        });
+        app.onError(onApiError);
+        app.route('/api', api);
+
+        const unknownRepoId = 'non-existent-repo-id';
+        const res = await app.request(
+          `/api/repositories/${unknownRepoId}/worktrees/${encodedPath(WORKTREE_PATH)}?async=true`,
+          { method: 'DELETE' },
+        );
+
+        // Async path returns 202 immediately with the server-generated jobId.
+        expect(res.status).toBe(202);
+        const body = (await res.json()) as { accepted: boolean; jobId: string };
+        expect(body.accepted).toBe(true);
+        expect(typeof body.jobId).toBe('string');
+        expect(body.jobId.length).toBeGreaterThan(0);
+
+        // The job was enqueued with maxAttempts: 1 -- deletion must not be
+        // silently retried.
+        const job = await testJobQueue!.getJob(body.jobId);
+        expect(job).not.toBeNull();
+        expect(job!.type).toBe('worktree:delete');
+        expect(job!.max_attempts).toBe(1);
+        expect(job!.status).toBe('pending');
+
+        // Nothing has run yet -- testJobQueue is never started. Drive the
+        // handler deterministically.
+        await driveEnqueuedWorktreeDeleteJob(mockSessionManager, (msg) => broadcasts.push(msg));
+
+        const completedBroadcasts = broadcasts.filter(
+          (b): b is Extract<AppServerMessage, { type: 'worktree-deletion-completed' }> =>
+            b.type === 'worktree-deletion-completed' && b.taskId === body.jobId,
+        );
+        expect(completedBroadcasts.length).toBe(1);
+        expect(completedBroadcasts[0].sessionIds).toEqual([]);
+
+        // No failure should be emitted for the orphan path.
+        const failedBroadcasts = broadcasts.filter(
+          (b) => b.type === 'worktree-deletion-failed' && b.taskId === body.jobId,
+        );
+        expect(failedBroadcasts.length).toBe(0);
+
+        // The git-less helper must be the one that ran (not the git-bound
+        // removeWorktree). The payload threads `authUser.username`
+        // ('testuser' in the test fixture) down to the helper for Issue
+        // #882 multi-user elevation. In single-user mode `runAsUser`
+        // ignores the value, but the payload still carries it -- this
+        // assertion is the boundary test that proves the enqueue closes
+        // the threading gap end-to-end.
+        expect(mockWorktreeService.removeOrphanedWorktree).toHaveBeenCalledWith(WORKTREE_PATH, 'testuser');
+        expect(mockWorktreeService.removeWorktree).not.toHaveBeenCalled();
+      });
     });
   });
 });

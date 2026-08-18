@@ -42,6 +42,7 @@ import { initializeInboundIntegration } from './services/inbound/index.js';
 import { initializeDatabase, createDatabaseForTest, closeDatabase, getGlobalDatabase } from './database/connection.js';
 import { JobQueue as JobQueueClass } from './jobs/job-queue.js';
 import { registerJobHandlers } from './jobs/handlers.js';
+import { registerWorktreeDeleteJobHandler } from './jobs/worktree-delete-job-handler.js';
 import { SqliteSessionRepository } from './repositories/sqlite-session-repository.js';
 import { SqliteRepositoryRepository } from './repositories/sqlite-repository-repository.js';
 import { SessionManager as SessionManagerClass } from './services/session-manager.js';
@@ -77,6 +78,7 @@ import { MemoService } from './services/memo-service.js';
 import { BranchWatcherService } from './services/branch-watcher-service.js';
 import { suggestSessionMetadata } from './services/session-metadata-suggester.js';
 import { fetchPullRequestUrl, findOpenPullRequest } from './services/github-pr-service.js';
+import { getCurrentBranch } from './lib/git.js';
 import { fetchGitHubIssue } from './services/github-issue-service.js';
 import { generateRepositoryDescription } from './services/repository-description-generator.js';
 import { RepositoryCloneService } from './services/repository-clone-service.js';
@@ -359,6 +361,18 @@ export async function createAppContext(
     usernameLookup,
   });
 
+  // 6.4. Register the worktree:delete job handler now that worktreeService,
+  // repositoryManager, and sessionManager all exist. Registered separately
+  // from registerJobHandlers (called early in step 2) -- see
+  // registerWorktreeDeleteJobHandler's JSDoc for why. Safe relative to
+  // jobQueue.start() (already called in step 2): registerHandler is just a
+  // Map.set, and no worktree:delete job can be enqueued until the HTTP
+  // route is live, i.e. after this function returns.
+  registerWorktreeDeleteJobHandler(jobQueue, {
+    deletionDeps: { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
+    broadcastToApp: options?.broadcastToApp ?? (() => {}),
+  });
+
   // 6.5. Create timer manager with persistence
   const timerRepository = new SqliteTimerRepository(db);
   const timerManager = new TimerManagerClass((timer) => {
@@ -625,6 +639,8 @@ export interface CreateTestContextOptions {
    * want a real filesystem write should inject an always-success fake here.
    */
   runAsUserImpl?: typeof runAsUser;
+  /** Callback to broadcast messages to app WebSocket clients (default: no-op). */
+  broadcastToApp?: (msg: AppServerMessage) => void;
 }
 
 /**
@@ -739,6 +755,14 @@ export async function createTestContext(
     usernameLookup,
   });
 
+  // Register the worktree:delete job handler now that worktreeService,
+  // repositoryManager, and sessionManager all exist (see the analogous
+  // comment in createAppContext for why this is a separate registration).
+  registerWorktreeDeleteJobHandler(jobQueue, {
+    deletionDeps: { worktreeService, sessionManager, repositoryManager, findOpenPullRequest, getCurrentBranch },
+    broadcastToApp: overrides?.broadcastToApp ?? (() => {}),
+  });
+
   // Wire cross-dependencies
   repositoryManager.setDependencyCallbacks({
     getSessionsUsingRepository: (repoId) =>
@@ -819,7 +843,7 @@ export async function createTestContext(
     conditionalWakeupManager,
     interactiveProcessManager,
     inboundIntegration,
-    broadcastToApp: () => {},
+    broadcastToApp: overrides?.broadcastToApp ?? (() => {}),
     fetchPullRequestUrl,
     findOpenPullRequest,
     fetchGitHubIssue,

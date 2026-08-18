@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'bun:test';
+import { JOB_TYPES, type AppServerMessage, type WorktreeDeletePayload } from '@agent-console/shared';
 import {
   createAppContext,
   createTestContext,
@@ -139,6 +140,50 @@ describe('AppContext', () => {
       expect(() => {
         appContext!.notificationManager.cleanupSession('non-existent');
       }).not.toThrow();
+    });
+
+    it('should process an enqueued worktree:delete job end-to-end through the real construction path (Issue #1327)', async () => {
+      // Proves `registerWorktreeDeleteJobHandler`'s `deletionDeps` and
+      // `broadcastToApp` were both correctly threaded through the real
+      // createTestContext() construction path -- not through a hand-built
+      // fake queue in a route test (see routes/__tests__/worktrees.test.ts
+      // for that layer). A worktreePath outside the managed repositories
+      // directory makes `deleteWorktree` fail deterministically and fast
+      // (errorType: 'validation'), with no real git/filesystem setup
+      // needed.
+      const broadcasts: AppServerMessage[] = [];
+      appContext = await createTestContext({
+        broadcastToApp: (msg) => broadcasts.push(msg),
+      });
+
+      const jobId = crypto.randomUUID();
+      const payload: WorktreeDeletePayload = {
+        jobId,
+        repoId: 'nonexistent-repo',
+        worktreePath: '/not/a/managed/path',
+        force: false,
+        requestUsername: null,
+      };
+      await appContext.jobQueue.enqueue(JOB_TYPES.WORKTREE_DELETE, payload, { jobId, maxAttempts: 1 });
+
+      // createTestContext() starts the job queue by default; poll for the
+      // job to reach a terminal state (async processing). Stops on ANY
+      // terminal status (not just 'stalled') so an unexpected 'completed'
+      // doesn't burn the whole poll budget before the assertion below
+      // fails fast with a clear mismatch.
+      let job = await appContext.jobQueue.getJob(jobId);
+      for (let i = 0; i < 100 && job?.status !== 'stalled' && job?.status !== 'completed'; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        job = await appContext.jobQueue.getJob(jobId);
+      }
+
+      expect(job?.status).toBe('stalled');
+      expect(job?.last_error).toContain('outside managed directory');
+
+      const failedBroadcasts = broadcasts.filter(
+        (b) => b.type === 'worktree-deletion-failed' && b.taskId === jobId,
+      );
+      expect(failedBroadcasts.length).toBe(1);
     });
   });
 });

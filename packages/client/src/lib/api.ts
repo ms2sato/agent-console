@@ -513,9 +513,11 @@ export async function deleteWorktree(
 
 /**
  * Delete a worktree asynchronously.
- * The request includes a client-generated taskId for correlation.
- * Returns immediately with `{ accepted: true }`.
- * Listen to WebSocket for `worktree-deletion-completed` or `worktree-deletion-failed` events.
+ * The server enqueues a durable `worktree:delete` job and returns its
+ * server-generated `jobId` immediately with `{ accepted: true, jobId }`.
+ * Listen to WebSocket for `worktree-deletion-completed` or
+ * `worktree-deletion-failed` events (the `taskId` field on those payloads
+ * carries this same job id), or use `fetchJob(jobId)` as a recovery path.
  *
  * NOTE: This endpoint uses manual fetch because the server route uses a wildcard pattern
  * (`DELETE /:id/worktrees/*`) which Hono RPC client doesn't handle well.
@@ -523,12 +525,11 @@ export async function deleteWorktree(
 export async function deleteWorktreeAsync(
   repositoryId: string,
   worktreePath: string,
-  taskId: string,
   force: boolean = false
-): Promise<{ accepted: true }> {
+): Promise<{ accepted: true; jobId: string }> {
   const params = new URLSearchParams();
   if (force) params.set('force', 'true');
-  params.set('taskId', taskId);
+  params.set('async', 'true');
   const url = `${API_BASE}/repositories/${repositoryId}/worktrees/${encodeURIComponent(worktreePath)}?${params.toString()}`;
   const res = await fetch(url, {
     method: 'DELETE',

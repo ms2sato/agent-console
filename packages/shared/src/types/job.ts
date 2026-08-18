@@ -49,6 +49,12 @@ export const JOB_TYPES = {
   CLEANUP_REPOSITORY: 'cleanup:repository',
 
   /**
+   * Remove a worktree (and its matching sessions) asynchronously.
+   * Payload: WorktreeDeletePayload
+   */
+  WORKTREE_DELETE: 'worktree:delete',
+
+  /**
    * Process an inbound event from an external service (e.g., GitHub webhook).
    * Payload: InboundEventJobPayload
    */
@@ -123,6 +129,26 @@ export interface CleanupRepositoryPayload {
 }
 
 /**
+ * Payload for worktree:delete job.
+ *
+ * `jobId` duplicates the job's own persisted id (same pattern as
+ * `InboundEventJobPayload.jobId`) so the handler can stamp WebSocket
+ * broadcasts with `taskId` without a second lookup back into the queue.
+ *
+ * `requestUsername` carries the requesting OS username the same way
+ * `CleanupRepositoryPayload` does: multi-user elevation for the
+ * worktree-owning user's `git worktree remove` / fallback `rm -rf`, and
+ * for the `gh pr list` open-PR check inside `deleteWorktree`.
+ */
+export interface WorktreeDeletePayload {
+  jobId: string;
+  repoId: string;
+  worktreePath: string;
+  force: boolean;
+  requestUsername: string | null;
+}
+
+/**
  * Payload for inbound-event:process job.
  */
 export interface InboundEventJobPayload {
@@ -140,6 +166,7 @@ export type JobPayload =
   | CleanupSessionOutputsPayload
   | CleanupWorkerOutputPayload
   | CleanupRepositoryPayload
+  | WorktreeDeletePayload
   | InboundEventJobPayload;
 
 /**

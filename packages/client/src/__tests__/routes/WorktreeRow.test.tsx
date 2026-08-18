@@ -1,5 +1,6 @@
-import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
-import { screen, cleanup } from '@testing-library/react';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { screen, within, cleanup, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { renderWithRouter } from '../../test/renderWithRouter';
 import { WorktreeDeletionTasksContext, SessionStopTasksContext } from '../../contexts/root-contexts';
 import { setCapabilities } from '../../lib/capabilities';
@@ -18,6 +19,30 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+// deleteWorktreeAsync uses manual fetch (wildcard route), mocked at the
+// network boundary per testing.md.
+const originalFetch = globalThis.fetch;
+const mockFetch = mock(() => Promise.resolve(new Response()));
+
+beforeEach(() => {
+  globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
+  mockFetch.mockReset();
+});
+
+afterAll(() => {
+  globalThis.fetch = originalFetch;
+});
+
+function jsonResponse(body: unknown, options: { status?: number; ok?: boolean } = {}) {
+  const { status = 200, ok = true } = options;
+  return {
+    ok,
+    status,
+    statusText: ok ? 'OK' : 'Error',
+    json: () => Promise.resolve(body),
+  } as unknown as Response;
+}
 
 // -- Test data factories --
 
@@ -213,6 +238,47 @@ describe('WorktreeRow', () => {
 
       expect(screen.getByText('Deleting...')).not.toBeNull();
       expect(screen.queryByText('Delete')).toBeNull();
+    });
+
+    it('addTask is keyed off the server-generated jobId, not a client-generated id (new-mechanism contract)', async () => {
+      const user = userEvent.setup();
+      mockFetch.mockResolvedValue(jsonResponse({ accepted: true, jobId: 'server-job-123' }));
+      const worktree = createTestWorktree();
+      const session = createTestSession();
+      const ctx = createMockDeletionContext();
+
+      await renderWorktreeRow({ worktree, session }, ctx);
+
+      await user.click(screen.getByText('Delete'));
+      const dialog = await screen.findByRole('alertdialog');
+      await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() => {
+        expect(ctx.addTask).toHaveBeenCalledTimes(1);
+      });
+      expect(ctx.addTask).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'server-job-123', worktreePath: worktree.path })
+      );
+    });
+
+    it('does not add a task and surfaces an error dialog when the API call fails immediately (invariant-preservation: no task exists to attach the failure to)', async () => {
+      const user = userEvent.setup();
+      mockFetch.mockResolvedValue(
+        jsonResponse({ error: 'Deletion already in progress' }, { ok: false, status: 409 })
+      );
+      const worktree = createTestWorktree();
+      const ctx = createMockDeletionContext();
+
+      await renderWorktreeRow({ worktree }, ctx);
+
+      await user.click(screen.getByText('Delete'));
+      const dialog = await screen.findByRole('alertdialog');
+      await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+
+      await waitFor(() => {
+        expect(screen.getByText('Deletion already in progress')).toBeTruthy();
+      });
+      expect(ctx.addTask).not.toHaveBeenCalled();
     });
   });
 

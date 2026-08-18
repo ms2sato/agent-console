@@ -193,8 +193,9 @@ describe('SessionSettings', () => {
 
   describe('handleDeleteWorktree', () => {
     it('should call deleteWorktreeAsync and navigate immediately', async () => {
-      // Setup: successful delete response
-      deleteWorktreeResponses.push(createMockResponse({ accepted: true }));
+      // Setup: successful delete response -- the server now generates and
+      // owns the job id (Issue #1327 S2/S3), so the response carries jobId.
+      deleteWorktreeResponses.push(createMockResponse({ accepted: true, jobId: 'server-job-1' }));
 
       const { router } = await renderWithRouterAndContext(
         <SessionSettings {...defaultProps} />,
@@ -203,14 +204,16 @@ describe('SessionSettings', () => {
 
       await openDeleteWorktreeDialogAndConfirm();
 
-      // Verify fetch was called with correct URL and method (now includes taskId in query)
+      // Verify fetch was called with correct URL and method (now includes
+      // async=true instead of a client-generated taskId).
       await waitFor(() => {
         const calls = mockFetch.mock.calls;
         const deleteCall = calls.find((call) =>
           call[0]?.includes('/worktrees/') && call[1]?.method === 'DELETE'
         );
         expect(deleteCall).toBeTruthy();
-        expect(deleteCall![0]).toContain('taskId=');
+        expect(deleteCall![0]).toContain('async=true');
+        expect(deleteCall![0]).not.toContain('taskId=');
       });
 
       // Should navigate to home immediately (async deletion)
@@ -219,8 +222,8 @@ describe('SessionSettings', () => {
       });
     });
 
-    it('should add a deletion task when delete is initiated', async () => {
-      deleteWorktreeResponses.push(createMockResponse({ accepted: true }));
+    it('should add a deletion task keyed off the server-generated jobId once the API call resolves', async () => {
+      deleteWorktreeResponses.push(createMockResponse({ accepted: true, jobId: 'server-job-2' }));
 
       await renderWithRouterAndContext(
         <SessionSettings {...defaultProps} />,
@@ -229,15 +232,10 @@ describe('SessionSettings', () => {
 
       await openDeleteWorktreeDialogAndConfirm();
 
-      // The dialog now navigates immediately - task is added before navigation
-      // Since we're mocking the context module, we can't easily verify the addTask call
-      // But we can verify the fetch was made with taskId
       await waitFor(() => {
-        const calls = mockFetch.mock.calls;
-        const deleteCall = calls.find((call) =>
-          call[0]?.includes('/worktrees/') && call[1]?.method === 'DELETE'
+        expect(mockDeletionTasks.addTask).toHaveBeenCalledWith(
+          expect.objectContaining({ id: 'server-job-2', repositoryId: 'test-repo-id', worktreePath: '/path/to/worktree' })
         );
-        expect(deleteCall).toBeTruthy();
       });
     });
   });
