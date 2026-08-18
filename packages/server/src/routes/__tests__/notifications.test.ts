@@ -70,13 +70,15 @@ describe('Notification routes', () => {
   let db: Kysely<Database>;
   let artifactRepository: SqliteArtifactRepository;
   let notificationCursorRepository: SqliteNotificationCursorRepository;
+  let testHome: string;
 
   beforeEach(async () => {
     // artifactRepository.create writes a real on-disk HTML file
     // (lib/artifact-storage.ts, Bun-native, bypasses memfs) -- point
     // AGENT_CONSOLE_HOME at a throwaway temp dir, same as
     // routes/__tests__/artifacts.test.ts.
-    process.env.AGENT_CONSOLE_HOME = path.join(os.tmpdir(), `agent-console-notification-routes-test-${randomUUID()}`);
+    testHome = path.join(os.tmpdir(), `agent-console-notification-routes-test-${randomUUID()}`);
+    process.env.AGENT_CONSOLE_HOME = testHome;
     db = await createDatabaseForTest();
     artifactRepository = new SqliteArtifactRepository(db);
     notificationCursorRepository = new SqliteNotificationCursorRepository(db);
@@ -90,6 +92,11 @@ describe('Notification routes', () => {
 
   afterEach(async () => {
     await db.destroy();
+    // Same cleanup pattern as
+    // packages/integration/src/notification-boundary.test.ts: capture
+    // testHome BEFORE restoring the env var (restoring first would lose the
+    // throwaway path this test actually wrote real files into).
+    Bun.spawnSync(['rm', '-rf', testHome]);
     if (originalHome !== undefined) {
       process.env.AGENT_CONSOLE_HOME = originalHome;
     } else {
@@ -182,6 +189,67 @@ describe('Notification routes', () => {
         body: JSON.stringify({ lastSeenAt: farFuture }),
       });
       expect(res.status).toBe(400);
+    });
+
+    it('canonicalizes an offset-format lastSeenAt to UTC before storing/echoing it', async () => {
+      const app = buildApp(artifactRepository, notificationCursorRepository, OWNER);
+      // 2026-08-18T09:00:00+03:00 is 2026-08-18T06:00:00.000Z.
+      const offsetForm = '2026-08-18T09:00:00+03:00';
+      const expectedUtc = '2026-08-18T06:00:00.000Z';
+
+      const res = await app.request('/api/notifications/seen', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastSeenAt: offsetForm }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { lastSeenAt: string };
+      // Pre-fix, the route would echo the raw offset-format string
+      // (`offsetForm`) instead of canonicalizing it -- this assertion fails
+      // against the un-normalized code path.
+      expect(body.lastSeenAt).toBe(expectedUtc);
+
+      const getRes = await app.request('/api/notifications');
+      const getBody = (await getRes.json()) as { lastSeenAt: string | null };
+      expect(getBody.lastSeenAt).toBe(expectedUtc);
+    });
+
+    it('advances the cursor by actual chronological order, not raw lexical string order, across mixed timestamp formats (R2)', async () => {
+      const app = buildApp(artifactRepository, notificationCursorRepository, OWNER);
+
+      // 2026-08-18T09:00:00+03:00 === 2026-08-18T06:00:00.000Z, but as a RAW
+      // (un-normalized) string it sorts lexically AFTER
+      // "2026-08-18T07:00:00.000Z" -- the hour digit '9' compares greater
+      // than '0' at the same character position. Without canonicalization,
+      // storing the raw offset-form string first and then PUTting the
+      // chronologically-later Z-form value would be rejected as a "no-op"
+      // by the repository's lexical `<` guard, even though 07:00Z is
+      // genuinely later than 06:00Z (09:00+03:00).
+      const earlierOffsetForm = '2026-08-18T09:00:00+03:00'; // == 06:00:00.000Z
+      const laterZForm = '2026-08-18T07:00:00.000Z'; // genuinely 1h later
+
+      const firstRes = await app.request('/api/notifications/seen', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastSeenAt: earlierOffsetForm }),
+      });
+      expect(firstRes.status).toBe(200);
+      const firstBody = (await firstRes.json()) as { lastSeenAt: string };
+      expect(firstBody.lastSeenAt).toBe('2026-08-18T06:00:00.000Z');
+
+      const secondRes = await app.request('/api/notifications/seen', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lastSeenAt: laterZForm }),
+      });
+      expect(secondRes.status).toBe(200);
+      const secondBody = (await secondRes.json()) as { lastSeenAt: string };
+      // Pre-fix, the repository would compare the raw stored offset string
+      // ("...+03:00") against the raw Z-form string lexically and could
+      // fail to advance even though 07:00Z is chronologically later than
+      // 06:00Z. Post-fix, both are normalized to Z-form before storage, so
+      // the lexical comparison agrees with chronological order.
+      expect(secondBody.lastSeenAt).toBe(laterZForm);
     });
 
     it('is a no-op (200, unchanged cursor) when lastSeenAt is OLDER than the current cursor (R2)', async () => {

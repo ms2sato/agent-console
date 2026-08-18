@@ -173,6 +173,23 @@ describe('NotificationsSeenRequestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts an offset-format ISO timestamp (non-Z timezone offset) -- pins the schema\'s actual accepted range', () => {
+    // `v.isoTimestamp()` accepts both `Z`-suffixed and `+HH:mm`/`-HH:mm`
+    // offset-suffixed timestamps. This is WHY the route must canonicalize
+    // `lastSeenAt` to UTC before it is compared/stored lexically (see
+    // routes/notifications.ts's PUT /seen handler and R2 in
+    // docs/design/notification-center.md) -- the schema intentionally does
+    // NOT narrow this to Z-only, so the normalization responsibility lives
+    // at the route, not here.
+    const result = v.safeParse(NotificationsSeenRequestSchema, {
+      lastSeenAt: '2026-08-18T09:00:00+03:00',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.lastSeenAt).toBe('2026-08-18T09:00:00+03:00');
+    }
+  });
 });
 
 describe('NotificationsSeenResponseSchema', () => {

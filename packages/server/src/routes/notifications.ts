@@ -65,7 +65,17 @@ const notifications = new Hono<AppBindings>()
       throw new ValidationError('lastSeenAt must not be in the future');
     }
 
-    const current = await notificationCursorRepository.advance(authUser.id, lastSeenAt);
+    // `v.isoTimestamp()` accepts both `Z`-suffixed and `+HH:mm`/`-HH:mm`
+    // offset-suffixed timestamps, but the repository's monotonicity guard
+    // (R2) and NotificationService's unread-count math both do lexical/TEXT
+    // comparison on the stored string. Every other timestamp in this system
+    // is always a normalized UTC `Z` string (artifact `createdAt`, job
+    // `occurredAt`); `lastSeenAt` is the one externally client-supplied
+    // value, so it must be canonicalized to UTC here before it can be
+    // compared or stored lexically.
+    const normalizedLastSeenAt = new Date(parsedTime).toISOString();
+
+    const current = await notificationCursorRepository.advance(authUser.id, normalizedLastSeenAt);
     return c.json({ lastSeenAt: current });
   });
 

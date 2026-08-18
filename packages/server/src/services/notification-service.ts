@@ -74,13 +74,22 @@ async function composeWorktreeDeletionFinished(identity: FeedIdentity, deps: Not
   // low-frequency job type, so fetching without a limit is acceptable in v1;
   // the final FEED_CAP slice in getFeed (applied AFTER merge+sort across all
   // sources) is what bounds the response size, not this fetch.
-  const jobs = await deps.jobs.getJobs({ type: JOB_TYPES.WORKTREE_DELETE });
+  //
+  // Status is filtered at the fetch (COMPLETED + STALLED only, the two
+  // terminal statuses this feed shows per R4.5) rather than fetching every
+  // status and discarding non-terminal rows in the loop below. This is safe
+  // alongside the R-3 fix above: status filtering is not per-user scoping,
+  // so narrowing by status cannot reintroduce the eviction bug -- it only
+  // reduces rows fetched (pending/processing jobs never appear in the feed
+  // regardless of how many exist) as job history grows.
+  const [completedJobs, stalledJobs] = await Promise.all([
+    deps.jobs.getJobs({ type: JOB_TYPES.WORKTREE_DELETE, status: JOB_STATUS.COMPLETED }),
+    deps.jobs.getJobs({ type: JOB_TYPES.WORKTREE_DELETE, status: JOB_STATUS.STALLED }),
+  ]);
+  const jobs = [...completedJobs, ...stalledJobs];
   const items: NotificationItem[] = [];
 
   for (const job of jobs) {
-    // Non-terminal jobs are absent from the feed (R4.5).
-    if (job.status !== JOB_STATUS.COMPLETED && job.status !== JOB_STATUS.STALLED) continue;
-
     let payload: unknown;
     try {
       payload = JSON.parse(job.payload);

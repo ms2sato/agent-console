@@ -31,8 +31,50 @@ import { getDatabase } from '@agent-console/server/src/database/connection';
 import { SqliteArtifactRepository } from '@agent-console/server/src/repositories/sqlite-artifact-repository';
 import { SqliteNotificationCursorRepository } from '@agent-console/server/src/repositories/sqlite-notification-cursor-repository';
 import { NotificationService } from '@agent-console/server/src/services/notification-service';
+import type { JobRecord, GetJobsOptions } from '@agent-console/server/src/jobs/job-queue';
 
-import { NotificationsResponseSchema, NotificationsSeenResponseSchema } from '@agent-console/shared';
+import {
+  NotificationsResponseSchema,
+  NotificationsSeenResponseSchema,
+  JOB_TYPES,
+  JOB_STATUS,
+  type WorktreeDeletePayload,
+} from '@agent-console/shared';
+
+/**
+ * A real completed `worktree:delete` `JobRecord`, shaped the same way as
+ * `notification-service.test.ts`'s `makeWorktreeDeleteJob` helper. Without
+ * this, the boundary's `jobs` fake always returned `[]`
+ * (`getJobs: async () => []`), so the parse round-trip only ever exercised
+ * `artifact-created` items -- `outcome` (an optional field, only produced
+ * by the worktree-deletion composer) was never present in any parsed item,
+ * so a schema regression silently dropping `outcome` would not have been
+ * caught here despite this file's own header comment claiming full
+ * field-drop protection.
+ */
+function makeCompletedWorktreeDeleteJob(): JobRecord {
+  const payload: WorktreeDeletePayload = {
+    jobId: 'boundary-job-1',
+    repoId: 'repo-1',
+    worktreePath: '/repos/repo-1/worktrees/boundary-job-1',
+    force: false,
+    requestUsername: TEST_AUTH_USER.username,
+  };
+  return {
+    id: 'boundary-job-1',
+    type: JOB_TYPES.WORKTREE_DELETE,
+    payload: JSON.stringify(payload),
+    status: JOB_STATUS.COMPLETED,
+    priority: 0,
+    attempts: 1,
+    max_attempts: 5,
+    next_retry_at: 0,
+    last_error: null,
+    created_at: 1000,
+    started_at: 1000,
+    completed_at: 2000,
+  };
+}
 
 describe('Client-Server Boundary: /api/notifications', () => {
   let app: Hono<AppBindings>;
@@ -104,6 +146,43 @@ describe('Client-Server Boundary: /api/notifications', () => {
 
     expect(parsed.lastSeenAt).toBeNull();
     expect(parsed.unreadCount).toBe(1);
+  });
+
+  it('GET survives the parse round-trip for a worktree-deletion-finished item, with the optional outcome field intact', async () => {
+    // Uses its own app instance with a job-backed `jobs` fake -- the
+    // suite's shared `app` (built in beforeEach) always returns `[]` from
+    // `getJobs`, so it never exercises `outcome` (only produced by the
+    // worktree-deletion composer). Without this test, a schema regression
+    // that silently dropped `outcome` from `NotificationItemSchema` would
+    // not be caught by this file despite its header comment's claim.
+    const jobs = [makeCompletedWorktreeDeleteJob()];
+    const notificationService = new NotificationService({
+      artifactRepository,
+      jobs: {
+        getJobs: async (options?: GetJobsOptions) => {
+          let filtered = jobs;
+          if (options?.type) filtered = filtered.filter((j) => j.type === options.type);
+          if (options?.status) filtered = filtered.filter((j) => j.status === options.status);
+          return filtered;
+        },
+      },
+      cursorRepository: notificationCursorRepository,
+    });
+    const jobBackedApp = await createTestApp({
+      artifactRepository,
+      notificationCursorRepository,
+      notificationService,
+    });
+
+    const res = await jobBackedApp.request('/api/notifications');
+    expect(res.status).toBe(200);
+    const parsed = v.parse(NotificationsResponseSchema, await res.json());
+
+    expect(parsed.items).toHaveLength(1);
+    const item = parsed.items[0];
+    expect(item.kind).toBe('worktree-deletion-finished');
+    expect(item.id).toBe('boundary-job-1');
+    expect(item.outcome).toBe('completed');
   });
 
   it('GET returns an empty feed (boundary value) with unreadCount 0 and lastSeenAt null when the caller has no notifications', async () => {
