@@ -349,6 +349,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 30) {
     await migrateToV30(database);
   }
+
+  if (currentVersion < 31) {
+    await migrateToV31(database);
+  }
 }
 
 /**
@@ -1757,6 +1761,38 @@ export async function migrateToV30(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 30`.execute(database);
 
   logger.info('Migration to v30 completed');
+}
+
+/**
+ * Migration v31: Create `user_notification_cursor` table (Notification
+ * Center Phase 1, docs/design/notification-center.md §3/§5). One row per
+ * user, `last_seen_at` is a monotonic high-water mark for the bell badge --
+ * NOT per-item read state (N2). `user_id` is both the primary key and a FK
+ * to `users.id` (`ON DELETE CASCADE`), so a deleted user's cursor row is
+ * removed automatically; no separate index is needed since the primary key
+ * already indexes `user_id`.
+ *
+ * Modeled on `migrateToV28`'s "brand-new table, FK declared directly in
+ * createTable" pattern -- no table-recreation dance needed since this is a
+ * new table, not an alteration of an existing one.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV31(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v31: Creating user_notification_cursor table');
+
+  await database.schema
+    .createTable('user_notification_cursor')
+    .ifNotExists()
+    .addColumn('user_id', 'text', (col) =>
+      col.primaryKey().references('users.id').onDelete('cascade')
+    )
+    .addColumn('last_seen_at', 'text', (col) => col.notNull())
+    .execute();
+
+  await sql`PRAGMA user_version = 31`.execute(database);
+
+  logger.info('Migration to v31 completed');
 }
 
 /**

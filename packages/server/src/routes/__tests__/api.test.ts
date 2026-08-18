@@ -7,6 +7,7 @@ import type { MessageTemplateRepository } from '../../repositories/message-templ
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
+import { NotificationService } from '../../services/notification-service.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { serverConfig } from '../../lib/server-config.js';
 import { createMockSystemCapabilities } from '../../__tests__/utils/mock-system-capabilities-helper.js';
@@ -62,6 +63,20 @@ describe('API route mounting', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { artifacts: unknown[] };
     expect(Array.isArray(body.artifacts)).toBe(true);
+  });
+
+  it('should mount notifications route at /api/notifications', async () => {
+    const notificationService = new NotificationService({
+      artifactRepository: { findByUserId: async () => [] },
+      jobs: { getJobs: async () => [] },
+      cursorRepository: { getCursor: async () => null, advance: async (_userId, lastSeenAt) => lastSeenAt },
+    });
+    app = await createTestApp({ notificationService });
+    const res = await app.request('/api/notifications');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: unknown[]; lastSeenAt: string | null; unreadCount: number };
+    expect(body).toEqual({ items: [], lastSeenAt: null, unreadCount: 0 });
   });
 });
 

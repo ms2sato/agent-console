@@ -33,6 +33,8 @@ import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
 import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
 import type { ArtifactRepository } from './repositories/artifact-repository.js';
+import type { NotificationCursorRepository } from './repositories/notification-cursor-repository.js';
+import type { NotificationService } from './services/notification-service.js';
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
 import type { OpenPrInfo } from './services/github-pr-service.js';
 import type { GenerateRepositoryDescriptionFn } from './services/repository-description-generator.js';
@@ -85,6 +87,8 @@ import { RepositoryCloneService } from './services/repository-clone-service.js';
 import { getSourceReposDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
 import { SqliteArtifactRepository } from './repositories/sqlite-artifact-repository.js';
+import { SqliteNotificationCursorRepository } from './repositories/sqlite-notification-cursor-repository.js';
+import { NotificationService as NotificationServiceClass } from './services/notification-service.js';
 
 const logger = createLogger('app-context');
 
@@ -214,6 +218,12 @@ export interface AppContext {
   /** HTML artifact metadata + storage repository (see docs/design/html-artifacts.md) */
   artifactRepository: ArtifactRepository;
 
+  /** Per-user notification read cursor repository (docs/design/notification-center.md §5) */
+  notificationCursorRepository: NotificationCursorRepository;
+
+  /** Composed notification read-model service (docs/design/notification-center.md §3) */
+  notificationService: NotificationService;
+
   /** Branch watcher service for dynamic branch tracking */
   branchWatcherService: BranchWatcherServiceType;
 }
@@ -269,6 +279,12 @@ export async function createAppContext(
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
+  const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
+  const notificationService = new NotificationServiceClass({
+    artifactRepository,
+    jobs: jobQueue,
+    cursorRepository: notificationCursorRepository,
+  });
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
@@ -599,6 +615,8 @@ export async function createAppContext(
     repositoryCloneService,
     messageTemplateRepository,
     artifactRepository,
+    notificationCursorRepository,
+    notificationService,
     branchWatcherService,
   };
 }
@@ -673,6 +691,12 @@ export async function createTestContext(
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
+  const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
+  const notificationService = new NotificationServiceClass({
+    artifactRepository,
+    jobs: jobQueue,
+    cursorRepository: notificationCursorRepository,
+  });
   const worktreeService = new WorktreeServiceClass({ db });
   const annotationService = new AnnotationServiceClass();
   const interSessionMessageService = new InterSessionMessageServiceClass();
@@ -851,6 +875,8 @@ export async function createTestContext(
     repositoryCloneService,
     messageTemplateRepository,
     artifactRepository,
+    notificationCursorRepository,
+    notificationService,
     branchWatcherService: new BranchWatcherService(async () => {}),
   };
 }

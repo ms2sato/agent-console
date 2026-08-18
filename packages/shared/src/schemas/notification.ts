@@ -1,5 +1,9 @@
 import * as v from 'valibot';
 
+// This file is the OUTBOUND (Slack) notification system's schemas; the
+// notification CENTER's wire schemas live in `notification-item.ts` — see
+// `docs/design/notification-center.md` §7.
+
 // === Repository Slack Integration Schema ===
 
 /**

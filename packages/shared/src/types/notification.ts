@@ -3,6 +3,10 @@
  *
  * These types are used to send notifications to external services (e.g., Slack)
  * when Claude Code's state changes.
+ *
+ * This file is the OUTBOUND (Slack) notification system; the notification
+ * CENTER's wire types (the human-addressed awareness read-model) live in
+ * `notification-item.ts` — see `docs/design/notification-center.md` §7.
  */
 
 import type { IntegrationType } from './integration.js';

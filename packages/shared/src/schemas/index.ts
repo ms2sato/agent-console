@@ -155,3 +155,15 @@ export {
   ArtifactsListResponseSchema,
   type ArtifactsListResponse,
 } from './artifact.js';
+
+// Notification center schemas
+export {
+  NotificationItemSchema,
+  NotificationsResponseSchema,
+  NotificationsSeenRequestSchema,
+  NotificationsSeenResponseSchema,
+  type NotificationItemSchemaOutput,
+  type NotificationsResponseSchemaOutput,
+  type NotificationsSeenRequestSchemaOutput,
+  type NotificationsSeenResponseSchemaOutput,
+} from './notification-item.js';
