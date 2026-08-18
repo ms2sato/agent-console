@@ -6,14 +6,25 @@
  * that document's Appendix A for the authoritative mapping table this file
  * implements).
  *
- * `query()` is called exactly ONCE per engine lifetime, in the constructor.
- * Subsequent user turns are pushed onto a live `AsyncIterable<SDKUserMessage>`
- * (`UserMessageQueue`) that the SDK reads from -- this is the SDK's own
- * streaming-input mechanism for a multi-turn session on one `Query`, verified
- * live against SDK 2.1.233 (see the design doc and #1333's task notes).
+ * `query()` is called once per LIVE SDK session -- once at construction, and
+ * again on every Phase 2 session-boundary handoff (`reseed`, S4/S3 below).
+ * Turns within one session are pushed onto a live
+ * `AsyncIterable<SDKUserMessage>` (`UserMessageQueue`) that the SDK reads
+ * from -- this is the SDK's own streaming-input mechanism for a multi-turn
+ * session on one `Query`, verified live against SDK 2.1.233 (see the design
+ * doc and #1333's task notes).
  */
 
-import { query, type Options, type Query, type SDKMessage, type SDKUserMessage, type SpawnedProcess, type SpawnOptions } from '@anthropic-ai/claude-agent-sdk';
+import {
+  query,
+  type Options,
+  type Query,
+  type SDKControlGetContextUsageResponse,
+  type SDKMessage,
+  type SDKUserMessage,
+  type SpawnedProcess,
+  type SpawnOptions,
+} from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'node:child_process';
 import {
   DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS,
@@ -31,12 +42,40 @@ type UserMessagePayload = Extract<SDKMessage, { type: 'user' }>['message'];
 type ToolResultEvent = Extract<EmbeddedAgentEvent, { type: 'tool-result' }>;
 
 /**
+ * H2 (docs/design/embedded-agent-sdk-engine.md §5): calling `getContextUsage()`
+ * immediately after a turn's `result` intermittently threw "ProcessTransport
+ * is not ready for writing" -- an EMPIRICAL observation on SDK 0.3.226/0.3.233
+ * (both-version confirmed), NOT a documented SDK contract. ~300-500ms of
+ * settle reliably fixed it in the probe. Retry-with-settle, not a bare sleep:
+ * the budget below (5 settle gaps at 500ms = 2500ms across 6 attempts)
+ * comfortably exceeds both the observed 300-500ms window and the AC's
+ * "at least 3 attempts spanning at least 2s total" floor. Re-verify this
+ * constant pair on every SDK upgrade -- the SDK-bump tracking issue's
+ * checklist carries this obligation (docs/design/embedded-agent-sdk-engine.md
+ * §5's re-verification note).
+ */
+const CONTEXT_USAGE_SETTLE_DELAY_MS = 500;
+const CONTEXT_USAGE_MAX_ATTEMPTS = 6;
+
+/**
+ * PS1 tripwire (docs/design/embedded-agent-sdk-engine.md §5): `settings.
+ * autoCompactEnabled: false` is verified at small scale only -- a real
+ * ~1M-token full-window compaction was outside the design probe's budget.
+ * This constant does not PREVENT SDK-side compaction; it makes an
+ * unverified-at-scale premise LOUD instead of silent. A drop of more than
+ * this ratio between two consecutive context-usage polls, with no
+ * intervening handoff (`reseed()` resets the baseline), is logged as a
+ * possible violation of PS1.
+ */
+const MATERIAL_DROP_RATIO = 0.2;
+
+/**
  * Streaming-input queue backing `query()`'s `prompt: AsyncIterable<SDKUserMessage>`.
  * A pushed message is delivered to the next waiting `stream()` consumer
  * immediately; otherwise it buffers until the consumer catches up. `close()`
  * signals end-of-stream once any already-queued items have drained -- unused
- * in Phase 1 (the engine's `Query` lives for the subprocess's whole life),
- * kept for shutdown-path completeness.
+ * in Phase 1/2 (each live `Query` runs until `dispose()` or a handoff
+ * reseed), kept for shutdown-path completeness.
  */
 export class UserMessageQueue {
   private pending: SDKUserMessage[] = [];
@@ -101,6 +140,14 @@ export function spawnClaudeCodeProcess(options: SpawnOptions): SpawnedProcess {
   });
 }
 
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 export interface SdkEngineDeps {
   cwd: string;
   model: string;
@@ -109,9 +156,19 @@ export interface SdkEngineDeps {
   enabledTools?: EmbeddedAgentToolName[];
   mcp: { baseUrl: string; token: string };
   emit: (event: EmbeddedAgentEvent) => void;
+  /** Context Handoff (Phase 2, S3): loads the (possibly operator-overridden)
+   * distillation prompt -- the SAME `factories.loadHandoffPrompt` the
+   * native-loop engine uses (main.ts is the single writer that composes this
+   * from the raw factory; see main.ts's `claude-sdk` init arm). */
+  loadHandoffPrompt: () => Promise<string>;
   /** DI seam for tests; defaults to the real SDK `query` function. */
   queryFn?: typeof query;
+  /** DI seam for tests: the H2 retry-with-settle delay. Defaults to a real setTimeout-based sleep. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** Outcome of one distillation turn (S3's "distill" step). */
+type DistillationOutcome = { ok: true; text: string } | { ok: false; reason: string };
 
 /**
  * The claude-sdk engine. See the module header for the overall shape; see
@@ -121,14 +178,42 @@ export interface SdkEngineDeps {
 export class SdkEngine implements Engine {
   private readonly deps: SdkEngineDeps;
   private readonly queryFn: typeof query;
-  private readonly queue = new UserMessageQueue();
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly enabledToolNames: EmbeddedAgentToolName[];
   private readonly allowedToolNames: Set<string>;
-  private readonly query: Query;
+  /** S3: the ORIGINAL (Phase 1's composeSdkSystemPromptAppend output)
+   * systemPrompt.append, fixed at construction. Every reseed composes THIS
+   * (never a previously-reseeded value) plus the latest distillation --
+   * "the original composed append ... plus the distillation", per the AC. */
+  private readonly originalSystemPromptAppend: string | undefined;
+
+  private queue = new UserMessageQueue();
+  private query: Query;
+  /** S4: bumped on every reseed. A `consumeLoop` invocation captures its own
+   * query's generation at start; when its stream ends, a generation mismatch
+   * means a NEWER query has since superseded it (an expected clean end, not
+   * "the process died unexpectedly"). See `reseed` and `consumeLoop`. */
+  private queryGeneration = 0;
 
   private currentTurnId: string | null = null;
   private iterationText = '';
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
+
+  /** S3: 'distillation' while the handoff's own internal turn is in flight --
+   * suppresses the normal per-turn wire events (assistant-delta/-message,
+   * tool-call/-result) so the distillation prompt/response never reaches the
+   * client as an ordinary turn (matches the native engine's `emitDeltas:
+   * false` -- see agent-loop.ts's `handoff()` doc comment for the "dangling
+   * assistant-message bubble" this prevents). */
+  private turnMode: 'normal' | 'distillation' = 'normal';
+  private distillationText = '';
+  private distillationSawToolCall = false;
+  private distillationDeferred: { resolve: (outcome: DistillationOutcome) => void } | null = null;
+
+  /** S2: previous poll's usable totalTokens, for the PS1 material-drop
+   * tripwire. `null` = no baseline yet (fresh session or just-reseeded). */
+  private previousTotalTokens: number | null = null;
 
   /**
    * Ordering guard for the tool-call/tool-result race (see this file's
@@ -144,37 +229,17 @@ export class SdkEngine implements Engine {
   constructor(deps: SdkEngineDeps) {
     this.deps = deps;
     this.queryFn = deps.queryFn ?? query;
+    this.sleep = deps.sleep ?? defaultSleep;
     const enabledToolNames = deps.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS;
+    this.enabledToolNames = [...enabledToolNames];
     this.allowedToolNames = new Set(enabledToolNames);
-
-    const options: Options = {
-      executable: 'bun',
-      cwd: deps.cwd,
-      model: deps.model,
-      tools: [...enabledToolNames],
-      mcpServers: {
-        'agent-console': {
-          type: 'http',
-          url: deps.mcp.baseUrl,
-          headers: { Authorization: `Bearer ${deps.mcp.token}` },
-          alwaysLoad: true,
-        },
-      },
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      includePartialMessages: true,
-      settingSources: [],
-      settings: { autoCompactEnabled: false },
-      spawnClaudeCodeProcess,
-      ...(deps.systemPromptAppend !== undefined
-        ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: deps.systemPromptAppend } }
-        : {}),
-    };
+    this.originalSystemPromptAppend = deps.systemPromptAppend;
 
     // Exactly ONE production call site for the SDK's query() function --
     // this is both the DI seam Pin 1(a) exercises and the grep-containment
-    // target Pin 1(b) verifies (see __tests__/sdk-engine.test.ts).
-    this.query = this.queryFn({ prompt: this.queue.stream(), options });
+    // target Pin 1(b) verifies (see __tests__/sdk-engine.test.ts). `reseed`
+    // below is the second (and only other) production call site.
+    this.query = this.queryFn({ prompt: this.queue.stream(), options: this.buildOptions(deps.systemPromptAppend) });
 
     // Start the background stream consumer (detached, fire-and-forget)
     // BEFORE emitting `ready`, then emit `ready` synchronously -- NOT gated
@@ -187,8 +252,43 @@ export class SdkEngine implements Engine {
     // decoupled from system:init by design -- see
     // docs/design/embedded-agent-sdk-engine.md Appendix A.2, the `ready`
     // row's correction trail.
-    void this.consumeLoop();
+    void this.consumeLoop(this.query, this.queryGeneration);
     this.deps.emit({ v: 1, type: 'ready' });
+  }
+
+  /**
+   * Builds the `query()` Options battery. Used by BOTH the constructor
+   * (initial construction) and `reseed` (S3's handoff successor) -- S3
+   * requires every Phase 1 pin (no `resume`, allowlist `tools`,
+   * `spawnClaudeCodeProcess`, `settingSources: []`, `autoCompactEnabled:
+   * false`, no `apiKey`) to hold on the reseed options too. A second
+   * hand-rolled options object is exactly the drift vector this single
+   * builder exists to kill.
+   */
+  private buildOptions(systemPromptAppend: string | undefined): Options {
+    return {
+      executable: 'bun',
+      cwd: this.deps.cwd,
+      model: this.deps.model,
+      tools: [...this.enabledToolNames],
+      mcpServers: {
+        'agent-console': {
+          type: 'http',
+          url: this.deps.mcp.baseUrl,
+          headers: { Authorization: `Bearer ${this.deps.mcp.token}` },
+          alwaysLoad: true,
+        },
+      },
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      includePartialMessages: true,
+      settingSources: [],
+      settings: { autoCompactEnabled: false },
+      spawnClaudeCodeProcess,
+      ...(systemPromptAppend !== undefined
+        ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend } }
+        : {}),
+    };
   }
 
   async runTurn(id: string, text: string): Promise<void> {
@@ -219,22 +319,164 @@ export class SdkEngine implements Engine {
   }
 
   /**
-   * Context Handoff (Phase 2, out of scope for Phase 1): graceful
-   * not-yet-supported stub. Emits the same active/idle bracket a real
-   * handoff would, with a turn-error explaining the gap, rather than
-   * throwing (main.ts's dispatch wraps `loop.handoff()` in `.catch`
-   * already, but a clean graceful-reject is better UX than an
-   * unhandled-shape crash).
+   * Context Handoff (Phase 2, docs/design/embedded-agent-sdk-engine.md §4
+   * "Context handoff" row / S3): distill the CURRENT session's conversation
+   * into a summary (a turn on the live query, wire-suppressed -- see
+   * `turnMode`), emit the `context-handoff` marker, then terminate the old
+   * SDK session and seed a successor via `reseed`. Brackets `state: active
+   * -> idle` exactly once per call, matching the native engine's handoff
+   * (agent-loop.ts) and S3's "no second `ready`" requirement -- `ready` is
+   * construction-time only and is never re-emitted here.
+   *
+   * Handoff during an active turn: main.ts's dispatch loop already rejects a
+   * `handoff` command while `turnActive` is true (same gate `user-message`
+   * is subject to), so this method is never invoked concurrently with
+   * `runTurn` -- the native engine is gated identically at the same layer.
+   * This engine adds no additional concurrency handling because none is
+   * needed.
    */
   async handoff(): Promise<void> {
+    if (this.dead) {
+      this.deps.emit({
+        v: 1,
+        type: 'fatal',
+        message: 'SDK engine session already terminated; cannot start a handoff',
+      });
+      return;
+    }
     this.deps.emit({ v: 1, type: 'state', state: 'active' });
-    this.deps.emit({
-      v: 1,
-      type: 'turn-error',
-      turnId: crypto.randomUUID(),
-      message: 'Context handoff is not yet supported for the SDK engine (Phase 2).',
-    });
+
+    let promptText: string;
+    try {
+      promptText = await this.deps.loadHandoffPrompt();
+    } catch (err) {
+      this.emitHandoffFailure(`failed to load handoff prompt: ${errorMessage(err)}`);
+      return;
+    }
+
+    const outcome = await this.runDistillationTurn(promptText);
+    if (this.dead) {
+      // A transport crash or Pin 2 containment fatal landed WHILE the
+      // distillation turn was in flight -- `settlePendingDistillation`
+      // already resolved `outcome` as a failure and `handleFatal` already
+      // emitted `fatal`. Nothing further to emit here.
+      return;
+    }
+
+    // S1: "once after each handoff attempt", regardless of outcome --
+    // measured on the OLD (still-current) query, which is the semantically
+    // meaningful measurement (how much context the handoff is relieving).
+    await this.pollContextUsage();
+    if (this.dead) {
+      // pollContextUsage's H2-exhaustion path already emitted `fatal` and
+      // disposed the (about-to-be-replaced) old query -- do not proceed to
+      // reseed on top of a session the engine has already declared dead.
+      return;
+    }
+
+    if (!outcome.ok) {
+      this.emitHandoffFailure(`Context handoff failed: ${outcome.reason}`);
+      return;
+    }
+
+    this.deps.emit({ v: 1, type: 'context-handoff', distillation: outcome.text });
+    this.reseed(outcome.text);
+    if (this.dead) {
+      // reseed()'s successor-construction failure path already emitted
+      // `fatal` -- do not also emit a spurious state:idle on top of it.
+      return;
+    }
     this.deps.emit({ v: 1, type: 'state', state: 'idle' });
+  }
+
+  private emitHandoffFailure(message: string): void {
+    this.deps.emit({ v: 1, type: 'turn-error', turnId: crypto.randomUUID(), message });
+    this.deps.emit({ v: 1, type: 'state', state: 'idle' });
+  }
+
+  /** Runs the handoff distillation prompt as a turn on the CURRENT (still
+   * live) query, capturing the resulting text instead of streaming it to the
+   * client (`turnMode`). No tool calls are expected; if the SDK issues any
+   * anyway, the outcome is a failure -- mirrors the native engine's
+   * "tool-call-only response has nothing usable to seed with" rejection. */
+  private async runDistillationTurn(promptText: string): Promise<DistillationOutcome> {
+    this.turnMode = 'distillation';
+    this.distillationText = '';
+    this.distillationSawToolCall = false;
+    this.currentTurnId = crypto.randomUUID();
+    return new Promise<DistillationOutcome>((resolve) => {
+      this.distillationDeferred = { resolve };
+      this.queue.push({ type: 'user', message: { role: 'user', content: promptText }, parent_tool_use_id: null });
+    });
+  }
+
+  private settleDistillation(message: ResultMessage): void {
+    const deferred = this.distillationDeferred;
+    this.distillationDeferred = null;
+    this.turnMode = 'normal';
+    if (!deferred) return;
+    if (message.subtype !== 'success') {
+      deferred.resolve({ ok: false, reason: this.buildTurnErrorMessage(message) });
+      return;
+    }
+    if (this.distillationSawToolCall || this.distillationText.trim().length === 0) {
+      deferred.resolve({ ok: false, reason: 'provider returned no usable distillation' });
+      return;
+    }
+    deferred.resolve({ ok: true, text: this.distillationText });
+  }
+
+  /**
+   * S3/S4: terminates the current SDK query and constructs a successor on a
+   * FRESH session id (never `resume` -- PS4 is gated everywhere, §6). The
+   * successor's `systemPrompt.append` is the ORIGINAL composed append (never
+   * a previously-reseeded one) plus the latest distillation, original first
+   * -- matching PS3's probe-verified mechanism. Bumps `queryGeneration`
+   * BEFORE constructing the new query so the OLD query's `consumeLoop`, when
+   * its stream ends as a direct result of `close()` below, recognizes itself
+   * as superseded rather than emitting a spurious fatal (S4).
+   */
+  private reseed(distillation: string): void {
+    try {
+      this.query.close();
+    } catch {
+      // Already closed / never fully started -- nothing more to release.
+    }
+    // No `await` between close() and the generation bump: the old
+    // `consumeLoop`'s `for await` can only observe the stream ending on a
+    // LATER microtask/macrotask, by which point `queryGeneration` must
+    // already reflect the successor.
+    this.queryGeneration++;
+
+    const appendParts = [this.originalSystemPromptAppend, distillation].filter(
+      (part): part is string => part !== undefined && part.length > 0,
+    );
+    const systemPromptAppend = appendParts.length > 0 ? appendParts.join('\n\n') : undefined;
+
+    // Build the successor query BEFORE touching `this.queue`/`this.query`:
+    // if `queryFn` throws synchronously (the same failure mode Phase 1's
+    // initial construction is already rescued against, one layer up in
+    // main.ts), the engine must not silently keep pointing at the just-
+    // closed old query with a queue nothing is reading -- `handleFatal`
+    // below marks it dead so a later runTurn/handoff fails loudly instead
+    // of hanging.
+    const newQueue = new UserMessageQueue();
+    let successorQuery: Query;
+    try {
+      successorQuery = this.queryFn({ prompt: newQueue.stream(), options: this.buildOptions(systemPromptAppend) });
+    } catch (err) {
+      this.handleFatal(`SDK engine reseed construction failed: ${errorMessage(err)}`);
+      return;
+    }
+
+    this.queue = newQueue;
+    this.query = successorQuery;
+    // An intentional handoff-driven drop in context usage must never itself
+    // trip the PS1 material-drop tripwire (S2) -- the next usable poll
+    // becomes the new baseline with nothing to compare against.
+    this.previousTotalTokens = null;
+
+    void this.consumeLoop(this.query, this.queryGeneration);
   }
 
   /** Closes the underlying SDK query, which terminates its child `claude`
@@ -254,27 +496,40 @@ export class SdkEngine implements Engine {
     }
   }
 
-  private async consumeLoop(): Promise<void> {
+  /**
+   * `query`/`generation` are captured PARAMETERS, not read from `this.query`
+   * /`this.queryGeneration`, so a loop started for an OLD query keeps
+   * comparing against the value it was born with even after `reseed` moves
+   * `this.query`/bumps `this.queryGeneration` out from under it (S4).
+   */
+  private async consumeLoop(activeQuery: Query, generation: number): Promise<void> {
     try {
-      for await (const message of this.query) {
-        this.handleMessage(message);
+      for await (const message of activeQuery) {
+        await this.handleMessage(message);
         if (this.dead) break;
+      }
+      if (generation !== this.queryGeneration) {
+        // This query was superseded by a handoff reseed before its own
+        // stream ended -- an EXPECTED clean end (S4), not the "process died
+        // unexpectedly" case the fatal below guards against.
+        return;
       }
       // The `for await` loop exited WITHOUT throwing -- the SDK's message
       // stream ended cleanly. Outside of a deliberate `dispose()` (which
-      // already set `this.dead = true` before triggering this), this is
-      // unexpected: the child `claude` process exited, or the SDK ended the
-      // stream, with no `result` message ever settling the pending turn.
-      // Treat it exactly like the throwing case below -- `handleFatal`'s own
-      // `if (this.dead) return;` guard makes this a no-op on the deliberate
-      // `dispose()` path.
+      // already set `this.dead = true` before triggering this) or a
+      // superseding reseed (handled above), this is unexpected: the child
+      // `claude` process exited, or the SDK ended the stream, with no
+      // `result` message ever settling the pending turn. Treat it exactly
+      // like the throwing case below -- `handleFatal`'s own `if (this.dead)
+      // return;` guard makes this a no-op on the deliberate `dispose()` path.
       this.handleFatal('SDK message stream ended unexpectedly');
     } catch (err) {
+      if (generation !== this.queryGeneration) return;
       this.handleFatal(`SDK transport error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
-  private handleMessage(message: SDKMessage): void {
+  private async handleMessage(message: SDKMessage): Promise<void> {
     switch (message.type) {
       case 'system':
         if (message.subtype === 'init') this.handleSystemInit(message);
@@ -289,30 +544,31 @@ export class SdkEngine implements Engine {
         this.handleUserMessage(message.message);
         return;
       case 'result':
-        this.handleResult(message);
+        await this.handleResult(message);
         return;
       default:
         // Every other SDKMessage type (rate_limit_event, hook/task/
         // notification/etc. system subtypes, ...) has no native counterpart
-        // in Phase 1 -- ignored silently per Appendix A's coverage note.
+        // in Phase 1/2 -- ignored silently per Appendix A's coverage note.
         return;
     }
   }
 
   /**
    * `sdk-session-id` is emitted on every occurrence of this message (it
-   * recurs across turns on the same live session -- last-write-wins is the
-   * contract; see packages/shared/src/types/embedded-agent.ts's doc comment
-   * on the event). Pin 2 (S5, #1333 AC) containment ALSO runs here, live,
-   * on every occurrence -- not only in a unit test -- per the Architect's
-   * ruling: a session holding tools we intended to deny must be terminated,
-   * not merely flagged. Because system:init cannot arrive before the first
-   * prompt is in flight (the same finding that decouples `ready`), this
-   * check necessarily runs CONCURRENT WITH the first turn: a violating
-   * session may have already started (or even completed) processing before
-   * the fatal-terminate below fires. This is an accepted residual -- a few
-   * hundred ms of the forbidden tool being nominally "available" before we
-   * notice and kill the session -- not a design gap.
+   * recurs across turns on the same live session, AND on the successor
+   * session after a handoff reseed -- last-write-wins is the contract; see
+   * packages/shared/src/types/embedded-agent.ts's doc comment on the event).
+   * Pin 2 (S5, #1333 AC) containment ALSO runs here, live, on every
+   * occurrence -- not only in a unit test -- per the Architect's ruling: a
+   * session holding tools we intended to deny must be terminated, not merely
+   * flagged. Because system:init cannot arrive before the first prompt is in
+   * flight (the same finding that decouples `ready`), this check necessarily
+   * runs CONCURRENT WITH the first turn: a violating session may have
+   * already started (or even completed) processing before the fatal-
+   * terminate below fires. This is an accepted residual -- a few hundred ms
+   * of the forbidden tool being nominally "available" before we notice and
+   * kill the session -- not a design gap.
    */
   private handleSystemInit(message: SystemInitMessage): void {
     this.deps.emit({ v: 1, type: 'sdk-session-id', sdkSessionId: message.session_id });
@@ -334,14 +590,18 @@ export class SdkEngine implements Engine {
       const { delta } = event;
       if (delta.type === 'text_delta') {
         this.iterationText += delta.text;
-        this.deps.emit({ v: 1, type: 'assistant-delta', turnId: this.requireTurnId(), text: delta.text });
+        if (this.turnMode === 'normal') {
+          this.deps.emit({ v: 1, type: 'assistant-delta', turnId: this.requireTurnId(), text: delta.text });
+        }
       } else if (delta.type === 'thinking_delta') {
-        this.deps.emit({
-          v: 1,
-          type: 'assistant-thinking-delta',
-          turnId: this.requireTurnId(),
-          text: delta.thinking,
-        });
+        if (this.turnMode === 'normal') {
+          this.deps.emit({
+            v: 1,
+            type: 'assistant-thinking-delta',
+            turnId: this.requireTurnId(),
+            text: delta.thinking,
+          });
+        }
       }
       // input_json_delta (partial tool-call-argument JSON) and other delta
       // kinds: no native counterpart -- ignored.
@@ -355,18 +615,27 @@ export class SdkEngine implements Engine {
     // no mapping needed.
   }
 
-  /** Emits the completed iteration's assistant-message at `message_stop`.
-   * Tool calls are NOT buffered here -- they are emitted immediately as they
-   * are observed, in `handleAssistantMessage` below. (A prior version of this
-   * engine buffered `tool_use` blocks and flushed them here, after the
-   * assistant-message emit, to match the native engine's emission order. A
-   * live run found the SDK's own `tool_result` echo can arrive on the wire
-   * BEFORE the buffered `tool-call` it belongs to -- e.g. for a fast tool
-   * like Glob -- producing an unknown-callId `tool-result` client-side. See
-   * `handleAssistantMessage`'s doc comment and
+  /** Emits the completed iteration's assistant-message at `message_stop`, or
+   * (during a handoff's distillation turn -- `turnMode`) accumulates it into
+   * `distillationText` instead of emitting anything on the wire, so the
+   * client never sees a stray assistant bubble for the internal distillation
+   * prompt (matches the native engine's `emitDeltas: false` intent -- see
+   * agent-loop.ts's `handoff()`). Tool calls are NOT buffered here -- they
+   * are emitted immediately as they are observed, in `handleAssistantMessage`
+   * below. (A prior version of this engine buffered `tool_use` blocks and
+   * flushed them here, after the assistant-message emit, to match the native
+   * engine's emission order. A live run found the SDK's own `tool_result`
+   * echo can arrive on the wire BEFORE the buffered `tool-call` it belongs
+   * to -- e.g. for a fast tool like Glob -- producing an unknown-callId
+   * `tool-result` client-side. See `handleAssistantMessage`'s doc comment and
    * docs/design/embedded-agent-sdk-engine.md Appendix A's `tool-call` row
    * correction trail for the full account.) */
   private emitAssistantMessage(): void {
+    if (this.turnMode === 'distillation') {
+      this.distillationText += this.iterationText;
+      this.iterationText = '';
+      return;
+    }
     const turnId = this.requireTurnId();
     // Always emit the assistant message, even when the text is empty --
     // matches the native engine's "always emit" contract (e.g. a
@@ -389,10 +658,19 @@ export class SdkEngine implements Engine {
    * `tool-result` that arrived earlier for this exact callId (queued by
    * `handleUserMessage` below because its `tool-call` had not been emitted
    * yet) is flushed right after.
+   *
+   * During a handoff's distillation turn (`turnMode`), a tool_use block is
+   * NOT expected -- the SDK still executes it internally regardless of
+   * whether we surface it, so this only records that it happened (for
+   * `settleDistillation`'s failure classification) and emits nothing.
    */
   private handleAssistantMessage(message: AssistantMessagePayload): void {
     for (const block of message.content) {
       if (block.type === 'tool_use') {
+        if (this.turnMode === 'distillation') {
+          this.distillationSawToolCall = true;
+          continue;
+        }
         this.emitToolCall(block.id, block.name, block.input);
       }
     }
@@ -420,8 +698,14 @@ export class SdkEngine implements Engine {
    * `emitToolCall` the moment that callId's `tool-call` does go out. Any
    * result still queued when the turn ends (`handleResult`) is emitted
    * anyway, with a loud warning, rather than silently dropped.
+   *
+   * During a handoff's distillation turn (`turnMode`), no tool call is
+   * expected to have been emitted in the first place (see
+   * `handleAssistantMessage`), so any `tool_result` echo here is silently
+   * ignored -- there is no callId for it to correlate with on the wire.
    */
   private handleUserMessage(message: UserMessagePayload): void {
+    if (this.turnMode === 'distillation') return;
     const { content } = message;
     if (typeof content === 'string') return;
     for (const block of content) {
@@ -451,11 +735,27 @@ export class SdkEngine implements Engine {
    * native); every error subtype maps to a labeled `turn-error` message.
    * Any `tool-result` still queued at this point never saw its `tool-call`
    * arrive during the turn -- a genuinely pathological case -- and is
-   * flushed here anyway (loudly logged) rather than dropped. Either way,
-   * emits `state: idle` and settles the pending turn. */
-  private handleResult(message: ResultMessage): void {
+   * flushed here anyway (loudly logged) rather than dropped. During a
+   * handoff's distillation turn (`turnMode`), settles the distillation
+   * promise instead of the normal per-turn machinery -- see
+   * `settleDistillation`. Otherwise: polls context usage (S1), emits
+   * `state: idle`, and settles the pending turn. */
+  private async handleResult(message: ResultMessage): Promise<void> {
     const turnId = this.requireTurnId();
     this.flushOrphanedToolResults(turnId);
+
+    if (this.turnMode === 'distillation') {
+      this.settleDistillation(message);
+      return;
+    }
+
+    await this.pollContextUsage();
+    if (this.dead) {
+      // pollContextUsage's H2-exhaustion path already emitted `fatal`,
+      // disposed the query, and settled the pending turn -- do not also
+      // emit a spurious turn-error/state:idle on top of it.
+      return;
+    }
     if (message.subtype !== 'success') {
       this.deps.emit({ v: 1, type: 'turn-error', turnId, message: this.buildTurnErrorMessage(message) });
     }
@@ -503,6 +803,79 @@ export class SdkEngine implements Engine {
     }
   }
 
+  /** Settles a pending distillation turn with a failure outcome. Without
+   * this, a transport crash / Pin 2 containment fatal that lands WHILE
+   * `handoff()` is awaiting `runDistillationTurn` would leave
+   * `distillationDeferred` unsettled forever -- `handleFatal` only settled
+   * `currentTurnDeferred` (the normal-turn deferred), so `handoff()` would
+   * hang indefinitely instead of observing the fatal and returning. */
+  private settlePendingDistillation(): void {
+    if (this.distillationDeferred) {
+      const { resolve } = this.distillationDeferred;
+      this.distillationDeferred = null;
+      this.turnMode = 'normal';
+      resolve({ ok: false, reason: 'engine terminated before the distillation completed' });
+    }
+  }
+
+  /**
+   * S1/H2: polls `getContextUsage()` with retry-with-settle. A THROW from
+   * the call is the H2 race (or a genuine transport failure -- the two are
+   * indistinguishable from here, which is why exhaustion is treated as
+   * fatal rather than silently swallowed: a transport that never settles is
+   * a wedged session, and the next turn would fail anyway). A RESOLVED but
+   * unusable response (missing/non-finite `totalTokens`) is a different
+   * failure mode -- skip-with-warn, not fatal, and not retried (the call
+   * itself succeeded; retrying would not change a structurally-absent
+   * field).
+   */
+  private async pollContextUsage(): Promise<void> {
+    for (let attempt = 1; attempt <= CONTEXT_USAGE_MAX_ATTEMPTS; attempt++) {
+      let response: SDKControlGetContextUsageResponse;
+      try {
+        response = await this.query.getContextUsage();
+      } catch (err) {
+        if (attempt === CONTEXT_USAGE_MAX_ATTEMPTS) {
+          this.handleFatal(
+            `SDK transport did not settle for getContextUsage() after ${CONTEXT_USAGE_MAX_ATTEMPTS} attempts (H2, docs/design/embedded-agent-sdk-engine.md §5): ${errorMessage(err)}`,
+          );
+          return;
+        }
+        await this.sleep(CONTEXT_USAGE_SETTLE_DELAY_MS);
+        continue;
+      }
+      this.emitContextUsageIfUsable(response);
+      return;
+    }
+  }
+
+  private emitContextUsageIfUsable(response: SDKControlGetContextUsageResponse): void {
+    const totalTokens = response?.totalTokens;
+    if (typeof totalTokens !== 'number' || !Number.isFinite(totalTokens)) {
+      console.warn(
+        '[sdk-engine] getContextUsage() resolved without a usable totalTokens field; skipping context-usage emit',
+      );
+      return;
+    }
+    this.checkForMaterialDrop(totalTokens);
+    this.deps.emit({ v: 1, type: 'context-usage', promptTokens: totalTokens, estimated: false });
+    this.previousTotalTokens = totalTokens;
+  }
+
+  /** S2's PS1 tripwire: see this file's `MATERIAL_DROP_RATIO` doc comment. */
+  private checkForMaterialDrop(totalTokens: number): void {
+    if (
+      this.previousTotalTokens !== null &&
+      totalTokens < this.previousTotalTokens * (1 - MATERIAL_DROP_RATIO)
+    ) {
+      console.warn(
+        `[sdk-engine] PS1 tripwire: totalTokens dropped from ${this.previousTotalTokens} to ${totalTokens} ` +
+          `(>${MATERIAL_DROP_RATIO * 100}% drop) with no intervening handoff -- possible SDK-side compaction ` +
+          'despite autoCompactEnabled:false (docs/design/embedded-agent-sdk-engine.md §5 PS1)',
+      );
+    }
+  }
+
   /**
    * Reused by both the consumer-loop-crash path (transport/process failure)
    * and the Pin 2 containment violation: emits `fatal`, disposes the
@@ -510,7 +883,9 @@ export class SdkEngine implements Engine {
    * `runTurn` fails loudly instead of hanging, and settles any pending turn
    * (resolve, not reject -- mirrors how a `turn-error` always still
    * resolves the caller's promise; the `fatal` event is what tells the
-   * client something is actually wrong). Idempotent.
+   * client something is actually wrong). Also settles any pending
+   * distillation turn (see `settlePendingDistillation`'s doc comment) --
+   * `handoff()` awaits that separately from a normal turn. Idempotent.
    */
   private handleFatal(message: string): void {
     if (this.dead) return;
@@ -518,5 +893,6 @@ export class SdkEngine implements Engine {
     this.deps.emit({ v: 1, type: 'fatal', message });
     this.dispose();
     this.settlePendingTurn();
+    this.settlePendingDistillation();
   }
 }
