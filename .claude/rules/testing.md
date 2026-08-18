@@ -66,6 +66,18 @@ If yes, it is a real guard and its both-worlds pass is the point. If no — if n
 
 Worked example: PR [#1283](https://github.com/ms2sato/agent-console/pull/1283) added a `{{var:+prefix}}` template form, and two of its nine new tests asserted that reserved names (`{{prompt:+X}}`, `{{cwd:+X}}`) are *not* expanded through it. Those two passed against the unmodified engine — the reserved-name guard already existed one pass down. They are not vacuous: dropping the guard from the new pass makes `{{prompt:+X}}` expand to the empty string and the placeholder silently disappear, which is exactly the mistake an implementer might make. Seven tests flipped, two did not, and all nine were correct.
 
+### When an assertion has more than one way to come true
+
+The question above ("would this fail against a plausible wrong implementation?") is asked about the test as a whole. There is a narrower failure that slips past it: the assertion is *satisfied by a different condition than the one the test claims to exercise*. The test is green, the assertion is genuinely true, and it would stay true no matter how badly the thing under test broke.
+
+The shape is always the same — **the production condition is a conjunction, and the test sets up one conjunct while leaving the others at defaults that already decide the outcome.**
+
+Worked example: a component renders a notice when `engine === 'claude-sdk' && restoredMessageCount > 0`. A test for "while the engine is unresolved, the notice must not render" set the engine unresolved but left `restoredMessageCount` at its default `null`. The notice was suppressed by the null, not by the engine check — so the assertion could not detect a regression in the engine logic it existed to guard.
+
+**The one-line self-check, at writing time:** *if I remove the condition this test is about, does the assertion still come out the same?* If yes, that condition is not being tested. Equivalently: name every input the production expression reads, and confirm the test moves the one under test **off** the value that would satisfy the assertion by itself.
+
+This is not caught by a green suite, by CI, or usually by review — the assertion is true, the test name is accurate, and nothing looks wrong. Three instances landed in one day (Sprint 2026-08-18), in three different PRs by three different delegates, at three different layers: a grep-shaped containment test whose pattern a two-file split would bypass ([#1356](https://github.com/ms2sato/agent-console/pull/1356)); a wire-boundary test whose job fake always returned `[]`, so the one optional field it existed to protect never traversed the parse path ([#1357](https://github.com/ms2sato/agent-console/pull/1357)); and the engine case above ([#1360](https://github.com/ms2sato/agent-console/pull/1360)). Two were found by CodeRabbit, one by reading a screenshot. None by the suite.
+
 **When reporting polarity, state the category per test.** "7 of 9 flipped" invites a partial-polarity finding; "7 bug/contract tests flipped, 2 invariant-preservation tests hold in both worlds and fail against a guard-less implementation" is the same fact, correctly classified.
 
 ### Demonstrating polarity without breaking the build

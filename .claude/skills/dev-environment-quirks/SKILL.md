@@ -96,6 +96,24 @@ git -C <serving-checkout> log -1 --format='%ci %h %s'
 
 If the process start time predates the commit time, the server is running old code — restart (or re-rsync / re-bundle) before drawing any verification conclusion from its behavior. (Lesson: Sprint 2026-08-01 — merged PRs #1237/#1241 were believed E2E-verified on the shared dev server, which was in fact running a binary from before the merges; the gap sat undetected for two days. See `.claude/rules/pre-pr-completeness.md` Q13 "Retroactive application".)
 
+## Whose server is on that port? (parallel sessions collide silently)
+
+A LISTEN on your expected port does not mean **your** process is listening. When several delegates work in parallel, each starting a dev server on the default ports, a start-up failure in yours leaves someone else's server answering — and the browser looks completely normal, because it *is* a working instance, just of different code.
+
+Check provenance at start time, every time, not when something looks wrong:
+
+```bash
+ss -tlnp | grep -E ':3457|:5173'        # get the PID actually holding the port
+readlink -f /proc/<pid>/cwd             # must be YOUR worktree
+ps -o lstart=,args= -p <pid>            # start time matches your launch; argv carries the worktree path
+```
+
+Two things make this failure hard to catch by feel: the symptom is *absence* of your change (which reads as "my change didn't work"), and every functional check you run still passes, because the other instance works fine. Confirming the port's owner is one command; noticing by intuition is luck.
+
+**Prefer isolation over detection.** For QA that matters, start the instance on a dedicated port with its own `AGENT_CONSOLE_HOME` (see the next section) rather than competing for the defaults. Detection tells you afterward; isolation removes the collision.
+
+(Lesson: Sprint 2026-08-18 PR [#1360](https://github.com/ms2sato/agent-console/pull/1360) — a delegate's own dev server failed to start on the second launch, and they QA'd against a *different* delegate's server without noticing. They caught it only because a one-line change they had reviewed minutes earlier was missing from the picker; their own retrospective named the root error precisely: treating "the port is LISTENing" as "my process is LISTENing". The first round's provenance was later established from `ps` argv — which happened to contain the absolute worktree path. That was luck, not procedure.)
+
 ## Driving MCP against a throwaway instance you started yourself
 
 Shipping-path verification often needs a disposable instance (`AGENT_CONSOLE_HOME=/tmp/agent-console-<issue>-verify` on a free port — never under `~/.agent-console*`, which a guard protects from cleanup). **The session's pre-registered MCP clients cannot reach it**: those entries point at the shared instances, and rewriting the global `~/.claude.json` to retarget them would disturb every other session on the machine.
