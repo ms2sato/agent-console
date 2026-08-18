@@ -303,6 +303,10 @@ async function initializeLoop(
       enabledTools: init.enabledTools,
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
+      loadHandoffPrompt: async () => {
+        const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
+        return content;
+      },
     });
   } catch (err) {
     const message = `SDK engine construction failed: ${err instanceof Error ? err.message : String(err)}`;

@@ -463,6 +463,58 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
   });
 });
 
+describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () => {
+  const claudeSdkInitCommand = () =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    });
+
+  // A `handoff` command received while a turn is active is rejected at
+  // main.ts's dispatch layer (the same `turnActive` gate `user-message` is
+  // subject to) BEFORE it ever reaches `Engine.handoff()` -- this is
+  // engine-agnostic dispatch-loop behavior, so the native-loop and
+  // claude-sdk engines observe an IDENTICAL contract here by construction,
+  // with no engine-specific code needed on either side. This is the
+  // verification for docs/design/embedded-agent-sdk-engine.md's S3 AC line
+  // "Handoff during an active turn: match the native engine's observable
+  // contract."
+  it('ignores a handoff command received while a turn is active, and never calls Engine.handoff()', async () => {
+    let handoffCalled = false;
+    let resolveTurn: (() => void) | null = null;
+    class HangingEngine implements Engine {
+      async runTurn(): Promise<void> {
+        return new Promise<void>((resolve) => {
+          resolveTurn = resolve;
+        });
+      }
+      cancel(): void {
+        resolveTurn?.();
+      }
+      async handoff(): Promise<void> {
+        handoffCalled = true;
+      }
+    }
+
+    const { io, errors } = makeIo([
+      claudeSdkInitCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hi' }),
+      JSON.stringify({ v: 1, type: 'handoff' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    const factories = makeFactories({ createSdkEngine: () => new HangingEngine() });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(handoffCalled).toBe(false);
+    expect(errors.some((e) => e.includes('Ignoring handoff received while a turn is active'))).toBe(true);
+  });
+});
+
 describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
   const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
     JSON.stringify({
@@ -527,6 +579,24 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
 
     expect(await runLoop(io, factories)).toBe(0);
     expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
+  });
+
+  it('wires loadHandoffPrompt to factories.loadHandoffPrompt (S3): the SAME single-writer prompt source the native-loop engine uses', async () => {
+    const { io } = makeIo([claudeSdkInitCommand()]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadHandoffPrompt: async ({ cwd }) => {
+        expect(cwd).toBe('/tmp');
+        return { content: 'FACTORY_HANDOFF_PROMPT', origin: 'bundled-default' };
+      },
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    await expect(capturedDeps!.loadHandoffPrompt()).resolves.toBe('FACTORY_HANDOFF_PROMPT');
   });
 });
 
