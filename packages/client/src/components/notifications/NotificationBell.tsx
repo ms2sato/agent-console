@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchNotifications, markNotificationsSeen } from '../../lib/api';
 import { notificationCenterKeys } from '../../lib/query-keys';
@@ -23,8 +23,9 @@ import { logger } from '../../lib/logger';
 export function NotificationBell() {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
+  const panelId = useId();
 
-  const { data, isLoading, refetch } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: notificationCenterKeys.feed(),
     queryFn: fetchNotifications,
   });
@@ -88,6 +89,9 @@ export function NotificationBell() {
     }
   };
 
+  // Badge keeps the last known server-computed unreadCount on a failed
+  // refetch (TanStack Query's default stale-data-on-error behavior) -- there
+  // is no dedicated error-badge state, and this must not zero the badge.
   const unreadCount = data?.unreadCount ?? 0;
   const items = data?.items ?? [];
 
@@ -99,6 +103,8 @@ export function NotificationBell() {
         className="relative text-slate-400 hover:text-white p-1 rounded hover:bg-white/10 transition-colors"
         aria-label={unreadCount > 0 ? `Notifications (${unreadCount} unread)` : 'Notifications'}
         aria-expanded={open}
+        aria-haspopup="dialog"
+        aria-controls={panelId}
       >
         <BellIcon className="w-4 h-4" />
         {unreadCount > 0 && (
@@ -114,7 +120,14 @@ export function NotificationBell() {
       {open && (
         <>
           <div className="fixed inset-0 z-30" aria-hidden="true" onClick={() => setOpen(false)} />
-          <NotificationPanel items={items} isLoading={isLoading} onNavigate={() => setOpen(false)} />
+          <NotificationPanel
+            id={panelId}
+            items={items}
+            isLoading={isLoading}
+            isError={isError}
+            onRetry={() => refetch()}
+            onNavigate={() => setOpen(false)}
+          />
         </>
       )}
     </div>

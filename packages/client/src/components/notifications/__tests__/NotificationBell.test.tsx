@@ -41,6 +41,7 @@ interface FeedItem {
 let serverItems: FeedItem[] = [];
 let serverUnreadCount = 0;
 let putShouldFail = false;
+let getShouldFail = false;
 /** When set, the PUT /seen handler blocks until this resolver is invoked -- lets tests observe in-flight state deterministically. */
 let resolveSeenPut: (() => void) | null = null;
 let blockSeenPut = false;
@@ -64,6 +65,9 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit): Pro
   }
 
   if (url.includes('/notifications')) {
+    if (getShouldFail) {
+      return jsonResponse({ error: 'Internal Server Error' }, 500);
+    }
     return jsonResponse({ items: serverItems, lastSeenAt: null, unreadCount: serverUnreadCount });
   }
 
@@ -90,11 +94,13 @@ let useAppWsEventSpy: ReturnType<typeof spyOn>;
 let useAppWsStateSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
-  globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
+  const fetchStub: typeof fetch = Object.assign(mockFetch, { preconnect: () => {} });
+  globalThis.fetch = fetchStub;
   mockFetch.mockClear();
   serverItems = [];
   serverUnreadCount = 0;
   putShouldFail = false;
+  getShouldFail = false;
   blockSeenPut = false;
   resolveSeenPut = null;
   capturedWsOptions = undefined;
@@ -171,6 +177,8 @@ describe('NotificationBell', () => {
     await user.click(screen.getByRole('button', { name: /notifications/i }));
 
     await waitFor(() => expect(screen.getByText(/no notifications yet/i)).toBeTruthy());
+    // Negative arm: a genuinely-empty feed must never render the error copy.
+    expect(screen.queryByText(/failed to load notifications/i)).toBeNull();
 
     // GET refetch happened, but no PUT (nothing was seen -- cursor unchanged).
     const putCalls = (mockFetch.mock.calls as unknown[][]).filter((call) => {
@@ -181,6 +189,38 @@ describe('NotificationBell', () => {
     });
     expect(putCalls.length).toBe(0);
     expect(mockFetch.mock.calls.length).toBeGreaterThan(callsBeforeOpen);
+  });
+
+  describe('fetch-error state (distinct from genuinely-empty)', () => {
+    it('shows the error copy with a Retry button, and never the empty-state copy, when the feed GET fails', async () => {
+      getShouldFail = true;
+      await renderWithRouter(<NotificationBell />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /notifications/i }));
+
+      await waitFor(() => expect(screen.getByText(/failed to load notifications/i)).toBeTruthy());
+      // The point of this test: a failed fetch must not be collapsed into
+      // "no notifications yet" -- the two states must stay distinguishable.
+      expect(screen.queryByText(/no notifications yet/i)).toBeNull();
+      expect(screen.getByRole('button', { name: /retry/i })).toBeTruthy();
+    });
+
+    it('retries the fetch when Retry is clicked', async () => {
+      getShouldFail = true;
+      await renderWithRouter(<NotificationBell />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /notifications/i }));
+      await waitFor(() => expect(screen.getByText(/failed to load notifications/i)).toBeTruthy());
+
+      getShouldFail = false;
+      serverItems = [makeItem()];
+      serverUnreadCount = 1;
+      await user.click(screen.getByRole('button', { name: /retry/i }));
+
+      await waitFor(() => expect(screen.queryByText(/failed to load notifications/i)).toBeNull());
+    });
   });
 
   describe('Ruling 2: badge zeroing is a server round trip, not optimistic', () => {
@@ -297,6 +337,9 @@ describe('NotificationBell', () => {
       const callsAfterMount = mockFetch.mock.calls.length;
 
       // Still disconnected -- no additional fetch from mere render settling.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
       expect(mockFetch.mock.calls.length).toBe(callsAfterMount);
 
       await act(async () => {

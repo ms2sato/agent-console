@@ -50,7 +50,8 @@ export function NotificationItemRow({ item, onNavigate }: NotificationItemRowPro
   if (item.kind === 'worktree-deletion-finished') {
     return (
       <Link
-        to={item.link as string}
+        to="/worktree-deletion-tasks/$taskId"
+        params={{ taskId: item.id }}
         className={rowClassName}
         data-testid="notification-item"
         data-kind={item.kind}

@@ -228,7 +228,10 @@ function RootLayout() {
               <AgentsNavLink />
               <ArtifactsNavLink />
               <RepositoriesNavLink />
-              <NotificationBell />
+              {/* isMobile-gated: the parent <nav> is only CSS-hidden (hidden md:flex) on mobile, not
+                  unmounted, so without this gate NotificationBell would double-mount alongside
+                  MobileHeaderControls' own instance. */}
+              {!isMobile && <NotificationBell />}
               <SettingsNavLink />
               {isMultiUser && <LogoutButton />}
             </nav>

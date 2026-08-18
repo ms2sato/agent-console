@@ -21,7 +21,7 @@ function makeItems(count: number): NotificationItem[] {
 describe('NotificationPanel', () => {
   it('shows a loading state while fetching', async () => {
     await renderWithRouter(
-      <NotificationPanel items={[]} isLoading={true} onNavigate={mock(() => {})} />
+      <NotificationPanel items={[]} isLoading={true} isError={false} onRetry={mock(() => {})} onNavigate={mock(() => {})} />
     );
 
     expect(screen.getByText(/loading/i)).toBeTruthy();
@@ -29,16 +29,18 @@ describe('NotificationPanel', () => {
 
   it('shows the empty-state copy when there are no items', async () => {
     await renderWithRouter(
-      <NotificationPanel items={[]} isLoading={false} onNavigate={mock(() => {})} />
+      <NotificationPanel items={[]} isLoading={false} isError={false} onRetry={mock(() => {})} onNavigate={mock(() => {})} />
     );
 
     expect(screen.getByText(/no notifications yet/i)).toBeTruthy();
+    // Negative arm: a genuinely-empty feed must never render the error copy.
+    expect(screen.queryByText(/failed to load notifications/i)).toBeNull();
   });
 
   it('renders every item passed in props', async () => {
     const items = makeItems(3);
     await renderWithRouter(
-      <NotificationPanel items={items} isLoading={false} onNavigate={mock(() => {})} />
+      <NotificationPanel items={items} isLoading={false} isError={false} onRetry={mock(() => {})} onNavigate={mock(() => {})} />
     );
 
     for (const item of items) {
@@ -46,15 +48,30 @@ describe('NotificationPanel', () => {
     }
   });
 
-  it('renders exactly the 50-item cap even when more are unread (51 unread / 50 items case)', async () => {
+  it('renders all 50 items when the server returns the capped page', async () => {
     // unreadCount > items.length is a badge-only concern (Ruling 2); the
     // panel itself only ever renders what it is given.
     const items = makeItems(50);
     await renderWithRouter(
-      <NotificationPanel items={items} isLoading={false} onNavigate={mock(() => {})} />
+      <NotificationPanel items={items} isLoading={false} isError={false} onRetry={mock(() => {})} onNavigate={mock(() => {})} />
     );
 
     const rows = screen.getAllByTestId('notification-item');
     expect(rows.length).toBe(50);
+  });
+
+  it('shows the error copy with a Retry button, and never the empty-state copy, when isError is true', async () => {
+    const onRetry = mock(() => {});
+    await renderWithRouter(
+      <NotificationPanel items={[]} isLoading={false} isError={true} onRetry={onRetry} onNavigate={mock(() => {})} />
+    );
+
+    expect(screen.getByText(/failed to load notifications/i)).toBeTruthy();
+    // The point of this test: an error must not be collapsed into the
+    // empty-state copy -- the two states must stay distinguishable.
+    expect(screen.queryByText(/no notifications yet/i)).toBeNull();
+
+    screen.getByRole('button', { name: /retry/i }).click();
+    expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });
