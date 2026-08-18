@@ -11,6 +11,8 @@
  * See docs/design/embedded-agent-worker.md Part II for the normative spec.
  */
 
+import type { PtyNotificationKind } from './system-events.js';
+
 /**
  * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
  * tool-name literals in the repo — every other usage must reference this
@@ -201,6 +203,19 @@ export type EmbeddedAgentEvent =
  * only `EmbeddedAgentEvent` would silently drop every user message and exit row
  * from replayed history.
  */
+/**
+ * Marker payload for a system-originated internal notification delivered as
+ * a `user-message` server event. `kind`/`summary` derive
+ * solely from the {@link PtyNotificationKind}-shaped params the notification
+ * was composed from -- never from any reply-instructions suffix appended to
+ * the delivered/persisted text (see
+ * SessionManager.sendEmbeddedAgentSystemNotification).
+ */
+export interface EmbeddedAgentServerNotification {
+  kind: PtyNotificationKind;
+  summary?: string;
+}
+
 export type EmbeddedAgentServerEvent =
   | {
       v: 1;
@@ -215,6 +230,13 @@ export type EmbeddedAgentServerEvent =
       // for server-originated sends (e.g. the initial prompt delivery),
       // which have no client to correlate with.
       clientMessageId?: string;
+      // Present iff this user-message is a system-originated internal
+      // notification (e.g. delivered via
+      // SessionManager.sendEmbeddedAgentSystemNotification) rather than a
+      // real human/API-caller message. This presence check IS the
+      // discriminator -- there is no separate `origin` field that could
+      // disagree with it.
+      notification?: EmbeddedAgentServerNotification;
     }
   | { v: 1; type: 'exited'; code: number | null };
 

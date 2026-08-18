@@ -1903,6 +1903,21 @@ describe('MCP Server Tools', () => {
       const data = parseToolResult(response) as { messageId: string; path: string };
       expect(userMessageWrite!.text).toContain(data.path);
 
+      // Issue #1351: the PERSISTED event carries a `notification` marker
+      // distinguishing this system-originated send from a real user/API
+      // message, with summary matching what stdin's text already asserted.
+      const history = await sessionManager.getWorkerOutputHistory(session.id, embeddedWorker!.id, 0);
+      expect(history).not.toBeNull();
+      const persistedUserMessage = (history!.data as string)
+        .split('\n')
+        .filter((line: string) => line.length > 0)
+        .map((line: string) => JSON.parse(line) as { type: string; notification?: { kind: string; summary?: string } })
+        .find((event) => event.type === 'user-message');
+      expect(persistedUserMessage?.notification).toEqual({
+        kind: 'internal-message',
+        summary: `Message from session ${senderSession.title ?? senderSession.id}`,
+      });
+
       const deactivatePromise = sessionManager.deactivateEmbeddedAgentWorker(session.id, embeddedWorker!.id);
       fakeEmbeddedSpawn.simulateExit(0);
       await deactivatePromise;

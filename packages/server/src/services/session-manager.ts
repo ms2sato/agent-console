@@ -42,6 +42,7 @@ import { substituteVariables } from '../lib/template-variables.js';
 import { getConfigDir, getServerPid } from '../lib/config.js';
 import { stopWatching } from './git-diff-service.js';
 import { SessionDataPathResolver } from '../lib/session-data-path-resolver.js';
+import type { PtyNotificationParams } from '../lib/pty-notification.js';
 import {
   computeSessionDataBaseDir,
   InvalidSessionDataScopeError,
@@ -710,6 +711,25 @@ export class SessionManager {
     clientMessageId?: string,
   ): Promise<SendUserMessageResult> {
     return this.embeddedAgentWorkerService.sendUserMessage(sessionId, workerId, text, clientMessageId);
+  }
+
+  /**
+   * Deliver a system-originated notification to an embedded-agent worker's
+   * loop as an ordinary user turn, but persist it with a `notification` marker
+   * so the client can render it distinctly from a real user/API message.
+   * `params` is the structured PTY-notification params type (never a
+   * pre-composed string) -- see docs/design/embedded-agent-worker.md and
+   * pty-notification.ts. `opts.replyToSessionId`, when set, appends the
+   * standard reply-instructions block to the delivered/persisted text without
+   * affecting `notification.kind`/`summary` (those derive from `params` only).
+   */
+  async sendEmbeddedAgentSystemNotification(
+    sessionId: string,
+    workerId: string,
+    params: PtyNotificationParams,
+    opts?: { replyToSessionId?: string },
+  ): Promise<SendUserMessageResult> {
+    return this.embeddedAgentWorkerService.sendSystemNotification(sessionId, workerId, params, opts);
   }
 
   /** Forward a cancel command to an embedded-agent worker's loop. */

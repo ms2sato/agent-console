@@ -5,6 +5,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import type { Element as HastElement, Text as HastText } from 'hast';
 import type { JSX } from 'react';
 import type { ExtraProps } from 'react-markdown';
+import type { PtyNotificationKind, EmbeddedAgentServerNotification } from '@agent-console/shared';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
 import { RefreshIcon, AlertCircleIcon, CopyIcon, CheckIcon } from '../Icons';
@@ -464,6 +465,72 @@ function CopyMarkdownButton({ text }: { text: string }) {
   );
 }
 
+/**
+ * Humanized labels for every {@link PtyNotificationKind}.
+ * `satisfies Record<PtyNotificationKind, string>` makes a future addition to
+ * the shared enum a compile error here until a label is added -- see
+ * design-principles.md "Enforce constraints through structure, not
+ * convention".
+ */
+const NOTIFICATION_KIND_LABELS = {
+  'inbound-event': 'Inbound Event',
+  'internal-message': 'Message',
+  'internal-timer': 'Timer',
+  'internal-review-comment': 'Review Comment',
+  'internal-reviewed': 'Review Completed',
+  'internal-process': 'Process',
+  'internal-conditional-wakeup': 'Conditional Wakeup',
+  'internal-agent-spawn-failed': 'Agent Spawn Failed',
+} satisfies Record<PtyNotificationKind, string>;
+
+/** Cap (in characters) for the fallback preview derived from a notification's raw text -- see notificationPreviewText. */
+const NOTIFICATION_PREVIEW_CAP = 140;
+
+/**
+ * Collapsed-row preview text for a notification entry: the `summary` field
+ * when the notification's kind carries one (`internal-message`/
+ * `inbound-event`), otherwise a capped first line of the raw text --
+ * `buildPtyNotificationText` (server) always embeds `timestamp=<ISO8601>` as
+ * the first field, so this fallback already surfaces a timestamp without any
+ * separate date-parsing logic here.
+ */
+function notificationPreviewText(entry: { text: string; notification: EmbeddedAgentServerNotification }): string {
+  if (entry.notification.summary !== undefined) return entry.notification.summary;
+  const firstLine = entry.text.trim().split('\n')[0] ?? '';
+  return firstLine.length > NOTIFICATION_PREVIEW_CAP
+    ? `${firstLine.slice(0, NOTIFICATION_PREVIEW_CAP)}…`
+    : firstLine;
+}
+
+type NotificationEntry = Extract<EmbeddedAgentChatEntry, { kind: 'user-message' }> & {
+  notification: EmbeddedAgentServerNotification;
+};
+
+/**
+ * Muted, full-width, collapsed-by-default row for a system-originated
+ * internal notification delivered as a `user-message` -- visually distinct
+ * from both the user-bubble (`bg-blue-600/80`) and the
+ * assistant-message (`bg-slate-800`) treatments. Raw text renders as a plain
+ * text node (never through the Markdown pipeline) since it is operational
+ * metadata, not agent prose.
+ */
+function NotificationRow({ entry }: { entry: NotificationEntry }) {
+  const label = NOTIFICATION_KIND_LABELS[entry.notification.kind];
+  return (
+    <div className="text-sm text-gray-500 bg-slate-800/40 border border-slate-700/60 rounded px-3 py-2">
+      <details>
+        <summary className="cursor-pointer flex items-center gap-2 text-xs text-gray-400">
+          <span className="uppercase tracking-wide text-[10px] text-gray-600 shrink-0">{label}</span>
+          <span className="truncate">{notificationPreviewText(entry)}</span>
+        </summary>
+        <div className="mt-2 min-w-0 whitespace-pre-wrap text-xs text-gray-400 font-mono [overflow-wrap:anywhere]">
+          {entry.text}
+        </div>
+      </details>
+    </div>
+  );
+}
+
 interface ChatEntryRowProps {
   entry: OutsideEntry;
   onRestart: () => void;
@@ -472,6 +539,9 @@ interface ChatEntryRowProps {
 function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
   switch (entry.kind) {
     case 'user-message':
+      if (entry.notification) {
+        return <NotificationRow entry={entry as NotificationEntry} />;
+      }
       return (
         <div className="flex justify-end">
           <div className="min-w-0 max-w-[80%] rounded-lg bg-blue-600/80 text-white px-3 py-2 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
