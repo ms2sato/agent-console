@@ -2137,4 +2137,100 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
     });
   });
+
+  describe('SDK-engine restore-divergence notice (#1335)', () => {
+    it('shows the divergence notice (not the generic restore banner) for a claude-sdk engine worker that restored a prior transcript', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-restore-1', workerId: 'w-sdk-restore-1', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
+        );
+      });
+      await flush();
+
+      expect(
+        screen.getByText(/conversation context was not carried over the restart/i),
+      ).toBeTruthy();
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+    });
+
+    it('does not show the divergence notice for a native-loop engine worker, and still shows the generic restore banner', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture()])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-restore-2', workerId: 'w-sdk-restore-2', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
+        );
+      });
+      await flush();
+
+      expect(
+        screen.queryByText(/conversation context was not carried over the restart/i),
+      ).toBeNull();
+      expect(
+        screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeTruthy();
+    });
+
+    it('shows neither banner for a claude-sdk engine worker with no prior transcript (fresh worker, no restore-info push)', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-restore-3', workerId: 'w-sdk-restore-3', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      expect(
+        screen.queryByText(/conversation context was not carried over the restart/i),
+      ).toBeNull();
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+    });
+  });
 });

@@ -162,6 +162,7 @@ export function UnifiedAgentSelector({
               disabled={disabledKindSet.has('embedded')}
             >
               {agent.name}
+              {agent.isBuiltIn ? ' (built-in)' : ''}
             </option>
           ))}
         </optgroup>

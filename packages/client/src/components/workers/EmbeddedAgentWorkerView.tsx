@@ -208,6 +208,21 @@ export function EmbeddedAgentWorkerView({
 
   const isTurnActive = activityState === 'active';
 
+  // `claude-sdk` engine workers do not reconstruct their live SDK session
+  // from the persisted transcript on revival (v1 limitation, see
+  // docs/design/embedded-agent-worker.md) -- the generic restore banner
+  // below is only accurate for `native-loop` engine workers (and the
+  // defensive case where the definition hasn't loaded yet). `undefined`
+  // (definition not loaded / not found) intentionally falls into the
+  // generic-banner branch, matching pre-existing behavior.
+  const isSdkEngine = embeddedAgentDefinition?.engine === 'claude-sdk';
+  // `restoredMessageCount` is not reset to null when `restoring` flips
+  // false (see its doc comment in embedded-agent-store.ts), so this is a
+  // reliable "this activation/incarnation restored a non-empty prior
+  // transcript" signal, decoupled from the transient restoring state.
+  const hadPriorTranscriptThisIncarnation =
+    restoredMessageCount !== null && restoredMessageCount > 0;
+
   const displayItems = useMemo(() => buildDisplayItems(entries), [entries]);
 
   return (
@@ -218,11 +233,27 @@ export function EmbeddedAgentWorkerView({
 
       {/* Persistent, non-dismissable transcript-restore notice (Transcript
           Restore #1123). This is a permanent fixture of the view, not a
-          toast -- it has no close button. */}
-      <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
-        Conversation is restored automatically after a worker or server restart; it only resets if the
-        saved transcript can't be recovered.
-      </div>
+          toast -- it has no close button. Only accurate for `native-loop`
+          engine workers, whose live conversation IS reconstructed from the
+          persisted transcript on revival. */}
+      {!isSdkEngine && (
+        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
+          Conversation is restored automatically after a worker or server restart; it only resets if the
+          saved transcript can't be recovered.
+        </div>
+      )}
+
+      {/* SDK-engine restore-divergence notice (#1335 Phase 3): `claude-sdk`
+          engine workers do NOT carry conversation context across a restart
+          -- only the transcript display is restored, the live SDK session
+          starts fresh. Shown only when this incarnation actually restored a
+          non-empty prior transcript (nothing to diverge from otherwise). */}
+      {isSdkEngine && hadPriorTranscriptThisIncarnation && (
+        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
+          This worker's conversation context was not carried over the restart — the messages above
+          are history, not something the agent currently remembers. This turn starts fresh.
+        </div>
+      )}
 
       {workerError && (
         <div

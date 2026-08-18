@@ -185,6 +185,31 @@ describe('UnifiedAgentSelector', () => {
     expect(screen.getByText('Ollama Agent')).toBeTruthy();
   });
 
+  it('shows a "(built-in)" suffix on a built-in embedded agent option and not on a non-built-in one', async () => {
+    mockFetch.mockImplementation((input) => {
+      const url = resolveUrl(input);
+      if (url.includes('embedded-agents')) {
+        return Promise.resolve(
+          createMockResponse({
+            embeddedAgents: [
+              { id: 'embedded-1', name: 'Claude', isBuiltIn: true },
+              { id: 'embedded-2', name: 'Ollama Agent', isBuiltIn: false },
+            ],
+          }),
+        );
+      }
+      return Promise.resolve(createMockResponse(mockAgentsResponse));
+    });
+
+    renderUnifiedAgentSelector();
+
+    await waitFor(() => {
+      expect(screen.getByText('Claude (built-in)')).toBeTruthy();
+    });
+    expect(screen.getByText('Ollama Agent')).toBeTruthy();
+    expect(screen.queryByText('Ollama Agent (built-in)')).toBeNull();
+  });
+
   it('defaults selection to the priority terminal agent when neither agentId nor embeddedAgentId is given', async () => {
     renderUnifiedAgentSelector({ priorityAgentId: 'another-agent' });
 
