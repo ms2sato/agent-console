@@ -355,6 +355,13 @@ export class SdkEngine implements Engine {
     }
 
     const outcome = await this.runDistillationTurn(promptText);
+    if (this.dead) {
+      // A transport crash or Pin 2 containment fatal landed WHILE the
+      // distillation turn was in flight -- `settlePendingDistillation`
+      // already resolved `outcome` as a failure and `handleFatal` already
+      // emitted `fatal`. Nothing further to emit here.
+      return;
+    }
 
     // S1: "once after each handoff attempt", regardless of outcome --
     // measured on the OLD (still-current) query, which is the semantically
@@ -374,6 +381,11 @@ export class SdkEngine implements Engine {
 
     this.deps.emit({ v: 1, type: 'context-handoff', distillation: outcome.text });
     this.reseed(outcome.text);
+    if (this.dead) {
+      // reseed()'s successor-construction failure path already emitted
+      // `fatal` -- do not also emit a spurious state:idle on top of it.
+      return;
+    }
     this.deps.emit({ v: 1, type: 'state', state: 'idle' });
   }
 
@@ -441,8 +453,24 @@ export class SdkEngine implements Engine {
     );
     const systemPromptAppend = appendParts.length > 0 ? appendParts.join('\n\n') : undefined;
 
-    this.queue = new UserMessageQueue();
-    this.query = this.queryFn({ prompt: this.queue.stream(), options: this.buildOptions(systemPromptAppend) });
+    // Build the successor query BEFORE touching `this.queue`/`this.query`:
+    // if `queryFn` throws synchronously (the same failure mode Phase 1's
+    // initial construction is already rescued against, one layer up in
+    // main.ts), the engine must not silently keep pointing at the just-
+    // closed old query with a queue nothing is reading -- `handleFatal`
+    // below marks it dead so a later runTurn/handoff fails loudly instead
+    // of hanging.
+    const newQueue = new UserMessageQueue();
+    let successorQuery: Query;
+    try {
+      successorQuery = this.queryFn({ prompt: newQueue.stream(), options: this.buildOptions(systemPromptAppend) });
+    } catch (err) {
+      this.handleFatal(`SDK engine reseed construction failed: ${errorMessage(err)}`);
+      return;
+    }
+
+    this.queue = newQueue;
+    this.query = successorQuery;
     // An intentional handoff-driven drop in context usage must never itself
     // trip the PS1 material-drop tripwire (S2) -- the next usable poll
     // becomes the new baseline with nothing to compare against.
@@ -775,6 +803,21 @@ export class SdkEngine implements Engine {
     }
   }
 
+  /** Settles a pending distillation turn with a failure outcome. Without
+   * this, a transport crash / Pin 2 containment fatal that lands WHILE
+   * `handoff()` is awaiting `runDistillationTurn` would leave
+   * `distillationDeferred` unsettled forever -- `handleFatal` only settled
+   * `currentTurnDeferred` (the normal-turn deferred), so `handoff()` would
+   * hang indefinitely instead of observing the fatal and returning. */
+  private settlePendingDistillation(): void {
+    if (this.distillationDeferred) {
+      const { resolve } = this.distillationDeferred;
+      this.distillationDeferred = null;
+      this.turnMode = 'normal';
+      resolve({ ok: false, reason: 'engine terminated before the distillation completed' });
+    }
+  }
+
   /**
    * S1/H2: polls `getContextUsage()` with retry-with-settle. A THROW from
    * the call is the H2 race (or a genuine transport failure -- the two are
@@ -840,7 +883,9 @@ export class SdkEngine implements Engine {
    * `runTurn` fails loudly instead of hanging, and settles any pending turn
    * (resolve, not reject -- mirrors how a `turn-error` always still
    * resolves the caller's promise; the `fatal` event is what tells the
-   * client something is actually wrong). Idempotent.
+   * client something is actually wrong). Also settles any pending
+   * distillation turn (see `settlePendingDistillation`'s doc comment) --
+   * `handoff()` awaits that separately from a normal turn. Idempotent.
    */
   private handleFatal(message: string): void {
     if (this.dead) return;
@@ -848,5 +893,6 @@ export class SdkEngine implements Engine {
     this.deps.emit({ v: 1, type: 'fatal', message });
     this.dispose();
     this.settlePendingTurn();
+    this.settlePendingDistillation();
   }
 }

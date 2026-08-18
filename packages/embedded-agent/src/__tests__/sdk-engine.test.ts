@@ -1438,6 +1438,82 @@ describe('SdkEngine — session-boundary handoff (S3)', () => {
     expect(eventsOfType(events, 'context-handoff')).toHaveLength(0);
     expect(callCount()).toBe(1); // no successor session constructed
   });
+
+  it('BUG FIX: a transport crash mid-distillation settles handoff() with fatal instead of hanging forever', async () => {
+    // Without settling `distillationDeferred` in handleFatal, this test
+    // times out (bun:test's default per-test timeout) rather than failing
+    // fast -- `handoff()`'s `await this.runDistillationTurn(...)` would
+    // never resolve.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, callCount } = makeMultiSessionFakeQuery([
+      {
+        source: () =>
+          (async function* (): AsyncGenerator<SDKMessage, void> {
+            yield systemInit();
+            await new Promise<void>((resolve) => setTimeout(resolve, 0)); // gate, see gatedSession's doc comment
+            throw new Error('transport exploded mid-distillation');
+          })(),
+      },
+    ]);
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+
+    await engine.handoff();
+
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('transport exploded mid-distillation');
+    expect(eventsOfType(events, 'context-handoff')).toHaveLength(0);
+    expect(callCount()).toBe(1); // no successor session constructed
+  });
+
+  it('BUG FIX: a synchronous throw constructing the successor query on reseed goes fatal instead of leaving the engine stuck', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    let callIndex = 0;
+    const queryFn: QueryFn = () => {
+      const idx = callIndex++;
+      if (idx === 0) {
+        const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
+          yield systemInit();
+          await new Promise<void>((resolve) => setTimeout(resolve, 0)); // gate, see gatedSession's doc comment
+          yield textDeltaEvent('DISTILLED');
+          yield messageStopEvent();
+          yield resultSuccess();
+          await new Promise<never>(() => {});
+        })();
+        return asQuery(
+          Object.assign(gen, {
+            interrupt: async () => undefined,
+            close: () => {},
+            getContextUsage: async () => usableContextUsage(1000),
+          }),
+        );
+      }
+      // The successor's queryFn call (S3's second production call site)
+      // throws synchronously -- models the SDK rejecting the reseed's
+      // options battery.
+      throw new Error('malformed successor options rejected by the SDK');
+    };
+    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+
+    await engine.handoff();
+
+    // The distillation itself succeeded (context-handoff was already
+    // emitted) -- only the successor construction failed.
+    expect(eventsOfType(events, 'context-handoff')).toHaveLength(1);
+    const fatalEvents = eventsOfType(events, 'fatal');
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('reseed construction failed');
+    expect(fatalEvents[0].message).toContain('malformed successor options rejected by the SDK');
+    // No spurious state:idle emitted after the fatal.
+    expect(eventsOfType(events, 'state').map((e) => e.state)).toEqual(['active']);
+
+    // A later runTurn fails loudly rather than hanging.
+    events.length = 0;
+    await engine.runTurn('u2', 'hi');
+    expect(events).toEqual([
+      { v: 1, type: 'fatal', message: 'SDK engine session already terminated; cannot start a new turn' },
+    ]);
+  });
 });
 
 describe('SdkEngine — S4: reseed vs the clean-stream-end guard', () => {
