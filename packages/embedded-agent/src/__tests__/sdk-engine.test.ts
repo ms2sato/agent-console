@@ -5,6 +5,10 @@
  * process is spawned. The one exception is the `spawnClaudeCodeProcess`
  * override test, which spawns a real short-lived process to prove the
  * override actually delegates to `node:child_process.spawn`.
+ *
+ * The sibling engine's own literal is `openai-api` (#1364; formerly
+ * `native-loop`) -- production `sdk-engine.ts` only names it in comments, so
+ * no assertion here changes.
  */
 
 import { describe, it, expect, spyOn } from 'bun:test';
