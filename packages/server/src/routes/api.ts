@@ -13,6 +13,7 @@ import { reviewQueue } from './review-queue.js';
 import { skills } from './skills.js';
 import { messageTemplates } from './message-templates.js';
 import { artifacts } from './artifacts.js';
+import { notifications } from './notifications.js';
 import { auth } from './auth.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { serverConfig } from '../lib/server-config.js';
@@ -59,7 +60,8 @@ const api = new Hono<AppBindings>()
   .route('/review-queue', reviewQueue)
   .route('/skills', skills)
   .route('/message-templates', messageTemplates)
-  .route('/artifacts', artifacts);
+  .route('/artifacts', artifacts)
+  .route('/notifications', notifications);
 
 export type AppType = typeof api;
 export { api };

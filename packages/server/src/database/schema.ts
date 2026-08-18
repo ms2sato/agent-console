@@ -19,6 +19,7 @@ export interface Database {
   timers: TimersTable;
   message_templates: MessageTemplatesTable;
   artifacts: ArtifactsTable;
+  user_notification_cursor: UserNotificationCursorTable;
 }
 
 /**
@@ -480,3 +481,19 @@ export interface ArtifactsTable {
 export type ArtifactRow = Selectable<ArtifactsTable>;
 /** Artifact data for INSERT queries */
 export type NewArtifact = Insertable<ArtifactsTable>;
+
+/**
+ * User notification cursor table (Notification Center, docs/design/notification-center.md §5).
+ * One row per user; `last_seen_at` is a high-water mark, not per-item state (N2).
+ */
+export interface UserNotificationCursorTable {
+  /** Primary key — foreign key reference to users.id (owner) */
+  user_id: string;
+  /** ISO 8601 timestamp of the newest notification the user has seen */
+  last_seen_at: string;
+}
+
+/** User notification cursor row as returned from SELECT queries */
+export type UserNotificationCursorRow = Selectable<UserNotificationCursorTable>;
+/** User notification cursor data for INSERT queries */
+export type NewUserNotificationCursor = Insertable<UserNotificationCursorTable>;
