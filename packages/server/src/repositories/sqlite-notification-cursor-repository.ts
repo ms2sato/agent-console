@@ -24,6 +24,12 @@ export class SqliteNotificationCursorRepository implements NotificationCursorRep
   }
 
   async advance(userId: string, lastSeenAt: string): Promise<string> {
+    if (lastSeenAt !== new Date(lastSeenAt).toISOString()) {
+      throw new Error(
+        `NotificationCursorRepository.advance: lastSeenAt must be a canonical UTC ISO string, got: ${lastSeenAt}`
+      );
+    }
+
     await this.db
       .insertInto('user_notification_cursor')
       .values({ user_id: userId, last_seen_at: lastSeenAt })

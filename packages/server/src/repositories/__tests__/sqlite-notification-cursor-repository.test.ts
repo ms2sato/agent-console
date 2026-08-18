@@ -71,6 +71,21 @@ describe('SqliteNotificationCursorRepository', () => {
       expect(await repository.getCursor('user-1')).toBe('2026-08-18T02:00:00.000Z');
     });
 
+    it('throws when given a non-canonical (non-UTC-Z) ISO timestamp', async () => {
+      // Valid ISO 8601, but not the canonical `new Date(x).toISOString()`
+      // form -- monotonicity comparisons upstream (SQL WHERE and
+      // NotificationService's lexical `>`) are only sound when every
+      // caller passes canonical UTC. See R-a, notification-center.md.
+      await expect(
+        repository.advance('user-1', '2026-08-18T09:00:00+03:00')
+      ).rejects.toThrow(/canonical UTC ISO string/);
+    });
+
+    it('does not throw and behaves normally for a canonical UTC ISO timestamp', async () => {
+      const result = await repository.advance('user-1', '2026-08-18T09:00:00.000Z');
+      expect(result).toBe('2026-08-18T09:00:00.000Z');
+    });
+
     it('two concurrent-shaped advances (simulated sequentially, either order) converge to the max value', async () => {
       // Order A: older then newer.
       const dbA = await createDatabaseForTest();

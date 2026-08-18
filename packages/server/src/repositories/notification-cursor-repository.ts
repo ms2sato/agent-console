@@ -13,6 +13,12 @@ export interface NotificationCursorRepository {
    * is a no-op by construction (SQL-level WHERE guard), not an error.
    * Always returns the CURRENT stored cursor after the attempt, whether or
    * not this call's value "won".
+   *
+   * Precondition: `lastSeenAt` MUST be a canonical UTC ISO 8601 string
+   * (i.e. `new Date(lastSeenAt).toISOString() === lastSeenAt`). Callers are
+   * responsible for normalizing before calling; implementations may throw
+   * if this precondition is violated, since the monotonicity guarantee
+   * above is only sound when every caller compares canonical values.
    */
   advance(userId: string, lastSeenAt: string): Promise<string>;
 }
