@@ -284,13 +284,23 @@ export function EmbeddedAgentWorkerView({
         </div>
       )}
 
+      {/* Transient loading indicator (#1123/#1205). Wording is deliberately
+          engine-neutral -- must not use "conversation"/"restoring" or any
+          other memory-continuity word, since this same string renders for
+          both native-loop (whose live session really is reconstructed, see
+          the generic banner above) and claude-sdk (whose live session is
+          NOT reconstructed, see the divergence notice above) workers. This
+          block only reports that prior transcript content is loading into
+          the display, not a claim about session continuity -- no per-engine
+          branch here, on purpose: see EmbeddedAgentWorkerView.test.tsx's
+          "SDK-engine restore-divergence notice" suite for the reasoning. */}
       {restoring && restoredMessageCount !== null && (
         <div className="px-4 py-2 bg-slate-800/60 border-b border-slate-700 text-gray-400 text-xs shrink-0 flex items-center gap-2">
           <span
             className="inline-block w-1.5 h-3 bg-gray-500 animate-pulse align-middle"
             aria-hidden="true"
           />
-          Restoring conversation from {restoredMessageCount} previous message
+          Loading {restoredMessageCount} previous message
           {restoredMessageCount === 1 ? '' : 's'}...
         </div>
       )}

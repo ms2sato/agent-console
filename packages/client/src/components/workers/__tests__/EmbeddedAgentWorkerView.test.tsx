@@ -2094,7 +2094,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('2 tool calls affected.')).toBeTruthy();
     });
 
-    it('shows the "Restoring conversation..." banner while restoring is true, and hides it once a completed:true restore-info push arrives (#1205)', async () => {
+    it('shows the "Loading N previous messages..." indicator while restoring is true, and hides it once a completed:true restore-info push arrives (#1205)', async () => {
       renderView({ sessionId: 's-restore-2', workerId: 'w-restore-2' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -2102,7 +2102,7 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
+      expect(screen.queryByText(/Loading \d+ previous message/)).toBeNull();
 
       act(() => {
         ws?.simulateMessage(
@@ -2117,9 +2117,9 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.getByText('Restoring conversation from 5 previous messages...')).toBeTruthy();
+      expect(screen.getByText('Loading 5 previous messages...')).toBeTruthy();
 
-      // Server-authoritative (#1205): the banner clears on a FRESH restore-info
+      // Server-authoritative (#1205): the indicator clears on a FRESH restore-info
       // push carrying completed: true (sent the moment the new incarnation's
       // `ready` event is observed server-side), not merely from a `ready`
       // event folding client-side -- a successful restore does not mint a
@@ -2138,7 +2138,68 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
+      expect(screen.queryByText(/Loading \d+ previous message/)).toBeNull();
+    });
+
+    it('never claims "Restoring conversation" for a claude-sdk engine worker while restoring is true -- the loading indicator wording must not imply session continuity (Browser QA follow-up)', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-restore-3', workerId: 'w-restore-3', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 3,
+            repairedToolCallIds: [],
+            completed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.queryByText(/Restoring conversation/)).toBeNull();
+      expect(screen.getByText('Loading 3 previous messages...')).toBeTruthy();
+    });
+
+    it('still shows the neutral "Loading N previous messages..." progress wording for a native-loop engine worker while restoring is true', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture()])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-restore-4', workerId: 'w-restore-4', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 1,
+            repairedToolCallIds: [],
+            completed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByText(/Loading \d+ previous messages?\.\.\./i)).toBeTruthy();
     });
   });
 
