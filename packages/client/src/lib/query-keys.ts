@@ -118,3 +118,13 @@ export const artifactKeys = {
   /** Artifacts list */
   list: () => ['artifacts', 'list'] as const,
 } as const;
+
+// Note: distinct from `notificationKeys` above, which is the unrelated
+// OUTWARD (Slack) notification status. This is the human-addressed
+// notification center read-model (docs/design/notification-center.md).
+export const notificationCenterKeys = {
+  /** Root key for invalidating all notification center queries */
+  root: () => ['notification-center'] as const,
+  /** The composed feed (items + cursor + unread count) */
+  feed: () => ['notification-center', 'feed'] as const,
+} as const;

@@ -39,7 +39,8 @@ import type {
   MessageTemplate,
   Artifact,
 } from '@agent-console/shared';
-import { ArtifactsListResponseSchema } from '@agent-console/shared';
+import { ArtifactsListResponseSchema, NotificationsResponseSchema, NotificationsSeenResponseSchema } from '@agent-console/shared';
+import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
 
 export type { ConfigResponse } from '@agent-console/shared';
@@ -1149,4 +1150,37 @@ export async function deleteArtifact(id: string): Promise<void> {
   if (!res.ok) {
     await handleApiError(res, 'Failed to delete artifact');
   }
+}
+
+// ===========================================================================
+// Notification Center (client phase, #1354)
+// ===========================================================================
+
+/**
+ * Fetch the caller's composed notification feed (newest first -- server
+ * contract, do not client-side re-sort). Parsed through
+ * `NotificationsResponseSchema` at the wire boundary rather than blindly
+ * cast, so a server/client field drift fails loudly instead of silently
+ * dropping data (see `.claude/rules/pre-pr-completeness.md` Q10).
+ */
+export async function fetchNotifications(): Promise<NotificationsResponseSchemaOutput> {
+  const res = await api.notifications.$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch notifications');
+  }
+  return v.parse(NotificationsResponseSchema, await res.json());
+}
+
+/**
+ * Advance the caller's notification-seen cursor. `lastSeenAt` must be the
+ * newest fetched item's `occurredAt` (never `Date.now()` -- see
+ * docs/design/notification-center.md R4.1/R2 and the server's future-
+ * timestamp rejection).
+ */
+export async function markNotificationsSeen(lastSeenAt: string): Promise<NotificationsSeenResponseSchemaOutput> {
+  const res = await api.notifications.seen.$put({ json: { lastSeenAt } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update notification cursor');
+  }
+  return v.parse(NotificationsSeenResponseSchema, await res.json());
 }

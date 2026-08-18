@@ -62,7 +62,7 @@ An obligation ("this failed and needs a decision") clears by **doing**, not by *
 - `GET /api/notifications` → `{ items: NotificationItem[], lastSeenAt: string | null, unreadCount: number }` — newest first, capped (v1: 50, an accepted cut; no pagination). **Amendment (Phase 1 AC, #1353):** `unreadCount` is computed server-side **pre-cap** (before the 50-item cap is applied), so the badge stays accurate once unread exceeds the cap — `items` alone cannot express this since it is truncated.
 - `PUT /api/notifications/seen { lastSeenAt }` — monotonic (server rejects moving the cursor backwards).
 - **v1 scope: personal feed** (owner-confirmed, 2026-08-18) — items the user owns or initiated (artifacts by `user_id`; deletion jobs by payload `requestUsername`). A global team feed is a deliberate non-goal, revisitable later; personal-to-global is an easy widening, global-to-personal is not.
-- Client: bell in the header; badge = server-computed unread count; opening the panel fetches the list and advances the cursor; app-WS events for the covered kinds act as invalidation hints only (N1).
+- Client: bell in the header; badge = server-computed unread count; opening the panel fetches the list and advances the cursor; app-WS events for the covered kinds act as invalidation hints only (N1; `artifact-created` has no broadcast source yet, so an artifact created while the tab is already open surfaces on the next refetch trigger rather than instantly -- tracked as a follow-up, see Phase 2 AC Ruling 1).
 
 ## 9. Phases
 
