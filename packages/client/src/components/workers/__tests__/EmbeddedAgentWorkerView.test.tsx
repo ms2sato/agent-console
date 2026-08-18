@@ -162,8 +162,12 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.queryByText('Working...')).toBeNull();
   });
 
-  it('always renders the persistent transcript-restore note', () => {
-    renderView({ sessionId: 's1', workerId: 'w1' });
+  it('renders the persistent transcript-restore note once the worker definition resolves to native-loop', async () => {
+    globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+    renderView({ sessionId: 's1', workerId: 'w1', embeddedAgentId: 'ea-1' });
+    await act(async () => {
+      await flush();
+    });
 
     expect(
       screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
@@ -2090,7 +2094,7 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('2 tool calls affected.')).toBeTruthy();
     });
 
-    it('shows the "Restoring conversation..." banner while restoring is true, and hides it once a completed:true restore-info push arrives (#1205)', async () => {
+    it('shows the "Loading N previous messages..." indicator while restoring is true, and hides it once a completed:true restore-info push arrives (#1205)', async () => {
       renderView({ sessionId: 's-restore-2', workerId: 'w-restore-2' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -2098,7 +2102,7 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
+      expect(screen.queryByText(/Loading \d+ previous message/)).toBeNull();
 
       act(() => {
         ws?.simulateMessage(
@@ -2113,9 +2117,9 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.getByText('Restoring conversation from 5 previous messages...')).toBeTruthy();
+      expect(screen.getByText('Loading 5 previous messages...')).toBeTruthy();
 
-      // Server-authoritative (#1205): the banner clears on a FRESH restore-info
+      // Server-authoritative (#1205): the indicator clears on a FRESH restore-info
       // push carrying completed: true (sent the moment the new incarnation's
       // `ready` event is observed server-side), not merely from a `ready`
       // event folding client-side -- a successful restore does not mint a
@@ -2134,7 +2138,225 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.queryByText(/Restoring conversation from/)).toBeNull();
+      expect(screen.queryByText(/Loading \d+ previous message/)).toBeNull();
+    });
+
+    it('never claims "Restoring conversation" for a claude-sdk engine worker while restoring is true -- the loading indicator wording must not imply session continuity (Browser QA follow-up)', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-restore-3', workerId: 'w-restore-3', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 3,
+            repairedToolCallIds: [],
+            completed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.queryByText(/Restoring conversation/)).toBeNull();
+      expect(screen.getByText('Loading 3 previous messages...')).toBeTruthy();
+    });
+
+    it('still shows the neutral "Loading N previous messages..." progress wording for a native-loop engine worker while restoring is true', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture()])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-restore-4', workerId: 'w-restore-4', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 1,
+            repairedToolCallIds: [],
+            completed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByText(/Loading \d+ previous messages?\.\.\./i)).toBeTruthy();
+    });
+  });
+
+  describe('SDK-engine restore-divergence notice (#1335)', () => {
+    it('shows the divergence notice (not the generic restore banner) for a claude-sdk engine worker that restored a prior transcript', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-restore-1', workerId: 'w-sdk-restore-1', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
+        );
+      });
+      await flush();
+
+      expect(
+        screen.getByText(/conversation context was not carried over the restart/i),
+      ).toBeTruthy();
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+    });
+
+    it('does not show the divergence notice for a native-loop engine worker, and still shows the generic restore banner', async () => {
+      globalThis.fetch = Object.assign(
+        mock(makeEmbeddedViewFetch([embeddedAgentFixture()])),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-restore-2', workerId: 'w-sdk-restore-2', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
+        );
+      });
+      await flush();
+
+      expect(
+        screen.queryByText(/conversation context was not carried over the restart/i),
+      ).toBeNull();
+      expect(
+        screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeTruthy();
+    });
+
+    it('shows neither banner for a claude-sdk engine worker with no prior transcript (fresh worker, no restore-info push)', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-restore-3', workerId: 'w-sdk-restore-3', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      expect(
+        screen.queryByText(/conversation context was not carried over the restart/i),
+      ).toBeNull();
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+    });
+
+    it('renders neither banner while the embedded-agents registry is still loading (unresolved engine, not yet known to be native-loop)', async () => {
+      let resolveEmbeddedAgents: (response: Response) => void = () => {};
+      const embeddedAgentsPromise = new Promise<Response>((resolve) => {
+        resolveEmbeddedAgents = resolve;
+      });
+      globalThis.fetch = Object.assign(
+        mock((input: RequestInfo | URL): Promise<Response> => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
+          if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
+          if (url.endsWith('/api/embedded-agents')) return embeddedAgentsPromise;
+          return Promise.resolve(new Response('null', { status: 404 }));
+        }),
+        { preconnect: () => {} },
+      );
+
+      renderView({ sessionId: 's-sdk-restore-4', workerId: 'w-sdk-restore-4', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // Push a restore-info with a non-empty messageCount WHILE the
+      // `/api/embedded-agents` fetch is still pending, so
+      // hadPriorTranscriptThisIncarnation is true but the engine is still
+      // unresolved -- this is what makes the assertions below non-vacuous:
+      // without this push, restoredMessageCount stays null and the
+      // divergence-notice assertion would pass regardless of whether the
+      // engine-unresolved guard does anything at all.
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 3,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
+        );
+      });
+      await flush();
+
+      // The `/api/embedded-agents` fetch is still pending -- embeddedAgentDefinition
+      // is undefined, so the engine is genuinely unknown (not yet confirmed
+      // native-loop). Neither banner may render a claim about an engine we
+      // haven't resolved.
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+      expect(
+        screen.queryByText(/conversation context was not carried over the restart/i),
+      ).toBeNull();
+
+      // Resolve the pending fetch so it doesn't leak into a later test.
+      await act(async () => {
+        resolveEmbeddedAgents(jsonResponse({ embeddedAgents: [] }));
+        await flush();
+      });
     });
   });
 });

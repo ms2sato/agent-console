@@ -114,7 +114,13 @@ export interface EmbeddedAgentSnapshot {
   /**
    * The `messageCount` from the most recently accepted `restore-info` for
    * the current epoch; null before any has been received this epoch. Used
-   * to render "Restoring conversation from N previous messages...".
+   * to render "Loading N previous messages..." (wording is deliberately
+   * engine-neutral -- see EmbeddedAgentWorkerView.tsx's comment above that
+   * block, or docs/design/embedded-agent-sdk-engine.md §4.3). This field's
+   * persistence past `restoring` flipping back to false (see the `restoring`
+   * doc comment above) is also depended on by EmbeddedAgentWorkerView.tsx's
+   * SDK-engine restore-divergence notice (`hadPriorTranscriptThisIncarnation`),
+   * so a future change to when this field resets to null must account for it.
    */
   restoredMessageCount: number | null;
 }
