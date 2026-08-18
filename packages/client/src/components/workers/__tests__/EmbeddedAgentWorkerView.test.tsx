@@ -162,8 +162,12 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.queryByText('Working...')).toBeNull();
   });
 
-  it('always renders the persistent transcript-restore note', () => {
-    renderView({ sessionId: 's1', workerId: 'w1' });
+  it('renders the persistent transcript-restore note once the worker definition resolves to native-loop', async () => {
+    globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+    renderView({ sessionId: 's1', workerId: 'w1', embeddedAgentId: 'ea-1' });
+    await act(async () => {
+      await flush();
+    });
 
     expect(
       screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
@@ -2231,6 +2235,47 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(
         screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
       ).toBeNull();
+    });
+
+    it('renders neither banner while the embedded-agents registry is still loading (unresolved engine, not yet known to be native-loop)', async () => {
+      let resolveEmbeddedAgents: (response: Response) => void = () => {};
+      const embeddedAgentsPromise = new Promise<Response>((resolve) => {
+        resolveEmbeddedAgents = resolve;
+      });
+      globalThis.fetch = Object.assign(
+        mock((input: RequestInfo | URL): Promise<Response> => {
+          const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+          if (url.endsWith('/api/skills')) return Promise.resolve(jsonResponse({ skills: [] }));
+          if (url.endsWith('/api/message-templates')) return Promise.resolve(jsonResponse({ templates: [] }));
+          if (url.endsWith('/api/embedded-agents')) return embeddedAgentsPromise;
+          return Promise.resolve(new Response('null', { status: 404 }));
+        }),
+        { preconnect: () => {} },
+      );
+
+      renderView({ sessionId: 's-sdk-restore-4', workerId: 'w-sdk-restore-4', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // The `/api/embedded-agents` fetch is still pending -- embeddedAgentDefinition
+      // is undefined, so the engine is genuinely unknown (not yet confirmed
+      // native-loop). Neither banner may render a claim about an engine we
+      // haven't resolved.
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+      expect(
+        screen.queryByText(/conversation context was not carried over the restart/i),
+      ).toBeNull();
+
+      // Resolve the pending fetch so it doesn't leak into a later test.
+      await act(async () => {
+        resolveEmbeddedAgents(jsonResponse({ embeddedAgents: [] }));
+        await flush();
+      });
     });
   });
 });

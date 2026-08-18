@@ -211,11 +211,16 @@ export function EmbeddedAgentWorkerView({
   // `claude-sdk` engine workers do not reconstruct their live SDK session
   // from the persisted transcript on revival (v1 limitation, see
   // docs/design/embedded-agent-worker.md) -- the generic restore banner
-  // below is only accurate for `native-loop` engine workers (and the
-  // defensive case where the definition hasn't loaded yet). `undefined`
-  // (definition not loaded / not found) intentionally falls into the
-  // generic-banner branch, matching pre-existing behavior.
+  // below is only accurate for `native-loop` engine workers. `engine` is
+  // genuinely three-valued here ('native-loop' / 'claude-sdk' / unresolved),
+  // where "unresolved" covers both the registry still loading and a
+  // dangling/unmatched embeddedAgentId -- so the generic banner uses an
+  // explicit positive `=== 'native-loop'` check rather than `!isSdkEngine`.
+  // Negating a two-valued check collapses "confirmed native-loop" and
+  // "unresolved" into the same branch, which would show the native-loop-only
+  // claim while the engine is still unknown.
   const isSdkEngine = embeddedAgentDefinition?.engine === 'claude-sdk';
+  const isNativeLoopEngine = embeddedAgentDefinition?.engine === 'native-loop';
   // `restoredMessageCount` is not reset to null when `restoring` flips
   // false (see its doc comment in embedded-agent-store.ts), so this is a
   // reliable "this activation/incarnation restored a non-empty prior
@@ -235,8 +240,11 @@ export function EmbeddedAgentWorkerView({
           Restore #1123). This is a permanent fixture of the view, not a
           toast -- it has no close button. Only accurate for `native-loop`
           engine workers, whose live conversation IS reconstructed from the
-          persisted transcript on revival. */}
-      {!isSdkEngine && (
+          persisted transcript on revival -- gated on the confirmed
+          `=== 'native-loop'` check, not `!isSdkEngine`, so it makes no claim
+          while the engine is still unresolved (registry loading, or a
+          dangling/unmatched embeddedAgentId). */}
+      {isNativeLoopEngine && (
         <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
           Conversation is restored automatically after a worker or server restart; it only resets if the
           saved transcript can't be recovered.
