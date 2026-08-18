@@ -55,6 +55,15 @@ export const EmbeddedAgentProviderSchema = v.strictObject({
 });
 
 /**
+ * `claude-sdk` engine's provider shape (docs/design/embedded-agent-sdk-engine.md
+ * §3.2): no `baseUrl`, no `apiKeyRef` -- no provider secret ever crosses the
+ * server for this engine, so the schema has nothing to carry beyond the model id.
+ */
+export const EmbeddedAgentSdkProviderSchema = v.strictObject({
+  model: v.pipe(v.string(), v.minLength(1)),
+});
+
+/**
  * Context Handoff (Phase A) threshold/auto-fire config. `auto` is accepted
  * and persisted here for forward-compat but is NOT read by any Phase A code
  * path — see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)".
@@ -72,21 +81,46 @@ export const EmbeddedAgentHandoffConfigSchema = v.pipe(
   ),
 );
 
-export const EmbeddedAgentDefinitionSchema = v.strictObject({
+/**
+ * Fields shared by both `engine` arms of {@link EmbeddedAgentDefinitionSchema}.
+ * Spread into each arm rather than composed via intersection, since
+ * `v.variant` requires each member to be a plain object schema exposing the
+ * discriminant key directly (see the identical pattern in `app-server-message.ts`).
+ */
+const EmbeddedAgentDefinitionBaseFields = {
   id: v.pipe(v.string(), v.minLength(1)),
   name: v.pipe(v.string(), v.trim(), v.minLength(1, 'Name is required')),
   description: v.optional(v.string()),
-  provider: EmbeddedAgentProviderSchema,
   systemPrompt: v.optional(v.string()),
   maxToolIterations: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   enabledTools: v.optional(EnabledToolsSchema),
   instructions: v.optional(InstructionsListSchema),
   contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   handoff: v.optional(EmbeddedAgentHandoffConfigSchema),
+  isBuiltIn: v.boolean(),
   createdBy: v.string(),
   createdAt: v.string(),
   updatedAt: v.string(),
-});
+};
+
+/**
+ * Discriminated on `engine` (docs/design/embedded-agent-sdk-engine.md §3.1):
+ * the wire schema enforces the per-arm `provider` shape, not just the
+ * TypeScript type -- a `native-loop` definition with an SDK-shaped provider
+ * (or vice versa) is rejected at the boundary.
+ */
+export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
+  v.strictObject({
+    ...EmbeddedAgentDefinitionBaseFields,
+    engine: v.literal('native-loop'),
+    provider: EmbeddedAgentProviderSchema,
+  }),
+  v.strictObject({
+    ...EmbeddedAgentDefinitionBaseFields,
+    engine: v.literal('claude-sdk'),
+    provider: EmbeddedAgentSdkProviderSchema,
+  }),
+]);
 
 /**
  * Schema for creating an embedded agent definition. `createdBy` is set
@@ -126,31 +160,57 @@ export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
 
 // === Protocol schemas ===
 
-export const EmbeddedAgentCommandSchema = v.union([
+/**
+ * Fields shared by both `engine` arms of the `init` command. Mirrors
+ * {@link EmbeddedAgentDefinitionBaseFields}'s split -- see
+ * docs/design/embedded-agent-sdk-engine.md §3.1.
+ */
+const EmbeddedAgentInitCommandBaseFields = {
+  v: v.literal(1),
+  type: v.literal('init'),
+  mcp: v.strictObject({
+    baseUrl: v.string(),
+    token: v.string(),
+  }),
+  context: v.strictObject({
+    sessionId: v.string(),
+    workerId: v.string(),
+    repositoryId: v.optional(v.string()),
+    cwd: v.string(),
+  }),
+  systemPrompt: v.optional(v.string()),
+  enabledTools: v.optional(EnabledToolsSchema),
+  instructions: v.optional(InstructionsListSchema),
+  maxToolIterations: v.number(),
+  restoredConversation: v.optional(v.array(EmbeddedAgentRestoredMessageSchema)),
+};
+
+/**
+ * Discriminated on `engine`, same rationale as
+ * {@link EmbeddedAgentDefinitionSchema}: the `claude-sdk` arm's `provider`
+ * carries no `apiKey` (absent by construction, per §3.2).
+ */
+const EmbeddedAgentInitCommandSchema = v.variant('engine', [
   v.strictObject({
-    v: v.literal(1),
-    type: v.literal('init'),
-    mcp: v.strictObject({
-      baseUrl: v.string(),
-      token: v.string(),
-    }),
+    ...EmbeddedAgentInitCommandBaseFields,
+    engine: v.literal('native-loop'),
     provider: v.strictObject({
       baseUrl: v.string(),
       model: v.string(),
       apiKey: v.optional(v.string()),
     }),
-    context: v.strictObject({
-      sessionId: v.string(),
-      workerId: v.string(),
-      repositoryId: v.optional(v.string()),
-      cwd: v.string(),
-    }),
-    systemPrompt: v.optional(v.string()),
-    enabledTools: v.optional(EnabledToolsSchema),
-    instructions: v.optional(InstructionsListSchema),
-    maxToolIterations: v.number(),
-    restoredConversation: v.optional(v.array(EmbeddedAgentRestoredMessageSchema)),
   }),
+  v.strictObject({
+    ...EmbeddedAgentInitCommandBaseFields,
+    engine: v.literal('claude-sdk'),
+    provider: v.strictObject({
+      model: v.pipe(v.string(), v.minLength(1)),
+    }),
+  }),
+]);
+
+export const EmbeddedAgentCommandSchema = v.union([
+  EmbeddedAgentInitCommandSchema,
   v.strictObject({
     v: v.literal(1),
     type: v.literal('user-message'),
@@ -220,6 +280,11 @@ export const EmbeddedAgentEventSchema = v.union([
     v: v.literal(1),
     type: v.literal('context-handoff'),
     distillation: v.string(),
+  }),
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('sdk-session-id'),
+    sdkSessionId: v.string(),
   }),
 ]);
 

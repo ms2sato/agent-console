@@ -841,6 +841,13 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           distillation: event.distillation,
         });
         return true;
+      case 'sdk-session-id':
+        // SDK Engine Phase 1 (docs/design/embedded-agent-sdk-engine.md):
+        // server-side bookkeeping only (the worker's current SDK session
+        // id) -- no client UI surface for this event, minimal exhaustiveness
+        // fix so this store keeps typechecking against the new event union
+        // member. Not a chat row.
+        return false;
       default: {
         const _exhaustive: never = event;
         return _exhaustive;

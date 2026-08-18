@@ -24,7 +24,7 @@
     "@agent-console/embedded-agent": "*",
     "@agent-console/shared": "*",
     "@hono/mcp": "npm:@jsr/hono__mcp",
-    "@modelcontextprotocol/sdk": "^1.26.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "bun-pty": "^0.4.2",
     "hono": "^4.11.9",
     "hono-pino": "^0.10.3",

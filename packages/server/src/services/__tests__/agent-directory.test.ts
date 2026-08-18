@@ -24,11 +24,15 @@ function makeTerminalAgent(overrides: Partial<AgentDefinition> = {}): AgentDefin
   };
 }
 
-function makeEmbeddedAgent(overrides: Partial<EmbeddedAgentDefinition> = {}): EmbeddedAgentDefinition {
+function makeEmbeddedAgent(
+  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>> = {}
+): EmbeddedAgentDefinition {
   return {
     id: 'embedded-1',
     name: 'Embedded Agent',
+    engine: 'native-loop',
     provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+    isBuiltIn: false,
     createdBy: 'user-1',
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',

@@ -630,7 +630,9 @@ describe('AppServerMessageSchema', () => {
     const embeddedAgentDefinition = {
       id: 'def-1',
       name: 'Ollama qwen3:32b',
+      engine: 'native-loop',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      isBuiltIn: false,
       createdBy: 'user-uuid',
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',

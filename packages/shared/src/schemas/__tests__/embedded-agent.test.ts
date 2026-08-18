@@ -15,6 +15,7 @@ const validDefinition = {
   id: 'def-1',
   name: 'Ollama qwen3:32b',
   description: 'Local model',
+  engine: 'native-loop',
   provider: {
     baseUrl: 'http://localhost:11434/v1',
     model: 'qwen3:32b',
@@ -22,7 +23,21 @@ const validDefinition = {
   },
   systemPrompt: 'You are helpful.',
   maxToolIterations: 25,
+  isBuiltIn: false,
   createdBy: 'user-uuid',
+  createdAt: '2026-01-01T00:00:00Z',
+  updatedAt: '2026-01-01T00:00:00Z',
+};
+
+const validSdkDefinition = {
+  id: 'def-sdk-1',
+  name: 'Claude',
+  engine: 'claude-sdk',
+  provider: {
+    model: 'claude-sonnet-5',
+  },
+  isBuiltIn: true,
+  createdBy: 'system',
   createdAt: '2026-01-01T00:00:00Z',
   updatedAt: '2026-01-01T00:00:00Z',
 };
@@ -37,7 +52,9 @@ describe('EmbeddedAgentDefinitionSchema', () => {
     const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
       id: 'def-2',
       name: 'Minimal',
+      engine: 'native-loop',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      isBuiltIn: false,
       createdBy: 'user-uuid',
       createdAt: '2026-01-01T00:00:00Z',
       updatedAt: '2026-01-01T00:00:00Z',
@@ -203,6 +220,49 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       contextWindowTokens: -1,
     });
     expect(result.success).toBe(false);
+  });
+
+  describe('engine discriminant (SDK Engine Phase 1, docs/design/embedded-agent-sdk-engine.md §3.1)', () => {
+    it('accepts a valid claude-sdk definition (no baseUrl/apiKeyRef on provider)', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, validSdkDefinition);
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a native-loop definition whose provider carries the claude-sdk shape (missing baseUrl)', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validDefinition,
+        provider: { model: 'qwen3:32b' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a claude-sdk definition whose provider carries the native-loop shape (extra baseUrl)', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validSdkDefinition,
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'claude-sonnet-5' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a definition with an unknown engine literal', () => {
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
+        ...validDefinition,
+        engine: 'raw-messages-api',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a definition missing the engine discriminant', () => {
+      const { engine: _engine, ...withoutEngine } = validDefinition;
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, withoutEngine);
+      expect(result.success).toBe(false);
+    });
+
+    it('requires isBuiltIn on both arms', () => {
+      const { isBuiltIn: _isBuiltIn, ...withoutIsBuiltIn } = validDefinition;
+      const result = v.safeParse(EmbeddedAgentDefinitionSchema, withoutIsBuiltIn);
+      expect(result.success).toBe(false);
+    });
   });
 });
 
@@ -542,6 +602,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      engine: 'native-loop',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -575,6 +636,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      engine: 'native-loop',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -592,6 +654,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      engine: 'native-loop',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -606,6 +669,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      engine: 'native-loop',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -623,6 +687,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      engine: 'native-loop',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -637,6 +702,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      engine: 'native-loop',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -649,10 +715,68 @@ describe('EmbeddedAgentCommandSchema', () => {
     }
   });
 
+  describe('engine discriminant (SDK Engine Phase 1, docs/design/embedded-agent-sdk-engine.md §3.1)', () => {
+    const baseFields = {
+      v: 1,
+      type: 'init',
+      mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+      context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+      maxToolIterations: 25,
+    };
+
+    it('parses a claude-sdk init command whose provider carries only model (no apiKey)', () => {
+      const init = { ...baseFields, engine: 'claude-sdk', provider: { model: 'claude-sonnet-5' } };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        expect(result.output.provider).toEqual({ model: 'claude-sonnet-5' });
+      }
+    });
+
+    it('rejects a claude-sdk init command whose provider carries baseUrl (native-loop shape)', () => {
+      const init = {
+        ...baseFields,
+        engine: 'claude-sdk',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'claude-sonnet-5' },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a native-loop init command whose provider is missing baseUrl (claude-sdk shape)', () => {
+      const init = { ...baseFields, engine: 'native-loop', provider: { model: 'llama3' } };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an init command with an unknown engine literal', () => {
+      const init = {
+        ...baseFields,
+        engine: 'raw-messages-api',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+      };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an init command missing the engine discriminant', () => {
+      const init = { ...baseFields, provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' } };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a claude-sdk init command whose provider carries an empty-string model', () => {
+      const init = { ...baseFields, engine: 'claude-sdk', provider: { model: '' } };
+      const result = v.safeParse(EmbeddedAgentCommandSchema, init);
+      expect(result.success).toBe(false);
+    });
+  });
+
   describe('restoredConversation (Transcript Restore #1123)', () => {
     const baseInit = {
       v: 1,
       type: 'init',
+      engine: 'native-loop',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -757,6 +881,7 @@ describe('EmbeddedAgentEventSchema', () => {
       { v: 1, type: 'fatal', message: 'dead' },
       { v: 1, type: 'context-usage', promptTokens: 1234, estimated: false },
       { v: 1, type: 'context-handoff', distillation: 'summary text' },
+      { v: 1, type: 'sdk-session-id', sdkSessionId: 'sdk-sess-1' },
     ];
     for (const event of events) {
       expect(v.safeParse(EmbeddedAgentEventSchema, event).success).toBe(true);
@@ -867,6 +992,32 @@ describe('EmbeddedAgentEventSchema', () => {
   it('rejects a server-authored exited event (narrow union)', () => {
     const result = v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'exited', code: 0 });
     expect(result.success).toBe(false);
+  });
+
+  describe('sdk-session-id (SDK Engine Phase 1)', () => {
+    it('accepts a standalone sdk-session-id event', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'sdk-session-id',
+        sdkSessionId: 'sdk-sess-abc',
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a sdk-session-id event missing sdkSessionId', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'sdk-session-id' });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a sdk-session-id event with an unknown field (strictObject)', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'sdk-session-id',
+        sdkSessionId: 'sdk-sess-abc',
+        unexpectedField: 'leaked',
+      });
+      expect(result.success).toBe(false);
+    });
   });
 });
 

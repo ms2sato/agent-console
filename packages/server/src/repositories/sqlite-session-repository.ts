@@ -107,6 +107,7 @@ export class SqliteSessionRepository implements SessionRepository {
               pid: workerRow.pid,
               agent_id: workerRow.agent_id,
               base_commit: workerRow.base_commit,
+              sdk_session_id: workerRow.sdk_session_id,
             })
           )
           .execute();

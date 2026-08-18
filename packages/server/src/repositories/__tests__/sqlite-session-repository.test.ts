@@ -11,6 +11,7 @@ import {
   buildPersistedAgentWorker,
   buildPersistedTerminalWorker,
   buildPersistedGitDiffWorker,
+  buildPersistedEmbeddedAgentWorker,
 } from '../../__tests__/utils/build-test-data.js';
 
 const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
@@ -70,6 +71,7 @@ describe('SqliteSessionRepository', () => {
       .addColumn('base_commit', 'text')
       .addColumn('embedded_agent_id', 'text')
       .addColumn('deliver_initial_prompt_on_activation', 'integer')
+      .addColumn('sdk_session_id', 'text')
       .execute();
 
     repository = new SqliteSessionRepository(db);
@@ -676,6 +678,58 @@ describe('SqliteSessionRepository', () => {
       const after = await repository.findById('valid-session');
       expect(after?.workers.length).toBe(2);
       expect(after?.workers.map((w) => w.id).sort()).toEqual(['git-diff-1', 'terminal-1']);
+    });
+
+    it('BUG POLARITY: persists a worker.sdkSessionId value set AFTER creation, on a SECOND (update-branch) save call', async () => {
+      // The bug's shape is specifically the UPDATE (onConflict) branch of the
+      // workers upsert silently omitting sdk_session_id from its
+      // doUpdateSet field list -- the INSERT branch (`.values(workerRow)`)
+      // was never broken, since it always writes every column. A test that
+      // creates a worker WITH sdkSessionId already set and persists ONCE
+      // would only exercise the INSERT branch and would pass even against
+      // the pre-fix code, proving nothing. This test instead:
+      //   1. Persists the worker with sdkSessionId: null (INSERT branch).
+      //   2. Mutates sdkSessionId to a real value in memory.
+      //   3. Persists AGAIN -- a distinct, second save() call -- which is
+      //      the UPDATE/onConflict branch that was actually broken.
+      //   4. Reads the row back directly from the database (not the
+      //      in-memory object) and asserts the value matches.
+      const worker = buildPersistedEmbeddedAgentWorker({ id: 'sdk-session-worker', sdkSessionId: null });
+      const session = buildPersistedQuickSession({
+        id: 'sdk-session-id-persistence-test',
+        workers: [worker],
+      });
+
+      // Step 1: first save (INSERT branch) -- sdkSessionId still null.
+      await repository.save(session);
+
+      const afterInsert = await db
+        .selectFrom('workers')
+        .where('id', '=', 'sdk-session-worker')
+        .select(['sdk_session_id'])
+        .executeTakeFirst();
+      expect(afterInsert?.sdk_session_id).toBeNull();
+
+      // Step 2: mutate in memory, as EmbeddedAgentWorkerService does when a
+      // real sdk-session-id event arrives from the subprocess.
+      const updatedSession = buildPersistedQuickSession({
+        id: 'sdk-session-id-persistence-test',
+        workers: [
+          buildPersistedEmbeddedAgentWorker({ id: 'sdk-session-worker', sdkSessionId: 'sdk-sess-real-value' }),
+        ],
+      });
+
+      // Step 3: second, distinct save() call -- the UPDATE/onConflict branch.
+      await repository.save(updatedSession);
+
+      // Step 4: read back directly from the database, not the in-memory
+      // object the repository was called with.
+      const afterUpdate = await db
+        .selectFrom('workers')
+        .where('id', '=', 'sdk-session-worker')
+        .select(['sdk_session_id'])
+        .executeTakeFirst();
+      expect(afterUpdate?.sdk_session_id).toBe('sdk-sess-real-value');
     });
 
     it('should preserve optional fields as undefined when null in database', async () => {

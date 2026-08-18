@@ -41,6 +41,7 @@ async function seedEmbeddedAgent(
       id: overrides.id,
       name: 'Ollama',
       description: null,
+      engine: 'native-loop',
       provider_base_url: 'http://localhost:11434/v1',
       provider_model: 'qwen3:32b',
       provider_api_key_ref: null,
@@ -52,6 +53,7 @@ async function seedEmbeddedAgent(
       handoff_soft_ratio: overrides.handoff_soft_ratio ?? null,
       handoff_hard_ratio: overrides.handoff_hard_ratio ?? null,
       handoff_auto: overrides.handoff_auto ?? null,
+      is_built_in: 0,
       created_by: 'user-1',
     })
     .execute();
@@ -76,7 +78,7 @@ describe('migration v27 (embedded_agents Context Handoff Phase A columns)', () =
     // initializeDatabase runs every migration; the v27 step is part of that
     // chain and the final version is the current latest.
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(28);
+    expect(versionRes.rows[0]?.user_version).toBe(30);
   });
 
   it('adds all four columns to embedded_agents, nullable with no default', async () => {

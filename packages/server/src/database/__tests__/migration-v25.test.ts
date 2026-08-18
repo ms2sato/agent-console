@@ -39,7 +39,7 @@ describe('migration v25 (embedded_agents.instructions)', () => {
   it('advances the schema version to 25', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(28);
+    expect(versionRes.rows[0]?.user_version).toBe(30);
   });
 
   it('adds the instructions column to embedded_agents, nullable with no default', async () => {
@@ -61,6 +61,7 @@ describe('migration v25 (embedded_agents.instructions)', () => {
         id: 'agent-1',
         name: 'Ollama',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'qwen3:32b',
         provider_api_key_ref: null,
@@ -68,6 +69,7 @@ describe('migration v25 (embedded_agents.instructions)', () => {
         max_tool_iterations: null,
         enabled_tools: null,
         instructions: JSON.stringify(['docs/local-note.md', 'CONTRIBUTING.md']),
+        is_built_in: 0,
         created_by: 'user-1',
       })
       .execute();
@@ -90,6 +92,7 @@ describe('migration v25 (embedded_agents.instructions)', () => {
         id: 'agent-null',
         name: 'Ollama',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'qwen3:32b',
         provider_api_key_ref: null,
@@ -97,6 +100,7 @@ describe('migration v25 (embedded_agents.instructions)', () => {
         max_tool_iterations: null,
         enabled_tools: null,
         instructions: null,
+        is_built_in: 0,
         created_by: 'user-1',
       })
       .execute();

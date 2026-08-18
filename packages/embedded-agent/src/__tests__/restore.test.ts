@@ -47,6 +47,7 @@ describe('reconstructConversation — 4c total classification', () => {
       { v: 1, type: 'context-usage', promptTokens: 10, estimated: false },
       { v: 1, type: 'turn-error', turnId: 't1', message: 'unrelated noise' },
       { v: 1, type: 'fatal', message: 'unrelated noise' },
+      { v: 1, type: 'sdk-session-id', sdkSessionId: 'sdk-sess-1' },
       { v: 1, type: 'state', state: 'idle' },
       { v: 1, type: 'exited', code: 0 },
     ];

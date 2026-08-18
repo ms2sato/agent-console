@@ -236,6 +236,18 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().entries).toHaveLength(0);
   });
 
+  it('ignores sdk-session-id without creating a chat entry (SDK Engine Phase 1, no client UI surface yet)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s3sdk', 'w3sdk');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'sdk-session-id', sdkSessionId: 'sdk-sess-1' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    expect(instance.getSnapshot().entries).toHaveLength(0);
+  });
+
   it('folds context-handoff into a context-handoff chat entry and clears handoffInFlight', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s3g', 'w3g');
     const ws = MockWebSocket.getLastInstance();

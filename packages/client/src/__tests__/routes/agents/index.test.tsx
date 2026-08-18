@@ -37,11 +37,15 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
-function makeEmbeddedAgent(overrides: Partial<EmbeddedAgentDefinition> = {}): EmbeddedAgentDefinition {
+function makeEmbeddedAgent(
+  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>> = {}
+): EmbeddedAgentDefinition {
   return {
     id: 'embedded-1',
     name: 'Ollama qwen3',
+    engine: 'native-loop',
     provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+    isBuiltIn: false,
     createdBy: 'creator-1',
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
@@ -168,6 +172,81 @@ describe('AgentsPage / EmbeddedAgentsSection', () => {
       expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy();
     });
     expect(screen.getByRole('button', { name: 'Delete' })).toBeTruthy();
+  });
+
+  it('(c-builtin-single-user) hides Edit/Delete for a built-in embedded-agent definition in single-user mode, even though a non-built-in one shows them', async () => {
+    // authMode defaults to 'none' (single-user) after resetAuth(). Without the
+    // `!embeddedAgent.isBuiltIn` gate at the canManage call site, the built-in
+    // claude-sdk definition would get canManage=true here (canManageEmbeddedAgent
+    // returns true unconditionally in single-user mode), exposing Edit/Delete
+    // for a definition the server always rejects mutating -- see
+    // `EmbeddedAgentManager.updateEmbeddedAgent`'s `isBuiltIn` guard
+    // (packages/server/src/services/embedded-agent-manager.ts:199) and
+    // `deleteEmbeddedAgent`'s identical guard (line 279).
+    //
+    // Polarity: this case WOULD have failed pre-fix (canManage was
+    // unconditionally true in single-user mode regardless of isBuiltIn) --
+    // this is the actual bug this PR fixes.
+    embeddedAgentsResponse = {
+      embeddedAgents: [
+        makeEmbeddedAgent({ id: 'builtin-claude', name: 'Claude', isBuiltIn: true, createdBy: 'system' }),
+        makeEmbeddedAgent({ id: 'embedded-1', name: 'Ollama qwen3', isBuiltIn: false }),
+      ],
+    };
+
+    await renderAgentsPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('Claude')).toBeTruthy();
+      expect(screen.getByText('Ollama qwen3')).toBeTruthy();
+    });
+
+    // The non-built-in definition shows Edit/Delete (single-user mode).
+    expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(1);
+
+    // The built-in definition's card shows the "built-in" badge and no
+    // Edit/Delete buttons of its own.
+    const builtinCard = screen.getByText('Claude').closest('.card');
+    expect(builtinCard).toBeTruthy();
+    expect(within(builtinCard as HTMLElement).getByText('built-in')).toBeTruthy();
+    expect(within(builtinCard as HTMLElement).queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(within(builtinCard as HTMLElement).queryByRole('button', { name: 'Delete' })).toBeNull();
+  });
+
+  it('(c-builtin-multi-user) hides Edit/Delete for a built-in embedded-agent definition in multi-user mode too', async () => {
+    // Multi-user mode was already correct pre-fix: canManageEmbeddedAgent's
+    // `createdBy === currentUserId` comparison already evaluates false for
+    // the builtin (createdBy: 'system', which no real user id matches), so
+    // this case would have PASSED even against the pre-fix code -- it is an
+    // invariant-preservation guard confirming the `!embeddedAgent.isBuiltIn`
+    // gate doesn't regress the already-correct multi-user path, not a
+    // bug-polarity guard like the single-user case above.
+    setAuthMode('multi-user');
+    setCurrentUser({ id: 'viewer-1', username: 'viewer', homeDir: '/home/viewer' });
+    embeddedAgentsResponse = {
+      embeddedAgents: [
+        makeEmbeddedAgent({ id: 'builtin-claude', name: 'Claude', isBuiltIn: true, createdBy: 'system' }),
+        makeEmbeddedAgent({ id: 'embedded-1', name: 'Ollama qwen3', isBuiltIn: false, createdBy: 'viewer-1' }),
+      ],
+    };
+
+    await renderAgentsPage();
+
+    await waitFor(() => {
+      expect(screen.getByText('Claude')).toBeTruthy();
+      expect(screen.getByText('Ollama qwen3')).toBeTruthy();
+    });
+
+    // The non-built-in, viewer-owned definition shows Edit/Delete.
+    expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Delete' })).toHaveLength(1);
+
+    const builtinCard = screen.getByText('Claude').closest('.card');
+    expect(builtinCard).toBeTruthy();
+    expect(within(builtinCard as HTMLElement).getByText('built-in')).toBeTruthy();
+    expect(within(builtinCard as HTMLElement).queryByRole('button', { name: 'Edit' })).toBeNull();
+    expect(within(builtinCard as HTMLElement).queryByRole('button', { name: 'Delete' })).toBeNull();
   });
 
   it('(d) refetches the embedded-agents list after a successful delete instead of relying solely on the WS broadcast', async () => {

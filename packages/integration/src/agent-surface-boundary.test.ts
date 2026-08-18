@@ -233,8 +233,14 @@ describe('Agent surface boundary: list_agents wire-level shape (Issue #1160 PR-A
     const before = parseToolResult(
       await callTool(app, mcpSessionId, 'list_agents', {}, nextId++),
     ) as { agents: Array<{ kind: string }> };
+    // SDK Engine Phase 1: EmbeddedAgentManager always registers the
+    // claude-sdk built-in on startup, so the "before" count is >= 1 (the
+    // built-in), not 0. The test's actual intent -- registering ONE new
+    // custom definition adds exactly ONE "embedded" entry -- is asserted via
+    // the beforeEmbeddedCount + 1 delta below, which is agnostic to the
+    // built-in's presence.
     const beforeEmbeddedCount = before.agents.filter((a) => a.kind === 'embedded').length;
-    expect(beforeEmbeddedCount).toBe(0);
+    expect(beforeEmbeddedCount).toBeGreaterThanOrEqual(1);
 
     const def = await embeddedAgentManager.createEmbeddedAgent(
       {

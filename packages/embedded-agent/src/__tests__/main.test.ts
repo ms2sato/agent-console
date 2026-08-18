@@ -1,6 +1,9 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, afterEach } from 'bun:test';
 import { join } from 'node:path';
-import type { EmbeddedAgentEvent } from '@agent-console/shared';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import * as v from 'valibot';
+import { EmbeddedAgentCommandSchema, type EmbeddedAgentEvent } from '@agent-console/shared';
 import {
   runLoop,
   type LoopFactories,
@@ -14,13 +17,30 @@ import type {
   ToolDefinition,
 } from '../providers/types.js';
 import type { ToolCallOutcome } from '../mcp.js';
+import type { Engine } from '../engine-types.js';
+import type { SdkEngineDeps } from '../sdk-engine.js';
+import { loadOptInInstructions } from '../system-prompt.js';
 
 const mainPath = join(import.meta.dir, '..', 'main.ts');
+
+// Temp-dir helper for tests that need a real filesystem `cwd` (mirrors
+// system-prompt.test.ts's makeTempDir -- kept local rather than shared, since
+// the two test files aren't otherwise coupled).
+const tempDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+});
+async function makeTempDir(): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'embedded-agent-main-claude-md-'));
+  tempDirs.push(dir);
+  return dir;
+}
 
 const initCommand = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
     v: 1,
     type: 'init',
+    engine: 'native-loop',
     mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
     provider: { baseUrl: 'http://provider/v1', model: 'm' },
     context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -48,6 +68,15 @@ class CapturingAdapter implements ProviderAdapter {
     yield { type: 'text-delta', text: 'hi' };
     yield { type: 'done', finishReason: 'stop' };
   }
+}
+
+/** Default `createSdkEngine` stub for tests that don't exercise the
+ * claude-sdk init arm -- a no-op Engine that satisfies the interface without
+ * driving any real (or fake) SDK query stream. */
+class NoopEngine implements Engine {
+  async runTurn(): Promise<void> {}
+  cancel(): void {}
+  async handoff(): Promise<void> {}
 }
 
 class StubMcpClient implements McpClientLike {
@@ -87,7 +116,9 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     createMcpClient: () => new StubMcpClient(),
     createAdapter: () => new StubAdapter(),
     loadInstructions: async () => ({ segments: [] }),
+    loadOptInInstructions: async () => [],
     loadHandoffPrompt: async () => ({ content: 'DEFAULT_HANDOFF_PROMPT_STUB', origin: 'bundled-default' }),
+    createSdkEngine: () => new NoopEngine(),
     ...overrides,
   };
 }
@@ -353,6 +384,208 @@ describe('runLoop — restoredConversation threading (Transcript Restore #1123)'
     expect(systemMessage.content).not.toContain('STALE_SERVER_PROMPT');
     expect(systemMessage.content).toContain('LOOP_SIDE_INSTRUCTION_MARKER');
     expect(secondMessage).toEqual({ role: 'user', content: 'earlier question' });
+  });
+});
+
+describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () => {
+  // `initializeLoop` narrows `init.engine` at runtime
+  // (`if (init.engine === 'native-loop') { ... } else { new SdkEngine(...) }`)
+  // and TypeScript enforces the SAME split at compile time via
+  // `EmbeddedAgentCommand`'s discriminated union: a `native-loop`-shaped
+  // `init.provider` (baseUrl/model/apiKey?) is structurally incompatible
+  // with the `claude-sdk` arm's `provider: { model: string }`, so code that
+  // narrows to one arm cannot read the other arm's fields. This test proves
+  // the WIRE-LEVEL half of that containment: the shared schema rejects a
+  // native-loop-shaped init command carrying `engine: 'claude-sdk'` (an
+  // apiKey field the claude-sdk arm's strictObject provider must never
+  // accept -- see docs/design/embedded-agent-sdk-engine.md §3.2 and §7's
+  // "Auth property test").
+  it('rejects a claude-sdk init command whose provider carries an apiKey (native-loop-shaped payload misdeclared as claude-sdk)', () => {
+    const command = {
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5', apiKey: 'sk-leaked' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, command);
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a claude-sdk init command whose provider carries only `model` (no apiKey field to leak)', () => {
+    const command = {
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    };
+    const result = v.safeParse(EmbeddedAgentCommandSchema, command);
+    expect(result.success).toBe(true);
+    if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+      expect('apiKey' in result.output.provider).toBe(false);
+    }
+  });
+
+  // Mirrors the native-loop branch's "emits a fatal event and exits 1 when
+  // MCP connection fails" test above: `SdkEngine`'s constructor calls the
+  // real SDK's `query()` synchronously, so a throw there must be caught and
+  // surfaced the same way the native branch's MCP-connect failure is,
+  // instead of propagating uncaught out of `initializeLoop`/`runLoop`.
+  it('emits a fatal event and exits 1 when SdkEngine construction throws synchronously', async () => {
+    const claudeSdkInitCommand = JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+    });
+    const { io, events, errors } = makeIo([claudeSdkInitCommand]);
+    const factories = makeFactories({
+      createSdkEngine: () => {
+        throw new Error('malformed options rejected by the SDK');
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(1);
+    const fatalEvents = events.filter(
+      (e): e is Extract<EmbeddedAgentEvent, { type: 'fatal' }> => e.type === 'fatal',
+    );
+    expect(fatalEvents).toHaveLength(1);
+    expect(fatalEvents[0].message).toContain('malformed options rejected by the SDK');
+    expect(errors.some((e) => e.includes('malformed options rejected by the SDK'))).toBe(true);
+  });
+});
+
+describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
+  const claudeSdkInitCommand = (overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+      ...overrides,
+    });
+
+  it('loads the definition instructions[] list via loadOptInInstructions and composes it into systemPromptAppend, ordered before the definition system prompt', async () => {
+    const { io } = makeIo([
+      claudeSdkInitCommand({ instructions: ['docs/local-note.md'], systemPrompt: 'OPERATOR_PROMPT' }),
+    ]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadOptInInstructions: async (cwd, instructionsList) => {
+        expect(cwd).toBe('/tmp');
+        expect(instructionsList).toEqual(['docs/local-note.md']);
+        return [{ origin: '/tmp/docs/local-note.md', content: 'INSTRUCTION_MARKER' }];
+      },
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toContain('INSTRUCTION_MARKER');
+    expect(capturedDeps?.systemPromptAppend).toContain('OPERATOR_PROMPT');
+    const instructionIdx = capturedDeps!.systemPromptAppend!.indexOf('INSTRUCTION_MARKER');
+    const operatorIdx = capturedDeps!.systemPromptAppend!.indexOf('OPERATOR_PROMPT');
+    expect(operatorIdx).toBeGreaterThan(instructionIdx);
+  });
+
+  it('omits systemPromptAppend entirely when neither instructions[] nor a definition system prompt are configured (no regression)', async () => {
+    const { io } = makeIo([claudeSdkInitCommand()]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toBeUndefined();
+  });
+
+  it('systemPromptAppend contains only the definition system prompt when instructions[] is unconfigured (no regression)', async () => {
+    const { io } = makeIo([claudeSdkInitCommand({ systemPrompt: 'OPERATOR_ONLY' })]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
+  });
+});
+
+// Phase 1's builtin claude-sdk definition (claude-sdk-builtin.ts) bakes
+// `instructions: ['CLAUDE.md']` -- this is the ONLY way CLAUDE.md content
+// reaches this engine's context (settingSources: [] disables the SDK's own
+// native auto-discovery; see docs/design/embedded-agent-sdk-engine.md §4.2).
+// Unlike the block above (which stubs `loadOptInInstructions` to prove the
+// composition/ordering contract), this block wires in the REAL production
+// `loadOptInInstructions` against a real temp-dir CLAUDE.md file, proving the
+// builtin's configured value actually resolves end-to-end into
+// `systemPromptAppend` -- not just that the composition function honors
+// whatever segments it's handed.
+describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin definition\'s instructions: ["CLAUDE.md"])', () => {
+  const claudeSdkInitCommand = (cwd: string, overrides: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd },
+      maxToolIterations: 5,
+      instructions: ['CLAUDE.md'],
+      ...overrides,
+    });
+
+  it('reads a real CLAUDE.md file at cwd via the real loadOptInInstructions and composes its content into systemPromptAppend', async () => {
+    const dir = await makeTempDir();
+    await writeFile(join(dir, 'CLAUDE.md'), 'PROJECT_CLAUDE_MD_MARKER');
+    const { io } = makeIo([claudeSdkInitCommand(dir)]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadOptInInstructions, // real production implementation, not a stub
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toContain('PROJECT_CLAUDE_MD_MARKER');
+  });
+
+  it('polarity: with instructions: [] (no CLAUDE.md opt-in), systemPromptAppend omits the CLAUDE.md content even though the same file exists on disk', async () => {
+    const dir = await makeTempDir();
+    await writeFile(join(dir, 'CLAUDE.md'), 'PROJECT_CLAUDE_MD_MARKER');
+    const { io } = makeIo([claudeSdkInitCommand(dir, { instructions: [] })]);
+    let capturedDeps: SdkEngineDeps | undefined;
+    const factories = makeFactories({
+      loadOptInInstructions, // real production implementation, not a stub
+      createSdkEngine: (deps) => {
+        capturedDeps = deps;
+        return new NoopEngine();
+      },
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    expect(capturedDeps?.systemPromptAppend).toBeUndefined();
   });
 });
 

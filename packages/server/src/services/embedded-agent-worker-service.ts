@@ -148,6 +148,7 @@ const KNOWN_EVENT_TYPES = new Set<string>([
   'fatal',
   'context-usage',
   'context-handoff',
+  'sdk-session-id',
 ]);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
@@ -416,7 +417,7 @@ export class EmbeddedAgentWorkerService {
     // converted. Any other error from this seam (including a misbehaving
     // injected loadProviderKeyFn) propagates unwrapped.
     let apiKey: string | undefined;
-    if (definition.provider.apiKeyRef) {
+    if (definition.engine === 'native-loop' && definition.provider.apiKeyRef) {
       try {
         apiKey = await this.loadProviderKeyFn(definition.provider.apiKeyRef);
       } catch (err) {
@@ -555,16 +556,15 @@ export class EmbeddedAgentWorkerService {
 
       const ctx: StreamContext = { sessionId, workerId, worker, resolver };
 
-      // Step 6: write the init command as the FIRST stdin line.
-      const initCommand: EmbeddedAgentCommand = {
-        v: 1,
-        type: 'init',
+      // Step 6: write the init command as the FIRST stdin line. Branched on
+      // `definition.engine` (SDK Engine Phase 1) so each arm's `provider`
+      // shape matches the discriminated `EmbeddedAgentCommand` union --
+      // claude-sdk carries no `apiKey` (absent by construction, never merely
+      // undefined; see docs/design/embedded-agent-sdk-engine.md §3.2).
+      const initCommandShared = {
+        v: 1 as const,
+        type: 'init' as const,
         mcp: { baseUrl: this.deps.getMcpBaseUrl(), token },
-        provider: {
-          baseUrl: definition.provider.baseUrl,
-          model: definition.provider.model,
-          ...(apiKey !== undefined ? { apiKey } : {}),
-        },
         context: restoreContext,
         ...(definition.systemPrompt !== undefined ? { systemPrompt: definition.systemPrompt } : {}),
         ...(definition.enabledTools !== undefined ? { enabledTools: definition.enabledTools } : {}),
@@ -572,6 +572,22 @@ export class EmbeddedAgentWorkerService {
         maxToolIterations: definition.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS,
         ...(restoredConversation !== undefined ? { restoredConversation } : {}),
       };
+      const initCommand: EmbeddedAgentCommand =
+        definition.engine === 'native-loop'
+          ? {
+              ...initCommandShared,
+              engine: 'native-loop',
+              provider: {
+                baseUrl: definition.provider.baseUrl,
+                model: definition.provider.model,
+                ...(apiKey !== undefined ? { apiKey } : {}),
+              },
+            }
+          : {
+              ...initCommandShared,
+              engine: 'claude-sdk',
+              provider: { model: definition.provider.model },
+            };
       this.writeCommand(stdin, initCommand);
 
       // Step 7: start readers, register the exit observer, and mark idle.
@@ -1003,6 +1019,22 @@ export class EmbeddedAgentWorkerService {
       if (runtime.restoreInfo !== null && runtime.restoreInfo.completed === false) {
         runtime.restoreInfo = { ...runtime.restoreInfo, completed: true };
         this.pushRestoreInfoToConnections(ctx.worker, runtime.restoreInfo);
+      }
+    }
+
+    // (e): SDK engine only -- persist the worker's CURRENT SDK session id.
+    // Emitted on activation and on every future SDK-session replacement
+    // (e.g. Phase 2's context-handoff reseed); last-write-wins. Persisted
+    // immediately per-event rather than batched: this event fires rarely
+    // (activation, and later occasional reseed), unlike a chatty streaming
+    // event, so inline persistence (mirroring maybeDeliverInitialPrompt's
+    // fetch-and-persist shape) is the right-sized choice for Phase 1. See
+    // docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
+    if (event.type === 'sdk-session-id') {
+      ctx.worker.sdkSessionId = event.sdkSessionId;
+      const session = this.deps.getSession(ctx.sessionId);
+      if (session) {
+        await this.deps.persistSession(session);
       }
     }
   }

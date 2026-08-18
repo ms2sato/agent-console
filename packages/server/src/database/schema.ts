@@ -111,6 +111,8 @@ export interface WorkersTable {
   embedded_agent_id: string | null;
   /** Eligibility marker for initial-prompt delivery (embedded-agent workers only; null for other types and legacy rows). See docs/glossary.md "Initial Prompt (Session)". */
   deliver_initial_prompt_on_activation: number | null;
+  /** The worker's current Claude Agent SDK session id (embedded-agent workers with the `claude-sdk` engine only; null for other types and native-loop engine workers). See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row. */
+  sdk_session_id: string | null;
 }
 
 // Helper types for queries
@@ -211,9 +213,11 @@ export interface EmbeddedAgentsTable {
   name: string;
   /** Human-readable description (optional) */
   description: string | null;
-  /** OpenAI-compatible provider root URL */
-  provider_base_url: string;
-  /** Model id passed in the chat.completions request */
+  /** Execution engine discriminant (SDK Engine Phase 1): 'native-loop' (existing OpenAI-compatible custom loop) or 'claude-sdk' (Claude Agent SDK subprocess). See docs/design/embedded-agent-sdk-engine.md §3.1. */
+  engine: 'native-loop' | 'claude-sdk';
+  /** OpenAI-compatible provider root URL. NULL for 'claude-sdk' engine rows (no provider secret crosses the server for that engine, §3.2); NOT NULL for 'native-loop' rows. */
+  provider_base_url: string | null;
+  /** Model id passed in the chat.completions request (native-loop) or to the SDK session (claude-sdk) -- both engines have a model */
   provider_model: string;
   /** Name of a key in the server-side key store (null = no auth, e.g. local LLMs) */
   provider_api_key_ref: string | null;
@@ -233,6 +237,8 @@ export interface EmbeddedAgentsTable {
   handoff_hard_ratio: number | null;
   /** Phase B auto-fire flag (Context Handoff Phase A schema landed early; NOT read by any Phase A code path) */
   handoff_auto: number | null;
+  /** Builtin-definition marker (SDK Engine Phase 1), mirroring agents.is_built_in: 1 for the claude-sdk builtin, 0 for user-created definitions. Builtin definitions cannot be modified or deleted. */
+  is_built_in: number;
   /** User UUID (from users table) of the creator */
   created_by: string;
   /** Creation timestamp as ISO 8601 string (has DEFAULT) */

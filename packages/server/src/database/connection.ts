@@ -341,6 +341,14 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 28) {
     await migrateToV28(database);
   }
+
+  if (currentVersion < 29) {
+    await migrateToV29(database);
+  }
+
+  if (currentVersion < 30) {
+    await migrateToV30(database);
+  }
 }
 
 /**
@@ -1598,6 +1606,157 @@ export async function migrateToV28(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 28`.execute(database);
 
   logger.info('Migration to v28 completed');
+}
+
+/**
+ * Migration v29: Add `engine`/`is_built_in` to `embedded_agents` (SDK Engine
+ * Phase 1, consulted with the Architect 2026-08-17). Docs:
+ * docs/design/embedded-agent-sdk-engine.md §3.1/§5.
+ *
+ * A TABLE REBUILD, not a plain `ALTER TABLE ADD COLUMN` like v22-27's
+ * additions to this same table: `provider_base_url` is currently `NOT NULL`
+ * and must become NULLABLE for `claude-sdk` rows (no provider secret crosses
+ * the server for that engine -- §3.2), and SQLite cannot relax a NOT NULL
+ * constraint in place. Modeled on `migrateToV19`'s table-recreation pattern
+ * (create `_new`, copy, drop, rename), simplified because -- unlike
+ * `sessions`, which `workers.session_id` references via a real FK --
+ * `embedded_agents` has no FK dependents (`workers.embedded_agent_id` is a
+ * plain nullable TEXT column, no `REFERENCES` clause), so there is no
+ * FK-rewrite-on-rename hazard to route around and no need to toggle
+ * `PRAGMA foreign_keys`.
+ *
+ * New columns: `engine` TEXT NOT NULL DEFAULT 'native-loop' (every pre-v29
+ * row predates the SDK engine, so all rows backfill explicitly to
+ * 'native-loop' -- `engine` is NOT NULL with no third state), `is_built_in`
+ * INTEGER NOT NULL DEFAULT 0 (mirrors `agents.is_built_in`; every pre-v29
+ * row is user-created, so all backfill to 0). `provider_base_url` loses its
+ * NOT NULL constraint; `provider_model` stays NOT NULL (both engines carry a
+ * model).
+ *
+ * Idempotent: if `user_version` is already >= 29 the function returns early.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV29(database: Kysely<Database>): Promise<void> {
+  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
+  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
+  if (currentVersion >= 29) {
+    logger.info({ currentVersion }, 'Skipping migration to v29: already applied');
+    return;
+  }
+
+  logger.info('Running migration to v29: Adding engine/is_built_in to embedded_agents (SDK Engine Phase 1)');
+
+  // Snapshot non-automatic indexes/triggers on embedded_agents before the
+  // drop, mirroring migrateToV19's defensive restore step. No such objects
+  // exist today, but the pattern stays correct if one is ever added.
+  const objectsResult = await sql<{
+    type: string;
+    name: string;
+    sql: string | null;
+  }>`
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE tbl_name = 'embedded_agents'
+      AND type IN ('index', 'trigger')
+      AND name NOT LIKE 'sqlite_autoindex%'
+  `.execute(database);
+  const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
+
+  await database.transaction().execute(async (trx) => {
+    await sql`
+      CREATE TABLE embedded_agents_new (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        engine TEXT NOT NULL DEFAULT 'native-loop',
+        provider_base_url TEXT,
+        provider_model TEXT NOT NULL,
+        provider_api_key_ref TEXT,
+        system_prompt TEXT,
+        max_tool_iterations INTEGER,
+        enabled_tools TEXT,
+        instructions TEXT,
+        context_window_tokens INTEGER,
+        handoff_soft_ratio REAL,
+        handoff_hard_ratio REAL,
+        handoff_auto INTEGER,
+        is_built_in INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `.execute(trx);
+
+    // Every pre-v29 row predates the SDK engine and was user-created:
+    // backfill engine='native-loop', is_built_in=0 explicitly (not left NULL
+    // -- engine is NOT NULL with no third state).
+    await sql`
+      INSERT INTO embedded_agents_new (
+        id, name, description, engine, provider_base_url, provider_model,
+        provider_api_key_ref, system_prompt, max_tool_iterations,
+        enabled_tools, instructions, context_window_tokens,
+        handoff_soft_ratio, handoff_hard_ratio, handoff_auto, is_built_in,
+        created_by, created_at, updated_at
+      )
+      SELECT
+        id, name, description, 'native-loop', provider_base_url, provider_model,
+        provider_api_key_ref, system_prompt, max_tool_iterations,
+        enabled_tools, instructions, context_window_tokens,
+        handoff_soft_ratio, handoff_hard_ratio, handoff_auto, 0,
+        created_by, created_at, updated_at
+      FROM embedded_agents
+    `.execute(trx);
+
+    await sql`DROP TABLE embedded_agents`.execute(trx);
+    await sql`ALTER TABLE embedded_agents_new RENAME TO embedded_agents`.execute(trx);
+
+    for (const obj of objectsToRestore) {
+      await sql.raw(obj.sql as string).execute(trx);
+    }
+
+    const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+      PRAGMA foreign_key_check
+    `.execute(trx);
+    if (fkCheck.rows.length > 0) {
+      throw new Error(
+        `Foreign key check failed after v29 migration: ${JSON.stringify(fkCheck.rows)}`
+      );
+    }
+
+    await sql`PRAGMA user_version = 29`.execute(trx);
+  });
+
+  logger.info('Migration to v29 completed');
+}
+
+/**
+ * Migration v30: Add `sdk_session_id` column to `workers` (SDK Engine Phase
+ * 1, consulted with the Architect 2026-08-17). Nullable TEXT column
+ * persisting `InternalEmbeddedAgentWorker.sdkSessionId` -- the worker's
+ * current Claude Agent SDK session id -- so it survives a server restart.
+ * Null for non-embedded-agent workers and for `native-loop` engine
+ * embedded-agent workers, which never carry an SDK session. See
+ * docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV30(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v30: Adding sdk_session_id column to workers');
+
+  try {
+    await database.schema
+      .alterTable('workers')
+      .addColumn('sdk_session_id', 'text')
+      .execute();
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column sdk_session_id already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 30`.execute(database);
+
+  logger.info('Migration to v30 completed');
 }
 
 /**

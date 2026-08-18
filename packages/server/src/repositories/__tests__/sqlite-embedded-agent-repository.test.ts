@@ -9,15 +9,17 @@ import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
 function buildDefinition(
-  overrides: Partial<EmbeddedAgentDefinition> = {}
+  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>> = {}
 ): EmbeddedAgentDefinition {
   return {
     id: 'def-1',
     name: 'Ollama qwen3',
+    engine: 'native-loop',
     provider: {
       baseUrl: 'http://localhost:11434/v1',
       model: 'qwen3:32b',
     },
+    isBuiltIn: false,
     createdBy: 'user-1',
     createdAt: '2024-01-01T00:00:00.000Z',
     updatedAt: '2024-01-01T00:00:00.000Z',
@@ -43,7 +45,8 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('id', 'text', (col) => col.primaryKey())
       .addColumn('name', 'text', (col) => col.notNull())
       .addColumn('description', 'text')
-      .addColumn('provider_base_url', 'text', (col) => col.notNull())
+      .addColumn('engine', 'text', (col) => col.notNull().defaultTo('native-loop'))
+      .addColumn('provider_base_url', 'text')
       .addColumn('provider_model', 'text', (col) => col.notNull())
       .addColumn('provider_api_key_ref', 'text')
       .addColumn('system_prompt', 'text')
@@ -54,6 +57,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('handoff_soft_ratio', 'real')
       .addColumn('handoff_hard_ratio', 'real')
       .addColumn('handoff_auto', 'integer')
+      .addColumn('is_built_in', 'integer', (col) => col.notNull().defaultTo(0))
       .addColumn('created_by', 'text', (col) => col.notNull())
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
@@ -78,6 +82,84 @@ describe('SqliteEmbeddedAgentRepository', () => {
 
       const all = await repository.findAll();
       expect(all.map((d) => d.id).sort()).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('data integrity handling', () => {
+    // `engine` is typed as a literal union ('native-loop' | 'claude-sdk') by
+    // the Kysely schema; a corrupted row's actual value is deliberately
+    // outside that union (this is what `toEmbeddedAgentDefinition`'s
+    // default-arm consistency guard exists to catch), so the insert needs a
+    // single, documented, narrowly-scoped cast to bypass the compile-time
+    // guarantee that real corrupted data would not honor either.
+    const BOGUS_ENGINE = 'bogus-engine' as 'native-loop' | 'claude-sdk';
+
+    it('skips a row with an unknown engine value in findAll, returning healthy definitions', async () => {
+      await repository.save(buildDefinition({ id: 'healthy' }));
+
+      // Insert a corrupted row directly (unknown `engine` value -- the
+      // `toEmbeddedAgentDefinition` mapper's default-arm consistency guard).
+      await db
+        .insertInto('embedded_agents')
+        .values({
+          id: 'corrupted-unknown-engine',
+          name: 'Corrupted',
+          engine: BOGUS_ENGINE,
+          provider_base_url: 'http://localhost:11434/v1',
+          provider_model: 'm',
+          is_built_in: 0,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      const all = await repository.findAll();
+
+      expect(all.map((d) => d.id)).toEqual(['healthy']);
+    });
+
+    it('skips a native-loop row with a null provider_base_url in findAll, returning healthy definitions', async () => {
+      await repository.save(buildDefinition({ id: 'healthy' }));
+
+      // Insert a corrupted row directly (native-loop engine requires a
+      // non-null provider_base_url).
+      await db
+        .insertInto('embedded_agents')
+        .values({
+          id: 'corrupted-null-base-url',
+          name: 'Corrupted',
+          engine: 'native-loop',
+          provider_base_url: null,
+          provider_model: 'm',
+          is_built_in: 0,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      const all = await repository.findAll();
+
+      expect(all.map((d) => d.id)).toEqual(['healthy']);
+    });
+
+    it('lets a DataIntegrityError propagate uncaught from findById, which has no containment wrapper', async () => {
+      // findById has no per-row try/catch (unlike findAll's containment
+      // loop) -- a single corrupted row looked up directly still surfaces
+      // the mapper's DataIntegrityError uncaught, same as before this fix.
+      await db
+        .insertInto('embedded_agents')
+        .values({
+          id: 'corrupted-only',
+          name: 'Corrupted',
+          engine: BOGUS_ENGINE,
+          provider_base_url: 'http://localhost:11434/v1',
+          provider_model: 'm',
+          is_built_in: 0,
+          created_by: 'user-1',
+        })
+        .execute();
+
+      await expect(repository.findById('corrupted-only')).rejects.toThrow(
+        "Data integrity error: embedded-agent 'corrupted-only' has invalid engine (unexpected value: bogus-engine)"
+      );
     });
   });
 
@@ -108,7 +190,10 @@ describe('SqliteEmbeddedAgentRepository', () => {
       const found = await repository.findById('minimal');
 
       expect(found?.description).toBeUndefined();
-      expect(found?.provider.apiKeyRef).toBeUndefined();
+      expect(found?.engine).toBe('native-loop');
+      if (found?.engine === 'native-loop') {
+        expect(found.provider.apiKeyRef).toBeUndefined();
+      }
       expect(found?.systemPrompt).toBeUndefined();
       expect(found?.maxToolIterations).toBeUndefined();
     });
@@ -196,6 +281,16 @@ describe('SqliteEmbeddedAgentRepository', () => {
 
       expect(found?.contextWindowTokens).toBeUndefined();
       expect(found?.handoff).toBeUndefined();
+    });
+
+    it('round-trips engine and isBuiltIn (SDK Engine Phase 1)', async () => {
+      const def = buildDefinition({ id: 'engine-fields', isBuiltIn: true });
+
+      await repository.save(def);
+      const found = await repository.findById('engine-fields');
+
+      expect(found?.engine).toBe('native-loop');
+      expect(found?.isBuiltIn).toBe(true);
     });
   });
 
@@ -286,6 +381,16 @@ describe('SqliteEmbeddedAgentRepository', () => {
       const found = await repository.findById('x');
       expect(found?.contextWindowTokens).toBe(128000);
       expect(found?.handoff).toEqual({ softRatio: 0.8, hardRatio: 0.95, auto: true });
+    });
+
+    it('updates is_built_in on conflict (regression guard: onConflict lists columns explicitly)', async () => {
+      await repository.save(buildDefinition({ id: 'x', isBuiltIn: false }));
+      await repository.save(
+        buildDefinition({ id: 'x', isBuiltIn: true, updatedAt: '2024-06-01T00:00:00.000Z' })
+      );
+
+      const found = await repository.findById('x');
+      expect(found?.isBuiltIn).toBe(true);
     });
   });
 

@@ -466,6 +466,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -485,6 +486,7 @@ describe('mappers', () => {
         base_commit: null, // Missing required field
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -504,6 +506,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -525,6 +528,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: 1,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -545,6 +549,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -565,6 +570,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -586,6 +592,7 @@ describe('mappers', () => {
         base_commit: 'abc123def456',
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -607,6 +614,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: null, // Missing required field
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -626,6 +634,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: 'def-1',
         deliver_initial_prompt_on_activation: 1,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -649,6 +658,7 @@ describe('mappers', () => {
         base_commit: null,
         embedded_agent_id: 'def-1',
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -1351,6 +1361,7 @@ describe('mappers', () => {
       id: 'def-1',
       name: 'Ollama qwen3:32b',
       description: 'Local model',
+      engine: 'native-loop',
       provider: {
         baseUrl: 'http://localhost:11434/v1',
         model: 'qwen3:32b',
@@ -1363,6 +1374,7 @@ describe('mappers', () => {
       contextWindowTokens: 128000,
       handoff: { softRatio: 0.75, hardRatio: 0.9, auto: true },
       createdBy: 'user-uuid',
+      isBuiltIn: false,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-02T00:00:00.000Z',
     };
@@ -1391,8 +1403,10 @@ describe('mappers', () => {
       const minimal: EmbeddedAgentDefinition = {
         id: 'def-2',
         name: 'Minimal',
+        engine: 'native-loop',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         createdBy: 'user-uuid',
+        isBuiltIn: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
@@ -1415,9 +1429,11 @@ describe('mappers', () => {
       const autoFalse: EmbeddedAgentDefinition = {
         id: 'def-auto-false',
         name: 'AutoFalse',
+        engine: 'native-loop',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         handoff: { auto: false },
         createdBy: 'user-uuid',
+        isBuiltIn: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
@@ -1433,9 +1449,11 @@ describe('mappers', () => {
       const emptyTools: EmbeddedAgentDefinition = {
         id: 'def-4',
         name: 'AllToolsOff',
+        engine: 'native-loop',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         enabledTools: [],
         createdBy: 'user-uuid',
+        isBuiltIn: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
@@ -1449,9 +1467,11 @@ describe('mappers', () => {
       const emptyInstructions: EmbeddedAgentDefinition = {
         id: 'def-6',
         name: 'NoInstructions',
+        engine: 'native-loop',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         instructions: [],
         createdBy: 'user-uuid',
+        isBuiltIn: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
@@ -1469,7 +1489,8 @@ describe('mappers', () => {
         id: row.id,
         name: row.name,
         description: row.description ?? null,
-        provider_base_url: row.provider_base_url,
+        engine: 'native-loop',
+        provider_base_url: row.provider_base_url ?? null,
         provider_model: row.provider_model,
         provider_api_key_ref: row.provider_api_key_ref ?? null,
         system_prompt: row.system_prompt ?? null,
@@ -1481,6 +1502,7 @@ describe('mappers', () => {
         handoff_hard_ratio: row.handoff_hard_ratio ?? null,
         handoff_auto: row.handoff_auto ?? null,
         created_by: row.created_by,
+        is_built_in: 0,
         created_at: fullDefinition.createdAt,
         updated_at: fullDefinition.updatedAt,
       };
@@ -1495,6 +1517,7 @@ describe('mappers', () => {
         id: 'def-3',
         name: 'Nulls',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1507,6 +1530,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: null,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1514,7 +1538,10 @@ describe('mappers', () => {
       const restored = toEmbeddedAgentDefinition(selectRow);
 
       expect(restored.description).toBeUndefined();
-      expect(restored.provider.apiKeyRef).toBeUndefined();
+      expect(restored.engine).toBe('native-loop');
+      if (restored.engine === 'native-loop') {
+        expect(restored.provider.apiKeyRef).toBeUndefined();
+      }
       expect(restored.systemPrompt).toBeUndefined();
       expect(restored.maxToolIterations).toBeUndefined();
       expect(restored.enabledTools).toBeUndefined();
@@ -1528,6 +1555,7 @@ describe('mappers', () => {
         id: 'def-5',
         name: 'EmptyTools',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1540,6 +1568,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: null,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1555,6 +1584,7 @@ describe('mappers', () => {
         id: 'def-malformed',
         name: 'Malformed',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1567,6 +1597,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: null,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1584,6 +1615,7 @@ describe('mappers', () => {
         id: 'def-malformed-instructions',
         name: 'Malformed',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1596,6 +1628,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: null,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1613,6 +1646,7 @@ describe('mappers', () => {
         id: 'def-non-array-tools',
         name: 'NonArray',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1625,6 +1659,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: null,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1642,6 +1677,7 @@ describe('mappers', () => {
         id: 'def-non-array-instructions',
         name: 'NonArray',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1654,6 +1690,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: null,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1671,6 +1708,7 @@ describe('mappers', () => {
         id: 'def-partial-handoff',
         name: 'PartialHandoff',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1683,6 +1721,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: null,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1697,6 +1736,7 @@ describe('mappers', () => {
         id: 'def-auto-false',
         name: 'AutoFalse',
         description: null,
+        engine: 'native-loop',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1709,6 +1749,7 @@ describe('mappers', () => {
         handoff_hard_ratio: null,
         handoff_auto: 0,
         created_by: 'user-uuid',
+        is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
         updated_at: '2026-01-01T00:00:00.000Z',
       };
@@ -1716,6 +1757,123 @@ describe('mappers', () => {
       const restored = toEmbeddedAgentDefinition(selectRow);
 
       expect(restored.handoff).toEqual({ softRatio: undefined, hardRatio: undefined, auto: false });
+    });
+
+    describe('engine/provider round-trip and consistency guard (SDK Engine Phase 1)', () => {
+      it('flattens a claude-sdk definition with a null provider_base_url column', () => {
+        const sdkDefinition: EmbeddedAgentDefinition = {
+          id: 'def-sdk-1',
+          name: 'Claude',
+          engine: 'claude-sdk',
+          provider: { model: 'claude-sonnet-5' },
+          isBuiltIn: true,
+          createdBy: 'system',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+
+        const row = toEmbeddedAgentRow(sdkDefinition);
+
+        expect(row.engine).toBe('claude-sdk');
+        expect(row.provider_base_url).toBeNull();
+        expect(row.provider_model).toBe('claude-sonnet-5');
+        expect(row.provider_api_key_ref).toBeNull();
+        expect(row.is_built_in).toBe(1);
+      });
+
+      it('round-trips a claude-sdk definition through row and back', () => {
+        const sdkDefinition: EmbeddedAgentDefinition = {
+          id: 'def-sdk-2',
+          name: 'Claude',
+          engine: 'claude-sdk',
+          provider: { model: 'claude-sonnet-5' },
+          isBuiltIn: true,
+          createdBy: 'system',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-01T00:00:00.000Z',
+        };
+
+        const row = toEmbeddedAgentRow(sdkDefinition);
+        const selectRow: EmbeddedAgentRow = {
+          id: row.id,
+          name: row.name,
+          description: row.description ?? null,
+          engine: row.engine,
+          provider_base_url: row.provider_base_url ?? null,
+          provider_model: row.provider_model,
+          provider_api_key_ref: row.provider_api_key_ref ?? null,
+          system_prompt: row.system_prompt ?? null,
+          max_tool_iterations: row.max_tool_iterations ?? null,
+          enabled_tools: row.enabled_tools ?? null,
+          instructions: row.instructions ?? null,
+          context_window_tokens: row.context_window_tokens ?? null,
+          handoff_soft_ratio: row.handoff_soft_ratio ?? null,
+          handoff_hard_ratio: row.handoff_hard_ratio ?? null,
+          handoff_auto: row.handoff_auto ?? null,
+          is_built_in: row.is_built_in,
+          created_by: row.created_by,
+          created_at: sdkDefinition.createdAt,
+          updated_at: sdkDefinition.updatedAt,
+        };
+
+        const restored = toEmbeddedAgentDefinition(selectRow);
+
+        expect(restored).toEqual(sdkDefinition);
+      });
+
+      it('throws DataIntegrityError for a native-loop row with a null provider_base_url', () => {
+        const selectRow: EmbeddedAgentRow = {
+          id: 'def-inconsistent-1',
+          name: 'Inconsistent',
+          description: null,
+          engine: 'native-loop',
+          provider_base_url: null,
+          provider_model: 'llama3',
+          provider_api_key_ref: null,
+          system_prompt: null,
+          max_tool_iterations: null,
+          enabled_tools: null,
+          instructions: null,
+          context_window_tokens: null,
+          handoff_soft_ratio: null,
+          handoff_hard_ratio: null,
+          handoff_auto: null,
+          created_by: 'user-uuid',
+          is_built_in: 0,
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        };
+
+        expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
+        expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/provider_base_url/);
+      });
+
+      it('throws DataIntegrityError for a claude-sdk row with a non-null provider_base_url', () => {
+        const selectRow: EmbeddedAgentRow = {
+          id: 'def-inconsistent-2',
+          name: 'Inconsistent',
+          description: null,
+          engine: 'claude-sdk',
+          provider_base_url: 'http://localhost:11434/v1',
+          provider_model: 'claude-sonnet-5',
+          provider_api_key_ref: null,
+          system_prompt: null,
+          max_tool_iterations: null,
+          enabled_tools: null,
+          instructions: null,
+          context_window_tokens: null,
+          handoff_soft_ratio: null,
+          handoff_hard_ratio: null,
+          handoff_auto: null,
+          created_by: 'system',
+          is_built_in: 1,
+          created_at: '2026-01-01T00:00:00.000Z',
+          updated_at: '2026-01-01T00:00:00.000Z',
+        };
+
+        expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
+        expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/provider_base_url/);
+      });
     });
   });
 });

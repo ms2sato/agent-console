@@ -37,7 +37,7 @@ export function assertNever(x: never, message?: string): never {
  */
 export class DataIntegrityError extends Error {
   constructor(
-    public readonly entityType: 'session' | 'worker',
+    public readonly entityType: 'session' | 'worker' | 'embedded-agent',
     public readonly entityId: string,
     public readonly issue: string
   ) {
@@ -175,6 +175,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       base_commit: null,
       embedded_agent_id: worker.embeddedAgentId,
       deliver_initial_prompt_on_activation: worker.deliverInitialPromptOnActivation ? 1 : 0,
+      sdk_session_id: worker.sdkSessionId,
     };
   } else {
     return assertNever(worker, `Unknown worker type for worker ${base.id}`);
@@ -245,6 +246,7 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       pid: worker.pid ?? null,
       embeddedAgentId: worker.embedded_agent_id,
       deliverInitialPromptOnActivation: worker.deliver_initial_prompt_on_activation === 1,
+      sdkSessionId: worker.sdk_session_id ?? null,
     } as PersistedEmbeddedAgentWorker;
   } else {
     // This should never be reached due to the validation above,
@@ -521,9 +523,14 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     id: def.id,
     name: def.name,
     description: def.description ?? null,
-    provider_base_url: def.provider.baseUrl,
+    engine: def.engine,
+    // native-loop writes its real baseUrl; claude-sdk writes null -- no
+    // provider secret crosses the server for that engine (SDK Engine Phase
+    // 1, docs/design/embedded-agent-sdk-engine.md §3.2). Both engines write
+    // provider_model (every engine carries a model).
+    provider_base_url: def.engine === 'native-loop' ? def.provider.baseUrl : null,
     provider_model: def.provider.model,
-    provider_api_key_ref: def.provider.apiKeyRef ?? null,
+    provider_api_key_ref: def.engine === 'native-loop' ? (def.provider.apiKeyRef ?? null) : null,
     system_prompt: def.systemPrompt ?? null,
     max_tool_iterations: def.maxToolIterations ?? null,
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
@@ -532,6 +539,7 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     handoff_soft_ratio: def.handoff?.softRatio ?? null,
     handoff_hard_ratio: def.handoff?.hardRatio ?? null,
     handoff_auto: def.handoff?.auto !== undefined ? (def.handoff.auto ? 1 : 0) : null,
+    is_built_in: def.isBuiltIn ? 1 : 0,
     created_by: def.createdBy,
     created_at: def.createdAt,
     updated_at: def.updatedAt,
@@ -601,25 +609,61 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
         }
       : undefined;
 
-  return {
+  const base = {
     id: row.id,
     name: row.name,
     description: row.description ?? undefined,
-    provider: {
-      baseUrl: row.provider_base_url,
-      model: row.provider_model,
-      apiKeyRef: row.provider_api_key_ref ?? undefined,
-    },
     systemPrompt: row.system_prompt ?? undefined,
     maxToolIterations: row.max_tool_iterations ?? undefined,
     enabledTools,
     instructions,
     contextWindowTokens: row.context_window_tokens ?? undefined,
     handoff,
+    isBuiltIn: row.is_built_in === 1,
     createdBy: row.created_by,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+
+  // Engine/provider-shape consistency guard (SDK Engine Phase 1, consulted
+  // with the Architect 2026-08-17): `engine` and `provider_base_url` must
+  // agree, mirroring the `dataScope`/`dataScopeSlug` consistency checks
+  // above (`toSessionRow`/`toPersistedSession`). A row failing this check is
+  // corrupted data, not a recoverable shape -- throw rather than silently
+  // picking an arm.
+  if (row.engine === 'native-loop') {
+    if (row.provider_base_url === null) {
+      throw new DataIntegrityError(
+        'embedded-agent',
+        row.id,
+        'provider_base_url (missing required field for native-loop engine)'
+      );
+    }
+    return {
+      ...base,
+      engine: 'native-loop',
+      provider: {
+        baseUrl: row.provider_base_url,
+        model: row.provider_model,
+        apiKeyRef: row.provider_api_key_ref ?? undefined,
+      },
+    };
+  } else if (row.engine === 'claude-sdk') {
+    if (row.provider_base_url !== null) {
+      throw new DataIntegrityError(
+        'embedded-agent',
+        row.id,
+        'provider_base_url (unexpected value for claude-sdk engine, must be null)'
+      );
+    }
+    return {
+      ...base,
+      engine: 'claude-sdk',
+      provider: { model: row.provider_model },
+    };
+  } else {
+    throw new DataIntegrityError('embedded-agent', row.id, `engine (unexpected value: ${row.engine})`);
+  }
 }
 
 // ========== Message Template Mappers ==========

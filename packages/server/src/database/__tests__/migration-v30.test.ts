@@ -1,18 +1,17 @@
 /**
- * Migration v26 tests — workers.deliver_initial_prompt_on_activation column
- * addition.
+ * Migration v30 tests — workers.sdk_session_id column addition (SDK Engine
+ * Phase 1, consulted with the Architect 2026-08-17).
  *
- * v26 adds a nullable `deliver_initial_prompt_on_activation INTEGER` (0/1)
- * column to `workers`, persisting the eligibility marker
- * (`InternalEmbeddedAgentWorker.deliverInitialPromptOnActivation`) so it
- * survives a server restart (Issue #1074). Null/0 for non-embedded-agent
- * workers and for legacy embedded-agent rows predating v26 (treated as
- * "not eligible" by application code).
+ * v30 adds a nullable `sdk_session_id TEXT` column to `workers`, persisting
+ * `InternalEmbeddedAgentWorker.sdkSessionId` (SDK Engine Phase 1) so it
+ * survives a server restart. Null for non-embedded-agent workers and for
+ * native-loop engine embedded-agent workers. See
+ * docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { sql } from 'kysely';
-import { initializeDatabase, closeDatabase, migrateToV26 } from '../connection.js';
+import { initializeDatabase, closeDatabase, migrateToV30 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -54,7 +53,7 @@ async function seedSession(db: Awaited<ReturnType<typeof initializeDatabase>>, i
     .execute();
 }
 
-describe('migration v26 (workers.deliver_initial_prompt_on_activation)', () => {
+describe('migration v30 (workers.sdk_session_id)', () => {
   beforeEach(async () => {
     await closeDatabase();
     setupMemfs({
@@ -68,31 +67,31 @@ describe('migration v26 (workers.deliver_initial_prompt_on_activation)', () => {
     cleanupMemfs();
   });
 
-  it('advances the schema version to 26', async () => {
+  it('advances the schema version to 30', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
     expect(versionRes.rows[0]?.user_version).toBe(30);
   });
 
-  it('adds the deliver_initial_prompt_on_activation column to workers, nullable with no default', async () => {
+  it('adds the sdk_session_id column to workers, nullable with no default', async () => {
     const db = await initializeDatabase(':memory:');
 
     const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(workers)`.execute(db);
-    const column = columns.rows.find((c) => c.name === 'deliver_initial_prompt_on_activation');
+    const column = columns.rows.find((c) => c.name === 'sdk_session_id');
     expect(column).toBeDefined();
-    expect(column!.type.toUpperCase()).toBe('INTEGER');
+    expect(column!.type.toUpperCase()).toBe('TEXT');
     expect(column!.notnull).toBe(0);
     expect(column!.dflt_value).toBeNull();
   });
 
-  it('round-trips a value of 1 (eligible)', async () => {
+  it('round-trips a non-null sdk_session_id value', async () => {
     const db = await initializeDatabase(':memory:');
     await seedSession(db, 'sess-1');
 
     await db
       .insertInto('workers')
       .values({
-        id: 'worker-eligible',
+        id: 'worker-sdk',
         session_id: 'sess-1',
         type: 'embedded-agent',
         name: 'Embedded Agent',
@@ -100,54 +99,56 @@ describe('migration v26 (workers.deliver_initial_prompt_on_activation)', () => {
         agent_id: null,
         base_commit: null,
         embedded_agent_id: 'def-1',
-        deliver_initial_prompt_on_activation: 1,
+        deliver_initial_prompt_on_activation: null,
+        sdk_session_id: 'sdk-sess-abc',
       })
       .execute();
 
     const row = await db
       .selectFrom('workers')
-      .where('id', '=', 'worker-eligible')
-      .select('deliver_initial_prompt_on_activation')
+      .where('id', '=', 'worker-sdk')
+      .select('sdk_session_id')
       .executeTakeFirstOrThrow();
 
-    expect(row.deliver_initial_prompt_on_activation).toBe(1);
+    expect(row.sdk_session_id).toBe('sdk-sess-abc');
   });
 
-  it('round-trips a null value (legacy row / non-embedded-agent worker)', async () => {
+  it('round-trips a null sdk_session_id value (native-loop engine / non-embedded-agent worker)', async () => {
     const db = await initializeDatabase(':memory:');
     await seedSession(db, 'sess-1');
 
     await db
       .insertInto('workers')
       .values({
-        id: 'worker-legacy',
+        id: 'worker-native-loop',
         session_id: 'sess-1',
-        type: 'agent',
-        name: 'Agent',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
         pid: null,
-        agent_id: 'claude-code',
+        agent_id: null,
         base_commit: null,
-        embedded_agent_id: null,
+        embedded_agent_id: 'def-1',
         deliver_initial_prompt_on_activation: null,
+        sdk_session_id: null,
       })
       .execute();
 
     const row = await db
       .selectFrom('workers')
-      .where('id', '=', 'worker-legacy')
-      .select('deliver_initial_prompt_on_activation')
+      .where('id', '=', 'worker-native-loop')
+      .select('sdk_session_id')
       .executeTakeFirstOrThrow();
 
-    expect(row.deliver_initial_prompt_on_activation).toBeNull();
+    expect(row.sdk_session_id).toBeNull();
   });
 
   it('is idempotent when re-applied (duplicate column is ignored)', async () => {
     const db = await initializeDatabase(':memory:');
 
-    await expect(migrateToV26(db)).resolves.toBeUndefined();
-    await expect(migrateToV26(db)).resolves.toBeUndefined();
+    await expect(migrateToV30(db)).resolves.toBeUndefined();
+    await expect(migrateToV30(db)).resolves.toBeUndefined();
 
     const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(workers)`.execute(db);
-    expect(columns.rows.find((c) => c.name === 'deliver_initial_prompt_on_activation')).toBeDefined();
+    expect(columns.rows.find((c) => c.name === 'sdk_session_id')).toBeDefined();
   });
 });
