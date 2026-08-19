@@ -5,6 +5,7 @@ import { ChevronRightIcon, PlusIcon } from '../components/Icons';
 import { QuickWorktreeDialog } from '../components/worktrees';
 import { MobileHeaderControls } from '../components/header/MobileHeaderControls';
 import { JobsNavLink, AgentsNavLink, ArtifactsNavLink, RepositoriesNavLink, SettingsNavLink, ReviewNavLink, LogoutButton, ValidationWarningIndicator } from '../components/header/NavLinks';
+import { NotificationBell } from '../components/notifications';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { ConnectionBanner } from '../components/ui/ConnectionBanner';
 import { SchemaVersionBanner } from '../components/ui/SchemaVersionBanner';
@@ -227,6 +228,10 @@ function RootLayout() {
               <AgentsNavLink />
               <ArtifactsNavLink />
               <RepositoriesNavLink />
+              {/* isMobile-gated: the parent <nav> is only CSS-hidden (hidden md:flex) on mobile, not
+                  unmounted, so without this gate NotificationBell would double-mount alongside
+                  MobileHeaderControls' own instance. */}
+              {!isMobile && <NotificationBell />}
               <SettingsNavLink />
               {isMultiUser && <LogoutButton />}
             </nav>

@@ -1,6 +1,7 @@
 import { MenuIcon, LayoutListIcon } from '../Icons';
 import { MobileNavMenu } from './MobileNavMenu';
 import { MobileSidebarDrawer } from '../sidebar/MobileSidebarDrawer';
+import { NotificationBell } from '../notifications';
 
 export interface MobileHeaderControlsProps {
   mobileNavOpen: boolean;
@@ -36,6 +37,7 @@ export function MobileHeaderControls({
             <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-yellow-400 rounded-full" aria-hidden="true" />
           )}
         </button>
+        <NotificationBell />
         <button
           onClick={onToggleNav}
           className="p-2 text-gray-400 hover:text-white min-w-[44px] min-h-[44px] flex items-center justify-center"

@@ -18,6 +18,8 @@ import {
   openInVSCode,
   fetchArtifacts,
   deleteArtifact,
+  fetchNotifications,
+  markNotificationsSeen,
   ServerUnavailableError,
   ApiError,
 } from '../api';
@@ -1213,6 +1215,71 @@ describe('API Client', () => {
 
       await expect(deleteArtifact('artifact-1')).rejects.toThrow(
         'Only the owner can delete this artifact'
+      );
+    });
+  });
+
+  describe('fetchNotifications', () => {
+    it('fetches the notification feed and parses the response through the wire schema', async () => {
+      const mockFeed = {
+        items: [
+          {
+            kind: 'artifact-created',
+            id: 'artifact-1',
+            occurredAt: '2026-08-16T00:00:00.000Z',
+            title: 'My Dashboard',
+            link: '/artifacts/artifact-1',
+          },
+        ],
+        lastSeenAt: null,
+        unreadCount: 1,
+      };
+      mockFetch.mockResolvedValue(createMockResponse(mockFeed));
+
+      const result = await fetchNotifications();
+
+      expect((mockFetch.mock.calls as unknown[][])[0]?.[0]).toBe('/api/notifications');
+      expect(result).toEqual(mockFeed);
+    });
+
+    it('throws when the response fails schema validation (e.g. a dropped field)', async () => {
+      // unreadCount is missing -- NotificationsResponseSchema must reject
+      // this, not silently pass through `undefined` (the #926 silent-drop gap).
+      mockFetch.mockResolvedValue(
+        createMockResponse({ items: [], lastSeenAt: null })
+      );
+
+      await expect(fetchNotifications()).rejects.toThrow();
+    });
+
+    it('throws error on failure', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({}, { status: 500, ok: false })
+      );
+
+      await expect(fetchNotifications()).rejects.toThrow('Failed to fetch notifications');
+    });
+  });
+
+  describe('markNotificationsSeen', () => {
+    it('sends the cursor timestamp via PUT and parses the response through the wire schema', async () => {
+      mockFetch.mockResolvedValue(createMockResponse({ lastSeenAt: '2026-08-16T00:00:00.000Z' }));
+
+      const result = await markNotificationsSeen('2026-08-16T00:00:00.000Z');
+
+      expect(getLastFetchUrl()).toContain('/api/notifications/seen');
+      expect(getLastFetchMethod()).toBe('PUT');
+      expect(await getLastFetchBody()).toEqual({ lastSeenAt: '2026-08-16T00:00:00.000Z' });
+      expect(result).toEqual({ lastSeenAt: '2026-08-16T00:00:00.000Z' });
+    });
+
+    it('throws error on failure', async () => {
+      mockFetch.mockResolvedValue(
+        createMockResponse({ error: 'lastSeenAt must not be in the future' }, { status: 400, ok: false })
+      );
+
+      await expect(markNotificationsSeen('2026-08-16T00:00:00.000Z')).rejects.toThrow(
+        'lastSeenAt must not be in the future'
       );
     });
   });
