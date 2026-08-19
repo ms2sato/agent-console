@@ -46,6 +46,21 @@ export interface ArtifactRepository {
   findByUserId(userId: string): Promise<Artifact[]>;
 
   /**
+   * Find all artifacts owned by a user AND originating from a given
+   * session, newest first (wire shape -- no `userId`). Both conditions are
+   * scoped in the SQL query itself, never as a post-fetch filter: a JS-side
+   * session filter applied after an already-capped user-scoped fetch could
+   * hide the caller's own older rows behind other users' newer ones in
+   * that session.
+   *
+   * Session ownership is deliberately NOT checked here: `userId` already
+   * constrains the result set to the caller's own artifacts, so
+   * `sourceSessionId` is a pure secondary filter, not an authorization
+   * check.
+   */
+  findByUserIdAndSourceSessionId(userId: string, sessionId: string): Promise<Artifact[]>;
+
+  /**
    * Delete an artifact: removes the metadata row and the on-disk HTML file
    * together (docs/design/html-artifacts.md §5.1's lifecycle). Returns
    * `true` if an artifact was found and deleted, `false` if no artifact

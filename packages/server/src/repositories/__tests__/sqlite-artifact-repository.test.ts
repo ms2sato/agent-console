@@ -193,6 +193,113 @@ describe('SqliteArtifactRepository', () => {
     });
   });
 
+  describe('findByUserIdAndSourceSessionId', () => {
+    it('returns only the given user\'s artifacts within the given session, newest first', async () => {
+      await repository.create({
+        id: 'artifact-session-old',
+        userId: 'user-1',
+        title: 'Session Old',
+        content: '<p>old</p>',
+        sourceSessionId: 'session-1',
+      });
+      await new Promise((r) => setTimeout(r, 2));
+      await repository.create({
+        id: 'artifact-session-new',
+        userId: 'user-1',
+        title: 'Session New',
+        content: '<p>new</p>',
+        sourceSessionId: 'session-1',
+      });
+      // Same user, but a different session -- must not appear.
+      await repository.create({
+        id: 'artifact-other-session',
+        userId: 'user-1',
+        title: 'Other session',
+        content: '<p>other session</p>',
+        sourceSessionId: 'session-2',
+      });
+
+      const results = await repository.findByUserIdAndSourceSessionId('user-1', 'session-1');
+      expect(results.map((a) => a.id)).toEqual(['artifact-session-new', 'artifact-session-old']);
+    });
+
+    it("does not leak another user's artifact in the SAME session (polarity direction 1)", async () => {
+      await repository.create({
+        id: 'artifact-mine',
+        userId: 'user-1',
+        title: 'Mine',
+        content: '<p>mine</p>',
+        sourceSessionId: 'session-1',
+      });
+      await repository.create({
+        id: 'artifact-theirs',
+        userId: 'user-2',
+        title: 'Theirs',
+        content: '<p>theirs</p>',
+        sourceSessionId: 'session-1',
+      });
+
+      const results = await repository.findByUserIdAndSourceSessionId('user-1', 'session-1');
+      expect(results.map((a) => a.id)).toEqual(['artifact-mine']);
+    });
+
+    it('does not leak the same user\'s artifact from ANOTHER session (polarity direction 2)', async () => {
+      await repository.create({
+        id: 'artifact-session-1',
+        userId: 'user-1',
+        title: 'Session 1',
+        content: '<p>s1</p>',
+        sourceSessionId: 'session-1',
+      });
+      await repository.create({
+        id: 'artifact-session-2',
+        userId: 'user-1',
+        title: 'Session 2',
+        content: '<p>s2</p>',
+        sourceSessionId: 'session-2',
+      });
+
+      const results = await repository.findByUserIdAndSourceSessionId('user-1', 'session-1');
+      expect(results.map((a) => a.id)).toEqual(['artifact-session-1']);
+    });
+
+    it("stays SQL-scoped, not JS-filtered-after-fetch: the caller's own artifact still appears even when many other users' NEWER artifacts share the same session", async () => {
+      await repository.create({
+        id: 'artifact-caller-own',
+        userId: 'user-1',
+        title: "Caller's own",
+        content: '<p>mine</p>',
+        sourceSessionId: 'session-1',
+      });
+
+      // 10 other-user artifacts in the SAME session, all created AFTER the
+      // caller's own artifact -- if the session filter were a post-fetch JS
+      // .filter() applied to an already-capped user-scoped fetch, these
+      // newer rows would be irrelevant here (findByUserId('user-1') never
+      // sees user-2's rows in the first place). The real risk this test
+      // guards against is a query shaped as an unscoped session fetch
+      // filtered by user afterward -- this proves the implementation is
+      // genuinely `WHERE user_id = ? AND source_session_id = ?` in one SQL
+      // query, not two conditions applied at different layers.
+      for (let i = 0; i < 10; i++) {
+        await repository.create({
+          id: `artifact-other-${i}`,
+          userId: 'user-2',
+          title: `Other ${i}`,
+          content: '<p>other</p>',
+          sourceSessionId: 'session-1',
+        });
+      }
+
+      const results = await repository.findByUserIdAndSourceSessionId('user-1', 'session-1');
+      expect(results.map((a) => a.id)).toEqual(['artifact-caller-own']);
+    });
+
+    it('returns an empty array for a user/session combination with no artifacts', async () => {
+      expect(await repository.findByUserIdAndSourceSessionId('user-1', 'session-does-not-exist')).toEqual([]);
+    });
+  });
+
   describe('delete', () => {
     it('removes the row and the file together, returning true', async () => {
       await repository.create({

@@ -55,10 +55,18 @@ const artifacts = new Hono<AppBindings>()
   // List the authenticated user's own artifacts, newest first. Other users'
   // artifacts are reachable by direct URL only (GET /:id below) -- v1 has
   // no global browse (docs/design/html-artifacts.md §7).
+  //
+  // Optional `?sessionId=` narrows the list to artifacts originating from
+  // that session. Session ownership is NOT checked -- the `authUser.id`
+  // user-scope already constrains the result set, so `sessionId` is a
+  // pure secondary filter, not an authorization check.
   .get('/', async (c) => {
     const { artifactRepository } = c.get('appContext');
     const authUser = c.get('authUser');
-    const list = await artifactRepository.findByUserId(authUser.id);
+    const sessionId = c.req.query('sessionId');
+    const list = sessionId
+      ? await artifactRepository.findByUserIdAndSourceSessionId(authUser.id, sessionId)
+      : await artifactRepository.findByUserId(authUser.id);
     return c.json({ artifacts: list });
   })
   // Serve an artifact's raw HTML bytes, byte-verbatim -- no sanitizer, no

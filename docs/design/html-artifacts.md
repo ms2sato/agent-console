@@ -105,6 +105,14 @@ Design, with no mode-keyed inference anywhere:
 - Single-user dev convenience comes from dev tooling setting the value explicitly (`dev.sh` exports `http://localhost:<PORT>`); the multi-user setup script provisions it like `EMBEDDED_AGENT_BUN_PATH` (it knows the host it installs on).
 - **Request-`Host` derivation is forbidden as a fallback**: MCP tool calls arrive over the localhost dial-back, so the `Host` header the tool handler sees is precisely the wrong value. This is stated here so no implementer reaches for it.
 
+### 4.2 List filtering — session scope (Issue #1370)
+
+`GET /api/artifacts` accepts an optional `?sessionId=<id>` query parameter, narrowing the caller's own list (§5.1's `user_id` scope, unchanged) to artifacts whose `source_session_id` matches. This is the read path §5.1 refers to.
+
+- **Additive, not a new route.** The wire response shape (`{ artifacts: Artifact[] }`, §7's list contract) is unchanged; only the filter condition differs. Omitting `sessionId` is byte-identical to the pre-existing behavior.
+- **Both conditions are scoped in the SQL query** (`WHERE user_id = ? AND source_session_id = ?`), never a post-fetch JS filter over an already-capped user-scoped fetch — the same identity-scoping discipline `design-principles.md` requires generally, applied here so that another user's newer artifacts in the same session can never crowd the caller's own rows out of a filter applied after any future row cap.
+- **Session ownership is deliberately NOT checked.** `authUser.id` already constrains the result set to the caller's own artifacts; `sessionId` is a pure secondary filter, not an authorization boundary. A caller cannot use this parameter to enumerate another user's artifacts — it can only narrow their own.
+
 ## 5. Storage, data model, attribution, lifecycle
 
 ### 5.1 Storage — a new top-level per-user namespace
@@ -112,7 +120,7 @@ Design, with no mode-keyed inference anywhere:
 Artifacts are user-scoped by requirement (per-user history), not session-scoped: tying them to the session-scoped layout would make history a cross-session scavenger hunt and would couple artifact lifetime to session lifetime, contradicting requirement 6. Therefore:
 
 - Bytes: `<AGENT_CONSOLE_HOME>/artifacts/<users.id>/<artifactId>.html` — a new namespace, deliberately parallel to (not inside) `repositories/`.
-- Metadata: a new `artifacts` table — `id` (UUID PK), `user_id` (FK `users.id`), `title`, `created_at`, `size_bytes`, `source_session_id` (nullable, provenance only — an artifact outlives its source session and the column is never used for lookup).
+- Metadata: a new `artifacts` table — `id` (UUID PK), `user_id` (FK `users.id`), `title`, `created_at`, `size_bytes`, `source_session_id` (nullable). Originally provenance-only; §4.2 (Issue #1370) added a read path over it — the column is populated at creation time regardless, so no migration or backfill was needed when that read path landed.
 
 Lifecycle (pre-pr-completeness Q7, answered at design time): **created** by the tool (§6); **read** by the serving endpoint and the history list; **deleted** by the owning user (UI delete; optionally an MCP delete tool at AC time) — deletion removes the row and the file together; **never** auto-expired in v1. Files are written by the server process and owned by it — no elevation anywhere in this feature (multi-user viewers go through HTTP, never the filesystem). The deletion story ships in the same phase as the creation story.
 
@@ -140,6 +148,7 @@ Tool result shape: `{ artifactId, path, url?, note? }` per §4.1 — `url` prese
 ## 7. UI
 
 - **History page**: the authenticated user's own artifacts, newest first — title, created-at, size, view link, delete. Others' artifacts are reachable by URL (requirement 3) but v1 has no global browse; that is a deliberate v1 cut, not an oversight.
+- **Session-scoped surfacing (Issue #1370)**: from a session's own view, the artifacts it created are also reachable directly — presented the way the session's Memo already is (a collapsible sidebar, hidden when empty), not merged into or replacing the history page above. The presentation is analogous to Memo; the storage mechanism is not (Memo is a file at `~/.agent-console/memos/{sessionId}.md`; artifacts remain SQLite rows filtered via §4.2). Deep links from this surfacing inherit the same plain-`<a>`, non-SPA navigation as the history page's view link (§3's navigation jail applies uniformly to every artifact deep link, regardless of which list surfaced it).
 - **Viewer page**: the sandboxed-iframe wrapper (§4), with title and owner shown outside the frame so artifact content cannot spoof the chrome around it — rendered **as a text node, never HTML-interpolated into markup or an attribute sink**, both in the viewer chrome and the history page's title column. The stored title is already stripped to plain text at write time (§5.3's title-resolution chain runs the fragment through a fixed-point tag-strip, closing the storage-time half of this obligation), but the render site must not rely on that alone: a future title write path (a rename API, an import) could bypass the strip, and this sentence is the boundary claim for the chrome specifically — it is either true or false at the render site, independent of what wrote the value. Required test: a `<script>`-bearing title injected directly at the storage layer (bypassing the strip, so the raw unstripped value is what's in the DB) must not execute when rendered in the history or viewer chrome.
 
 ## 8. Verification floor

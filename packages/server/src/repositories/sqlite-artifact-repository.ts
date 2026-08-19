@@ -75,6 +75,17 @@ export class SqliteArtifactRepository implements ArtifactRepository {
     return rows.map(toArtifact);
   }
 
+  async findByUserIdAndSourceSessionId(userId: string, sessionId: string): Promise<Artifact[]> {
+    const rows = await this.db
+      .selectFrom('artifacts')
+      .where('user_id', '=', userId)
+      .where('source_session_id', '=', sessionId)
+      .selectAll()
+      .orderBy('created_at', 'desc')
+      .execute();
+    return rows.map(toArtifact);
+  }
+
   async delete(id: string): Promise<boolean> {
     // Look up user_id first: it is needed to locate the on-disk file, and
     // the row is about to be deleted.
