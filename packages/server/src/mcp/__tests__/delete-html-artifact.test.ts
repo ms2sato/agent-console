@@ -168,7 +168,7 @@ describe('delete_html_artifact', () => {
     worktreeService = new WorktreeService({ db });
     agentDirectory = new AgentDirectory({ terminal: agentManager, embedded: embeddedAgentManager });
 
-    await mountMcpApp();
+    await mountMcpApp({ mcpAuthMode: 'off' });
     nextId = 10;
   });
 
