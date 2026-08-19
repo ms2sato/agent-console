@@ -1907,8 +1907,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // Sixth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, and run_process. No mechanical registry
-  // enumerates these tools; this comment is the convention-only marker.
+  // create_conditional_wakeup, run_process, and delete_html_artifact. No
+  // mechanical registry enumerates these tools; this comment is the
+  // convention-only marker.
   mcpServer.tool(
     'create_html_artifact',
     'Upload an HTML document (optionally with inline JavaScript/CSS) and receive a URL to view it in a browser. ' +
@@ -1986,6 +1987,76 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, sessionId }, 'create_html_artifact failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: delete_html_artifact ----------
+
+  // Seventh session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, and create_html_artifact. No
+  // mechanical registry enumerates these tools; this comment is the
+  // convention-only marker.
+  mcpServer.tool(
+    'delete_html_artifact',
+    'Permanently delete a previously created HTML artifact. This is irreversible: any URL already shared for ' +
+      "this artifact will stop working. To change the content behind an already-shared URL, delete and " +
+      're-create is NOT equivalent (the URL changes); an in-place update is not available yet.',
+    {
+      artifactId: z.string().describe('The id of the artifact to delete, as returned by create_html_artifact.'),
+      sessionId: z.string().describe(
+        "The calling session's ID, used to resolve that session's owner (session.createdBy) for the ownership " +
+          'check. Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+      ),
+    },
+    async ({ artifactId, sessionId }) => {
+      try {
+        // Resolve the calling session. Ownership comparison below MUST
+        // derive from session.createdBy, NEVER from getMcpCallerIdentity()
+        // -- same layering as create_html_artifact above:
+        // getMcpCallerIdentity() is used ONLY for checkCallerOwnsSession.
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; deleting an artifact from an ownerless (legacy) session is not possible`,
+          );
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'delete_html_artifact' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const artifact = await artifactRepository.findById(artifactId);
+        if (!artifact) {
+          return errorResult(`Artifact not found: ${artifactId}`);
+        }
+        if (artifact.userId !== session.createdBy) {
+          return errorResult(
+            `You do not own this artifact (${artifactId}); only the owner can delete it`,
+          );
+        }
+
+        const deleted = await artifactRepository.delete(artifactId);
+        if (!deleted) {
+          // Deleted between the existence check and delete (race); idempotent-style not-found, matching the REST route.
+          return errorResult(`Artifact not found: ${artifactId}`);
+        }
+
+        logger.info({ artifactId, sessionId, userId: session.createdBy }, 'HTML artifact deleted via MCP');
+
+        return textResult({ deleted: true, artifactId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, artifactId, sessionId }, 'delete_html_artifact failed');
         return errorResult(message);
       }
     },
