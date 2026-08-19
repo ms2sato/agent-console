@@ -181,8 +181,7 @@ describe('NotificationBell', () => {
     expect(screen.queryByText(/failed to load notifications/i)).toBeNull();
 
     // GET refetch happened, but no PUT (nothing was seen -- cursor unchanged).
-    const putCalls = (mockFetch.mock.calls as unknown[][]).filter((call) => {
-      const [reqInput, reqInit] = call as [RequestInfo | URL, RequestInit | undefined];
+    const putCalls = mockFetch.mock.calls.filter(([reqInput, reqInit]) => {
       const url = reqInput instanceof Request ? reqInput.url : String(reqInput);
       const method = (reqInput instanceof Request ? reqInput.method : reqInit?.method) ?? 'GET';
       return url.includes('/notifications/seen') && method === 'PUT';
@@ -259,8 +258,7 @@ describe('NotificationBell', () => {
 
       // The point of this test: a failed refetch must never advance the
       // seen-cursor using the stale/cached item that survived the error.
-      const putCalls = (mockFetch.mock.calls as unknown[][]).filter((call) => {
-        const [reqInput, reqInit] = call as [RequestInfo | URL, RequestInit | undefined];
+      const putCalls = mockFetch.mock.calls.filter(([reqInput, reqInit]) => {
         const url = reqInput instanceof Request ? reqInput.url : String(reqInput);
         const method = (reqInput instanceof Request ? reqInput.method : reqInit?.method) ?? 'GET';
         return url.includes('/notifications/seen') && method === 'PUT';
@@ -383,8 +381,7 @@ describe('NotificationBell', () => {
       await user.click(screen.getByRole('button', { name: /notifications/i }));
 
       await waitFor(() => {
-        const putCalls = (mockFetch.mock.calls as unknown[][]).filter((call) => {
-          const [reqInput, reqInit] = call as [RequestInfo | URL, RequestInit | undefined];
+        const putCalls = mockFetch.mock.calls.filter(([reqInput, reqInit]) => {
           const url = reqInput instanceof Request ? reqInput.url : String(reqInput);
           const method = (reqInput instanceof Request ? reqInput.method : reqInit?.method) ?? 'GET';
           return url.includes('/notifications/seen') && method === 'PUT';
