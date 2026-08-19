@@ -4879,6 +4879,45 @@ describe('MCP Server Tools', () => {
   });
 
   // ===========================================================================
+  // delete_html_artifact: registration in this createMcpApp wiring (Issue #1371)
+  //
+  // Full behavior coverage (ownership resolution, authz, delete semantics)
+  // lives in the dedicated __tests__/delete-html-artifact.test.ts, mirroring
+  // create-html-artifact.test.ts's own split. This is only a wiring check:
+  // the tool the artifactRepository-consuming block above requires is
+  // actually registered by createMcpApp and exposes the expected params.
+  // ===========================================================================
+
+  describe('delete_html_artifact: registration (mcp-server.ts wiring)', () => {
+    it('is registered by createMcpApp with artifactId and sessionId parameters', async () => {
+      const listRes = await app.request('/mcp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json, text/event-stream',
+          'Mcp-Session-Id': mcpSessionId,
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: nextId++ }),
+      });
+      expect(listRes.status).toBe(200);
+
+      const listBody = (await listRes.json()) as {
+        result?: {
+          tools?: Array<{
+            name: string;
+            inputSchema?: { properties?: Record<string, unknown> };
+          }>;
+        };
+      };
+      const deleteTool = listBody.result?.tools?.find((t) => t.name === 'delete_html_artifact');
+
+      expect(deleteTool).toBeDefined();
+      expect(deleteTool?.inputSchema?.properties?.artifactId).toBeDefined();
+      expect(deleteTool?.inputSchema?.properties?.sessionId).toBeDefined();
+    });
+  });
+
+  // ===========================================================================
   // MCP caller identity wiring (docs/design/embedded-agent-worker.md phase 1)
   // ===========================================================================
 
