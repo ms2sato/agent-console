@@ -1,6 +1,7 @@
 /**
  * HTML artifact viewer shell (HTML Artifacts phase 1 -- navigation-jail
- * addendum -- plus phase 2 (#1313) chrome).
+ * addendum -- plus phase 2 chrome -- plus the header-blind-origin token
+ * fallback).
  *
  * Mounted OUTSIDE the `/api` mount, at the top level (`GET /artifacts/:id`),
  * matching the path `mcp-server.ts`'s `buildArtifactToolResult` already
@@ -41,16 +42,30 @@
  * phase 1 where the nested iframe's own request was the only 404 check.
  * Validating here is what lets the shell render the artifact's actual
  * title/owner rather than blind placeholder chrome. `routes/artifacts.ts`
- * (raw byte-serving, `ARTIFACT_SERVING_CSP`) is untouched by this file --
- * phase 2 fronts phase 1, it does not modify it. This file must NOT be
+ * (raw byte-serving, `ARTIFACT_SERVING_CSP`) still owns its own gate logic
+ * -- phase 2 fronts phase 1, it does not modify it. This file must NOT be
  * replaced with, or duplicated as, an SPA route at the same path, since an
  * SPA-served page cannot carry this per-route `frame-src` response header
  * the jail depends on.
+ *
+ * On EVERY render, this route also mints a single-use viewer token
+ * (`lib/artifact-viewer-tokens.ts`) and embeds it in the iframe `src` as
+ * `?vt=<token>`. This is the P6'-b fallback for a header-blind origin:
+ * browsers only attach `Sec-Fetch-Dest` to requests
+ * targeting a potentially-trustworthy origin (HTTPS, or localhost), so on
+ * a plain-HTTP, non-localhost origin (e.g. a LAN IP), `routes/artifacts.ts`
+ * cannot use the header to recognize this iframe's own genuine load. The
+ * token gives it a credential it minted itself instead -- see
+ * `routes/artifacts.ts`'s gate comment and docs/design/html-artifacts.md
+ * §3.3 P6' for the full derivation. Minting is unconditional (no
+ * origin-dependent branch here): the token is simply unused when
+ * `Sec-Fetch-Dest` already answered the question.
  */
 import { Hono } from 'hono';
 import type { AppBindings } from '../app-context.js';
 import { authMiddleware } from '../middleware/auth.js';
 import { NotFoundError } from '../lib/errors.js';
+import { mintArtifactViewerToken } from '../lib/artifact-viewer-tokens.js';
 
 /**
  * Exact-match tested (see sibling test) so any future silent change to
@@ -79,7 +94,7 @@ function escapeHtmlAttribute(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function buildShellHtml(params: { artifactId: string; title: string; ownerUsername: string }): string {
+function buildShellHtml(params: { artifactId: string; title: string; ownerUsername: string; viewerToken: string }): string {
   // Two nested contexts, both must be encoded, in this order: the id is a
   // URL path segment (encodeURIComponent first -- `routes/artifacts.ts`'s
   // redirect-target construction does the same), and the resulting string
@@ -87,8 +102,12 @@ function buildShellHtml(params: { artifactId: string; title: string; ownerUserna
   // second). Encoding only one leaves the other unprotected -- e.g. an id
   // containing `?` would otherwise survive HTML-escaping unchanged and
   // turn `src="/api/artifacts/<id>"` into a request with a query string
-  // the iframe never intended.
+  // the iframe never intended. The viewer token (a query PARAM value) gets
+  // the same two-context treatment for the same reason, even though its
+  // base64url alphabet is already URL-safe -- defense in depth, matching
+  // the id's own discipline exactly.
   const escapedId = escapeHtmlAttribute(encodeURIComponent(params.artifactId));
+  const escapedToken = escapeHtmlAttribute(encodeURIComponent(params.viewerToken));
   const escapedTitle = escapeHtmlAttribute(params.title);
   const escapedOwner = escapeHtmlAttribute(params.ownerUsername);
   return `<!doctype html>
@@ -109,7 +128,7 @@ function buildShellHtml(params: { artifactId: string; title: string; ownerUserna
 <h1>${escapedTitle}</h1>
 <p class="owner">Created by ${escapedOwner}</p>
 </header>
-<iframe sandbox="allow-scripts" src="/api/artifacts/${escapedId}" width="100%" height="100%" frameborder="0"></iframe>
+<iframe sandbox="allow-scripts" src="/api/artifacts/${escapedId}?vt=${escapedToken}" width="100%" height="100%" frameborder="0"></iframe>
 </body>
 </html>`;
 }
@@ -127,10 +146,32 @@ const artifactsViewer = new Hono<AppBindings>()
     const owner = await userRepository.findById(artifact.userId);
     const ownerUsername = owner?.username ?? 'Unknown user';
 
+    // Minted on EVERY render, unconditionally -- no origin-dependent branch
+    // here (per the Architect ruling recorded in docs/design/html-artifacts.md
+    // §4). On a trustworthy origin the token is simply unused by
+    // `routes/artifacts.ts`'s gate (`Sec-Fetch-Dest` wins outright there);
+    // minting it anyway costs nothing and keeps this route's own logic
+    // origin-agnostic, with all origin-conditionality living in one place
+    // (the gate).
+    const viewerToken = mintArtifactViewerToken(id);
+
     return c.html(
-      buildShellHtml({ artifactId: id, title: artifact.title, ownerUsername }),
+      buildShellHtml({ artifactId: id, title: artifact.title, ownerUsername, viewerToken }),
       200,
-      { 'Content-Security-Policy': ARTIFACT_SHELL_CSP },
+      {
+        'Content-Security-Policy': ARTIFACT_SHELL_CSP,
+        // Required now that this response embeds a fresh single-use token
+        // on every render (see the minting comment above): the shell used
+        // to be idempotent (same artifact -> same bytes) and is no longer.
+        // A cached copy would serve an already-spent token, whose iframe
+        // request gets redirected back to the shell -- and if THAT
+        // redirect target is also served from the same stale cache, the
+        // result is the exact nested-shell loop this fix exists to close,
+        // reintroduced via a caching path instead of the header-blind-origin
+        // path. See docs/design/html-artifacts.md §4.0 for the full
+        // rationale, including why `no-store` rather than `no-cache`.
+        'Cache-Control': 'no-store',
+      },
     );
   });
 

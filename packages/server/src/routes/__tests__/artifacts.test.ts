@@ -24,6 +24,11 @@ import type { Database } from '../../database/schema.js';
 import { createDatabaseForTest } from '../../database/connection.js';
 import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
 import { readArtifactFile } from '../../lib/artifact-storage.js';
+import {
+  mintArtifactViewerToken,
+  consumeArtifactViewerToken,
+  ARTIFACT_VIEWER_TOKEN_TTL_MS,
+} from '../../lib/artifact-viewer-tokens.js';
 import { artifacts, ARTIFACT_SERVING_CSP } from '../artifacts.js';
 import { authMiddleware } from '../../middleware/auth.js';
 import { onApiError } from '../../lib/error-handler.js';
@@ -204,11 +209,20 @@ describe('Artifact routes', () => {
   });
 
   // =========================================================================
-  // GET /api/artifacts/:id -- Sec-Fetch-Dest gating (P6, navigation jail)
+  // GET /api/artifacts/:id -- Sec-Fetch-Dest + viewer-token two-tier gate
+  // (P6', reworked for Issue #1366 -- header-blind origins). Matrix per the
+  // Architect-approved AC:
+  //
+  //   | Sec-Fetch-Dest    | token                          | expected |
+  //   |-------------------|--------------------------------|----------|
+  //   | iframe            | any / none                     | serve (token NOT consumed) |
+  //   | document / other  | valid                           | redirect (header wins) |
+  //   | absent            | valid + unspent, id matches     | serve + token consumed  |
+  //   | absent            | spent / expired / absent / wrong-id | redirect |
   // =========================================================================
 
-  describe('GET /api/artifacts/:id -- Sec-Fetch-Dest gating (P6)', () => {
-    it('serves raw bytes when Sec-Fetch-Dest is exactly "iframe"', async () => {
+  describe("GET /api/artifacts/:id -- Sec-Fetch-Dest + viewer-token two-tier gate (P6')", () => {
+    it('serves raw bytes when Sec-Fetch-Dest is exactly "iframe" (header wins, no token needed)', async () => {
       const created = await repository.create({
         id: randomUUID(),
         userId: OWNER.id,
@@ -225,7 +239,174 @@ describe('Artifact routes', () => {
       expect(await res.text()).toBe('<p>x</p>');
     });
 
-    it('redirects (302) to the viewer shell when Sec-Fetch-Dest is "document" (a top-level browser navigation)', async () => {
+    it('serves raw bytes when Sec-Fetch-Dest is "iframe" even with an invalid token present, and does NOT consume a valid token supplied alongside it (header wins outright, token ignored)', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+      const token = mintArtifactViewerToken(created.id);
+
+      const app = buildApp(repository, OWNER);
+
+      // Invalid token (never minted) -- the header still wins outright.
+      const invalidRes = await app.request(`/api/artifacts/${created.id}?vt=not-a-real-token`, {
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
+      });
+      expect(invalidRes.status).toBe(200);
+
+      // Valid token, supplied alongside the header -- same outcome, and the
+      // header branch never touches it.
+      const res = await app.request(`/api/artifacts/${created.id}?vt=${token}`, {
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
+      });
+      expect(res.status).toBe(200);
+
+      // The token must still be unspent -- the iframe branch never touches
+      // it. Consuming it now (via the header-absent path) proves this.
+      expect(consumeArtifactViewerToken(token, created.id)).toBe(true);
+    });
+
+    it('redirects (302) to the viewer shell when Sec-Fetch-Dest is "document" (a top-level browser navigation), EVEN with a valid token (header wins)', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+      const token = mintArtifactViewerToken(created.id);
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}?vt=${token}`, {
+        headers: { 'Sec-Fetch-Dest': 'document' },
+        redirect: 'manual',
+      });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+
+      // The header branch ignores the token entirely -- it must still be
+      // unspent afterward.
+      expect(consumeArtifactViewerToken(token, created.id)).toBe(true);
+    });
+
+    it('redirects (302) to the viewer shell when Sec-Fetch-Dest is ABSENT and no token is supplied -- the fail-closed default for old browsers / non-browser clients (curl, plain fetch), now also the "absent + no token" row', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(repository, OWNER);
+      // No Sec-Fetch-Dest header at all, no ?vt= query param either.
+      const res = await app.request(`/api/artifacts/${created.id}`, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+    });
+
+    it('serves raw bytes when Sec-Fetch-Dest is ABSENT but a valid, unspent, id-matching token is supplied (header-blind origin fallback, Issue #1366), and consumes the token', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+      const token = mintArtifactViewerToken(created.id);
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}?vt=${token}`, { redirect: 'manual' });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe('<p>x</p>');
+
+      // Single-use polarity: an immediate second identical request must
+      // now redirect, since the token was consumed by the first.
+      const secondRes = await app.request(`/api/artifacts/${created.id}?vt=${token}`, { redirect: 'manual' });
+      expect(secondRes.status).toBe(302);
+      expect(secondRes.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+    });
+
+    it('redirects (302) when the token is already spent (single-use)', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+      const token = mintArtifactViewerToken(created.id);
+      // Spend it directly via the store, mirroring what the route itself
+      // does on a first successful serve.
+      expect(consumeArtifactViewerToken(token, created.id)).toBe(true);
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}?vt=${token}`, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+    });
+
+    it('redirects (302) when the token is expired (TTL honored, fake clock -- no sleeping)', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+      // Mint with a clock already ARTIFACT_VIEWER_TOKEN_TTL_MS + 1ms in the
+      // past, so the token is expired by the time the route (using the
+      // real Date.now internally) checks it -- no sleeping required.
+      const expiredToken = mintArtifactViewerToken(created.id, () => Date.now() - ARTIFACT_VIEWER_TOKEN_TTL_MS - 1);
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}?vt=${expiredToken}`, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+    });
+
+    it('redirects (302) when the token is bound to a DIFFERENT artifact id (id-bound)', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+      const otherArtifact = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'Other',
+        content: '<p>other</p>',
+        sourceSessionId: null,
+      });
+      const tokenForOther = mintArtifactViewerToken(otherArtifact.id);
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}?vt=${tokenForOther}`, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+    });
+
+    it('redirects (302) when the ?vt= query param is present but empty', async () => {
+      const created = await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request(`/api/artifacts/${created.id}?vt=`, { redirect: 'manual' });
+      expect(res.status).toBe(302);
+      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+    });
+
+    it('the raw 200 response carries Cache-Control: no-store (closes the browser-cache single-use bypass)', async () => {
       const created = await repository.create({
         id: randomUUID(),
         userId: OWNER.id,
@@ -236,28 +417,10 @@ describe('Artifact routes', () => {
 
       const app = buildApp(repository, OWNER);
       const res = await app.request(`/api/artifacts/${created.id}`, {
-        headers: { 'Sec-Fetch-Dest': 'document' },
-        redirect: 'manual',
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
       });
-      expect(res.status).toBe(302);
-      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
-    });
-
-    it('redirects (302) to the viewer shell when Sec-Fetch-Dest is ABSENT -- the fail-closed default for old browsers / non-browser clients (curl, plain fetch)', async () => {
-      const created = await repository.create({
-        id: randomUUID(),
-        userId: OWNER.id,
-        title: 'T',
-        content: '<p>x</p>',
-        sourceSessionId: null,
-      });
-
-      const app = buildApp(repository, OWNER);
-      // No Sec-Fetch-Dest header at all -- this is the case that matters
-      // most: it must NEVER fall through to serving raw bytes.
-      const res = await app.request(`/api/artifacts/${created.id}`, { redirect: 'manual' });
-      expect(res.status).toBe(302);
-      expect(res.headers.get('Location')).toBe(`/artifacts/${created.id}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
     });
   });
 

@@ -33,16 +33,24 @@
  * ============================================================================
  *
  * This script duplicates (rather than imports) V1's disposable-instance
- * boot / credential-issuance-substitution login / MCP JSON-RPC helpers.
- * Deliberate: V1's script is an already-verified, load-bearing security
- * probe; extracting a shared module at this second consumer would touch
- * (and risk destabilizing) a file this round was told not to touch. This
- * repo's convention is "duplicate once, extract at the second real
- * consumer" -- the bias here is toward NOT touching V1's file at all,
- * which the extraction path cannot guarantee. See V1's script for the full
- * rationale on each piece (in-process import for module-cache identity,
- * the Q13 credential-issuance substitution, etc.) -- not re-derived here,
- * only the parts relevant to V2/V3 are repeated.
+ * boot / credential-issuance / MCP JSON-RPC helpers, INCLUDING
+ * `mintRealSessionToken` (real OS user lookup, real DB upsert, real
+ * on-disk-secret JWT signing -- see V1's "CREDENTIAL-ISSUANCE
+ * SUBSTITUTION" header comment for the full rationale, including why an
+ * earlier `validateOsCredentials` monkey-patch was withdrawn as a security
+ * defect and replaced with this direct-mint approach). Deliberate:
+ * extracting a shared module at this second consumer would touch (and
+ * risk destabilizing) V1's file, which multiple rounds of this PR were
+ * told not to touch beyond what each round's fix required. This repo's
+ * convention is "duplicate once, extract at the second real consumer" --
+ * the bias here is toward NOT touching V1's file for reasons unrelated to
+ * its own fixes, which the extraction path cannot guarantee. See V1's
+ * script for the full rationale on each piece (in-process import for
+ * module-cache identity, etc.) -- not re-derived here, only the parts
+ * relevant to V2/V3 are repeated. This script never drives a real browser
+ * (no Playwright), so its credential is delivered as a plain `Cookie:`
+ * header on `fetch()` calls -- no cookie-jar `domain`/`secure`/`sameSite`
+ * attributes to construct, unlike V1's script.
  *
  * Usage:
  *   bun scripts/smoke/check-artifact-server-story-e2e.mjs
@@ -57,8 +65,23 @@ import { Database as BunDatabase } from 'bun:sqlite';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createRequire } from 'module';
 
 const REPO_ROOT = new URL('../..', import.meta.url).pathname;
+
+/**
+ * `jose` is a dependency of `packages/server`, not of this script's own
+ * directory -- a bare `import('jose')` from here fails to resolve (Bun's
+ * bare-specifier resolution is rooted at the importing file's own
+ * directory, walking up its ancestors only). `createRequire`, rooted at a
+ * path inside `packages/server/src/`, resolves it exactly the way that
+ * package's own code would; duplicated from V1's script (same rationale).
+ */
+async function importJoseFromServerPackage() {
+  const requireFromServer = createRequire(path.join(REPO_ROOT, 'packages/server/src/services/user-mode.ts'));
+  const joseEntryPath = requireFromServer.resolve('jose');
+  return import(joseEntryPath);
+}
 
 // ---------------------------------------------------------------------------
 // Mini assertion harness -- same shape as V1's script.
@@ -102,14 +125,52 @@ async function waitForServerReady(baseUrl, timeoutMs = 15_000) {
   throw new Error(`Disposable server did not become ready within ${timeoutMs}ms: ${lastErr}`);
 }
 
-/** Minimal Set-Cookie parser -- only the attributes this script needs. */
-function parseSetCookie(setCookieHeader) {
-  const parts = setCookieHeader.split(';').map((p) => p.trim());
-  const [nameValue] = parts;
-  const eqIdx = nameValue.indexOf('=');
-  const name = nameValue.slice(0, eqIdx);
-  const value = nameValue.slice(eqIdx + 1);
-  return { name, value };
+/**
+ * Mint a REAL session credential directly, replicating every step of
+ * `MultiUserMode.login()` (`services/user-mode.ts`) that runs AFTER
+ * password validation. Duplicated from V1's script
+ * (`check-artifact-sandbox-boundary.mjs`'s `mintRealSessionToken`) per
+ * this file's own stated "duplicate once, extract at the second real
+ * consumer" convention -- see V1's "CREDENTIAL-ISSUANCE SUBSTITUTION"
+ * header comment for the full Q13 justification and the security
+ * rationale for why this replaces an interactive-login-style approach.
+ * MUST be called AFTER the disposable server is ready: both the JWT
+ * secret file and the database singleton this function reaches into are
+ * created during the server's own boot sequence.
+ */
+async function mintRealSessionToken(disposableHome, osUsername) {
+  const { lookupOsUser } = await import('../../packages/server/src/services/os-user-lookup.ts');
+  const { initializeDatabase } = await import('../../packages/server/src/database/connection.ts');
+  const { SqliteUserRepository } = await import('../../packages/server/src/repositories/sqlite-user-repository.ts');
+  const { SignJWT } = await importJoseFromServerPackage();
+
+  const userInfo = await lookupOsUser(osUsername);
+  if (!userInfo) {
+    throw new Error(`mintRealSessionToken: lookupOsUser('${osUsername}') returned null -- cannot mint a session for this OS user`);
+  }
+
+  // Fast path: initializeDatabase() called with NO dbPath argument returns
+  // the SAME cached Kysely instance the running server itself uses -- not
+  // a second/divergent connection (same module-cache-identity rationale
+  // used elsewhere in this file, e.g. the direct SQLite read below).
+  const db = await initializeDatabase();
+  const userRepository = new SqliteUserRepository(db);
+  const authUser = await userRepository.upsertByOsUid(userInfo.uid, osUsername, userInfo.homeDir);
+
+  // Real per-instance secret, written to disk by the server's own
+  // `MultiUserMode.create()` at boot (`services/user-mode.ts`'s
+  // `JWT_SECRET_FILE` constant is the literal string 'jwt-secret').
+  const jwtSecret = new Uint8Array(await Bun.file(path.join(disposableHome, 'jwt-secret')).arrayBuffer());
+
+  // EXACT payload shape / algorithm / expiry `MultiUserMode.login()` signs.
+  const token = await new SignJWT({ username: authUser.username, home: authUser.homeDir })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject(authUser.id)
+    .setIssuedAt()
+    .setExpirationTime('7d')
+    .sign(jwtSecret);
+
+  return { token, authUser };
 }
 
 // ---------------------------------------------------------------------------
@@ -191,20 +252,6 @@ async function main() {
   process.env.HOST = '127.0.0.1';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'warn';
 
-  // CREDENTIAL-ISSUANCE SUBSTITUTION (pre-pr-completeness.md Q13), same
-  // proxy V1's script uses and justifies at length: only the interactive
-  // OS-password check is bypassed, at runtime, in this process, zero repo
-  // files modified. Real OS user lookup, real DB upsert, real JWT
-  // signing, real cookie issuance all run unmodified.
-  const userModeModule = await import('../../packages/server/src/services/user-mode.ts');
-  userModeModule.MultiUserMode.prototype.validateOsCredentials = async () => true;
-  console.log(
-    '==> CREDENTIAL ISSUANCE (proxy): MultiUserMode.prototype.validateOsCredentials monkey-patched to bypass ' +
-      'the interactive OS-password check ONLY (runtime-only, this process, zero repo files modified). See ' +
-      'check-artifact-sandbox-boundary.mjs header comment "CREDENTIAL-ISSUANCE SUBSTITUTION" for the full ' +
-      'pre-pr-completeness.md Q13 justification (identical substitution, reused here).',
-  );
-
   // getDbPath() is imported live (not hardcoded) so this script cannot
   // silently drift from lib/config.ts's actual DB path resolution.
   const configModule = await import('../../packages/server/src/lib/config.ts');
@@ -217,24 +264,15 @@ async function main() {
   let sqliteHandle;
   try {
     // -----------------------------------------------------------------
-    // Real login.
+    // Real session credential: minted directly (see mintRealSessionToken
+    // above) rather than through the real /api/auth/login HTTP endpoint --
+    // that endpoint is never called by this script.
     // -----------------------------------------------------------------
     const osUsername = os.userInfo().username;
-    const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: osUsername, password: 'unused-password-check-is-bypassed' }),
-    });
-    if (!loginRes.ok) {
-      throw new Error(`Login failed unexpectedly (status ${loginRes.status}): ${await loginRes.text()}`);
-    }
-    const setCookieHeader = loginRes.headers.get('set-cookie');
-    if (!setCookieHeader) {
-      throw new Error('Login succeeded but no Set-Cookie header was returned');
-    }
-    const authCookie = parseSetCookie(setCookieHeader);
-    const cookieHeader = `${authCookie.name}=${authCookie.value}`;
-    console.log(`==> real login succeeded for OS user '${osUsername}'`);
+    const { token: sessionToken, authUser: mintedAuthUser } = await mintRealSessionToken(disposableHome, osUsername);
+    const { AUTH_COOKIE_NAME } = await import('../../packages/server/src/lib/auth-constants.ts');
+    const cookieHeader = `${AUTH_COOKIE_NAME}=${sessionToken}`;
+    console.log(`==> real session credential minted for OS user '${osUsername}' (userId=${mintedAuthUser.id})`);
 
     // -----------------------------------------------------------------
     // Real session (a real terminal-session shape, same as V1's script).
@@ -306,6 +344,14 @@ async function main() {
       serveRes.headers.get('Content-Security-Policy') === routesModule.ARTIFACT_SERVING_CSP,
       'V3 serve: Content-Security-Policy header is the EXACT ARTIFACT_SERVING_CSP constant',
       `observed=${JSON.stringify(serveRes.headers.get('Content-Security-Policy'))}`,
+    );
+    // Issue #1366 (P6'-b token fallback): the raw response now also
+    // carries Cache-Control: no-store, closing the browser-cache bypass
+    // of the viewer token's single-use property.
+    expect(
+      serveRes.headers.get('Cache-Control') === 'no-store',
+      "V3 serve: Cache-Control header is 'no-store' (Issue #1366)",
+      `observed=${JSON.stringify(serveRes.headers.get('Cache-Control'))}`,
     );
     await serveRes.text();
 
