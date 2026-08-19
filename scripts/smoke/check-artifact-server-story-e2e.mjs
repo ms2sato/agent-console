@@ -307,6 +307,14 @@ async function main() {
       'V3 serve: Content-Security-Policy header is the EXACT ARTIFACT_SERVING_CSP constant',
       `observed=${JSON.stringify(serveRes.headers.get('Content-Security-Policy'))}`,
     );
+    // Issue #1366 (P6'-b token fallback): the raw response now also
+    // carries Cache-Control: no-store, closing the browser-cache bypass
+    // of the viewer token's single-use property.
+    expect(
+      serveRes.headers.get('Cache-Control') === 'no-store',
+      "V3 serve: Cache-Control header is 'no-store' (Issue #1366)",
+      `observed=${JSON.stringify(serveRes.headers.get('Cache-Control'))}`,
+    );
     await serveRes.text();
 
     // New coverage (P6, navigation jail): the SAME raw endpoint, without

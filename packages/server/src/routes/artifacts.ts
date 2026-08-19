@@ -16,6 +16,7 @@ import { Hono } from 'hono';
 import type { AppBindings } from '../app-context.js';
 import { NotFoundError, ForbiddenError } from '../lib/errors.js';
 import { readArtifactFile } from '../lib/artifact-storage.js';
+import { consumeArtifactViewerToken } from '../lib/artifact-viewer-tokens.js';
 
 /**
  * Response headers that reconstruct the blob-URL-equivalent boundary for a
@@ -68,24 +69,47 @@ const artifacts = new Hono<AppBindings>()
     const id = c.req.param('id');
     const { artifactRepository } = c.get('appContext');
 
-    // P6 gate (docs/design/html-artifacts.md §3.3): only a genuine
-    // iframe-embedded load gets raw bytes. `Sec-Fetch-Dest` is a Fetch
-    // Metadata header modern browsers attach automatically per the
-    // requesting context -- `iframe` for a subresource load inside an
-    // <iframe>, `document` for a top-level navigation, and it is simply
-    // ABSENT for older browsers and non-browser HTTP clients (curl,
-    // fetch() from a script, etc.). Anything other than exactly `iframe`
-    // -- INCLUDING the header's absence -- redirects to the viewer shell
-    // instead of serving bytes. Fail CLOSED: this is what makes the
-    // header's absence safe rather than a bypass -- an old browser or a
-    // headless client never gets raw bytes at the top level, only ever the
-    // jailed shell. This is a UX premise (which client gets which
-    // experience), not a safety premise -- safety holds either way because
-    // of this fail-closed default. See §3.3 P6 and the shell's
-    // `frame-src` (P7, `routes/artifacts-viewer.ts`) for the mechanism
-    // that actually blocks a jailed artifact from escaping.
-    if (c.req.header('Sec-Fetch-Dest') !== 'iframe') {
-      return c.redirect(`/artifacts/${encodeURIComponent(id)}`, 302);
+    // P6' gate (docs/design/html-artifacts.md §3.3, reworked for the
+    // header-blind-origin addendum): two-tier, `Sec-Fetch-Dest` first, a
+    // shell-minted token as fallback ONLY when the header is entirely absent.
+    //
+    // P6'-a: `Sec-Fetch-Dest` is a Fetch Metadata header, and browsers
+    // attach Fetch Metadata headers ONLY to requests targeting a
+    // potentially-trustworthy origin (HTTPS, or localhost). On such an
+    // origin, if the browser spoke, always believe it: `iframe` serves,
+    // anything else (`document`, `empty`, ...) redirects to the shell. The
+    // token query param is IGNORED entirely on this branch -- it is not
+    // needed, the header already answered the question.
+    //
+    // P6'-b: when the header is ABSENT, that is NOT evidence the request
+    // isn't a genuine iframe load -- it may simply be a header-blind origin
+    // (plain HTTP, non-localhost, e.g. a LAN IP -- see the design doc's
+    // correction trail for the reported symptom). The original
+    // unconditional premise treated absence as
+    // "not an iframe" and always redirected; because the viewer SHELL is
+    // itself a consumer of this endpoint, that redirect fed straight back
+    // into another shell render, which requested this endpoint again,
+    // absent the header again -- an unbounded shell-inside-shell loop with
+    // no way out. Falling back to a single-use, TTL-bound, artifact-id-bound
+    // token that `routes/artifacts-viewer.ts` mints on every shell render
+    // breaks that loop: a request bearing a valid, unspent token for THIS
+    // artifact id is trusted as "induced by our own shell's render" and
+    // served; anything else (no token, wrong id, spent, expired) redirects.
+    //
+    // The token is NEVER an authentication signal -- `authMiddleware`
+    // (unchanged, applied via the `/api` mount) remains the sole authority
+    // on WHO is asking. It proves only that a shell render induced this
+    // specific request.
+    const secFetchDest = c.req.header('Sec-Fetch-Dest');
+    if (secFetchDest !== undefined) {
+      if (secFetchDest !== 'iframe') {
+        return c.redirect(`/artifacts/${encodeURIComponent(id)}`, 302);
+      }
+    } else {
+      const viewerToken = c.req.query('vt');
+      if (!viewerToken || !consumeArtifactViewerToken(viewerToken, id)) {
+        return c.redirect(`/artifacts/${encodeURIComponent(id)}`, 302);
+      }
     }
 
     const artifact = await artifactRepository.findById(id);
@@ -105,6 +129,12 @@ const artifacts = new Hono<AppBindings>()
       'Content-Type': 'text/html; charset=utf-8',
       'Content-Security-Policy': ARTIFACT_SERVING_CSP,
       'X-Content-Type-Options': 'nosniff',
+      // Required by the P6'-b token fallback: a cached raw
+      // 200 could otherwise be replayed at the top level directly from the
+      // browser cache, without ever passing back through this gate --
+      // routing around the token's single-use property. Independently
+      // correct anyway: this response is authenticated, per-user content.
+      'Cache-Control': 'no-store',
     });
   })
   // Delete an artifact -- owner only. A non-owner gets 403 and the artifact

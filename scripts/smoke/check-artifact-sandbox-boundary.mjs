@@ -224,6 +224,29 @@ function getFreePort() {
   return port;
 }
 
+/**
+ * Resolve a non-internal (LAN) IPv4 address for this machine, for arm 8
+ * (Issue #1366, "header-blind origin"). Auto-detected via
+ * `os.networkInterfaces()` rather than hardcoded, since this script may run
+ * on a different host than the one the Issue was filed against; override
+ * with ARTIFACT_BOUNDARY_LAN_IP for a specific target. Returns null when no
+ * such interface exists (e.g. a fully NAT'd/loopback-only sandbox) --
+ * arm 8's own precondition check reports and stops rather than simulating.
+ */
+function resolveLanIPv4() {
+  const override = process.env.ARTIFACT_BOUNDARY_LAN_IP;
+  if (override) return override;
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return null;
+}
+
 /** Poll GET /health until the disposable server accepts connections. */
 async function waitForServerReady(baseUrl, timeoutMs = 15_000) {
   const deadline = Date.now() + timeoutMs;
@@ -476,7 +499,11 @@ async function main() {
   process.env.AGENT_CONSOLE_HOME = disposableHome;
   process.env.AUTH_MODE = 'multi-user';
   process.env.PORT = String(port);
-  process.env.HOST = '127.0.0.1';
+  // 0.0.0.0 (all interfaces), not 127.0.0.1: arm 8 (Issue #1366) needs the
+  // disposable server reachable over the LAN interface, not just loopback.
+  // This does not change arms 0-7 -- they keep using 127.0.0.1/localhost
+  // URLs internally, and 0.0.0.0 still accepts loopback connections.
+  process.env.HOST = '0.0.0.0';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'warn';
 
   // CREDENTIAL-ISSUANCE SUBSTITUTION (see header comment): monkey-patch the
@@ -765,10 +792,16 @@ async function main() {
       `count=${earlyChildFrames.length}, urls=${JSON.stringify(earlyChildFrames.map((f) => f.url()))}`,
     );
     if (earlyChildFrames.length === 1) {
+      // Compare pathname only (strip any query string): the shell now
+      // embeds a per-render viewer token in the iframe src as `?vt=...`
+      // (Issue #1366, S2) -- the production `Sec-Fetch-Dest: iframe`
+      // branch ignores that token entirely (P6'-a, header wins outright),
+      // so its presence/value is irrelevant to what THIS assertion proves
+      // (a genuine iframe-embedded load gets raw bytes, no redirect).
       expect(
-        earlyChildFrames[0].url() === artifactUrl,
+        earlyChildFrames[0].url().split('?')[0] === artifactUrl,
         'arm 7a: the real browser iframe-embedded load of the raw endpoint served bytes directly (no redirect to the shell)',
-        `childFrame.url()=${earlyChildFrames[0].url()}, expected=${artifactUrl}`,
+        `childFrame.url()=${earlyChildFrames[0].url()}, expected pathname=${artifactUrl}`,
       );
     }
 
@@ -1002,6 +1035,333 @@ async function main() {
       );
     }
     await nodeSideRawFetch.text().catch(() => {});
+
+    // ---------------------------------------------------------------
+    // Arm 8 (Issue #1366, V1): header-blind origin -- plain HTTP,
+    // non-localhost LAN IP. Browsers only attach Sec-Fetch-* (Fetch
+    // Metadata) headers to requests whose target origin is "potentially
+    // trustworthy" (HTTPS, or localhost/127.0.0.1) -- a plain-HTTP LAN IP
+    // origin never gets them, including from the shell's own genuine
+    // iframe subresource load. Pre-fix, this fed the request straight back
+    // into the shell (P6's unconditional `Sec-Fetch-Dest !== 'iframe'` ->
+    // redirect), which requested this endpoint again, absent the header
+    // again -- reproduced as an unbounded shell-inside-shell loop
+    // (single-user mode) or a shorter loop terminating in a raw
+    // `{"error":"Unauthorized"}` state (multi-user mode specifically,
+    // this script's own mode -- the second-nested shell's iframe runs
+    // inside an opaque-origin ancestor, breaking the browser's same-site
+    // cookie computation and withholding the `SameSite=Lax` auth cookie).
+    // Post-fix (P6'-b), the shell-minted single-use token lets the same
+    // endpoint recognize the shell's own genuine load without needing
+    // `Sec-Fetch-Dest`, breaking the loop.
+    //
+    // Per AC V1: asserts the premise (zero Sec-Fetch-Dest headers reach
+    // the server from this origin), that the shell renders EXACTLY ONCE
+    // with the iframe receiving raw bytes (the postMessage harness
+    // confirms script execution, same protocol as arms 0-7), no nested
+    // shell, no aborted request -- and, since this script runs in
+    // multi-user mode, that the previously-observed terminal
+    // `Unauthorized` end-state does not occur either.
+    // ---------------------------------------------------------------
+    console.log('\n==> arm 8: header-blind origin (plain HTTP, non-localhost LAN IP) -- Issue #1366');
+    const lanIp = resolveLanIPv4();
+    if (!lanIp) {
+      console.error(
+        '  FAIL  arm 8 precondition: no non-internal IPv4 interface found on this machine ' +
+          '(os.networkInterfaces() returned none). Cannot exercise the header-blind-origin scenario for ' +
+          'real -- STOPPING per instructions rather than substituting a simulation.',
+      );
+      await browser.close();
+      cleanupAndExit(disposableHome, 2);
+    }
+    const lanBaseUrl = `http://${lanIp}:${port}`;
+    const lanArtifactShellUrl = `${lanBaseUrl}${toolResult.path}`;
+    const lanArtifactUrl = `${lanBaseUrl}/api${toolResult.path}`;
+    console.log(`  INFO  resolved LAN IPv4: ${lanIp}; target shell URL: ${lanArtifactShellUrl}`);
+
+    // Reachability precondition: a plain fetch() against /health via the
+    // LAN IP, bounded by a short timeout. STOP (do not simulate) if
+    // unreachable -- explicit, non-negotiable per this dispatch.
+    let lanReachable = false;
+    let lanReachErr = null;
+    try {
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 5000);
+      const healthRes = await fetch(`${lanBaseUrl}/health`, { signal: ac.signal });
+      clearTimeout(timer);
+      lanReachable = healthRes.ok;
+      await healthRes.text().catch(() => {});
+    } catch (err) {
+      lanReachErr = err;
+    }
+    if (!lanReachable) {
+      console.error(
+        `  FAIL  arm 8 precondition: could not reach ${lanBaseUrl}/health over plain HTTP (${lanReachErr}). ` +
+          'STOPPING per instructions rather than substituting a simulation.',
+      );
+      await browser.close();
+      cleanupAndExit(disposableHome, 2);
+    }
+    console.log(`  OK    arm 8 precondition: ${lanBaseUrl}/health is reachable over plain HTTP`);
+
+    // Real login via the LAN-IP origin itself (not a manually-forged
+    // cross-domain cookie copy) -- mints a cookie genuinely scoped to that
+    // origin, same monkey-patched password bypass as the primary login
+    // above (see CREDENTIAL-ISSUANCE SUBSTITUTION header comment).
+    const lanLoginRes = await fetch(`${lanBaseUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: osUsername, password: 'unused-password-check-is-bypassed' }),
+    });
+    if (!lanLoginRes.ok) {
+      throw new Error(
+        `arm 8: LAN-IP login failed unexpectedly (status ${lanLoginRes.status}): ${await lanLoginRes.text()}`,
+      );
+    }
+    const lanSetCookieHeader = lanLoginRes.headers.get('set-cookie');
+    if (!lanSetCookieHeader) {
+      throw new Error('arm 8: LAN-IP login succeeded but no Set-Cookie header was returned');
+    }
+    const lanAuthCookie = parseSetCookie(lanSetCookieHeader);
+    console.log(`  INFO  arm 8: real login succeeded via LAN IP for OS user '${osUsername}'`);
+
+    // Fresh, isolated browser context -- deliberately NOT the `context`
+    // used by arms 0-7/positive controls (scoped to the 127.0.0.1 cookie
+    // jar): mirrors a genuinely fresh browser session opening the LAN URL
+    // for the first time, matching the Issue's manual reproduction.
+    const lanContext = await browser.newContext();
+    await lanContext.addCookies([
+      {
+        name: lanAuthCookie.name,
+        value: lanAuthCookie.value,
+        domain: lanIp,
+        path: lanAuthCookie.path,
+        httpOnly: lanAuthCookie.httpOnly,
+        secure: lanAuthCookie.secure,
+        sameSite: (() => {
+          const normalized = lanAuthCookie.sameSite?.toLowerCase();
+          if (normalized === 'lax') return 'Lax';
+          if (normalized === 'strict') return 'Strict';
+          return 'None';
+        })(),
+      },
+    ]);
+
+    const lanPage = await lanContext.newPage();
+    const lanRequestLog = [];
+    lanPage.on('request', (req) => {
+      lanRequestLog.push({ url: req.url(), method: req.method(), headers: req.headers() });
+    });
+    const lanResponseLog = [];
+    lanPage.on('response', (res) => {
+      lanResponseLog.push({ url: res.url(), status: res.status() });
+    });
+    const lanFailedRequests = [];
+    lanPage.on('requestfailed', (req) => {
+      lanFailedRequests.push({ url: req.url(), failure: req.failure()?.errorText });
+    });
+    const lanPageErrors = [];
+    lanPage.on('pageerror', (err) => lanPageErrors.push(String(err)));
+    const lanConsoleErrors = [];
+    lanPage.on('console', (msg) => {
+      if (msg.type() === 'error') lanConsoleErrors.push(msg.text());
+    });
+    // Same postMessage-bridge protocol as arms 0-7's probePage (see
+    // buildProbeArtifactHtml): registered via addInitScript so it is live
+    // BEFORE the shell's own server-rendered iframe has a chance to load,
+    // same race-avoidance rationale as the primary probe above.
+    await lanPage.addInitScript(() => {
+      window.__probeMessages = [];
+      window.addEventListener('message', (e) => window.__probeMessages.push(e.data));
+    });
+
+    let lanGotoError = null;
+    try {
+      await lanPage.goto(lanArtifactShellUrl, { timeout: 15000 });
+    } catch (err) {
+      lanGotoError = String(err);
+    }
+
+    // Capture the "no nested shell" evidence EARLY -- same rationale as
+    // the primary probe's arm 7a (see its own comment above): this
+    // script's probe artifact (buildProbeArtifactHtml) is the SAME
+    // artifact reused for this arm, and its arm 6 (self-navigation) fires
+    // ~1-1.5s into script execution and replaces whichever frame it runs
+    // in with a Chromium error interstitial (`chrome-error://chromewebdata/`)
+    // once blocked -- capturing frame state AFTER that has already fired
+    // would misreport an interstitial as "nested shell" or "raw bytes".
+    await lanPage.waitForTimeout(300);
+    const lanEarlyChildFrames = lanPage.frames().filter((f) => f !== lanPage.mainFrame());
+    const lanEarlyChildFrameUrls = lanEarlyChildFrames.map((f) => f.url());
+
+    // Bounded settle wait for everything else (postMessage messages,
+    // request/response logs, console errors) -- long enough for several
+    // levels of the suspected nested-shell recursion to play out (or the
+    // request chain to abort), short enough not to hang the script
+    // indefinitely if the browser does not self-terminate the loop.
+    await lanPage.waitForTimeout(5700);
+
+    const lanFinalUrl = lanPage.url();
+    const lanFrames = lanPage.frames();
+    const lanFrameUrls = lanFrames.map((f) => f.url());
+    const lanMessages = await lanPage.evaluate(() => window.__probeMessages ?? []);
+
+    // Always logged, regardless of pass/fail below -- this is the evidence
+    // trail the PR body's polarity section quotes verbatim.
+    info('arm 8 observation: final top-level page URL after goto() + settle wait', lanFinalUrl);
+    info(
+      'arm 8 observation: EARLY child frame count + URLs (~300ms after goto, before arm 6 can fire)',
+      `count=${lanEarlyChildFrames.length}, urls=${JSON.stringify(lanEarlyChildFrameUrls)}`,
+    );
+    info(
+      'arm 8 observation: child frame count + URLs after the FULL settle wait (post arm-6 self-navigation attempt)',
+      `count=${lanFrames.length}, urls=${JSON.stringify(lanFrameUrls)}`,
+    );
+    info('arm 8 observation: goto() error (if any)', lanGotoError ?? '(none -- goto() resolved normally)');
+    info(
+      'arm 8 observation: requests to /artifacts/... or /api/artifacts/... (chronological)',
+      JSON.stringify(
+        lanRequestLog
+          .filter((r) => r.url.includes('/artifacts/'))
+          .map((r) => ({ url: r.url, secFetchDest: r.headers['sec-fetch-dest'] ?? '(absent)' })),
+      ),
+    );
+    info(
+      'arm 8 observation: responses to /artifacts/... or /api/artifacts/... (chronological, with status)',
+      JSON.stringify(lanResponseLog.filter((r) => r.url.includes('/artifacts/'))),
+    );
+    info('arm 8 observation: requestfailed events', JSON.stringify(lanFailedRequests));
+    info('arm 8 observation: pageerror events', JSON.stringify(lanPageErrors));
+    info('arm 8 observation: console.error messages', JSON.stringify(lanConsoleErrors));
+    info('arm 8 observation: total request count to this origin during the settle window', String(lanRequestLog.length));
+    info('arm 8 observation: postMessage bridge messages received', JSON.stringify(lanMessages));
+
+    // PREMISE (blocking): zero requests to this LAN origin carry a
+    // Sec-Fetch-Dest header -- the load-bearing premise the whole Issue
+    // #1366 diagnosis rests on. If violated on this environment/browser
+    // version, the reproduction itself is invalid and must be reported as
+    // a finding, not routed around.
+    const requestsWithSecFetchDest = lanRequestLog.filter((r) => 'sec-fetch-dest' in r.headers);
+    expect(
+      requestsWithSecFetchDest.length === 0,
+      'arm 8 premise: zero requests to the plain-HTTP LAN-IP origin carry a Sec-Fetch-Dest header',
+      `found ${requestsWithSecFetchDest.length} request(s) with the header: ${JSON.stringify(
+        requestsWithSecFetchDest.map((r) => ({ url: r.url, secFetchDest: r.headers['sec-fetch-dest'] })),
+      )}`,
+    );
+
+    // AC V1 (blocking): the shell renders EXACTLY ONCE -- exactly one
+    // child frame, and it is the raw artifact endpoint itself (not another
+    // copy of the shell). Evaluated on the EARLY snapshot (see capture
+    // comment above) -- a later snapshot would conflate the self-navigation
+    // arm's interstitial replacement with a nested-shell symptom.
+    expect(
+      lanEarlyChildFrames.length === 1,
+      'arm 8 (V1): the shell renders exactly once -- exactly one child iframe present shortly after navigation (no nested shell)',
+      `count=${lanEarlyChildFrames.length}, urls=${JSON.stringify(lanEarlyChildFrameUrls)}`,
+    );
+    if (lanEarlyChildFrameUrls.length === 1) {
+      // IMPORTANT: use the already-captured STRING snapshot
+      // (`lanEarlyChildFrameUrls`), never re-call `.url()` on the live
+      // `Frame` object at this point -- `Frame.url()` is a live getter,
+      // and by the time this assertion runs (after the further ~5.7s
+      // settle wait below), arm 6's self-navigation may have already
+      // replaced the frame's content with the Chromium error interstitial,
+      // which would make a live re-read misreport the EARLY state as the
+      // LATE one (this was caught empirically: the info() line correctly
+      // showed the raw artifact URL while a live re-read here showed
+      // `chrome-error://chromewebdata/`).
+      expect(
+        lanEarlyChildFrameUrls[0].split('?')[0] === lanArtifactUrl,
+        'arm 8 (V1): the single child iframe is the raw artifact endpoint (not a second copy of the shell)',
+        `childFrame.url()=${lanEarlyChildFrameUrls[0]}, expected pathname=${lanArtifactUrl}`,
+      );
+    }
+
+    // AC V1 (blocking): the iframe receives raw bytes -- the postMessage
+    // harness confirms script execution, same gating signal as arm 0.
+    expect(
+      lanMessages.some((m) => m.type === 'script-ran'),
+      'arm 8 (V1): the artifact iframe received raw bytes and its script executed (script-ran received via postMessage)',
+      `messages received: ${JSON.stringify(lanMessages)}`,
+    );
+
+    // AC V1 (blocking): no aborted request (the reported net::ERR_ABORTED
+    // end-state).
+    expect(
+      lanFailedRequests.length === 0,
+      'arm 8 (V1): no request to this origin failed/aborted during the settle window',
+      `failed requests: ${JSON.stringify(lanFailedRequests)}`,
+    );
+
+    // AC V1 (blocking, multi-user-mode-specific): the previously-observed
+    // terminal Unauthorized end-state does not occur -- no 401 response to
+    // the raw endpoint, and no "Unauthorized" console error.
+    const unauthorizedResponses = lanResponseLog.filter(
+      (r) => r.url.includes('/api/artifacts/') && r.status === 401,
+    );
+    expect(
+      unauthorizedResponses.length === 0,
+      'arm 8 (V1, multi-user mode): no 401 Unauthorized response to the raw artifact endpoint (the previously-observed terminal auth-failure end-state)',
+      `401 responses: ${JSON.stringify(unauthorizedResponses)}`,
+    );
+    expect(
+      !lanConsoleErrors.some((m) => /401|Unauthorized/i.test(m)),
+      'arm 8 (V1, multi-user mode): no console error mentioning 401/Unauthorized',
+      `console errors: ${JSON.stringify(lanConsoleErrors)}`,
+    );
+
+    await lanPage.close();
+
+    // ---------------------------------------------------------------
+    // Arm 8b (Issue #1366, V2): top-level opens of the RAW artifact URL
+    // from the SAME header-blind LAN origin -- P7 must hold there too.
+    // Reuses `lanContext` (same LAN-scoped auth cookie) but each case is a
+    // fresh page, a fresh top-level navigation, mirroring how a user would
+    // actually reach these URLs (a bookmark, a pasted link, a stale tab).
+    // ---------------------------------------------------------------
+    console.log('\n==> arm 8b: top-level opens of the raw artifact URL, header-blind LAN origin (V2)');
+
+    // In-process import (module-cache identity, same rationale as the
+    // "SERVER LIFECYCLE" header comment) -- mint/consume against the SAME
+    // token store the disposable server's own routes use, not a
+    // reimplementation.
+    const { mintArtifactViewerToken, consumeArtifactViewerToken } = await import(
+      '../../packages/server/src/lib/artifact-viewer-tokens.ts'
+    );
+
+    // (a) No token at all -- must redirect to the shell, never raw bytes.
+    const noTokenPage = await lanContext.newPage();
+    await noTokenPage.goto(lanArtifactUrl);
+    expect(
+      noTokenPage.url() === lanArtifactShellUrl,
+      'arm 8b (V2): top-level open of the raw URL with NO token redirects to the viewer shell',
+      `finalUrl=${noTokenPage.url()}, expected=${lanArtifactShellUrl}`,
+    );
+    const noTokenCsp = await noTokenPage.evaluate(() => document.querySelector('iframe') !== null);
+    expect(
+      noTokenCsp,
+      'arm 8b (V2): the landed page is the shell (contains the wrapper iframe), not the raw artifact document',
+    );
+    await noTokenPage.close();
+
+    // (b) A SPENT (already-consumed) token -- must also redirect, never
+    // raw bytes. Minted and immediately consumed directly against the
+    // SAME in-process token store the disposable server uses (module-cache
+    // identity, same rationale as the SERVER LIFECYCLE header comment).
+    const spentTokenPage = await lanContext.newPage();
+    const spentToken = mintArtifactViewerToken(toolResult.artifactId);
+    const consumedOk = consumeArtifactViewerToken(spentToken, toolResult.artifactId);
+    expect(consumedOk, 'arm 8b (V2) setup: the spent-token fixture actually consumed successfully before use');
+    await spentTokenPage.goto(`${lanArtifactUrl}?vt=${spentToken}`);
+    expect(
+      spentTokenPage.url() === lanArtifactShellUrl,
+      'arm 8b (V2): top-level open of the raw URL with a SPENT token redirects to the viewer shell',
+      `finalUrl=${spentTokenPage.url()}, expected=${lanArtifactShellUrl}`,
+    );
+    await spentTokenPage.close();
+
+    await lanContext.close();
 
     // ---------------------------------------------------------------
     // Positive controls -- SAME run, SAME browser context (same cookie

@@ -129,7 +129,48 @@ describe('Artifact viewer shell route', () => {
       const body = await res.text();
       expect(body).toContain('My Artifact');
       expect(body).toContain('Created by owner');
-      expect(body).toContain(`<iframe sandbox="allow-scripts" src="/api/artifacts/${created.id}"`);
+      expect(body).toContain(`<iframe sandbox="allow-scripts" src="/api/artifacts/${created.id}?vt=`);
+    });
+
+    it('embeds a viewer token (?vt=) in the iframe src on EVERY render (Issue #1366, S2)', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(OWNER);
+      const res = await app.request(`/artifacts/${created.id}`);
+      expect(res.status).toBe(200);
+
+      const body = await res.text();
+      const match = body.match(/<iframe sandbox="allow-scripts" src="\/api\/artifacts\/[^"]+\?vt=([^"&]+)"/);
+      expect(match).not.toBeNull();
+      // base64url-encoded 128-bit token -> 22 characters, URL-safe alphabet.
+      expect(match?.[1]).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    });
+
+    it('mints a DIFFERENT token on each successive render of the same artifact (per-render, not cached)', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(OWNER);
+      const firstBody = await (await app.request(`/artifacts/${created.id}`)).text();
+      const secondBody = await (await app.request(`/artifacts/${created.id}`)).text();
+
+      const extractToken = (body: string) => body.match(/\?vt=([^"&]+)"/)?.[1];
+      const firstToken = extractToken(firstBody);
+      const secondToken = extractToken(secondBody);
+      expect(firstToken).toBeDefined();
+      expect(secondToken).toBeDefined();
+      expect(firstToken).not.toBe(secondToken);
     });
 
     it('rejects an unauthenticated request with 401 (this route does not inherit /api auth)', async () => {
@@ -251,9 +292,10 @@ describe('Artifact viewer shell route', () => {
       // encodeURIComponent runs first (the id is also a URL path segment),
       // so every HTML-meaningful character is already percent-encoded by
       // the time escapeHtmlAttribute would otherwise act on it. The
-      // percent-encoded form is what must appear in the iframe src.
+      // percent-encoded form is what must appear in the iframe src, followed
+      // by the per-render viewer token query param (Issue #1366, S2).
       expect(body).toContain(
-        '<iframe sandbox="allow-scripts" src="/api/artifacts/%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E%3Ciframe%20src%3D%22"',
+        '<iframe sandbox="allow-scripts" src="/api/artifacts/%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E%3Ciframe%20src%3D%22?vt=',
       );
     });
   });
