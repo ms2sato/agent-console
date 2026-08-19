@@ -162,7 +162,7 @@ describe('Workers API', () => {
             ? {
                 id: 'agent-def-1',
                 name: 'Test Embedded',
-                engine: 'native-loop' as const,
+                engine: 'openai-api' as const,
                 provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
                 isBuiltIn: false,
                 createdBy: 'test-user-id',

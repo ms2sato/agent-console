@@ -38,7 +38,7 @@ const TEST_CONFIG_DIR = '/test/config';
 const EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   id: 'def-1',
   name: 'My Local Model',
-  engine: 'native-loop',
+  engine: 'openai-api',
   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
   isBuiltIn: false,
   createdBy: 'user-1',

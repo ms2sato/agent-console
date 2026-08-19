@@ -158,7 +158,7 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
   deliverInitialPromptOnActivation: boolean;
   /**
    * The worker's CURRENT Claude Agent SDK session id (SDK engine only; stays
-   * `null` for `native-loop` engine workers). Set from the `sdk-session-id`
+   * `null` for `openai-api` engine workers). Set from the `sdk-session-id`
    * event, emitted on activation and on every SDK-session replacement (e.g.
    * Phase 2's context-handoff reseed) -- last-write-wins, mirroring
    * `subprocess`/`stdin`'s null-when-not-applicable convention. Persisted via

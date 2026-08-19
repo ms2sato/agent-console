@@ -5,7 +5,7 @@
  * v30 adds a nullable `sdk_session_id TEXT` column to `workers`, persisting
  * `InternalEmbeddedAgentWorker.sdkSessionId` (SDK Engine Phase 1) so it
  * survives a server restart. Null for non-embedded-agent workers and for
- * native-loop engine embedded-agent workers. See
+ * openai-api engine embedded-agent workers. See
  * docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
  */
 
@@ -70,7 +70,7 @@ describe('migration v30 (workers.sdk_session_id)', () => {
   it('advances the schema version to 30', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(31);
+    expect(versionRes.rows[0]?.user_version).toBe(32);
   });
 
   it('adds the sdk_session_id column to workers, nullable with no default', async () => {
@@ -113,14 +113,14 @@ describe('migration v30 (workers.sdk_session_id)', () => {
     expect(row.sdk_session_id).toBe('sdk-sess-abc');
   });
 
-  it('round-trips a null sdk_session_id value (native-loop engine / non-embedded-agent worker)', async () => {
+  it('round-trips a null sdk_session_id value (openai-api engine / non-embedded-agent worker)', async () => {
     const db = await initializeDatabase(':memory:');
     await seedSession(db, 'sess-1');
 
     await db
       .insertInto('workers')
       .values({
-        id: 'worker-native-loop',
+        id: 'worker-openai-api',
         session_id: 'sess-1',
         type: 'embedded-agent',
         name: 'Embedded Agent',
@@ -135,7 +135,7 @@ describe('migration v30 (workers.sdk_session_id)', () => {
 
     const row = await db
       .selectFrom('workers')
-      .where('id', '=', 'worker-native-loop')
+      .where('id', '=', 'worker-openai-api')
       .select('sdk_session_id')
       .executeTakeFirstOrThrow();
 

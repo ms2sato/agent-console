@@ -25,12 +25,12 @@ function makeTerminalAgent(overrides: Partial<AgentDefinition> = {}): AgentDefin
 }
 
 function makeEmbeddedAgent(
-  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>> = {}
+  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'openai-api' }>> = {}
 ): EmbeddedAgentDefinition {
   return {
     id: 'embedded-1',
     name: 'Embedded Agent',
-    engine: 'native-loop',
+    engine: 'openai-api',
     provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
     isBuiltIn: false,
     createdBy: 'user-1',

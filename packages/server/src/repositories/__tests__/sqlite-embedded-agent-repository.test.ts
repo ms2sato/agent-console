@@ -9,12 +9,12 @@ import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 const NOW_ISO8601 = sql`(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))`;
 
 function buildDefinition(
-  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'native-loop' }>> = {}
+  overrides: Partial<Extract<EmbeddedAgentDefinition, { engine: 'openai-api' }>> = {}
 ): EmbeddedAgentDefinition {
   return {
     id: 'def-1',
     name: 'Ollama qwen3',
-    engine: 'native-loop',
+    engine: 'openai-api',
     provider: {
       baseUrl: 'http://localhost:11434/v1',
       model: 'qwen3:32b',
@@ -45,7 +45,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('id', 'text', (col) => col.primaryKey())
       .addColumn('name', 'text', (col) => col.notNull())
       .addColumn('description', 'text')
-      .addColumn('engine', 'text', (col) => col.notNull().defaultTo('native-loop'))
+      .addColumn('engine', 'text', (col) => col.notNull().defaultTo('openai-api'))
       .addColumn('provider_base_url', 'text')
       .addColumn('provider_model', 'text', (col) => col.notNull())
       .addColumn('provider_api_key_ref', 'text')
@@ -86,13 +86,13 @@ describe('SqliteEmbeddedAgentRepository', () => {
   });
 
   describe('data integrity handling', () => {
-    // `engine` is typed as a literal union ('native-loop' | 'claude-sdk') by
+    // `engine` is typed as a literal union ('openai-api' | 'claude-sdk') by
     // the Kysely schema; a corrupted row's actual value is deliberately
     // outside that union (this is what `toEmbeddedAgentDefinition`'s
     // default-arm consistency guard exists to catch), so the insert needs a
     // single, documented, narrowly-scoped cast to bypass the compile-time
     // guarantee that real corrupted data would not honor either.
-    const BOGUS_ENGINE = 'bogus-engine' as 'native-loop' | 'claude-sdk';
+    const BOGUS_ENGINE = 'bogus-engine' as 'openai-api' | 'claude-sdk';
 
     it('skips a row with an unknown engine value in findAll, returning healthy definitions', async () => {
       await repository.save(buildDefinition({ id: 'healthy' }));
@@ -117,17 +117,17 @@ describe('SqliteEmbeddedAgentRepository', () => {
       expect(all.map((d) => d.id)).toEqual(['healthy']);
     });
 
-    it('skips a native-loop row with a null provider_base_url in findAll, returning healthy definitions', async () => {
+    it('skips an openai-api row with a null provider_base_url in findAll, returning healthy definitions', async () => {
       await repository.save(buildDefinition({ id: 'healthy' }));
 
-      // Insert a corrupted row directly (native-loop engine requires a
+      // Insert a corrupted row directly (openai-api engine requires a
       // non-null provider_base_url).
       await db
         .insertInto('embedded_agents')
         .values({
           id: 'corrupted-null-base-url',
           name: 'Corrupted',
-          engine: 'native-loop',
+          engine: 'openai-api',
           provider_base_url: null,
           provider_model: 'm',
           is_built_in: 0,
@@ -190,8 +190,8 @@ describe('SqliteEmbeddedAgentRepository', () => {
       const found = await repository.findById('minimal');
 
       expect(found?.description).toBeUndefined();
-      expect(found?.engine).toBe('native-loop');
-      if (found?.engine === 'native-loop') {
+      expect(found?.engine).toBe('openai-api');
+      if (found?.engine === 'openai-api') {
         expect(found.provider.apiKeyRef).toBeUndefined();
       }
       expect(found?.systemPrompt).toBeUndefined();
@@ -289,7 +289,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       await repository.save(def);
       const found = await repository.findById('engine-fields');
 
-      expect(found?.engine).toBe('native-loop');
+      expect(found?.engine).toBe('openai-api');
       expect(found?.isBuiltIn).toBe(true);
     });
   });

@@ -353,6 +353,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 31) {
     await migrateToV31(database);
   }
+
+  if (currentVersion < 32) {
+    await migrateToV32(database);
+  }
 }
 
 /**
@@ -1617,6 +1621,11 @@ export async function migrateToV28(database: Kysely<Database>): Promise<void> {
  * Phase 1, consulted with the Architect 2026-08-17). Docs:
  * docs/design/embedded-agent-sdk-engine.md §3.1/§5.
  *
+ * This function is frozen (already applied to production databases); its
+ * `'native-loop'` default/backfill value below is historical and describes
+ * what v29 actually did. The value was later renamed to `'openai-api'` by
+ * migration v32 (#1364) -- see `migrateToV32` below.
+ *
  * A TABLE REBUILD, not a plain `ALTER TABLE ADD COLUMN` like v22-27's
  * additions to this same table: `provider_base_url` is currently `NOT NULL`
  * and must become NULLABLE for `claude-sdk` rows (no provider secret crosses
@@ -1739,7 +1748,7 @@ export async function migrateToV29(database: Kysely<Database>): Promise<void> {
  * 1, consulted with the Architect 2026-08-17). Nullable TEXT column
  * persisting `InternalEmbeddedAgentWorker.sdkSessionId` -- the worker's
  * current Claude Agent SDK session id -- so it survives a server restart.
- * Null for non-embedded-agent workers and for `native-loop` engine
+ * Null for non-embedded-agent workers and for `openai-api` engine
  * embedded-agent workers, which never carry an SDK session. See
  * docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
  *
@@ -1793,6 +1802,120 @@ export async function migrateToV31(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 31`.execute(database);
 
   logger.info('Migration to v31 completed');
+}
+
+/**
+ * Migration v32: Rename the `embedded_agents.engine` discriminant value
+ * `'native-loop'` to `'openai-api'` (#1364). The `'claude-sdk'` engine
+ * value is unaffected.
+ *
+ * A TABLE REBUILD, not a plain value `UPDATE`, mirroring `migrateToV29`'s own
+ * table-recreation pattern: SQLite cannot `ALTER` a column's `DEFAULT` in
+ * place, and `engine TEXT NOT NULL DEFAULT 'native-loop'` (v29's DDL) would
+ * otherwise stay behind after a bare `UPDATE ... SET engine = 'openai-api'`,
+ * silently resurrecting the old value on any future insert path that relies
+ * on the column default (e.g. `createEmbeddedAgent`'s hardcoded literal is
+ * always explicit, but the column default is still part of the schema
+ * contract and must not lie about the current value set). The column list is
+ * unchanged from v29's final shape -- no migration between v29 and v31
+ * touched `embedded_agents`'s columns.
+ *
+ * Idempotent: if `user_version` is already >= 32 the function returns early.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV32(database: Kysely<Database>): Promise<void> {
+  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
+  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
+  if (currentVersion >= 32) {
+    logger.info({ currentVersion }, 'Skipping migration to v32: already applied');
+    return;
+  }
+
+  logger.info("Running migration to v32: Renaming embedded_agents.engine 'native-loop' to 'openai-api'");
+
+  // Snapshot non-automatic indexes/triggers on embedded_agents before the
+  // drop, mirroring migrateToV29's defensive restore step. No such objects
+  // exist today, but the pattern stays correct if one is ever added.
+  const objectsResult = await sql<{
+    type: string;
+    name: string;
+    sql: string | null;
+  }>`
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE tbl_name = 'embedded_agents'
+      AND type IN ('index', 'trigger')
+      AND name NOT LIKE 'sqlite_autoindex%'
+  `.execute(database);
+  const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
+
+  await database.transaction().execute(async (trx) => {
+    await sql`
+      CREATE TABLE embedded_agents_new (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        engine TEXT NOT NULL DEFAULT 'openai-api',
+        provider_base_url TEXT,
+        provider_model TEXT NOT NULL,
+        provider_api_key_ref TEXT,
+        system_prompt TEXT,
+        max_tool_iterations INTEGER,
+        enabled_tools TEXT,
+        instructions TEXT,
+        context_window_tokens INTEGER,
+        handoff_soft_ratio REAL,
+        handoff_hard_ratio REAL,
+        handoff_auto INTEGER,
+        is_built_in INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `.execute(trx);
+
+    // Rewrite existing 'native-loop' rows to 'openai-api'; 'claude-sdk' rows
+    // pass through untouched.
+    await sql`
+      INSERT INTO embedded_agents_new (
+        id, name, description, engine, provider_base_url, provider_model,
+        provider_api_key_ref, system_prompt, max_tool_iterations,
+        enabled_tools, instructions, context_window_tokens,
+        handoff_soft_ratio, handoff_hard_ratio, handoff_auto, is_built_in,
+        created_by, created_at, updated_at
+      )
+      SELECT
+        id, name, description,
+        CASE WHEN engine = 'native-loop' THEN 'openai-api' ELSE engine END,
+        provider_base_url, provider_model,
+        provider_api_key_ref, system_prompt, max_tool_iterations,
+        enabled_tools, instructions, context_window_tokens,
+        handoff_soft_ratio, handoff_hard_ratio, handoff_auto, is_built_in,
+        created_by, created_at, updated_at
+      FROM embedded_agents
+    `.execute(trx);
+
+    await sql`DROP TABLE embedded_agents`.execute(trx);
+    await sql`ALTER TABLE embedded_agents_new RENAME TO embedded_agents`.execute(trx);
+
+    for (const obj of objectsToRestore) {
+      await sql.raw(obj.sql as string).execute(trx);
+    }
+
+    const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+      PRAGMA foreign_key_check
+    `.execute(trx);
+    if (fkCheck.rows.length > 0) {
+      throw new Error(
+        `Foreign key check failed after v32 migration: ${JSON.stringify(fkCheck.rows)}`
+      );
+    }
+
+    await sql`PRAGMA user_version = 32`.execute(trx);
+  });
+
+  logger.info('Migration to v32 completed');
 }
 
 /**

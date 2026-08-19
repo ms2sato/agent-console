@@ -342,15 +342,15 @@ function EmbeddedAgentsSection() {
                   description: embeddedAgent.description ?? '',
                   // SDK Engine Phase 1: the claude-sdk engine's provider carries
                   // no baseUrl/apiKeyRef (docs/design/embedded-agent-sdk-engine.md
-                  // §3.2); this form only ever edits native-loop definitions in
+                  // §3.2); this form only ever edits openai-api definitions in
                   // practice (the built-in claude-sdk definition's edit
                   // affordance is gated off via the `!embeddedAgent.isBuiltIn`
                   // check below, independent of ownership), narrowed here for
                   // type safety.
-                  baseUrl: embeddedAgent.engine === 'native-loop' ? embeddedAgent.provider.baseUrl : '',
+                  baseUrl: embeddedAgent.engine === 'openai-api' ? embeddedAgent.provider.baseUrl : '',
                   model: embeddedAgent.provider.model,
                   apiKeyRef:
-                    embeddedAgent.engine === 'native-loop' ? (embeddedAgent.provider.apiKeyRef ?? '') : '',
+                    embeddedAgent.engine === 'openai-api' ? (embeddedAgent.provider.apiKeyRef ?? '') : '',
                   systemPrompt: embeddedAgent.systemPrompt ?? '',
                   maxToolIterationsInput: embeddedAgent.maxToolIterations?.toString() ?? '',
                   enabledTools: embeddedAgent.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS.slice(),
@@ -430,7 +430,7 @@ function EmbeddedAgentCard({ embeddedAgent, canManage, onEdit, onDelete, isDelet
           </div>
 
           <div className="text-sm text-gray-400 font-mono mb-2">
-            {embeddedAgent.engine === 'native-loop' ? `${embeddedAgent.provider.baseUrl} · ` : ''}
+            {embeddedAgent.engine === 'openai-api' ? `${embeddedAgent.provider.baseUrl} · ` : ''}
             {embeddedAgent.provider.model}
           </div>
 

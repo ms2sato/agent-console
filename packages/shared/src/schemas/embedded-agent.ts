@@ -107,13 +107,13 @@ const EmbeddedAgentDefinitionBaseFields = {
 /**
  * Discriminated on `engine` (docs/design/embedded-agent-sdk-engine.md §3.1):
  * the wire schema enforces the per-arm `provider` shape, not just the
- * TypeScript type -- a `native-loop` definition with an SDK-shaped provider
+ * TypeScript type -- an `openai-api` definition with an SDK-shaped provider
  * (or vice versa) is rejected at the boundary.
  */
 export const EmbeddedAgentDefinitionSchema = v.variant('engine', [
   v.strictObject({
     ...EmbeddedAgentDefinitionBaseFields,
-    engine: v.literal('native-loop'),
+    engine: v.literal('openai-api'),
     provider: EmbeddedAgentProviderSchema,
   }),
   v.strictObject({
@@ -194,7 +194,7 @@ const EmbeddedAgentInitCommandBaseFields = {
 const EmbeddedAgentInitCommandSchema = v.variant('engine', [
   v.strictObject({
     ...EmbeddedAgentInitCommandBaseFields,
-    engine: v.literal('native-loop'),
+    engine: v.literal('openai-api'),
     provider: v.strictObject({
       baseUrl: v.string(),
       model: v.string(),

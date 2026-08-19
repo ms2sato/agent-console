@@ -1,7 +1,7 @@
 /**
  * The claude-sdk engine (docs/design/embedded-agent-sdk-engine.md): hosts a
  * Claude Agent SDK session inside the same subprocess harness the
- * native-loop engine (agent-loop.ts) runs in, mapping the SDK's own message
+ * openai-api engine (agent-loop.ts) runs in, mapping the SDK's own message
  * stream onto the SAME NDJSON event vocabulary the native engine emits (see
  * that document's Appendix A for the authoritative mapping table this file
  * implements).
@@ -158,7 +158,7 @@ export interface SdkEngineDeps {
   emit: (event: EmbeddedAgentEvent) => void;
   /** Context Handoff (Phase 2, S3): loads the (possibly operator-overridden)
    * distillation prompt -- the SAME `factories.loadHandoffPrompt` the
-   * native-loop engine uses (main.ts is the single writer that composes this
+   * openai-api engine uses (main.ts is the single writer that composes this
    * from the raw factory; see main.ts's `claude-sdk` init arm). */
   loadHandoffPrompt: () => Promise<string>;
   /** DI seam for tests; defaults to the real SDK `query` function. */

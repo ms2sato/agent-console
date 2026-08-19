@@ -15,7 +15,7 @@ const validDefinition = {
   id: 'def-1',
   name: 'Ollama qwen3:32b',
   description: 'Local model',
-  engine: 'native-loop',
+  engine: 'openai-api',
   provider: {
     baseUrl: 'http://localhost:11434/v1',
     model: 'qwen3:32b',
@@ -52,7 +52,7 @@ describe('EmbeddedAgentDefinitionSchema', () => {
     const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
       id: 'def-2',
       name: 'Minimal',
-      engine: 'native-loop',
+      engine: 'openai-api',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       isBuiltIn: false,
       createdBy: 'user-uuid',
@@ -228,7 +228,7 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       expect(result.success).toBe(true);
     });
 
-    it('rejects a native-loop definition whose provider carries the claude-sdk shape (missing baseUrl)', () => {
+    it('rejects an openai-api definition whose provider carries the claude-sdk shape (missing baseUrl)', () => {
       const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
         ...validDefinition,
         provider: { model: 'qwen3:32b' },
@@ -236,7 +236,7 @@ describe('EmbeddedAgentDefinitionSchema', () => {
       expect(result.success).toBe(false);
     });
 
-    it('rejects a claude-sdk definition whose provider carries the native-loop shape (extra baseUrl)', () => {
+    it('rejects a claude-sdk definition whose provider carries the openai-api shape (extra baseUrl)', () => {
       const result = v.safeParse(EmbeddedAgentDefinitionSchema, {
         ...validSdkDefinition,
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'claude-sonnet-5' },
@@ -602,7 +602,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
-      engine: 'native-loop',
+      engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -636,7 +636,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
-      engine: 'native-loop',
+      engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -654,7 +654,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
-      engine: 'native-loop',
+      engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -669,7 +669,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
-      engine: 'native-loop',
+      engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -687,7 +687,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
-      engine: 'native-loop',
+      engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -702,7 +702,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
-      engine: 'native-loop',
+      engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
@@ -733,7 +733,7 @@ describe('EmbeddedAgentCommandSchema', () => {
       }
     });
 
-    it('rejects a claude-sdk init command whose provider carries baseUrl (native-loop shape)', () => {
+    it('rejects a claude-sdk init command whose provider carries baseUrl (openai-api shape)', () => {
       const init = {
         ...baseFields,
         engine: 'claude-sdk',
@@ -743,8 +743,8 @@ describe('EmbeddedAgentCommandSchema', () => {
       expect(result.success).toBe(false);
     });
 
-    it('rejects a native-loop init command whose provider is missing baseUrl (claude-sdk shape)', () => {
-      const init = { ...baseFields, engine: 'native-loop', provider: { model: 'llama3' } };
+    it('rejects an openai-api init command whose provider is missing baseUrl (claude-sdk shape)', () => {
+      const init = { ...baseFields, engine: 'openai-api', provider: { model: 'llama3' } };
       const result = v.safeParse(EmbeddedAgentCommandSchema, init);
       expect(result.success).toBe(false);
     });
@@ -776,7 +776,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const baseInit = {
       v: 1,
       type: 'init',
-      engine: 'native-loop',
+      engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },

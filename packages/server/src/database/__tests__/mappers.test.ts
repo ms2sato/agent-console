@@ -1361,7 +1361,7 @@ describe('mappers', () => {
       id: 'def-1',
       name: 'Ollama qwen3:32b',
       description: 'Local model',
-      engine: 'native-loop',
+      engine: 'openai-api',
       provider: {
         baseUrl: 'http://localhost:11434/v1',
         model: 'qwen3:32b',
@@ -1403,7 +1403,7 @@ describe('mappers', () => {
       const minimal: EmbeddedAgentDefinition = {
         id: 'def-2',
         name: 'Minimal',
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         createdBy: 'user-uuid',
         isBuiltIn: false,
@@ -1429,7 +1429,7 @@ describe('mappers', () => {
       const autoFalse: EmbeddedAgentDefinition = {
         id: 'def-auto-false',
         name: 'AutoFalse',
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         handoff: { auto: false },
         createdBy: 'user-uuid',
@@ -1449,7 +1449,7 @@ describe('mappers', () => {
       const emptyTools: EmbeddedAgentDefinition = {
         id: 'def-4',
         name: 'AllToolsOff',
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         enabledTools: [],
         createdBy: 'user-uuid',
@@ -1467,7 +1467,7 @@ describe('mappers', () => {
       const emptyInstructions: EmbeddedAgentDefinition = {
         id: 'def-6',
         name: 'NoInstructions',
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
         instructions: [],
         createdBy: 'user-uuid',
@@ -1489,7 +1489,7 @@ describe('mappers', () => {
         id: row.id,
         name: row.name,
         description: row.description ?? null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: row.provider_base_url ?? null,
         provider_model: row.provider_model,
         provider_api_key_ref: row.provider_api_key_ref ?? null,
@@ -1517,7 +1517,7 @@ describe('mappers', () => {
         id: 'def-3',
         name: 'Nulls',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1538,8 +1538,8 @@ describe('mappers', () => {
       const restored = toEmbeddedAgentDefinition(selectRow);
 
       expect(restored.description).toBeUndefined();
-      expect(restored.engine).toBe('native-loop');
-      if (restored.engine === 'native-loop') {
+      expect(restored.engine).toBe('openai-api');
+      if (restored.engine === 'openai-api') {
         expect(restored.provider.apiKeyRef).toBeUndefined();
       }
       expect(restored.systemPrompt).toBeUndefined();
@@ -1555,7 +1555,7 @@ describe('mappers', () => {
         id: 'def-5',
         name: 'EmptyTools',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1584,7 +1584,7 @@ describe('mappers', () => {
         id: 'def-malformed',
         name: 'Malformed',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1615,7 +1615,7 @@ describe('mappers', () => {
         id: 'def-malformed-instructions',
         name: 'Malformed',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1646,7 +1646,7 @@ describe('mappers', () => {
         id: 'def-non-array-tools',
         name: 'NonArray',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1677,7 +1677,7 @@ describe('mappers', () => {
         id: 'def-non-array-instructions',
         name: 'NonArray',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1708,7 +1708,7 @@ describe('mappers', () => {
         id: 'def-partial-handoff',
         name: 'PartialHandoff',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1736,7 +1736,7 @@ describe('mappers', () => {
         id: 'def-auto-false',
         name: 'AutoFalse',
         description: null,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
         provider_model: 'llama3',
         provider_api_key_ref: null,
@@ -1821,12 +1821,12 @@ describe('mappers', () => {
         expect(restored).toEqual(sdkDefinition);
       });
 
-      it('throws DataIntegrityError for a native-loop row with a null provider_base_url', () => {
+      it('throws DataIntegrityError for an openai-api row with a null provider_base_url', () => {
         const selectRow: EmbeddedAgentRow = {
           id: 'def-inconsistent-1',
           name: 'Inconsistent',
           description: null,
-          engine: 'native-loop',
+          engine: 'openai-api',
           provider_base_url: null,
           provider_model: 'llama3',
           provider_api_key_ref: null,

@@ -273,7 +273,7 @@ function capSegment(segment: InstructionSegment): InstructionSegment {
  * against `cwd`, capped per-file. No global (~/.config/agent-console) or
  * chain (AGENTS.md/CLAUDE.md auto-discovery) layers. Shared by
  * `loadInstructions` (which composes this with the other two layers for the
- * native-loop engine) and the SDK engine (which uses ONLY this layer --
+ * openai-api engine) and the SDK engine (which uses ONLY this layer --
  * AGENTS.md auto-discovery is deliberately out of scope for that engine, see
  * docs/design/embedded-agent-sdk-engine.md §4).
  */

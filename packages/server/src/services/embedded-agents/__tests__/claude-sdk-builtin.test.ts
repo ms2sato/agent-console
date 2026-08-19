@@ -1,3 +1,6 @@
+// The other embedded-agent engine's own literal is `openai-api` (#1364;
+// formerly `native-loop`) -- production `claude-sdk-builtin.ts` only names
+// it in a comment, so no assertion here changes.
 import { describe, it, expect } from 'bun:test';
 import { claudeSdkAgent, CLAUDE_SDK_AGENT_ID, CLAUDE_SDK_AGENT_CREATED_BY } from '../claude-sdk-builtin.js';
 

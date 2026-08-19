@@ -182,7 +182,7 @@ async function initializeLoop(
   factories: LoopFactories,
   init: InitCommand,
 ): Promise<Engine | null> {
-  if (init.engine === 'native-loop') {
+  if (init.engine === 'openai-api') {
     const instructions = await factories.loadInstructions({
       cwd: init.context.cwd,
       instructionsList: init.instructions,
@@ -278,14 +278,14 @@ async function initializeLoop(
   // background stream consumer -- NEVER gated on the SDK's own system:init
   // handshake. See SdkEngine's constructor comment and
   // docs/design/embedded-agent-sdk-engine.md Appendix A.2's `ready` row for
-  // the live-probed finding this decouples from. Unlike the native-loop
+  // the live-probed finding this decouples from. Unlike the openai-api
   // branch above, this function does not emit `ready` itself for this arm.
   //
   // Instruction loader (§4's compatibility matrix, corrected): the SDK's own
   // AGENTS.md/CLAUDE.md auto-discovery is deliberately disabled (never runs
   // for this engine -- see the design doc's corrected row). Only the
   // definition's explicit opt-in `instructions[]` list is honored, loaded
-  // here (this function is already async, same shape as the native-loop
+  // here (this function is already async, same shape as the openai-api
   // branch's own `loadInstructions` call above) and composed into the SDK's
   // `systemPrompt.append` alongside the definition system prompt, BEFORE
   // `SdkEngine` is constructed -- `SdkEngine`'s constructor stays fully

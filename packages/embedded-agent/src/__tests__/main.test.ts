@@ -40,7 +40,7 @@ const initCommand = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
     v: 1,
     type: 'init',
-    engine: 'native-loop',
+    engine: 'openai-api',
     mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
     provider: { baseUrl: 'http://provider/v1', model: 'm' },
     context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
@@ -389,18 +389,18 @@ describe('runLoop — restoredConversation threading (Transcript Restore #1123)'
 
 describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () => {
   // `initializeLoop` narrows `init.engine` at runtime
-  // (`if (init.engine === 'native-loop') { ... } else { new SdkEngine(...) }`)
+  // (`if (init.engine === 'openai-api') { ... } else { new SdkEngine(...) }`)
   // and TypeScript enforces the SAME split at compile time via
-  // `EmbeddedAgentCommand`'s discriminated union: a `native-loop`-shaped
+  // `EmbeddedAgentCommand`'s discriminated union: an `openai-api`-shaped
   // `init.provider` (baseUrl/model/apiKey?) is structurally incompatible
   // with the `claude-sdk` arm's `provider: { model: string }`, so code that
   // narrows to one arm cannot read the other arm's fields. This test proves
-  // the WIRE-LEVEL half of that containment: the shared schema rejects a
-  // native-loop-shaped init command carrying `engine: 'claude-sdk'` (an
+  // the WIRE-LEVEL half of that containment: the shared schema rejects an
+  // openai-api-shaped init command carrying `engine: 'claude-sdk'` (an
   // apiKey field the claude-sdk arm's strictObject provider must never
   // accept -- see docs/design/embedded-agent-sdk-engine.md §3.2 and §7's
   // "Auth property test").
-  it('rejects a claude-sdk init command whose provider carries an apiKey (native-loop-shaped payload misdeclared as claude-sdk)', () => {
+  it('rejects a claude-sdk init command whose provider carries an apiKey (openai-api-shaped payload misdeclared as claude-sdk)', () => {
     const command = {
       v: 1,
       type: 'init',
@@ -431,7 +431,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     }
   });
 
-  // Mirrors the native-loop branch's "emits a fatal event and exits 1 when
+  // Mirrors the openai-api branch's "emits a fatal event and exits 1 when
   // MCP connection fails" test above: `SdkEngine`'s constructor calls the
   // real SDK's `query()` synchronously, so a throw there must be caught and
   // surfaced the same way the native branch's MCP-connect failure is,
@@ -478,7 +478,7 @@ describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () 
   // A `handoff` command received while a turn is active is rejected at
   // main.ts's dispatch layer (the same `turnActive` gate `user-message` is
   // subject to) BEFORE it ever reaches `Engine.handoff()` -- this is
-  // engine-agnostic dispatch-loop behavior, so the native-loop and
+  // engine-agnostic dispatch-loop behavior, so the openai-api and
   // claude-sdk engines observe an IDENTICAL contract here by construction,
   // with no engine-specific code needed on either side. This is the
   // verification for docs/design/embedded-agent-sdk-engine.md's S3 AC line
@@ -581,7 +581,7 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
   });
 
-  it('wires loadHandoffPrompt to factories.loadHandoffPrompt (S3): the SAME single-writer prompt source the native-loop engine uses', async () => {
+  it('wires loadHandoffPrompt to factories.loadHandoffPrompt (S3): the SAME single-writer prompt source the openai-api engine uses', async () => {
     const { io } = makeIo([claudeSdkInitCommand()]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({

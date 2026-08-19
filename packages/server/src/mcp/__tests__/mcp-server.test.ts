@@ -211,7 +211,7 @@ const TEST_REPO_PATH = '/test/repo';
 const TEST_EMBEDDED_AGENT_DEF: EmbeddedAgentDefinition = {
   id: 'def-1',
   name: 'My Local Model',
-  engine: 'native-loop',
+  engine: 'openai-api',
   provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
   isBuiltIn: false,
   createdBy: 'user-1',
@@ -2751,7 +2751,7 @@ describe('MCP Server Tools', () => {
       const embeddedDef: EmbeddedAgentDefinition = {
         id: 'def-shared-name',
         name: sharedName,
-        engine: 'native-loop',
+        engine: 'openai-api',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         isBuiltIn: false,
         createdBy: 'user-1',

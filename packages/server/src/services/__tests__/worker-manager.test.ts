@@ -1419,7 +1419,7 @@ describe('WorkerManager', () => {
       }
     });
 
-    it('persists a null sdkSessionId through to PersistedEmbeddedAgentWorker (native-loop engine)', () => {
+    it('persists a null sdkSessionId through to PersistedEmbeddedAgentWorker (openai-api engine)', () => {
       const worker = buildInternalEmbeddedAgentWorker({
         id: 'embedded-no-sdk-session',
         embeddedAgentId: 'def-1',

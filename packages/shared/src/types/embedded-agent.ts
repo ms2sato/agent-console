@@ -96,17 +96,17 @@ interface EmbeddedAgentDefinitionBase {
 
 /**
  * Definition of an agent that owns its own LLM loop. Discriminated on
- * `engine` (docs/design/embedded-agent-sdk-engine.md §3.1): `native-loop` is
+ * `engine` (docs/design/embedded-agent-sdk-engine.md §3.1): `openai-api` is
  * the existing OpenAI-compatible custom loop (`agent-loop.ts` +
  * `providers/` + `tools/` + `mcp.ts`); `claude-sdk` hosts a Claude Agent SDK
  * session in the same subprocess harness. User-facing creation via the REST
- * route always produces a `native-loop` definition (hardcoded server-side,
+ * route always produces an `openai-api` definition (hardcoded server-side,
  * `EmbeddedAgentManager.createEmbeddedAgent`) -- the `claude-sdk` engine is
  * registered as a builtin only in Phase 1, never user-created.
  */
 export type EmbeddedAgentDefinition =
   | (EmbeddedAgentDefinitionBase & {
-      engine: 'native-loop';
+      engine: 'openai-api';
       provider: {
         baseUrl: string;       // OpenAI-compatible root, e.g. "http://localhost:11434/v1"
         model: string;         // model id passed in the chat.completions request
@@ -146,7 +146,7 @@ type EmbeddedAgentInitCommandBase = {
  */
 export type EmbeddedAgentCommand =
   | (EmbeddedAgentInitCommandBase & {
-      engine: 'native-loop';
+      engine: 'openai-api';
       provider: { baseUrl: string; model: string; apiKey?: string };
     })
   | (EmbeddedAgentInitCommandBase & {
