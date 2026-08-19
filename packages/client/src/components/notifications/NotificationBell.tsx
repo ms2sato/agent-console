@@ -42,7 +42,10 @@ export function NotificationBell() {
 
   // Ruling 3 / N1: broadcast payloads are discarded entirely -- the
   // callbacks below take no parameter, so the payload is structurally
-  // unreachable, not merely unused by convention.
+  // unreachable, not merely unused by convention. This safety is
+  // conditional on N1 (docs/design/notification-center.md) -- if a
+  // future change puts render-relevant data on the broadcast payload,
+  // read that note before changing this.
   useAppWsEvent({
     onWorktreeDeletionCompleted: () => {
       queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
