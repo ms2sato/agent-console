@@ -221,6 +221,52 @@ describe('NotificationBell', () => {
 
       await waitFor(() => expect(screen.queryByText(/failed to load notifications/i)).toBeNull());
     });
+
+    it('does not mark stale/cached items as seen when the open-triggered refetch fails', async () => {
+      // Seed real "previous data" so there is something to go stale: the
+      // initial mount fetch must succeed and populate items before the
+      // failure is introduced.
+      serverItems = [makeItem({ occurredAt: '2026-08-17T00:00:00.000Z' })];
+      serverUnreadCount = 1;
+      await renderWithRouter(<NotificationBell />);
+
+      await waitFor(() => expect(screen.getByText('1')).toBeTruthy());
+
+      // Now the GET fails. TanStack Query v5 retains the previous successful
+      // `data` on a failed refetch (not undefined) and sets `isError: true`
+      // -- this test does not mock that away; it drives the real hook
+      // through a real failing refetch and lets that real behavior produce
+      // the stale-but-present `result.data` the bug depended on.
+      getShouldFail = true;
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /notifications/i }));
+
+      await waitFor(() => expect(screen.getByText(/failed to load notifications/i)).toBeTruthy());
+
+      // Precondition check -- confirm the failure actually reproduces the
+      // exact condition the bug depended on, not merely "an error happened".
+      // `unreadCount` and `items` both come from the SAME `data` object
+      // TanStack Query retains on a failed refetch, so the badge still
+      // showing the pre-failure count ('1', not gone / not '0') is direct
+      // evidence that `result.data` (and therefore `result.data.items`) was
+      // genuinely non-undefined and stale, not empty or absent. Without this
+      // assertion, a broken test harness that never reproduced the
+      // stale-retention behavior (e.g. one where a failed refetch cleared
+      // `data` entirely) could pass the PUT-count assertion below for the
+      // wrong reason -- by never reaching the buggy code path at all.
+      expect(screen.getByText('1')).toBeTruthy();
+
+      // The point of this test: a failed refetch must never advance the
+      // seen-cursor using the stale/cached item that survived the error.
+      const putCalls = (mockFetch.mock.calls as unknown[][]).filter((call) => {
+        const [reqInput, reqInit] = call as [RequestInfo | URL, RequestInit | undefined];
+        const url = reqInput instanceof Request ? reqInput.url : String(reqInput);
+        const method = (reqInput instanceof Request ? reqInput.method : reqInit?.method) ?? 'GET';
+        return url.includes('/notifications/seen') && method === 'PUT';
+      });
+      expect(putCalls.length).toBe(0);
+    });
   });
 
   describe('Ruling 2: badge zeroing is a server round trip, not optimistic', () => {

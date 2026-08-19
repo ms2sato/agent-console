@@ -75,6 +75,12 @@ export function NotificationBell() {
 
   const openAndMarkSeen = async () => {
     const result = await refetch();
+    // TanStack Query v5 retains the previous successful `data` on a failed
+    // refetch (it does not become undefined) and sets `isError: true`. Bail
+    // out here, before reading `result.data` -- otherwise a failed refetch
+    // would advance the cursor using stale/cached items that were never
+    // freshly confirmed by the very fetch that was supposed to confirm them.
+    if (result.isError) return;
     const items = result.data?.items ?? [];
     if (items.length === 0) return; // Nothing to mark seen; cursor stays put.
     // Server contract: items are newest-first, so items[0] is the newest.
