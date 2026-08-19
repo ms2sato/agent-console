@@ -132,6 +132,21 @@ describe('Artifact viewer shell route', () => {
       expect(body).toContain(`<iframe sandbox="allow-scripts" src="/api/artifacts/${created.id}?vt=`);
     });
 
+    it('the shell response carries Cache-Control: no-store (the shell embeds a fresh single-use token per render, so it is no longer idempotent and must never be served from a cache)', async () => {
+      const created = await artifactRepository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'T',
+        content: '<p>x</p>',
+        sourceSessionId: null,
+      });
+
+      const app = buildApp(OWNER);
+      const res = await app.request(`/artifacts/${created.id}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+    });
+
     it('embeds a viewer token (?vt=) in the iframe src on EVERY render (Issue #1366, S2)', async () => {
       const created = await artifactRepository.create({
         id: randomUUID(),

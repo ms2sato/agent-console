@@ -158,7 +158,20 @@ const artifactsViewer = new Hono<AppBindings>()
     return c.html(
       buildShellHtml({ artifactId: id, title: artifact.title, ownerUsername, viewerToken }),
       200,
-      { 'Content-Security-Policy': ARTIFACT_SHELL_CSP },
+      {
+        'Content-Security-Policy': ARTIFACT_SHELL_CSP,
+        // Required now that this response embeds a fresh single-use token
+        // on every render (see the minting comment above): the shell used
+        // to be idempotent (same artifact -> same bytes) and is no longer.
+        // A cached copy would serve an already-spent token, whose iframe
+        // request gets redirected back to the shell -- and if THAT
+        // redirect target is also served from the same stale cache, the
+        // result is the exact nested-shell loop this fix exists to close,
+        // reintroduced via a caching path instead of the header-blind-origin
+        // path. See docs/design/html-artifacts.md §4.0 for the full
+        // rationale, including why `no-store` rather than `no-cache`.
+        'Cache-Control': 'no-store',
+      },
     );
   });
 
