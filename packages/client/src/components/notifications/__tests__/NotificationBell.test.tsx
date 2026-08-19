@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { useState as useStateReal } from 'react';
-import { screen, cleanup, waitFor, act } from '@testing-library/react';
+import { screen, cleanup, waitFor, act, fireEvent } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import type { WorktreeDeletionCompletedPayload } from '@agent-console/shared';
 import { renderWithRouter } from '../../../test/renderWithRouter';
@@ -266,6 +266,82 @@ describe('NotificationBell', () => {
         return url.includes('/notifications/seen') && method === 'PUT';
       });
       expect(putCalls.length).toBe(0);
+    });
+  });
+
+  describe('panel dismiss paths (Escape, outside click, unmount cleanup)', () => {
+    it('closes the panel on Escape keydown', async () => {
+      serverItems = [makeItem()];
+      serverUnreadCount = 1;
+      await renderWithRouter(<NotificationBell />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /notifications/i }));
+
+      // Precondition: the panel must actually be open before Escape fires --
+      // otherwise the later "panel is closed" assertion would pass
+      // vacuously even if Escape never did anything (it was never open to
+      // begin with).
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+
+      await user.keyboard('{Escape}');
+
+      // This would fail if Escape never closed the panel: the dialog would
+      // still be in the DOM.
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    });
+
+    it('closes the panel when clicking the outside overlay', async () => {
+      serverItems = [makeItem()];
+      serverUnreadCount = 1;
+      const { container } = await renderWithRouter(<NotificationBell />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /notifications/i }));
+
+      // Precondition: same reasoning as the Escape test -- confirm the
+      // panel (and its overlay) are actually mounted before clicking it.
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+      const overlay = container.querySelector('.fixed.inset-0');
+      expect(overlay).not.toBeNull();
+
+      fireEvent.click(overlay as Element);
+
+      // This would fail if the overlay click handler never ran (or never
+      // called setOpen(false)): the dialog would still be present.
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    });
+
+    it('removes the keydown listener via document.removeEventListener when the component unmounts', async () => {
+      serverItems = [makeItem()];
+      serverUnreadCount = 1;
+      const addSpy = spyOn(document, 'addEventListener');
+      const removeSpy = spyOn(document, 'removeEventListener');
+
+      const { unmount } = await renderWithRouter(<NotificationBell />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: /notifications/i }));
+
+      // Precondition: confirm the panel actually opened (which is what
+      // triggers the effect that registers the keydown listener) before
+      // asserting anything about its cleanup.
+      await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy());
+
+      const keydownAddCall = addSpy.mock.calls.find(([eventName]) => eventName === 'keydown');
+      expect(keydownAddCall).toBeDefined();
+      const registeredHandler = keydownAddCall?.[1];
+
+      unmount();
+
+      // This would fail if the effect's cleanup function were missing or
+      // did not call removeEventListener with the exact handler that was
+      // registered on mount (e.g. a new arrow function each render, which
+      // would leak the original listener instead of removing it).
+      expect(removeSpy).toHaveBeenCalledWith('keydown', registeredHandler);
+
+      addSpy.mockRestore();
+      removeSpy.mockRestore();
     });
   });
 
