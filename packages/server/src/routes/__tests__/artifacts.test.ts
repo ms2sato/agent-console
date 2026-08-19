@@ -250,6 +250,15 @@ describe('Artifact routes', () => {
       const token = mintArtifactViewerToken(created.id);
 
       const app = buildApp(repository, OWNER);
+
+      // Invalid token (never minted) -- the header still wins outright.
+      const invalidRes = await app.request(`/api/artifacts/${created.id}?vt=not-a-real-token`, {
+        headers: { 'Sec-Fetch-Dest': 'iframe' },
+      });
+      expect(invalidRes.status).toBe(200);
+
+      // Valid token, supplied alongside the header -- same outcome, and the
+      // header branch never touches it.
       const res = await app.request(`/api/artifacts/${created.id}?vt=${token}`, {
         headers: { 'Sec-Fetch-Dest': 'iframe' },
       });

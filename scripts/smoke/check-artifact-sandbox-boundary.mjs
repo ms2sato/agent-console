@@ -32,10 +32,13 @@
  *    `AGENT_CONSOLE_HOME` / `AUTH_MODE=multi-user` / `PORT` in
  *    `process.env`, mirroring how `bun run src/index.ts` boots it -- see
  *    "SERVER LIFECYCLE" below for why in-process rather than a subprocess).
- * 2. Mints a REAL authenticated session against that instance (see
+ * 2. Mints a REAL session credential directly against that instance (see
  *    "CREDENTIAL-ISSUANCE SUBSTITUTION" below -- this is a recorded proxy
  *    per pre-pr-completeness.md Q13, not a bypass of anything this probe
- *    verifies).
+ *    verifies, and it never weakens or bypasses the real `/api/auth/login`
+ *    endpoint itself -- that endpoint is never called by this script and
+ *    stays fully password-protected for anyone else on the network the
+ *    whole time this script runs).
  * 3. Creates a real quick session (`POST /api/sessions`) and calls the real
  *    `create_html_artifact` MCP tool over real JSON-RPC HTTP
  *    (`POST /mcp`, per the `dev-environment-quirks` skill's "driving MCP
@@ -57,52 +60,97 @@
  * dynamically `import()`s it directly, in the SAME Bun process as the rest
  * of this script, rather than spawning `bun run src/index.ts` as a child
  * process. This is a deliberate choice over the shell-out alternative the
- * AC also allows: it lets step 2 below reach into the *exact* `MultiUserMode`
- * class instance the running server uses via ordinary module-cache identity
- * (Bun's module cache keys by resolved absolute file path, not by the
- * import specifier string, so this script's
- * `import('../packages/server/src/services/user-mode.ts')` and
- * `app-context.ts`'s `import('./services/user-mode.js')` resolve to the
- * SAME cached module) -- no second SQLite connection, no IPC, no
- * subprocess-boundary credential smuggling.
+ * AC also allows: it lets step 2 below reach the *exact* shared database
+ * connection and on-disk JWT secret the running server itself uses, via
+ * ordinary module-cache identity (Bun's module cache keys by resolved
+ * absolute file path, not by the import specifier string, so this script's
+ * `import('../packages/server/src/database/connection.ts')` and
+ * `app-context.ts`'s `import('./database/connection.js')` resolve to the
+ * SAME cached module, and `initializeDatabase()`'s no-argument fast path
+ * therefore returns the SAME live `Kysely` instance) -- no second SQLite
+ * connection, no IPC, no subprocess-boundary credential smuggling.
  *
  * ============================================================================
  * CREDENTIAL-ISSUANCE SUBSTITUTION (pre-pr-completeness.md Q13)
  * ============================================================================
  *
  * V1's credentialed-fetch arm and both positive controls need a REAL
- * authenticated session (real user row, real signed JWT, real Set-Cookie
- * response with the production `SameSite=Lax` attribute) against a REAL
- * `AUTH_MODE=multi-user` instance -- P2 is specifically about SameSite,
+ * authenticated session (real user row, real signed JWT) against a REAL
+ * `AUTH_MODE=multi-user` instance -- P2 is specifically about `SameSite`,
  * which is a no-op to test in `AUTH_MODE=none` (see the AC's "critical
- * environment finding"). Multi-user login validates OS credentials
- * (`pamtester` on Linux) against a REAL password this script has no
- * legitimate way to obtain (no interactive terminal, and creating a new OS
- * account requires root + would violate
+ * environment finding"). This script has no legitimate way to authenticate
+ * through the real `/api/auth/login` endpoint interactively (no interactive
+ * terminal, and creating a new OS account requires root + would violate
  * `.claude/rules/os-environment-coupling.md` Discipline 2 -- no unilateral
  * OS state changes outside the project's own scope, without owner consent).
  *
+ * IMPORTANT (Architect ruling, superseding an earlier draft of this script
+ * that monkey-patched `MultiUserMode.prototype.validateOsCredentials` to
+ * accept any password): that approach was REJECTED as a security defect,
+ * not merely narrowed-but-accepted. Weakening the password check itself,
+ * for the whole script run, on a server reachable from the LAN (arm 8
+ * needs that reachability by definition), means ANY host that can reach
+ * the port during the run window could have authenticated as the operator
+ * with any password and reached `POST /api/sessions` (real PTY spawn as
+ * the operator's OS identity) -- an RCE window, not just a probe-data leak.
+ * Narrowing the network exposure (binding to a single IP instead of
+ * `0.0.0.0`) does not fix this: it is a smaller door, not no door, since
+ * arm 8 still requires LAN reachability. The fix has to be to the
+ * credential mechanism, not the network surface.
+ *
+ * The actual substitution: this script mints a session JWT DIRECTLY,
+ * replicating every step of `MultiUserMode.login()`
+ * (`packages/server/src/services/user-mode.ts`) that comes AFTER password
+ * validation -- real OS user lookup (`lookupOsUser`), a real upsert against
+ * the running server's own live database (`userRepository.upsertByOsUid`),
+ * and a real `SignJWT` call using the exact same payload shape, algorithm,
+ * and expiry, signed with the REAL per-instance secret the server itself
+ * generated and persisted to `<AGENT_CONSOLE_HOME>/jwt-secret` at boot. See
+ * `mintRealSessionToken` below.
+ *
  * Per Q13's three conditions for a recorded proxy substitution:
  *
- *   1. Upstream and outside: `MultiUserMode.prototype.validateOsCredentials`
- *      is monkey-patched (at RUNTIME, in this script's own process only --
- *      zero repository files are modified) to resolve `true` unconditionally.
- *      This is the interactive-password-check step, which sits upstream of
- *      and entirely outside the CSP sandbox boundary chain this probe
- *      verifies (P1/P2 are about what an artifact document can and cannot
- *      do once loaded, not about how a user proves their password).
- *   2. Genuinely provisioned: every other step of `MultiUserMode.login()`
- *      runs FOR REAL and UNMODIFIED: `lookupOsUser()` does a real `id` /
- *      `getent` lookup of this script's own real OS user (`os.userInfo()`),
- *      `userRepository.upsertByOsUid()` performs a real INSERT against the
- *      disposable instance's real SQLite database, and the JWT is signed by
- *      the real `SignJWT` call with the real per-instance secret generated
- *      by `MultiUserMode.create()`. The resulting cookie is set via the
- *      real `POST /api/auth/login` route handler (`routes/auth.ts`,
- *      unmodified), with the real `SameSite=Lax` attribute this probe
- *      exists to verify.
+ *   1. Upstream and outside: the ONLY thing substituted is the MECHANISM
+ *      for OBTAINING a valid session credential -- direct signing instead
+ *      of an interactive password entry through the login endpoint. This
+ *      sits upstream of and entirely outside the CSP sandbox boundary
+ *      chain this probe verifies (P1/P2 are about what an artifact
+ *      document can and cannot do once loaded, not about how a test
+ *      harness itself proves its own identity to obtain a token). Critically,
+ *      this is a STRONGER isolation than the rejected patch: the real
+ *      `/api/auth/login` endpoint, and its real password validation, is
+ *      NEVER called, weakened, or reachable-with-a-bypass by this script,
+ *      at any point -- there is no window, however narrow, during which
+ *      anyone else on the network could authenticate without a real
+ *      password. Zero repository files are modified.
+ *   2. Genuinely provisioned: every step performed IS the real production
+ *      mechanism, just invoked directly instead of over HTTP: `lookupOsUser()`
+ *      does a real `id` / `getent` lookup of this script's own real OS user
+ *      (`os.userInfo()`); `userRepository.upsertByOsUid()` performs a real
+ *      INSERT against the SAME live SQLite connection the running server
+ *      uses (see "SERVER LIFECYCLE" above); the JWT is signed with the
+ *      REAL per-instance secret the disposable server itself generated.
+ *      The ENTIRE verification path on the other side --
+ *      `MultiUserMode.authenticate()` / `verifyTokenSync()` -- runs
+ *      completely unmodified: a forged token, or one signed with the wrong
+ *      secret, is rejected by the running server exactly as it would be in
+ *      production. This script constructs a credential the production
+ *      verification path independently accepts as genuine; it does not
+ *      disable that path.
  *   3. Recorded as a proxy, here and in the final run report (see the
  *      script's own log output at "CREDENTIAL ISSUANCE (proxy)").
+ *
+ * One consequence: this script no longer round-trips the real
+ * `POST /api/auth/login` HTTP response, so it can no longer independently
+ * verify premise P2's `SameSite=Lax` cookie attribute via a live Set-Cookie
+ * header (as an earlier version of this script did). That coverage now
+ * lives in `packages/server/src/routes/__tests__/auth.test.ts` (a real,
+ * in-process Hono route-level test against the actual `routes/auth.ts`
+ * handler) -- see the P2 log line below for the pointer. The cookie THIS
+ * script injects into Chromium/`fetch()` still carries `SameSite=Lax` (and
+ * `secure` computed via the real `resolveAuthCookieSecure(serverConfig)`
+ * call), matching what `routes/auth.ts` sets, so the sandbox-boundary arms
+ * that depend on the cookie's actual attributes (P1/P2/P2a) are unaffected.
  *
  * ============================================================================
  * ARM 3 -- THE CONNECT WALL (layer 2), NOT P2 (Architect ruling, 2026-08-16)
@@ -117,7 +165,10 @@
  * reaches the point where a cookie would or wouldn't be attached, so this
  * arm is structurally unable to distinguish "blocked by CSP" from "blocked
  * by SameSite". P2 is source-verified instead (`SameSite=Lax` asserted
- * against the real `Set-Cookie` header earlier in this script) plus a
+ * against a real Set-Cookie header from the actual `routes/auth.ts` handler
+ * in `packages/server/src/routes/__tests__/auth.test.ts` -- this script no
+ * longer round-trips the real login endpoint itself, see
+ * "CREDENTIAL-ISSUANCE SUBSTITUTION" above) plus a
  * re-verification trigger recorded in docs/design/html-artifacts.md §3.3:
  * any future change that adds `connect-src` to the artifact CSP MUST add a
  * direct cross-site probe of P2 before that change ships.
@@ -150,8 +201,27 @@ import { chromium } from 'playwright-core';
 import { existsSync, mkdirSync, rmSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { createRequire } from 'module';
 
 const REPO_ROOT = new URL('../..', import.meta.url).pathname;
+
+/**
+ * `jose` is a dependency of `packages/server`, not of this script's own
+ * directory (`scripts/smoke/` has no `node_modules` of its own, and Bun's
+ * module resolution for a bare specifier is rooted at the IMPORTING file's
+ * directory, walking up its ancestors only -- it does not search sibling
+ * package directories). A bare `import('jose')` from this file therefore
+ * fails to resolve even though the disposable server (which lives under
+ * `packages/server/src/`) imports it successfully. `createRequire`, rooted
+ * at a path inside `packages/server/src/`, resolves it exactly the way
+ * that package's own code would, then this script dynamically imports the
+ * resolved absolute path -- no new dependency, no duplication of `jose`.
+ */
+async function importJoseFromServerPackage() {
+  const requireFromServer = createRequire(path.join(REPO_ROOT, 'packages/server/src/services/user-mode.ts'));
+  const joseEntryPath = requireFromServer.resolve('jose');
+  return import(joseEntryPath);
+}
 
 // ---------------------------------------------------------------------------
 // Chromium resolution -- copied verbatim from the #1162 precedent script
@@ -263,22 +333,54 @@ async function waitForServerReady(baseUrl, timeoutMs = 15_000) {
   throw new Error(`Disposable server did not become ready within ${timeoutMs}ms: ${lastErr}`);
 }
 
-/** Minimal Set-Cookie parser -- only the attributes this probe needs to verify. */
-function parseSetCookie(setCookieHeader) {
-  const parts = setCookieHeader.split(';').map((p) => p.trim());
-  const [nameValue, ...attrParts] = parts;
-  const eqIdx = nameValue.indexOf('=');
-  const name = nameValue.slice(0, eqIdx);
-  const value = nameValue.slice(eqIdx + 1);
-  const attrs = { httpOnly: false, secure: false, sameSite: undefined, path: '/' };
-  for (const attr of attrParts) {
-    const lower = attr.toLowerCase();
-    if (lower === 'httponly') attrs.httpOnly = true;
-    else if (lower === 'secure') attrs.secure = true;
-    else if (lower.startsWith('samesite=')) attrs.sameSite = attr.split('=')[1];
-    else if (lower.startsWith('path=')) attrs.path = attr.split('=')[1];
+/**
+ * Mint a REAL session credential directly, replicating every step of
+ * `MultiUserMode.login()` (`services/user-mode.ts`) that runs AFTER
+ * password validation -- see the header comment "CREDENTIAL-ISSUANCE
+ * SUBSTITUTION" for the full Q13 justification and the security rationale
+ * for why this replaces the earlier `validateOsCredentials` monkey-patch.
+ * MUST be called AFTER the disposable server is ready: both the JWT secret
+ * file and the database singleton this function reaches into are created
+ * during the server's own boot sequence.
+ */
+async function mintRealSessionToken(disposableHome, osUsername) {
+  const { lookupOsUser } = await import('../../packages/server/src/services/os-user-lookup.ts');
+  const { initializeDatabase } = await import('../../packages/server/src/database/connection.ts');
+  const { SqliteUserRepository } = await import('../../packages/server/src/repositories/sqlite-user-repository.ts');
+  const { SignJWT } = await importJoseFromServerPackage();
+
+  const userInfo = await lookupOsUser(osUsername);
+  if (!userInfo) {
+    throw new Error(`mintRealSessionToken: lookupOsUser('${osUsername}') returned null -- cannot mint a session for this OS user`);
   }
-  return { name, value, ...attrs };
+
+  // Fast path (see "SERVER LIFECYCLE" header comment): initializeDatabase()
+  // called with NO dbPath argument returns the SAME cached Kysely instance
+  // the running server itself uses -- not a second/divergent connection.
+  const db = await initializeDatabase();
+  const userRepository = new SqliteUserRepository(db);
+  const authUser = await userRepository.upsertByOsUid(userInfo.uid, osUsername, userInfo.homeDir);
+
+  // Real per-instance secret, written to disk by the server's own
+  // `MultiUserMode.create()` at boot (`services/user-mode.ts`'s
+  // `JWT_SECRET_FILE` constant is the literal string 'jwt-secret'), read
+  // directly rather than reaching into the class instance -- this script no
+  // longer touches `MultiUserMode` at all.
+  const jwtSecret = new Uint8Array(await Bun.file(path.join(disposableHome, 'jwt-secret')).arrayBuffer());
+
+  // EXACT payload shape / algorithm / expiry `MultiUserMode.login()` signs.
+  // Any drift here would mint a token the real, unmodified
+  // `authenticate()` / `verifyTokenSync()` path legitimately rejects --
+  // this is a parallel construction of what a real login would have
+  // produced, not a bypass of the verification side.
+  const token = await new SignJWT({ username: authUser.username, home: authUser.homeDir })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setSubject(authUser.id)
+    .setIssuedAt()
+    .setExpirationTime('7d')
+    .sign(jwtSecret);
+
+  return { token, authUser };
 }
 
 // ---------------------------------------------------------------------------
@@ -506,24 +608,10 @@ async function main() {
   process.env.HOST = '0.0.0.0';
   process.env.LOG_LEVEL = process.env.LOG_LEVEL ?? 'warn';
 
-  // CREDENTIAL-ISSUANCE SUBSTITUTION (see header comment): monkey-patch the
-  // OS-password-check step ONLY, at runtime, in this process. Every other
-  // step of MultiUserMode.login() (real OS user lookup, real DB upsert,
-  // real JWT signing, real cookie attributes) runs unmodified.
-  const userModeModule = await import('../../packages/server/src/services/user-mode.ts');
-  const originalValidateOsCredentials = userModeModule.MultiUserMode.prototype.validateOsCredentials;
-  userModeModule.MultiUserMode.prototype.validateOsCredentials = async () => true;
-  console.log(
-    '==> CREDENTIAL ISSUANCE (proxy): MultiUserMode.prototype.validateOsCredentials monkey-patched to bypass ' +
-      'the interactive OS-password check ONLY (runtime-only, this process, zero repo files modified). ' +
-      'lookupOsUser / upsertByOsUid / JWT signing / cookie issuance all run for real. See header comment ' +
-      '"CREDENTIAL-ISSUANCE SUBSTITUTION" for the pre-pr-completeness.md Q13 justification.',
-  );
-
   // SERVER-SIDE REQUEST OBSERVATION (arm 3 / connect-wall assertion, see
   // header comment "ARM 3"): monkey-patch the GLOBAL `Bun.serve` (at
-  // RUNTIME, in this process only, zero repo files modified -- same style
-  // as the CREDENTIAL-ISSUANCE SUBSTITUTION above) so every request the
+  // RUNTIME, in this process only, zero repository files modified) so
+  // every request the
   // disposable server's real `Bun.serve({ fetch: app.fetch, ... })` call
   // receives is also recorded here, by pathname, before being forwarded
   // UNMODIFIED to the real `app.fetch`. This is pure instrumentation, not
@@ -562,31 +650,36 @@ async function main() {
   console.log('==> disposable server is ready');
 
   // -----------------------------------------------------------------
-  // Real login: this script's own real OS user, real everything except
-  // the password check (see CREDENTIAL-ISSUANCE SUBSTITUTION above).
+  // Real session credential: minted directly (see CREDENTIAL-ISSUANCE
+  // SUBSTITUTION above) rather than through the real /api/auth/login HTTP
+  // endpoint -- that endpoint is never called by this script and stays
+  // fully password-protected for anyone else the whole time it runs.
   // -----------------------------------------------------------------
   const osUsername = os.userInfo().username;
-  const loginRes = await fetch(`${baseUrl}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: osUsername, password: 'unused-password-check-is-bypassed' }),
-  });
-  if (!loginRes.ok) {
-    throw new Error(`Login failed unexpectedly (status ${loginRes.status}): ${await loginRes.text()}`);
-  }
-  const setCookieHeader = loginRes.headers.get('set-cookie');
-  if (!setCookieHeader) {
-    throw new Error('Login succeeded but no Set-Cookie header was returned');
-  }
-  const authCookie = parseSetCookie(setCookieHeader);
-  console.log(
-    `==> real login succeeded for OS user '${osUsername}'; cookie attrs: SameSite=${authCookie.sameSite}, ` +
-      `HttpOnly=${authCookie.httpOnly}, Secure=${authCookie.secure}`,
-  );
-  expect(
-    authCookie.sameSite && authCookie.sameSite.toLowerCase() === 'lax',
-    'auth cookie carries SameSite=Lax (premise P2 dependency)',
-    `observed SameSite=${authCookie.sameSite}`,
+  const { token: sessionToken, authUser: mintedAuthUser } = await mintRealSessionToken(disposableHome, osUsername);
+  console.log(`==> real session credential minted for OS user '${osUsername}' (userId=${mintedAuthUser.id})`);
+  const { AUTH_COOKIE_NAME } = await import('../../packages/server/src/lib/auth-constants.ts');
+  const { resolveAuthCookieSecure, serverConfig } = await import('../../packages/server/src/lib/server-config.ts');
+  // Construct the cookie THIS script injects with the exact same
+  // attributes `routes/auth.ts`'s setCookie(...) call uses -- `secure` via
+  // the real resolveAuthCookieSecure(serverConfig) call (not hardcoded),
+  // `sameSite`/`path`/`httpOnly` matching its literal values. Since this
+  // script no longer round-trips the real login response, it can no longer
+  // independently verify P2's SameSite=Lax via a live Set-Cookie header --
+  // that coverage now lives in routes/__tests__/auth.test.ts (see the
+  // CREDENTIAL-ISSUANCE SUBSTITUTION header comment for the pointer).
+  const authCookie = {
+    name: AUTH_COOKIE_NAME,
+    value: sessionToken,
+    path: '/',
+    httpOnly: true,
+    secure: resolveAuthCookieSecure(serverConfig),
+    sameSite: 'Lax',
+  };
+  info(
+    "P2 dependency: the injected auth cookie carries SameSite=Lax (matching routes/auth.ts's setCookie(...) call)",
+    'independently verified via a real Set-Cookie header in packages/server/src/routes/__tests__/auth.test.ts, ' +
+      'not re-verified here since this script no longer calls the real login endpoint',
   );
 
   // -----------------------------------------------------------------
@@ -645,9 +738,9 @@ async function main() {
 
   try {
     const context = await browser.newContext();
-    // Seed the real auth cookie into the browser's cookie jar for this
-    // origin -- the SAME cookie routes/auth.ts issued via the real login
-    // above, with its real SameSite/HttpOnly/Secure attributes intact.
+    // Seed the minted session cookie into the browser's cookie jar for
+    // this origin -- constructed above with the SAME SameSite/HttpOnly/
+    // Secure attributes routes/auth.ts's setCookie(...) call uses.
     // ALSO seed a second, non-HttpOnly marker cookie for the
     // document.cookie positive control below: the real auth cookie is
     // HttpOnly by production design (routes/auth.ts), so `document.cookie`
@@ -665,20 +758,11 @@ async function main() {
         path: authCookie.path,
         httpOnly: authCookie.httpOnly,
         secure: authCookie.secure,
-        // Normalize case ONCE before mapping to Playwright's expected
-        // capitalization: the server may emit a lowercase `SameSite=lax`
-        // attribute (the parser at attrs.sameSite above preserves
-        // whatever case the server sent), and an exact-case comparison
-        // here would silently fall through to 'None' -- seeding the
-        // probe's cookie with a DIFFERENT SameSite policy than what the
-        // server actually emits, changing what this probe tests without
-        // any visible failure.
-        sameSite: (() => {
-          const normalized = authCookie.sameSite?.toLowerCase();
-          if (normalized === 'lax') return 'Lax';
-          if (normalized === 'strict') return 'Strict';
-          return 'None';
-        })(),
+        // authCookie.sameSite is a fixed literal ('Lax') constructed above
+        // to match routes/auth.ts's setCookie(...) call -- no case
+        // normalization needed (unlike a parsed live Set-Cookie header,
+        // there is no server-emitted casing to preserve here).
+        sameSite: authCookie.sameSite,
       },
       {
         name: cookieControlName,
@@ -1104,26 +1188,13 @@ async function main() {
     }
     console.log(`  OK    arm 8 precondition: ${lanBaseUrl}/health is reachable over plain HTTP`);
 
-    // Real login via the LAN-IP origin itself (not a manually-forged
-    // cross-domain cookie copy) -- mints a cookie genuinely scoped to that
-    // origin, same monkey-patched password bypass as the primary login
-    // above (see CREDENTIAL-ISSUANCE SUBSTITUTION header comment).
-    const lanLoginRes = await fetch(`${lanBaseUrl}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: osUsername, password: 'unused-password-check-is-bypassed' }),
-    });
-    if (!lanLoginRes.ok) {
-      throw new Error(
-        `arm 8: LAN-IP login failed unexpectedly (status ${lanLoginRes.status}): ${await lanLoginRes.text()}`,
-      );
-    }
-    const lanSetCookieHeader = lanLoginRes.headers.get('set-cookie');
-    if (!lanSetCookieHeader) {
-      throw new Error('arm 8: LAN-IP login succeeded but no Set-Cookie header was returned');
-    }
-    const lanAuthCookie = parseSetCookie(lanSetCookieHeader);
-    console.log(`  INFO  arm 8: real login succeeded via LAN IP for OS user '${osUsername}'`);
+    // No separate LAN-IP login needed: the session credential is a JWT
+    // (see CREDENTIAL-ISSUANCE SUBSTITUTION header comment), which is not
+    // origin-bound -- only the injected COOKIE's own `domain` attribute
+    // governs whether a browser attaches it to a given origin. Reuse the
+    // SAME token minted earlier for the primary flow, just under a cookie
+    // scoped to this LAN IP instead of 127.0.0.1.
+    console.log(`  INFO  arm 8: reusing the same real session credential (minted once for OS user '${osUsername}') for the LAN-IP origin`);
 
     // Fresh, isolated browser context -- deliberately NOT the `context`
     // used by arms 0-7/positive controls (scoped to the 127.0.0.1 cookie
@@ -1132,18 +1203,13 @@ async function main() {
     const lanContext = await browser.newContext();
     await lanContext.addCookies([
       {
-        name: lanAuthCookie.name,
-        value: lanAuthCookie.value,
+        name: authCookie.name,
+        value: authCookie.value,
         domain: lanIp,
-        path: lanAuthCookie.path,
-        httpOnly: lanAuthCookie.httpOnly,
-        secure: lanAuthCookie.secure,
-        sameSite: (() => {
-          const normalized = lanAuthCookie.sameSite?.toLowerCase();
-          if (normalized === 'lax') return 'Lax';
-          if (normalized === 'strict') return 'Strict';
-          return 'None';
-        })(),
+        path: authCookie.path,
+        httpOnly: authCookie.httpOnly,
+        secure: authCookie.secure,
+        sameSite: authCookie.sameSite,
       },
     ]);
 
@@ -1350,6 +1416,12 @@ async function main() {
     // SAME in-process token store the disposable server uses (module-cache
     // identity, same rationale as the SERVER LIFECYCLE header comment).
     const spentTokenPage = await lanContext.newPage();
+    // Guard the fixture's own precondition first (mirrors
+    // check-artifact-server-story-e2e.mjs's V2 assertion on the same
+    // field): without this, an undefined toolResult.artifactId would still
+    // make the mint/consume pair "pass" -- both sides using `undefined` as
+    // the id -- proving nothing about the actual id-bound behavior below.
+    expect(!!toolResult.artifactId, 'arm 8b (V2) setup: toolResult carries an artifactId', JSON.stringify(toolResult));
     const spentToken = mintArtifactViewerToken(toolResult.artifactId);
     const consumedOk = consumeArtifactViewerToken(spentToken, toolResult.artifactId);
     expect(consumedOk, 'arm 8b (V2) setup: the spent-token fixture actually consumed successfully before use');
