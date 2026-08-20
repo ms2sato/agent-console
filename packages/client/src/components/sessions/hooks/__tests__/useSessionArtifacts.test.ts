@@ -32,13 +32,11 @@ function getLastFetchUrl(): string {
   return String(arg);
 }
 
-function createMockResponse(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    statusText: 'OK',
-    json: mock(() => Promise.resolve(body)),
-  } as unknown as Response;
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }
 
 describe('useSessionArtifacts', () => {
@@ -48,7 +46,7 @@ describe('useSessionArtifacts', () => {
 
   it('calls fetchArtifacts with the given sessionId (session-scoped query)', async () => {
     mockFetch.mockResolvedValue(
-      createMockResponse({
+      jsonResponse({
         artifacts: [
           { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
         ],
@@ -67,7 +65,7 @@ describe('useSessionArtifacts', () => {
   });
 
   it('resolves an empty list when the session has no artifacts', async () => {
-    mockFetch.mockResolvedValue(createMockResponse({ artifacts: [] }));
+    mockFetch.mockResolvedValue(jsonResponse({ artifacts: [] }));
 
     const { result } = renderHook(() => useSessionArtifacts('session-2'), { wrapper: createWrapper() });
 

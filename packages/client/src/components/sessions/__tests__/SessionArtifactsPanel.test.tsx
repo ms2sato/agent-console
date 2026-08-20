@@ -16,13 +16,11 @@ afterEach(() => {
   cleanup();
 });
 
-function createMockResponse(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    statusText: 'OK',
-    json: mock(() => Promise.resolve(body)),
-  } as unknown as Response;
+function jsonResponse(data: unknown, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }
 
 describe('SessionArtifactsPanel', () => {
@@ -41,7 +39,7 @@ describe('SessionArtifactsPanel', () => {
   });
 
   it('renders nothing when the session has no artifacts (same as Memo with no content)', async () => {
-    mockFetch.mockResolvedValue(createMockResponse({ artifacts: [] }));
+    mockFetch.mockResolvedValue(jsonResponse({ artifacts: [] }));
 
     const { container } = await renderWithRouter(<SessionArtifactsPanel sessionId="session-1" />);
 
@@ -52,7 +50,7 @@ describe('SessionArtifactsPanel', () => {
 
   it('renders the artifact list with a plain full-document anchor deep link (#1340 jail rule)', async () => {
     mockFetch.mockResolvedValue(
-      createMockResponse({
+      jsonResponse({
         artifacts: [
           { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
         ],
@@ -72,7 +70,7 @@ describe('SessionArtifactsPanel', () => {
 
   it('collapses to a thin strip and can be re-expanded', async () => {
     mockFetch.mockResolvedValue(
-      createMockResponse({
+      jsonResponse({
         artifacts: [
           { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
         ],
@@ -86,5 +84,8 @@ describe('SessionArtifactsPanel', () => {
 
     await waitFor(() => expect(screen.getByLabelText('Expand artifacts')).toBeTruthy());
     expect(screen.queryByText('My Dashboard')).toBeNull();
+
+    screen.getByLabelText('Expand artifacts').click();
+    await waitFor(() => expect(screen.getByText('My Dashboard')).toBeTruthy());
   });
 });
