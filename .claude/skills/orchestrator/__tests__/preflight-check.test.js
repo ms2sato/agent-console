@@ -19,7 +19,27 @@ describe('formatCoverageVerdict (Issue #1189)', () => {
       hasIntegrationGap: true,
       hasCommentOnlyExemptions: false,
     });
-    expect(result).toBe('**Integration test gap detected — review recommended.** ⚠');
+    expect(result).toBe(
+      "**Integration test gap detected — raise it with the requester before opening the PR; this is not the implementer's to waive.** ⚠",
+    );
+  });
+
+  // The wording is load-bearing, not cosmetic. A delegate who reads the gap as
+  // "advisory, so I may decide it myself" is applying the script's exit code as
+  // the escalation criterion, which is not the rule's criterion -- see
+  // `.claude/rules/workflow.md`, "A joint decision does not unlock a strong
+  // preflight recommend". Observed once: the integration gap on a cross-package
+  // PR was seen, classified as self-waivable because it left the exit code
+  // clean, and never surfaced.
+  it('names the escalation obligation rather than merely recommending review', () => {
+    const result = formatCoverageVerdict({
+      hasUnitGaps: false,
+      gapsCount: 0,
+      hasIntegrationGap: true,
+      hasCommentOnlyExemptions: false,
+    });
+    expect(result).toContain('raise it with the requester');
+    expect(result).not.toContain('review recommended');
   });
 
   it('does not claim exempted files have corresponding tests — uses exemption-specific wording', () => {

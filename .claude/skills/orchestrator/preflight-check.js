@@ -97,6 +97,16 @@ function printIntegrationTestCoverage(integrationTestNeeds) {
     }
     if (integrationTestNeeds.isCrossPackage) {
       console.log('\n⚠ Cross-package change (client + server) — integration test strongly recommended');
+      console.log(
+        '  This warning is advisory to the SCRIPT (it does not affect the exit code) but not to YOU.',
+      );
+      console.log(
+        '  It is not yours to waive: raise it with whoever assigned the work, and let them decide',
+      );
+      console.log(
+        '  WHICH test to add. See `.claude/rules/workflow.md`, "A joint decision does not unlock a',
+      );
+      console.log('  strong preflight recommend".');
     }
     console.log();
   }
@@ -109,7 +119,7 @@ function printIntegrationTestCoverage(integrationTestNeeds) {
  */
 export function formatCoverageVerdict({ hasUnitGaps, gapsCount, hasIntegrationGap, hasCommentOnlyExemptions }) {
   if (hasUnitGaps) return `**${gapsCount} production file(s) missing test coverage.**`;
-  if (hasIntegrationGap) return '**Integration test gap detected — review recommended.** ⚠';
+  if (hasIntegrationGap) return '**Integration test gap detected — raise it with the requester before opening the PR; this is not the implementer\'s to waive.** ⚠';
   if (hasCommentOnlyExemptions) return '**All test coverage requirements are satisfied (comment-only changes exempted).** ✅';
   return '**All production files have corresponding tests.** ✅';
 }
