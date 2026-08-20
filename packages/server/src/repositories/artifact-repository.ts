@@ -12,7 +12,10 @@ export interface CreateArtifactParams {
   userId: string;
   title: string;
   content: string;
-  /** Provenance only (nullable); never used for lookup. */
+  /**
+   * Provenance (nullable). Used only as a secondary list filter in
+   * `findByUserIdAndSourceSessionId`; never as an authorization check.
+   */
   sourceSessionId: string | null;
 }
 
