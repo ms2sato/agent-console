@@ -101,6 +101,23 @@ Reason: without `minLength(1)`, the `regex` check on an empty string produces th
 - Test user interactions, not implementation
 - Mock API calls at the fetch level — see [test-standards skill](../test-standards/SKILL.md)
 
+### SessionPage panel composition is verified by Browser QA, not by a mount test
+
+`SessionPage.tsx` composes the session-context panels (Memo, Artifacts, Bookmarks, and any that follow). Its sibling test `__tests__/SessionPage.test.ts` is deliberately JSX-free and verifies each panel with a **type-level contract check** — pinning the panel's prop signature via `Parameters<typeof Panel>[0]`, the idiom the `AddAgentWorkerMenu` / `onSelectShell` case established.
+
+**Know what that does not cover.** A prop-signature pin says nothing about whether SessionPage actually renders the panel. Delete the `<SessionArtifactsPanel ... />` line and every test still passes. The composition site is covered by Browser QA, and by nothing else.
+
+**This is a decision, not an oversight.** Rendering SessionPage requires standing up `useSessionStopTasksContext` (which throws without its Provider), `useSessionPageState` (WebSocket-driven), `useTabManagement`, and `useAgents`. No test in the repository renders it today. Building that harness is its own piece of work, and attaching it to whichever feature happens to add the next panel would make that feature pay for it.
+
+So, when you add a panel to SessionPage:
+
+- add the type-level prop pin to `SessionPage.test.ts`,
+- cover the panel's own behavior in its component and hook tests, where it belongs,
+- include the panel's visible state in Browser QA — that pass is the only thing verifying the mount,
+- point at this section from the PR body rather than re-deriving the reasoning.
+
+**When to revisit.** If a mount regression actually ships, or the panel count grows enough that Browser QA stops being a credible check, build the harness then — with that as the driver. Until one of those happens, a harness Issue would be a wish with nothing pushing it. (Decided 2026-08-20 while adding the third panel; see [#1380](https://github.com/ms2sato/agent-console/issues/1380) for the discussion that produced this.)
+
 ## Performance
 
 - Memoize expensive computations with `useMemo`
