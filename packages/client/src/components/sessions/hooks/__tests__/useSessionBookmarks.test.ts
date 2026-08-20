@@ -93,16 +93,23 @@ describe('useSessionBookmarks', () => {
   });
 
   it('addBookmark posts the url/title and invalidates the session list', async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
     const { result } = renderHook(() => useSessionBookmarks('session-3'), { wrapper: createWrapper() });
     await waitFor(() => expect(result.current.isPending).toBe(false));
 
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        bookmark: { id: 'bookmark-new', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z' },
-      })
-    );
+    const newBookmark = {
+      id: 'bookmark-new',
+      url: 'https://example.com',
+      title: 'Example',
+      createdAt: '2026-08-20T00:00:00.000Z',
+    };
+    // The POST response and the invalidated query's GET refetch are two
+    // distinct calls with different response shapes -- queue them
+    // separately so the refetch doesn't receive the POST's `{ bookmark }`
+    // shape (which fails BookmarksListResponseSchema parsing).
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmark: newBookmark }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [newBookmark] }));
 
     await act(async () => {
       result.current.addBookmark('https://example.com', 'Example');
@@ -111,15 +118,27 @@ describe('useSessionBookmarks', () => {
 
     const [, postInit] = findFetchCallByMethod('POST')!;
     expect(JSON.parse(postInit!.body!)).toEqual({ url: 'https://example.com', title: 'Example', sessionId: 'session-3' });
+
+    await waitFor(() => expect(result.current.bookmarks).toEqual([newBookmark]));
   });
 
   it('deleteBookmark issues a DELETE for the given id and invalidates the session list', async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
+    const existingBookmark = {
+      id: 'bookmark-1',
+      url: 'https://example.com',
+      title: 'Example',
+      createdAt: '2026-08-20T00:00:00.000Z',
+    };
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [existingBookmark] }));
 
     const { result } = renderHook(() => useSessionBookmarks('session-4'), { wrapper: createWrapper() });
     await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.bookmarks).toEqual([existingBookmark]);
 
-    mockFetch.mockResolvedValue(jsonResponse({ success: true }));
+    // Same reasoning as the addBookmark test above: queue the DELETE
+    // response and the invalidated query's GET refetch separately.
+    mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
     await act(async () => {
       result.current.deleteBookmark('bookmark-1');
@@ -128,5 +147,7 @@ describe('useSessionBookmarks', () => {
 
     const [deleteUrl] = findFetchCallByMethod('DELETE')!;
     expect(fetchUrl(deleteUrl)).toContain('/api/bookmarks/bookmark-1');
+
+    await waitFor(() => expect(result.current.bookmarks).toEqual([]));
   });
 });

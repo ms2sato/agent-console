@@ -102,18 +102,25 @@ describe('SessionBookmarksPanel', () => {
     expect(container.querySelector('script')).toBeNull();
   });
 
-  it('submitting the add form calls the create mutation with the entered url/title', async () => {
-    mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
+  it('submitting the add form calls the create mutation with the entered url/title and refreshes the list', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
     await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
 
     await waitFor(() => expect(screen.getByLabelText('Bookmark URL')).toBeTruthy());
 
-    mockFetch.mockResolvedValue(
-      jsonResponse({
-        bookmark: { id: 'bookmark-new', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z' },
-      })
-    );
+    const newBookmark = {
+      id: 'bookmark-new',
+      url: 'https://example.com',
+      title: 'Example',
+      createdAt: '2026-08-20T00:00:00.000Z',
+    };
+    // The POST response and the invalidated query's GET refetch are two
+    // distinct calls with different response shapes -- queue them
+    // separately so the refetch doesn't receive the POST's `{ bookmark }`
+    // shape (which fails BookmarksListResponseSchema parsing).
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmark: newBookmark }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [newBookmark] }));
 
     fireEvent.change(screen.getByLabelText('Bookmark URL'), { target: { value: 'https://example.com' } });
     fireEvent.change(screen.getByLabelText('Bookmark title'), { target: { value: 'Example' } });
@@ -129,10 +136,13 @@ describe('SessionBookmarksPanel', () => {
       const init = postCall![1] as { body: string };
       expect(JSON.parse(init.body)).toEqual({ url: 'https://example.com', title: 'Example', sessionId: 'session-1' });
     });
+
+    // The invalidated query's refetch brings the new bookmark into the list.
+    await waitFor(() => expect(screen.getByText('Example')).toBeTruthy());
   });
 
-  it('clicking delete calls the delete mutation with the right id', async () => {
-    mockFetch.mockResolvedValue(
+  it('clicking delete calls the delete mutation with the right id and refreshes the list', async () => {
+    mockFetch.mockResolvedValueOnce(
       jsonResponse({
         bookmarks: [
           { id: 'bookmark-1', url: 'https://example.com', title: 'Example Site', createdAt: '2026-08-20T00:00:00.000Z' },
@@ -143,7 +153,10 @@ describe('SessionBookmarksPanel', () => {
     await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
 
-    mockFetch.mockResolvedValue(jsonResponse({ success: true }));
+    // Same reasoning as the add-form test above: queue the DELETE response
+    // and the invalidated query's GET refetch separately.
+    mockFetch.mockResolvedValueOnce(jsonResponse({ success: true }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
     fireEvent.click(screen.getByLabelText('Delete bookmark Example Site'));
 
@@ -158,6 +171,9 @@ describe('SessionBookmarksPanel', () => {
       const urlStr = typeof url === 'string' ? url : url instanceof Request ? url.url : String(url);
       expect(urlStr).toContain('/api/bookmarks/bookmark-1');
     });
+
+    // The invalidated query's refetch removes the deleted bookmark from the list.
+    await waitFor(() => expect(screen.queryByText('Example Site')).toBeNull());
   });
 
   it('collapses to a thin strip and can be re-expanded', async () => {

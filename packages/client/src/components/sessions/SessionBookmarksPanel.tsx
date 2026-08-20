@@ -31,7 +31,7 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
   const [title, setTitle] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const { bookmarks, isPending, addBookmark, deleteBookmark } = useSessionBookmarks(sessionId);
+  const { bookmarks, isPending, isAddingBookmark, addBookmark, deleteBookmark } = useSessionBookmarks(sessionId);
 
   // Render nothing while genuinely pending with no cached data yet -- once
   // resolved (even to an empty list), the panel stays mounted so the add
@@ -42,6 +42,9 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (isAddingBookmark) {
+      return;
+    }
     setError(null);
     addBookmark(url.trim(), title.trim() || undefined, {
       onSuccess: () => {
@@ -104,7 +107,7 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
         />
         <button
           type="submit"
-          disabled={url.trim().length === 0}
+          disabled={url.trim().length === 0 || isAddingBookmark}
           className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
         >
           Add bookmark

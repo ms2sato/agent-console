@@ -38,6 +38,7 @@ export function useSessionBookmarks(sessionId: string) {
   return {
     bookmarks: bookmarks ?? [],
     isPending,
+    isAddingBookmark: addMutation.isPending,
     addBookmark: (
       url: string,
       title: string | undefined,
