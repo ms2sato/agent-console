@@ -60,6 +60,14 @@ None of surfaces 1-3 is the **commit-status context** named `CodeRabbit`. That c
 CodeRabbit=SUCCESS
 ```
 
+`gh pr checks <N>` renders the same underlying status worse still, as the bare word **`pass`**:
+
+```
+CodeRabbit	pass	0		Review rate limited
+```
+
+The description is sitting right there in the next column, and it still gets read as a verdict — because `pass` is the vocabulary of the row above it and the row below it, where it does mean "this check succeeded". Two delegates on 2026-08-20 independently reported "CodeRabbit: rate-limited, treated as pass", each having copied that column's word into a list of green checks. Neither ran `gh pr view --json reviewDecision`. **`gh pr checks` cannot express the CodeRabbit verdict at all** — it collapses commit-status `state` into one word and shows neither `reviewDecision` nor any review body. Seeing the `CodeRabbit` row there is a signal to go read surfaces 2-5, never a substitute for them.
+
 **Its `state` is `success` regardless of whether a review happened.** The truth is in the `description`, which `statusCheckRollup` does not surface by default. Read it explicitly:
 
 ```bash
