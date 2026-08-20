@@ -7,6 +7,7 @@ import type { MessageTemplateRepository } from '../../repositories/message-templ
 import type { EmbeddedAgentManager } from '../../services/embedded-agent-manager.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
+import type { BookmarkRepository } from '../../repositories/bookmark-repository.js';
 import { NotificationService } from '../../services/notification-service.js';
 import { SharedAccountRegistry } from '../../services/shared-account-registry.js';
 import { serverConfig } from '../../lib/server-config.js';
@@ -63,6 +64,17 @@ describe('API route mounting', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { artifacts: unknown[] };
     expect(Array.isArray(body.artifacts)).toBe(true);
+  });
+
+  it('should mount bookmarks route at /api/bookmarks', async () => {
+    app = await createTestApp({
+      bookmarkRepository: { findByUserId: async () => [] } as Pick<BookmarkRepository, 'findByUserId'> as BookmarkRepository,
+    });
+    const res = await app.request('/api/bookmarks');
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { bookmarks: unknown[] };
+    expect(Array.isArray(body.bookmarks)).toBe(true);
   });
 
   it('should mount notifications route at /api/notifications', async () => {
