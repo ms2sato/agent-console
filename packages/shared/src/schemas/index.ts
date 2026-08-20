@@ -156,6 +156,17 @@ export {
   type ArtifactsListResponse,
 } from './artifact.js';
 
+// Bookmark schemas
+export {
+  BookmarkSchema,
+  type BookmarkSchemaOutput,
+  BookmarksListResponseSchema,
+  type BookmarksListResponse,
+  CreateBookmarkRequestSchema,
+  type CreateBookmarkRequest,
+  ALLOWED_BOOKMARK_URL_SCHEMES,
+} from './bookmark.js';
+
 // Notification center schemas
 export {
   NotificationItemSchema,

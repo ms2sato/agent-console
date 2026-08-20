@@ -357,6 +357,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 32) {
     await migrateToV32(database);
   }
+
+  if (currentVersion < 33) {
+    await migrateToV33(database);
+  }
 }
 
 /**
@@ -1916,6 +1920,47 @@ export async function migrateToV32(database: Kysely<Database>): Promise<void> {
   });
 
   logger.info('Migration to v32 completed');
+}
+
+/**
+ * Migration v33: Create `bookmarks` table.
+ *
+ * Additive new table -- no existing table is touched, mirroring
+ * `migrateToV28`'s (artifacts table) shape exactly. Unlike `artifacts`,
+ * bookmarks have no file-storage component: everything lives in this row.
+ *
+ * `source_session_id` is provenance only (nullable, no FK to `sessions.id`):
+ * a bookmark outlives its source session, deliberately not cascade-deleted
+ * when the session is removed.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV33(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v33: Creating bookmarks table');
+
+  await database.schema
+    .createTable('bookmarks')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('user_id', 'text', (col) =>
+      col.notNull().references('users.id').onDelete('cascade')
+    )
+    .addColumn('source_session_id', 'text')
+    .addColumn('url', 'text', (col) => col.notNull())
+    .addColumn('title', 'text')
+    .addColumn('created_at', 'text', (col) => col.notNull())
+    .execute();
+
+  await database.schema
+    .createIndex('idx_bookmarks_user_id')
+    .ifNotExists()
+    .on('bookmarks')
+    .column('user_id')
+    .execute();
+
+  await sql`PRAGMA user_version = 33`.execute(database);
+
+  logger.info('Migration to v33 completed');
 }
 
 /**

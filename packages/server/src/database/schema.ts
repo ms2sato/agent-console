@@ -20,6 +20,7 @@ export interface Database {
   message_templates: MessageTemplatesTable;
   artifacts: ArtifactsTable;
   user_notification_cursor: UserNotificationCursorTable;
+  bookmarks: BookmarksTable;
 }
 
 /**
@@ -497,3 +498,33 @@ export interface UserNotificationCursorTable {
 export type UserNotificationCursorRow = Selectable<UserNotificationCursorTable>;
 /** User notification cursor data for INSERT queries */
 export type NewUserNotificationCursor = Insertable<UserNotificationCursorTable>;
+
+/**
+ * Bookmarks table schema.
+ * Stores user-registered bookmarks: an arbitrary URL plus optional title,
+ * scoped by owner. Unlike `artifacts`, bookmarks have no file-storage
+ * component -- everything lives in this table.
+ */
+export interface BookmarksTable {
+  /** Primary key - UUID */
+  id: string;
+  /** Foreign key reference to users.id (owner) */
+  user_id: string;
+  /**
+   * Provenance only -- the session that created this bookmark. Nullable,
+   * and NEVER used for authorization: a bookmark outlives its source
+   * session (no cascade delete on session removal).
+   */
+  source_session_id: string | null;
+  /** The bookmarked URL. Scheme-allowlisted (http:/https: only) at write time. */
+  url: string;
+  /** Optional display title; null displays the URL client-side. */
+  title: string | null;
+  /** Creation timestamp as ISO 8601 string */
+  created_at: string;
+}
+
+/** Bookmark row as returned from SELECT queries */
+export type BookmarkRow = Selectable<BookmarksTable>;
+/** Bookmark data for INSERT queries */
+export type NewBookmark = Insertable<BookmarksTable>;
