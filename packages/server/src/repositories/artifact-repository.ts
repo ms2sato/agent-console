@@ -50,8 +50,8 @@ export interface ArtifactRepository {
    * session, newest first (wire shape -- no `userId`). Both conditions are
    * scoped in the SQL query itself, never as a post-fetch filter: a JS-side
    * session filter applied after an already-capped user-scoped fetch could
-   * hide the caller's own older rows behind other users' newer ones in
-   * that session.
+   * hide the caller's own older rows (from the target session) behind the
+   * same caller's own newer artifacts from other sessions.
    *
    * Session ownership is deliberately NOT checked here: `userId` already
    * constrains the result set to the caller's own artifacts, so
