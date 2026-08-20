@@ -90,6 +90,22 @@ In any real environment with multiple users, mounted volumes, or sandboxes, "per
 
 (Lesson: Sprint 2026-06-30 PR #926 — during a bug triage dialog the agent ran a `grep ... 2>/dev/null || echo "NOT FOUND"` against `/home/agentconsole/agent-console-dev/` from the `ms2sato` user account. The path was readable by `agentconsole` but not by `ms2sato`, so the grep failed with `Permission denied` — silently suppressed and replaced with `NOT FOUND`. The agent reported "server snapshot is stale" to the owner, who then performed an unnecessary `dev:multiuser` restart before the real cause — a forgotten valibot schema entry — was identified. The wrong-cause report cost roughly one round trip in the three-hour debugging session.)
 
+## Writing a PR or Issue body from a file: `-F`, never `-f`
+
+`gh pr edit --body-file` and `gh issue edit --body-file` fail on this repository with a GraphQL `projectCards` error. The workaround is `gh api ... -X PATCH` — and there is a second trap waiting inside it.
+
+**`-f` does not expand `@file`.** It is the raw-string field flag, so `-f body=@/tmp/body.md` stores the eleven-character literal `@/tmp/body.md` as the entire body. Nothing errors: exit code 0, and the PR now says `@/tmp/body.md`. You find out by re-reading the PR, or you do not find out at all.
+
+Use `-F` (capital), the typed-field flag, which does read the file:
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<N> -X PATCH -F body=@/tmp/body.md
+```
+
+Verify afterwards with `gh pr view <N> --json body`. The failure is silent, so the check is the only thing that catches it.
+
+**Why this section exists rather than a note somewhere else.** This trap has been independently rediscovered at least three times, most recently on 2026-08-20. Each agent correctly recognized "this is the known `gh pr edit` bug" and then reconstructed the workaround **from memory instead of opening the reference** — reproducing, against their own recollection, exactly the inference-vs-verification failure `workflow.md` describes for external signals. Recognizing a pattern is not the same as recalling its exact form, and the two feel identical from the inside.
+
 ## Claude Code on the Web — Full Setup
 
 The declarative summary is in the rule. This is the full operational setup.
