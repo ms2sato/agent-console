@@ -9,7 +9,10 @@ export interface CreateBookmarkParams {
   userId: string;
   url: string;
   title: string | null;
-  /** Provenance only (nullable); never used for lookup. */
+  /**
+   * Provenance (nullable). Used only as a secondary list filter in
+   * `findByUserIdAndSourceSessionId`; never as an authorization check.
+   */
   sourceSessionId: string | null;
 }
 

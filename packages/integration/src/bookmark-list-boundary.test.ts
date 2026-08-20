@@ -94,7 +94,7 @@ describe('Client-Server Boundary: /api/bookmarks', () => {
     expect(result).toHaveLength(1);
     expect(result[0].url).toBe('https://example.com/mine');
     // userId must never leak onto the wire.
-    expect((result[0] as unknown as Record<string, unknown>).userId).toBeUndefined();
+    expect(Object.keys(result[0])).not.toContain('userId');
   });
 
   it('round-trips the sessionId filter through the real Hono RPC client -> HTTP query string -> server query param, and leaves the no-sessionId branch unaffected', async () => {
