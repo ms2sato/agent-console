@@ -33,6 +33,7 @@ import type { AnnotationService } from './services/annotation-service.js';
 import type { InterSessionMessageService } from './services/inter-session-message-service.js';
 import type { MessageTemplateRepository } from './repositories/message-template-repository.js';
 import type { ArtifactRepository } from './repositories/artifact-repository.js';
+import type { BookmarkRepository } from './repositories/bookmark-repository.js';
 import type { NotificationCursorRepository } from './repositories/notification-cursor-repository.js';
 import type { NotificationService } from './services/notification-service.js';
 import type { SuggestSessionMetadataFn } from './services/session-metadata-suggester.js';
@@ -87,6 +88,7 @@ import { RepositoryCloneService } from './services/repository-clone-service.js';
 import { getSourceReposDir } from './lib/config.js';
 import { SqliteMessageTemplateRepository } from './repositories/sqlite-message-template-repository.js';
 import { SqliteArtifactRepository } from './repositories/sqlite-artifact-repository.js';
+import { SqliteBookmarkRepository } from './repositories/sqlite-bookmark-repository.js';
 import { SqliteNotificationCursorRepository } from './repositories/sqlite-notification-cursor-repository.js';
 import { NotificationService as NotificationServiceClass } from './services/notification-service.js';
 
@@ -218,6 +220,9 @@ export interface AppContext {
   /** HTML artifact metadata + storage repository (see docs/design/html-artifacts.md) */
   artifactRepository: ArtifactRepository;
 
+  /** Bookmark CRUD repository */
+  bookmarkRepository: BookmarkRepository;
+
   /** Per-user notification read cursor repository (docs/design/notification-center.md §5) */
   notificationCursorRepository: NotificationCursorRepository;
 
@@ -279,6 +284,7 @@ export async function createAppContext(
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
+  const bookmarkRepository = new SqliteBookmarkRepository(db);
   const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
   const notificationService = new NotificationServiceClass({
     artifactRepository,
@@ -615,6 +621,7 @@ export async function createAppContext(
     repositoryCloneService,
     messageTemplateRepository,
     artifactRepository,
+    bookmarkRepository,
     notificationCursorRepository,
     notificationService,
     branchWatcherService,
@@ -691,6 +698,7 @@ export async function createTestContext(
   const repositoryRepository = new SqliteRepositoryRepository(db);
   const messageTemplateRepository = new SqliteMessageTemplateRepository(db);
   const artifactRepository = new SqliteArtifactRepository(db);
+  const bookmarkRepository = new SqliteBookmarkRepository(db);
   const notificationCursorRepository = new SqliteNotificationCursorRepository(db);
   const notificationService = new NotificationServiceClass({
     artifactRepository,
@@ -875,6 +883,7 @@ export async function createTestContext(
     repositoryCloneService,
     messageTemplateRepository,
     artifactRepository,
+    bookmarkRepository,
     notificationCursorRepository,
     notificationService,
     branchWatcherService: new BranchWatcherService(async () => {}),

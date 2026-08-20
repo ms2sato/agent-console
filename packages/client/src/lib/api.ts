@@ -38,8 +38,15 @@ import type {
   SkillDefinition,
   MessageTemplate,
   Artifact,
+  Bookmark,
 } from '@agent-console/shared';
-import { ArtifactsListResponseSchema, NotificationsResponseSchema, NotificationsSeenResponseSchema } from '@agent-console/shared';
+import {
+  ArtifactsListResponseSchema,
+  NotificationsResponseSchema,
+  NotificationsSeenResponseSchema,
+  BookmarksListResponseSchema,
+  BookmarkSchema,
+} from '@agent-console/shared';
 import type { NotificationsResponseSchemaOutput, NotificationsSeenResponseSchemaOutput } from '@agent-console/shared';
 import * as v from 'valibot';
 
@@ -1158,6 +1165,62 @@ export async function deleteArtifact(id: string): Promise<void> {
   const res = await api.artifacts[':id'].$delete({ param: { id } });
   if (!res.ok) {
     await handleApiError(res, 'Failed to delete artifact');
+  }
+}
+
+// ===========================================================================
+// Session Bookmarks (#1379)
+// ===========================================================================
+
+/**
+ * Fetch the caller's own bookmarks, newest first (server contract -- do not
+ * client-side re-sort). Parsed through `BookmarksListResponseSchema` at the
+ * wire boundary rather than blindly cast, so a server/client field drift
+ * fails loudly instead of silently dropping data (see
+ * `.claude/rules/pre-pr-completeness.md` Q10).
+ *
+ * `sessionId` is an optional secondary filter that narrows the list to
+ * bookmarks registered from that session. Omitting it is byte-identical to
+ * the original no-arg call -- the Hono RPC client appends a (harmless but
+ * test-visible) trailing `?` once a `query` object is passed at all, so the
+ * no-sessionId branch intentionally calls `$get()` with no args rather than
+ * `$get({ query: {} })` (same quirk as `fetchArtifacts`).
+ */
+export async function fetchBookmarks(sessionId?: string): Promise<Bookmark[]> {
+  const res = sessionId
+    ? await api.bookmarks.$get({ query: { sessionId } })
+    : await api.bookmarks.$get();
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to fetch bookmarks');
+  }
+  const parsed = v.parse(BookmarksListResponseSchema, await res.json());
+  return parsed.bookmarks;
+}
+
+/**
+ * Register a new bookmark. `title` is passed through as-is (undefined stays
+ * undefined -- the server treats an absent/empty title as `null` and the
+ * client displays the URL in that case). The server is the trust boundary
+ * for the URL scheme allowlist (`http:`/`https:` only, S4); a rejected
+ * scheme surfaces as a 400 via `handleApiError`.
+ */
+export async function createBookmark(
+  url: string,
+  title: string | undefined,
+  sessionId: string
+): Promise<Bookmark> {
+  const res = await api.bookmarks.$post({ json: { url, title, sessionId } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to create bookmark');
+  }
+  const json = await res.json();
+  return v.parse(BookmarkSchema, json.bookmark);
+}
+
+export async function deleteBookmark(id: string): Promise<void> {
+  const res = await api.bookmarks[':id'].$delete({ param: { id } });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to delete bookmark');
   }
 }
 

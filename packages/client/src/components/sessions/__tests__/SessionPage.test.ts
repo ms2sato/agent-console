@@ -19,6 +19,7 @@ import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBa
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
 import { SessionArtifactsPanel } from '../SessionArtifactsPanel';
+import { SessionBookmarksPanel } from '../SessionBookmarksPanel';
 
 // Test helpers
 
@@ -632,6 +633,24 @@ describe('SessionArtifactsPanel wiring', () => {
     // deep link) lives in SessionArtifactsPanel.test.tsx and
     // useSessionArtifacts.test.ts.
     const props: Parameters<typeof SessionArtifactsPanel>[0] = {
+      sessionId: 'session-1',
+    };
+    expect(typeof props.sessionId).toBe('string');
+  });
+});
+
+describe('SessionBookmarksPanel wiring', () => {
+  it('SessionBookmarksPanel accepts the sessionId prop SessionPage.tsx passes it', () => {
+    // Type-level contract check: if SessionBookmarksPanel's prop type ever
+    // diverged incompatibly from `{ sessionId: string }` (renamed, widened to
+    // optional, etc.), this file would fail to typecheck -- SessionPage.tsx's
+    // JSX passes `sessionId={sessionId}` where `sessionId` is a `string`.
+    //
+    // SessionPage's panel-composition mount is verified via Browser QA + this
+    // type-level pin, not an automated render test -- see
+    // .claude/skills/frontend-standards/frontend-standards.md for the durable
+    // decision record (Issue #1380).
+    const props: Parameters<typeof SessionBookmarksPanel>[0] = {
       sessionId: 'session-1',
     };
     expect(typeof props.sessionId).toBe('string');

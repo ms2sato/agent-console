@@ -1,7 +1,8 @@
-import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact } from '@agent-console/shared';
+import type { AgentDefinition, Repository, AgentActivityPatterns, MessageTemplate, EmbeddedAgentDefinition, EmbeddedAgentToolName, Artifact, Bookmark } from '@agent-console/shared';
 import type { ArtifactRecord } from '../repositories/artifact-repository.js';
+import type { BookmarkRecord } from '../repositories/bookmark-repository.js';
 import { computeCapabilities } from '@agent-console/shared';
-import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow, NewEmbeddedAgent, EmbeddedAgentRow, ArtifactRow } from './schema.js';
+import type { NewSession, NewWorker, Session, Worker, NewRepository, RepositoryRow, NewAgent, AgentRow, MessageTemplateRow, NewEmbeddedAgent, EmbeddedAgentRow, ArtifactRow, BookmarkRow } from './schema.js';
 import type {
   PersistedSession,
   PersistedWorker,
@@ -719,6 +720,42 @@ export function toArtifact(row: ArtifactRow): Artifact {
 export function toArtifactRecord(row: ArtifactRow): ArtifactRecord {
   return {
     ...toArtifact(row),
+    userId: row.user_id,
+  };
+}
+
+// ========== Bookmark Mappers ==========
+
+/**
+ * Convert a database bookmark row to the shared `Bookmark` wire summary
+ * (id, url, title, createdAt). Deliberately excludes `user_id` and
+ * `source_session_id` -- neither belongs in the wire type (see
+ * `packages/shared/src/types/bookmark.ts`).
+ *
+ * @param row - The database bookmark row
+ * @returns The Bookmark object
+ */
+export function toBookmark(row: BookmarkRow): Bookmark {
+  return {
+    id: row.id,
+    url: row.url,
+    title: row.title,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Convert a database bookmark row to the server-internal `BookmarkRecord`
+ * (the wire `Bookmark` summary plus `userId`). Used by route handlers that
+ * need the owning user's id -- e.g. to enforce owner-only deletion -- but
+ * MUST NEVER forward `userId` into a client-visible response.
+ *
+ * @param row - The database bookmark row
+ * @returns The BookmarkRecord object
+ */
+export function toBookmarkRecord(row: BookmarkRow): BookmarkRecord {
+  return {
+    ...toBookmark(row),
     userId: row.user_id,
   };
 }

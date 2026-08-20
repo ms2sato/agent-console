@@ -143,6 +143,25 @@ describe('shared index exports', () => {
     expect(accepted.success).toBe(true);
   });
 
+  it('should export Bookmark type and the BookmarkSchema runtime schema', async () => {
+    const mod = await import('../index.js');
+
+    // Bookmark is a type-only export -- verify the module loads successfully.
+    expect(mod).toBeDefined();
+
+    // BookmarkSchema is a real runtime value, re-exported transitively via
+    // `export * from './schemas/index.js'` in the same barrel -- verify it
+    // is actually present and parses a well-formed bookmark.
+    expect(mod.BookmarkSchema).toBeDefined();
+    const accepted = v.safeParse(mod.BookmarkSchema, {
+      id: 'bookmark-id',
+      url: 'https://example.com',
+      title: null,
+      createdAt: '2026-04-27T00:00:00.000Z',
+    });
+    expect(accepted.success).toBe(true);
+  });
+
   it('should export NotificationItem type and the NotificationItemSchema/NotificationsResponseSchema runtime schemas', async () => {
     const mod = await import('../index.js');
 

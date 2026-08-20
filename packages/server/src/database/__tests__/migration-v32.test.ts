@@ -97,7 +97,7 @@ describe('migration v32 (embedded_agents.engine native-loop -> openai-api)', () 
   it('advances the schema version to 32 via the real production migration path', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(32);
+    expect(versionRes.rows[0]?.user_version).toBe(33);
   });
 
   it("rewrites existing 'native-loop' rows to 'openai-api', and passes a 'claude-sdk' control row through byte-unchanged", async () => {
