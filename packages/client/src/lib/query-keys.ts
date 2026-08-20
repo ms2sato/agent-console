@@ -117,6 +117,8 @@ export const artifactKeys = {
   root: () => ['artifacts'] as const,
   /** Artifacts list */
   list: () => ['artifacts', 'list'] as const,
+  /** Artifacts list scoped to a single session */
+  listBySession: (sessionId: string) => ['artifacts', 'list', sessionId] as const,
 } as const;
 
 // Note: distinct from `notificationKeys` above, which is the unrelated

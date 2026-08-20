@@ -24,6 +24,7 @@ import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
 import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { MemoPanel } from './MemoPanel';
+import { SessionArtifactsPanel } from './SessionArtifactsPanel';
 import { useAgents } from '../../hooks/useAgents';
 import { useSessionStopTasksContext } from '../../routes/__root';
 import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
@@ -641,6 +642,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         </div>
         {/* Memo sidebar */}
         <MemoPanel sessionId={sessionId} />
+        {/* Artifacts sidebar */}
+        <SessionArtifactsPanel sessionId={sessionId} />
       </div>
 
       {/* Message panel - only shown for agent workers */}

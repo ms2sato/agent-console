@@ -1135,9 +1135,18 @@ export async function reorderMessageTemplates(orderedIds: string[]): Promise<{ s
  * at the wire boundary rather than blindly cast, so a server/client field
  * drift fails loudly instead of silently dropping data (see
  * `.claude/rules/pre-pr-completeness.md` Q10).
+ *
+ * `sessionId` is an optional secondary filter that narrows the
+ * list to artifacts created in that session. Omitting it is byte-identical
+ * to the original no-arg call -- the Hono RPC client appends a (harmless but
+ * test-visible) trailing `?` once a `query` object is passed at all, so the
+ * no-sessionId branch intentionally calls `$get()` with no args rather than
+ * `$get({ query: {} })`.
  */
-export async function fetchArtifacts(): Promise<Artifact[]> {
-  const res = await api.artifacts.$get();
+export async function fetchArtifacts(sessionId?: string): Promise<Artifact[]> {
+  const res = sessionId
+    ? await api.artifacts.$get({ query: { sessionId } })
+    : await api.artifacts.$get();
   if (!res.ok) {
     await handleApiError(res, 'Failed to fetch artifacts');
   }

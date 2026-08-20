@@ -32,7 +32,7 @@ export function ArtifactsPage() {
     refetch,
   } = useQuery({
     queryKey: artifactKeys.list(),
-    queryFn: fetchArtifacts,
+    queryFn: () => fetchArtifacts(),
   });
 
   const deleteMutation = useMutation({

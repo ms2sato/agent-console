@@ -484,6 +484,54 @@ describe('Artifact routes', () => {
       const res = await app.request('/api/artifacts');
       expect(res.status).toBe(401);
     });
+
+    it("with ?sessionId= present, returns only the caller's artifacts in that session", async () => {
+      await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'In session',
+        content: '<p>in session</p>',
+        sourceSessionId: 'session-1',
+      });
+      await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'In another session',
+        content: '<p>other session</p>',
+        sourceSessionId: 'session-2',
+      });
+      await repository.create({
+        id: randomUUID(),
+        userId: OTHER.id,
+        title: "Other user's, same session",
+        content: '<p>other user</p>',
+        sourceSessionId: 'session-1',
+      });
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request('/api/artifacts?sessionId=session-1');
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { artifacts: { title: string }[] };
+      expect(body.artifacts.map((a) => a.title)).toEqual(['In session']);
+    });
+
+    it('with ?sessionId= present but the caller has no artifacts in that session, returns an empty array', async () => {
+      await repository.create({
+        id: randomUUID(),
+        userId: OWNER.id,
+        title: 'Different session',
+        content: '<p>x</p>',
+        sourceSessionId: 'session-2',
+      });
+
+      const app = buildApp(repository, OWNER);
+      const res = await app.request('/api/artifacts?sessionId=session-1');
+      expect(res.status).toBe(200);
+
+      const body = (await res.json()) as { artifacts: unknown[] };
+      expect(body.artifacts).toEqual([]);
+    });
   });
 
   // =========================================================================

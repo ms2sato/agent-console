@@ -18,6 +18,7 @@ import type { SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
+import { SessionArtifactsPanel } from '../SessionArtifactsPanel';
 
 // Test helpers
 
@@ -612,5 +613,27 @@ describe('unified shell/agent picker wiring', () => {
     };
 
     expect(typeof props.onSelectShell).toBe('function');
+  });
+});
+
+describe('SessionArtifactsPanel wiring', () => {
+  it('SessionArtifactsPanel accepts the sessionId prop SessionPage.tsx passes it', () => {
+    // Type-level contract check: if SessionArtifactsPanel's prop type ever
+    // diverged incompatibly from `{ sessionId: string }` (renamed, widened to
+    // optional, etc.), this file would fail to typecheck -- SessionPage.tsx's
+    // JSX passes `sessionId={sessionId}` where `sessionId` is a `string`.
+    //
+    // This pins the PROP SIGNATURE only. It does NOT verify the panel is
+    // actually mounted inside SessionPage's render tree -- there is no
+    // full-render test of SessionPage in this codebase (it requires
+    // SessionStopTasksContext.Provider, WebSocket-backed hooks, and several
+    // other heavy dependencies with no existing test harness). Actual
+    // render/behavior coverage (renders with data, hides when empty, jail-rule
+    // deep link) lives in SessionArtifactsPanel.test.tsx and
+    // useSessionArtifacts.test.ts.
+    const props: Parameters<typeof SessionArtifactsPanel>[0] = {
+      sessionId: 'session-1',
+    };
+    expect(typeof props.sessionId).toBe('string');
   });
 });

@@ -119,4 +119,39 @@ describe('Client-Server Boundary: GET /api/artifacts', () => {
     const result = await fetchArtifacts();
     expect(result).toEqual([]);
   });
+
+  it('round-trips the sessionId filter through the real Hono RPC client -> HTTP query string -> server query param, and leaves the no-sessionId branch unaffected', async () => {
+    await repository.create({
+      id: randomUUID(),
+      userId: TEST_AUTH_USER.id,
+      title: 'Session A artifact',
+      content: '<p>a</p>',
+      sourceSessionId: 'session-a',
+    });
+    await repository.create({
+      id: randomUUID(),
+      userId: TEST_AUTH_USER.id,
+      title: 'Session B artifact',
+      content: '<p>b</p>',
+      sourceSessionId: 'session-b',
+    });
+
+    // Real client function -> real Hono RPC `$get({ query: { sessionId } })`
+    // -> real HTTP request with a `?sessionId=` query string -> server's
+    // `c.req.query('sessionId')` -> `findByUserIdAndSourceSessionId` ->
+    // back through `ArtifactsListResponseSchema`. Neither side's unit tests
+    // exercise this connection: the client's mocks `fetch`, the server's
+    // route test builds the URL by hand.
+    const sessionAResult = await fetchArtifacts('session-a');
+    expect(sessionAResult.map((a) => a.title)).toEqual(['Session A artifact']);
+
+    const sessionARequest = findRequest(bridge.capturedRequests, 'GET', '/api/artifacts');
+    expect(sessionARequest?.url).toContain('sessionId=session-a');
+
+    // No-sessionId branch: must still return artifacts from BOTH sessions,
+    // proving the omitted-query-param path is genuinely unaffected by the
+    // new branch rather than merely asserted so in a comment.
+    const allResult = await fetchArtifacts();
+    expect(allResult.map((a) => a.title).sort()).toEqual(['Session A artifact', 'Session B artifact']);
+  });
 });
