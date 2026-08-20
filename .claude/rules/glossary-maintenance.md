@@ -55,7 +55,7 @@ The same decision tree applies when finding contradictions (e.g., two entries de
 
 - **Canonical source**: [`docs/glossary.md`](../../docs/glossary.md) (Maintenance section also summarizes triggers; this rule is the operational expansion)
 - **Acceptance check**: `acceptance-check.js` Q9 — Orchestrator's mechanical verification step during PR review
-- **Sibling rule**: [`pre-pr-completeness.md`](pre-pr-completeness.md) — covers process completeness for new mechanisms; this rule is adjacent (terminology) and orthogonal (Gap-Scan does not include glossary checks)
+- **Sibling rule**: [`pre-pr-completeness.md`](pre-pr-completeness.md) — covers process completeness for new mechanisms; this rule is adjacent (terminology) and orthogonal (Gap-Scan does not perform glossary judgment). **The orthogonality forbids duplicating the substance, not pointing at it.** Gap-Scan Q1.7 is a one-line recall point that sends the reader here; the trigger list and the drift-handling tree stay in this file as their single writer. A future reader should not "restore" the orthogonality by deleting that pointer — it was added (2026-08-20) precisely because recall, not judgment, was the layer that was missing: two PRs in two days reached the acceptance check with the entry absent, and the author had no step in their flow that would have surfaced this rule.
 - **Future automation**: Issue [#671](https://github.com/ms2sato/agent-console/issues/671) — referenced-but-not-defined linter (separate concern, this rule remains the manual gate until the linter lands)
 
 ## How this rule is expected to evolve

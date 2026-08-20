@@ -194,6 +194,22 @@ Claims of the form "**still waiting on** X" are the highest-risk shape, because 
 
 (Lessons, both Sprint 2026-08-05: the Architect held "PR #1270 is awaiting owner gate" across two days of intermittent turns, restating it in each status summary without re-reading, then raised an urgent warning that a commit-message keyword would close an Issue on merge — the PR had merged two days earlier and the Issue had closed with it. Separately, the Orchestrator left a self-check timer whose action text still described a PR merged hours before; it fired repeatedly while a delegate's completed PR sat unreviewed for six hours, and the stall was surfaced by the owner asking what the hold-up was, not by the timer.)
 
+## Cheap refutation: universal claims
+
+A sister criterion to Inference vs Verification, and a different axis. That rule asks *which signal you are treating as ground truth*. This one asks *what shape the claim has*, regardless of who made it.
+
+**When a claim is universal — "nowhere else in the codebase", "always", "never", "none of them", "every" — estimate what it would cost to find one counterexample before accepting it.** Usually that is a single `ls` or `grep`. Run it.
+
+The asymmetry is what makes this worth a rule. Refuting a universal costs one command; accepting a false one costs everything built on top of it, because a universal claim is what people stop searching after. "There is no precedent anywhere" ends the search. "There is no test for this elsewhere either" ends the objection.
+
+It fires on the claim's form, not its source — a subagent's report, a review comment, a design doc, or your own reasoning from ten minutes ago.
+
+**The boundary: this is not "distrust universal claims". It is "price the refutation".** Some universals are expensive to refute — "this distributed system never deadlocks" is not settled by a grep, and needs its own kind of verification. The criterion fires only when a counterexample search is cheap. There, one command before accepting wins on expected value; everywhere else, use the verification the claim actually calls for.
+
+This names a point several existing disciplines already circle: the vacuous truth of `[].every()` in boundary-value testing, and the way an "accepted risk" paragraph can quietly remove something from the verification surface. All three are the same shape — a universal, an empty set, or a negation, cheap to state and expensive to have wrong.
+
+(Lessons, both Sprint 2026-08-20: a specialist reported "no dedicated sibling test anywhere else in the codebase either", which the delegate refuted with one `ls` — the precedent existed and the gap was real, requiring a re-delegation. Separately, the Orchestrator inferred that a `queryFn` signature trap was silently affecting 18 sibling call sites, framed it to the owner as a probable latent-debt finding, and had a delegate measure it: `typecheck` catches it at every site. Both claims were plausible, both were refutable in under a minute, and only one of them was actually checked before it travelled.)
+
 ## Commands
 
 ```bash
