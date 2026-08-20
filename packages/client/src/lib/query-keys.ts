@@ -121,6 +121,15 @@ export const artifactKeys = {
   listBySession: (sessionId: string) => ['artifacts', 'list', sessionId] as const,
 } as const;
 
+export const bookmarkKeys = {
+  /** Root key for invalidating all bookmark queries */
+  root: () => ['bookmarks'] as const,
+  /** Bookmarks list */
+  list: () => ['bookmarks', 'list'] as const,
+  /** Bookmarks list scoped to a single session */
+  listBySession: (sessionId: string) => ['bookmarks', 'list', sessionId] as const,
+} as const;
+
 // Note: distinct from `notificationKeys` above, which is the unrelated
 // OUTWARD (Slack) notification status. This is the human-addressed
 // notification center read-model (docs/design/notification-center.md).

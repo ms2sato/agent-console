@@ -25,6 +25,7 @@ import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
 import { MemoPanel } from './MemoPanel';
 import { SessionArtifactsPanel } from './SessionArtifactsPanel';
+import { SessionBookmarksPanel } from './SessionBookmarksPanel';
 import { useAgents } from '../../hooks/useAgents';
 import { useSessionStopTasksContext } from '../../routes/__root';
 import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
@@ -644,6 +645,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         <MemoPanel sessionId={sessionId} />
         {/* Artifacts sidebar */}
         <SessionArtifactsPanel sessionId={sessionId} />
+        {/* Bookmarks sidebar */}
+        <SessionBookmarksPanel sessionId={sessionId} />
       </div>
 
       {/* Message panel - only shown for agent workers */}
