@@ -12,6 +12,7 @@ export const BookmarkSchema = v.strictObject({
   url: v.pipe(v.string(), v.minLength(1)),
   title: v.nullable(v.string()),
   createdAt: v.string(),
+  origin: v.picklist(['user', 'agent']),
 });
 
 export type BookmarkSchemaOutput = v.InferOutput<typeof BookmarkSchema>;
@@ -57,7 +58,15 @@ function isAllowedBookmarkUrl(value: string): boolean {
  * Request-body schema for `POST /api/bookmarks`. `url` must be a non-empty,
  * well-formed URL whose scheme is allowlisted (S4); `title` is optional
  * free text (no server-side synthesis -- an absent title displays the URL
- * client-side); `sessionId` is the source session id (provenance, non-empty).
+ * client-side), capped at 200 characters (matches `MAX_TITLE_LENGTH` in
+ * `mcp-server.ts`, the HTML artifact title cap -- one length policy, reused
+ * rather than re-derived); `sessionId` is the source session id
+ * (provenance, non-empty).
+ *
+ * This is the SINGLE writer of scheme and length validation for bookmark
+ * registration -- both `POST /api/bookmarks` and the `create_bookmark` MCP
+ * tool parse through this schema. Do not re-implement either check
+ * elsewhere (see `docs/design/session-bookmarks.md` §8).
  */
 export const CreateBookmarkRequestSchema = v.strictObject({
   url: v.pipe(
@@ -66,7 +75,7 @@ export const CreateBookmarkRequestSchema = v.strictObject({
     v.minLength(1, 'URL is required'),
     v.check(isAllowedBookmarkUrl, 'URL must use http: or https:'),
   ),
-  title: v.optional(v.pipe(v.string(), v.trim())),
+  title: v.optional(v.pipe(v.string(), v.trim(), v.maxLength(200, 'Title must be at most 200 characters'))),
   sessionId: v.pipe(v.string(), v.trim(), v.minLength(1, 'sessionId is required')),
 });
 

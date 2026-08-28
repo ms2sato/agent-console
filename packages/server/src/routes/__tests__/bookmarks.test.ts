@@ -105,6 +105,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/old',
         title: 'Old',
         sourceSessionId: null,
+        origin: 'user',
       });
       await new Promise((r) => setTimeout(r, 2));
       await repository.create({
@@ -113,6 +114,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/new',
         title: 'New',
         sourceSessionId: null,
+        origin: 'user',
       });
       await repository.create({
         id: 'bookmark-other-user',
@@ -120,6 +122,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/other',
         title: "Other user's bookmark",
         sourceSessionId: null,
+        origin: 'user',
       });
 
       const app = buildApp(repository, OWNER);
@@ -136,6 +139,7 @@ describe('Bookmark routes', () => {
       for (const entry of body.bookmarks) {
         const parsed = v.parse(BookmarkSchema, entry);
         expect(parsed.url).toBeDefined();
+        expect(parsed.origin).toBe('user');
         // userId must never leak onto the wire.
         expect((entry as Record<string, unknown>).userId).toBeUndefined();
       }
@@ -163,6 +167,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/in-session',
         title: 'In session',
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
       await repository.create({
         id: 'bookmark-session-2',
@@ -170,6 +175,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/other-session',
         title: 'In another session',
         sourceSessionId: 'session-2',
+        origin: 'user',
       });
       await repository.create({
         id: 'bookmark-other-user-session-1',
@@ -177,6 +183,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/other-user',
         title: "Other user's, same session",
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
 
       const app = buildApp(repository, OWNER);
@@ -194,6 +201,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/different',
         title: 'Different session',
         sourceSessionId: 'session-2',
+        origin: 'user',
       });
 
       const app = buildApp(repository, OWNER);
@@ -223,11 +231,13 @@ describe('Bookmark routes', () => {
       expect(body.bookmark.url).toBe('https://example.com');
       expect(body.bookmark.title).toBe('My bookmark');
       expect(body.bookmark.userId).toBeUndefined();
+      expect(body.bookmark.origin).toBe('user');
 
       v.parse(BookmarkSchema, body.bookmark);
 
       const stored = await repository.findById(body.bookmark.id as string);
       expect(stored?.userId).toBe(OWNER.id);
+      expect(stored?.origin).toBe('user');
     });
 
     it('creates a bookmark with title omitted, stored as null title', async () => {
@@ -331,6 +341,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/bye',
         title: 'To delete',
         sourceSessionId: null,
+        origin: 'user',
       });
 
       const app = buildApp(repository, OWNER);
@@ -350,6 +361,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com/mine',
         title: 'Not yours',
         sourceSessionId: null,
+        origin: 'user',
       });
 
       const app = buildApp(repository, OTHER);
@@ -375,6 +387,7 @@ describe('Bookmark routes', () => {
         url: 'https://example.com',
         title: 'T',
         sourceSessionId: null,
+        origin: 'user',
       });
 
       const app = buildApp(repository, null);

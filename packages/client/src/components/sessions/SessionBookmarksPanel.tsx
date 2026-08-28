@@ -5,25 +5,32 @@ interface SessionBookmarksPanelProps {
   sessionId: string;
 }
 
+// Host is always re-derived from the URL at render time -- never stored or
+// passed through from a registrant-supplied string (design doc §3.3/§7).
+// `URL`'s IDNA normalization also closes the homograph-domain path as a side
+// effect of parsing: a confusable Unicode host renders in its Punycode
+// (`xn--...`) form.
+function bookmarkHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 /**
  * Session-scoped bookmark list + registration form, presented alongside
  * `MemoPanel` and `SessionArtifactsPanel`. Structurally
- * mirrors `SessionArtifactsPanel`'s collapse/expand sidebar shell; unlike
- * artifacts, the list is human-registered (there is no MCP tool for
- * bookmarks in v1), so this panel always renders a form even when the list
- * is empty -- there must be a way to add the first bookmark.
+ * mirrors `SessionArtifactsPanel`'s collapse/expand sidebar shell. Bookmarks
+ * can be registered by a human (through the form below) or by an agent
+ * (through the `create_bookmark` MCP tool) -- this panel always renders the
+ * form even when the list is empty, so there is always a way to add the
+ * first bookmark by hand.
  *
- * Navigation safety (S4): a bookmark points at an external origin, so it
- * does not and cannot have the artifact's `frame-src` jail or opaque-origin
- * boundary (#1340) -- an external origin is outside our CSP's reach. What
- * protects the user is the registration-time scheme allowlist (server-side,
- * `http:`/`https:` only) plus this render-time `rel`/`target`/text-node
- * discipline; the safety of the destination itself is not guaranteed. This
- * is acceptable in the v1 threat model because a person opens a URL they
- * pasted themselves. If v1's human-only registration ever changes to allow
- * agent registration over MCP, this premise must be re-derived -- an agent
- * that supplies a friendly title for a malicious URL opens a phishing
- * surface, and scheme validation alone would no longer be sufficient.
+ * Navigation safety and the click-time threat model (agent vs. human
+ * registration, the host-display invariant, why REST and MCP use different
+ * identity anchors) are specified in `docs/design/session-bookmarks.md` --
+ * this component implements that spec; do not restate the reasoning here.
  */
 export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps) {
   const [isExpanded, setIsExpanded] = useState(true);
@@ -122,15 +129,28 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
             key={bookmark.id}
             className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-700/50"
           >
-            <a
-              href={bookmark.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-sm text-blue-400 hover:text-blue-300 truncate no-underline"
-              title={bookmark.title ?? bookmark.url}
-            >
-              {bookmark.title ?? bookmark.url}
-            </a>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={bookmark.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-w-0 text-sm text-blue-400 hover:text-blue-300 truncate no-underline"
+                  style={{ unicodeBidi: 'isolate' }}
+                >
+                  {bookmark.title ?? bookmark.url}
+                </a>
+                {bookmark.origin === 'agent' && (
+                  <span
+                    className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none"
+                    aria-label="Registered by an agent"
+                  >
+                    Agent
+                  </span>
+                )}
+              </div>
+              <span className="block break-all text-xs text-gray-500">{bookmarkHost(bookmark.url)}</span>
+            </div>
             <button
               onClick={() => deleteBookmark(bookmark.id)}
               className="text-gray-400 hover:text-red-400 cursor-pointer bg-transparent border-none p-1 text-xs shrink-0"

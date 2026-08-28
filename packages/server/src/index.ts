@@ -161,6 +161,7 @@ const mcpApp = createMcpApp({
   deleteWorktree,
   userRepository: appContext.userRepository,
   artifactRepository: appContext.artifactRepository,
+  bookmarkRepository: appContext.bookmarkRepository,
   broadcastToApp: appContext.broadcastToApp,
   fetchPullRequestUrl: appContext.fetchPullRequestUrl,
   findOpenPullRequest: appContext.findOpenPullRequest,

@@ -22,6 +22,7 @@ export class SqliteBookmarkRepository implements BookmarkRepository {
         url: params.url,
         title: params.title,
         created_at: now,
+        origin: params.origin,
       })
       .execute();
 

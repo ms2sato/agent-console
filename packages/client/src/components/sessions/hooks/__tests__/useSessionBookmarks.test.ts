@@ -66,7 +66,7 @@ describe('useSessionBookmarks', () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         bookmarks: [
-          { id: 'bookmark-1', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z' },
+          { id: 'bookmark-1', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z', origin: 'user' },
         ],
       })
     );
@@ -78,7 +78,7 @@ describe('useSessionBookmarks', () => {
     expect(getLastFetchUrl()).toContain('/api/bookmarks');
     expect(getLastFetchUrl()).toContain('sessionId=session-1');
     expect(result.current.bookmarks).toEqual([
-      { id: 'bookmark-1', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z' },
+      { id: 'bookmark-1', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z', origin: 'user' },
     ]);
   });
 
@@ -103,6 +103,7 @@ describe('useSessionBookmarks', () => {
       url: 'https://example.com',
       title: 'Example',
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user' as const,
     };
     // The POST response and the invalidated query's GET refetch are two
     // distinct calls with different response shapes -- queue them
@@ -128,6 +129,7 @@ describe('useSessionBookmarks', () => {
       url: 'https://example.com',
       title: 'Example',
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user' as const,
     };
     mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [existingBookmark] }));
 

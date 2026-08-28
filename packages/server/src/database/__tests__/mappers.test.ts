@@ -10,10 +10,11 @@ import {
   toAgentDefinition,
   toEmbeddedAgentRow,
   toEmbeddedAgentDefinition,
+  toBookmark,
   DataIntegrityError,
   assertNever,
 } from '../mappers.js';
-import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow } from '../schema.js';
+import type { Session, Worker, RepositoryRow, AgentRow, EmbeddedAgentRow, BookmarkRow } from '../schema.js';
 import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type {
   PersistedAgentWorker,
@@ -1874,6 +1875,39 @@ describe('mappers', () => {
         expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(DataIntegrityError);
         expect(() => toEmbeddedAgentDefinition(selectRow)).toThrow(/provider_base_url/);
       });
+    });
+  });
+
+  describe('toBookmark - origin validation', () => {
+    function buildBookmarkRow(
+      overrides: Partial<Omit<BookmarkRow, 'origin'>> & { origin?: string } = {}
+    ): BookmarkRow {
+      return {
+        id: 'bookmark-1',
+        user_id: 'user-1',
+        source_session_id: null,
+        url: 'https://example.com',
+        title: null,
+        created_at: '2026-08-20T00:00:00.000Z',
+        origin: 'user',
+        ...overrides,
+      } as BookmarkRow;
+    }
+
+    it("round-trips origin: 'user'", () => {
+      const bookmark = toBookmark(buildBookmarkRow({ origin: 'user' }));
+      expect(bookmark.origin).toBe('user');
+    });
+
+    it("round-trips origin: 'agent'", () => {
+      const bookmark = toBookmark(buildBookmarkRow({ origin: 'agent' }));
+      expect(bookmark.origin).toBe('agent');
+    });
+
+    it('throws DataIntegrityError for an unrecognized origin value', () => {
+      const row = buildBookmarkRow({ origin: 'mystery' });
+      expect(() => toBookmark(row)).toThrow(DataIntegrityError);
+      expect(() => toBookmark(row)).toThrow(/origin \(unexpected value: mystery\)/);
     });
   });
 });

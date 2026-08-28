@@ -38,7 +38,7 @@ export function assertNever(x: never, message?: string): never {
  */
 export class DataIntegrityError extends Error {
   constructor(
-    public readonly entityType: 'session' | 'worker' | 'embedded-agent',
+    public readonly entityType: 'session' | 'worker' | 'embedded-agent' | 'bookmark',
     public readonly entityId: string,
     public readonly issue: string
   ) {
@@ -727,20 +727,31 @@ export function toArtifactRecord(row: ArtifactRow): ArtifactRecord {
 // ========== Bookmark Mappers ==========
 
 /**
+ * Valid bookmark origins. Used for runtime validation of database values.
+ */
+const VALID_BOOKMARK_ORIGINS = ['user', 'agent'] as const;
+
+/**
  * Convert a database bookmark row to the shared `Bookmark` wire summary
- * (id, url, title, createdAt). Deliberately excludes `user_id` and
+ * (id, url, title, createdAt, origin). Deliberately excludes `user_id` and
  * `source_session_id` -- neither belongs in the wire type (see
  * `packages/shared/src/types/bookmark.ts`).
  *
  * @param row - The database bookmark row
  * @returns The Bookmark object
+ * @throws DataIntegrityError if `origin` is not a recognized value
  */
 export function toBookmark(row: BookmarkRow): Bookmark {
+  if (!VALID_BOOKMARK_ORIGINS.includes(row.origin as (typeof VALID_BOOKMARK_ORIGINS)[number])) {
+    throw new DataIntegrityError('bookmark', row.id, `origin (unexpected value: ${row.origin})`);
+  }
+
   return {
     id: row.id,
     url: row.url,
     title: row.title,
     createdAt: row.created_at,
+    origin: row.origin as 'user' | 'agent',
   };
 }
 

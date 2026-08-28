@@ -52,7 +52,13 @@ describe('SessionBookmarksPanel', () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         bookmarks: [
-          { id: 'bookmark-1', url: 'https://example.com', title: 'Example Site', createdAt: '2026-08-20T00:00:00.000Z' },
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com',
+            title: 'Example Site',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
         ],
       })
     );
@@ -74,7 +80,13 @@ describe('SessionBookmarksPanel', () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         bookmarks: [
-          { id: 'bookmark-1', url: 'https://example.com/no-title', title: null, createdAt: '2026-08-20T00:00:00.000Z' },
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com/no-title',
+            title: null,
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
         ],
       })
     );
@@ -84,12 +96,41 @@ describe('SessionBookmarksPanel', () => {
     await waitFor(() => expect(screen.getByText('https://example.com/no-title')).toBeTruthy());
   });
 
+  it('a null title still shows a host line alongside the URL-as-label anchor (design doc §7)', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com/no-title',
+            title: null,
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('https://example.com/no-title')).toBeTruthy());
+    // Coexistence, not either/or: the host line renders even though the
+    // anchor's own text already happens to be the URL.
+    expect(screen.getByText('example.com')).toBeTruthy();
+  });
+
   it('renders a malicious title as inert text, not markup (text-node discipline)', async () => {
     const maliciousTitle = '"><script>alert(1)</script>';
     mockFetch.mockResolvedValue(
       jsonResponse({
         bookmarks: [
-          { id: 'bookmark-1', url: 'https://example.com', title: maliciousTitle, createdAt: '2026-08-20T00:00:00.000Z' },
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com',
+            title: maliciousTitle,
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
         ],
       })
     );
@@ -114,6 +155,7 @@ describe('SessionBookmarksPanel', () => {
       url: 'https://example.com',
       title: 'Example',
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user',
     };
     // The POST response and the invalidated query's GET refetch are two
     // distinct calls with different response shapes -- queue them
@@ -145,7 +187,13 @@ describe('SessionBookmarksPanel', () => {
     mockFetch.mockResolvedValueOnce(
       jsonResponse({
         bookmarks: [
-          { id: 'bookmark-1', url: 'https://example.com', title: 'Example Site', createdAt: '2026-08-20T00:00:00.000Z' },
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com',
+            title: 'Example Site',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
         ],
       })
     );
@@ -180,7 +228,13 @@ describe('SessionBookmarksPanel', () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
         bookmarks: [
-          { id: 'bookmark-1', url: 'https://example.com', title: 'Example Site', createdAt: '2026-08-20T00:00:00.000Z' },
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com',
+            title: 'Example Site',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
         ],
       })
     );
@@ -195,5 +249,166 @@ describe('SessionBookmarksPanel', () => {
 
     screen.getByLabelText('Expand bookmarks').click();
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
+  });
+
+  it('renders the host as a separate DOM node, not inside the title anchor (design doc §7)', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com/some/path',
+            title: 'Example Site',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
+
+    const link = screen.getByText('Example Site').closest('a')!;
+    // The host string is not part of the anchor's own text content...
+    expect(link.textContent).toBe('Example Site');
+    // ...but it is present elsewhere in the DOM, as its own text node.
+    const hostNode = screen.getByText('example.com');
+    expect(link.contains(hostNode)).toBe(false);
+  });
+
+  it('wraps the host line instead of clipping it, even for an attacker-controlled long host (structural pin)', async () => {
+    // A maliciously long, unbroken host (up to 253 chars via many DNS
+    // labels) must wrap across lines rather than overflow -- an ellipsis or
+    // any other clipping would hide the host's true suffix, defeating P4's
+    // "host is visible at click time" guarantee via a different mechanism
+    // than title-crowding (design doc §7). happy-dom does not lay out CSS,
+    // so this test pins the *class*, not actual visual wrapping.
+    const longLabel = 'a'.repeat(63);
+    const longHost = `github.com.${longLabel}.${longLabel}.${longLabel}.attacker.example`;
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: `https://${longHost}/`,
+            title: 'Long Host Bookmark',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('Long Host Bookmark')).toBeTruthy());
+
+    const hostNode = screen.getByText(longHost);
+    expect(hostNode.className).toContain('break-all');
+    expect(hostNode.className).not.toContain('truncate');
+  });
+
+  it('derives the host from the URL, not from a title containing a fake host string', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: 'https://evil.example/phish',
+            title: 'Login - github.com',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('Login - github.com')).toBeTruthy());
+
+    // The computed host must read the real destination, never the
+    // registrant-supplied fake host string embedded in the title.
+    expect(screen.getByText('evil.example')).toBeTruthy();
+    expect(screen.queryByText('github.com')).toBeNull();
+  });
+
+  it('shows the origin badge only for agent-registered bookmarks', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-agent',
+            url: 'https://example.com',
+            title: 'Agent Bookmark',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'agent',
+          },
+          {
+            id: 'bookmark-user',
+            url: 'https://example.org',
+            title: 'User Bookmark',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('Agent Bookmark')).toBeTruthy());
+    expect(screen.getByText('User Bookmark')).toBeTruthy();
+
+    const badges = screen.getAllByLabelText('Registered by an agent');
+    expect(badges).toHaveLength(1);
+  });
+
+  it('leaves the host node present in the DOM even with a very long title', async () => {
+    const longTitle = 'A'.repeat(160);
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: 'https://example.com',
+            title: longTitle,
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText(longTitle)).toBeTruthy());
+    expect(screen.getByText('example.com')).toBeTruthy();
+  });
+
+  it('renders an IDN host in its Punycode ASCII form, not the raw Unicode', async () => {
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: 'https://пример.рф/',
+            title: 'IDN Example',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('IDN Example')).toBeTruthy());
+    const expectedHost = new URL('https://пример.рф/').host;
+    expect(expectedHost).toMatch(/^xn--/);
+    expect(screen.getByText(expectedHost)).toBeTruthy();
+    expect(screen.queryByText('пример.рф')).toBeNull();
   });
 });

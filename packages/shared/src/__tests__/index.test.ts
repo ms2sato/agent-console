@@ -158,6 +158,7 @@ describe('shared index exports', () => {
       url: 'https://example.com',
       title: null,
       createdAt: '2026-04-27T00:00:00.000Z',
+      origin: 'user',
     });
     expect(accepted.success).toBe(true);
   });
