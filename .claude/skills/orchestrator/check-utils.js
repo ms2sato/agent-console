@@ -234,6 +234,59 @@ function fileExtension(filePath) {
   return match ? match[0] : '';
 }
 
+const HUNK_HEADER_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+
+/**
+ * Scan a file's FULL content top-to-bottom and return, for each 1-based
+ * line number, whether that line begins already inside an unterminated
+ * block comment opened on an earlier line. This mirrors (rather than
+ * reuses — the two operate on different structures: a flat line array vs.
+ * diff hunks) the block-open/close judgment `isCommentOnlyDiff` applies
+ * within a hunk, so a `--unified=0` hunk that edits only the BODY of an
+ * existing block comment (whose `/**`/`/*` opener sits outside the hunk,
+ * in unchanged context) can still be seeded with the correct starting
+ * state instead of unconditionally starting "not in a block".
+ *
+ * Deliberately simple: does not account for `/*` or `//` appearing inside
+ * string literals. This matches the conservatism level of the per-hunk
+ * logic below (which has the same limitation) and is safe in the direction
+ * that matters — the worst case from a false open/close is a comment-only
+ * file still being required to have a sibling test, never the reverse,
+ * because `isCommentOnlyDiff` itself still fails closed on anything it
+ * cannot confirm as comment content.
+ *
+ * Returns `[]` for extensions with no block-comment syntax.
+ */
+function scanBlockCommentLineStarts(content, ext) {
+  if (!BLOCK_COMMENT_EXTS.has(ext)) return [];
+
+  const startsInBlock = [];
+  let inBlock = false;
+
+  for (const rawLine of content.split('\n')) {
+    startsInBlock.push(inBlock);
+    if (inBlock) {
+      const closeIdx = rawLine.indexOf('*/');
+      if (closeIdx === -1) continue; // whole line stays inside the block
+      inBlock = false;
+      continue; // ignore anything after the close for re-open purposes,
+      // consistent with the per-hunk logic never handling a second block
+      // comment starting later on the same physical line
+    }
+
+    const lineCommentIdx = rawLine.indexOf('//');
+    const openIdx = rawLine.indexOf('/*');
+    if (openIdx === -1) continue;
+    if (lineCommentIdx !== -1 && lineCommentIdx < openIdx) continue; // `//` shadows a later `/*`
+
+    const closeIdx = rawLine.indexOf('*/', openIdx + 2);
+    if (closeIdx === -1) inBlock = true; // opened, not closed on this line
+    // else: opened and closed on the same line, state unchanged (false)
+  }
+
+  return startsInBlock; // startsInBlock[i] === true means line (i+1) starts inside an open block
+}
+
 /**
  * Determine whether a unified diff (as produced by `git diff --unified=0`)
  * for a single file consists entirely of comment and/or blank line changes,
@@ -241,17 +294,19 @@ function fileExtension(filePath) {
  *
  * Block-comment state is tracked per side (added `+` vs removed `-` are two
  * different file versions) and resets at each hunk boundary (`@@ ... @@`).
- * A bare `*`-prefixed (or otherwise block-body-shaped) line is only ever
- * treated as comment content when a `/*` opener was already confirmed
- * earlier in the SAME hunk — `--unified=0` hunks carry no surrounding
- * context, so a block comment that opens outside the hunk cannot be
- * reliably detected from the diff alone, and a bare line could just as
- * well be real code (e.g. a multiplication continuation or a generator
- * method). Treating an unconfirmed line as non-comment is the safe,
- * fail-closed default — the worst case is a comment-only file still being
- * required to have a sibling test, never the reverse. For the same reason,
- * a block-comment close marker followed by non-whitespace on the same line
- * is treated as real code, not a comment-only close.
+ * `--unified=0` hunks carry no surrounding context, so when a hunk edits
+ * only the BODY of an existing block comment, the `/*` opener line sits
+ * outside the hunk. When `opts.baseContent` / `opts.headContent` (the
+ * full file content on each side) is supplied, the per-side starting
+ * state is seeded from `scanBlockCommentLineStarts` using the hunk
+ * header's line numbers, so this case is recognised correctly (Issue
+ * #1394). When content is not supplied — or a specific line's state
+ * cannot otherwise be confirmed — an unconfirmed line is still treated as
+ * non-comment: the safe, fail-closed default. The worst case is a
+ * comment-only file still being required to have a sibling test, never
+ * the reverse. For the same reason, a block-comment close marker followed
+ * by non-whitespace on the same line is treated as real code, not a
+ * comment-only close.
  *
  * File-level diff metadata (`diff --git`, `index`, `--- a/file`,
  * `+++ b/file`) is only ever skipped while it appears BEFORE the first
@@ -266,13 +321,24 @@ function fileExtension(filePath) {
  *
  * Returns false (not comment-only) for files with no changed lines and for
  * extensions with no known comment syntax.
+ *
+ * @param {string} diffText
+ * @param {string} filePath
+ * @param {{ baseContent?: string | null, headContent?: string | null }} [opts]
+ *   Full file content on each side of the diff (base = pre-image, head =
+ *   post-image), used only to seed block-comment state at each hunk's
+ *   start. Omit (or pass null) when unavailable — the function still
+ *   works, just without the outside-the-hunk-opener recognition.
  */
-export function isCommentOnlyDiff(diffText, filePath) {
+export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
+  const { baseContent = null, headContent = null } = opts;
   const ext = fileExtension(filePath);
   const lineCommentPrefix = LINE_COMMENT_PREFIX_BY_EXT[ext];
   if (!lineCommentPrefix) return false;
 
   const supportsBlockComments = BLOCK_COMMENT_EXTS.has(ext);
+  const addedBlockStarts = supportsBlockComments && headContent !== null ? scanBlockCommentLineStarts(headContent, ext) : null;
+  const removedBlockStarts = supportsBlockComments && baseContent !== null ? scanBlockCommentLineStarts(baseContent, ext) : null;
 
   let insideHunk = false;
   let inBlockAdded = false;
@@ -282,8 +348,11 @@ export function isCommentOnlyDiff(diffText, filePath) {
   for (const rawLine of diffText.split('\n')) {
     if (rawLine.startsWith('@@')) {
       insideHunk = true;
-      inBlockAdded = false;
-      inBlockRemoved = false;
+      const headerMatch = rawLine.match(HUNK_HEADER_RE);
+      const oldStart = headerMatch ? parseInt(headerMatch[1], 10) : null;
+      const newStart = headerMatch ? parseInt(headerMatch[2], 10) : null;
+      inBlockAdded = !!(addedBlockStarts && newStart !== null && addedBlockStarts[newStart - 1]);
+      inBlockRemoved = !!(removedBlockStarts && oldStart !== null && removedBlockStarts[oldStart - 1]);
       continue;
     }
     // Lines before the first hunk marker are file-level diff metadata, not
@@ -345,10 +414,31 @@ export function isCommentOnlyDiff(diffText, filePath) {
 }
 
 /**
+ * Read a file's content at a given git ref via `git show <ref>:<path>`.
+ * Returns null on any error (ref/path does not exist, not a git repo,
+ * etc.) rather than throwing — callers treat null as "content unavailable"
+ * and `isCommentOnlyDiff` falls back to its no-content fail-closed default.
+ */
+function readGitFileContent(ref, filePath, cwd) {
+  const result = spawnSync('git', ['show', `${ref}:${filePath}`], { encoding: 'utf-8', cwd });
+  if (result.error || result.status !== 0) return null;
+  return result.stdout;
+}
+
+/**
  * Filesystem/git wrapper around `isCommentOnlyDiff`: runs
  * `git diff --unified=0 <baseBranch>...HEAD -- <file>` and evaluates the
  * result. Returns false (safe default: require coverage) on any git error
  * or when the file has no diff against baseBranch.
+ *
+ * Also reads the file's full content on both sides of the diff — HEAD for
+ * the post-image, and the merge-base of `baseBranch` and `HEAD` (the same
+ * base the triple-dot diff itself compares against) for the pre-image —
+ * and passes them through so `isCommentOnlyDiff` can seed block-comment
+ * state for hunks whose opener falls outside the `--unified=0` context
+ * (Issue #1394). Either read failing (e.g. the file did not exist on that
+ * side) degrades to that side's no-content fail-closed default rather than
+ * failing the whole check.
  *
  * `cwd` defaults to the process's own working directory; tests pass an
  * explicit repo path instead of mutating the shared `process.cwd()` (which
@@ -360,7 +450,14 @@ export function isCommentOnlyFileDiff(filePath, baseBranch = process.env.BASE_BR
     cwd,
   });
   if (result.error || result.status !== 0) return false;
-  return isCommentOnlyDiff(result.stdout || '', filePath);
+
+  const mergeBaseResult = spawnSync('git', ['merge-base', baseBranch, 'HEAD'], { encoding: 'utf-8', cwd });
+  const mergeBase = !mergeBaseResult.error && mergeBaseResult.status === 0 ? mergeBaseResult.stdout.trim() : null;
+
+  const baseContent = mergeBase ? readGitFileContent(mergeBase, filePath, cwd) : null;
+  const headContent = readGitFileContent('HEAD', filePath, cwd);
+
+  return isCommentOnlyDiff(result.stdout || '', filePath, { baseContent, headContent });
 }
 
 export function findTestFiles(changedFiles) {
