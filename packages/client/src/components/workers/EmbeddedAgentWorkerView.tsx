@@ -304,12 +304,25 @@ export function EmbeddedAgentWorkerView({
 
       {/* The wording never names an engine or a mechanism (§3.1's no-leak
           principle): from here it is one feature, however differently the
-          two engines implement it. */}
+          two engines implement it.
+
+          `checked` is the server's value and nothing else. The client
+          deliberately does NOT substitute the ON default when the value is
+          unknown: that default is the server's (`workers.auto_compaction NOT
+          NULL DEFAULT 1`), and re-implementing it here would give one fact
+          two sources -- so a field that went missing at the wire would render
+          as a confident ON and look completely normal. That is the exact
+          failure shape Gap-Scan Q10 exists for, and this PR already hit one
+          instance of it at a different gate.
+
+          An unknown value therefore disables the control rather than
+          displaying a guess, which also stops a click from PATCHing a value
+          derived from one. */}
       <label className="px-4 py-1.5 shrink-0 flex items-center gap-2 text-xs text-gray-400 border-t border-slate-800">
         <input
           type="checkbox"
-          checked={autoCompaction ?? true}
-          disabled={togglePending}
+          checked={autoCompaction === true}
+          disabled={togglePending || autoCompaction === undefined}
           onChange={(e) => void handleAutoCompactionChange(e.target.checked)}
           className="accent-blue-600 disabled:opacity-50"
         />

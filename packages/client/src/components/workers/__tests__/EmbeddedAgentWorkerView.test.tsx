@@ -1867,6 +1867,38 @@ describe('EmbeddedAgentWorkerView', () => {
         expect((toggle as HTMLInputElement).checked).toBe(true);
       });
 
+      it('does NOT substitute the ON default when the server value is unknown, and is not clickable then', async () => {
+        // The ON default belongs to the server (`workers.auto_compaction NOT
+        // NULL DEFAULT 1`). Repeating it here would give one fact two
+        // sources, so a field dropped at the wire would render as a confident
+        // ON and look perfectly normal -- the Gap-Scan Q10 failure shape,
+        // which this PR already hit once at a different gate. Unknown must
+        // therefore read as "not available", and must not be writable: a
+        // click from a guessed baseline would PATCH a value the user never
+        // saw the truth of.
+        // Parameters declared so `mock.calls` carries them -- an argument-less
+        // mock records a zero-length tuple, and the PATCH assertion below has
+        // to read the request init.
+        const fetchMock = mock(
+          async (_input: RequestInfo | URL, _init?: RequestInit) =>
+            new Response(JSON.stringify([]), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+        );
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        renderView({ sessionId: 's-tog-unknown', workerId: 'w-tog-unknown' });
+
+        const toggle = screen.getByRole('checkbox', {
+          name: /Compact automatically when the context fills up/,
+        }) as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+        expect(toggle.disabled).toBe(true);
+
+        await userEvent.setup().click(toggle).catch(() => {});
+        expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+      });
+
       it('never names an engine or a mechanism in its wording', () => {
         // §3.1's no-leak principle: from the user's side this is one
         // feature, however differently the two engines implement it.

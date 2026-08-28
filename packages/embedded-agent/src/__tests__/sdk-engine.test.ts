@@ -1648,6 +1648,41 @@ describe('SdkEngine — compaction: the Compact tool', () => {
     expect(pushed).toEqual(['please compact', '/compact']);
   });
 
+  it("attributes the injected /compact turn's events to the RESERVING turn, by decision", async () => {
+    // Wire semantics, persisted forever, so it is pinned rather than left to
+    // fall out of `currentTurnId` never being reassigned. The alternative --
+    // minting a fresh id here -- would produce an assistant bubble belonging
+    // to no user message at all, because the injected `/compact` deliberately
+    // has no `user-message` row. See drainPendingCompactCommand's doc comment.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield resultSuccess();
+        // The SDK's response to the injected /compact.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield textDeltaEvent('compacting now');
+        yield messageStopEvent();
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    const turn = engine.runTurn('RESERVING-TURN', 'please compact');
+    engine.reserveCompaction();
+    await turn;
+    await flush();
+    await flush();
+
+    const injected = eventsOfType(events, 'assistant-message').filter((e) =>
+      e.text.includes('compacting now'),
+    );
+    expect(injected).toHaveLength(1);
+    expect(injected[0].turnId).toBe('RESERVING-TURN');
+  });
+
   it('DISCARDS the reservation on cancel', async () => {
     const { queryFn } = makeFakeQuery(() =>
       (async function* (): AsyncGenerator<SDKMessage, void> {

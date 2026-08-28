@@ -760,6 +760,24 @@ export class SdkEngine implements Engine {
    * `user-message` echo is appended to the persisted transcript: that echo
    * exists to record a real human or API-caller message, and a synthetic
    * `/compact` is neither. A fake user row would misattribute the action.
+   *
+   * **The injected turn's events carry the RESERVING turn's `turnId`, by
+   * decision.** Not going through `runTurn` means `currentTurnId` is never
+   * reassigned, so everything the SDK emits in response to this `/compact`
+   * -- deltas, the assistant message, the `result` -- is attributed to the
+   * turn in which the agent called `Compact`. Read as a contract rather than
+   * as a leftover: the compaction was requested during that turn, and its
+   * acknowledgement belongs to it. On the client this appends to that turn's
+   * assistant content, which is what a user sees as "I asked, and it
+   * answered". This attribution is persisted in the transcript forever, so
+   * it is wire semantics, not an implementation detail.
+   *
+   * **Why NOT mint a fresh turnId here** -- the change a future reader is
+   * most likely to make, thinking the missing id is an oversight: a fresh id
+   * would produce an assistant bubble belonging to no user message at all,
+   * because the injected `/compact` deliberately has no `user-message` row
+   * (see above). Trading a defensible attribution for an orphaned one is a
+   * regression, not a fix. Pinned by a test.
    */
   private drainPendingCompactCommand(): void {
     if (!this.pendingCompactCommand) return;
