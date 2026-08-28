@@ -335,8 +335,13 @@ describe('Client-Server Boundary: Compaction wire round trips', () => {
 
     // Prove the SQLite round trip (toEmbeddedAgentRow / toEmbeddedAgentDefinition)
     // also preserves the fields, not just the in-memory object create() returned.
-    const fetched = embeddedAgentManager.getEmbeddedAgent(created.id);
-    expect(fetched).toBeDefined();
+    // Read through the REPOSITORY, not `embeddedAgentManager.getEmbeddedAgent`:
+    // the manager returns the in-memory map entry it inserted after
+    // `repository.save`, so asserting on it never invokes `findById` or the
+    // row mappers -- the very layer this test exists to cover. A schema/mapper
+    // drop would pass unnoticed through the manager's cache.
+    const fetched = await new SqliteEmbeddedAgentRepository(getDatabase()).findById(created.id);
+    expect(fetched).not.toBeNull();
     expect(fetched!.contextWindowTokens).toBe(128000);
     expect(fetched!.compaction).toEqual({ threshold: 0.8 });
     const parsedFetched = v.parse(EmbeddedAgentDefinitionSchema, fetched);

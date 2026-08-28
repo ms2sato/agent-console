@@ -1626,6 +1626,11 @@ describe('SdkEngine — compaction: the Compact tool', () => {
         yield systemInit();
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
         yield resultSuccess();
+        // The injected `/compact`'s own terminal result. `await turn` below
+        // does not resolve without it -- the turn is held open across the
+        // compaction on purpose.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield resultSuccess();
         await new Promise<never>(() => {});
       })(),
     );
@@ -1681,6 +1686,81 @@ describe('SdkEngine — compaction: the Compact tool', () => {
     );
     expect(injected).toHaveLength(1);
     expect(injected[0].turnId).toBe('RESERVING-TURN');
+  });
+
+  it('holds the reserving turn open until the injected /compact reaches its own result', async () => {
+    // The STRUCTURAL half of the attribution contract pinned above. That test
+    // asserts the injected events carry the reserving turn's id; this one
+    // asserts the only reason they can. `main.ts` keeps `turnActive` set for
+    // as long as `runTurn` is unsettled, so holding the turn open across the
+    // compaction is what makes a `user-message` mid-compaction impossible --
+    // and with it, any reassignment of `currentTurnId` underneath the
+    // injected turn. Settle before draining (the previous order) and the
+    // attribution held only while nobody typed.
+    let releaseCompactResult!: () => void;
+    const compactResult = new Promise<void>((resolve) => {
+      releaseCompactResult = resolve;
+    });
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield resultSuccess(); // the reserving turn's own result
+        await compactResult; // ... the injected /compact is in flight here
+        yield resultSuccess(); // the injected /compact's result
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    let settled = false;
+    const turn = engine.runTurn('u1', 'please compact').then(() => {
+      settled = true;
+    });
+    engine.reserveCompaction();
+    await flush();
+    await flush();
+
+    // The reserving turn's result has been consumed, yet the turn is NOT over.
+    expect(settled).toBe(false);
+
+    releaseCompactResult();
+    await turn;
+    expect(settled).toBe(true);
+  });
+
+  it('settles the turn when a booked compaction cannot be queued', async () => {
+    // `drainPendingCompactCommand` reports whether it actually queued the
+    // command, and `handleResult` holds the turn open ONLY on true. Otherwise
+    // a booked compaction that never became a queued message would leave the
+    // turn waiting for a result nobody will produce.
+    //
+    // Driven directly rather than through `handleResult`: the caller already
+    // returns early on `this.dead` immediately before the drain, with no
+    // `await` between the two, so this branch is not reachable from that path
+    // today. It is pinned as the drain's own contract, which is what
+    // `handleResult` relies on -- and what would silently rot if a future
+    // `await` were introduced above it.
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+    const internals = engine as unknown as {
+      pendingCompactCommand: boolean;
+      dead: boolean;
+      drainPendingCompactCommand: () => boolean;
+    };
+
+    engine.reserveCompaction();
+    internals.dead = true;
+
+    expect(internals.drainPendingCompactCommand()).toBe(false);
+    // The reservation is consumed either way, so a later pass cannot re-enter
+    // the held-open branch on a stale flag.
+    expect(internals.pendingCompactCommand).toBe(false);
   });
 
   it('DISCARDS the reservation on cancel', async () => {
@@ -1747,14 +1827,18 @@ describe('SdkEngine — compaction: the Compact tool', () => {
     engine.reserveCompaction();
     await turn;
 
-    // The `/compact` went out, and the SDK's refusal came back as an
-    // ordinary assistant message on the following turn.
-    await engine.runTurn('u2', 'anything');
+    // The `/compact` went out and the refusal came back as ordinary assistant
+    // output INSIDE the reserving turn -- the turn is held open across the
+    // compaction, so no second `runTurn` is needed to collect it.
     expect(eventsOfType(events, 'context-compacted')).toHaveLength(0);
     expect(
       eventsOfType(events, 'assistant-message').some((e) =>
         e.text.includes('Not enough messages to compact.'),
       ),
     ).toBe(true);
+    // Nothing hangs and nothing settles twice: the refusal's result reaches
+    // the ordinary tail exactly once. A `/compact` the SDK declines is still
+    // a terminal result, which is why no timeout guard is needed here.
+    expect(eventsOfType(events, 'state').filter((e) => e.state === 'idle')).toHaveLength(1);
   });
 });

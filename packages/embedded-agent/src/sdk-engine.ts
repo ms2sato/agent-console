@@ -705,7 +705,9 @@ export class SdkEngine implements Engine {
    * arrive during the turn -- a genuinely pathological case -- and is
    * flushed here anyway (loudly logged) rather than dropped. Then: flushes
    * any compaction boundary observed during the turn, polls context usage
-   * (S1), emits `state: idle`, and settles the pending turn. */
+   * (S1), and -- unless a booked `Compact` is drained here, which holds the
+   * turn open until that injected command's own result arrives -- emits
+   * `state: idle` and settles the pending turn. */
   private async handleResult(message: ResultMessage): Promise<void> {
     const turnId = this.requireTurnId();
     this.flushOrphanedToolResults(turnId);
@@ -728,9 +730,23 @@ export class SdkEngine implements Engine {
     if (message.subtype !== 'success') {
       this.deps.emit({ v: 1, type: 'turn-error', turnId, message: this.buildTurnErrorMessage(message) });
     }
+    // Compaction: a `Compact` booked during this turn runs as PART of it --
+    // the turn is not over until the injected `/compact` reaches its own
+    // terminal `result`. Deferring `idle`/settle here is what turns the
+    // attribution contract below into a structural guarantee rather than an
+    // assumption: `main.ts` keeps `turnActive` set for as long as `runTurn`
+    // is unsettled, so no `user-message` can start a turn that would reassign
+    // `currentTurnId` out from under the injected one. This mirrors the
+    // openai-api engine, where `runUserTurn` and
+    // `settleCompactionAtTurnBoundary` are one promise for the same reason --
+    // the asymmetry this replaces was an omission, not a decision. On the
+    // second pass (the `/compact`'s own result) the flag is already cleared,
+    // so this falls through and settles exactly once.
+    if (this.pendingCompactCommand && this.drainPendingCompactCommand()) {
+      return; // turn held open; the /compact's own result settles it
+    }
     this.deps.emit({ v: 1, type: 'state', state: 'idle' });
     this.settlePendingTurn();
-    this.drainPendingCompactCommand();
   }
 
   /**
@@ -762,8 +778,16 @@ export class SdkEngine implements Engine {
    * `/compact` is neither. A fake user row would misattribute the action.
    *
    * **The injected turn's events carry the RESERVING turn's `turnId`, by
-   * decision.** Not going through `runTurn` means `currentTurnId` is never
-   * reassigned, so everything the SDK emits in response to this `/compact`
+   * decision -- and structurally, not by assumption.** `handleResult` defers
+   * `state: idle` and the turn's settlement until this injected command
+   * reaches its own terminal `result`, which keeps `main.ts`'s `turnActive`
+   * set across the whole compaction. A `user-message` arriving mid-compaction
+   * is therefore refused rather than started, so nothing can reassign
+   * `currentTurnId` while these events are in flight. (Before that deferral
+   * existed, the attribution below held only for as long as no one sent a
+   * message during compaction -- and emitting `state: idle` first actively
+   * invited exactly that.) Not going through `runTurn` means `currentTurnId`
+   * is never reassigned, so everything the SDK emits in response to this `/compact`
    * -- deltas, the assistant message, the `result` -- is attributed to the
    * turn in which the agent called `Compact`. Read as a contract rather than
    * as a leftover: the compaction was requested during that turn, and its
@@ -779,15 +803,19 @@ export class SdkEngine implements Engine {
    * (see above). Trading a defensible attribution for an orphaned one is a
    * regression, not a fix. Pinned by a test.
    */
-  private drainPendingCompactCommand(): void {
-    if (!this.pendingCompactCommand) return;
+  private drainPendingCompactCommand(): boolean {
+    if (!this.pendingCompactCommand) return false;
     this.pendingCompactCommand = false;
-    if (this.dead) return;
+    // Nothing was queued, so nothing will produce the `result` the caller
+    // would be waiting for -- report false so it settles the turn instead of
+    // holding it open forever.
+    if (this.dead) return false;
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: COMPACT_SLASH_COMMAND },
       parent_tool_use_id: null,
     });
+    return true;
   }
 
   private flushOrphanedToolResults(turnId: string): void {

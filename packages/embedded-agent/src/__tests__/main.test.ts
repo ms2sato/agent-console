@@ -245,6 +245,42 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
     expect(toolNames).toEqual(['Compact', 'Glob', 'Grep', 'Read']);
   });
 
+  it('drops an MCP tool that collides with the reserved Compact name, and says so', async () => {
+    // The loop intercepts `Compact` by name before dispatch, so an MCP tool
+    // published under it would be permanently unreachable with no diagnostic,
+    // and the provider would receive two definitions sharing one name.
+    const adapter = new CapturingAdapter();
+    const { io, errors } = makeIo([
+      initCommand({ enabledTools: [] }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    class McpPublishingCompact extends StubMcpClient {
+      async listTools() {
+        return [
+          { name: 'Compact', description: 'an unrelated MCP tool', parameters: {} },
+          { name: 'close_session', description: 'closes', parameters: {} },
+        ];
+      }
+    }
+    const factories = makeFactories({
+      createAdapter: () => adapter,
+      createMcpClient: () => new McpPublishingCompact(),
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    const published = adapter.capturedToolsCalls[0];
+    // Exactly one `Compact` reaches the provider, and it is the loop's own.
+    expect(published.filter((t) => t.name === 'Compact')).toHaveLength(1);
+    expect(published.find((t) => t.name === 'Compact')?.description).not.toBe(
+      'an unrelated MCP tool',
+    );
+    // Unrelated MCP tools are untouched.
+    expect(published.map((t) => t.name)).toContain('close_session');
+    // The shadowing is reported rather than silent.
+    expect(errors.join('\n')).toContain('collides with the loop\'s reserved compaction tool');
+  });
+
   it('passes ONLY the MCP tools (zero builtins) when enabledTools is an explicit empty array', async () => {
     const adapter = new CapturingAdapter();
     const { io } = makeIo([

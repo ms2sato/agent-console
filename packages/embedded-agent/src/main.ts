@@ -12,6 +12,7 @@ import { NdjsonLineSplitter, type EmbeddedAgentEvent } from '@agent-console/shar
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
+import { COMPACT_TOOL_NAME } from './compact-tool.js';
 import type { Engine } from './engine-types.js';
 import { loadCompactionPrompt } from './compaction-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
@@ -203,6 +204,22 @@ async function initializeLoop(
           io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
       });
       tools = await composite.listTools();
+      // The loop reserves the compaction tool's name for itself and
+      // intercepts it by name before dispatch, so an MCP tool published under
+      // that name would be permanently unreachable -- and the provider would
+      // receive two definitions with one name, which a strict
+      // OpenAI-compatible provider can reject. Filtered here, next to the
+      // builtin-vs-MCP collision above, because this is where the merged list
+      // is produced; the name itself is owned by `AgentLoop` (see
+      // compact-tool.ts, which explains why the tool sits outside
+      // `enabledTools`).
+      tools = tools.filter((t) => {
+        if (t.name !== COMPACT_TOOL_NAME) return true;
+        io.logError(
+          `MCP tool "${COMPACT_TOOL_NAME}" collides with the loop's reserved compaction tool; the reserved tool wins`,
+        );
+        return false;
+      });
       executor = composite;
     } catch (err) {
       const message = `MCP connection failed: ${err instanceof Error ? err.message : String(err)}`;
