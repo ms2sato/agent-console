@@ -671,6 +671,37 @@ describe('isCommentOnlyDiff — opener outside the --unified=0 hunk, seeded via 
     expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(false);
   });
 
+  it('returns false for a real code change following a phantom `/*` picked up from a string/glob literal (adversarial seed)', () => {
+    // `'packages/server/src/*'` contains the two characters `/*` with no
+    // matching `*/` later on the line, so scanBlockCommentLineStarts reads
+    // it as an unterminated block-comment opener and marks every
+    // subsequent line as "starts inside a block" -- even though the file
+    // has no real block comment at all. Without the shape-check guard in
+    // isCommentOnlyDiff, this phantom seed would make the hunk's actual
+    // code change (`return 1;` -> `return 2;`) look like comment body
+    // (no `*/` on that line either) and silently exempt it from the
+    // sibling-test requirement -- a fail-open in the mechanism that
+    // enforces test coverage. This is the load-bearing negative case for
+    // the shape-check guard.
+    const baseContent = ["const paths = glob('packages/server/src/*');", 'function realCode() {', '  return 1;', '}'].join('\n');
+    const headContent = ["const paths = glob('packages/server/src/*');", 'function realCode() {', '  return 2;', '}'].join('\n');
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -3 +3 @@', '-  return 1;', '+  return 2;'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(false);
+  });
+
+  it('confirms the JSDoc body edit is actually exempted via the content-seeding path, not by coincidence', () => {
+    // Same fixture as the first test in this block, but calling
+    // isCommentOnlyDiff both without and with opts makes the dependency on
+    // content-seeding explicit within a single test, rather than relying
+    // on the reader to infer it from two separately-written tests.
+    const baseContent = ['function foo() {}', '', '/**', ' * old continuation line', ' */', 'const x = 1;'].join('\n');
+    const headContent = ['function foo() {}', '', '/**', ' * new continuation line', ' */', 'const x = 1;'].join('\n');
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -4 +4 @@', '- * old continuation line', '+ * new continuation line'].join('\n');
+
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false); // no content supplied: fail-closed, as before
+    expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(true); // content supplied: recognised
+  });
+
   // Polarity fixture: the actual `sdk-engine.ts` diff from PR #1393
   // (chore/1338-bump-claude-agent-sdk, comparing origin/main...FETCH_HEAD).
   // Its hunk edits only the BODY of an existing JSDoc block; the `/**`
@@ -765,6 +796,11 @@ describe('isCommentOnlyDiff — opener outside the --unified=0 hunk, seeded via 
     .join('\n');
 
   it('returns true for the exact PR #1393 sdk-engine.ts diff (comment-body edit, opener outside the hunk)', () => {
+    // Explicit content-path dependency: without base/head content this
+    // exact diff still fails closed (same as before this fix), so the
+    // `true` below is demonstrably coming from the content-seeding path,
+    // not from some incidental change in the hunk-local logic.
+    expect(isCommentOnlyDiff(PR_1393_SDK_ENGINE_DIFF, 'packages/embedded-agent/src/sdk-engine.ts')).toBe(false);
     expect(
       isCommentOnlyDiff(PR_1393_SDK_ENGINE_DIFF, 'packages/embedded-agent/src/sdk-engine.ts', {
         baseContent: PR_1393_SDK_ENGINE_BASE_CONTENT,

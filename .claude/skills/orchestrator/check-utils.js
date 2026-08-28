@@ -247,13 +247,18 @@ const HUNK_HEADER_RE = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
  * in unchanged context) can still be seeded with the correct starting
  * state instead of unconditionally starting "not in a block".
  *
- * Deliberately simple: does not account for `/*` or `//` appearing inside
- * string literals. This matches the conservatism level of the per-hunk
- * logic below (which has the same limitation) and is safe in the direction
- * that matters — the worst case from a false open/close is a comment-only
- * file still being required to have a sibling test, never the reverse,
- * because `isCommentOnlyDiff` itself still fails closed on anything it
- * cannot confirm as comment content.
+ * Deliberately simple: does NOT account for `/*` or `//` appearing inside
+ * string/glob/regex literals (e.g. `glob('packages/server/src/*')` reads
+ * as an unterminated block-comment opener to this scanner). This function
+ * can therefore return a FALSE "starts inside a block" for a line that is
+ * actually real code — it is not safe to trust on its own. What makes the
+ * overall result safe is NOT this function's own conservatism (it has
+ * none); it is that `isCommentOnlyDiff` treats a seed produced here as
+ * only conditionally trusted, and additionally requires the specific
+ * changed line to have block-comment-body shape (see its "seed-derived
+ * ... only conditionally trusted" note) before accepting it as comment
+ * content. A phantom seed whose lines don't have that shape is rejected
+ * there, not here.
  *
  * Returns `[]` for extensions with no block-comment syntax.
  */
@@ -298,10 +303,32 @@ function scanBlockCommentLineStarts(content, ext) {
  * only the BODY of an existing block comment, the `/*` opener line sits
  * outside the hunk. When `opts.baseContent` / `opts.headContent` (the
  * full file content on each side) is supplied, the per-side starting
- * state is seeded from `scanBlockCommentLineStarts` using the hunk
- * header's line numbers, so this case is recognised correctly (Issue
- * #1394). When content is not supplied — or a specific line's state
- * cannot otherwise be confirmed — an unconfirmed line is still treated as
+ * state is seeded from `scanBlockCommentLineStarts` (see that function)
+ * using the hunk header's line numbers, so this case is recognised
+ * correctly (Issue #1394).
+ *
+ * Seed-derived vs. in-hunk-confirmed trust are NOT equivalent, and this
+ * function does not treat them as equivalent. `scanBlockCommentLineStarts`
+ * can produce a false "inside a block" seed (it does not distinguish a
+ * `/*` inside a string/glob/regex literal from a real comment opener), so
+ * while `inBlock` is true FROM A SEED, each changed line must additionally
+ * look like block-comment-body shape (starts with `*`, or is the line that
+ * closes the block) before being accepted as comment content; a line that
+ * fails that shape check drops the (apparently phantom) block state and is
+ * re-evaluated under the normal rules below, same as if no seed had ever
+ * applied. Once a `/*` opener is directly observed within the hunk's own
+ * diff text (not inferred from the file-content scan), the state it
+ * establishes is fully trusted for the rest of the hunk — no shape check —
+ * matching this function's behavior before content-seeding existed.
+ *
+ * (Follow-up candidate, not done here: `scanBlockCommentLineStarts`'s
+ * open/close transition logic and this function's in-hunk equivalent are
+ * two named, hand-verified implementations of the same judgment rather
+ * than a shared helper — acceptable as-is, but a future PR could extract
+ * the transition into one function both call.)
+ *
+ * When content is not supplied — or a specific line's state cannot
+ * otherwise be confirmed — an unconfirmed line is still treated as
  * non-comment: the safe, fail-closed default. The worst case is a
  * comment-only file still being required to have a sibling test, never
  * the reverse. For the same reason, a block-comment close marker followed
@@ -343,6 +370,14 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
   let insideHunk = false;
   let inBlockAdded = false;
   let inBlockRemoved = false;
+  // Whether the CURRENT inBlock* = true state was established by actually
+  // observing a `/*` opener line within this hunk's own diff text (fully
+  // trusted, matches pre-#1394 behavior exactly), as opposed to being
+  // seeded from scanBlockCommentLineStarts's file-content scan (which does
+  // not distinguish a `/*` inside a string literal from a real comment
+  // opener, and therefore is only conditionally trusted — see below).
+  let addedBlockConfirmed = false;
+  let removedBlockConfirmed = false;
   let sawChangedLine = false;
 
   for (const rawLine of diffText.split('\n')) {
@@ -353,6 +388,10 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
       const newStart = headerMatch ? parseInt(headerMatch[2], 10) : null;
       inBlockAdded = !!(addedBlockStarts && newStart !== null && addedBlockStarts[newStart - 1]);
       inBlockRemoved = !!(removedBlockStarts && oldStart !== null && removedBlockStarts[oldStart - 1]);
+      // A hunk boundary is always seed-or-nothing — an in-hunk-confirmed
+      // opener can only be observed AFTER this point, within the hunk.
+      addedBlockConfirmed = false;
+      removedBlockConfirmed = false;
       continue;
     }
     // Lines before the first hunk marker are file-level diff metadata, not
@@ -378,16 +417,45 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
 
     if (ext === '.sh' && trimmed.startsWith('#!')) return false;
 
-    const inBlock = sign === '+' ? inBlockAdded : inBlockRemoved;
+    let inBlock = sign === '+' ? inBlockAdded : inBlockRemoved;
+    const blockConfirmed = sign === '+' ? addedBlockConfirmed : removedBlockConfirmed;
 
     if (inBlock) {
       const closeIdx = trimmed.indexOf('*/');
-      if (closeIdx === -1) continue; // still inside the block; whole line is comment body
-      const after = trimmed.slice(closeIdx + 2).trim();
-      if (after.length > 0) return false; // real code follows the block close
-      if (sign === '+') inBlockAdded = false;
-      else inBlockRemoved = false;
-      continue;
+      // A confirmed (in-hunk-observed) opener trusts any line unconditionally
+      // (original behavior, unchanged). A seed-derived opener additionally
+      // requires this specific line to look like block-comment-body shape
+      // — a JSDoc-style `*`-prefixed continuation, or the line that closes
+      // the block — before accepting it as comment content. Without this,
+      // a phantom `/*` picked up from a string/glob literal by the
+      // file-content scan (e.g. `'packages/server/src/*'`) would silently
+      // swallow real code changes as "still inside the block" all the way
+      // to the next literal `*/` anywhere later in the file.
+      const looksLikeBlockBody = blockConfirmed || closeIdx !== -1 || trimmed.startsWith('*');
+      if (looksLikeBlockBody) {
+        if (closeIdx === -1) continue; // still inside the block; whole line is comment body
+        const after = trimmed.slice(closeIdx + 2).trim();
+        if (after.length > 0) return false; // real code follows the block close
+        if (sign === '+') {
+          inBlockAdded = false;
+          addedBlockConfirmed = false;
+        } else {
+          inBlockRemoved = false;
+          removedBlockConfirmed = false;
+        }
+        continue;
+      }
+      // Untrusted seed state whose line doesn't look like comment body:
+      // drop the (likely phantom) block state and fall through to
+      // evaluate this line under the normal, non-block rules below.
+      if (sign === '+') {
+        inBlockAdded = false;
+        addedBlockConfirmed = false;
+      } else {
+        inBlockRemoved = false;
+        removedBlockConfirmed = false;
+      }
+      inBlock = false;
     }
 
     if (trimmed.startsWith(lineCommentPrefix)) continue;
@@ -395,8 +463,15 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
     if (supportsBlockComments && trimmed.startsWith('/*')) {
       const closeIdx = trimmed.indexOf('*/', 2);
       if (closeIdx === -1) {
-        if (sign === '+') inBlockAdded = true;
-        else inBlockRemoved = true;
+        // The opener itself was observed directly in this hunk's diff
+        // text, not inferred from a file-content scan — fully trusted.
+        if (sign === '+') {
+          inBlockAdded = true;
+          addedBlockConfirmed = true;
+        } else {
+          inBlockRemoved = true;
+          removedBlockConfirmed = true;
+        }
         continue;
       }
       const after = trimmed.slice(closeIdx + 2).trim();
@@ -406,7 +481,8 @@ export function isCommentOnlyDiff(diffText, filePath, opts = {}) {
 
     // Not blank, not a confirmed comment-open/continuation/close line:
     // real code (this also fail-closes a bare `*` line with no confirmed
-    // opener in this hunk).
+    // opener in this hunk, and a seed-derived in-block line that did not
+    // have block-comment-body shape).
     return false;
   }
 
