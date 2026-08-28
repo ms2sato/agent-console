@@ -248,7 +248,7 @@ This table is the pre-implementation gate named in §7: every native NDJSON comm
 
 | Native command | SDK engine handling | Class |
 |---|---|---|
-| `init` | Construct the `query()` options: system-prompt append, allowed-tools from `enabledTools` (§4.1 exclusions), MCP dial-back as an SDK MCP server, `settings.autoCompactEnabled: false`, `executable: 'bun'`, no `resume` (a Phase 1 pin: this engine constructs fresh sessions, and eviction — the feature that would pass `resume` — is not shipped; PS4 itself is verified as of #1400). `provider.apiKey` absent by construction (§3.2) | mapped |
+| `init` | Construct the `query()` options: system-prompt append, allowed-tools from `enabledTools` (§4.1 exclusions), MCP dial-back as an SDK MCP server, `settings.autoCompactEnabled` from the worker's own `autoCompaction` toggle (`init.compaction.auto`; #1401 made the SDK's auto-compaction this engine's automatic compaction, so this is no longer the literal `false` it was in Phase 1), `executable: 'bun'`, no `resume` (a Phase 1 pin: this engine constructs fresh sessions, and eviction — the feature that would pass `resume` — is not shipped; PS4 itself is verified as of #1400). `provider.apiKey` absent by construction (§3.2) | mapped |
 | `user-message` | Next user turn into the live SDK session | mapped — `verify`: the streaming-input mechanism for a follow-up turn on 2.1.233 — see §5 correction |
 | `cancel` | SDK interrupt | mapped — `verify`: the interrupt call's behavior on partial output (what the stream emits after an interrupt) |
 | `shutdown` | Terminate the SDK session and child process; stdin-sink teardown per the feeding-consumer rules | mapped |
