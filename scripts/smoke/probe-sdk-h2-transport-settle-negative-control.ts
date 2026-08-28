@@ -90,13 +90,16 @@ async function runOneTrial(trial: number): Promise<TrialResult> {
   const queue = new UserMessageQueue();
   const q = query({ prompt: queue.stream(), options: buildOptions() });
 
-  queue.push({ type: 'user', message: { role: 'user', content: 'Reply with exactly the single word: pong' }, parent_tool_use_id: null });
+  const consume = (async () => {
+    // THE ARTIFACT: break out of the for-await as soon as `result` arrives,
+    // instead of continuing to iterate like production's consumeLoop does.
+    for await (const message of q) {
+      if (message.type === 'result') break;
+    }
+  })();
 
-  // THE ARTIFACT: break out of the for-await as soon as `result` arrives,
-  // instead of continuing to iterate like production's consumeLoop does.
-  for await (const message of q) {
-    if (message.type === 'result') break;
-  }
+  queue.push({ type: 'user', message: { role: 'user', content: 'Reply with exactly the single word: pong' }, parent_tool_use_id: null });
+  await consume;
 
   let attempts = 0;
   for (; attempts < RETRY_ATTEMPTS; attempts++) {

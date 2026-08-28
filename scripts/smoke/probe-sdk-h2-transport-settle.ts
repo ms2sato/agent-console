@@ -110,25 +110,31 @@ async function runOneTrial(trial: number): Promise<TrialResult> {
   // Mirrors sdk-engine.ts's consumeLoop: iterate the message stream for the
   // engine's whole life, never breaking early -- see this file's header for
   // why an early break is the artifact the negative control demonstrates.
-  for await (const message of q) {
-    if (message.type === 'result') {
-      const t0 = Date.now();
-      try {
-        const resp = await q.getContextUsage();
-        result = { trial, ok: true, elapsedMs: Date.now() - t0, totalTokens: resp?.totalTokens };
-      } catch (err) {
-        result = { trial, ok: false, elapsedMs: Date.now() - t0, error: err instanceof Error ? err.message : String(err) };
+  // Run the consume loop CONCURRENTLY with pushing the prompt below -- the
+  // queue's stream() only yields once something has been pushed, so if the
+  // push happened after awaiting this loop directly, it would deadlock.
+  const consume = (async () => {
+    for await (const message of q) {
+      if (message.type === 'result') {
+        const t0 = Date.now();
+        try {
+          const resp = await q.getContextUsage();
+          result = { trial, ok: true, elapsedMs: Date.now() - t0, totalTokens: resp?.totalTokens };
+        } catch (err) {
+          result = { trial, ok: false, elapsedMs: Date.now() - t0, error: err instanceof Error ? err.message : String(err) };
+        }
+        break; // safe HERE -- getContextUsage() has already resolved/rejected
+               // from inside the still-live loop body, matching production.
       }
-      break; // safe HERE -- getContextUsage() has already resolved/rejected
-             // from inside the still-live loop body, matching production.
     }
-  }
+  })();
 
   const prompt: SDKUserMessage = withTool
     ? { type: 'user', message: { role: 'user', content: 'Run the shell command `pwd` using your Bash tool, then reply with just the word done.' }, parent_tool_use_id: null }
     : { type: 'user', message: { role: 'user', content: 'Reply with exactly the single word: pong' }, parent_tool_use_id: null };
   queue.push(prompt);
 
+  await consume;
   return result;
 }
 
