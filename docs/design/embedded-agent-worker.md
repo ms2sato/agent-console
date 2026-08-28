@@ -382,9 +382,11 @@ type EmbeddedAgentCommand =
       systemPrompt?: string;
       maxToolIterations: number;
       enabledTools?: EmbeddedAgentToolName[]; // FF-1a; server forwards the definition's raw value unchanged, incl. undefined — the loop applies the undefined -> default rule itself (see Built-in tools)
-      instructions?: string[] }               // opt-in instruction-file list, forwarded unchanged; the loop resolves + confines + loads them — see AGENTS.md loader
+      instructions?: string[];                // opt-in instruction-file list, forwarded unchanged; the loop resolves + confines + loads them — see AGENTS.md loader
+      compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number } } // Compaction; `auto` is the WORKER's toggle, the other two the definition's
   | { v: 1; type: 'user-message'; id: string; text: string } // id minted by server, echoed in events
   | { v: 1; type: 'cancel' }                                 // abort the in-flight turn (AbortController)
+  | { v: 1; type: 'set-auto-compaction'; enabled: boolean }  // Compaction; reflects a toggle change into a running subprocess. Not gated on turnActive — the flag is only read at the turn boundary
   | { v: 1; type: 'shutdown' };
 ```
 
@@ -402,7 +404,7 @@ type EmbeddedAgentEvent =
   | { v: 1; type: 'turn-error'; turnId: string; message: string }    // turn aborted (provider error, iteration cap, cancel, compaction failure)
   | { v: 1; type: 'fatal'; message: string }                         // loop is about to exit(1)
   | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean } // Compaction; emitted after every turn/compaction attempt that produced a usable value
-  | { v: 1; type: 'context-compacted'; source: 'auto' | 'manual'; summary?: string } // Compaction; persisted boundary marker, emitted immediately before the atomic conversation replacement
+  | { v: 1; type: 'context-compacted'; source: 'auto' | 'manual'; summary?: string; preTokens?: number; postTokens?: number } // Compaction; persisted boundary marker, emitted immediately before the atomic conversation replacement. The token pair is what the transcript row renders, so an aggressive compaction reports its own severity
   | { v: 1; type: 'context-handoff'; distillation: string };         // RETIRED (Context Handoff, #1122): no longer emitted; the type and its parse/render path are retained so persisted transcripts written before #1401 still replay
 ```
 
