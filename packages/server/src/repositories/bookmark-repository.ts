@@ -52,13 +52,13 @@ export interface BookmarkRepository {
   /**
    * Find all bookmarks owned by a user AND originating from a given
    * session, newest first (wire shape -- no `userId`). Both conditions are
-   * scoped in the SQL query itself, never as a post-fetch filter.
-   *
-   * A user-scoped fetch never contains other users' rows, so "another
-   * user's newer rows crowd the caller out" is NOT the mechanism here. What
-   * a post-fetch session filter would actually lose is the same user's
-   * older bookmarks in the target session, pushed out of a row-cap window
-   * by that same user's newer bookmarks from other sessions.
+   * scoped in the SQL query itself, never as a post-fetch filter -- see
+   * docs/design/html-artifacts.md §4.2 (single writer of the "why", shared
+   * with `ArtifactRepository`'s identical pattern) for the full rationale.
+   * In short: a user-scoped fetch has no other users' rows to be crowded
+   * out by; a post-fetch filter would instead lose the caller's own older
+   * rows in this session, pushed out by the caller's own newer rows from
+   * other sessions.
    *
    * Session ownership is deliberately NOT checked here: `userId` already
    * constrains the result set to the caller's own bookmarks, so
