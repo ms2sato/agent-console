@@ -391,6 +391,47 @@ export async function pollUsageWithSettle(q: Query): Promise<SDKControlGetContex
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+/**
+ * SINGLE WRITER of "this turn produced a usable measurement".
+ *
+ * A turn that timed out, or whose stream died under it, carries the same
+ * SHAPE as one that completed and simply said nothing: empty text, no nonce,
+ * no boundary. Every probe verdict in this repo is derived from that shape,
+ * so without this predicate an unsettled turn silently becomes an empirical
+ * negative -- a write path reported as unwritable, a positive control
+ * reported as having answered UNKNOWN, a compaction reported as having lost
+ * a value it never saw. Those are not hypothetical: all four shapes existed
+ * in these probes until a review found them as one class.
+ *
+ * The individual guards live at the sites that derive verdicts; what lives
+ * here is the DEFINITION, so the four sites cannot drift on what "settled"
+ * means.
+ */
+export function turnSettled(o: TurnOutcome): boolean {
+  return o.result !== undefined && !o.timedOut && o.streamError === undefined;
+}
+
+/**
+ * `null` when the turn is usable; otherwise the reason, phrased for a verdict
+ * line. Callers must treat a non-null return as "no measurement available"
+ * -- never as a negative measurement.
+ */
+export function unsettledReason(o: TurnOutcome, what: string): string | null {
+  if (turnSettled(o)) return null;
+  const why = o.timedOut ? 'timed out' : (o.streamError ?? 'no result message arrived');
+  return `${what} did not settle (${why}), so it measured nothing`;
+}
+
+/**
+ * Uniform per-turn trace line. Every turn a probe logs goes through this, so
+ * the pasted evidence shows settledness for EVERY turn rather than for the
+ * ones whose call site happened to print it -- which is what lets a reader
+ * check the guards never fired, instead of taking the author's word for it.
+ */
+export function turnLine(label: string, o: TurnOutcome): string {
+  return `${label}: result=${o.result?.subtype ?? '(none)'} timedOut=${o.timedOut} streamError=${o.streamError ?? '(none)'} settled=${turnSettled(o)}`;
+}
+
 /** Compact one-line rendering of the fields every item in #1400 reads. */
 export function usageLine(u: SDKControlGetContextUsageResponse | undefined): string {
   if (!u) return '(no usage)';

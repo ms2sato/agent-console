@@ -104,6 +104,8 @@ import {
   isolateClaudeConfigDir,
   nonce,
   stamp,
+  turnLine,
+  unsettledReason,
   usageLine,
   verifyIsolation,
   type TurnOutcome,
@@ -371,23 +373,32 @@ interface WriteAttempt {
   moved: boolean;
   reply?: string;
   error?: string;
+  /**
+   * Set when the write's own turn never settled. `moved` is then MEANINGLESS
+   * -- the write may never have reached the CLI -- so the verdict must not
+   * read it as "this key does nothing".
+   */
+  unsettled?: string;
 }
 
 async function applyAttempt(
   s: ProbeSession,
   how: string,
-  write: () => Promise<string | undefined>,
+  write: () => Promise<{ reply?: string; unsettled?: string }>,
 ): Promise<WriteAttempt> {
   const before = usageDigest(await s.readUsage());
   let error: string | undefined;
   let reply: string | undefined;
+  let unsettled: string | undefined;
   try {
-    reply = await write();
+    const out = await write();
+    reply = out.reply;
+    unsettled = out.unsettled;
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
   }
   const after = usageDigest(await s.readUsage());
-  return { how, before, after, moved: before !== after, reply, error };
+  return { how, before, after, moved: before !== after && !unsettled, reply, error, unsettled };
 }
 
 /** P3(i) result: the cheapest write path that actually moves the window, if any. */
@@ -421,13 +432,13 @@ async function itemP3i(): Promise<Lever> {
     await applyAttempt(s, 'applyFlagSettings({autoCompactThreshold: 0.2})', async () => {
       const probe: ProbeSettings = { autoCompactThreshold: 0.2 };
       await s.q.applyFlagSettings(probe);
-      return undefined;
+      return {};
     }),
   );
   attempts.push(
     await applyAttempt(s, `applyFlagSettings({autoCompactWindow: ${PROBE_WINDOW}})`, async () => {
       await s.q.applyFlagSettings({ autoCompactWindow: PROBE_WINDOW });
-      return undefined;
+      return {};
     }),
   );
 
@@ -438,14 +449,16 @@ async function itemP3i(): Promise<Lever> {
     await applyAttempt(s, `/autocompact ${BELOW_FLOOR_WINDOW} (deliberately below the SDK's floor)`, async () => {
       const t = await s.runTurn(`/autocompact ${BELOW_FLOOR_WINDOW}`);
       accountTurn('p3i', t);
-      return t.text.trim();
+      console.log(`  ${turnLine('/autocompact below-floor turn', t)}`);
+      return { reply: t.text.trim(), unsettled: unsettledReason(t, 'the below-floor /autocompact turn') ?? undefined };
     }),
   );
   attempts.push(
     await applyAttempt(s, `/autocompact ${PROBE_WINDOW / 1000}k`, async () => {
       const t = await s.runTurn(`/autocompact ${PROBE_WINDOW / 1000}k`);
       accountTurn('p3i', t);
-      return t.text.trim();
+      console.log(`  ${turnLine('/autocompact at-floor turn', t)}`);
+      return { reply: t.text.trim(), unsettled: unsettledReason(t, 'the at-floor /autocompact turn') ?? undefined };
     }),
   );
   s.close();
@@ -487,6 +500,7 @@ async function itemP3i(): Promise<Lever> {
     console.log(`    after : ${a.after}   moved=${a.moved}`);
     if (a.reply) console.log(`    reply : ${JSON.stringify(a.reply.slice(0, 240))}`);
     if (a.error) console.log(`    error : ${a.error}`);
+    if (a.unsettled) console.log(`    NO MEASUREMENT: ${a.unsettled}`);
   }
   console.log(`  baseline (no lever)                                  -> ${baseline}`);
   console.log(`  construct({autoCompactWindow: ${PROBE_WINDOW}})            -> ${constructedWindow}   moved=${constructedWindow !== baseline}`);
@@ -560,6 +574,12 @@ async function itemP3i(): Promise<Lever> {
     `the window has a FLOOR: a below-floor value is refused by \`/autocompact\` with a parse message and dropped SILENTLY by \`settings.autoCompactWindow\``,
   );
 
+  const unmeasured = attempts.filter((a) => a.unsettled);
+  if (unmeasured.length > 0) {
+    parts.push(
+      `**${unmeasured.length} write path(s) produced NO MEASUREMENT** (${unmeasured.map((a) => a.how).join('; ')}) -- those are not negative results and must not be read as one`,
+    );
+  }
   verdicts.push({
     item: 'P3(i) (threshold/window writable)',
     verdict: `${lever.kind ? 'PARTIALLY WRITABLE' : 'NOT WRITABLE'} -- ${parts.join('; ')}`,
@@ -597,14 +617,14 @@ async function itemP2(): Promise<void> {
     `Remember this exact token: ${token}. It must be preserved verbatim through any later summarisation. Reply with exactly the single word: ok`,
   );
   accountTurn('p2', plant);
-  console.log(`\nCTRL-P2-TURN(a) plant turn: result=${plant.result?.subtype ?? '(none)'} timedOut=${plant.timedOut} observed=${JSON.stringify(plant.observed)} text=${JSON.stringify(plant.text.trim().slice(0, 120))}`);
+  console.log(`\n${turnLine('CTRL-P2-TURN(a) plant turn', plant)} observed=${JSON.stringify(plant.observed)} text=${JSON.stringify(plant.text.trim().slice(0, 120))}`);
 
   for (let i = 1; i <= P2_WARMUP_TURNS; i++) {
     const w = await s.runTurn(
       `Warm-up ${i} of ${P2_WARMUP_TURNS}: name one fact about the port of Kalmar in at most 12 words.`,
     );
     accountTurn('p2', w);
-    console.log(`  warm-up ${i}: result=${w.result?.subtype ?? '(none)'} text=${JSON.stringify(w.text.trim().slice(0, 90))}`);
+    console.log(`  ${turnLine(`warm-up ${i}`, w)} text=${JSON.stringify(w.text.trim().slice(0, 90))}`);
   }
   const before = await s.readUsage();
   console.log(`  usage before /compact: ${usageLine(before)}`);
@@ -612,7 +632,7 @@ async function itemP2(): Promise<void> {
   const boundariesBefore = s.compactBoundaries.length;
   const compact = await s.runTurn('/compact');
   accountTurn('p2', compact);
-  console.log(`\n/compact turn: result=${compact.result?.subtype ?? '(none)'} timedOut=${compact.timedOut} streamError=${compact.streamError ?? '(none)'}`);
+  console.log(`\n${turnLine('/compact turn', compact)}`);
   console.log(`  message types observed during the /compact turn: ${JSON.stringify(compact.observed)}`);
   console.log(`  assistant text: ${JSON.stringify(compact.text.trim().slice(0, 600))}`);
   console.log(`  usage after /compact: ${usageLine(compact.usage)}`);
@@ -630,7 +650,7 @@ async function itemP2(): Promise<void> {
   );
   accountTurn('p2', recall);
   const recalled = recall.text.includes(token);
-  console.log(`\nCTRL-P2-TURN(b) recall turn: result=${recall.result?.subtype ?? '(none)'} timedOut=${recall.timedOut}`);
+  console.log(`\n${turnLine('CTRL-P2-TURN(b) recall turn', recall)}`);
   console.log(`  reply: ${JSON.stringify(recall.text.trim().slice(0, 300))}`);
   console.log(`  nonce ${token} recalled verbatim: ${recalled}`);
   console.log(`  usage after recall: ${usageLine(recall.usage)}`);
@@ -727,7 +747,7 @@ async function drive(label: string, autoCompactEnabled: boolean, lever: Lever): 
   );
   accountTurn(label, plant);
   const harnessAlive = !plant.timedOut && plant.result !== undefined;
-  console.log(`${label}: plant turn result=${plant.result?.subtype ?? '(none)'} ${usageLine(plant.usage)}`);
+  console.log(`${turnLine(`${label}: plant turn`, plant)} ${usageLine(plant.usage)}`);
   usage = plant.usage ?? usage;
 
   let rounds = 0;
@@ -766,7 +786,7 @@ async function drive(label: string, autoCompactEnabled: boolean, lever: Lever): 
       peakUsage = Math.max(peakUsage, turn.usage.totalTokens);
     }
     console.log(
-      `${label}: round ${rounds} pushed ~${chars} chars -> result=${turn.result?.subtype ?? '(none)'} timedOut=${turn.timedOut} boundaries=${s.compactBoundaries.length} ${usageLine(turn.usage)} charsPerToken~${charsPerToken.toFixed(2)} cumPromptTokens=${totalPromptTokens()} (fresh ${totalFreshPromptTokens()}) cost=$${totalCostUsd().toFixed(4)}`,
+      `${label}: round ${rounds} pushed ~${chars} chars -> ${turnLine('turn', turn)} boundaries=${s.compactBoundaries.length} ${usageLine(turn.usage)} charsPerToken~${charsPerToken.toFixed(2)} cumPromptTokens=${totalPromptTokens()} (fresh ${totalFreshPromptTokens()}) cost=$${totalCostUsd().toFixed(4)}`,
     );
     if (turn.timedOut || turn.streamError) {
       stoppedBy = `turn did not settle: ${turn.streamError ?? 'timeout'}`;
@@ -796,7 +816,7 @@ async function drive(label: string, autoCompactEnabled: boolean, lever: Lever): 
     accountTurn(label, recall);
     recalled = recall.text.includes(token);
     gist = recall.text.trim().slice(0, 400);
-    console.log(`${label}: post-compaction recall -> nonce=${recalled} reply=${JSON.stringify(gist)}`);
+    console.log(`${turnLine(`${label}: post-compaction recall`, recall)} nonce=${recalled} reply=${JSON.stringify(gist)}`);
   }
 
   s.close();
@@ -966,15 +986,16 @@ async function itemP4Hooks(lever: Lever): Promise<void> {
   await s.waitForReady();
   const plant = await s.runTurn('Reply with exactly the single word: ok');
   accountTurn('p4', plant);
-  console.log(`plant turn: result=${plant.result?.subtype ?? '(none)'} (proves the hook-wired session is alive)`);
+  console.log(`${turnLine('plant turn', plant)} (proves the hook-wired session is alive)`);
 
   for (let i = 1; i <= P2_WARMUP_TURNS; i++) {
     const w = await s.runTurn(`Warm-up ${i}: name one fact about the port of Kalmar in at most 12 words.`);
     accountTurn('p4', w);
+    console.log(`  ${turnLine(`warm-up ${i}`, w)}`);
   }
   const compact = await s.runTurn('/compact');
   accountTurn('p4', compact);
-  console.log(`/compact turn: result=${compact.result?.subtype ?? '(none)'} boundaries=${s.compactBoundaries.length} text=${JSON.stringify(compact.text.trim().slice(0, 200))}`);
+  console.log(`${turnLine('/compact turn', compact)} boundaries=${s.compactBoundaries.length} text=${JSON.stringify(compact.text.trim().slice(0, 200))}`);
   console.log(`hook callbacks fired: ${fired.length}`);
   for (const f of fired) console.log(`  ${f}`);
 

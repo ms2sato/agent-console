@@ -86,6 +86,9 @@ import {
   nonce,
   stamp,
   transcriptFiles,
+  turnLine,
+  turnSettled,
+  unsettledReason,
   usageLine,
   verifyIsolation,
   type TurnOutcome,
@@ -226,7 +229,7 @@ async function resumeAndAsk(label: string, sessionId: string, token: string): Pr
   const recall = await r.runTurn(RECALL_PROMPT);
   account(label, recall);
   const usage = recall.usage;
-  console.log(`${label}: recall result=${recall.result?.subtype ?? '(none)'} timedOut=${recall.timedOut} streamError=${recall.streamError ?? '(none)'}`);
+  console.log(`${turnLine(`${label}: recall`, recall)}`);
   console.log(`${label}: observed=${JSON.stringify(recall.observed)}`);
   console.log(`${label}: reply=${JSON.stringify(recall.text.trim().slice(0, 400))}`);
   console.log(`${label}: usage=${usageLine(usage)}`);
@@ -237,7 +240,7 @@ async function resumeAndAsk(label: string, sessionId: string, token: string): Pr
   // amnesiac.
   const live = await r.runTurn('Reply with exactly the single word: alive');
   account(label, live);
-  console.log(`${label}: CTRL-RESUME-LIVE fresh turn -> ${JSON.stringify(live.text.trim().slice(0, 60))} (result=${live.result?.subtype ?? '(none)'})`);
+  console.log(`${turnLine(`${label}: CTRL-RESUME-LIVE fresh turn`, live)} reply=${JSON.stringify(live.text.trim().slice(0, 60))}`);
 
   r.close();
   await r.waitForStreamEnd();
@@ -254,8 +257,16 @@ async function resumeAndAsk(label: string, sessionId: string, token: string): Pr
   };
 }
 
-/** CTRL-RESUME-FRESH: the same question, asked of a session with NO resume. */
-async function freshControl(label: string, token: string): Promise<{ recalled: boolean; text: string }> {
+/**
+ * CTRL-RESUME-FRESH: the same question, asked of a session with NO resume.
+ *
+ * This control is load-bearing -- it is what makes a successful recall
+ * attributable to `resume` rather than to the model or the config dir. A
+ * control that STALLED produces the same empty answer as one that genuinely
+ * said UNKNOWN, so `settled` is returned alongside and the caller must not
+ * count an unsettled control as having answered.
+ */
+async function freshControl(label: string, token: string): Promise<{ recalled: boolean; text: string; settled: boolean }> {
   const f = new ProbeSession({ label, options: buildOptions() });
   await f.waitForReady(60_000);
   const t = await f.runTurn(RECALL_PROMPT);
@@ -263,8 +274,9 @@ async function freshControl(label: string, token: string): Promise<{ recalled: b
   f.close();
   await f.waitForStreamEnd();
   const recalled = t.text.includes(token);
-  console.log(`${label}: CTRL-RESUME-FRESH (no resume) reply=${JSON.stringify(t.text.trim().slice(0, 200))} recalled=${recalled}`);
-  return { recalled, text: t.text.trim() };
+  console.log(`${turnLine(`${label}: CTRL-RESUME-FRESH (no resume)`, t)}`);
+  console.log(`${label}: reply=${JSON.stringify(t.text.trim().slice(0, 200))} recalled=${recalled}`);
+  return { recalled, text: t.text.trim(), settled: turnSettled(t) };
 }
 
 // ---------------------------------------------------------------------------
@@ -282,17 +294,17 @@ async function itemBasic(): Promise<void> {
     `Remember this exact token: ${token}. Also remember that this conversation is about a fictional shipping ledger for the port of Kalmar. Reply with exactly the single word: ok`,
   );
   account('p5a-origin', t1);
-  console.log(`turn 1: result=${t1.result?.subtype ?? '(none)'} text=${JSON.stringify(t1.text.trim().slice(0, 80))}`);
+  console.log(`${turnLine('turn 1', t1)} text=${JSON.stringify(t1.text.trim().slice(0, 80))}`);
 
   const t2 = await s.runTurn('Name one more fact about the port of Kalmar in at most 12 words.');
   account('p5a-origin', t2);
-  console.log(`turn 2: result=${t2.result?.subtype ?? '(none)'} text=${JSON.stringify(t2.text.trim().slice(0, 120))}`);
+  console.log(`${turnLine('turn 2', t2)} text=${JSON.stringify(t2.text.trim().slice(0, 120))}`);
 
   // CTRL-RESUME-PRE: the same question, answered BEFORE the kill.
   const pre = await s.runTurn(RECALL_PROMPT);
   account('p5a-origin', pre);
   const preRecalled = pre.text.includes(token);
-  console.log(`CTRL-RESUME-PRE pre-kill recall: recalled=${preRecalled} reply=${JSON.stringify(pre.text.trim().slice(0, 200))}`);
+  console.log(`${turnLine('CTRL-RESUME-PRE pre-kill recall', pre)} recalled=${preRecalled} reply=${JSON.stringify(pre.text.trim().slice(0, 200))}`);
   console.log(`pre-kill usage: ${usageLine(pre.usage)}`);
 
   const originSessionId = s.sessionId;
@@ -327,6 +339,9 @@ async function itemBasic(): Promise<void> {
   } else if (out.errored) {
     verdict = `STOP -- PS4 FAILS: resume errored (${out.errored}). #1336 stays reserved and the claude-sdk restore path needs redesigning`;
     stop = true;
+  } else if (!fresh.settled) {
+    verdict = `STOP -- INDETERMINATE: CTRL-RESUME-FRESH never settled, so the control that attributes a recall to \`resume\` produced no measurement. The resumed session ${out.recalledNonce ? 'did' : 'did not'} recall the nonce, but without the control that fact is not attributable`;
+    stop = true;
   } else if (out.recalledNonce && !fresh.recalled) {
     verdict = `PS4 PASSES -- after a SIGKILL of the child while idle, a new query() with \`resume: ${originSessionId}\` recalled the pre-kill nonce verbatim (${JSON.stringify(out.recallText.slice(0, 160))}). The resumed query reported session id ${out.resumedSessionId ?? '(none)'}; context usage on the resumed session was ${out.usageTotalTokens ?? '?'} tokens. A no-resume session in the same config dir answered UNKNOWN, so the recall is attributable to \`resume\`, not to the model or the environment`;
   } else if (out.recalledNonce && fresh.recalled) {
@@ -360,7 +375,7 @@ async function itemMidTurn(): Promise<void> {
   );
   account('p5b-origin', t1);
   const preRecalled = t1.result !== undefined;
-  console.log(`turn 1 (plant): result=${t1.result?.subtype ?? '(none)'} text=${JSON.stringify(t1.text.trim().slice(0, 80))}`);
+  console.log(`${turnLine('turn 1 (plant)', t1)} text=${JSON.stringify(t1.text.trim().slice(0, 80))}`);
 
   const originSessionId = s.sessionId;
   console.log(`origin session id: ${originSessionId ?? '(none)'}`);
@@ -384,7 +399,7 @@ async function itemMidTurn(): Promise<void> {
   console.log(`a turn was still in flight at kill time: ${killedDuringTurn}`);
   await killChildren(s, 'p5b-origin');
   const interrupted = await inFlight;
-  console.log(`mid-turn outcome: result=${interrupted.result?.subtype ?? '(none)'} timedOut=${interrupted.timedOut} streamError=${interrupted.streamError ?? '(none)'}`);
+  console.log(`${turnLine('mid-turn outcome', interrupted)}`);
   console.log(`  partial assistant text length: ${interrupted.text.length} chars`);
 
   if (!killedDuringTurn) {
@@ -443,12 +458,12 @@ async function itemPostCompact(): Promise<void> {
     `Remember this exact token: ${token}. Also remember that this conversation is about a fictional shipping ledger for the port of Kalmar. Both facts must be preserved verbatim through any later summarisation. Reply with exactly the single word: ok`,
   );
   account('p5c-origin', t1);
-  console.log(`plant turn: result=${t1.result?.subtype ?? '(none)'}`);
+  console.log(`${turnLine('plant turn', t1)}`);
 
   for (let i = 1; i <= WARMUP_TURNS; i++) {
     const w = await s.runTurn(`Warm-up ${i}: name one fact about the port of Kalmar in at most 12 words.`);
     account('p5c-origin', w);
-    console.log(`  warm-up ${i}: ${JSON.stringify(w.text.trim().slice(0, 80))}`);
+    console.log(`  ${turnLine(`warm-up ${i}`, w)} text=${JSON.stringify(w.text.trim().slice(0, 80))}`);
   }
 
   if (PRESSURE) {
@@ -468,14 +483,14 @@ async function itemPostCompact(): Promise<void> {
       `Kalmar ledger bulk load. Do not summarise it, do not comment on it, just acknowledge.\n\n${filler(170_000)}\n\nReply with exactly the single word: ack`,
     );
     account('p5c-origin', bulk);
-    console.log(`  bulk load: result=${bulk.result?.subtype ?? '(none)'} ${usageLine(bulk.usage)}`);
+    console.log(`  ${turnLine('bulk load', bulk)} ${usageLine(bulk.usage)}`);
   }
 
   const beforeCompact = await s.readUsage();
   console.log(`usage before /compact: ${usageLine(beforeCompact)}`);
   const compact = await s.runTurn('/compact');
   account('p5c-origin', compact);
-  console.log(`/compact turn: result=${compact.result?.subtype ?? '(none)'} boundaries=${s.compactBoundaries.length} observed=${JSON.stringify(compact.observed)}`);
+  console.log(`${turnLine('/compact turn', compact)} boundaries=${s.compactBoundaries.length} observed=${JSON.stringify(compact.observed)}`);
   for (const b of s.compactBoundaries) {
     console.log(
       `  compact_boundary trigger=${b.compact_metadata.trigger} pre_tokens=${b.compact_metadata.pre_tokens} post_tokens=${b.compact_metadata.post_tokens ?? '(absent)'} preserved_messages=${b.compact_metadata.preserved_messages ? b.compact_metadata.preserved_messages.uuids.length : '(none)'}`,
@@ -490,7 +505,14 @@ async function itemPostCompact(): Promise<void> {
   account('p5c-origin', pre);
   const preRecalled = pre.text.includes(token);
   const preRecall = pre.text.trim();
-  console.log(`CTRL-RESUME-PRE post-compact, pre-kill recall: recalled=${preRecalled} reply=${JSON.stringify(preRecall.slice(0, 200))}`);
+  // A pre-kill recall that never settled looks exactly like one that answered
+  // "I don't remember" -- and the latter is what this probe reports as a
+  // COMPACTION FIDELITY loss, an observation that feeds the design doc's
+  // shipping input. An unsettled turn must never be able to manufacture one.
+  const preUnsettled = unsettledReason(pre, 'the post-compaction pre-kill recall');
+  console.log(`${turnLine('CTRL-RESUME-PRE post-compact, pre-kill recall', pre)}`);
+  console.log(`CTRL-RESUME-PRE: recalled=${preRecalled} reply=${JSON.stringify(preRecall.slice(0, 200))}`);
+  if (preUnsettled) console.log(`CTRL-RESUME-PRE: NO MEASUREMENT -- ${preUnsettled}`);
 
   const originSessionId = s.sessionId;
   const boundaries = s.compactBoundaries.length;
@@ -537,7 +559,9 @@ async function itemPostCompact(): Promise<void> {
   // Conflating the two would blame resume for a fidelity failure that
   // happened while the process was still alive, so the two are reported
   // separately and the nonce comparison is voided rather than read.
-  const nonceTestValid = preRecalled;
+  // Three states, not two: the nonce test is valid only when the pre-kill
+  // control actually answered AND remembered.
+  const nonceTestValid = preRecalled && !preUnsettled;
   const stateSentence = `Which state it landed in: ${
             landedPostCompact === null
               ? `NOT DISCRIMINABLE in this run -- the pre- and post-compaction context sizes are only ${separation} tokens apart (expectedPre=${expectedPre}, expectedPost=${expectedPost}), below the ${DISCRIMINATION_FLOOR}-token floor this reading needs, because at this conversation size the ~${freshBaseline}-token system/tool baseline dominates the total. Re-run with --pressure for a discriminating measurement`
@@ -549,11 +573,15 @@ async function itemPostCompact(): Promise<void> {
   const verdict =
     boundaries === 0
       ? `NON-RESULT -- no compaction occurred in the origin session, so the composite was never set up. Resume itself behaved as: nonce recalled=${out.recalledNonce}, usage ${out.usageTotalTokens ?? '?'}`
-      : out.errored
-        ? `resume ERRORED on a post-compaction session: ${out.errored}`
-        : nonceTestValid
-          ? `resume ${out.recalledNonce ? 'RECOVERED' : 'did NOT recover'} the pre-compaction nonce from a compacted-then-killed session (reply ${JSON.stringify(out.recallText.slice(0, 200))}; a no-resume control answered UNKNOWN: ${!fresh.recalled}). ${stateSentence}`
-          : `NONCE TEST VOID, STATE ANSWER VALID -- the ORIGIN session could no longer recall the nonce BEFORE the kill (it answered ${JSON.stringify(preRecall.slice(0, 80))}), so the compaction itself dropped it and the nonce cannot measure resume. Separately recorded as a COMPACTION FIDELITY observation: a ${beforeCompact.totalTokens}-token conversation was summarised to ${boundary?.post_tokens ?? '?'} tokens and lost a value the prompt explicitly asked to preserve verbatim. What resume DID do is still measurable and unambiguous here: ${stateSentence}, and the resumed session reproduced the origin's own post-compaction answer (${JSON.stringify(out.recallText.slice(0, 80))}) rather than a fresh-session one -- a no-resume control answered UNKNOWN with a visibly different explanation: ${!fresh.recalled}`;
+      : out.timedOut
+        ? `NO MEASUREMENT -- the recall turn on the resumed session never settled (${out.errored}). A stalled turn is not an errored resume and not a lost conversation`
+        : out.errored
+          ? `resume ERRORED on a post-compaction session: ${out.errored}`
+          : preUnsettled
+            ? `NONCE TEST VOID FOR LACK OF A CONTROL, STATE ANSWER VALID -- ${preUnsettled}, so it cannot be told apart from a compaction that dropped the nonce; NO fidelity claim is made from this run. ${stateSentence}`
+            : nonceTestValid
+              ? `resume ${out.recalledNonce ? 'RECOVERED' : 'did NOT recover'} the pre-compaction nonce from a compacted-then-killed session (reply ${JSON.stringify(out.recallText.slice(0, 200))}; a no-resume control answered UNKNOWN: ${!fresh.recalled}). ${stateSentence}`
+              : `NONCE TEST VOID, STATE ANSWER VALID -- the ORIGIN session could no longer recall the nonce BEFORE the kill (it answered ${JSON.stringify(preRecall.slice(0, 80))}), so the compaction itself dropped it and the nonce cannot measure resume. Separately recorded as a COMPACTION FIDELITY observation: a ${beforeCompact.totalTokens}-token conversation was summarised to ${boundary?.post_tokens ?? '?'} tokens and lost a value the prompt explicitly asked to preserve verbatim. What resume DID do is still measurable and unambiguous here: ${stateSentence}, and the resumed session reproduced the origin's own post-compaction answer (${JSON.stringify(out.recallText.slice(0, 80))}) rather than a fresh-session one -- a no-resume control answered UNKNOWN with a visibly different explanation: ${!fresh.recalled}`;
 
   verdicts.push({
     item: 'P5(c) (compaction x eviction composite)',
