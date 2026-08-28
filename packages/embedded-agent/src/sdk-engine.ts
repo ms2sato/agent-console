@@ -43,16 +43,16 @@ type ToolResultEvent = Extract<EmbeddedAgentEvent, { type: 'tool-result' }>;
 
 /**
  * H2 (docs/design/embedded-agent-sdk-engine.md §5): calling `getContextUsage()`
- * immediately after a turn's `result` intermittently threw "ProcessTransport
- * is not ready for writing" -- an EMPIRICAL observation on SDK 0.3.226/0.3.233
- * (both-version confirmed), NOT a documented SDK contract. ~300-500ms of
- * settle reliably fixed it in the probe. Retry-with-settle, not a bare sleep:
- * the budget below (5 settle gaps at 500ms = 2500ms across 6 attempts)
- * comfortably exceeds both the observed 300-500ms window and the AC's
- * "at least 3 attempts spanning at least 2s total" floor. Re-verify this
- * constant pair on every SDK upgrade -- the SDK-bump tracking issue's
- * checklist carries this obligation (docs/design/embedded-agent-sdk-engine.md
- * §5's re-verification note).
+ * immediately after a turn's `result` can throw "ProcessTransport is not
+ * ready for writing" -- an encoded workaround for empirically observed
+ * behavior, NOT a documented SDK contract. Retry-with-settle, not a bare
+ * sleep: the budget below (5 settle gaps at 500ms = 2500ms across 6
+ * attempts) comfortably exceeds both the originally observed settle window
+ * and the AC's "at least 3 attempts spanning at least 2s total" floor.
+ * Re-verify this constant pair on every SDK upgrade -- the SDK-bump
+ * tracking issue's checklist carries this obligation. §5 is the canonical
+ * source for this hazard's CURRENT epistemic status; do not infer it from
+ * this comment.
  */
 const CONTEXT_USAGE_SETTLE_DELAY_MS = 500;
 const CONTEXT_USAGE_MAX_ATTEMPTS = 6;
