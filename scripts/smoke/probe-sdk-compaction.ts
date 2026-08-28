@@ -76,9 +76,13 @@
  * by hand when re-verifying the design doc's version-premised behavior, NOT
  * a CI gate (hence no `check:` alias).
  *
- * Usage:
- *   bun scripts/smoke/probe-sdk-compaction.ts [--p1a] [--p3i] [--p2] [--p3-on] [--p3-neg] [--p4-hooks]
- *                                             [--budget-tokens N] [--budget-minutes N]
+ * Usage: the invocation line is NOT restated here. `USAGE_TEXT` below is its
+ * single writer -- the script prints it on any usage error, and the flag
+ * lists it names (`ITEM_FLAGS`, `VALUE_FLAGS`) are the same constants the
+ * parser reads. This header used to carry its own copy, and the two drifted:
+ * the header still advertised `--budget-tokens` after the flag had been
+ * renamed to `--budget-usd`, so the one artifact a future operator reads
+ * before running the script was the one telling them the wrong thing.
  *
  * Exit codes:
  *   0  every selected item produced a determinate result (which may be a
@@ -96,6 +100,7 @@
 import type { Options, Settings } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import {
   ProbeSession,
+  filler,
   isolateClaudeConfigDir,
   nonce,
   stamp,
@@ -125,7 +130,7 @@ const selected = new Set<string>();
  */
 let budgetUsd = 2;
 let budgetMinutes = 30;
-const usageText = `Usage: bun scripts/smoke/probe-sdk-compaction.ts [--p1a] [--p3i] [--p2] [--p3-on] [--p3-neg] [--p4-hooks] [--budget-usd N] [--budget-minutes N]
+const USAGE_TEXT = `Usage: bun scripts/smoke/probe-sdk-compaction.ts [--p1a] [--p3i] [--p2] [--p3-on] [--p3-neg] [--p4-hooks] [--budget-usd N] [--budget-minutes N]
   Default (no item flag) = --p1a --p3i --p2 (the cheap set).`;
 
 for (let i = 0; i < argv.length; i++) {
@@ -137,14 +142,14 @@ for (let i = 0; i < argv.length; i++) {
   if ((VALUE_FLAGS as readonly string[]).includes(a)) {
     const raw = argv[++i];
     if (raw === undefined || !/^[1-9]\d*$/.test(raw)) {
-      console.error(`${usageText}\n  ${a} requires a positive integer. Got: ${raw ?? '(nothing)'}`);
+      console.error(`${USAGE_TEXT}\n  ${a} requires a positive integer. Got: ${raw ?? '(nothing)'}`);
       process.exit(2);
     }
     if (a === '--budget-usd') budgetUsd = Number(raw);
     else budgetMinutes = Number(raw);
     continue;
   }
-  console.error(`${usageText}\n  Unrecognized argument: ${a}`);
+  console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
   process.exit(2);
 }
 
@@ -174,6 +179,15 @@ const MODEL = 'claude-sonnet-5';
  */
 const PROBE_WINDOW = 100_000;
 const BELOW_FLOOR_WINDOW = 30_000;
+
+/**
+ * `autoCompactThreshold` is NOT a key of the SDK's `Settings` type -- only
+ * `autoCompactWindow` is. P3(i) measures whether the runtime accepts it
+ * anyway, so the probe has to be able to send it. Declaring the extra key
+ * keeps "this key is untyped, and that is the thing under test" visible in
+ * the type, rather than erasing the whole shape behind a cast.
+ */
+type ProbeSettings = Settings & { autoCompactThreshold?: number };
 
 const CONFIG_DIR = isolateClaudeConfigDir('compaction');
 const startedAt = Date.now();
@@ -403,12 +417,10 @@ async function itemP3i(): Promise<Lever> {
   const baseline = usageDigest(await s.readUsage());
   console.log(`baseline (autoCompactEnabled:true, no lever written): ${baseline}`);
 
-  // Cast on `autoCompactThreshold`: it is NOT part of the SDK's `Settings`
-  // type (only `autoCompactWindow` is). Probing an untyped key is the point
-  // -- the type says "no", and we are measuring whether the runtime agrees.
   attempts.push(
     await applyAttempt(s, 'applyFlagSettings({autoCompactThreshold: 0.2})', async () => {
-      await s.q.applyFlagSettings({ autoCompactThreshold: 0.2 } as unknown as Parameters<typeof s.q.applyFlagSettings>[0]);
+      const probe: ProbeSettings = { autoCompactThreshold: 0.2 };
+      await s.q.applyFlagSettings(probe);
       return undefined;
     }),
   );
@@ -461,7 +473,7 @@ async function itemP3i(): Promise<Lever> {
 
   const d = new ProbeSession({
     label: 'p3i-construct-threshold',
-    options: buildOptions({ autoCompactEnabled: true, autoCompactThreshold: 0.2 } as unknown as Settings),
+    options: buildOptions({ autoCompactEnabled: true, autoCompactThreshold: 0.2 } satisfies ProbeSettings),
   });
   await d.waitForReady();
   const constructedThreshold = usageDigest(await d.readUsage());
@@ -659,18 +671,6 @@ async function itemP2(): Promise<void> {
 // P3(ii) / P3(iii): what auto-ON (and auto-OFF) actually do under pressure
 // ---------------------------------------------------------------------------
 
-/** Deterministic filler, sized in CHARACTERS so the caller can calibrate. */
-function filler(round: number, chars: number): string {
-  const lines: string[] = [];
-  let total = 0;
-  for (let i = 0; total < chars; i++) {
-    const line = `r${round}:${i} ledger entry ${(i * 7919) % 100000} status nominal checksum ${(i * 104729) % 99991}`;
-    lines.push(line);
-    total += line.length + 1;
-  }
-  return lines.join('\n');
-}
-
 interface DriveOutcome {
   boundaries: number;
   rounds: number;
@@ -756,7 +756,7 @@ async function drive(label: string, autoCompactEnabled: boolean, lever: Lever): 
     const before = s.compactBoundaries.length;
     const prevTotal = usage.totalTokens;
     const turn = await s.runTurn(
-      `Round ${rounds} of the Kalmar ledger. Do not summarise it, do not comment on it, just acknowledge.\n\n${filler(rounds, chars)}\n\nReply with exactly the single word: ack`,
+      `Round ${rounds} of the Kalmar ledger. Do not summarise it, do not comment on it, just acknowledge.\n\n${filler(chars, `r${rounds}:`)}\n\nReply with exactly the single word: ack`,
     );
     accountTurn(label, turn);
     if (turn.usage) {

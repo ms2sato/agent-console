@@ -405,6 +405,25 @@ export function usageLine(u: SDKControlGetContextUsageResponse | undefined): str
   ].join(' ');
 }
 
+/**
+ * Deterministic filler for the pressure items, sized in CHARACTERS so the
+ * caller can calibrate chars-per-token from a measured turn. Shared by both
+ * probes so their pressure content is identical, and because the obvious
+ * hand-rolled version (`while (lines.join('\n').length < chars)`) rebuilds a
+ * growing ~170,000-character string on every one of ~2,750 iterations. The
+ * running total below is the same shape, minus the quadratic.
+ */
+export function filler(chars: number, prefix = ''): string {
+  const lines: string[] = [];
+  let total = 0;
+  for (let i = 0; total < chars; i++) {
+    const line = `${prefix}${i} ledger entry ${(i * 7919) % 100000} status nominal checksum ${(i * 104729) % 99991}`;
+    lines.push(line);
+    total += line.length + 1;
+  }
+  return lines.join('\n');
+}
+
 export function nonce(prefix: string): string {
   return `${prefix}-${Math.random().toString(36).slice(2, 8).toUpperCase()}${Date.now().toString(36).toUpperCase()}`;
 }

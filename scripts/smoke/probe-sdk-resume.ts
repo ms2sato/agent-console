@@ -60,8 +60,12 @@
  * makes real Anthropic API calls and costs real usage -- a manual tool, not
  * a CI gate (hence no `check:` alias).
  *
- * Usage:
- *   bun scripts/smoke/probe-sdk-resume.ts [--basic] [--post-compact]
+ * Usage: the invocation line is NOT restated here. `USAGE_TEXT` below is its
+ * single writer -- the script prints it on any usage error, and the flag list
+ * it names (`ITEM_FLAGS`) is the same constant the parser reads. This header
+ * used to carry its own copy, and the two drifted: the header omitted
+ * `--pressure` entirely, which is the modifier the design doc's PS4 trail
+ * tells operators to reach for.
  *
  * Exit codes:
  *   0  every selected item produced a determinate result
@@ -77,12 +81,14 @@
 import type { Options } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import {
   ProbeSession,
+  filler,
   isolateClaudeConfigDir,
   nonce,
   stamp,
   transcriptFiles,
   usageLine,
   verifyIsolation,
+  type TurnOutcome,
 } from './probe-sdk-session-harness.js';
 
 // ---------------------------------------------------------------------------
@@ -90,6 +96,9 @@ import {
 // ---------------------------------------------------------------------------
 
 const ITEM_FLAGS = ['--basic', '--post-compact', '--pressure'] as const;
+/** Single writer of this script's invocation line -- see the file header. */
+const USAGE_TEXT = `Usage: bun scripts/smoke/probe-sdk-resume.ts [--basic] [--post-compact [--pressure]]
+  Default (no item flag) = --basic. --pressure is a modifier for --post-compact.`;
 const argv = process.argv.slice(2);
 const selected = new Set<string>();
 for (const a of argv) {
@@ -97,14 +106,12 @@ for (const a of argv) {
     selected.add(a);
     continue;
   }
-  console.error(
-    `Usage: bun scripts/smoke/probe-sdk-resume.ts [--basic] [--post-compact [--pressure]]\n  Default (no item flag) = --basic.\n  Unrecognized argument: ${a}`,
-  );
+  console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
   process.exit(2);
 }
 if (selected.size === 0) selected.add('--basic');
 if (selected.has('--pressure') && !selected.has('--post-compact')) {
-  console.error('Usage: --pressure is a modifier for --post-compact and does nothing on its own.');
+  console.error(`${USAGE_TEXT}\n  --pressure is a modifier for --post-compact and does nothing on its own.`);
   process.exit(2);
 }
 /** See `itemPostCompact`'s "why this modifier exists" note. Billable. */
@@ -134,7 +141,7 @@ function buildOptions(extra: Partial<Options> = {}): Options {
   };
 }
 
-function account(label: string, outcome: { result?: { modelUsage?: Record<string, { inputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number }>; total_cost_usd?: number } }): void {
+function account(label: string, outcome: Pick<TurnOutcome, 'result'>): void {
   const r = outcome.result;
   if (!r) return;
   let prompt = 0;
@@ -195,6 +202,16 @@ interface ResumeOutcome {
   ready: string;
   resumedSessionId: string | null;
   errored: string | null;
+  /**
+   * A recall turn that never settled. Kept separate from `errored` and from
+   * an empty recall because the three are different facts: a stalled turn is
+   * not a restored-but-empty conversation, and only the latter would be a
+   * PS4 failure. Collapsing them would let a harness stall be recorded as
+   * the SDK losing a conversation -- the same attribution mistake the
+   * post-compaction item makes when a compaction, not resume, dropped the
+   * value.
+   */
+  timedOut: boolean;
   recallText: string;
   recalledNonce: boolean;
   usageTotalTokens?: number;
@@ -228,7 +245,8 @@ async function resumeAndAsk(label: string, sessionId: string, token: string): Pr
   return {
     ready,
     resumedSessionId: r.sessionId,
-    errored: recall.streamError ?? null,
+    errored: recall.streamError ?? (recall.timedOut ? `recall turn timed out (ready-via=${ready})` : null),
+    timedOut: recall.timedOut,
     recallText: recall.text.trim(),
     recalledNonce: recall.text.includes(token),
     usageTotalTokens: usage?.totalTokens,
@@ -302,6 +320,9 @@ async function itemBasic(): Promise<void> {
   let stop = false;
   if (!preRecalled) {
     verdict = 'STOP -- INDETERMINATE: the origin session could not recall the nonce even BEFORE the kill, so nothing after the kill is interpretable';
+    stop = true;
+  } else if (out.timedOut) {
+    verdict = `STOP -- INDETERMINATE: the recall turn on the resumed session never settled (${out.errored}). A stalled turn is not a lost conversation, so this says nothing about PS4 either way -- re-run before concluding anything`;
     stop = true;
   } else if (out.errored) {
     verdict = `STOP -- PS4 FAILS: resume errored (${out.errored}). #1336 stays reserved and the claude-sdk restore path needs redesigning`;
@@ -443,13 +464,8 @@ async function itemPostCompact(): Promise<void> {
     // totals are far apart and the answer is unambiguous. It costs real
     // money -- roughly one large turn plus one compaction -- which is why it
     // is opt-in rather than the default.
-    const chars = 170_000;
-    const lines: string[] = [];
-    for (let i = 0; lines.join('\n').length < chars; i += 1) {
-      lines.push(`ledger entry ${(i * 7919) % 100000} status nominal checksum ${(i * 104729) % 99991}`);
-    }
     const bulk = await s.runTurn(
-      `Kalmar ledger bulk load. Do not summarise it, do not comment on it, just acknowledge.\n\n${lines.join('\n')}\n\nReply with exactly the single word: ack`,
+      `Kalmar ledger bulk load. Do not summarise it, do not comment on it, just acknowledge.\n\n${filler(170_000)}\n\nReply with exactly the single word: ack`,
     );
     account('p5c-origin', bulk);
     console.log(`  bulk load: result=${bulk.result?.subtype ?? '(none)'} ${usageLine(bulk.usage)}`);
