@@ -12,7 +12,9 @@
  * `AsyncIterable<SDKUserMessage>` (`UserMessageQueue`) that the SDK reads
  * from -- this is the SDK's own streaming-input mechanism for a multi-turn
  * session on one `Query`, verified live against SDK 2.1.233 (see the design
- * doc and #1333's task notes).
+ * doc and #1333's task notes). Re-verified on SDK 0.3.238 (the 2026-08-28
+ * SDK bump, #1338) — see docs/design/embedded-agent-sdk-engine.md §5's
+ * version-naming correction for the full re-verification account.
  */
 
 import {
@@ -52,7 +54,12 @@ type ToolResultEvent = Extract<EmbeddedAgentEvent, { type: 'tool-result' }>;
  * "at least 3 attempts spanning at least 2s total" floor. Re-verify this
  * constant pair on every SDK upgrade -- the SDK-bump tracking issue's
  * checklist carries this obligation (docs/design/embedded-agent-sdk-engine.md
- * §5's re-verification note).
+ * §5's re-verification note). Re-verified for the SDK 0.3.238 bump (#1338,
+ * 2026-08-28): the race did not reproduce under a production-faithful probe
+ * on either 0.3.226 or 0.3.238 -- see the design doc's H2 correction trail
+ * (§5) for the full account and the resulting epistemic-status note.
+ * Constants left UNCHANGED (a cheap, harmless no-op per §7's anticipated
+ * outcome).
  */
 const CONTEXT_USAGE_SETTLE_DELAY_MS = 500;
 const CONTEXT_USAGE_MAX_ATTEMPTS = 6;

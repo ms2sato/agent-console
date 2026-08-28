@@ -192,7 +192,9 @@ export type EmbeddedAgentEvent =
    * freshly-activated worker is a LEGITIMATE "no session to resume yet"
    * state, never a fault condition. Any persistence-layer reader or future
    * consumer (e.g. Phase E's resume logic) must treat its absence
-   * accordingly, not as an error.
+   * accordingly, not as an error. Re-confirmed on SDK 0.3.238 (the
+   * 2026-08-28 SDK bump, #1338): system:init still arrives only after the
+   * first prompt yield (24ms lag observed).
    */
   | { v: 1; type: 'sdk-session-id'; sdkSessionId: string };
 
