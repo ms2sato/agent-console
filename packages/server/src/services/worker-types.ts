@@ -166,6 +166,16 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
    * See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
    */
   sdkSessionId: string | null;
+  /**
+   * Compaction's automatic-firing toggle for THIS worker (see
+   * docs/design/embedded-agent-worker.md "Compaction"). Per-worker rather
+   * than per-definition on purpose: the decision belongs to the conversation
+   * in front of the user, so two workers from the same embedded agent may
+   * differ. Defaults ON. Persisted via
+   * `PersistedEmbeddedAgentWorker.autoCompaction` (`workers.auto_compaction`)
+   * and survives server restart.
+   */
+  autoCompaction: boolean;
 }
 
 /**

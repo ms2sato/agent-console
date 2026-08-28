@@ -9,7 +9,7 @@
  * continue.
  */
 
-import type { EmbeddedAgentEvent } from '@agent-console/shared';
+import { DEFAULT_COMPACTION_THRESHOLD, type EmbeddedAgentEvent } from '@agent-console/shared';
 import type { ToolExecutor } from './mcp.js';
 import {
   ProviderError,
@@ -19,7 +19,12 @@ import {
   type ToolDefinition,
 } from './providers/types.js';
 import { truncateToBytes } from './truncate.js';
-import { buildHandoffSeedMessages } from './conversation-seed.js';
+import { buildCompactionSeedMessages } from './conversation-seed.js';
+import {
+  COMPACT_TOOL_NAME,
+  COMPACT_TOOL_SCHEDULED_RESULT,
+  compactToolDefinition,
+} from './compact-tool.js';
 import { pushSyntheticToolError } from './tool-call-repair.js';
 
 const TOOL_RESULT_MAX_BYTES = 16384;
@@ -43,10 +48,17 @@ export interface AgentLoopDeps {
   maxToolIterations: number;
   retryDelaysMs?: [number, number];
   sleep?: (ms: number) => Promise<void>;
-  /** Context Handoff (Phase A): re-runs loadInstructions + assembleSystemPrompt. */
+  /** Compaction: re-runs loadInstructions + assembleSystemPrompt. */
   reassembleSystemPrompt: () => Promise<string>;
-  /** Context Handoff (Phase A): loads the (possibly operator-overridden) distillation prompt. */
-  loadHandoffPrompt: () => Promise<string>;
+  /** Compaction: loads the (possibly operator-overridden) distillation prompt. */
+  loadCompactionPrompt: () => Promise<string>;
+  /**
+   * Compaction's activation-time configuration (the init command's
+   * `compaction` object). `auto` is the WORKER's toggle and can change at
+   * runtime via {@link AgentLoop.setAutoCompaction}; the other two come from
+   * the definition and are fixed for the subprocess's lifetime.
+   */
+  compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number };
   /** Transcript Restore (#1123): seeds this.conversation directly from a server-reconstructed array, skipping the fresh [{role:'system',...}] seed. Absent = today's v1 fresh-conversation behavior. */
   restoredConversation?: ChatMessage[];
 }
@@ -61,6 +73,14 @@ interface TurnUsage {
   promptTokens: number;
   estimated: boolean;
 }
+
+/**
+ * How a user turn ended, as seen by the turn-boundary compaction step.
+ * `canceled` is distinguished from `error` because it is the one ending that
+ * DISCARDS a pending compaction reservation: cancel means "stop what you were
+ * doing", and the tool call was part of what was being done.
+ */
+type TurnEnding = 'completed' | 'error' | 'canceled';
 
 type ProviderOutcome =
   | { kind: 'ok'; text: string; toolCalls: ProviderToolCall[]; usage?: TurnUsage }
@@ -126,13 +146,31 @@ export class AgentLoop {
   private readonly retryDelaysMs: [number, number];
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly conversation: ChatMessage[];
+  /**
+   * The tool list published to the provider. `Compact` is prepended here
+   * rather than merged into the builtin registry, which is what puts it
+   * structurally outside `enabledTools`' reach -- see compact-tool.ts.
+   */
+  private readonly tools: ToolDefinition[];
   private currentAbort: AbortController | null = null;
+  /** Compaction: the worker's auto toggle. Mutable -- see setAutoCompaction. */
+  private autoCompaction: boolean;
+  /**
+   * Compaction: a `Compact` tool call was made during the current turn and
+   * is booked for the turn boundary. Idempotent by construction (a boolean,
+   * so a second call within the same turn books nothing further).
+   */
+  private pendingCompact = false;
+  /** The last turn's terminal usage reading -- the auto threshold's input. */
+  private lastTurnUsage: TurnUsage | undefined;
 
   constructor(deps: AgentLoopDeps) {
     this.deps = deps;
     this.retryDelaysMs = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     this.sleep = deps.sleep ?? defaultSleep;
     this.conversation = deps.restoredConversation ?? [{ role: 'system', content: deps.systemPrompt }];
+    this.tools = [compactToolDefinition, ...deps.tools];
+    this.autoCompaction = deps.compaction.auto;
   }
 
   /** Abort the in-flight turn, if any. No-op when no turn is active. */
@@ -140,7 +178,69 @@ export class AgentLoop {
     this.currentAbort?.abort();
   }
 
+  /**
+   * Compaction: reflect a change to the worker's auto toggle without waiting
+   * for the next activation. Idempotent; takes effect at the next turn
+   * boundary, which is the only point the flag is read.
+   */
+  setAutoCompaction(enabled: boolean): void {
+    this.autoCompaction = enabled;
+  }
+
+  /**
+   * Run one user turn, then settle Compaction at the turn boundary. The two
+   * are one call deliberately: `main.ts` holds `turnActive` for the whole
+   * returned promise, so no user message can interleave between the turn
+   * ending and the compaction that follows it.
+   */
   async runTurn(id: string, text: string): Promise<void> {
+    const ending = await this.runUserTurn(id, text);
+    await this.settleCompactionAtTurnBoundary(ending);
+  }
+
+  /**
+   * Compaction's turn-boundary step. Precedence is deliberate: a cancel
+   * discards the reservation entirely; otherwise an explicit `Compact` call
+   * wins over the automatic threshold (the user asked, so no threshold gate
+   * and no small-context exemption applies); the automatic path runs only
+   * after a cleanly-completed turn, since a turn that ended in an error has
+   * no fresh usage reading worth acting on.
+   */
+  private async settleCompactionAtTurnBoundary(ending: TurnEnding): Promise<void> {
+    if (ending === 'canceled') {
+      this.pendingCompact = false;
+      return;
+    }
+    if (this.pendingCompact) {
+      this.pendingCompact = false;
+      await this.compact('manual');
+      return;
+    }
+    if (ending !== 'completed') return;
+    if (!this.shouldAutoCompact()) return;
+    await this.compact('auto');
+  }
+
+  /**
+   * Whether the automatic threshold has been crossed. Every `false` here is
+   * a distinct reason, and two of them are structural rather than numeric:
+   * an absent `contextWindowTokens` means there is no denominator at all (we
+   * do not guess the model's window -- guessing low would compact
+   * conversations with plenty of room left), and an absent usage reading
+   * means no provider call produced one this turn (the vacuous case, e.g. an
+   * empty conversation: the ratio is not small, it is absent).
+   */
+  private shouldAutoCompact(): boolean {
+    if (!this.autoCompaction) return false;
+    const windowTokens = this.deps.compaction.contextWindowTokens;
+    if (windowTokens === undefined) return false;
+    const usage = this.lastTurnUsage;
+    if (usage === undefined) return false;
+    const threshold = this.deps.compaction.threshold ?? DEFAULT_COMPACTION_THRESHOLD;
+    return usage.promptTokens / windowTokens >= threshold;
+  }
+
+  private async runUserTurn(id: string, text: string): Promise<TurnEnding> {
     const turnId = id;
     const abort = new AbortController();
     this.currentAbort = abort;
@@ -160,12 +260,12 @@ export class AgentLoop {
         if (outcome.kind === 'canceled') {
           this.emitContextUsageIfKnown(turnUsage);
           this.emitTurnError(turnId, 'turn canceled');
-          return;
+          return 'canceled';
         }
         if (outcome.kind === 'error') {
           this.emitContextUsageIfKnown(turnUsage);
           this.emitTurnError(turnId, outcome.message);
-          return;
+          return 'error';
         }
         turnUsage = outcome.usage;
 
@@ -181,7 +281,7 @@ export class AgentLoop {
         if (outcome.toolCalls.length === 0) {
           this.emitContextUsageIfKnown(turnUsage);
           this.emitIdle();
-          return;
+          return 'completed';
         }
 
         // Track which of this assistant message's tool calls already have a
@@ -205,7 +305,7 @@ export class AgentLoop {
                 turnId,
                 `tool arguments could not be parsed after ${MAX_MALFORMED_REASKS} re-asks: ${parsed.message}`,
               );
-              return;
+              return 'error';
             }
             malformedReAsks++;
             this.conversation.push({
@@ -221,7 +321,7 @@ export class AgentLoop {
             this.fillPendingToolResponses(outcome.toolCalls, responded, 'tool call canceled');
             this.emitContextUsageIfKnown(turnUsage);
             this.emitTurnError(turnId, 'turn canceled');
-            return;
+            return 'canceled';
           }
           this.deps.emit({
             v: 1,
@@ -231,12 +331,12 @@ export class AgentLoop {
             name: call.name,
             args: capToolCallArgsForWire(call.argsJson, parsed.value),
           });
-          const result = await this.deps.executor.callTool(call.name, parsed.value, abort.signal);
+          const result = await this.callToolOrReserveCompaction(call.name, parsed.value, abort.signal);
           if (abort.signal.aborted) {
             this.fillPendingToolResponses(outcome.toolCalls, responded, 'tool call canceled');
             this.emitContextUsageIfKnown(turnUsage);
             this.emitTurnError(turnId, 'turn canceled');
-            return;
+            return 'canceled';
           }
           const { text: truncated } = truncateToBytes(result.result, TOOL_RESULT_MAX_BYTES);
           this.deps.emit({
@@ -258,9 +358,32 @@ export class AgentLoop {
 
       this.emitContextUsageIfKnown(turnUsage);
       this.emitTurnError(turnId, 'maximum tool iterations reached');
+      return 'error';
     } finally {
       this.currentAbort = null;
     }
+  }
+
+  /**
+   * Dispatch one tool call. `Compact` is intercepted by name BEFORE the
+   * executor is reached -- that interception is what keeps it outside
+   * `enabledTools`, since the executor is the only thing `enabledTools`
+   * configures. The interception sits between the caller's `tool-call` emit
+   * and its `tool-result` emit, so the call surfaces in the transcript
+   * through exactly the same path every other tool call uses: a user must be
+   * able to see that the agent reserved a compaction, or a compaction that
+   * appears from nowhere is indistinguishable from a bug.
+   */
+  private async callToolOrReserveCompaction(
+    name: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal,
+  ): Promise<{ ok: boolean; result: string }> {
+    if (name === COMPACT_TOOL_NAME) {
+      this.pendingCompact = true;
+      return { ok: true, result: COMPACT_TOOL_SCHEDULED_RESULT };
+    }
+    return this.deps.executor.callTool(name, args, signal);
   }
 
   /**
@@ -345,19 +468,19 @@ export class AgentLoop {
     for await (const event of this.deps.adapter.run({
       model: this.deps.model,
       messages,
-      tools: this.deps.tools,
+      tools: this.tools,
       signal,
     })) {
       switch (event.type) {
         case 'text-delta':
           text += event.text;
-          // Context Handoff (Phase A): the distillation call (handoff() ->
+          // Compaction: the distillation call (compact() ->
           // runProviderWithRetries with emitDeltas: false) must NOT stream its
-          // text on the wire -- only the context-handoff marker (with the full
-          // distillation string) is meant to reach the client. Streaming these
+          // text on the wire -- only the context-compacted marker (with the
+          // full summary) is meant to reach the client. Streaming these
           // deltas anyway leaves a dangling assistant-message bubble on the
-          // client (handoff() never emits the closing assistant-message for
-          // this turnId; only runTurn does).
+          // client (compact() never emits the closing assistant-message for
+          // this turnId; only runUserTurn does).
           if (opts.emitDeltas) this.deps.emit({ v: 1, type: 'assistant-delta', turnId, text: event.text });
           break;
         case 'reasoning-delta':
@@ -387,16 +510,20 @@ export class AgentLoop {
   }
 
   /**
-   * Context Handoff (Phase A): distill the conversation so far into a summary,
-   * then atomically reset the conversation to a fresh system prompt + a seed
-   * message carrying that summary. See docs/design/embedded-agent-worker.md
-   * "AgentLoop.handoff()" for the normative step list and the failure
-   * invariant this method must uphold: every early-return path here returns
-   * strictly before the `context-handoff` marker is emitted, so
-   * `this.conversation` is NEVER mutated without that marker having been
-   * emitted first.
+   * Compaction: distill the conversation so far into a summary, then
+   * atomically replace the conversation with a fresh system prompt plus a
+   * seed message carrying that summary. See
+   * docs/design/embedded-agent-worker.md "`AgentLoop.compact()`" for the
+   * normative step list and the failure invariant this method must uphold:
+   * every early-return path here returns strictly before the
+   * `context-compacted` marker is emitted, so `this.conversation` is NEVER
+   * mutated without that marker having been emitted first.
+   *
+   * Never runs mid-turn -- both callers are the turn boundary (see
+   * `settleCompactionAtTurnBoundary`). Splicing the conversation array while
+   * a provider request is in flight would destroy the in-flight turn.
    */
-  async handoff(): Promise<void> {
+  async compact(source: 'auto' | 'manual'): Promise<void> {
     const abort = new AbortController();
     this.currentAbort = abort;
 
@@ -404,69 +531,69 @@ export class AgentLoop {
       this.deps.emit({ v: 1, type: 'state', state: 'active' });
       const turnId = crypto.randomUUID();
 
-      let handoffPromptText: string;
+      let compactionPromptText: string;
       try {
-        handoffPromptText = await this.deps.loadHandoffPrompt();
+        compactionPromptText = await this.deps.loadCompactionPrompt();
       } catch (err) {
-        this.emitTurnError(turnId, `failed to load handoff prompt: ${errorMessage(err)}`);
+        this.emitTurnError(turnId, `failed to load compaction prompt: ${errorMessage(err)}`);
         return;
       }
 
       // Transient request array -- NEVER pushed onto this.conversation.
       const messages: ChatMessage[] = [
         ...this.conversation,
-        { role: 'user', content: handoffPromptText },
+        { role: 'user', content: compactionPromptText },
       ];
 
       const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal, {
         emitDeltas: false,
       });
       if (outcome.kind === 'canceled') {
-        this.emitTurnError(turnId, 'Context handoff failed: turn canceled');
+        this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
         return;
       }
       if (outcome.kind === 'error') {
-        this.emitTurnError(turnId, `Context handoff failed: ${outcome.message}`);
+        this.emitTurnError(turnId, `Context compaction failed: ${outcome.message}`);
         return;
       }
       // No tool calls are expected or handled for the distillation request;
       // if the provider returns any anyway, they are ignored entirely -- but a
       // tool-call-only (or empty/whitespace-only text) response has nothing
-      // usable to seed the fresh conversation with, so it is rejected as a
-      // failure rather than silently replacing the conversation with an
+      // usable to replace the conversation's head with, so it is rejected as
+      // a failure rather than silently replacing the conversation with an
       // empty or partial summary (preserve-on-failure).
       if (outcome.toolCalls.length > 0 || outcome.text.trim().length === 0) {
         this.emitTurnError(
           turnId,
-          'Context handoff failed: provider returned no usable distillation',
+          'Context compaction failed: provider returned no usable summary',
         );
         return;
       }
 
-      // The distillation call's own usage -- reflects the (large, pre-handoff)
-      // prompt size -- emitted before the reset. See "Handoff's own usage" in
-      // docs/design/embedded-agent-worker.md.
+      // The distillation call's own usage -- reflects the (large,
+      // pre-compaction) prompt size -- emitted before the replacement. See
+      // "Compaction's own usage" in docs/design/embedded-agent-worker.md.
       this.emitContextUsageIfKnown(outcome.usage);
 
-      const distillation = truncateToBytes(outcome.text, WIRE_EVENT_MAX_BYTES).text;
+      const summary = truncateToBytes(outcome.text, WIRE_EVENT_MAX_BYTES).text;
 
       let newSystemPrompt: string;
       try {
         newSystemPrompt = await this.deps.reassembleSystemPrompt();
       } catch {
         // Degrade gracefully rather than abort: distillation already
-        // succeeded, so the reset must complete as a unit even in this
+        // succeeded, so the replacement must complete as a unit even in this
         // degraded form.
         newSystemPrompt = this.deps.systemPrompt;
       }
 
       // Emitted BEFORE the conversation mutation, and with no `await` between
       // this line and the splice below -- the persisted/broadcast marker is
-      // never followed by an async gap that could leave a completed-handoff
+      // never followed by an async gap that could leave a completed-compaction
       // marker persisted while the old conversation is still intact.
-      this.deps.emit({ v: 1, type: 'context-handoff', distillation });
+      this.deps.emit({ v: 1, type: 'context-compacted', source, summary });
 
-      this.conversation.splice(0, this.conversation.length, ...buildHandoffSeedMessages(newSystemPrompt, distillation));
+      this.conversation.splice(0, this.conversation.length, ...buildCompactionSeedMessages(newSystemPrompt, summary));
 
       this.emitContextUsageIfKnown({
         promptTokens: estimateTokensFromChars(this.conversation),
@@ -489,6 +616,10 @@ export class AgentLoop {
 
   private emitContextUsageIfKnown(usage: TurnUsage | undefined): void {
     if (usage === undefined) return;
+    // Also the auto-compaction threshold's input: the reading the loop just
+    // published IS the one the threshold is compared against, so there is no
+    // second, separately-maintained notion of "current usage" to drift.
+    this.lastTurnUsage = usage;
     this.deps.emit({
       v: 1,
       type: 'context-usage',

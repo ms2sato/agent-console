@@ -468,6 +468,7 @@ describe('mappers', () => {
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -488,6 +489,7 @@ describe('mappers', () => {
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -508,6 +510,7 @@ describe('mappers', () => {
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -530,6 +533,7 @@ describe('mappers', () => {
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: 1,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -551,6 +555,7 @@ describe('mappers', () => {
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -572,6 +577,7 @@ describe('mappers', () => {
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -594,6 +600,7 @@ describe('mappers', () => {
         embedded_agent_id: null,
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -616,6 +623,7 @@ describe('mappers', () => {
         embedded_agent_id: null, // Missing required field
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       expect(() => toPersistedWorker(dbWorker)).toThrow(DataIntegrityError);
@@ -636,6 +644,7 @@ describe('mappers', () => {
         embedded_agent_id: 'def-1',
         deliver_initial_prompt_on_activation: 1,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -660,6 +669,7 @@ describe('mappers', () => {
         embedded_agent_id: 'def-1',
         deliver_initial_prompt_on_activation: null,
         sdk_session_id: null,
+        auto_compaction: 1,
       };
 
       const worker = toPersistedWorker(dbWorker);
@@ -1373,7 +1383,7 @@ describe('mappers', () => {
       enabledTools: ['Read', 'Glob'],
       instructions: ['docs/local-note.md', 'CONTRIBUTING.md'],
       contextWindowTokens: 128000,
-      handoff: { softRatio: 0.75, hardRatio: 0.9, auto: true },
+      compaction: { threshold: 0.75 },
       createdBy: 'user-uuid',
       isBuiltIn: false,
       createdAt: '2026-01-01T00:00:00.000Z',
@@ -1394,9 +1404,7 @@ describe('mappers', () => {
       expect(row.enabled_tools).toBe('["Read","Glob"]');
       expect(row.instructions).toBe('["docs/local-note.md","CONTRIBUTING.md"]');
       expect(row.context_window_tokens).toBe(128000);
-      expect(row.handoff_soft_ratio).toBe(0.75);
-      expect(row.handoff_hard_ratio).toBe(0.9);
-      expect(row.handoff_auto).toBe(1);
+      expect(row.compaction_threshold).toBe(0.75);
       expect(row.created_by).toBe('user-uuid');
     });
 
@@ -1421,29 +1429,25 @@ describe('mappers', () => {
       expect(row.enabled_tools).toBeNull();
       expect(row.instructions).toBeNull();
       expect(row.context_window_tokens).toBeNull();
-      expect(row.handoff_soft_ratio).toBeNull();
-      expect(row.handoff_hard_ratio).toBeNull();
-      expect(row.handoff_auto).toBeNull();
+      expect(row.compaction_threshold).toBeNull();
     });
 
-    it('maps a handoff config with auto explicitly false to handoff_auto: 0', () => {
-      const autoFalse: EmbeddedAgentDefinition = {
-        id: 'def-auto-false',
-        name: 'AutoFalse',
+    it('maps an empty compaction object to a null threshold column', () => {
+      // `{}` is a legitimate value (the schema allows it) and must round-trip
+      // to "unconfigured", not to some invented number.
+      const emptyCompaction: EmbeddedAgentDefinition = {
+        id: 'def-empty-compaction',
+        name: 'EmptyCompaction',
         engine: 'openai-api',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
-        handoff: { auto: false },
+        compaction: {},
         createdBy: 'user-uuid',
         isBuiltIn: false,
         createdAt: '2026-01-01T00:00:00.000Z',
         updatedAt: '2026-01-01T00:00:00.000Z',
       };
 
-      const row = toEmbeddedAgentRow(autoFalse);
-
-      expect(row.handoff_auto).toBe(0);
-      expect(row.handoff_soft_ratio).toBeNull();
-      expect(row.handoff_hard_ratio).toBeNull();
+      expect(toEmbeddedAgentRow(emptyCompaction).compaction_threshold).toBeNull();
     });
 
     it('maps an explicit empty enabledTools array to a serialized empty-array column', () => {
@@ -1499,9 +1503,7 @@ describe('mappers', () => {
         enabled_tools: row.enabled_tools ?? null,
         instructions: row.instructions ?? null,
         context_window_tokens: row.context_window_tokens ?? null,
-        handoff_soft_ratio: row.handoff_soft_ratio ?? null,
-        handoff_hard_ratio: row.handoff_hard_ratio ?? null,
-        handoff_auto: row.handoff_auto ?? null,
+        compaction_threshold: row.compaction_threshold ?? null,
         created_by: row.created_by,
         is_built_in: 0,
         created_at: fullDefinition.createdAt,
@@ -1527,9 +1529,7 @@ describe('mappers', () => {
         enabled_tools: null,
         instructions: null,
         context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        compaction_threshold: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1548,7 +1548,7 @@ describe('mappers', () => {
       expect(restored.enabledTools).toBeUndefined();
       expect(restored.instructions).toBeUndefined();
       expect(restored.contextWindowTokens).toBeUndefined();
-      expect(restored.handoff).toBeUndefined();
+      expect(restored.compaction).toBeUndefined();
     });
 
     it('unflattens a serialized empty-array column to an explicit empty array', () => {
@@ -1565,9 +1565,7 @@ describe('mappers', () => {
         enabled_tools: '[]',
         instructions: '[]',
         context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        compaction_threshold: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1594,9 +1592,7 @@ describe('mappers', () => {
         enabled_tools: '["Read"',
         instructions: null,
         context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        compaction_threshold: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1625,9 +1621,7 @@ describe('mappers', () => {
         enabled_tools: null,
         instructions: '["docs/note.md"',
         context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        compaction_threshold: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1656,9 +1650,7 @@ describe('mappers', () => {
         enabled_tools: '{}',
         instructions: null,
         context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        compaction_threshold: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1687,9 +1679,7 @@ describe('mappers', () => {
         enabled_tools: null,
         instructions: '"foo"',
         context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        compaction_threshold: null,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1704,10 +1694,10 @@ describe('mappers', () => {
       expect(restored?.instructions).toBeUndefined();
     });
 
-    it('reconstructs handoff when only one of the three columns is non-null', () => {
+    it('reconstructs compaction from a non-null compaction_threshold column', () => {
       const selectRow: EmbeddedAgentRow = {
-        id: 'def-partial-handoff',
-        name: 'PartialHandoff',
+        id: 'def-compaction',
+        name: 'WithCompaction',
         description: null,
         engine: 'openai-api',
         provider_base_url: 'http://localhost:11434/v1',
@@ -1718,9 +1708,7 @@ describe('mappers', () => {
         enabled_tools: null,
         instructions: null,
         context_window_tokens: null,
-        handoff_soft_ratio: 0.6,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        compaction_threshold: 0.6,
         created_by: 'user-uuid',
         is_built_in: 0,
         created_at: '2026-01-01T00:00:00.000Z',
@@ -1729,35 +1717,7 @@ describe('mappers', () => {
 
       const restored = toEmbeddedAgentDefinition(selectRow);
 
-      expect(restored.handoff).toEqual({ softRatio: 0.6, hardRatio: undefined, auto: undefined });
-    });
-
-    it('reconstructs handoff.auto as false when handoff_auto is 0', () => {
-      const selectRow: EmbeddedAgentRow = {
-        id: 'def-auto-false',
-        name: 'AutoFalse',
-        description: null,
-        engine: 'openai-api',
-        provider_base_url: 'http://localhost:11434/v1',
-        provider_model: 'llama3',
-        provider_api_key_ref: null,
-        system_prompt: null,
-        max_tool_iterations: null,
-        enabled_tools: null,
-        instructions: null,
-        context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: 0,
-        created_by: 'user-uuid',
-        is_built_in: 0,
-        created_at: '2026-01-01T00:00:00.000Z',
-        updated_at: '2026-01-01T00:00:00.000Z',
-      };
-
-      const restored = toEmbeddedAgentDefinition(selectRow);
-
-      expect(restored.handoff).toEqual({ softRatio: undefined, hardRatio: undefined, auto: false });
+      expect(restored.compaction).toEqual({ threshold: 0.6 });
     });
 
     describe('engine/provider round-trip and consistency guard (SDK Engine Phase 1)', () => {
@@ -1808,9 +1768,7 @@ describe('mappers', () => {
           enabled_tools: row.enabled_tools ?? null,
           instructions: row.instructions ?? null,
           context_window_tokens: row.context_window_tokens ?? null,
-          handoff_soft_ratio: row.handoff_soft_ratio ?? null,
-          handoff_hard_ratio: row.handoff_hard_ratio ?? null,
-          handoff_auto: row.handoff_auto ?? null,
+          compaction_threshold: row.compaction_threshold ?? null,
           is_built_in: row.is_built_in,
           created_by: row.created_by,
           created_at: sdkDefinition.createdAt,
@@ -1836,9 +1794,7 @@ describe('mappers', () => {
           enabled_tools: null,
           instructions: null,
           context_window_tokens: null,
-          handoff_soft_ratio: null,
-          handoff_hard_ratio: null,
-          handoff_auto: null,
+          compaction_threshold: null,
           created_by: 'user-uuid',
           is_built_in: 0,
           created_at: '2026-01-01T00:00:00.000Z',
@@ -1863,9 +1819,7 @@ describe('mappers', () => {
           enabled_tools: null,
           instructions: null,
           context_window_tokens: null,
-          handoff_soft_ratio: null,
-          handoff_hard_ratio: null,
-          handoff_auto: null,
+          compaction_threshold: null,
           created_by: 'system',
           is_built_in: 1,
           created_at: '2026-01-01T00:00:00.000Z',

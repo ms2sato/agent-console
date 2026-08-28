@@ -99,7 +99,7 @@ function makeLoop(
     retryDelaysMs?: [number, number];
     onSleep?: (loopRef: { current: AgentLoop | null }) => void;
     reassembleSystemPrompt?: () => Promise<string>;
-    loadHandoffPrompt?: () => Promise<string>;
+    loadCompactionPrompt?: () => Promise<string>;
     restoredConversation?: ChatMessage[];
   } = {},
 ): Harness {
@@ -123,7 +123,9 @@ function makeLoop(
       opts.onSleep?.(loopRef);
     },
     reassembleSystemPrompt: opts.reassembleSystemPrompt ?? (async () => 'sys'),
-    loadHandoffPrompt: opts.loadHandoffPrompt ?? (async () => 'DISTILL_PROMPT'),
+    loadCompactionPrompt: opts.loadCompactionPrompt ?? (async () => 'DISTILL_PROMPT'),
+    // Auto compaction OFF: this file's subject is the turn cycle itself.
+    compaction: { auto: false },
     restoredConversation: opts.restoredConversation,
   };
   const loop = new AgentLoop(deps);

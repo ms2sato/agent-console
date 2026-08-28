@@ -578,6 +578,19 @@ export class EmbeddedAgentWorkerService {
         ...(definition.instructions !== undefined ? { instructions: definition.instructions } : {}),
         maxToolIterations: definition.maxToolIterations ?? DEFAULT_MAX_TOOL_ITERATIONS,
         ...(restoredConversation !== undefined ? { restoredConversation } : {}),
+        // Compaction: `auto` comes from the WORKER (its own toggle), the
+        // other two from the definition. Composed here rather than read
+        // separately by each engine so there is one place that decides what
+        // the subprocess is told about compaction.
+        compaction: {
+          auto: ctx.worker.autoCompaction,
+          ...(definition.contextWindowTokens !== undefined
+            ? { contextWindowTokens: definition.contextWindowTokens }
+            : {}),
+          ...(definition.compaction?.threshold !== undefined
+            ? { threshold: definition.compaction.threshold }
+            : {}),
+        },
       };
       const initCommand: EmbeddedAgentCommand =
         definition.engine === 'openai-api'
@@ -765,6 +778,37 @@ export class EmbeddedAgentWorkerService {
     this.appendEvent(runtime.ctx, event);
 
     return { ok: true, id };
+  }
+
+  /**
+   * Compaction: forward a change to the worker's auto-compaction toggle to a
+   * RUNNING subprocess, so the change applies without waiting for the next
+   * activation.
+   *
+   * Deliberately NOT gated on `turnActive`, unlike every other command this
+   * service forwards: the loop only reads the flag at the turn boundary, so
+   * recording it mid-turn is safe and means the very next boundary already
+   * honours it. Gating would silently drop the change for the duration of a
+   * long turn -- exactly when a user is most likely to reach for the toggle.
+   *
+   * Returns `false` when there is no live subprocess to tell. That is not a
+   * failure: the durable value is already persisted by the caller and will be
+   * read at the next activation. The caller must not surface it as an error.
+   */
+  forwardAutoCompaction(workerId: string, enabled: boolean): boolean {
+    const runtime = this.runtimes.get(workerId);
+    const stdin = runtime?.ctx.worker.stdin;
+    if (!runtime || !stdin) return false;
+    try {
+      this.writeCommand(stdin, { v: 1, type: 'set-auto-compaction', enabled });
+      return true;
+    } catch (err) {
+      logger.warn(
+        { workerId, err },
+        'Failed to forward auto-compaction toggle to embedded-agent stdin',
+      );
+      return false;
+    }
   }
 
   /**

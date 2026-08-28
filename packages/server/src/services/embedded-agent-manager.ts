@@ -150,7 +150,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
       enabledTools: request.enabledTools,
       instructions: request.instructions,
       contextWindowTokens: request.contextWindowTokens,
-      handoff: request.handoff,
+      compaction: request.compaction,
       isBuiltIn: false,
       createdBy,
       createdAt: now,
@@ -241,7 +241,7 @@ export class EmbeddedAgentManager implements AgentSurface<'embedded'> {
         request.contextWindowTokens === null
           ? undefined
           : (request.contextWindowTokens ?? existing.contextWindowTokens),
-      handoff: request.handoff === null ? undefined : (request.handoff ?? existing.handoff),
+      compaction: request.compaction === null ? undefined : (request.compaction ?? existing.compaction),
       createdBy: existing.createdBy,
       createdAt: existing.createdAt,
       updatedAt: new Date().toISOString(),

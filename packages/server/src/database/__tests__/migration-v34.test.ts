@@ -61,7 +61,7 @@ describe('migration v34 (bookmarks.origin column)', () => {
   it('advances the schema version to 34', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(34);
+    expect(versionRes.rows[0]?.user_version).toBe(36);
   });
 
   it("adds the origin column as TEXT NOT NULL DEFAULT 'user'", async () => {

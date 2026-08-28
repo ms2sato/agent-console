@@ -177,6 +177,7 @@ export function toWorkerRow(worker: PersistedWorker, sessionId: string): NewWork
       embedded_agent_id: worker.embeddedAgentId,
       deliver_initial_prompt_on_activation: worker.deliverInitialPromptOnActivation ? 1 : 0,
       sdk_session_id: worker.sdkSessionId,
+      auto_compaction: worker.autoCompaction ? 1 : 0,
     };
   } else {
     return assertNever(worker, `Unknown worker type for worker ${base.id}`);
@@ -248,6 +249,10 @@ export function toPersistedWorker(worker: Worker): PersistedWorker {
       embeddedAgentId: worker.embedded_agent_id,
       deliverInitialPromptOnActivation: worker.deliver_initial_prompt_on_activation === 1,
       sdkSessionId: worker.sdk_session_id ?? null,
+      // `!== 0` rather than `=== 1`: the column is NOT NULL DEFAULT 1, so an
+      // absent/legacy value must read as ON, matching what the migration's
+      // default does for rows it backfilled.
+      autoCompaction: worker.auto_compaction !== 0,
     } as PersistedEmbeddedAgentWorker;
   } else {
     // This should never be reached due to the validation above,
@@ -537,9 +542,7 @@ export function toEmbeddedAgentRow(def: EmbeddedAgentDefinition): NewEmbeddedAge
     enabled_tools: def.enabledTools !== undefined ? JSON.stringify(def.enabledTools) : null,
     instructions: def.instructions !== undefined ? JSON.stringify(def.instructions) : null,
     context_window_tokens: def.contextWindowTokens ?? null,
-    handoff_soft_ratio: def.handoff?.softRatio ?? null,
-    handoff_hard_ratio: def.handoff?.hardRatio ?? null,
-    handoff_auto: def.handoff?.auto !== undefined ? (def.handoff.auto ? 1 : 0) : null,
+    compaction_threshold: def.compaction?.threshold ?? null,
     is_built_in: def.isBuiltIn ? 1 : 0,
     created_by: def.createdBy,
     created_at: def.createdAt,
@@ -597,18 +600,11 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
   );
   const instructions = parseEmbeddedAgentJsonArrayColumn<string>(row.instructions, row.id, 'instructions');
 
-  // `handoff` is reconstructed conditionally: unlike `provider` (required,
-  // always rebuilt), an all-null triple must yield `undefined`, not `{}`, so
-  // an unconfigured definition round-trips to "no handoff config" exactly as
+  // `compaction` is reconstructed conditionally: unlike `provider` (required,
+  // always rebuilt), a null column must yield `undefined`, not `{}`, so an
+  // unconfigured definition round-trips to "no compaction config" exactly as
   // it was written.
-  const handoff =
-    row.handoff_soft_ratio !== null || row.handoff_hard_ratio !== null || row.handoff_auto !== null
-      ? {
-          softRatio: row.handoff_soft_ratio ?? undefined,
-          hardRatio: row.handoff_hard_ratio ?? undefined,
-          auto: row.handoff_auto !== null ? row.handoff_auto === 1 : undefined,
-        }
-      : undefined;
+  const compaction = row.compaction_threshold !== null ? { threshold: row.compaction_threshold } : undefined;
 
   const base = {
     id: row.id,
@@ -619,7 +615,7 @@ export function toEmbeddedAgentDefinition(row: EmbeddedAgentRow): EmbeddedAgentD
     enabledTools,
     instructions,
     contextWindowTokens: row.context_window_tokens ?? undefined,
-    handoff,
+    compaction,
     isBuiltIn: row.is_built_in === 1,
     createdBy: row.created_by,
     createdAt: row.created_at,

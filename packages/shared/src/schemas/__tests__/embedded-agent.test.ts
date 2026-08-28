@@ -4,7 +4,7 @@ import {
   EmbeddedAgentDefinitionSchema,
   CreateEmbeddedAgentRequestSchema,
   UpdateEmbeddedAgentRequestSchema,
-  EmbeddedAgentHandoffConfigSchema,
+  EmbeddedAgentCompactionConfigSchema,
   EmbeddedAgentCommandSchema,
   EmbeddedAgentEventSchema,
   EmbeddedAgentServerEventSchema,
@@ -366,91 +366,65 @@ describe('CreateEmbeddedAgentRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('accepts a valid handoff config', () => {
+  it('accepts a valid compaction config', () => {
     const result = v.safeParse(CreateEmbeddedAgentRequestSchema, {
       name: 'New Agent',
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
-      handoff: { softRatio: 0.7, hardRatio: 0.9, auto: true },
+      compaction: { threshold: 0.7 },
     });
     expect(result.success).toBe(true);
   });
 });
 
-describe('EmbeddedAgentHandoffConfigSchema', () => {
-  it('accepts a fully-populated config', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, {
-      softRatio: 0.7,
-      hardRatio: 0.9,
-      auto: true,
-    });
+describe('EmbeddedAgentCompactionConfigSchema', () => {
+  it('accepts a populated config', () => {
+    const result = v.safeParse(EmbeddedAgentCompactionConfigSchema, { threshold: 0.85 });
     expect(result.success).toBe(true);
   });
 
-  it('accepts an empty object (all fields optional)', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, {});
+  it('accepts an empty object (threshold falls to the default downstream)', () => {
+    const result = v.safeParse(EmbeddedAgentCompactionConfigSchema, {});
     expect(result.success).toBe(true);
   });
 
-  it('accepts a config with only softRatio set', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.5 });
-    expect(result.success).toBe(true);
+  it('accepts 1 (compact only when the window is completely full)', () => {
+    expect(v.safeParse(EmbeddedAgentCompactionConfigSchema, { threshold: 1 }).success).toBe(true);
   });
 
-  it('accepts a config with only hardRatio set', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { hardRatio: 0.85 });
-    expect(result.success).toBe(true);
+  it('REJECTS 0, which would compact after every turn including the first', () => {
+    // 0 is inside [0, 1] but means nothing an operator would intend by
+    // "compact when the context fills up" -- excluded deliberately rather
+    // than accepted as a degenerate case.
+    expect(v.safeParse(EmbeddedAgentCompactionConfigSchema, { threshold: 0 }).success).toBe(false);
   });
 
-  it('accepts a config with only auto set', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { auto: false });
-    expect(result.success).toBe(true);
+  it('rejects a threshold below 0', () => {
+    expect(v.safeParse(EmbeddedAgentCompactionConfigSchema, { threshold: -0.1 }).success).toBe(false);
   });
 
-  it('accepts boundary ratio values 0 and 1', () => {
-    const zero = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0, hardRatio: 0 });
-    expect(zero.success).toBe(true);
-    const one = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 1, hardRatio: 1 });
-    expect(one.success).toBe(true);
+  it('rejects a threshold above 1', () => {
+    expect(v.safeParse(EmbeddedAgentCompactionConfigSchema, { threshold: 1.1 }).success).toBe(false);
   });
 
-  it('rejects an inverted pair where softRatio > hardRatio', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.9, hardRatio: 0.5 });
-    expect(result.success).toBe(false);
-  });
-
-  it('accepts softRatio === hardRatio (boundary, not inverted)', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.75, hardRatio: 0.75 });
-    expect(result.success).toBe(true);
-  });
-
-  it('rejects a softRatio below 0', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: -0.1 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects a softRatio above 1', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 1.1 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects a hardRatio below 0', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { hardRatio: -0.1 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects a hardRatio above 1', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { hardRatio: 1.1 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects a non-boolean auto', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { auto: 'yes' });
-    expect(result.success).toBe(false);
+  it('rejects a non-numeric threshold', () => {
+    expect(v.safeParse(EmbeddedAgentCompactionConfigSchema, { threshold: '0.85' }).success).toBe(false);
   });
 
   it('rejects an unknown key (strictObject)', () => {
-    const result = v.safeParse(EmbeddedAgentHandoffConfigSchema, { softRatio: 0.5, unexpectedField: 'leaked' });
+    const result = v.safeParse(EmbeddedAgentCompactionConfigSchema, {
+      threshold: 0.5,
+      unexpectedField: 'leaked',
+    });
     expect(result.success).toBe(false);
+  });
+
+  it('rejects the retired handoff sub-fields, so a stale caller fails loudly', () => {
+    // A client still sending the old shape must not be silently accepted with
+    // its threshold ignored -- that is the shape of a bug that looks like
+    // working software.
+    expect(
+      v.safeParse(EmbeddedAgentCompactionConfigSchema, { softRatio: 0.75, hardRatio: 0.9 }).success,
+    ).toBe(false);
   });
 });
 
@@ -561,37 +535,44 @@ describe('UpdateEmbeddedAgentRequestSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('accepts handoff: null (clear to default)', () => {
+  it('accepts compaction: null (clear to default)', () => {
     const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
-      handoff: null,
+      compaction: null,
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.output.handoff).toBeNull();
+      expect(result.output.compaction).toBeNull();
     }
   });
 
-  it('accepts handoff absent (no change)', () => {
+  it('accepts compaction absent (no change)', () => {
     const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {});
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.output.handoff).toBeUndefined();
+      expect(result.output.compaction).toBeUndefined();
     }
   });
 
-  it('accepts a whole-object handoff replacement with only some sub-fields set', () => {
+  it('accepts a whole-object compaction replacement', () => {
     const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
-      handoff: { softRatio: 0.6 },
+      compaction: { threshold: 0.6 },
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.output.handoff).toEqual({ softRatio: 0.6 });
+      expect(result.output.compaction).toEqual({ threshold: 0.6 });
     }
   });
 
-  it('rejects a handoff replacement with an out-of-range sub-field', () => {
+  it('rejects a compaction replacement with an out-of-range threshold', () => {
     const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
-      handoff: { hardRatio: 1.5 },
+      compaction: { threshold: 1.5 },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects the retired handoff key outright (strictObject)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentRequestSchema, {
+      handoff: { softRatio: 0.6 },
     });
     expect(result.success).toBe(false);
   });
@@ -602,6 +583,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
@@ -636,6 +618,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
@@ -654,6 +637,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
@@ -669,6 +653,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
@@ -687,6 +672,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
@@ -702,6 +688,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const init = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
@@ -719,6 +706,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const baseFields = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
       maxToolIterations: 25,
@@ -776,6 +764,7 @@ describe('EmbeddedAgentCommandSchema', () => {
     const baseInit = {
       v: 1,
       type: 'init',
+      compaction: { auto: true },
       engine: 'openai-api',
       mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
       provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },

@@ -309,6 +309,23 @@ export class SdkEngine implements Engine {
     });
   }
 
+  /**
+   * Compaction (#1401): reflect a change to the worker's auto-compaction
+   * toggle. Currently a NO-OP on this engine, deliberately and temporarily:
+   * this engine's auto compaction is the SDK's own, driven by a settings key
+   * whose NAME is not yet verified (our `buildOptions` writes
+   * `autoCompactEnabled` while the SDK's own `.d.ts` exposes
+   * `isAutoCompactEnabled`), and whether a mid-session `applyFlagSettings`
+   * takes effect at all is exactly what probe #1400 P1a measures. Writing a
+   * setting we have not confirmed arrives would produce a toggle that
+   * silently does nothing while appearing to work -- worse than one that
+   * honestly applies at the next activation. Filled in once the probe
+   * reports.
+   */
+  setAutoCompaction(_enabled: boolean): void {
+    // Intentionally empty -- see the doc comment above.
+  }
+
   cancel(): void {
     if (this.dead) return;
     void this.query.interrupt().catch(() => {

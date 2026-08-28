@@ -97,7 +97,7 @@ describe('migration v32 (embedded_agents.engine native-loop -> openai-api)', () 
   it('advances the schema version to 32 via the real production migration path', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(34);
+    expect(versionRes.rows[0]?.user_version).toBe(36);
   });
 
   it("rewrites existing 'native-loop' rows to 'openai-api', and passes a 'claude-sdk' control row through byte-unchanged", async () => {
@@ -244,9 +244,14 @@ describe('migration v32 (embedded_agents.engine native-loop -> openai-api)', () 
     expect(row.enabled_tools).toBe('["Read"]');
     expect(row.instructions).toBe('["docs/note.md"]');
     expect(row.context_window_tokens).toBe(128000);
-    expect(row.handoff_soft_ratio).toBe(0.75);
-    expect(row.handoff_hard_ratio).toBe(0.9);
-    expect(row.handoff_auto).toBe(1);
+    // v31-era columns: migration v36 later dropped these three, so the
+    // current `Database` type no longer declares them. This fixture builds a
+    // v31-shaped table with raw SQL, so they genuinely exist at runtime --
+    // read them off an untyped view of the row.
+    const legacyRow = row as unknown as Record<string, unknown>;
+    expect(legacyRow.handoff_soft_ratio).toBe(0.75);
+    expect(legacyRow.handoff_hard_ratio).toBe(0.9);
+    expect(legacyRow.handoff_auto).toBe(1);
     expect(row.is_built_in).toBe(0);
     expect(row.created_by).toBe('user-1');
 

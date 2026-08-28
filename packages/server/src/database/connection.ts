@@ -365,6 +365,14 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 34) {
     await migrateToV34(database);
   }
+
+  if (currentVersion < 35) {
+    await migrateToV35(database);
+  }
+
+  if (currentVersion < 36) {
+    await migrateToV36(database);
+  }
 }
 
 /**
@@ -1990,6 +1998,142 @@ export async function migrateToV34(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 34`.execute(database);
 
   logger.info('Migration to v34 completed');
+}
+
+/**
+ * Migration v35: Add `auto_compaction` column to `workers` -- Compaction's
+ * per-worker automatic-firing toggle (Issue #1401,
+ * docs/design/embedded-agent-worker.md "Compaction").
+ *
+ * `NOT NULL DEFAULT 1` backfills every pre-existing row to ON, which is what
+ * the owner's 2026-08-28 decision means: the swap exists to end the state
+ * where a worker has no context management, so shipping the toggle OFF for
+ * every worker that already exists would recreate exactly that state.
+ *
+ * Meaningful for `embedded-agent` workers only; other worker types carry the
+ * default and never read it (same convention as `deliver_initial_prompt_on_activation`
+ * and `sdk_session_id`, which are likewise type-scoped columns on this table).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV35(database: Kysely<Database>): Promise<void> {
+  logger.info('Running migration to v35: Adding auto_compaction column to workers');
+
+  try {
+    await sql`ALTER TABLE workers ADD COLUMN auto_compaction INTEGER NOT NULL DEFAULT 1`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column auto_compaction already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 35`.execute(database);
+
+  logger.info('Migration to v35 completed');
+}
+
+/**
+ * Migration v36: Replace `embedded_agents`' three Context Handoff columns
+ * (`handoff_soft_ratio`, `handoff_hard_ratio`, `handoff_auto`) with a single
+ * `compaction_threshold REAL` (Issue #1401).
+ *
+ * SQLite has no portable in-place column drop at the version this project
+ * targets, so this follows `migrateToV32`'s table-recreation template for
+ * this exact table -- including its index/trigger snapshot-and-restore step
+ * and its post-rewrite `foreign_key_check`.
+ *
+ * **No value is carried across, deliberately.** The soft/hard pair were the
+ * two ends of a banner escalation, not a compaction trigger point; mapping
+ * either onto `compaction_threshold` would invent a threshold the operator
+ * never chose. `handoff_auto` was a per-definition flag that no code path
+ * ever read, and its replacement lives on the worker (v35), not here. Every
+ * existing definition therefore lands on `compaction_threshold = NULL`,
+ * i.e. the DEFAULT_COMPACTION_THRESHOLD default.
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV36(database: Kysely<Database>): Promise<void> {
+  const versionResult = await sql<{ user_version: number }>`PRAGMA user_version`.execute(database);
+  const currentVersion = versionResult.rows[0]?.user_version ?? 0;
+  if (currentVersion >= 36) {
+    logger.info({ currentVersion }, 'Skipping migration to v36: already applied');
+    return;
+  }
+
+  logger.info('Running migration to v36: Replacing embedded_agents handoff columns with compaction_threshold');
+
+  const objectsResult = await sql<{
+    type: string;
+    name: string;
+    sql: string | null;
+  }>`
+    SELECT type, name, sql
+    FROM sqlite_master
+    WHERE tbl_name = 'embedded_agents'
+      AND type IN ('index', 'trigger')
+      AND name NOT LIKE 'sqlite_autoindex%'
+  `.execute(database);
+  const objectsToRestore = objectsResult.rows.filter((row) => row.sql !== null);
+
+  await database.transaction().execute(async (trx) => {
+    await sql`
+      CREATE TABLE embedded_agents_new (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT,
+        engine TEXT NOT NULL DEFAULT 'openai-api',
+        provider_base_url TEXT,
+        provider_model TEXT NOT NULL,
+        provider_api_key_ref TEXT,
+        system_prompt TEXT,
+        max_tool_iterations INTEGER,
+        enabled_tools TEXT,
+        instructions TEXT,
+        context_window_tokens INTEGER,
+        compaction_threshold REAL,
+        is_built_in INTEGER NOT NULL DEFAULT 0,
+        created_by TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `.execute(trx);
+
+    await sql`
+      INSERT INTO embedded_agents_new (
+        id, name, description, engine, provider_base_url, provider_model,
+        provider_api_key_ref, system_prompt, max_tool_iterations,
+        enabled_tools, instructions, context_window_tokens,
+        compaction_threshold, is_built_in,
+        created_by, created_at, updated_at
+      )
+      SELECT
+        id, name, description, engine, provider_base_url, provider_model,
+        provider_api_key_ref, system_prompt, max_tool_iterations,
+        enabled_tools, instructions, context_window_tokens,
+        NULL, is_built_in,
+        created_by, created_at, updated_at
+      FROM embedded_agents
+    `.execute(trx);
+
+    await sql`DROP TABLE embedded_agents`.execute(trx);
+    await sql`ALTER TABLE embedded_agents_new RENAME TO embedded_agents`.execute(trx);
+
+    for (const obj of objectsToRestore) {
+      await sql.raw(obj.sql as string).execute(trx);
+    }
+
+    const fkCheck = await sql<{ table: string; rowid: number; parent: string; fkid: number }>`
+      PRAGMA foreign_key_check
+    `.execute(trx);
+    if (fkCheck.rows.length > 0) {
+      throw new Error(
+        `Foreign key check failed after v36 migration: ${JSON.stringify(fkCheck.rows)}`
+      );
+    }
+
+    await sql`PRAGMA user_version = 36`.execute(trx);
+  });
+
+  logger.info('Migration to v36 completed');
 }
 
 /**

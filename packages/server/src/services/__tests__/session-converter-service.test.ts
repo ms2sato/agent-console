@@ -69,7 +69,7 @@ describe('SessionConverterService', () => {
         } else if (w.type === 'git-diff') {
           return { id: w.id, type: 'git-diff', name: w.name, createdAt: w.createdAt, baseCommit: w.baseCommit };
         } else {
-          return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, activated: w.subprocess !== null };
+          return { id: w.id, type: 'embedded-agent', name: w.name, createdAt: w.createdAt, embeddedAgentId: w.embeddedAgentId, activated: w.subprocess !== null, autoCompaction: w.autoCompaction };
         }
       },
       toPersistedWorker: (w: InternalWorker): PersistedWorker => {
@@ -99,6 +99,7 @@ describe('SessionConverterService', () => {
             pid: w.subprocess?.pid ?? null,
             deliverInitialPromptOnActivation: w.deliverInitialPromptOnActivation,
             sdkSessionId: w.sdkSessionId,
+            autoCompaction: w.autoCompaction,
           };
         }
       },

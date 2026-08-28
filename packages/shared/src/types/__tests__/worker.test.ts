@@ -40,6 +40,7 @@ const embeddedAgentWorker: EmbeddedAgentWorker = {
   type: 'embedded-agent',
   embeddedAgentId: 'def-1',
   activated: false,
+  autoCompaction: true,
 };
 
 describe('isPtyBackedWorker', () => {

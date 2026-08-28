@@ -393,6 +393,8 @@ export class WorkerManager {
       connectionCallbacks: new Map(),
       deliverInitialPromptOnActivation: params.deliverInitialPromptOnActivation ?? false,
       sdkSessionId: null,
+      // Default ON -- a new worker starts with context management enabled.
+      autoCompaction: true,
     };
 
     return worker;
@@ -1204,6 +1206,10 @@ export class WorkerManager {
             // restored SDK-engine worker retains its session id across a
             // server restart, even though `subprocess`/`stdin` restart null.
             sdkSessionId: pw.sdkSessionId,
+            // Round-trips from PersistedEmbeddedAgentWorker.autoCompaction so
+            // an explicitly-turned-OFF toggle is not silently re-enabled by a
+            // server restart.
+            autoCompaction: pw.autoCompaction,
           };
           break;
         default: {
@@ -1246,6 +1252,7 @@ export class WorkerManager {
           type: 'embedded-agent',
           embeddedAgentId: worker.embeddedAgentId,
           activated: worker.subprocess !== null,
+          autoCompaction: worker.autoCompaction,
         };
         return embeddedAgentWorker;
       }
@@ -1285,6 +1292,7 @@ export class WorkerManager {
           pid: worker.subprocess?.pid ?? null,
           deliverInitialPromptOnActivation: worker.deliverInitialPromptOnActivation,
           sdkSessionId: worker.sdkSessionId,
+          autoCompaction: worker.autoCompaction,
         };
         return persistedEmbeddedAgent;
       }

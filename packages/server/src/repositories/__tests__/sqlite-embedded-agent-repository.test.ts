@@ -54,9 +54,7 @@ describe('SqliteEmbeddedAgentRepository', () => {
       .addColumn('enabled_tools', 'text')
       .addColumn('instructions', 'text')
       .addColumn('context_window_tokens', 'integer')
-      .addColumn('handoff_soft_ratio', 'real')
-      .addColumn('handoff_hard_ratio', 'real')
-      .addColumn('handoff_auto', 'integer')
+      .addColumn('compaction_threshold', 'real')
       .addColumn('is_built_in', 'integer', (col) => col.notNull().defaultTo(0))
       .addColumn('created_by', 'text', (col) => col.notNull())
       .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(NOW_ISO8601))
@@ -259,28 +257,28 @@ describe('SqliteEmbeddedAgentRepository', () => {
       expect(found?.instructions).toEqual(['docs/local-note.md', 'CONTRIBUTING.md']);
     });
 
-    it('round-trips contextWindowTokens and handoff (Context Handoff Phase A)', async () => {
+    it('round-trips contextWindowTokens and compaction', async () => {
       const def = buildDefinition({
-        id: 'handoff-configured',
+        id: 'compaction-configured',
         contextWindowTokens: 128000,
-        handoff: { softRatio: 0.75, hardRatio: 0.9, auto: true },
+        compaction: { threshold: 0.75 },
       });
 
       await repository.save(def);
-      const found = await repository.findById('handoff-configured');
+      const found = await repository.findById('compaction-configured');
 
       expect(found?.contextWindowTokens).toBe(128000);
-      expect(found?.handoff).toEqual({ softRatio: 0.75, hardRatio: 0.9, auto: true });
+      expect(found?.compaction).toEqual({ threshold: 0.75 });
     });
 
-    it('round-trips contextWindowTokens/handoff: undefined as NULL columns and back to undefined', async () => {
-      const def = buildDefinition({ id: 'handoff-unconfigured' });
+    it('round-trips contextWindowTokens/compaction: undefined as NULL columns and back to undefined', async () => {
+      const def = buildDefinition({ id: 'compaction-unconfigured' });
 
       await repository.save(def);
-      const found = await repository.findById('handoff-unconfigured');
+      const found = await repository.findById('compaction-unconfigured');
 
       expect(found?.contextWindowTokens).toBeUndefined();
-      expect(found?.handoff).toBeUndefined();
+      expect(found?.compaction).toBeUndefined();
     });
 
     it('round-trips engine and isBuiltIn (SDK Engine Phase 1)', async () => {
@@ -367,20 +365,20 @@ describe('SqliteEmbeddedAgentRepository', () => {
       expect(found?.instructions).toEqual(['a.md', 'b.md']);
     });
 
-    it('updates contextWindowTokens/handoff on conflict (regression guard: onConflict lists columns explicitly)', async () => {
+    it('updates contextWindowTokens/compaction on conflict (regression guard: onConflict lists columns explicitly)', async () => {
       await repository.save(buildDefinition({ id: 'x', contextWindowTokens: 32000 }));
       await repository.save(
         buildDefinition({
           id: 'x',
           contextWindowTokens: 128000,
-          handoff: { softRatio: 0.8, hardRatio: 0.95, auto: true },
+          compaction: { threshold: 0.8 },
           updatedAt: '2024-06-01T00:00:00.000Z',
         })
       );
 
       const found = await repository.findById('x');
       expect(found?.contextWindowTokens).toBe(128000);
-      expect(found?.handoff).toEqual({ softRatio: 0.8, hardRatio: 0.95, auto: true });
+      expect(found?.compaction).toEqual({ threshold: 0.8 });
     });
 
     it('updates is_built_in on conflict (regression guard: onConflict lists columns explicitly)', async () => {

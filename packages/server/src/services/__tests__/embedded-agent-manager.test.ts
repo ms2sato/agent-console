@@ -187,7 +187,7 @@ describe('EmbeddedAgentManager', () => {
       expect(def.instructions).toBeUndefined();
     });
 
-    it('sets contextWindowTokens and handoff from the request', async () => {
+    it('sets contextWindowTokens and compaction from the request', async () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
@@ -195,16 +195,16 @@ describe('EmbeddedAgentManager', () => {
           name: 'Ollama',
           provider: VALID_PROVIDER,
           contextWindowTokens: 128000,
-          handoff: { softRatio: 0.75, hardRatio: 0.9, auto: true },
+          compaction: { threshold: 0.75 },
         },
         'creator-user-id'
       );
 
       expect(def.contextWindowTokens).toBe(128000);
-      expect(def.handoff).toEqual({ softRatio: 0.75, hardRatio: 0.9, auto: true });
+      expect(def.compaction).toEqual({ threshold: 0.75 });
     });
 
-    it('leaves contextWindowTokens/handoff undefined when absent from the request', async () => {
+    it('leaves contextWindowTokens/compaction undefined when absent from the request', async () => {
       const manager = await getManager();
 
       const def = await manager.createEmbeddedAgent(
@@ -213,7 +213,7 @@ describe('EmbeddedAgentManager', () => {
       );
 
       expect(def.contextWindowTokens).toBeUndefined();
-      expect(def.handoff).toBeUndefined();
+      expect(def.compaction).toBeUndefined();
     });
 
     it('fires onEmbeddedAgentCreated after a successful save', async () => {
@@ -257,7 +257,7 @@ describe('EmbeddedAgentManager', () => {
           enabledTools: ['Read'],
           instructions: ['docs/local-note.md'],
           contextWindowTokens: 32000,
-          handoff: { softRatio: 0.7, hardRatio: 0.85, auto: false },
+          compaction: { threshold: 0.7 },
         },
         'owner-id'
       );
@@ -277,13 +277,13 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.enabledTools).toEqual(['Read']);
       expect(updated?.instructions).toEqual(['docs/local-note.md']);
       expect(updated?.contextWindowTokens).toBe(32000);
-      expect(updated?.handoff).toEqual({ softRatio: 0.7, hardRatio: 0.85, auto: false });
+      expect(updated?.compaction).toEqual({ threshold: 0.7 });
       expect(updated?.provider).toEqual(VALID_PROVIDER);
       expect(updated?.createdBy).toBe('owner-id');
       expect(updated?.createdAt).toBe(created.createdAt);
     });
 
-    it('clears description/systemPrompt/maxToolIterations/enabledTools/instructions/contextWindowTokens/handoff on null', async () => {
+    it('clears description/systemPrompt/maxToolIterations/enabledTools/instructions/contextWindowTokens/compaction on null', async () => {
       const manager = await getManager();
       const created = await seed(manager);
 
@@ -294,7 +294,7 @@ describe('EmbeddedAgentManager', () => {
         enabledTools: null,
         instructions: null,
         contextWindowTokens: null,
-        handoff: null,
+        compaction: null,
       });
 
       expect(updated?.description).toBeUndefined();
@@ -303,20 +303,22 @@ describe('EmbeddedAgentManager', () => {
       expect(updated?.enabledTools).toBeUndefined();
       expect(updated?.instructions).toBeUndefined();
       expect(updated?.contextWindowTokens).toBeUndefined();
-      expect(updated?.handoff).toBeUndefined();
+      expect(updated?.compaction).toBeUndefined();
     });
 
-    it('replaces the whole handoff object when handoff is present (no per-subfield merge)', async () => {
+    it('replaces the whole compaction object when compaction is present (no per-subfield merge)', async () => {
       const manager = await getManager();
       const created = await seed(manager);
 
       const updated = await manager.updateEmbeddedAgent(created.id, {
-        handoff: { softRatio: 0.6 },
+        compaction: {},
       });
 
-      // Whole-object replace: hardRatio/auto from the original handoff are
-      // NOT carried over even though only softRatio was specified.
-      expect(updated?.handoff).toEqual({ softRatio: 0.6 });
+      // Whole-object replace: the original threshold is NOT carried over by
+      // an empty replacement object. With one sub-field left this is the only
+      // shape that can still distinguish replace from merge -- a merge would
+      // leave 0.7 in place.
+      expect(updated?.compaction).toEqual({});
     });
 
     it('replaces enabledTools with the request value when present, including an explicit empty array', async () => {

@@ -1812,6 +1812,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
+        autoCompaction: true,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 
@@ -1896,6 +1897,7 @@ describe('WorkerLifecycleManager', () => {
         connectionCallbacks: new Map(),
         deliverInitialPromptOnActivation: false,
         sdkSessionId: null,
+        autoCompaction: true,
       };
       session.workers.set(embeddedWorker.id, embeddedWorker);
 

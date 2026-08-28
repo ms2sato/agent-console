@@ -115,6 +115,14 @@ export interface WorkersTable {
   deliver_initial_prompt_on_activation: number | null;
   /** The worker's current Claude Agent SDK session id (embedded-agent workers with the `claude-sdk` engine only; null for other types and openai-api engine workers). See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row. */
   sdk_session_id: string | null;
+  /**
+   * Compaction's per-worker auto toggle (embedded-agent workers only; the
+   * value is written but meaningless for other types). NOT NULL DEFAULT 1 --
+   * ON is what the owner's 2026-08-28 decision means, and rows predating
+   * migration v35 fall to ON for the same reason. See
+   * docs/design/embedded-agent-worker.md "Compaction".
+   */
+  auto_compaction: Generated<number>;
 }
 
 // Helper types for queries
@@ -231,14 +239,10 @@ export interface EmbeddedAgentsTable {
   enabled_tools: string | null;
   /** JSON-serialized array of opt-in instruction-file paths (null = none configured) */
   instructions: string | null;
-  /** Operator-declared model context window in tokens (Context Handoff Phase A); null = no denominator, ratio/threshold UI disabled */
+  /** Operator-declared model context window in tokens (Compaction); null = no denominator, so the ratio UI is disabled AND openai-api auto compaction can never fire */
   context_window_tokens: number | null;
-  /** Soft handoff threshold ratio 0..1 (Context Handoff Phase A); null = use the 0.75 default downstream */
-  handoff_soft_ratio: number | null;
-  /** Hard handoff threshold ratio 0..1 (Context Handoff Phase A); null = use the 0.90 default downstream */
-  handoff_hard_ratio: number | null;
-  /** Phase B auto-fire flag (Context Handoff Phase A schema landed early; NOT read by any Phase A code path) */
-  handoff_auto: number | null;
+  /** Auto-compaction threshold ratio 0..1 exclusive of 0 (Compaction, migration v36, replacing the three handoff_* columns); null = use DEFAULT_COMPACTION_THRESHOLD downstream */
+  compaction_threshold: number | null;
   /** Builtin-definition marker (SDK Engine Phase 1), mirroring agents.is_built_in: 1 for the claude-sdk builtin, 0 for user-created definitions. Builtin definitions cannot be modified or deleted. */
   is_built_in: number;
   /** User UUID (from users table) of the creator */

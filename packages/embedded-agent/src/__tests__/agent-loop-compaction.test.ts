@@ -1,0 +1,798 @@
+/**
+ * Compaction — `AgentLoop.compact()` polarity test, the auto threshold's
+ * boundary values, and the `Compact` tool's reservation semantics.
+ *
+ * See docs/design/embedded-agent-worker.md "`AgentLoop.compact()`" — Failure
+ * invariant: every early-return path (prompt-load failure, provider
+ * failure/cancel, unusable summary) returns strictly before the
+ * `context-compacted` marker is emitted, so `this.conversation` is NEVER
+ * mutated without that marker having also been emitted. This is the audited
+ * property; both directions are asserted directly against the messages array
+ * a SUBSEQUENT provider call actually receives, not merely against
+ * emitted-event side effects.
+ */
+import { describe, it, expect } from 'bun:test';
+import type { EmbeddedAgentEvent } from '@agent-console/shared';
+import { AgentLoop, type AgentLoopDeps } from '../agent-loop.js';
+import type { ToolCallOutcome, ToolExecutor } from '../mcp.js';
+import type { ChatMessage, ProviderAdapter, ProviderEvent, ProviderRunRequest } from '../providers/types.js';
+
+type ScriptedResponse =
+  | { kind: 'events'; events: ProviderEvent[] }
+  | { kind: 'throw'; error: unknown };
+
+/** Adapter whose response for each successive `run()` call is taken from a
+ * fixed script (the last entry repeats once exhausted), recording every
+ * request's `messages` snapshot for later inspection. */
+class ScriptedAdapter implements ProviderAdapter {
+  calls = 0;
+  capturedMessages: ChatMessage[][] = [];
+  capturedToolNames: string[][] = [];
+  constructor(private readonly script: ScriptedResponse[]) {}
+
+  async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+    const idx = this.calls;
+    this.calls++;
+    this.capturedMessages.push([...req.messages]);
+    this.capturedToolNames.push(req.tools.map((t) => t.name));
+    const resp = this.script[Math.min(idx, this.script.length - 1)];
+    if (resp.kind === 'throw') {
+      throw resp.error;
+    }
+    for (const event of resp.events) {
+      yield event;
+    }
+  }
+}
+
+class StubExecutor implements ToolExecutor {
+  async listTools() {
+    return [];
+  }
+  async callTool(): Promise<ToolCallOutcome> {
+    return { ok: true, result: 'ok' };
+  }
+}
+
+const textResponse = (text: string): ScriptedResponse => ({
+  kind: 'events',
+  events: [{ type: 'text-delta', text }, { type: 'done', finishReason: 'stop' }],
+});
+
+function makeDeps(overrides: Partial<AgentLoopDeps> & { adapter: ProviderAdapter }): {
+  deps: AgentLoopDeps;
+  events: EmbeddedAgentEvent[];
+} {
+  const events: EmbeddedAgentEvent[] = [];
+  const deps: AgentLoopDeps = {
+    model: 'm',
+    tools: [],
+    executor: new StubExecutor(),
+    emit: (event) => events.push(event),
+    systemPrompt: 'ORIGINAL_SYSTEM_PROMPT',
+    maxToolIterations: 25,
+    sleep: async () => {},
+    reassembleSystemPrompt: async () => 'ORIGINAL_SYSTEM_PROMPT',
+    loadCompactionPrompt: async () => 'DISTILL_PROMPT',
+    // Auto OFF by default so the turn-boundary check never fires in tests
+    // that are about something else; the auto-threshold describe below opts
+    // in explicitly.
+    compaction: { auto: false },
+    ...overrides,
+  };
+  return { deps, events };
+}
+
+describe('AgentLoop.compact() — failure invariant (polarity, mandatory)', () => {
+  it('FAILS to reset the conversation when the distillation provider call fails: no context-compacted, and a subsequent turn sees exactly the pre-compaction conversation', async () => {
+    // Seed a successful turn first, then distillation fails on all 3 retry
+    // attempts, then a plain success is scripted for the subsequent runTurn
+    // call. Seeding matters: an implementation that incorrectly wipes
+    // `this.conversation` on failure would otherwise be indistinguishable
+    // from a correct one, since a fresh loop has nothing to preserve either.
+    const adapter = new ScriptedAdapter([
+      textResponse('seed reply'),
+      { kind: 'throw', error: new Error('boom') },
+      { kind: 'throw', error: new Error('boom') },
+      { kind: 'throw', error: new Error('boom') },
+      textResponse('reply to t2'),
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t0', 'seed message');
+
+    await loop.compact('manual');
+
+    expect(events.find((e) => e.type === 'turn-error')).toBeDefined();
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+
+    // Drive a subsequent turn and inspect what the adapter actually received.
+    await loop.runTurn('t2', 'next message');
+    const messagesForT2 = adapter.capturedMessages.at(-1)!;
+
+    // Baseline: a loop seeded with the IDENTICAL prior turn (but no compaction
+    // attempt in between), driven by the identical runTurn call. Comparing
+    // against a baseline that also carries the seeded history -- rather than
+    // an empty fresh loop -- is what actually proves preservation.
+    const baselineAdapter = new ScriptedAdapter([textResponse('seed reply'), textResponse('reply to t2')]);
+    const { deps: baselineDeps } = makeDeps({ adapter: baselineAdapter });
+    const baselineLoop = new AgentLoop(baselineDeps);
+    await baselineLoop.runTurn('t0', 'seed message');
+    await baselineLoop.runTurn('t2', 'next message');
+    const baselineMessages = baselineAdapter.capturedMessages.at(-1)!;
+
+    expect(messagesForT2).toEqual(baselineMessages);
+    // Sanity: the seeded turn's history is actually present, not merely
+    // equal to an equally-empty baseline.
+    expect(messagesForT2.some((m) => m.role === 'assistant' && m.content === 'seed reply')).toBe(true);
+  });
+
+  it('SUCCEEDS: emits context-compacted and atomically resets the conversation to the seed shape a subsequent turn actually sends', async () => {
+    const adapter = new ScriptedAdapter([
+      textResponse('DISTILLATION_SUMMARY'),
+      textResponse('reply to next'),
+    ]);
+    const { deps, events } = makeDeps({
+      adapter,
+      reassembleSystemPrompt: async () => 'REASSEMBLED_SYSTEM_PROMPT',
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    const compactedEvent = events.find((e) => e.type === 'context-compacted');
+    expect(compactedEvent).toEqual({
+      v: 1,
+      type: 'context-compacted',
+      source: 'manual',
+      summary: 'DISTILLATION_SUMMARY',
+    });
+
+    await loop.runTurn('t2', 'next');
+    const messagesForT2 = adapter.capturedMessages.at(-1)!;
+
+    expect(messagesForT2).toEqual([
+      { role: 'system', content: 'REASSEMBLED_SYSTEM_PROMPT' },
+      {
+        role: 'user',
+        content:
+          'Summary of the earlier part of this conversation, which has been compacted away: DISTILLATION_SUMMARY',
+      },
+      { role: 'user', content: 'next' },
+    ]);
+  });
+});
+
+describe('AgentLoop.compact() — additional behaviors', () => {
+  it('emits a turn-error (not context-compacted) and leaves the conversation untouched when loadCompactionPrompt throws', async () => {
+    const adapter = new ScriptedAdapter([textResponse('should not be called for compaction')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      loadCompactionPrompt: async () => {
+        throw new Error('prompt file unreadable');
+      },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    expect(adapter.calls).toBe(0);
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError).toMatchObject({ message: expect.stringContaining('failed to load compaction prompt') });
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+
+  it('emits TWO context-usage events for a successful compaction: the distillation call\'s own pre-reset usage, then a fresh post-reset estimate', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    const usageEvents = events.filter((e) => e.type === 'context-usage');
+    expect(usageEvents).toHaveLength(2);
+    // Neither this adapter script nor `textResponse` sends a provider `usage`
+    // payload, so both readings fall back to the chars/4 estimate.
+    expect(usageEvents[0]).toMatchObject({ estimated: true });
+    expect(usageEvents[1]).toMatchObject({ estimated: true });
+    // Order: state(active) -> context-usage (pre-reset, distillation call's own
+    // usage) -> context-compacted -> context-usage (post-reset estimate) -> state(idle).
+    // No assistant-delta -- the distillation call suppresses streaming deltas
+    // (see the regression test below); the marker carries the full text.
+    const types = events.map((e) => e.type);
+    expect(types).toEqual(['state', 'context-usage', 'context-compacted', 'context-usage', 'state']);
+  });
+
+  it('the pre-reset context-usage carries the distillation call\'s own real usage when the provider sends one', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        kind: 'events',
+        events: [
+          { type: 'text-delta', text: 'SUMMARY' },
+          {
+            type: 'done',
+            finishReason: 'stop',
+            usage: { promptTokens: 12345, completionTokens: 10, totalTokens: 12355 },
+          },
+        ],
+      },
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    const usageEvents = events.filter((e) => e.type === 'context-usage');
+    expect(usageEvents).toHaveLength(2);
+    // First (pre-reset) event: the distillation call's own real usage.
+    expect(usageEvents[0]).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 12345,
+      estimated: false,
+    });
+    // Second (post-reset) event: always a fresh chars/4 estimate over the
+    // brand-new seed conversation, regardless of the first event's source.
+    expect(usageEvents[1]).toMatchObject({ estimated: true });
+  });
+
+  it('regression: suppresses assistant-delta/assistant-thinking-delta during the distillation call, but a subsequent normal runTurn still streams them', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        kind: 'events',
+        events: [
+          { type: 'reasoning-delta', text: 'thinking about it' },
+          { type: 'text-delta', text: 'DISTIL' },
+          { type: 'text-delta', text: 'LATION' },
+          { type: 'done', finishReason: 'stop' },
+        ],
+      },
+      textResponse('reply to next'),
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    // Only state (active/idle), context-usage (x2), and context-compacted should
+    // be present for the compaction call -- no assistant-delta /
+    // assistant-thinking-delta, and no dangling assistant-message either
+    // (compact() never emits one).
+    expect(events.map((e) => e.type)).toEqual([
+      'state',
+      'context-usage',
+      'context-compacted',
+      'context-usage',
+      'state',
+    ]);
+    expect(events.find((e) => e.type === 'assistant-delta')).toBeUndefined();
+    expect(events.find((e) => e.type === 'assistant-thinking-delta')).toBeUndefined();
+    expect(events.find((e) => e.type === 'assistant-message')).toBeUndefined();
+    expect(events.find((e) => e.type === 'context-compacted')).toEqual({
+      v: 1,
+      type: 'context-compacted',
+      source: 'manual',
+      summary: 'DISTILLATION',
+    });
+
+    // Existing runTurn behavior is unchanged: a normal turn still streams
+    // assistant-delta as before.
+    events.length = 0;
+    await loop.runTurn('t2', 'next');
+    const deltaEvents = events.filter((e) => e.type === 'assistant-delta');
+    expect(deltaEvents).toHaveLength(1);
+    expect(deltaEvents[0]).toMatchObject({ turnId: 't2', text: 'reply to next' });
+    expect(events.find((e) => e.type === 'assistant-message')).toMatchObject({
+      turnId: 't2',
+      text: 'reply to next',
+    });
+  });
+
+  it('falls back to the ORIGINAL system prompt when reassembleSystemPrompt throws, but still completes the reset', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY'), textResponse('reply')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      reassembleSystemPrompt: async () => {
+        throw new Error('fs error');
+      },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+    expect(events.find((e) => e.type === 'context-compacted')).toBeDefined();
+
+    await loop.runTurn('t2', 'next');
+    const messagesForT2 = adapter.capturedMessages.at(-1)!;
+    expect(messagesForT2[0]).toEqual({ role: 'system', content: 'ORIGINAL_SYSTEM_PROMPT' });
+  });
+
+  it('rejects the distillation (turn-error, no context-compacted, conversation untouched) when the provider returns any tool calls, even alongside text', async () => {
+    // Seed a successful turn first -- see the failure-invariant polarity test
+    // above for why an empty-vs-empty baseline can't distinguish "preserved"
+    // from "wrongly reset".
+    const adapter = new ScriptedAdapter([
+      textResponse('seed reply'),
+      {
+        kind: 'events',
+        events: [
+          { type: 'text-delta', text: 'SUMMARY' },
+          { type: 'tool-call', callId: 'c1', name: 'ignored_tool', argsJson: '{}' },
+          { type: 'done', finishReason: 'tool_calls' },
+        ],
+      },
+      textResponse('reply to t2'),
+    ]);
+    let toolCalled = false;
+    const { deps, events } = makeDeps({
+      adapter,
+      executor: {
+        async listTools() {
+          return [];
+        },
+        async callTool(): Promise<ToolCallOutcome> {
+          toolCalled = true;
+          return { ok: true, result: 'ok' };
+        },
+      },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t0', 'seed message');
+
+    await loop.compact('manual');
+
+    expect(toolCalled).toBe(false);
+    expect(events.find((e) => e.type === 'tool-call')).toBeUndefined();
+    expect(events.find((e) => e.type === 'tool-result')).toBeUndefined();
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError).toMatchObject({
+      message: expect.stringContaining('no usable summary'),
+    });
+
+    // Conversation is provably untouched: a subsequent turn matches a
+    // baseline loop seeded with the IDENTICAL prior turn (preserve-on-failure).
+    await loop.runTurn('t2', 'next message');
+    const messagesForT2 = adapter.capturedMessages.at(-1)!;
+
+    const baselineAdapter = new ScriptedAdapter([textResponse('seed reply'), textResponse('reply to t2')]);
+    const { deps: baselineDeps } = makeDeps({ adapter: baselineAdapter });
+    const baselineLoop = new AgentLoop(baselineDeps);
+    await baselineLoop.runTurn('t0', 'seed message');
+    await baselineLoop.runTurn('t2', 'next message');
+    const baselineMessages = baselineAdapter.capturedMessages.at(-1)!;
+
+    expect(messagesForT2).toEqual(baselineMessages);
+    expect(messagesForT2.some((m) => m.role === 'assistant' && m.content === 'seed reply')).toBe(true);
+  });
+
+  it('rejects the distillation (turn-error, no context-compacted) when the provider returns empty/whitespace-only text', async () => {
+    const adapter = new ScriptedAdapter([textResponse('   \n\t  ')]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError).toMatchObject({
+      message: expect.stringContaining('no usable summary'),
+    });
+    // No context-usage either -- the response was rejected before step 6's
+    // pre-reset usage emission and step 12's post-reset estimate.
+    expect(events.find((e) => e.type === 'context-usage')).toBeUndefined();
+  });
+
+  it('emits turn-error when compaction is canceled mid-flight, and the conversation stays untouched', async () => {
+    let signalProviderStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      signalProviderStarted = resolve;
+    });
+    const abortingAdapter: ProviderAdapter = {
+      async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+        signalProviderStarted();
+        // Never resolves; the loop's own AbortController drives cancellation.
+        await new Promise<never>((_resolve, reject) => {
+          req.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        });
+      },
+    };
+    // Seed with a responsive adapter first so the loop carries prior turn
+    // history into the canceled compaction -- see the failure-invariant
+    // polarity test above for why an empty-vs-empty baseline can't
+    // distinguish "preserved" from "wrongly reset".
+    const seedAdapter = new ScriptedAdapter([textResponse('seed reply')]);
+    const { deps, events } = makeDeps({ adapter: seedAdapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t0', 'seed message');
+
+    // AgentLoop captured `deps` by reference at construction; swap the
+    // adapter field on that same object so the compaction call reaches the
+    // never-resolving aborting adapter instead of the seed one.
+    deps.adapter = abortingAdapter;
+
+    const compactPromise = loop.compact('manual');
+    await providerStarted;
+    loop.cancel();
+    await compactPromise;
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError).toMatchObject({ message: expect.stringContaining('Context compaction failed') });
+
+    // Drive a subsequent turn on the SAME (already-canceled) loop instance
+    // and compare against a baseline loop seeded with the IDENTICAL prior
+    // turn (but no compaction attempt) -- the conversations must match.
+    const followUpAdapter = new ScriptedAdapter([textResponse('reply')]);
+    deps.adapter = followUpAdapter;
+    await loop.runTurn('t2', 'next');
+    const messagesForT2 = followUpAdapter.capturedMessages.at(-1)!;
+
+    const baselineAdapter = new ScriptedAdapter([textResponse('seed reply'), textResponse('reply')]);
+    const { deps: baselineDeps } = makeDeps({ adapter: baselineAdapter });
+    const baselineLoop = new AgentLoop(baselineDeps);
+    await baselineLoop.runTurn('t0', 'seed message');
+    await baselineLoop.runTurn('t2', 'next');
+    const baselineMessages = baselineAdapter.capturedMessages.at(-1)!;
+
+    expect(messagesForT2).toEqual(baselineMessages);
+    expect(messagesForT2.some((m) => m.role === 'assistant' && m.content === 'seed reply')).toBe(true);
+  });
+});
+
+/**
+ * A scripted response whose `done` event carries a real provider usage
+ * payload, so the auto threshold reads an exact `promptTokens` rather than
+ * the chars/4 estimate. Every threshold test below pins the numerator this
+ * way; otherwise the ratio would depend on the incidental byte length of the
+ * test's own strings.
+ */
+const textResponseWithUsage = (text: string, promptTokens: number): ScriptedResponse => ({
+  kind: 'events',
+  events: [
+    { type: 'text-delta', text },
+    {
+      type: 'done',
+      finishReason: 'stop',
+      usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 },
+    },
+  ],
+});
+
+describe('Compaction — the automatic threshold at its boundary values', () => {
+  // 1000-token window, default 0.85 threshold => fires at >= 850.
+  const WINDOW = 1000;
+
+  it('does NOT fire just below the threshold (849/1000 with the 0.85 default)', async () => {
+    const adapter = new ScriptedAdapter([textResponseWithUsage('reply', 849)]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+
+  it('fires EXACTLY AT the threshold (850/1000) — the comparison is >=, not >', async () => {
+    const adapter = new ScriptedAdapter([
+      textResponseWithUsage('reply', 850),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      source: 'auto',
+      summary: 'SUMMARY',
+    });
+  });
+
+  it('fires above the threshold (900/1000)', async () => {
+    const adapter = new ScriptedAdapter([
+      textResponseWithUsage('reply', 900),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({ source: 'auto' });
+  });
+
+  it('honours a definition-supplied threshold in place of the default', async () => {
+    // 600/1000 = 0.6: below the 0.85 default, at the configured 0.6.
+    const adapter = new ScriptedAdapter([
+      textResponseWithUsage('reply', 600),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW, threshold: 0.6 },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({ source: 'auto' });
+  });
+
+  it('CANNOT fire when contextWindowTokens is unset, however large the usage', async () => {
+    // A structural gate, not a numeric one: with no denominator there is no
+    // ratio at all, and we deliberately do not guess the model's window.
+    const adapter = new ScriptedAdapter([textResponseWithUsage('reply', 9_999_999)]);
+    const { deps, events } = makeDeps({ adapter, compaction: { auto: true } });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+
+  it('does not fire when the worker toggle is OFF, even above the threshold', async () => {
+    const adapter = new ScriptedAdapter([textResponseWithUsage('reply', 999)]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: false, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+
+  it('setAutoCompaction(true) takes effect at the very next turn boundary', async () => {
+    const adapter = new ScriptedAdapter([
+      textResponseWithUsage('reply one', 999),
+      textResponseWithUsage('reply two', 999),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: false, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+
+    loop.setAutoCompaction(true);
+    await loop.runTurn('t2', 'hello again');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({ source: 'auto' });
+  });
+
+  it('setAutoCompaction(false) suppresses a firing that would otherwise happen', async () => {
+    const adapter = new ScriptedAdapter([textResponseWithUsage('reply', 999)]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    loop.setAutoCompaction(false);
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+
+  it('does not fire when the turn produced no usage reading at all (the vacuous case)', async () => {
+    // A turn whose very first provider attempt fails emits no context-usage,
+    // so there is no ratio to compare -- not a small ratio, an absent one.
+    const adapter = new ScriptedAdapter([
+      { kind: 'throw', error: new Error('boom') },
+      { kind: 'throw', error: new Error('boom') },
+      { kind: 'throw', error: new Error('boom') },
+    ]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: 1 },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.find((e) => e.type === 'context-usage')).toBeUndefined();
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+});
+
+/** Emits a single tool call by name, then finishes the iteration. */
+const toolCallResponse = (name: string, callId: string): ScriptedResponse => ({
+  kind: 'events',
+  events: [
+    { type: 'tool-call', callId, name, argsJson: '{}' },
+    { type: 'done', finishReason: 'tool_calls' },
+  ],
+});
+
+describe('Compaction — the Compact tool and its turn-boundary reservation', () => {
+  it('publishes Compact to the provider regardless of enabledTools (the tool list the loop was constructed with is empty)', async () => {
+    const adapter = new ScriptedAdapter([textResponse('hi')]);
+    const { deps } = makeDeps({ adapter, tools: [] });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    // `tools: []` is the strongest form of "every builtin tool off"; Compact
+    // is still there, because it is not reachable from that configuration at
+    // all -- it is prepended by the loop itself.
+    const names = adapter.capturedToolNames.at(-1)!;
+    expect(names).toEqual(['Compact']);
+  });
+
+  it('reserves rather than compacting mid-turn: the compaction runs AFTER the turn concludes', async () => {
+    const adapter = new ScriptedAdapter([
+      toolCallResponse('Compact', 'c1'),
+      textResponse('all done'),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'please compact');
+
+    const types = events.map((e) => e.type);
+    // The compaction marker lands after the turn's own idle, never between
+    // the tool call and the assistant message that follows it.
+    expect(types.indexOf('context-compacted')).toBeGreaterThan(types.indexOf('assistant-message'));
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      source: 'manual',
+      summary: 'SUMMARY',
+    });
+  });
+
+  it('surfaces the call as an ordinary tool-call/tool-result pair, on the same path every other tool uses', async () => {
+    const adapter = new ScriptedAdapter([
+      toolCallResponse('Compact', 'c1'),
+      textResponse('all done'),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'please compact');
+
+    expect(events.find((e) => e.type === 'tool-call')).toMatchObject({
+      turnId: 't1',
+      callId: 'c1',
+      name: 'Compact',
+    });
+    expect(events.find((e) => e.type === 'tool-result')).toMatchObject({
+      turnId: 't1',
+      callId: 'c1',
+      ok: true,
+      result: 'Compaction scheduled; runs when this turn completes.',
+    });
+  });
+
+  it('never reaches the tool executor for Compact', async () => {
+    let executorCalledWith: string | null = null;
+    const adapter = new ScriptedAdapter([
+      toolCallResponse('Compact', 'c1'),
+      textResponse('all done'),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps } = makeDeps({
+      adapter,
+      executor: {
+        async listTools() {
+          return [];
+        },
+        async callTool(name: string): Promise<ToolCallOutcome> {
+          executorCalledWith = name;
+          return { ok: true, result: 'ok' };
+        },
+      },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'please compact');
+
+    expect(executorCalledWith).toBeNull();
+  });
+
+  it('is idempotent within one turn: two Compact calls produce ONE compaction', async () => {
+    const adapter = new ScriptedAdapter([
+      toolCallResponse('Compact', 'c1'),
+      toolCallResponse('Compact', 'c2'),
+      textResponse('all done'),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'compact twice');
+
+    expect(events.filter((e) => e.type === 'context-compacted')).toHaveLength(1);
+  });
+
+  it('runs even in a small context — a manual request has no threshold gate', async () => {
+    // No contextWindowTokens at all, which makes auto compaction structurally
+    // impossible; the manual reservation is unaffected by that.
+    const adapter = new ScriptedAdapter([
+      toolCallResponse('Compact', 'c1'),
+      textResponse('all done'),
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({ adapter, compaction: { auto: false } });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'compact please');
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({ source: 'manual' });
+  });
+
+  it('still runs at the boundary when the turn ended in an error', async () => {
+    // Compact is reserved, then the NEXT provider attempt fails the turn. A
+    // failed turn is exactly when a user may want the context reclaimed.
+    const adapter = new ScriptedAdapter([
+      toolCallResponse('Compact', 'c1'),
+      { kind: 'throw', error: new Error('boom') },
+      { kind: 'throw', error: new Error('boom') },
+      { kind: 'throw', error: new Error('boom') },
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'compact then fail');
+
+    expect(events.find((e) => e.type === 'turn-error')).toBeDefined();
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({ source: 'manual' });
+  });
+
+  it('DISCARDS the reservation when the turn is canceled', async () => {
+    let signalProviderStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => {
+      signalProviderStarted = resolve;
+    });
+    let call = 0;
+    const adapter: ProviderAdapter & { capturedMessages: ChatMessage[][] } = {
+      capturedMessages: [],
+      async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+        adapter.capturedMessages.push([...req.messages]);
+        if (call++ === 0) {
+          yield { type: 'tool-call', callId: 'c1', name: 'Compact', argsJson: '{}' };
+          yield { type: 'done', finishReason: 'tool_calls' };
+          return;
+        }
+        signalProviderStarted();
+        await new Promise<never>((_resolve, reject) => {
+          req.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+        });
+      },
+    };
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    const turn = loop.runTurn('t1', 'compact then cancel');
+    await providerStarted;
+    loop.cancel();
+    await turn;
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+
+    // And the reservation is genuinely gone, not merely deferred: a later
+    // clean turn does not suddenly compact.
+    call = 1;
+    const followUp = new ScriptedAdapter([textResponse('fine')]);
+    deps.adapter = followUp;
+    await loop.runTurn('t2', 'anything');
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+});

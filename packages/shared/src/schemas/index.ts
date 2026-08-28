@@ -30,6 +30,7 @@ export {
 export {
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
+  UpdateEmbeddedAgentWorkerRequestSchema,
   // Internal types for server-side worker creation
   type CreateAgentWorkerParams,
   type CreateTerminalWorkerParams,
@@ -39,6 +40,7 @@ export {
   // API types
   type CreateWorkerRequest,
   type RestartWorkerRequest,
+  type UpdateEmbeddedAgentWorkerRequest,
 } from './worker.js';
 
 // Embedded agent schemas

@@ -13,7 +13,7 @@ import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
 import type { Engine } from './engine-types.js';
-import { loadHandoffPrompt } from './handoff-prompt.js';
+import { loadCompactionPrompt } from './compaction-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
@@ -33,7 +33,14 @@ import { CompositeToolExecutor } from './tools/composite-executor.js';
 const EXIT_OK = 0;
 const EXIT_FATAL = 1;
 const EXIT_PROTOCOL = 2;
-const KNOWN_COMMAND_TYPES = new Set(['init', 'user-message', 'cancel', 'handoff', 'shutdown']);
+const KNOWN_COMMAND_TYPES = new Set([
+  'init',
+  'user-message',
+  'cancel',
+  'handoff',
+  'set-auto-compaction',
+  'shutdown',
+]);
 // 500ms buffer over Bash's process-group KILL_GRACE_MS so the SIGTERM ->
 // SIGKILL escalation on a stuck Bash child has time to complete before the
 // shutdown drain gives up.
@@ -63,7 +70,7 @@ export interface LoopFactories {
     cwd: string,
     instructionsList: string[] | undefined,
   ): Promise<InstructionSegment[]>;
-  loadHandoffPrompt: typeof loadHandoffPrompt;
+  loadCompactionPrompt: typeof loadCompactionPrompt;
   /** DI seam for tests: the claude-sdk engine's construction (which
    * synchronously calls the real SDK's `query()`), so a test can inject a
    * factory that throws without needing to reach through to `SdkEngine`'s
@@ -150,13 +157,21 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
         break;
       }
       case 'handoff': {
+        // RETIRING (#1401): only the claude-sdk engine still implements
+        // handoff. The openai-api engine's context management is Compaction
+        // now, which needs no command -- auto fires inside the loop and
+        // manual arrives as a `Compact` tool call.
+        const engineHandoff = loop.handoff?.bind(loop);
+        if (engineHandoff === undefined) {
+          io.logError('Ignoring handoff: this engine does not support it');
+          break;
+        }
         if (turnActive) {
           io.logError('Ignoring handoff received while a turn is active');
           break;
         }
         turnActive = true;
-        currentTurn = loop
-          .handoff()
+        currentTurn = engineHandoff()
           .catch((err) => {
             io.logError(`Handoff failed: ${err instanceof Error ? err.message : String(err)}`);
           })
@@ -165,6 +180,12 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
           });
         break;
       }
+      case 'set-auto-compaction':
+        // Deliberately NOT gated on `turnActive`: the flag is only read at
+        // the turn boundary, so recording it mid-turn is safe and means the
+        // very next boundary already honours it.
+        loop.setAutoCompaction(command.enabled);
+        break;
       case 'cancel':
         loop.cancel();
         break;
@@ -245,6 +266,11 @@ async function initializeLoop(
       systemPrompt,
       maxToolIterations: init.maxToolIterations,
       restoredConversation,
+      compaction: {
+        auto: init.compaction.auto,
+        contextWindowTokens: init.compaction.contextWindowTokens,
+        threshold: init.compaction.threshold,
+      },
       reassembleSystemPrompt: async () => {
         const reloadedInstructions = await factories.loadInstructions({
           cwd: init.context.cwd,
@@ -256,8 +282,8 @@ async function initializeLoop(
           definitionSystemPrompt: init.systemPrompt,
         });
       },
-      loadHandoffPrompt: async () => {
-        const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
+      loadCompactionPrompt: async () => {
+        const { content } = await factories.loadCompactionPrompt({ cwd: init.context.cwd });
         return content;
       },
     });
@@ -304,7 +330,7 @@ async function initializeLoop(
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
       loadHandoffPrompt: async () => {
-        const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
+        const { content } = await factories.loadCompactionPrompt({ cwd: init.context.cwd });
         return content;
       },
     });
@@ -357,7 +383,7 @@ if (import.meta.main) {
     createAdapter: (opts) => new OpenAIChatAdapter(opts),
     loadInstructions,
     loadOptInInstructions,
-    loadHandoffPrompt,
+    loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
   };
   runLoop(io, factories)

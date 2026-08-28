@@ -90,7 +90,8 @@ function makeDeps(
     maxToolIterations: 25,
     sleep: async () => {},
     reassembleSystemPrompt: async () => SYSTEM_PROMPT,
-    loadHandoffPrompt: async () => 'DISTILL_PROMPT',
+    loadCompactionPrompt: async () => 'DISTILL_PROMPT',
+    compaction: { auto: false },
     restoredConversation,
   };
   return { deps, events };

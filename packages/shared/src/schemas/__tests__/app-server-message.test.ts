@@ -667,7 +667,7 @@ describe('AppServerMessageSchema', () => {
             { id: 'w1', type: 'agent', name: 'Agent', agentId: 'claude-code', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w2', type: 'terminal', name: 'Terminal', createdAt: '2026-01-01T00:00:00Z', activated: true },
             { id: 'w3', type: 'git-diff', name: 'Diff', createdAt: '2026-01-01T00:00:00Z', baseCommit: 'abc123' },
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: false },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: false, autoCompaction: true },
           ],
         },
       });
@@ -679,7 +679,7 @@ describe('AppServerMessageSchema', () => {
         session: {
           ...worktreeSession,
           workers: [
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true },
           ],
         },
       });
@@ -689,6 +689,11 @@ describe('AppServerMessageSchema', () => {
         if (worker.type === 'embedded-agent') {
           expect(worker.embeddedAgentId).toBe('def-1');
           expect(worker.activated).toBe(true);
+          // Compaction's per-worker toggle must survive the strictObject
+          // parse -- valibot strips unknown fields silently, so a schema that
+          // forgot this field would reach the client as `undefined` with no
+          // error anywhere (Gap-Scan Q10).
+          expect(worker.autoCompaction).toBe(true);
         }
       }
     });
@@ -699,7 +704,7 @@ describe('AppServerMessageSchema', () => {
         session: {
           ...worktreeSession,
           workers: [
-            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, leaked: 'x' },
+            { id: 'w4', type: 'embedded-agent', name: 'Embedded', createdAt: '2026-01-01T00:00:00Z', embeddedAgentId: 'def-1', activated: true, autoCompaction: true, leaked: 'x' },
           ],
         },
       });

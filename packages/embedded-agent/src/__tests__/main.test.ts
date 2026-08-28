@@ -40,6 +40,7 @@ const initCommand = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
     v: 1,
     type: 'init',
+    compaction: { auto: false },
     engine: 'openai-api',
     mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
     provider: { baseUrl: 'http://provider/v1', model: 'm' },
@@ -76,6 +77,7 @@ class CapturingAdapter implements ProviderAdapter {
 class NoopEngine implements Engine {
   async runTurn(): Promise<void> {}
   cancel(): void {}
+  setAutoCompaction(): void {}
   async handoff(): Promise<void> {}
 }
 
@@ -117,7 +119,7 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     createAdapter: () => new StubAdapter(),
     loadInstructions: async () => ({ segments: [] }),
     loadOptInInstructions: async () => [],
-    loadHandoffPrompt: async () => ({ content: 'DEFAULT_HANDOFF_PROMPT_STUB', origin: 'bundled-default' }),
+    loadCompactionPrompt: async () => ({ content: 'DEFAULT_COMPACTION_PROMPT_STUB', origin: 'bundled-default' }),
     createSdkEngine: () => new NoopEngine(),
     ...overrides,
   };
@@ -238,7 +240,9 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
     expect(await runLoop(io, factories)).toBe(0);
     expect(adapter.capturedToolsCalls).toHaveLength(1);
     const toolNames = adapter.capturedToolsCalls[0].map((t) => t.name).sort();
-    expect(toolNames).toEqual(['Glob', 'Grep', 'Read']);
+    // `Compact` sits alongside the builtins but is not one of them: the loop
+    // prepends it itself, outside the registry `enabledTools` configures.
+    expect(toolNames).toEqual(['Compact', 'Glob', 'Grep', 'Read']);
   });
 
   it('passes ONLY the MCP tools (zero builtins) when enabledTools is an explicit empty array', async () => {
@@ -260,9 +264,16 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
 
     expect(await runLoop(io, factories)).toBe(0);
     expect(adapter.capturedToolsCalls).toHaveLength(1);
-    expect(adapter.capturedToolsCalls[0]).toEqual([
-      { name: 'close_session', description: 'closes', parameters: {} },
-    ]);
+    // `enabledTools: []` is the strongest form of "every builtin off" -- and
+    // `Compact` is still published, because no representable value of
+    // `enabledTools` can reach it (see compact-tool.ts's self-management
+    // tool class). Only the MCP tool and Compact are present; zero builtins.
+    expect(adapter.capturedToolsCalls[0].map((t) => t.name)).toEqual(['Compact', 'close_session']);
+    expect(adapter.capturedToolsCalls[0]).toContainEqual({
+      name: 'close_session',
+      description: 'closes',
+      parameters: {},
+    });
   });
 });
 
@@ -404,6 +415,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     const command = {
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5', apiKey: 'sk-leaked' },
@@ -418,6 +430,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     const command = {
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -440,6 +453,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     const claudeSdkInitCommand = JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -468,6 +482,7 @@ describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () 
     JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -496,6 +511,7 @@ describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () 
       cancel(): void {
         resolveTurn?.();
       }
+      setAutoCompaction(): void {}
       async handoff(): Promise<void> {
         handoffCalled = true;
       }
@@ -520,6 +536,7 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -581,13 +598,13 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
   });
 
-  it('wires loadHandoffPrompt to factories.loadHandoffPrompt (S3): the SAME single-writer prompt source the openai-api engine uses', async () => {
+  it('wires loadHandoffPrompt to factories.loadCompactionPrompt (S3): the SAME single-writer prompt source the openai-api engine uses', async () => {
     const { io } = makeIo([claudeSdkInitCommand()]);
     let capturedDeps: SdkEngineDeps | undefined;
     const factories = makeFactories({
-      loadHandoffPrompt: async ({ cwd }) => {
+      loadCompactionPrompt: async ({ cwd }: { cwd: string }) => {
         expect(cwd).toBe('/tmp');
-        return { content: 'FACTORY_HANDOFF_PROMPT', origin: 'bundled-default' };
+        return { content: 'FACTORY_HANDOFF_PROMPT', origin: 'bundled-default' as const };
       },
       createSdkEngine: (deps) => {
         capturedDeps = deps;
@@ -615,6 +632,7 @@ describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin defi
     JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },

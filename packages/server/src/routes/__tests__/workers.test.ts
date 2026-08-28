@@ -1099,6 +1099,141 @@ describe('Workers API', () => {
   });
 
   // ===========================================================================
+  // PATCH /api/sessions/:sessionId/workers/:workerId  (Compaction toggle)
+  // ===========================================================================
+
+  describe('PATCH /api/sessions/:sessionId/workers/:workerId', () => {
+    async function createEmbeddedWorker() {
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path', agentId: 'claude-code' },
+        { createdBy: 'test-user-id' },
+      );
+      const worker = await sessionManager.createWorker(session.id, {
+        type: 'embedded-agent',
+        embeddedAgentId: 'agent-def-1',
+      });
+      return { session, worker: worker! };
+    }
+
+    function patch(sessionId: string, workerId: string, body: unknown) {
+      return app.request(`/api/sessions/${sessionId}/workers/${workerId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('defaults a newly-created embedded-agent worker to autoCompaction ON', async () => {
+      // Not incidental: ON-by-default is the owner decision the whole
+      // compaction swap rests on, and it has to hold at worker creation as
+      // well as at migration.
+      const { worker } = await createEmbeddedWorker();
+      expect(worker.type).toBe('embedded-agent');
+      if (worker.type === 'embedded-agent') {
+        expect(worker.autoCompaction).toBe(true);
+      }
+    });
+
+    it('turns autoCompaction OFF and returns the updated worker', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      const res = await patch(session.id, worker.id, { autoCompaction: false });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: { type: string; autoCompaction: boolean } };
+      expect(body.worker.type).toBe('embedded-agent');
+      expect(body.worker.autoCompaction).toBe(false);
+    });
+
+    it('persists the change so a subsequent read sees it (the server is the source of truth)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      await patch(session.id, worker.id, { autoCompaction: false });
+
+      const readBack = sessionManager
+        .getSession(session.id)!
+        .workers.find((w) => w.id === worker.id)!;
+      expect(readBack.type).toBe('embedded-agent');
+      if (readBack.type === 'embedded-agent') {
+        expect(readBack.autoCompaction).toBe(false);
+      }
+    });
+
+    it('turns it back ON (the toggle is not one-way)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+
+      await patch(session.id, worker.id, { autoCompaction: false });
+      const res = await patch(session.id, worker.id, { autoCompaction: true });
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { worker: { autoCompaction: boolean } };
+      expect(body.worker.autoCompaction).toBe(true);
+    });
+
+    it('succeeds on a worker whose subprocess is not running', async () => {
+      // The ordinary case, not an edge case: a worker is deactivated before
+      // its first activation and after every server restart, and the toggle
+      // must be settable in exactly that state -- which is why this is REST
+      // and not a worker-socket command.
+      const { session, worker } = await createEmbeddedWorker();
+      expect(fakeEmbeddedSpawn.captured.length).toBe(0);
+
+      const res = await patch(session.id, worker.id, { autoCompaction: false });
+
+      expect(res.status).toBe(200);
+      expect(fakeEmbeddedSpawn.captured.length).toBe(0);
+    });
+
+    it('returns 404 for a non-existent session', async () => {
+      const res = await patch('non-existent-id', 'some-worker-id', { autoCompaction: false });
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toContain('Session');
+    });
+
+    it('returns 404 for a non-existent worker in an existing session', async () => {
+      const { session } = await createEmbeddedWorker();
+
+      const res = await patch(session.id, 'non-existent-worker', { autoCompaction: false });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 404 for a worker of the wrong type', async () => {
+      // A terminal worker has no compaction to toggle. 404 rather than 400:
+      // from the caller's side there is nothing at this address to patch.
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const terminal = await sessionManager.createWorker(session.id, { type: 'terminal' });
+
+      const res = await patch(session.id, terminal!.id, { autoCompaction: false });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('rejects a body without autoCompaction', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, {});
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a non-boolean autoCompaction', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, { autoCompaction: 'yes' });
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects an unknown field (strictObject)', async () => {
+      const { session, worker } = await createEmbeddedWorker();
+      const res = await patch(session.id, worker.id, { autoCompaction: true, leaked: 'x' });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // ===========================================================================
   // POST /api/sessions/:sessionId/workers/:workerId/restart
   // ===========================================================================
 

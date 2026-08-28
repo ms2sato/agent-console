@@ -1658,6 +1658,87 @@ describe('EmbeddedAgentWorkerService.sendSystemNotification (Issue #1351)', () =
   });
 });
 
+describe('EmbeddedAgentWorkerService — the init command\'s compaction config', () => {
+  it('carries the WORKER\'s toggle plus the definition\'s window and threshold', async () => {
+    const h = setup({
+      definition: buildDefinition({
+        contextWindowTokens: 128000,
+        compaction: { threshold: 0.7 },
+      }),
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.compaction).toEqual({
+      auto: true,
+      contextWindowTokens: 128000,
+      threshold: 0.7,
+    });
+  });
+
+  it('omits contextWindowTokens and threshold when the definition configures neither', async () => {
+    // Absent, not null or 0: the loop reads an absent window as "auto
+    // compaction can never fire", which is a different state from any number
+    // we could have substituted.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.compaction).toEqual({ auto: true });
+  });
+
+  it('reflects a worker whose toggle is OFF', async () => {
+    const h = setup();
+    h.worker.autoCompaction = false;
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.compaction.auto).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService.forwardAutoCompaction', () => {
+  it('forwards a set-auto-compaction command to a running subprocess', async () => {
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    const before = h.fake.stdinWrites.length;
+
+    expect(h.service.forwardAutoCompaction(h.workerId, false)).toBe(true);
+
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-auto-compaction',
+      enabled: false,
+    });
+  });
+
+  it('forwards even while a turn is in flight', async () => {
+    // Deliberately not gated on turnActive: the loop reads the flag at the
+    // turn boundary, so recording it mid-turn is safe -- and gating would
+    // silently drop the change for the length of a long turn, which is
+    // exactly when a user reaches for the toggle.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'a long turn');
+    const before = h.fake.stdinWrites.length;
+
+    expect(h.service.forwardAutoCompaction(h.workerId, true)).toBe(true);
+
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-auto-compaction',
+      enabled: true,
+    });
+  });
+
+  it('returns false, without throwing, when there is no running subprocess', async () => {
+    // The ordinary pre-activation / post-restart case. The caller has already
+    // persisted the durable value and must not surface this as an error.
+    const h = setup();
+    expect(h.service.forwardAutoCompaction(h.workerId, false)).toBe(false);
+  });
+});
+
 describe('EmbeddedAgentWorkerService.triggerHandoff', () => {
   it('forwards a handoff command to stdin and admits synchronously', async () => {
     const h = setup();

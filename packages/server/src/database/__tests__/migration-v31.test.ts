@@ -87,7 +87,7 @@ describe('migration v31 (user_notification_cursor table)', () => {
   it('advances the schema version to 31', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(34);
+    expect(versionRes.rows[0]?.user_version).toBe(36);
   });
 
   it('creates the user_notification_cursor table with the expected column shapes', async () => {

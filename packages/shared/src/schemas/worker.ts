@@ -62,6 +62,17 @@ export const CreateWorkerRequestSchema = v.union([
 ]);
 
 /**
+ * Schema for updating an embedded-agent worker's own settings.
+ *
+ * Only `autoCompaction` today. A PATCH rather than a WebSocket command
+ * because this is durable per-worker configuration, not a per-turn signal --
+ * REST is where this codebase puts durable writes.
+ */
+export const UpdateEmbeddedAgentWorkerRequestSchema = v.strictObject({
+  autoCompaction: v.boolean(),
+});
+
+/**
  * Schema for restarting a worker
  */
 export const RestartWorkerRequestSchema = v.strictObject({
@@ -89,3 +100,5 @@ export type CreateWorkerParams =
 // API types (client can create terminal, embedded-agent, and agent workers)
 export type CreateWorkerRequest = v.InferOutput<typeof CreateWorkerRequestSchema>;
 export type RestartWorkerRequest = v.InferOutput<typeof RestartWorkerRequestSchema>;
+
+export type UpdateEmbeddedAgentWorkerRequest = v.InferOutput<typeof UpdateEmbeddedAgentWorkerRequestSchema>;
