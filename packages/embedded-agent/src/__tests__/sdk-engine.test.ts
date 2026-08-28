@@ -1061,6 +1061,15 @@ describe('SdkEngine — context-usage polling (S1)', () => {
     }
   });
 
+  // H2 re-verification (SDK 0.3.238 bump, #1338, 2026-08-28): the transport-
+  // settle race these tests encode (retry-with-settle on "ProcessTransport is
+  // not ready for writing") did not reproduce under a live, production-
+  // faithful probe on either 0.3.226 or 0.3.238 -- see
+  // docs/design/embedded-agent-sdk-engine.md §5's H2 correction trail for the
+  // full account. These mock-based tests still correctly pin the RETRY
+  // MECHANISM's contract (it must still retry-with-settle if the SDK ever
+  // throws this error again) -- that contract is unchanged and still needs
+  // guarding regardless of whether the race is currently reproducible.
   it('H2: retries with settle when getContextUsage throws the transport error, then succeeds within budget', async () => {
     const events: EmbeddedAgentEvent[] = [];
     const sleeps: number[] = [];
