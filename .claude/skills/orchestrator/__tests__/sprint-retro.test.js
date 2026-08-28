@@ -81,11 +81,27 @@ describe('getSteps', () => {
     const steps = getSteps();
     const gapScan = steps.find(s => s.key === 'memory_gap_scan');
     const text = gapScan.instructions.join('\n');
-    expect(text).toContain('gh pr list --search');
+    expect(text).toContain('gh pr list --state merged');
     expect(text).toContain('grep -l');
     expect(text).toContain('project_sprint_status.md');
     expect(text).toContain('project_pending_triage_list.md');
     expect(text).toContain('gap candidate');
+  });
+
+  it('memory_gap_scan step does not tell the reader to combine --search with --json', () => {
+    const steps = getSteps();
+    const gapScan = steps.find(s => s.key === 'memory_gap_scan');
+    const text = gapScan.instructions.join('\n');
+    // `gh pr list` silently drops the search query's date qualifiers when
+    // --json is also passed, so the sprint window is never applied and the
+    // scan reports nearly every merged PR as a gap candidate. Measured
+    // 2026-08-28: a 2026-08-25..2026-08-29 window returned PRs merged as far
+    // back as 2026-08-03. The instruction must steer to a client-side filter.
+    // Anchored on the command form, not the bare flag: the prose above it
+    // names `--search` precisely to warn the reader off it.
+    expect(text).not.toContain('gh pr list --search');
+    expect(text).toContain('--jq');
+    expect(text).toContain('.mergedAt');
   });
 
   it('each step has title and instructions', () => {
