@@ -1784,6 +1784,15 @@ describe('SdkEngine — compaction: the Compact tool', () => {
     const turn = engine.runTurn('u1', 'compact then cancel');
     engine.reserveCompaction();
     engine.cancel();
+    // This `await` is a guard, not a wait. Since `handleResult` now holds the
+    // turn open whenever a compaction is still booked, a cancel that failed to
+    // discard the reservation would leave this turn deferred forever and the
+    // test would fail on bun:test's timeout rather than on an assertion. That
+    // is observed behaviour, not a hope: implementing the deferral made two
+    // sibling tests in this file fail exactly that way until their fake
+    // streams supplied the injected command's own result. Do not "simplify"
+    // this await away -- it is the only thing asserting that cancel cannot
+    // strand a turn.
     await turn;
 
     expect(pushed).toEqual(['compact then cancel']);
