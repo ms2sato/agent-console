@@ -4,13 +4,22 @@ interface ContextUsageBarProps {
   /** `EmbeddedAgentDefinition.contextWindowTokens` -- undefined means no denominator is configured. */
   contextWindowTokens: number | undefined;
   contextUsage: EmbeddedAgentContextUsage | null;
-  softRatio: number;
-  hardRatio: number;
+  /** The ratio at which compaction fires -- the red band's lower edge. */
+  threshold: number;
 }
 
 /**
- * Always-visible 2px context-window usage bar (Context Handoff Phase A) --
- * see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI
+ * How far below the compaction threshold the amber band starts. The bar's
+ * job is to let the user see compaction coming; this margin is what makes
+ * "coming" visible without introducing a second configurable ratio (the
+ * retired soft/hard pair existed only to drive two threshold banners, which
+ * #1401 removed).
+ */
+const AMBER_BAND_MARGIN = 0.15;
+
+/**
+ * Always-visible 2px context-window usage bar (Compaction) -- see
+ * docs/design/embedded-agent-worker.md "Compaction" § UI
  * "Always-visible usage bar". In-flow (NOT absolutely positioned, unlike
  * `TerminalLoadingBar`), rendered as a `shrink-0` sibling so it never eats
  * into the transcript's `flex-1` scroll region.
@@ -21,13 +30,13 @@ interface ContextUsageBarProps {
  * aria-valuenow/min/max (nothing to measure against).
  *
  * `contextWindowTokens` defined -> determinate: solid fill sized to
- * `promptTokens / contextWindowTokens`, color banded by `softRatio`/`hardRatio`.
+ * `promptTokens / contextWindowTokens`, banded gray -> amber -> red against
+ * the compaction threshold.
  */
 export function ContextUsageBar({
   contextWindowTokens,
   contextUsage,
-  softRatio,
-  hardRatio,
+  threshold,
 }: ContextUsageBarProps) {
   if (contextWindowTokens === undefined) {
     const title =
@@ -51,7 +60,12 @@ export function ContextUsageBar({
 
   const ratio = contextUsage !== null ? contextUsage.promptTokens / contextWindowTokens : 0;
   const pct = Math.min(100, Math.max(0, ratio * 100));
-  const color = ratio >= hardRatio ? 'bg-red-600' : ratio >= softRatio ? 'bg-amber-500' : 'bg-gray-500';
+  const color =
+    ratio >= threshold
+      ? 'bg-red-600'
+      : ratio >= threshold - AMBER_BAND_MARGIN
+        ? 'bg-amber-500'
+        : 'bg-gray-500';
   const title =
     contextUsage !== null
       ? `${contextUsage.estimated ? '~' : ''}${Math.round(pct)}% (${contextUsage.promptTokens} / ${contextWindowTokens} tokens${

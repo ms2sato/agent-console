@@ -33,6 +33,9 @@ function toolCallsAnsweredImmediately(messages: ChatMessage[]): boolean {
   return true;
 }
 
+const SEED_PREFIX =
+  'Summary of the earlier part of this conversation, which has been compacted away: ';
+
 describe('reconstructConversation — 4c total classification', () => {
   it('reconstructs only the four Mapped event kinds, in order, and skips every Noise kind', () => {
     const events: EmbeddedAgentStreamEvent[] = [
@@ -68,7 +71,21 @@ describe('reconstructConversation — 4c total classification', () => {
   });
 });
 
-describe('reconstructConversation — context-handoff boundary', () => {
+/**
+ * REGRESSION LOCK (#1401): `context-handoff` is retired as an EMISSION but
+ * retained everywhere a persisted stream is read. `restore.ts` is the third
+ * consumer of the retired event -- easy to miss next to the client store's
+ * entry kind and the view's render case, and the most damaging to lose: a
+ * worker whose stream still carries a handoff marker would replay its entire
+ * pre-handoff history on every activation, resurrecting exactly the context
+ * the handoff discarded.
+ *
+ * The reseed text these tests assert is today's COMPACTION wording, not the
+ * retired handoff sentence. That is deliberate and is the single-writer
+ * decision recorded in docs/design/embedded-agent-worker.md "Compaction
+ * boundary": the seed is a prompt to the model, not a historical record.
+ */
+describe('reconstructConversation — legacy context-handoff boundary (retained, never emitted)', () => {
   it('starts reconstruction from the most recent context-handoff event, discarding everything before it', () => {
     const events: EmbeddedAgentStreamEvent[] = [
       { v: 1, type: 'user-message', id: 'm1', text: 'before1' },
@@ -84,7 +101,7 @@ describe('reconstructConversation — context-handoff boundary', () => {
       { role: 'system', content: SYSTEM_PROMPT },
       {
         role: 'user',
-        content: 'This conversation continues from a previous one. Prior context summary: summary text',
+        content: `${SEED_PREFIX}summary text`,
       },
       { role: 'user', content: 'after1' },
       { role: 'assistant', content: 'reply2' },
@@ -107,7 +124,7 @@ describe('reconstructConversation — context-handoff boundary', () => {
 
     expect(outcome.conversation[1]).toEqual({
       role: 'user',
-      content: 'This conversation continues from a previous one. Prior context summary: second summary',
+      content: `${SEED_PREFIX}second summary`,
     });
     const flattened = JSON.stringify(outcome.conversation);
     expect(flattened).not.toContain('first summary');
@@ -115,7 +132,95 @@ describe('reconstructConversation — context-handoff boundary', () => {
   });
 });
 
-describe('reconstructConversation — no context-handoff in stream', () => {
+describe('reconstructConversation — context-compacted boundary', () => {
+  it('starts reconstruction from the most recent context-compacted event, discarding everything before it', () => {
+    // Without this the auto-compaction feature would undo itself: every
+    // activation would replay the whole pre-compaction history back into the
+    // conversation the compaction had just shortened.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'before1' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'reply1' },
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'summary text' },
+      { v: 1, type: 'user-message', id: 'm2', text: 'after1' },
+      { v: 1, type: 'assistant-message', turnId: 't2', text: 'reply2' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation).toEqual([
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: `${SEED_PREFIX}summary text` },
+      { role: 'user', content: 'after1' },
+      { role: 'assistant', content: 'reply2' },
+    ]);
+
+    const flattened = JSON.stringify(outcome.conversation);
+    expect(flattened).not.toContain('before1');
+    expect(flattened).not.toContain('reply1');
+  });
+
+  it('takes the most recent boundary of EITHER kind when both appear in one stream', () => {
+    // A worker that lived across the swap: an old handoff, then a compaction.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'context-handoff', distillation: 'old handoff summary' },
+      { v: 1, type: 'user-message', id: 'm1', text: 'middle' },
+      { v: 1, type: 'context-compacted', source: 'manual', summary: 'newer compaction summary' },
+      { v: 1, type: 'user-message', id: 'm2', text: 'after' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation[1]).toEqual({
+      role: 'user',
+      content: `${SEED_PREFIX}newer compaction summary`,
+    });
+    const flattened = JSON.stringify(outcome.conversation);
+    expect(flattened).not.toContain('old handoff summary');
+    expect(flattened).not.toContain('middle');
+  });
+
+  it('takes a legacy context-handoff when it is the LATER of the two kinds', () => {
+    // The mirror case, so the "most recent of either" rule is pinned in both
+    // directions rather than incidentally passing because one kind always
+    // happens to come last.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'older compaction summary' },
+      { v: 1, type: 'user-message', id: 'm1', text: 'middle' },
+      { v: 1, type: 'context-handoff', distillation: 'newer handoff summary' },
+      { v: 1, type: 'user-message', id: 'm2', text: 'after' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation[1]).toEqual({
+      role: 'user',
+      content: `${SEED_PREFIX}newer handoff summary`,
+    });
+    expect(JSON.stringify(outcome.conversation)).not.toContain('older compaction summary');
+  });
+
+  it('seeds an empty summary when a context-compacted event carries none', () => {
+    // `summary` is optional on the wire because the claude-sdk engine may
+    // have nothing to put there. The boundary still cuts; the seed is honest
+    // about having nothing to carry forward rather than inventing something.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'before' },
+      { v: 1, type: 'context-compacted', source: 'auto' },
+      { v: 1, type: 'user-message', id: 'm2', text: 'after' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation).toEqual([
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: SEED_PREFIX },
+      { role: 'user', content: 'after' },
+    ]);
+    expect(JSON.stringify(outcome.conversation)).not.toContain('before');
+  });
+});
+
+describe('reconstructConversation — no boundary event of either kind in stream', () => {
   it('reconstructs [system, ...everything replayed] when no handoff marker exists', () => {
     const events: EmbeddedAgentStreamEvent[] = [
       { v: 1, type: 'user-message', id: 'm1', text: 'hi' },

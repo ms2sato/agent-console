@@ -248,88 +248,74 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().entries).toHaveLength(0);
   });
 
-  it('folds context-handoff into a context-handoff chat entry and clears handoffInFlight', async () => {
+  it('folds context-compacted into a context-compacted chat entry, carrying source and summary', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s3g', 'w3g');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
-    instance.triggerHandoff();
-    expect(instance.getSnapshot().handoffInFlight).toBe(true);
-
-    const data = ndjson({ v: 1, type: 'context-handoff', distillation: 'summary of the conversation so far' });
+    const data = ndjson({
+      v: 1,
+      type: 'context-compacted',
+      source: 'auto',
+      summary: 'summary of the conversation so far',
+    });
     ws!.simulateMessage(historyMessage(data, data.length));
     await flush();
 
     const snapshot = instance.getSnapshot();
-    expect(snapshot.handoffInFlight).toBe(false);
     expect(snapshot.entries).toHaveLength(1);
     expect(snapshot.entries[0]).toMatchObject({
-      kind: 'context-handoff',
-      distillation: 'summary of the conversation so far',
+      kind: 'context-compacted',
+      source: 'auto',
+      summary: 'summary of the conversation so far',
     });
   });
 
-  it('clears handoffInFlight on a turn-error observed while a handoff is in flight (failed handoff)', async () => {
-    const instance = getOrCreateEmbeddedAgentWorker('s3h', 'w3h');
+  it('folds a context-compacted with NO summary, leaving the field absent rather than empty', async () => {
+    // `summary` is optional on the wire because an engine may have none.
+    // Absent must stay absent: the view renders a plain boundary line for it,
+    // and an injected empty string would render an expandable disclosure onto
+    // nothing.
+    const instance = getOrCreateEmbeddedAgentWorker('s3g2', 'w3g2');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
-    instance.triggerHandoff();
-    expect(instance.getSnapshot().handoffInFlight).toBe(true);
-
-    const data = ndjson({ v: 1, type: 'turn-error', turnId: 'synthetic-1', message: 'Context handoff failed: boom' });
+    const data = ndjson({ v: 1, type: 'context-compacted', source: 'manual' });
     ws!.simulateMessage(historyMessage(data, data.length));
     await flush();
 
-    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+    const entry = instance.getSnapshot().entries[0];
+    expect(entry).toMatchObject({ kind: 'context-compacted', source: 'manual' });
+    expect('summary' in entry).toBe(false);
   });
 
-  it('does not touch handoffInFlight on a turn-error observed while no handoff is in flight', async () => {
-    const instance = getOrCreateEmbeddedAgentWorker('s3i', 'w3i');
+  it('REGRESSION (#1401): still folds a LEGACY context-handoff row from a historical stream', async () => {
+    // No engine emits `context-handoff` any more, but transcripts written
+    // before the compaction swap contain these rows and replay them on every
+    // history load. Dropping the fold (or the entry kind) would render an old
+    // transcript with a silent hole where a real boundary was. The fixture is
+    // deliberately a whole historical stream rather than the single event, so
+    // it also pins that the surrounding rows still land in the right order.
+    const instance = getOrCreateEmbeddedAgentWorker('s3g3', 'w3g3');
     const ws = MockWebSocket.getLastInstance();
     ws!.simulateOpen();
 
-    expect(instance.getSnapshot().handoffInFlight).toBe(false);
-
-    const data = ndjson({ v: 1, type: 'turn-error', turnId: 't1', message: 'boom' });
+    const data = ndjson(
+      { v: 1, type: 'user-message', id: 'm1', text: 'before the handoff' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'reply before' },
+      { v: 1, type: 'context-handoff', distillation: 'summary of the conversation so far' },
+      { v: 1, type: 'user-message', id: 'm2', text: 'after the handoff' },
+    );
     ws!.simulateMessage(historyMessage(data, data.length));
     await flush();
 
-    expect(instance.getSnapshot().handoffInFlight).toBe(false);
-  });
-
-  it('clears handoffInFlight on an immediate server admission error (WS `error` message, distinct from a turn-error NDJSON event)', async () => {
-    const instance = getOrCreateEmbeddedAgentWorker('s3j', 'w3j');
-    const ws = MockWebSocket.getLastInstance();
-    ws!.simulateOpen();
-
-    instance.triggerHandoff();
-    expect(instance.getSnapshot().handoffInFlight).toBe(true);
-
-    // The server rejects `embedded-handoff` synchronously (e.g. a turn was
-    // already in progress) via a WS `error` message, not a `turn-error`
-    // NDJSON row -- see websocket/routes.ts's `embedded-handoff` handler.
-    ws!.simulateMessage(
-      JSON.stringify({ type: 'error', message: 'turn in progress', code: 'TURN_IN_PROGRESS' }),
-    );
-    await flush();
-
-    expect(instance.getSnapshot().handoffInFlight).toBe(false);
-  });
-
-  it('does not touch handoffInFlight on a WS `error` message observed while no handoff is in flight', async () => {
-    const instance = getOrCreateEmbeddedAgentWorker('s3k', 'w3k');
-    const ws = MockWebSocket.getLastInstance();
-    ws!.simulateOpen();
-
-    expect(instance.getSnapshot().handoffInFlight).toBe(false);
-
-    ws!.simulateMessage(
-      JSON.stringify({ type: 'error', message: 'turn in progress', code: 'TURN_IN_PROGRESS' }),
-    );
-    await flush();
-
-    expect(instance.getSnapshot().handoffInFlight).toBe(false);
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(4);
+    expect(entries[2]).toMatchObject({
+      kind: 'context-handoff',
+      distillation: 'summary of the conversation so far',
+    });
+    expect(entries[3]).toMatchObject({ kind: 'user-message', text: 'after the handoff' });
   });
 
   it('pairs a tool-result with its tool-call by callId, including error styling data', async () => {
@@ -890,44 +876,6 @@ describe('embedded-agent-store', () => {
     expect(sent).toContainEqual({ type: 'embedded-cancel' });
   });
 
-  it('triggerHandoff serializes embedded-handoff and sets handoffInFlight', () => {
-    const instance = getOrCreateEmbeddedAgentWorker('s15b', 'w15b');
-    const ws = MockWebSocket.getLastInstance();
-    ws!.simulateOpen();
-
-    instance.triggerHandoff();
-
-    const sent = lastSentMessages(ws!);
-    expect(sent).toContainEqual({ type: 'embedded-handoff' });
-    expect(instance.getSnapshot().handoffInFlight).toBe(true);
-  });
-
-  it('triggerHandoff is admission-atomic: calling it twice in quick succession only sends embedded-handoff once', () => {
-    const instance = getOrCreateEmbeddedAgentWorker('s15c', 'w15c');
-    const ws = MockWebSocket.getLastInstance();
-    ws!.simulateOpen();
-
-    instance.triggerHandoff();
-    instance.triggerHandoff();
-
-    const handoffSends = lastSentMessages(ws!).filter(
-      (m) => (m as { type: string }).type === 'embedded-handoff',
-    );
-    expect(handoffSends).toHaveLength(1);
-    expect(instance.getSnapshot().handoffInFlight).toBe(true);
-  });
-
-  it('triggerHandoff does not latch handoffInFlight when the underlying socket write fails (not connected)', () => {
-    const instance = getOrCreateEmbeddedAgentWorker('s15d', 'w15d');
-    // Deliberately do NOT open the socket -- `send()` returns false while
-    // `readyState !== OPEN`, mirroring a synchronous send failure.
-    const ws = MockWebSocket.getLastInstance();
-
-    instance.triggerHandoff();
-
-    expect(ws!.send).not.toHaveBeenCalled();
-    expect(instance.getSnapshot().handoffInFlight).toBe(false);
-  });
 
   it('restart forces a fresh WebSocket connection', () => {
     getOrCreateEmbeddedAgentWorker('s16', 'w16');

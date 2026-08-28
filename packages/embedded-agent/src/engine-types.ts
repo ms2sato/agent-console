@@ -19,9 +19,9 @@
  *
  * `AgentLoop` satisfies this interface structurally with no changes to
  * agent-loop.ts (a hard constraint of the SDK Engine Phase 1 work): it
- * already exposes `runTurn`/`cancel`/`handoff` with matching signatures, and
- * `dispose` is optional, so an `AgentLoop` instance is already assignable to
- * `Engine`.
+ * already exposes `runTurn`/`cancel`/`setAutoCompaction` with matching
+ * signatures, and `dispose` is optional, so an `AgentLoop` instance is
+ * already assignable to `Engine`.
  */
 export interface Engine {
   /** Start (or continue) one user turn. Resolves once the turn concludes,
@@ -30,9 +30,11 @@ export interface Engine {
   runTurn(id: string, text: string): Promise<void>;
   /** Abort the in-flight turn, if any. No-op when no turn is active. */
   cancel(): void;
-  /** Context Handoff (Phase A for the native engine; a graceful
-   * not-yet-supported stub for the SDK engine in Phase 1). */
-  handoff(): Promise<void>;
+  /**
+   * Compaction: reflect a change to the worker's auto-compaction toggle
+   * without waiting for the next activation.
+   */
+  setAutoCompaction(enabled: boolean): void;
   /**
    * Release any underlying resources held outside process memory (e.g. the
    * SDK engine's `Query`/child `claude` process). Optional because the

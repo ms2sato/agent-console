@@ -85,6 +85,7 @@ export function buildPersistedEmbeddedAgentWorker(
     pid: null,
     deliverInitialPromptOnActivation: false,
     sdkSessionId: null,
+    autoCompaction: true,
     createdAt: '2026-01-01T00:00:00.000Z',
     ...overrides,
   };
@@ -209,6 +210,7 @@ export function buildInternalEmbeddedAgentWorker(
     connectionCallbacks: new Map(),
     deliverInitialPromptOnActivation: false,
     sdkSessionId: null,
+    autoCompaction: true,
     ...overrides,
   };
 }

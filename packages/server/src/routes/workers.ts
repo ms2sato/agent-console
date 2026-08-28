@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto';
 import {
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
+  UpdateEmbeddedAgentWorkerRequestSchema,
   SendWorkerMessageRequestSchema,
   MAX_MESSAGE_FILES,
   MAX_TOTAL_FILE_SIZE,
@@ -369,6 +370,42 @@ const workers = new Hono<AppBindings>()
 
     return c.json({ success: true });
   })
+  // Compaction: update an embedded-agent worker's own settings.
+  //
+  // REST rather than a WebSocket command because this is durable per-worker
+  // configuration, not a per-turn signal -- and because it must be settable
+  // for a worker whose subprocess is not running, which the worker socket
+  // cannot express. The server is the source of truth: the response carries
+  // the updated worker and the change is broadcast as a session update, so
+  // the client follows rather than assuming its optimistic value stuck.
+  .patch(
+    '/:sessionId/workers/:workerId',
+    vValidator(UpdateEmbeddedAgentWorkerRequestSchema),
+    async (c) => {
+      const sessionId = c.req.param('sessionId');
+      const workerId = c.req.param('workerId');
+      const { autoCompaction } = c.req.valid('json');
+
+      const { sessionManager } = c.get('appContext');
+      if (!sessionManager.getSession(sessionId)) {
+        throw new NotFoundError('Session');
+      }
+
+      const worker = await sessionManager.setEmbeddedAgentAutoCompaction(
+        sessionId,
+        workerId,
+        autoCompaction,
+      );
+      if (!worker) {
+        // The session exists (checked above), so a null here means either no
+        // such worker or a worker of the wrong type. Both are "there is
+        // nothing at this address to patch" from the caller's side.
+        throw new NotFoundError('Embedded-agent worker');
+      }
+
+      return c.json({ worker });
+    },
+  )
   // Restart an agent worker
   .post('/:sessionId/workers/:workerId/restart', vValidator(RestartWorkerRequestSchema), async (c) => {
     const sessionId = c.req.param('sessionId');

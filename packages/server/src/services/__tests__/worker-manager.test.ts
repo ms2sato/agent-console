@@ -1281,11 +1281,50 @@ describe('WorkerManager', () => {
         expect(publicWorker.activated).toBe(false);
       }
     });
+
+    it('carries autoCompaction onto the public shape', () => {
+      // The toggle only reaches the client through this conversion; dropping
+      // it here would leave the control rendering the client's own default
+      // regardless of what the server actually holds.
+      const on = buildInternalEmbeddedAgentWorker({ id: 'pub-ac-on', autoCompaction: true });
+      const off = buildInternalEmbeddedAgentWorker({ id: 'pub-ac-off', autoCompaction: false });
+
+      const publicOn = workerManager.toPublicWorker(on);
+      const publicOff = workerManager.toPublicWorker(off);
+
+      expect(publicOn.type).toBe('embedded-agent');
+      if (publicOn.type === 'embedded-agent') expect(publicOn.autoCompaction).toBe(true);
+      expect(publicOff.type).toBe('embedded-agent');
+      if (publicOff.type === 'embedded-agent') expect(publicOff.autoCompaction).toBe(false);
+    });
   });
 
   // ========== toPersistedWorker Conversion ==========
 
   describe('toPersistedWorker', () => {
+    it('round-trips an embedded-agent worker\'s autoCompaction, so a deliberate OFF survives a restart', () => {
+      // Without this the toggle would silently re-enable itself every time
+      // the server restarted -- the one direction a user would notice and
+      // could not explain.
+      const off = buildInternalEmbeddedAgentWorker({ id: 'persist-ac-off', autoCompaction: false });
+
+      const persisted = workerManager.toPersistedWorker(off);
+
+      expect(persisted.type).toBe('embedded-agent');
+      if (persisted.type === 'embedded-agent') expect(persisted.autoCompaction).toBe(false);
+    });
+
+    it('defaults a newly-initialized embedded-agent worker to autoCompaction ON', () => {
+      const worker = workerManager.initializeEmbeddedAgentWorker({
+        id: 'init-ac',
+        name: 'Embedded Agent',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        embeddedAgentId: 'def-1',
+      });
+
+      expect(worker.autoCompaction).toBe(true);
+    });
+
     it('should persist agent worker with pid when PTY is active', async () => {
       const worker = createTestAgentWorker();
       await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);

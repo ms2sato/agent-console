@@ -12,8 +12,9 @@ import { NdjsonLineSplitter, type EmbeddedAgentEvent } from '@agent-console/shar
 import * as v from 'valibot';
 import { EmbeddedAgentCommandSchema } from '@agent-console/shared';
 import { AgentLoop } from './agent-loop.js';
+import { COMPACT_TOOL_NAME } from './compact-tool.js';
 import type { Engine } from './engine-types.js';
-import { loadHandoffPrompt } from './handoff-prompt.js';
+import { loadCompactionPrompt } from './compaction-prompt.js';
 import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
@@ -33,7 +34,13 @@ import { CompositeToolExecutor } from './tools/composite-executor.js';
 const EXIT_OK = 0;
 const EXIT_FATAL = 1;
 const EXIT_PROTOCOL = 2;
-const KNOWN_COMMAND_TYPES = new Set(['init', 'user-message', 'cancel', 'handoff', 'shutdown']);
+const KNOWN_COMMAND_TYPES = new Set([
+  'init',
+  'user-message',
+  'cancel',
+  'set-auto-compaction',
+  'shutdown',
+]);
 // 500ms buffer over Bash's process-group KILL_GRACE_MS so the SIGTERM ->
 // SIGKILL escalation on a stuck Bash child has time to complete before the
 // shutdown drain gives up.
@@ -63,7 +70,7 @@ export interface LoopFactories {
     cwd: string,
     instructionsList: string[] | undefined,
   ): Promise<InstructionSegment[]>;
-  loadHandoffPrompt: typeof loadHandoffPrompt;
+  loadCompactionPrompt: typeof loadCompactionPrompt;
   /** DI seam for tests: the claude-sdk engine's construction (which
    * synchronously calls the real SDK's `query()`), so a test can inject a
    * factory that throws without needing to reach through to `SdkEngine`'s
@@ -149,22 +156,12 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
           });
         break;
       }
-      case 'handoff': {
-        if (turnActive) {
-          io.logError('Ignoring handoff received while a turn is active');
-          break;
-        }
-        turnActive = true;
-        currentTurn = loop
-          .handoff()
-          .catch((err) => {
-            io.logError(`Handoff failed: ${err instanceof Error ? err.message : String(err)}`);
-          })
-          .finally(() => {
-            turnActive = false;
-          });
+      case 'set-auto-compaction':
+        // Deliberately NOT gated on `turnActive`: the flag is only read at
+        // the turn boundary, so recording it mid-turn is safe and means the
+        // very next boundary already honours it.
+        loop.setAutoCompaction(command.enabled);
         break;
-      }
       case 'cancel':
         loop.cancel();
         break;
@@ -207,6 +204,22 @@ async function initializeLoop(
           io.logError(`Builtin tool "${name}" collides with an MCP tool of the same name; builtin wins`),
       });
       tools = await composite.listTools();
+      // The loop reserves the compaction tool's name for itself and
+      // intercepts it by name before dispatch, so an MCP tool published under
+      // that name would be permanently unreachable -- and the provider would
+      // receive two definitions with one name, which a strict
+      // OpenAI-compatible provider can reject. Filtered here, next to the
+      // builtin-vs-MCP collision above, because this is where the merged list
+      // is produced; the name itself is owned by `AgentLoop` (see
+      // compact-tool.ts, which explains why the tool sits outside
+      // `enabledTools`).
+      tools = tools.filter((t) => {
+        if (t.name !== COMPACT_TOOL_NAME) return true;
+        io.logError(
+          `MCP tool "${COMPACT_TOOL_NAME}" collides with the loop's reserved compaction tool; the reserved tool wins`,
+        );
+        return false;
+      });
       executor = composite;
     } catch (err) {
       const message = `MCP connection failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -230,7 +243,7 @@ async function initializeLoop(
         // as the REQUESTING user and already computed a
         // correctly-permissioned `systemPrompt` above -- use it instead of the
         // server's placeholder, for both restore shapes (fresh system-prompt
-        // seed and the context-handoff seed pair both start with a system
+        // seed and the compaction seed pair both start with a system
         // message at index 0).
         restoredConversation = [{ ...first, content: systemPrompt }, ...rest];
       }
@@ -245,6 +258,11 @@ async function initializeLoop(
       systemPrompt,
       maxToolIterations: init.maxToolIterations,
       restoredConversation,
+      compaction: {
+        auto: init.compaction.auto,
+        contextWindowTokens: init.compaction.contextWindowTokens,
+        threshold: init.compaction.threshold,
+      },
       reassembleSystemPrompt: async () => {
         const reloadedInstructions = await factories.loadInstructions({
           cwd: init.context.cwd,
@@ -256,8 +274,8 @@ async function initializeLoop(
           definitionSystemPrompt: init.systemPrompt,
         });
       },
-      loadHandoffPrompt: async () => {
-        const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
+      loadCompactionPrompt: async () => {
+        const { content } = await factories.loadCompactionPrompt({ cwd: init.context.cwd });
         return content;
       },
     });
@@ -303,10 +321,7 @@ async function initializeLoop(
       enabledTools: init.enabledTools,
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
-      loadHandoffPrompt: async () => {
-        const { content } = await factories.loadHandoffPrompt({ cwd: init.context.cwd });
-        return content;
-      },
+      autoCompaction: init.compaction.auto,
     });
   } catch (err) {
     const message = `SDK engine construction failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -357,7 +372,7 @@ if (import.meta.main) {
     createAdapter: (opts) => new OpenAIChatAdapter(opts),
     loadInstructions,
     loadOptInInstructions,
-    loadHandoffPrompt,
+    loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
   };
   runLoop(io, factories)

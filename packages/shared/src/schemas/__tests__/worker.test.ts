@@ -3,6 +3,7 @@ import * as v from 'valibot';
 import {
   CreateWorkerRequestSchema,
   RestartWorkerRequestSchema,
+  UpdateEmbeddedAgentWorkerRequestSchema,
 } from '../worker';
 
 describe('CreateWorkerRequestSchema', () => {
@@ -301,6 +302,36 @@ describe('strict-parse contract (unknown-key rejection)', () => {
   it('RestartWorkerRequestSchema rejects an unknown key', () => {
     const result = v.safeParse(RestartWorkerRequestSchema, {
       continueConversation: true,
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.issues.some((i) => i.path?.[0]?.key === 'unexpectedField')).toBe(true);
+    }
+  });
+});
+
+describe('UpdateEmbeddedAgentWorkerRequestSchema (Compaction toggle)', () => {
+  it('accepts autoCompaction true and false', () => {
+    expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { autoCompaction: true }).success).toBe(true);
+    expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { autoCompaction: false }).success).toBe(true);
+  });
+
+  it('REQUIRES autoCompaction -- an empty body is not "no change"', () => {
+    // Unlike the definition PATCH, this route has exactly one field and
+    // exists to set it. An empty body would be a caller bug, and accepting
+    // it as a no-op would return 200 for a request that changed nothing.
+    expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {}).success).toBe(false);
+  });
+
+  it('rejects a non-boolean autoCompaction', () => {
+    expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { autoCompaction: 'yes' }).success).toBe(false);
+    expect(v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, { autoCompaction: 1 }).success).toBe(false);
+  });
+
+  it('rejects an unknown key (strictObject)', () => {
+    const result = v.safeParse(UpdateEmbeddedAgentWorkerRequestSchema, {
+      autoCompaction: true,
       unexpectedField: 'leaked',
     });
     expect(result.success).toBe(false);

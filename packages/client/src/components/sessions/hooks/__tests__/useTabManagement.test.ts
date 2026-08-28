@@ -94,7 +94,7 @@ function createGitDiffWorker(id: string, name = 'Git Diff'): Worker {
 }
 
 function createEmbeddedAgentWorker(id: string, name = 'Local GPT'): Worker {
-  return { id, type: 'embedded-agent', name, createdAt: new Date().toISOString(), embeddedAgentId: 'embedded-def-1', activated: true };
+  return { id, type: 'embedded-agent', name, createdAt: new Date().toISOString(), embeddedAgentId: 'embedded-def-1', activated: true, autoCompaction: true };
 }
 
 function createDefaultOptions(overrides: Partial<UseTabManagementOptions> = {}): UseTabManagementOptions {
@@ -429,7 +429,7 @@ describe('useTabManagement', () => {
           name: 'Local GPT',
           embeddedAgentId: 'embedded-def-1',
           createdAt: new Date().toISOString(),
-          activated: false,
+          activated: false, autoCompaction: true,
         },
       });
 

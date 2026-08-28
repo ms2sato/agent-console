@@ -129,11 +129,11 @@ describe('EditEmbeddedAgentForm', () => {
       enabledTools: ['Read', 'Glob', 'Grep'],
       instructions: null,
       contextWindowTokens: null,
-      handoff: null,
+      compaction: null,
     });
   });
 
-  it('PATCHes contextWindowTokens and a handoff object when both threshold inputs are set', async () => {
+  it('PATCHes contextWindowTokens and a compaction object when the threshold input is set', async () => {
     const user = userEvent.setup();
     const onSuccess = mock(() => {});
     renderEditEmbeddedAgentForm({
@@ -141,8 +141,7 @@ describe('EditEmbeddedAgentForm', () => {
       initialData: {
         ...initialData,
         contextWindowTokensInput: '128000',
-        handoffSoftRatioInput: '75',
-        handoffHardRatioInput: '90',
+        compactionThresholdInput: '75',
       },
       onSuccess,
       onCancel: () => {},
@@ -157,11 +156,11 @@ describe('EditEmbeddedAgentForm', () => {
     const body = await getLastFetchBody();
     expect(body).toMatchObject({
       contextWindowTokens: 128000,
-      handoff: { softRatio: 0.75, hardRatio: 0.9 },
+      compaction: { threshold: 0.75 },
     });
   });
 
-  it('PATCHes handoff: null when both threshold inputs are cleared', async () => {
+  it('PATCHes compaction: null when the threshold input is cleared', async () => {
     const user = userEvent.setup();
     const onSuccess = mock(() => {});
     renderEditEmbeddedAgentForm({
@@ -169,15 +168,13 @@ describe('EditEmbeddedAgentForm', () => {
       initialData: {
         ...initialData,
         contextWindowTokensInput: '128000',
-        handoffSoftRatioInput: '75',
-        handoffHardRatioInput: '90',
+        compactionThresholdInput: '75',
       },
       onSuccess,
       onCancel: () => {},
     });
 
     await user.clear(screen.getByDisplayValue('75'));
-    await user.clear(screen.getByDisplayValue('90'));
 
     await user.click(screen.getByText('Save Changes'));
 
@@ -186,7 +183,7 @@ describe('EditEmbeddedAgentForm', () => {
     });
 
     const body = await getLastFetchBody();
-    expect(body).toMatchObject({ handoff: null });
+    expect(body).toMatchObject({ compaction: null });
   });
 
   it('sends the current checkbox state as an explicit enabledTools array, not a hardcoded default', async () => {

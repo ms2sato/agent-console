@@ -5,6 +5,7 @@ import rehypeSanitize from 'rehype-sanitize';
 import type { Element as HastElement, Text as HastText } from 'hast';
 import type { JSX } from 'react';
 import type { ExtraProps } from 'react-markdown';
+import { DEFAULT_COMPACTION_THRESHOLD } from '@agent-console/shared';
 import type { PtyNotificationKind, EmbeddedAgentServerNotification } from '@agent-console/shared';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
@@ -13,14 +14,10 @@ import { MessagePanel } from '../sessions/MessagePanel';
 import type { ConnectionStatus } from '../terminal/terminal-contract';
 import { PreviewPanel } from './PreviewPanel';
 import { ContextUsageBar } from './ContextUsageBar';
-import { crossedThreshold } from './context-usage-threshold';
 import { useEmbeddedAgents } from '../../hooks/useEmbeddedAgents';
 import { logger } from '../../lib/logger';
+import { updateEmbeddedAgentWorker } from '../../lib/api';
 import { copyToClipboard } from '../../lib/clipboard';
-
-/** Defaults when `EmbeddedAgentDefinition.handoff.softRatio`/`hardRatio` are unset -- see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI. */
-const DEFAULT_SOFT_RATIO = 0.75;
-const DEFAULT_HARD_RATIO = 0.9;
 
 /** Entries folded into the collapsed-by-default "Working" accordion. */
 type GroupableEntry = Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' | 'tool-call' }>;
@@ -98,8 +95,16 @@ function buildDisplayItems(entries: EmbeddedAgentChatEntry[]): DisplayItem[] {
 interface EmbeddedAgentWorkerViewProps {
   sessionId: string;
   workerId: string;
-  /** `EmbeddedAgentWorker.embeddedAgentId` -- looked up against the embedded-agent registry (`useEmbeddedAgents`) for `contextWindowTokens`/`handoff` (Context Handoff Phase A). Undefined only defensively (every embedded-agent worker carries one). */
+  /** `EmbeddedAgentWorker.embeddedAgentId` -- looked up against the embedded-agent registry (`useEmbeddedAgents`) for `contextWindowTokens`/`compaction`. Undefined only defensively (every embedded-agent worker carries one). */
   embeddedAgentId?: string;
+  /**
+   * `EmbeddedAgentWorker.autoCompaction` -- the toggle's SERVER value, which
+   * is what the control renders. Deliberately a prop rather than local state:
+   * the server broadcasts the change back as a session update, so the client
+   * follows it instead of holding its own opinion. Undefined only
+   * defensively (every embedded-agent worker carries one).
+   */
+  autoCompaction?: boolean;
   onStatusChange?: (status: ConnectionStatus) => void;
 }
 
@@ -107,6 +112,7 @@ export function EmbeddedAgentWorkerView({
   sessionId,
   workerId,
   embeddedAgentId,
+  autoCompaction,
   onStatusChange,
 }: EmbeddedAgentWorkerViewProps) {
   const {
@@ -115,7 +121,6 @@ export function EmbeddedAgentWorkerView({
     activityState,
     workerError,
     contextUsage,
-    handoffInFlight,
     restoring,
     restoredMessageCount,
     sendUserMessage,
@@ -123,7 +128,6 @@ export function EmbeddedAgentWorkerView({
     restart,
     retry,
     dismissError,
-    triggerHandoff,
   } = useEmbeddedAgentWorker({ sessionId, workerId });
 
   const { embeddedAgents } = useEmbeddedAgents();
@@ -132,61 +136,25 @@ export function EmbeddedAgentWorkerView({
     [embeddedAgents, embeddedAgentId],
   );
   const contextWindowTokens = embeddedAgentDefinition?.contextWindowTokens;
-  const softRatio = embeddedAgentDefinition?.handoff?.softRatio ?? DEFAULT_SOFT_RATIO;
-  const hardRatio = embeddedAgentDefinition?.handoff?.hardRatio ?? DEFAULT_HARD_RATIO;
-  const ratio =
-    contextWindowTokens !== undefined && contextUsage !== null
-      ? contextUsage.promptTokens / contextWindowTokens
-      : null;
+  const compactionThreshold =
+    embeddedAgentDefinition?.compaction?.threshold ?? DEFAULT_COMPACTION_THRESHOLD;
 
-  // Threshold-crossing tracking (Context Handoff Phase A): reacting to
-  // `ratio` changing over time against the store's asynchronous, external
-  // updates is a legitimate useEffect use case per frontend.md's own
-  // carve-out ("Component-scoped ... browser API subscriptions") -- this is
-  // the same shape as the store-status bridge effect below, not a case of
-  // deriving state from current props during render. A plain render-phase
-  // `if (...) setState(...)` comparison was tried first but proved
-  // unreliable in a real browser: `contextUsage` arrives via a store
-  // `patch()`/`notify()` outside React's render cycle, and interleaving that
-  // external notification with a same-pass "adjust state during render"
-  // write let a later, unrelated re-render (e.g. the `activityState` ->
-  // `idle` update that follows moments later) observe the OLD `false` state
-  // and clobber the crossing that had just been recorded -- confirmed via
-  // live console tracing (banner state flips true -> false across two
-  // consecutive renders with no dismiss click and no code path setting it
-  // back to false). Root-caused to React.StrictMode's dev-mode double-invoke
-  // of the render function (active for `bun run dev`, which is how this was
-  // dogfooded) interacting with the render-phase `setState` + direct
-  // `prevRatioRef` mutation: the ref (a plain mutable object) survives a
-  // discarded/re-invoked render pass, but a pending `setSoftBannerShown(true)`
-  // from that pass does not, so a later render sees "already past the
-  // threshold" on the ref while `softBannerShown` is still stuck at its
-  // pre-crossing value. `useEffect` avoids this because the ref advance and
-  // the setState calls run together, atomically, after commit -- not subject
-  // to StrictMode's render-phase double-invoke -- keyed only off `ratio`
-  // actually changing. Regression-guarded in
-  // EmbeddedAgentWorkerView.test.tsx's `renderViewStrict`-based tests (only
-  // reproducible with `<StrictMode>` wrapping, matching main.tsx's app root).
-  // See docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
-  // UI "Threshold banners".
-  const prevRatioRef = useRef<number | null>(null);
-  const [softBannerShown, setSoftBannerShown] = useState(false);
-  const [hardBannerShown, setHardBannerShown] = useState(false);
-  useEffect(() => {
-    if (ratio === null) return;
-    const prevRatio = prevRatioRef.current;
-    if (ratio < softRatio) {
-      setSoftBannerShown(false);
-    } else if (crossedThreshold(prevRatio, ratio, softRatio)) {
-      setSoftBannerShown(true);
+  // The toggle writes through REST and then follows the server's value
+  // (which arrives as a session-updated broadcast). This flag only disables
+  // the control while a write is in flight, so a double-click cannot queue a
+  // second PATCH; it deliberately does NOT hold an optimistic value, which
+  // would show a state the server may have rejected.
+  const [togglePending, setTogglePending] = useState(false);
+  const handleAutoCompactionChange = async (enabled: boolean): Promise<void> => {
+    setTogglePending(true);
+    try {
+      await updateEmbeddedAgentWorker(sessionId, workerId, { autoCompaction: enabled });
+    } catch (err) {
+      logger.error('Failed to update auto-compaction', err);
+    } finally {
+      setTogglePending(false);
     }
-    if (ratio < hardRatio) {
-      setHardBannerShown(false);
-    } else if (crossedThreshold(prevRatio, ratio, hardRatio)) {
-      setHardBannerShown(true);
-    }
-    prevRatioRef.current = ratio;
-  }, [ratio, softRatio, hardRatio]);
+  };
 
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -318,67 +286,48 @@ export function EmbeddedAgentWorkerView({
         )}
       </div>
 
-      {/* Context Handoff (Phase A) chrome: usage bar and threshold banners --
+      {/* Compaction chrome: the usage bar and the auto-compaction toggle --
           siblings inserted between the transcript and MessagePanel, never
           inside MessagePanel (shared with PTY workers, stays
           worker-type-agnostic). See docs/design/embedded-agent-worker.md
-          "Context Handoff (Phase A)" § UI. */}
+          "Compaction" § UI.
+
+          The soft/hard threshold banners that used to live here are gone
+          with the manual-handoff CTA they existed to point at: automatic
+          compaction is the toggle below, and manual compaction is a request
+          made to the agent in the message box. */}
       <ContextUsageBar
         contextWindowTokens={contextWindowTokens}
         contextUsage={contextUsage}
-        softRatio={softRatio}
-        hardRatio={hardRatio}
+        threshold={compactionThreshold}
       />
 
-      {ratio !== null && softBannerShown && (
-        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0 flex items-center justify-between gap-3">
-          <span>Context is {Math.round(ratio * 100)}% full — consider starting a handoff</span>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={triggerHandoff}
-              disabled={isTurnActive || handoffInFlight}
-              className="btn btn-primary text-xs shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Handoff now
-            </button>
-            <button
-              onClick={() => setSoftBannerShown(false)}
-              aria-label="Dismiss"
-              className="text-amber-300 hover:text-white text-xs shrink-0"
-            >
-              ×
-            </button>
-          </div>
-        </div>
-      )}
+      {/* The wording never names an engine or a mechanism (§3.1's no-leak
+          principle): from here it is one feature, however differently the
+          two engines implement it.
 
-      {ratio !== null && hardBannerShown && (
-        <div
-          role="alert"
-          className="px-4 py-2 bg-red-900/30 border-b border-red-700/50 text-red-200 text-sm shrink-0 flex items-center justify-between gap-3"
-        >
-          <span>
-            Context is critically full ({Math.round(ratio * 100)}%) — start a handoff now to avoid losing
-            context
-          </span>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={triggerHandoff}
-              disabled={isTurnActive || handoffInFlight}
-              className="btn btn-primary text-xs shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              Handoff now
-            </button>
-            <button
-              onClick={() => setHardBannerShown(false)}
-              aria-label="Dismiss"
-              className="text-red-300 hover:text-white text-xs shrink-0"
-            >
-              ×
-            </button>
-          </div>
-        </div>
-      )}
+          `checked` is the server's value and nothing else. The client
+          deliberately does NOT substitute the ON default when the value is
+          unknown: that default is the server's (`workers.auto_compaction NOT
+          NULL DEFAULT 1`), and re-implementing it here would give one fact
+          two sources -- so a field that went missing at the wire would render
+          as a confident ON and look completely normal. That is the exact
+          failure shape Gap-Scan Q10 exists for, and this PR already hit one
+          instance of it at a different gate.
+
+          An unknown value therefore disables the control rather than
+          displaying a guess, which also stops a click from PATCHing a value
+          derived from one. */}
+      <label className="px-4 py-1.5 shrink-0 flex items-center gap-2 text-xs text-gray-400 border-t border-slate-800">
+        <input
+          type="checkbox"
+          checked={autoCompaction === true}
+          disabled={togglePending || autoCompaction === undefined}
+          onChange={(e) => void handleAutoCompactionChange(e.target.checked)}
+          className="accent-blue-600 disabled:opacity-50"
+        />
+        <span>Compact automatically when the context fills up</span>
+      </label>
 
       <MessagePanel
         sessionId={sessionId}
@@ -390,10 +339,43 @@ export function EmbeddedAgentWorkerView({
         onEscape={cancel}
         slashCompletionEnabled={false}
         attachmentsEnabled={false}
-        cancelState={{ active: isTurnActive || handoffInFlight, onCancel: cancel }}
+        cancelState={{ active: isTurnActive, onCancel: cancel }}
       />
     </div>
   );
+}
+
+/**
+ * Compact a token count for the boundary marker: `102150` -> `102k`,
+ * `2710` -> `2.7k`, `950` -> `950`. Rounded, because the marker's job is to
+ * convey magnitude at a glance, not to be arithmetic.
+ */
+export function formatTokenCount(tokens: number): string {
+  if (tokens < 1000) return String(tokens);
+  const thousands = tokens / 1000;
+  return thousands < 10 ? `${Math.round(thousands * 10) / 10}k` : `${Math.round(thousands)}k`;
+}
+
+/**
+ * The boundary marker's line.
+ *
+ * Deliberately a STATEMENT OF FACT, never a promise. "Context compacted
+ * (102k -> 2.7k)" reports what happened; anything of the form "your history
+ * is preserved" would be a guarantee, and SDK-side compaction fidelity has
+ * been measured non-deterministic (see docs/design/embedded-agent-worker.md
+ * § Compaction, "Summary fidelity") -- a single counterexample would make
+ * such a line a lie. The numbers are the point: a startlingly aggressive
+ * compaction reports its own severity to the user.
+ *
+ * Falls back to the bare marker when the engine supplied no figures, rather
+ * than printing a fabricated or zeroed one.
+ */
+export function formatCompactionBoundaryLabel(
+  preTokens: number | undefined,
+  postTokens: number | undefined,
+): string {
+  if (preTokens === undefined || postTokens === undefined) return '— Context compacted —';
+  return `— Context compacted (${formatTokenCount(preTokens)} → ${formatTokenCount(postTokens)}) —`;
 }
 
 /**
@@ -648,7 +630,32 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
           </button>
         </div>
       );
+    case 'context-compacted': {
+      // "One line marking the compaction boundary appears in the
+      // transcript." A summary, when the engine produced one, hangs off it
+      // as a disclosure rather than expanding the line.
+      const label = formatCompactionBoundaryLabel(entry.preTokens, entry.postTokens);
+      return (
+        <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          {entry.summary !== undefined ? (
+            <details>
+              <summary className="cursor-pointer text-xs text-gray-400">{label}</summary>
+              <div className="mt-2 min-w-0 whitespace-pre-wrap text-xs text-gray-300 [overflow-wrap:anywhere]">
+                {entry.summary}
+              </div>
+            </details>
+          ) : (
+            <div className="text-xs text-gray-400">{label}</div>
+          )}
+        </div>
+      );
+    }
     case 'context-handoff':
+      // LEGACY (#1401): no engine emits this any more, but a transcript
+      // written before the compaction swap replays these rows on every
+      // history load. Removing this case would render an old transcript with
+      // a silent hole where a real boundary was, so it stays -- regression-
+      // locked by a historical-stream fixture in the sibling test.
       return (
         <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
           <details>

@@ -195,6 +195,28 @@ export async function restartAgentWorker(
   return res.json() as Promise<{ worker: Worker }>;
 }
 
+/**
+ * Compaction: set an embedded-agent worker's auto-compaction toggle.
+ *
+ * The server is the source of truth -- the updated worker comes back in the
+ * response and the change is also broadcast as a session update, so callers
+ * follow the server's value rather than assuming their optimistic one stuck.
+ */
+export async function updateEmbeddedAgentWorker(
+  sessionId: string,
+  workerId: string,
+  update: { autoCompaction: boolean }
+): Promise<{ worker: Worker }> {
+  const res = await api.sessions[':sessionId'].workers[':workerId'].$patch({
+    param: { sessionId, workerId },
+    json: update,
+  });
+  if (!res.ok) {
+    await handleApiError(res, 'Failed to update worker');
+  }
+  return res.json() as Promise<{ worker: Worker }>;
+}
+
 export interface RestartAllAgentsResult {
   restarted: number;
   failed: number;

@@ -9,7 +9,7 @@ function makeEmbeddedWorker(id: string, embeddedAgentId: string): EmbeddedAgentW
     createdAt: '2026-01-01T00:00:00.000Z',
     type: 'embedded-agent',
     embeddedAgentId,
-    activated: true,
+    activated: true, autoCompaction: true,
   };
 }
 

@@ -1658,89 +1658,84 @@ describe('EmbeddedAgentWorkerService.sendSystemNotification (Issue #1351)', () =
   });
 });
 
-describe('EmbeddedAgentWorkerService.triggerHandoff', () => {
-  it('forwards a handoff command to stdin and admits synchronously', async () => {
+describe('EmbeddedAgentWorkerService — the init command\'s compaction config', () => {
+  it('carries the WORKER\'s toggle plus the definition\'s window and threshold', async () => {
+    const h = setup({
+      definition: buildDefinition({
+        contextWindowTokens: 128000,
+        compaction: { threshold: 0.7 },
+      }),
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.compaction).toEqual({
+      auto: true,
+      contextWindowTokens: 128000,
+      threshold: 0.7,
+    });
+  });
+
+  it('omits contextWindowTokens and threshold when the definition configures neither', async () => {
+    // Absent, not null or 0: the loop reads an absent window as "auto
+    // compaction can never fire", which is a different state from any number
+    // we could have substituted.
+    const h = setup();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.compaction).toEqual({ auto: true });
+  });
+
+  it('reflects a worker whose toggle is OFF', async () => {
+    const h = setup();
+    h.worker.autoCompaction = false;
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect(first.compaction.auto).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService.forwardAutoCompaction', () => {
+  it('forwards a set-auto-compaction command to a running subprocess', async () => {
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
     const before = h.fake.stdinWrites.length;
 
-    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(h.service.forwardAutoCompaction(h.workerId, false)).toBe(true);
 
-    expect(res).toEqual({ ok: true });
-    const forwarded = JSON.parse(h.fake.stdinWrites[before]);
-    expect(forwarded).toEqual({ v: 1, type: 'handoff' });
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-auto-compaction',
+      enabled: false,
+    });
   });
 
-  it('does not append any persisted/broadcast event for the handoff trigger itself', async () => {
+  it('forwards even while a turn is in flight', async () => {
+    // Deliberately not gated on turnActive: the loop reads the flag at the
+    // turn boundary, so recording it mid-turn is safe -- and gating would
+    // silently drop the change for the length of a long turn, which is
+    // exactly when a user reaches for the toggle.
     const h = setup();
     await h.service.activate(h.sessionId, h.workerId);
-    h.bufferOutput.mockClear();
+    await h.service.sendUserMessage(h.sessionId, h.workerId, 'a long turn');
+    const before = h.fake.stdinWrites.length;
 
-    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
+    expect(h.service.forwardAutoCompaction(h.workerId, true)).toBe(true);
 
-    expect(res.ok).toBe(true);
-    expect(h.bufferOutput).not.toHaveBeenCalled();
+    expect(JSON.parse(h.fake.stdinWrites[before])).toEqual({
+      v: 1,
+      type: 'set-auto-compaction',
+      enabled: true,
+    });
   });
 
-  it('rejects with NOT_ACTIVATED when the subprocess is null', async () => {
+  it('returns false, without throwing, when there is no running subprocess', async () => {
+    // The ordinary pre-activation / post-restart case. The caller has already
+    // persisted the durable value and must not surface this as an error.
     const h = setup();
-    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
-    expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
-  });
-
-  it('rejects a second concurrent trigger synchronously (turn in progress)', async () => {
-    const h = setup();
-    await h.service.activate(h.sessionId, h.workerId);
-
-    const p1 = h.service.triggerHandoff(h.sessionId, h.workerId);
-    const p2 = h.service.triggerHandoff(h.sessionId, h.workerId);
-    const [r1, r2] = await Promise.all([p1, p2]);
-
-    expect(r1.ok).toBe(true);
-    expect(r2).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
-  });
-
-  it('rejects a handoff while a sendUserMessage turn is already active (shared admission gate)', async () => {
-    const h = setup();
-    await h.service.activate(h.sessionId, h.workerId);
-
-    const sendResult = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hello');
-    expect(sendResult.ok).toBe(true);
-
-    const handoffResult = await h.service.triggerHandoff(h.sessionId, h.workerId);
-    expect(handoffResult).toEqual({ ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' });
-  });
-
-  it('rejects with code WRITE_FAILED when the stdin write throws, and clears turnActive so a retry is possible', async () => {
-    const h = setup();
-    await h.service.activate(h.sessionId, h.workerId);
-
-    h.worker.stdin!.write = () => {
-      throw new Error('EPIPE');
-    };
-
-    const res = await h.service.triggerHandoff(h.sessionId, h.workerId);
-    expect(res).toEqual({ ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' });
-
-    // turnActive was cleared on failure: a subsequent send is admitted.
-    h.worker.stdin!.write = () => 0;
-    const retry = await h.service.sendUserMessage(h.sessionId, h.workerId, 'retry');
-    expect(retry.ok).toBe(true);
-  });
-
-  it('re-admits a handoff after the loop reports idle', async () => {
-    const h = setup();
-    await h.service.activate(h.sessionId, h.workerId);
-
-    const first = await h.service.triggerHandoff(h.sessionId, h.workerId);
-    expect(first.ok).toBe(true);
-    expect((await h.service.triggerHandoff(h.sessionId, h.workerId)).ok).toBe(false);
-
-    h.fake.pushStdout('{"v":1,"type":"state","state":"idle"}\n');
-    await waitFor(() => h.worker.activityState === 'idle');
-
-    const third = await h.service.triggerHandoff(h.sessionId, h.workerId);
-    expect(third.ok).toBe(true);
+    expect(h.service.forwardAutoCompaction(h.workerId, false)).toBe(false);
   });
 });
 

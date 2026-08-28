@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, spyOn } from 'bun:test';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadHandoffPrompt, DEFAULT_HANDOFF_PROMPT } from '../handoff-prompt.js';
+import { loadCompactionPrompt, DEFAULT_COMPACTION_PROMPT } from '../compaction-prompt.js';
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -25,18 +25,18 @@ async function isolatedXdgConfigHome(): Promise<string> {
   return makeTempDir();
 }
 
-describe('loadHandoffPrompt — 3-layer override precedence', () => {
+describe('loadCompactionPrompt — 3-layer override precedence', () => {
   it('repo layer wins over global and bundled when all three exist', async () => {
     const cwd = await makeTempDir();
     await mkdir(join(cwd, '.agent-console'), { recursive: true });
-    await writeFile(join(cwd, '.agent-console', 'handoff-prompt.md'), 'REPO_PROMPT');
+    await writeFile(join(cwd, '.agent-console', 'compaction-prompt.md'), 'REPO_PROMPT');
 
     const xdgConfigHome = await makeTempDir();
     const globalDir = join(xdgConfigHome, 'agent-console');
     await mkdir(globalDir, { recursive: true });
-    await writeFile(join(globalDir, 'handoff-prompt.md'), 'GLOBAL_PROMPT');
+    await writeFile(join(globalDir, 'compaction-prompt.md'), 'GLOBAL_PROMPT');
 
-    const result = await loadHandoffPrompt({ cwd, xdgConfigHome });
+    const result = await loadCompactionPrompt({ cwd, xdgConfigHome });
 
     expect(result).toEqual({ content: 'REPO_PROMPT', origin: 'repo' });
   });
@@ -46,9 +46,9 @@ describe('loadHandoffPrompt — 3-layer override precedence', () => {
     const xdgConfigHome = await makeTempDir();
     const globalDir = join(xdgConfigHome, 'agent-console');
     await mkdir(globalDir, { recursive: true });
-    await writeFile(join(globalDir, 'handoff-prompt.md'), 'GLOBAL_PROMPT');
+    await writeFile(join(globalDir, 'compaction-prompt.md'), 'GLOBAL_PROMPT');
 
-    const result = await loadHandoffPrompt({ cwd, xdgConfigHome });
+    const result = await loadCompactionPrompt({ cwd, xdgConfigHome });
 
     expect(result).toEqual({ content: 'GLOBAL_PROMPT', origin: 'global' });
   });
@@ -56,38 +56,38 @@ describe('loadHandoffPrompt — 3-layer override precedence', () => {
   it('returns the bundled default when neither repo nor global is present', async () => {
     const cwd = await makeTempDir();
 
-    const result = await loadHandoffPrompt({ cwd, xdgConfigHome: await isolatedXdgConfigHome() });
+    const result = await loadCompactionPrompt({ cwd, xdgConfigHome: await isolatedXdgConfigHome() });
 
-    expect(result).toEqual({ content: DEFAULT_HANDOFF_PROMPT, origin: 'bundled-default' });
+    expect(result).toEqual({ content: DEFAULT_COMPACTION_PROMPT, origin: 'bundled-default' });
   });
 
   it('does not read the global or bundled layer content when the repo layer wins (override, not concatenation)', async () => {
     const cwd = await makeTempDir();
     await mkdir(join(cwd, '.agent-console'), { recursive: true });
-    await writeFile(join(cwd, '.agent-console', 'handoff-prompt.md'), 'REPO_ONLY');
+    await writeFile(join(cwd, '.agent-console', 'compaction-prompt.md'), 'REPO_ONLY');
 
     const xdgConfigHome = await makeTempDir();
     const globalDir = join(xdgConfigHome, 'agent-console');
     await mkdir(globalDir, { recursive: true });
-    await writeFile(join(globalDir, 'handoff-prompt.md'), 'GLOBAL_SHOULD_NOT_APPEAR');
+    await writeFile(join(globalDir, 'compaction-prompt.md'), 'GLOBAL_SHOULD_NOT_APPEAR');
 
-    const result = await loadHandoffPrompt({ cwd, xdgConfigHome });
+    const result = await loadCompactionPrompt({ cwd, xdgConfigHome });
 
     expect(result.content).not.toContain('GLOBAL_SHOULD_NOT_APPEAR');
-    expect(result.content).not.toContain(DEFAULT_HANDOFF_PROMPT);
+    expect(result.content).not.toContain(DEFAULT_COMPACTION_PROMPT);
   });
 });
 
-describe('loadHandoffPrompt — 16 KiB cap', () => {
+describe('loadCompactionPrompt — 16 KiB cap', () => {
   it('truncates an oversized repo prompt to the cap and warn-logs', async () => {
     const cwd = await makeTempDir();
     await mkdir(join(cwd, '.agent-console'), { recursive: true });
     const oversized = 'x'.repeat(20 * 1024);
-    await writeFile(join(cwd, '.agent-console', 'handoff-prompt.md'), oversized);
+    await writeFile(join(cwd, '.agent-console', 'compaction-prompt.md'), oversized);
 
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = await loadHandoffPrompt({
+      const result = await loadCompactionPrompt({
         cwd,
         xdgConfigHome: await isolatedXdgConfigHome(),
       });
@@ -101,7 +101,7 @@ describe('loadHandoffPrompt — 16 KiB cap', () => {
   });
 });
 
-describe('loadHandoffPrompt — unreadable-but-existing file falls through', () => {
+describe('loadCompactionPrompt — unreadable-but-existing file falls through', () => {
   function makeRejectingBunFile(errorCode: string, message: string) {
     return {
       text: () => {
@@ -115,12 +115,12 @@ describe('loadHandoffPrompt — unreadable-but-existing file falls through', () 
   it('warn-logs and falls through to global when the repo file exists but is unreadable (EACCES)', async () => {
     const cwd = await makeTempDir();
     await mkdir(join(cwd, '.agent-console'), { recursive: true });
-    const repoPath = join(cwd, '.agent-console', 'handoff-prompt.md');
+    const repoPath = join(cwd, '.agent-console', 'compaction-prompt.md');
 
     const xdgConfigHome = await makeTempDir();
     const globalDir = join(xdgConfigHome, 'agent-console');
     await mkdir(globalDir, { recursive: true });
-    await writeFile(join(globalDir, 'handoff-prompt.md'), 'GLOBAL_FALLBACK');
+    await writeFile(join(globalDir, 'compaction-prompt.md'), 'GLOBAL_FALLBACK');
 
     const originalBunFile = Bun.file.bind(Bun);
     const fileSpy = spyOn(Bun, 'file').mockImplementation((filePath: unknown, ...rest: unknown[]) => {
@@ -134,7 +134,7 @@ describe('loadHandoffPrompt — unreadable-but-existing file falls through', () 
     });
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = await loadHandoffPrompt({ cwd, xdgConfigHome });
+      const result = await loadCompactionPrompt({ cwd, xdgConfigHome });
 
       expect(result).toEqual({ content: 'GLOBAL_FALLBACK', origin: 'global' });
       expect(warnSpy).toHaveBeenCalled();
@@ -152,12 +152,12 @@ describe('loadHandoffPrompt — unreadable-but-existing file falls through', () 
     // (not ENOENT) and so still warn-logs and falls through, same as EACCES.
     const cwd = await makeTempDir();
     await mkdir(join(cwd, '.agent-console'), { recursive: true });
-    const repoPath = join(cwd, '.agent-console', 'handoff-prompt.md');
+    const repoPath = join(cwd, '.agent-console', 'compaction-prompt.md');
 
     const xdgConfigHome = await makeTempDir();
     const globalDir = join(xdgConfigHome, 'agent-console');
     await mkdir(globalDir, { recursive: true });
-    await writeFile(join(globalDir, 'handoff-prompt.md'), 'GLOBAL_FALLBACK');
+    await writeFile(join(globalDir, 'compaction-prompt.md'), 'GLOBAL_FALLBACK');
 
     const originalBunFile = Bun.file.bind(Bun);
     const fileSpy = spyOn(Bun, 'file').mockImplementation((filePath: unknown, ...rest: unknown[]) => {
@@ -173,7 +173,7 @@ describe('loadHandoffPrompt — unreadable-but-existing file falls through', () 
     });
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const result = await loadHandoffPrompt({ cwd, xdgConfigHome });
+      const result = await loadCompactionPrompt({ cwd, xdgConfigHome });
 
       expect(result).toEqual({ content: 'GLOBAL_FALLBACK', origin: 'global' });
       expect(warnSpy).toHaveBeenCalled();

@@ -7,7 +7,7 @@ import {
   parseMaxToolIterations,
   toInstructionPaths,
   parseContextWindowTokens,
-  parseHandoffRatio,
+  parseCompactionThreshold,
   type EmbeddedAgentFormData,
 } from './EmbeddedAgentForm';
 
@@ -42,12 +42,11 @@ export function AddEmbeddedAgentForm({ onSuccess, onCancel }: AddEmbeddedAgentFo
 
   const handleSubmit = (data: EmbeddedAgentFormData) => {
     setError(null);
-    // Context Handoff (Phase A): handoff.auto is deliberately never written
-    // by this form -- see docs/design/embedded-agent-worker.md "Context
-    // Handoff (Phase A)" § Definition config, migration, and forms.
-    const softRatio = parseHandoffRatio(data.handoffSoftRatioInput);
-    const hardRatio = parseHandoffRatio(data.handoffHardRatioInput);
-    const handoff = softRatio !== undefined || hardRatio !== undefined ? { softRatio, hardRatio } : undefined;
+    // Compaction: automatic firing is a per-worker toggle, never written by
+    // this form -- see docs/design/embedded-agent-worker.md "Compaction"
+    // § Definition config, migration, and forms.
+    const threshold = parseCompactionThreshold(data.compactionThresholdInput);
+    const compaction = threshold !== undefined ? { threshold } : undefined;
     createMutation.mutate({
       name: data.name,
       description: data.description || undefined,
@@ -61,7 +60,7 @@ export function AddEmbeddedAgentForm({ onSuccess, onCancel }: AddEmbeddedAgentFo
       enabledTools: data.enabledTools,
       instructions: data.instructions.length > 0 ? toInstructionPaths(data.instructions) : undefined,
       contextWindowTokens: parseContextWindowTokens(data.contextWindowTokensInput),
-      handoff,
+      compaction,
     });
   };
 

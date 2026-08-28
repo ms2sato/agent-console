@@ -8,8 +8,8 @@ import {
   COMMAND_EXECUTION_TOOL_NAMES,
   FILE_MODIFICATION_TOOL_NAMES,
   parseContextWindowTokens,
-  parseHandoffRatio,
-  formatHandoffRatioInput,
+  parseCompactionThreshold,
+  formatCompactionThresholdInput,
   type EmbeddedAgentFormData,
 } from '../EmbeddedAgentForm';
 
@@ -469,16 +469,25 @@ describe('EmbeddedAgentForm', () => {
     });
   });
 
-  describe('Context Handoff (Phase A) fields', () => {
-    it('should render the contextWindowTokens/handoffSoftRatio/handoffHardRatio inputs', () => {
+  describe('Compaction fields', () => {
+    it('should render the contextWindowTokens/compactionThreshold inputs', () => {
       renderEmbeddedAgentForm();
 
       expect(screen.getByPlaceholderText('e.g., 128000')).toBeTruthy();
-      expect(screen.getByPlaceholderText('75')).toBeTruthy();
-      expect(screen.getByPlaceholderText('90')).toBeTruthy();
+      expect(screen.getByPlaceholderText('85')).toBeTruthy();
     });
 
-    it('should submit typed values for contextWindowTokensInput/handoffSoftRatioInput/handoffHardRatioInput', async () => {
+    it('no longer renders the retired soft/hard threshold inputs', () => {
+      // The two-stage pair existed only to drive the threshold banners this
+      // change removed; leaving either input would offer configuration that
+      // nothing reads.
+      renderEmbeddedAgentForm();
+
+      expect(screen.queryByPlaceholderText('75')).toBeNull();
+      expect(screen.queryByPlaceholderText('90')).toBeNull();
+    });
+
+    it('should submit typed values for contextWindowTokensInput/compactionThresholdInput', async () => {
       const user = userEvent.setup();
       const { props } = renderEmbeddedAgentForm();
 
@@ -486,8 +495,7 @@ describe('EmbeddedAgentForm', () => {
       await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
       await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
       await user.type(screen.getByPlaceholderText('e.g., 128000'), '128000');
-      await user.type(screen.getByPlaceholderText('75'), '80');
-      await user.type(screen.getByPlaceholderText('90'), '95');
+      await user.type(screen.getByPlaceholderText('85'), '80');
 
       await user.click(screen.getByText('Add Embedded Agent'));
 
@@ -497,11 +505,10 @@ describe('EmbeddedAgentForm', () => {
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
       expect(formData.contextWindowTokensInput).toBe('128000');
-      expect(formData.handoffSoftRatioInput).toBe('80');
-      expect(formData.handoffHardRatioInput).toBe('95');
+      expect(formData.compactionThresholdInput).toBe('80');
     });
 
-    it('should submit empty strings for contextWindowTokensInput/handoffSoftRatioInput/handoffHardRatioInput when left blank', async () => {
+    it('should submit empty strings for contextWindowTokensInput/compactionThresholdInput when left blank', async () => {
       const user = userEvent.setup();
       const { props } = renderEmbeddedAgentForm();
 
@@ -517,15 +524,13 @@ describe('EmbeddedAgentForm', () => {
 
       const formData = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0][0] as EmbeddedAgentFormData;
       expect(formData.contextWindowTokensInput).toBe('');
-      expect(formData.handoffSoftRatioInput).toBe('');
-      expect(formData.handoffHardRatioInput).toBe('');
+      expect(formData.compactionThresholdInput).toBe('');
       // The submitted raw string form data converts to `undefined` via the
       // module's parse helpers (this is what AddEmbeddedAgentForm/
       // EditEmbeddedAgentForm actually call on submit -- see
-      // parseContextWindowTokens/parseHandoffRatio unit tests below).
+      // parseContextWindowTokens/parseCompactionThreshold unit tests below).
       expect(parseContextWindowTokens(formData.contextWindowTokensInput)).toBeUndefined();
-      expect(parseHandoffRatio(formData.handoffSoftRatioInput)).toBeUndefined();
-      expect(parseHandoffRatio(formData.handoffHardRatioInput)).toBeUndefined();
+      expect(parseCompactionThreshold(formData.compactionThresholdInput)).toBeUndefined();
     });
 
     it('should show a validation error for a non-integer contextWindowTokensInput', async () => {
@@ -546,43 +551,45 @@ describe('EmbeddedAgentForm', () => {
       expect(props.onSubmit).not.toHaveBeenCalled();
     });
 
-    it('should show a validation error for a handoffSoftRatioInput above 100', async () => {
+    it('should show a validation error for a compactionThresholdInput above 100', async () => {
       const user = userEvent.setup();
       const { props } = renderEmbeddedAgentForm();
 
       await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
       await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
       await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
-      await user.type(screen.getByPlaceholderText('75'), '150');
+      await user.type(screen.getByPlaceholderText('85'), '150');
       await user.tab();
 
       await user.click(screen.getByText('Add Embedded Agent'));
 
       await waitFor(() => {
-        expect(screen.getByText('Must be a number between 0 and 100')).toBeTruthy();
+        expect(screen.getByText('Must be a number above 0 and up to 100')).toBeTruthy();
       });
       expect(props.onSubmit).not.toHaveBeenCalled();
     });
 
-    it('should show a validation error for a negative handoffHardRatioInput', async () => {
+    it('should show a validation error for a compactionThresholdInput of 0', async () => {
+      // Mirrors the server schema's exclusion of 0: a zero threshold would
+      // compact after every turn including the first.
       const user = userEvent.setup();
       const { props } = renderEmbeddedAgentForm();
 
       await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
       await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
       await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
-      await user.type(screen.getByPlaceholderText('90'), '-5');
+      await user.type(screen.getByPlaceholderText('85'), '0');
       await user.tab();
 
       await user.click(screen.getByText('Add Embedded Agent'));
 
       await waitFor(() => {
-        expect(screen.getByText('Must be a number between 0 and 100')).toBeTruthy();
+        expect(screen.getByText('Must be a number above 0 and up to 100')).toBeTruthy();
       });
       expect(props.onSubmit).not.toHaveBeenCalled();
     });
 
-    it('should pre-fill percentage inputs in edit mode via formatHandoffRatioInput', () => {
+    it('should pre-fill the percentage input in edit mode via formatCompactionThresholdInput', () => {
       renderEmbeddedAgentForm({
         mode: 'edit',
         initialData: {
@@ -596,17 +603,15 @@ describe('EmbeddedAgentForm', () => {
           enabledTools: ['Read', 'Glob', 'Grep'],
           instructions: [],
           contextWindowTokensInput: '128000',
-          handoffSoftRatioInput: formatHandoffRatioInput(0.8),
-          handoffHardRatioInput: formatHandoffRatioInput(0.95),
+          compactionThresholdInput: formatCompactionThresholdInput(0.8),
         },
       });
 
       expect(screen.getByDisplayValue('128000')).toBeTruthy();
       expect(screen.getByDisplayValue('80')).toBeTruthy();
-      expect(screen.getByDisplayValue('95')).toBeTruthy();
     });
 
-    it('round-trips a decimal threshold (e.g. 75.6%) through the Edit form unchanged, instead of drifting to a whole percent (CodeRabbit: formatHandoffRatioInput precision)', () => {
+    it('round-trips a decimal threshold (e.g. 75.6%) through the Edit form unchanged, instead of drifting to a whole percent', () => {
       renderEmbeddedAgentForm({
         mode: 'edit',
         initialData: {
@@ -620,67 +625,13 @@ describe('EmbeddedAgentForm', () => {
           enabledTools: ['Read', 'Glob', 'Grep'],
           instructions: [],
           contextWindowTokensInput: '128000',
-          handoffSoftRatioInput: formatHandoffRatioInput(0.756),
-          handoffHardRatioInput: formatHandoffRatioInput(0.9),
+          compactionThresholdInput: formatCompactionThresholdInput(0.756),
         },
       });
 
       // Must show "75.6", NOT "76" -- a decimal threshold stored by a prior
       // save must not drift when the definition is re-opened for editing.
       expect(screen.getByDisplayValue('75.6')).toBeTruthy();
-      expect(screen.getByDisplayValue('90')).toBeTruthy();
-    });
-
-    it('should reject submission when the soft threshold exceeds the hard threshold', async () => {
-      const user = userEvent.setup();
-      const { props } = renderEmbeddedAgentForm();
-
-      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
-      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
-      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
-      await user.type(screen.getByPlaceholderText('75'), '95');
-      await user.type(screen.getByPlaceholderText('90'), '80');
-      await user.tab();
-
-      await user.click(screen.getByText('Add Embedded Agent'));
-
-      await waitFor(() => {
-        expect(screen.getByText('Soft threshold must not exceed the hard threshold')).toBeTruthy();
-      });
-      expect(props.onSubmit).not.toHaveBeenCalled();
-    });
-
-    it('should allow submission when the soft threshold equals the hard threshold', async () => {
-      const user = userEvent.setup();
-      const { props } = renderEmbeddedAgentForm();
-
-      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
-      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
-      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
-      await user.type(screen.getByPlaceholderText('75'), '80');
-      await user.type(screen.getByPlaceholderText('90'), '80');
-
-      await user.click(screen.getByText('Add Embedded Agent'));
-
-      await waitFor(() => {
-        expect(props.onSubmit).toHaveBeenCalledTimes(1);
-      });
-    });
-
-    it('should allow submission when only one of the two threshold inputs is set (no cross-field comparison possible)', async () => {
-      const user = userEvent.setup();
-      const { props } = renderEmbeddedAgentForm();
-
-      await user.type(screen.getByPlaceholderText('e.g., Ollama qwen3:32b'), 'My Embedded Agent');
-      await user.type(screen.getByPlaceholderText('http://localhost:11434/v1'), 'http://localhost:11434/v1');
-      await user.type(screen.getByPlaceholderText('e.g., qwen3:32b'), 'qwen3:32b');
-      await user.type(screen.getByPlaceholderText('75'), '95');
-
-      await user.click(screen.getByText('Add Embedded Agent'));
-
-      await waitFor(() => {
-        expect(props.onSubmit).toHaveBeenCalledTimes(1);
-      });
     });
   });
 
@@ -702,50 +653,39 @@ describe('EmbeddedAgentForm', () => {
     });
   });
 
-  describe('parseHandoffRatio', () => {
+  describe('parseCompactionThreshold', () => {
     it('should return undefined for an empty string', () => {
-      expect(parseHandoffRatio('')).toBeUndefined();
+      expect(parseCompactionThreshold('')).toBeUndefined();
     });
 
     it('should return undefined for undefined input', () => {
-      expect(parseHandoffRatio(undefined)).toBeUndefined();
+      expect(parseCompactionThreshold(undefined)).toBeUndefined();
     });
 
     it('should convert a percentage string into a 0-1 ratio', () => {
-      expect(parseHandoffRatio('75')).toBe(0.75);
+      expect(parseCompactionThreshold('85')).toBe(0.85);
     });
 
     it('should convert 100 into a ratio of 1', () => {
-      expect(parseHandoffRatio('100')).toBe(1);
-    });
-
-    it('should convert 0 into a ratio of 0', () => {
-      // '0' is truthy-empty-check-sensitive: the guard is `trimmed ? ... :
-      // undefined`, and the string '0' is truthy (non-empty), so this must
-      // return 0, not undefined.
-      expect(parseHandoffRatio('0')).toBe(0);
+      expect(parseCompactionThreshold('100')).toBe(1);
     });
   });
 
-  describe('formatHandoffRatioInput', () => {
+  describe('formatCompactionThresholdInput', () => {
     it('should format a whole-percent 0-1 ratio into a plain percentage string', () => {
-      expect(formatHandoffRatioInput(0.75)).toBe('75');
+      expect(formatCompactionThresholdInput(0.85)).toBe('85');
     });
 
-    it('should preserve decimal precision instead of rounding to the nearest integer percentage (CodeRabbit: precision-loss regression)', () => {
-      expect(formatHandoffRatioInput(0.756)).toBe('75.6');
+    it('should preserve decimal precision instead of rounding to the nearest integer percentage', () => {
+      expect(formatCompactionThresholdInput(0.756)).toBe('75.6');
     });
 
     it('should format a floating-point-noise value cleanly (0.7000000000000001 * 100 -> "70", not "70.00000000000001")', () => {
-      expect(formatHandoffRatioInput(0.7000000000000001)).toBe('70');
+      expect(formatCompactionThresholdInput(0.7000000000000001)).toBe('70');
     });
 
     it('should map undefined to an empty string', () => {
-      expect(formatHandoffRatioInput(undefined)).toBe('');
-    });
-
-    it('should map a ratio of 0 to "0"', () => {
-      expect(formatHandoffRatioInput(0)).toBe('0');
+      expect(formatCompactionThresholdInput(undefined)).toBe('');
     });
   });
 });

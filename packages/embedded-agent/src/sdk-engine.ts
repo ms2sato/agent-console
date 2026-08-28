@@ -6,8 +6,10 @@
  * that document's Appendix A for the authoritative mapping table this file
  * implements).
  *
- * `query()` is called once per LIVE SDK session -- once at construction, and
- * again on every Phase 2 session-boundary handoff (`reseed`, S4/S3 below).
+ * `query()` is called EXACTLY ONCE, at construction: one live SDK session per
+ * engine instance, for the instance's whole life. (Phase 2 also called it on
+ * every context-handoff reseed; handoff was retired by #1401, and with it the
+ * only reason this engine ever replaced a live session.)
  * Turns within one session are pushed onto a live
  * `AsyncIterable<SDKUserMessage>` (`UserMessageQueue`) that the SDK reads
  * from -- this is the SDK's own streaming-input mechanism for a multi-turn
@@ -16,7 +18,9 @@
  */
 
 import {
+  createSdkMcpServer,
   query,
+  tool,
   type Options,
   type Query,
   type SDKControlGetContextUsageResponse,
@@ -31,9 +35,15 @@ import {
   type EmbeddedAgentEvent,
   type EmbeddedAgentToolName,
 } from '@agent-console/shared';
+import {
+  COMPACT_TOOL_DESCRIPTION,
+  COMPACT_TOOL_NAME,
+  COMPACT_TOOL_SCHEDULED_RESULT,
+} from './compact-tool.js';
 import type { Engine } from './engine-types.js';
 
 type SystemInitMessage = Extract<SDKMessage, { type: 'system'; subtype: 'init' }>;
+type CompactBoundaryMessage = Extract<SDKMessage, { type: 'system'; subtype: 'compact_boundary' }>;
 type ResultMessage = Extract<SDKMessage, { type: 'result' }>;
 type ResultErrorMessage = Exclude<ResultMessage, { subtype: 'success' }>;
 type StreamEvent = Extract<SDKMessage, { type: 'stream_event' }>['event'];
@@ -58,24 +68,74 @@ const CONTEXT_USAGE_SETTLE_DELAY_MS = 500;
 const CONTEXT_USAGE_MAX_ATTEMPTS = 6;
 
 /**
- * PS1 tripwire (docs/design/embedded-agent-sdk-engine.md §5): `settings.
- * autoCompactEnabled: false` is verified at small scale only -- a real
- * ~1M-token full-window compaction was outside the design probe's budget.
- * This constant does not PREVENT SDK-side compaction; it makes an
- * unverified-at-scale premise LOUD instead of silent. A drop of more than
- * this ratio between two consecutive context-usage polls, with no
- * intervening handoff (`reseed()` resets the baseline), is logged as a
- * possible violation of PS1.
+ * PS1 tripwire (docs/design/embedded-agent-sdk-engine.md §5): a drop of more
+ * than this ratio between two consecutive context-usage polls is logged as an
+ * anomaly.
+ *
+ * Its ROLE changed when compaction became a supported mode. The primary
+ * detector of a compaction is now the SDK's own `compact_boundary` message,
+ * which probe #1400 confirmed reaches the query iterator for both manual and
+ * automatic firings. This ratio is the secondary detector, and it watches for
+ * exactly one thing: a large drop with NO accompanying boundary. That is a
+ * genuine anomaly in either mode, which is why the tripwire survives the
+ * toggle being ON rather than being deleted with it.
+ *
+ * **The constant is configuration-relative, not universal.** What it measures
+ * is `getContextUsage().totalTokens`, which includes a baseline of system
+ * prompt plus tool definitions (~21.5k in the probe) that compaction does not
+ * touch. Sensitivity therefore depends on the conversation-to-baseline ratio,
+ * and the baseline itself varies with the definition's `instructions[]` and
+ * tool set. Measured: near the auto-fire threshold a real compaction dropped
+ * totalTokens by 74.9% (101588 -> 25544), comfortably over this bar; a manual
+ * compaction of a small conversation dropped it by 2% (25308 -> 24792) and
+ * does not trip it at all. The second case is harmless precisely because the
+ * boundary event, not this ratio, is what surfaces a compaction.
  */
 const MATERIAL_DROP_RATIO = 0.2;
+
+/**
+ * Name of the in-process SDK MCP server that serves the `Compact` tool. Short
+ * on purpose: the SDK namespaces every MCP tool, so this string is visible to
+ * the model and in the transcript as `mcp__console__Compact`.
+ */
+const COMPACT_TOOL_SERVER_NAME = 'console';
+/** The tool's namespaced, model-visible name on this engine. */
+export const SDK_COMPACT_TOOL_NAME = `mcp__${COMPACT_TOOL_SERVER_NAME}__${COMPACT_TOOL_NAME}`;
+/**
+ * The user message the `Compact` tool enqueues. Probe #1400 P2 confirmed the
+ * SDK admits `/compact` pushed as an ordinary streaming-input user message and
+ * answers with a `compact_boundary` on the query iterator.
+ *
+ * A conversation too short to compact is answered with an ordinary assistant
+ * refusal ("Not enough messages to compact.") and NO boundary. That is a
+ * result, not a failure: the refusal is visible in the transcript where the
+ * user can read it, and treating a missing boundary as "the command does not
+ * exist" would be exactly the wrong inference.
+ */
+const COMPACT_SLASH_COMMAND = '/compact';
+
+/**
+ * Builds the `Compact` tool definition for the in-process SDK MCP server.
+ *
+ * A named factory rather than an inline literal so the handler's contract --
+ * "reserve, then answer with the same wording the openai-api engine uses" --
+ * is directly exercisable in a test without reaching into the SDK's own
+ * server internals to find the registered handler.
+ */
+export function createSdkCompactTool(onReserve: () => void) {
+  return tool(COMPACT_TOOL_NAME, COMPACT_TOOL_DESCRIPTION, {}, async () => {
+    onReserve();
+    return { content: [{ type: 'text' as const, text: COMPACT_TOOL_SCHEDULED_RESULT }] };
+  });
+}
 
 /**
  * Streaming-input queue backing `query()`'s `prompt: AsyncIterable<SDKUserMessage>`.
  * A pushed message is delivered to the next waiting `stream()` consumer
  * immediately; otherwise it buffers until the consumer catches up. `close()`
  * signals end-of-stream once any already-queued items have drained -- unused
- * in Phase 1/2 (each live `Query` runs until `dispose()` or a handoff
- * reseed), kept for shutdown-path completeness.
+ * (the live `Query` runs until `dispose()`), kept for shutdown-path
+ * completeness.
  */
 export class UserMessageQueue {
   private pending: SDKUserMessage[] = [];
@@ -156,19 +216,18 @@ export interface SdkEngineDeps {
   enabledTools?: EmbeddedAgentToolName[];
   mcp: { baseUrl: string; token: string };
   emit: (event: EmbeddedAgentEvent) => void;
-  /** Context Handoff (Phase 2, S3): loads the (possibly operator-overridden)
-   * distillation prompt -- the SAME `factories.loadHandoffPrompt` the
-   * openai-api engine uses (main.ts is the single writer that composes this
-   * from the raw factory; see main.ts's `claude-sdk` init arm). */
-  loadHandoffPrompt: () => Promise<string>;
+  /**
+   * Compaction: the WORKER's auto-compaction toggle, composed into the SDK's
+   * own `autoCompactEnabled` setting. Probe #1400 P1a confirmed the setting
+   * both arrives and follows in all four directions, which is what let this
+   * ship as a live toggle rather than an at-next-activation one.
+   */
+  autoCompaction: boolean;
   /** DI seam for tests; defaults to the real SDK `query` function. */
   queryFn?: typeof query;
   /** DI seam for tests: the H2 retry-with-settle delay. Defaults to a real setTimeout-based sleep. */
   sleep?: (ms: number) => Promise<void>;
 }
-
-/** Outcome of one distillation turn (S3's "distill" step). */
-type DistillationOutcome = { ok: true; text: string } | { ok: false; reason: string };
 
 /**
  * The claude-sdk engine. See the module header for the overall shape; see
@@ -181,39 +240,37 @@ export class SdkEngine implements Engine {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly enabledToolNames: EmbeddedAgentToolName[];
   private readonly allowedToolNames: Set<string>;
-  /** S3: the ORIGINAL (Phase 1's composeSdkSystemPromptAppend output)
-   * systemPrompt.append, fixed at construction. Every reseed composes THIS
-   * (never a previously-reseeded value) plus the latest distillation --
-   * "the original composed append ... plus the distillation", per the AC. */
-  private readonly originalSystemPromptAppend: string | undefined;
-
-  private queue = new UserMessageQueue();
-  private query: Query;
-  /** S4: bumped on every reseed. A `consumeLoop` invocation captures its own
-   * query's generation at start; when its stream ends, a generation mismatch
-   * means a NEWER query has since superseded it (an expected clean end, not
-   * "the process died unexpectedly"). See `reseed` and `consumeLoop`. */
-  private queryGeneration = 0;
+  private readonly queue = new UserMessageQueue();
+  private readonly query: Query;
 
   private currentTurnId: string | null = null;
   private iterationText = '';
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
 
-  /** S3: 'distillation' while the handoff's own internal turn is in flight --
-   * suppresses the normal per-turn wire events (assistant-delta/-message,
-   * tool-call/-result) so the distillation prompt/response never reaches the
-   * client as an ordinary turn (matches the native engine's `emitDeltas:
-   * false` -- see agent-loop.ts's `handoff()` doc comment for the "dangling
-   * assistant-message bubble" this prevents). */
-  private turnMode: 'normal' | 'distillation' = 'normal';
-  private distillationText = '';
-  private distillationSawToolCall = false;
-  private distillationDeferred: { resolve: (outcome: DistillationOutcome) => void } | null = null;
-
   /** S2: previous poll's usable totalTokens, for the PS1 material-drop
-   * tripwire. `null` = no baseline yet (fresh session or just-reseeded). */
+   * tripwire. `null` = no baseline yet. */
   private previousTotalTokens: number | null = null;
+
+  /** Compaction: the worker's auto toggle, mirrored into the SDK's settings. */
+  private autoCompaction: boolean;
+  /**
+   * Compaction: a `compact_boundary` observed during the current turn, and
+   * the `compact_summary` the `PostCompact` hook delivered for it.
+   *
+   * Both are buffered and the marker is emitted once, at the turn's `result`.
+   * The two signals arrive on INDEPENDENT paths -- the boundary on the query
+   * iterator, the summary through the hook callback -- and their relative
+   * order is not part of any contract we have measured. Emitting on whichever
+   * arrives first would drop the summary in one of the two orderings; the
+   * turn's `result` is the first moment both have definitely landed. This is
+   * the same buffer-and-flush shape `pendingToolResults` uses for the
+   * tool-call/tool-result ordering race, for the same reason.
+   */
+  private pendingCompactBoundary: CompactBoundaryMessage['compact_metadata'] | null = null;
+  private pendingCompactSummary: string | null = null;
+  /** Compaction: a `/compact` booked by the tool, sent at the turn boundary. */
+  private pendingCompactCommand = false;
 
   /**
    * Ordering guard for the tool-call/tool-result race (see this file's
@@ -233,12 +290,12 @@ export class SdkEngine implements Engine {
     const enabledToolNames = deps.enabledTools ?? DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS;
     this.enabledToolNames = [...enabledToolNames];
     this.allowedToolNames = new Set(enabledToolNames);
-    this.originalSystemPromptAppend = deps.systemPromptAppend;
+    this.autoCompaction = deps.autoCompaction;
 
-    // Exactly ONE production call site for the SDK's query() function --
-    // this is both the DI seam Pin 1(a) exercises and the grep-containment
-    // target Pin 1(b) verifies (see __tests__/sdk-engine.test.ts). `reseed`
-    // below is the second (and only other) production call site.
+    // The ONLY production call site for the SDK's query() function -- both
+    // the DI seam Pin 1(a) exercises and the grep-containment target Pin 1(b)
+    // verifies (see __tests__/sdk-engine.test.ts). Phase 2's `reseed` was the
+    // second; it went with handoff (#1401), so containment is now exact.
     this.query = this.queryFn({ prompt: this.queue.stream(), options: this.buildOptions(deps.systemPromptAppend) });
 
     // Start the background stream consumer (detached, fire-and-forget)
@@ -252,25 +309,27 @@ export class SdkEngine implements Engine {
     // decoupled from system:init by design -- see
     // docs/design/embedded-agent-sdk-engine.md Appendix A.2, the `ready`
     // row's correction trail.
-    void this.consumeLoop(this.query, this.queryGeneration);
+    void this.consumeLoop(this.query);
     this.deps.emit({ v: 1, type: 'ready' });
   }
 
   /**
-   * Builds the `query()` Options battery. Used by BOTH the constructor
-   * (initial construction) and `reseed` (S3's handoff successor) -- S3
-   * requires every Phase 1 pin (no `resume`, allowlist `tools`,
-   * `spawnClaudeCodeProcess`, `settingSources: []`, `autoCompactEnabled:
-   * false`, no `apiKey`) to hold on the reseed options too. A second
-   * hand-rolled options object is exactly the drift vector this single
-   * builder exists to kill.
+   * Builds the `query()` Options battery. One call site now that `reseed` is
+   * gone, but kept as a named builder: every Phase 1 pin (no `resume`,
+   * allowlist `tools`, `spawnClaudeCodeProcess`, `settingSources: []`, no
+   * `apiKey`) is asserted against its output, and a second hand-rolled
+   * options object anywhere is the drift vector this exists to kill.
    */
   private buildOptions(systemPromptAppend: string | undefined): Options {
     return {
       executable: 'bun',
       cwd: this.deps.cwd,
       model: this.deps.model,
-      tools: [...this.enabledToolNames],
+      // `Compact` is appended to the allowlist here rather than being a
+      // member of `enabledToolNames`: it is a self-management tool, outside
+      // the capability registry `enabledTools` configures, so no
+      // representable definition can remove it (see compact-tool.ts).
+      tools: [...this.enabledToolNames, SDK_COMPACT_TOOL_NAME],
       mcpServers: {
         'agent-console': {
           type: 'http',
@@ -278,12 +337,43 @@ export class SdkEngine implements Engine {
           headers: { Authorization: `Bearer ${this.deps.mcp.token}` },
           alwaysLoad: true,
         },
+        // Compaction's `Compact` tool, served IN THIS PROCESS -- the handler
+        // acts on state that lives here, and the server has no part in it
+        // (docs/design/embedded-agent-worker.md § The `Compact` tool). The
+        // SDK namespaces it, so the model sees `mcp__console__Compact` while
+        // the openai-api engine's model sees plain `Compact`; the contract
+        // (no parameters, reservation semantics, result wording) is identical.
+        [COMPACT_TOOL_SERVER_NAME]: createSdkMcpServer({
+          name: COMPACT_TOOL_SERVER_NAME,
+          tools: [createSdkCompactTool(() => this.reserveCompaction())],
+        }),
       },
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
       includePartialMessages: true,
       settingSources: [],
-      settings: { autoCompactEnabled: false },
+      // Compaction: the SDK's own auto-compaction IS this engine's automatic
+      // compaction; the worker's toggle drives it directly rather than
+      // through any machinery of ours.
+      settings: { autoCompactEnabled: this.autoCompaction },
+      // The `PostCompact` hook is the only path that carries the summary
+      // text; the `compact_boundary` message on the iterator carries the
+      // token counts but not the words. Both are needed for one marker --
+      // see `pendingCompactBoundary`.
+      hooks: {
+        PostCompact: [
+          {
+            hooks: [
+              async (input) => {
+                if (input.hook_event_name === 'PostCompact') {
+                  this.pendingCompactSummary = input.compact_summary;
+                }
+                return { continue: true };
+              },
+            ],
+          },
+        ],
+      },
       spawnClaudeCodeProcess,
       ...(systemPromptAppend !== undefined
         ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend } }
@@ -309,174 +399,43 @@ export class SdkEngine implements Engine {
     });
   }
 
+  /**
+   * Compaction: reflect a change to the worker's auto-compaction toggle into
+   * the live SDK session.
+   *
+   * Applied mid-session rather than at the next activation because probe
+   * #1400 P1a measured `applyFlagSettings` actually taking effect: writing
+   * `false` then reading back reported `false`, writing `true` reported
+   * `true`, and construction in either state agreed. The local field is
+   * updated first so a later reconstruction composes the current value even
+   * if the live write fails.
+   *
+   * The write is best-effort: a failure here leaves the durable value (which
+   * the server has already persisted) to take effect at the next activation,
+   * which is strictly better than throwing into a UI toggle's callback.
+   */
+  setAutoCompaction(enabled: boolean): void {
+    this.autoCompaction = enabled;
+    if (this.dead) return;
+    void this.query.applyFlagSettings({ autoCompactEnabled: enabled }).catch((err: unknown) => {
+      console.warn(
+        `[sdk-engine] failed to apply autoCompactEnabled=${enabled} to the live session; ` +
+          `it will take effect at the next activation: ${errorMessage(err)}`,
+      );
+    });
+  }
+
   cancel(): void {
+    // Compaction: a `Compact` booked during the turn being canceled is
+    // discarded. Cancel means "stop what you were doing", and the tool call
+    // was part of what was being done.
+    this.pendingCompactCommand = false;
     if (this.dead) return;
     void this.query.interrupt().catch(() => {
       // Best-effort: the pending turn's eventual settlement happens via the
       // `result` message the interrupt triggers (or, on transport failure,
       // via the consumer loop's fatal path) -- nothing further to do here.
     });
-  }
-
-  /**
-   * Context Handoff (Phase 2, docs/design/embedded-agent-sdk-engine.md §4
-   * "Context handoff" row / S3): distill the CURRENT session's conversation
-   * into a summary (a turn on the live query, wire-suppressed -- see
-   * `turnMode`), emit the `context-handoff` marker, then terminate the old
-   * SDK session and seed a successor via `reseed`. Brackets `state: active
-   * -> idle` exactly once per call, matching the native engine's handoff
-   * (agent-loop.ts) and S3's "no second `ready`" requirement -- `ready` is
-   * construction-time only and is never re-emitted here.
-   *
-   * Handoff during an active turn: main.ts's dispatch loop already rejects a
-   * `handoff` command while `turnActive` is true (same gate `user-message`
-   * is subject to), so this method is never invoked concurrently with
-   * `runTurn` -- the native engine is gated identically at the same layer.
-   * This engine adds no additional concurrency handling because none is
-   * needed.
-   */
-  async handoff(): Promise<void> {
-    if (this.dead) {
-      this.deps.emit({
-        v: 1,
-        type: 'fatal',
-        message: 'SDK engine session already terminated; cannot start a handoff',
-      });
-      return;
-    }
-    this.deps.emit({ v: 1, type: 'state', state: 'active' });
-
-    let promptText: string;
-    try {
-      promptText = await this.deps.loadHandoffPrompt();
-    } catch (err) {
-      this.emitHandoffFailure(`failed to load handoff prompt: ${errorMessage(err)}`);
-      return;
-    }
-
-    const outcome = await this.runDistillationTurn(promptText);
-    if (this.dead) {
-      // A transport crash or Pin 2 containment fatal landed WHILE the
-      // distillation turn was in flight -- `settlePendingDistillation`
-      // already resolved `outcome` as a failure and `handleFatal` already
-      // emitted `fatal`. Nothing further to emit here.
-      return;
-    }
-
-    // S1: "once after each handoff attempt", regardless of outcome --
-    // measured on the OLD (still-current) query, which is the semantically
-    // meaningful measurement (how much context the handoff is relieving).
-    await this.pollContextUsage();
-    if (this.dead) {
-      // pollContextUsage's H2-exhaustion path already emitted `fatal` and
-      // disposed the (about-to-be-replaced) old query -- do not proceed to
-      // reseed on top of a session the engine has already declared dead.
-      return;
-    }
-
-    if (!outcome.ok) {
-      this.emitHandoffFailure(`Context handoff failed: ${outcome.reason}`);
-      return;
-    }
-
-    this.deps.emit({ v: 1, type: 'context-handoff', distillation: outcome.text });
-    this.reseed(outcome.text);
-    if (this.dead) {
-      // reseed()'s successor-construction failure path already emitted
-      // `fatal` -- do not also emit a spurious state:idle on top of it.
-      return;
-    }
-    this.deps.emit({ v: 1, type: 'state', state: 'idle' });
-  }
-
-  private emitHandoffFailure(message: string): void {
-    this.deps.emit({ v: 1, type: 'turn-error', turnId: crypto.randomUUID(), message });
-    this.deps.emit({ v: 1, type: 'state', state: 'idle' });
-  }
-
-  /** Runs the handoff distillation prompt as a turn on the CURRENT (still
-   * live) query, capturing the resulting text instead of streaming it to the
-   * client (`turnMode`). No tool calls are expected; if the SDK issues any
-   * anyway, the outcome is a failure -- mirrors the native engine's
-   * "tool-call-only response has nothing usable to seed with" rejection. */
-  private async runDistillationTurn(promptText: string): Promise<DistillationOutcome> {
-    this.turnMode = 'distillation';
-    this.distillationText = '';
-    this.distillationSawToolCall = false;
-    this.currentTurnId = crypto.randomUUID();
-    return new Promise<DistillationOutcome>((resolve) => {
-      this.distillationDeferred = { resolve };
-      this.queue.push({ type: 'user', message: { role: 'user', content: promptText }, parent_tool_use_id: null });
-    });
-  }
-
-  private settleDistillation(message: ResultMessage): void {
-    const deferred = this.distillationDeferred;
-    this.distillationDeferred = null;
-    this.turnMode = 'normal';
-    if (!deferred) return;
-    if (message.subtype !== 'success') {
-      deferred.resolve({ ok: false, reason: this.buildTurnErrorMessage(message) });
-      return;
-    }
-    if (this.distillationSawToolCall || this.distillationText.trim().length === 0) {
-      deferred.resolve({ ok: false, reason: 'provider returned no usable distillation' });
-      return;
-    }
-    deferred.resolve({ ok: true, text: this.distillationText });
-  }
-
-  /**
-   * S3/S4: terminates the current SDK query and constructs a successor on a
-   * FRESH session id (never `resume` -- PS4 is gated everywhere, §6). The
-   * successor's `systemPrompt.append` is the ORIGINAL composed append (never
-   * a previously-reseeded one) plus the latest distillation, original first
-   * -- matching PS3's probe-verified mechanism. Bumps `queryGeneration`
-   * BEFORE constructing the new query so the OLD query's `consumeLoop`, when
-   * its stream ends as a direct result of `close()` below, recognizes itself
-   * as superseded rather than emitting a spurious fatal (S4).
-   */
-  private reseed(distillation: string): void {
-    try {
-      this.query.close();
-    } catch {
-      // Already closed / never fully started -- nothing more to release.
-    }
-    // No `await` between close() and the generation bump: the old
-    // `consumeLoop`'s `for await` can only observe the stream ending on a
-    // LATER microtask/macrotask, by which point `queryGeneration` must
-    // already reflect the successor.
-    this.queryGeneration++;
-
-    const appendParts = [this.originalSystemPromptAppend, distillation].filter(
-      (part): part is string => part !== undefined && part.length > 0,
-    );
-    const systemPromptAppend = appendParts.length > 0 ? appendParts.join('\n\n') : undefined;
-
-    // Build the successor query BEFORE touching `this.queue`/`this.query`:
-    // if `queryFn` throws synchronously (the same failure mode Phase 1's
-    // initial construction is already rescued against, one layer up in
-    // main.ts), the engine must not silently keep pointing at the just-
-    // closed old query with a queue nothing is reading -- `handleFatal`
-    // below marks it dead so a later runTurn/handoff fails loudly instead
-    // of hanging.
-    const newQueue = new UserMessageQueue();
-    let successorQuery: Query;
-    try {
-      successorQuery = this.queryFn({ prompt: newQueue.stream(), options: this.buildOptions(systemPromptAppend) });
-    } catch (err) {
-      this.handleFatal(`SDK engine reseed construction failed: ${errorMessage(err)}`);
-      return;
-    }
-
-    this.queue = newQueue;
-    this.query = successorQuery;
-    // An intentional handoff-driven drop in context usage must never itself
-    // trip the PS1 material-drop tripwire (S2) -- the next usable poll
-    // becomes the new baseline with nothing to compare against.
-    this.previousTotalTokens = null;
-
-    void this.consumeLoop(this.query, this.queryGeneration);
   }
 
   /** Closes the underlying SDK query, which terminates its child `claude`
@@ -489,6 +448,7 @@ export class SdkEngine implements Engine {
    * case `consumeLoop` guards against below. */
   dispose(): void {
     this.dead = true;
+    this.pendingCompactCommand = false;
     try {
       this.query.close();
     } catch {
@@ -497,34 +457,31 @@ export class SdkEngine implements Engine {
   }
 
   /**
-   * `query`/`generation` are captured PARAMETERS, not read from `this.query`
-   * /`this.queryGeneration`, so a loop started for an OLD query keeps
-   * comparing against the value it was born with even after `reseed` moves
-   * `this.query`/bumps `this.queryGeneration` out from under it (S4).
+   * Consumes the one live query's message stream for the engine's lifetime.
+   *
+   * Phase 2 carried a per-query generation counter here, because a handoff
+   * reseed replaced the live query and made the old loop's stream end
+   * cleanly -- indistinguishable, without the counter, from the process
+   * having died. With handoff retired (#1401) there is exactly one query per
+   * engine and nothing can supersede it, so the guard degenerates to the
+   * Phase 1 shape: a clean end is always unexpected unless we caused it.
    */
-  private async consumeLoop(activeQuery: Query, generation: number): Promise<void> {
+  private async consumeLoop(activeQuery: Query): Promise<void> {
     try {
       for await (const message of activeQuery) {
         await this.handleMessage(message);
         if (this.dead) break;
       }
-      if (generation !== this.queryGeneration) {
-        // This query was superseded by a handoff reseed before its own
-        // stream ended -- an EXPECTED clean end (S4), not the "process died
-        // unexpectedly" case the fatal below guards against.
-        return;
-      }
       // The `for await` loop exited WITHOUT throwing -- the SDK's message
       // stream ended cleanly. Outside of a deliberate `dispose()` (which
-      // already set `this.dead = true` before triggering this) or a
-      // superseding reseed (handled above), this is unexpected: the child
-      // `claude` process exited, or the SDK ended the stream, with no
-      // `result` message ever settling the pending turn. Treat it exactly
-      // like the throwing case below -- `handleFatal`'s own `if (this.dead)
-      // return;` guard makes this a no-op on the deliberate `dispose()` path.
+      // already set `this.dead = true` before triggering this), this is
+      // unexpected: the child `claude` process exited, or the SDK ended the
+      // stream, with no `result` message ever settling the pending turn.
+      // Treat it exactly like the throwing case below -- `handleFatal`'s own
+      // `if (this.dead) return;` guard makes this a no-op on the deliberate
+      // `dispose()` path.
       this.handleFatal('SDK message stream ended unexpectedly');
     } catch (err) {
-      if (generation !== this.queryGeneration) return;
       this.handleFatal(`SDK transport error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -533,6 +490,7 @@ export class SdkEngine implements Engine {
     switch (message.type) {
       case 'system':
         if (message.subtype === 'init') this.handleSystemInit(message);
+        else if (message.subtype === 'compact_boundary') this.handleCompactBoundary(message);
         return;
       case 'stream_event':
         this.handleStreamEvent(message.event);
@@ -557,7 +515,8 @@ export class SdkEngine implements Engine {
   /**
    * `sdk-session-id` is emitted on every occurrence of this message (it
    * recurs across turns on the same live session, AND on the successor
-   * session after a handoff reseed -- last-write-wins is the contract; see
+   * session id, should one ever be re-established -- last-write-wins is the
+   * contract; see
    * packages/shared/src/types/embedded-agent.ts's doc comment on the event).
    * Pin 2 (S5, #1333 AC) containment ALSO runs here, live, on every
    * occurrence -- not only in a unit test -- per the Architect's ruling: a
@@ -585,23 +544,56 @@ export class SdkEngine implements Engine {
     }
   }
 
+  /**
+   * Compaction: the SDK compacted its own conversation. Buffered rather than
+   * emitted here -- see `pendingCompactBoundary` for why both this and the
+   * `PostCompact` hook's summary have to land before the marker goes out.
+   */
+  private handleCompactBoundary(message: CompactBoundaryMessage): void {
+    this.pendingCompactBoundary = message.compact_metadata;
+  }
+
+  /**
+   * Emits the compaction boundary marker, if one is buffered. Called at the
+   * turn's terminal `result`, the first point at which both the boundary and
+   * the hook's summary have definitely arrived.
+   *
+   * `post_tokens` is optional on the SDK's own metadata, so the marker
+   * carries the pair only when both numbers are real -- a compaction that
+   * cannot report its severity renders the plain marker rather than a
+   * fabricated number (see the event's doc comment in shared).
+   */
+  private flushCompactionBoundary(): void {
+    const metadata = this.pendingCompactBoundary;
+    const summary = this.pendingCompactSummary;
+    this.pendingCompactBoundary = null;
+    this.pendingCompactSummary = null;
+    if (!metadata) return;
+
+    this.deps.emit({
+      v: 1,
+      type: 'context-compacted',
+      source: metadata.trigger,
+      ...(summary !== null ? { summary } : {}),
+      ...(metadata.post_tokens !== undefined
+        ? { preTokens: metadata.pre_tokens, postTokens: metadata.post_tokens }
+        : {}),
+    });
+  }
+
   private handleStreamEvent(event: StreamEvent): void {
     if (event.type === 'content_block_delta') {
       const { delta } = event;
       if (delta.type === 'text_delta') {
         this.iterationText += delta.text;
-        if (this.turnMode === 'normal') {
-          this.deps.emit({ v: 1, type: 'assistant-delta', turnId: this.requireTurnId(), text: delta.text });
-        }
+        this.deps.emit({ v: 1, type: 'assistant-delta', turnId: this.requireTurnId(), text: delta.text });
       } else if (delta.type === 'thinking_delta') {
-        if (this.turnMode === 'normal') {
-          this.deps.emit({
-            v: 1,
-            type: 'assistant-thinking-delta',
-            turnId: this.requireTurnId(),
-            text: delta.thinking,
-          });
-        }
+        this.deps.emit({
+          v: 1,
+          type: 'assistant-thinking-delta',
+          turnId: this.requireTurnId(),
+          text: delta.thinking,
+        });
       }
       // input_json_delta (partial tool-call-argument JSON) and other delta
       // kinds: no native counterpart -- ignored.
@@ -615,12 +607,8 @@ export class SdkEngine implements Engine {
     // no mapping needed.
   }
 
-  /** Emits the completed iteration's assistant-message at `message_stop`, or
-   * (during a handoff's distillation turn -- `turnMode`) accumulates it into
-   * `distillationText` instead of emitting anything on the wire, so the
-   * client never sees a stray assistant bubble for the internal distillation
-   * prompt (matches the native engine's `emitDeltas: false` intent -- see
-   * agent-loop.ts's `handoff()`). Tool calls are NOT buffered here -- they
+  /** Emits the completed iteration's assistant-message at `message_stop`.
+   * Tool calls are NOT buffered here -- they
    * are emitted immediately as they are observed, in `handleAssistantMessage`
    * below. (A prior version of this engine buffered `tool_use` blocks and
    * flushed them here, after the assistant-message emit, to match the native
@@ -631,11 +619,6 @@ export class SdkEngine implements Engine {
    * docs/design/embedded-agent-sdk-engine.md Appendix A's `tool-call` row
    * correction trail for the full account.) */
   private emitAssistantMessage(): void {
-    if (this.turnMode === 'distillation') {
-      this.distillationText += this.iterationText;
-      this.iterationText = '';
-      return;
-    }
     const turnId = this.requireTurnId();
     // Always emit the assistant message, even when the text is empty --
     // matches the native engine's "always emit" contract (e.g. a
@@ -658,19 +641,10 @@ export class SdkEngine implements Engine {
    * `tool-result` that arrived earlier for this exact callId (queued by
    * `handleUserMessage` below because its `tool-call` had not been emitted
    * yet) is flushed right after.
-   *
-   * During a handoff's distillation turn (`turnMode`), a tool_use block is
-   * NOT expected -- the SDK still executes it internally regardless of
-   * whether we surface it, so this only records that it happened (for
-   * `settleDistillation`'s failure classification) and emits nothing.
    */
   private handleAssistantMessage(message: AssistantMessagePayload): void {
     for (const block of message.content) {
       if (block.type === 'tool_use') {
-        if (this.turnMode === 'distillation') {
-          this.distillationSawToolCall = true;
-          continue;
-        }
         this.emitToolCall(block.id, block.name, block.input);
       }
     }
@@ -698,14 +672,8 @@ export class SdkEngine implements Engine {
    * `emitToolCall` the moment that callId's `tool-call` does go out. Any
    * result still queued when the turn ends (`handleResult`) is emitted
    * anyway, with a loud warning, rather than silently dropped.
-   *
-   * During a handoff's distillation turn (`turnMode`), no tool call is
-   * expected to have been emitted in the first place (see
-   * `handleAssistantMessage`), so any `tool_result` echo here is silently
-   * ignored -- there is no callId for it to correlate with on the wire.
    */
   private handleUserMessage(message: UserMessagePayload): void {
-    if (this.turnMode === 'distillation') return;
     const { content } = message;
     if (typeof content === 'string') return;
     for (const block of content) {
@@ -735,21 +703,24 @@ export class SdkEngine implements Engine {
    * native); every error subtype maps to a labeled `turn-error` message.
    * Any `tool-result` still queued at this point never saw its `tool-call`
    * arrive during the turn -- a genuinely pathological case -- and is
-   * flushed here anyway (loudly logged) rather than dropped. During a
-   * handoff's distillation turn (`turnMode`), settles the distillation
-   * promise instead of the normal per-turn machinery -- see
-   * `settleDistillation`. Otherwise: polls context usage (S1), emits
-   * `state: idle`, and settles the pending turn. */
+   * flushed here anyway (loudly logged) rather than dropped. Then: flushes
+   * any compaction boundary observed during the turn, polls context usage
+   * (S1), and -- unless a booked `Compact` is drained here, which holds the
+   * turn open until that injected command's own result arrives -- emits
+   * `state: idle` and settles the pending turn. */
   private async handleResult(message: ResultMessage): Promise<void> {
     const turnId = this.requireTurnId();
     this.flushOrphanedToolResults(turnId);
 
-    if (this.turnMode === 'distillation') {
-      this.settleDistillation(message);
-      return;
-    }
+    // Emitted BEFORE the usage poll so the transcript reads in causal order:
+    // the boundary marker, then the reading that reflects the post-compaction
+    // size. The poll's own tripwire also consults `pendingCompactBoundary`,
+    // which is why the flush cannot simply move to the end of this method --
+    // see `checkForMaterialDrop`.
+    const compacted = this.pendingCompactBoundary !== null;
+    this.flushCompactionBoundary();
 
-    await this.pollContextUsage();
+    await this.pollContextUsage({ compacted });
     if (this.dead) {
       // pollContextUsage's H2-exhaustion path already emitted `fatal`,
       // disposed the query, and settled the pending turn -- do not also
@@ -759,8 +730,92 @@ export class SdkEngine implements Engine {
     if (message.subtype !== 'success') {
       this.deps.emit({ v: 1, type: 'turn-error', turnId, message: this.buildTurnErrorMessage(message) });
     }
+    // Compaction: a `Compact` booked during this turn runs as PART of it --
+    // the turn is not over until the injected `/compact` reaches its own
+    // terminal `result`. Deferring `idle`/settle here is what turns the
+    // attribution contract below into a structural guarantee rather than an
+    // assumption: `main.ts` keeps `turnActive` set for as long as `runTurn`
+    // is unsettled, so no `user-message` can start a turn that would reassign
+    // `currentTurnId` out from under the injected one. This mirrors the
+    // openai-api engine, where `runUserTurn` and
+    // `settleCompactionAtTurnBoundary` are one promise for the same reason --
+    // the asymmetry this replaces was an omission, not a decision. On the
+    // second pass (the `/compact`'s own result) the flag is already cleared,
+    // so this falls through and settles exactly once.
+    if (this.pendingCompactCommand && this.drainPendingCompactCommand()) {
+      return; // turn held open; the /compact's own result settles it
+    }
     this.deps.emit({ v: 1, type: 'state', state: 'idle' });
     this.settlePendingTurn();
+  }
+
+  /**
+   * Compaction: book a `/compact` for the end of the current turn. The
+   * `Compact` tool's handler is this method's only caller -- public because
+   * that handler is constructed outside the class (`createSdkCompactTool`),
+   * and because "the tool's entry point" is a real part of this engine's
+   * surface rather than an incidental internal.
+   */
+  reserveCompaction(): void {
+    this.pendingCompactCommand = true;
+  }
+
+  /**
+   * Compaction: send the `/compact` a `Compact` tool call booked during the
+   * turn that just ended.
+   *
+   * Sent at the turn boundary, never mid-turn, for the same reason the
+   * openai-api engine reserves rather than compacts: the tool call happens
+   * inside a turn, and compaction must not interleave with one. The
+   * reservation is discarded on cancel and on shutdown -- both go through
+   * paths that clear it -- so "the user stopped what the agent was doing"
+   * also stops the compaction the agent had booked while doing it.
+   *
+   * This pushes an ordinary user message onto the SDK's own input queue. It
+   * deliberately does NOT go through `runTurn`, so no server-side
+   * `user-message` echo is appended to the persisted transcript: that echo
+   * exists to record a real human or API-caller message, and a synthetic
+   * `/compact` is neither. A fake user row would misattribute the action.
+   *
+   * **The injected turn's events carry the RESERVING turn's `turnId`, by
+   * decision -- and structurally, not by assumption.** `handleResult` defers
+   * `state: idle` and the turn's settlement until this injected command
+   * reaches its own terminal `result`, which keeps `main.ts`'s `turnActive`
+   * set across the whole compaction. A `user-message` arriving mid-compaction
+   * is therefore refused rather than started, so nothing can reassign
+   * `currentTurnId` while these events are in flight. (Before that deferral
+   * existed, the attribution below held only for as long as no one sent a
+   * message during compaction -- and emitting `state: idle` first actively
+   * invited exactly that.) Not going through `runTurn` means `currentTurnId`
+   * is never reassigned, so everything the SDK emits in response to this `/compact`
+   * -- deltas, the assistant message, the `result` -- is attributed to the
+   * turn in which the agent called `Compact`. Read as a contract rather than
+   * as a leftover: the compaction was requested during that turn, and its
+   * acknowledgement belongs to it. On the client this appends to that turn's
+   * assistant content, which is what a user sees as "I asked, and it
+   * answered". This attribution is persisted in the transcript forever, so
+   * it is wire semantics, not an implementation detail.
+   *
+   * **Why NOT mint a fresh turnId here** -- the change a future reader is
+   * most likely to make, thinking the missing id is an oversight: a fresh id
+   * would produce an assistant bubble belonging to no user message at all,
+   * because the injected `/compact` deliberately has no `user-message` row
+   * (see above). Trading a defensible attribution for an orphaned one is a
+   * regression, not a fix. Pinned by a test.
+   */
+  private drainPendingCompactCommand(): boolean {
+    if (!this.pendingCompactCommand) return false;
+    this.pendingCompactCommand = false;
+    // Nothing was queued, so nothing will produce the `result` the caller
+    // would be waiting for -- report false so it settles the turn instead of
+    // holding it open forever.
+    if (this.dead) return false;
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content: COMPACT_SLASH_COMMAND },
+      parent_tool_use_id: null,
+    });
+    return true;
   }
 
   private flushOrphanedToolResults(turnId: string): void {
@@ -803,21 +858,6 @@ export class SdkEngine implements Engine {
     }
   }
 
-  /** Settles a pending distillation turn with a failure outcome. Without
-   * this, a transport crash / Pin 2 containment fatal that lands WHILE
-   * `handoff()` is awaiting `runDistillationTurn` would leave
-   * `distillationDeferred` unsettled forever -- `handleFatal` only settled
-   * `currentTurnDeferred` (the normal-turn deferred), so `handoff()` would
-   * hang indefinitely instead of observing the fatal and returning. */
-  private settlePendingDistillation(): void {
-    if (this.distillationDeferred) {
-      const { resolve } = this.distillationDeferred;
-      this.distillationDeferred = null;
-      this.turnMode = 'normal';
-      resolve({ ok: false, reason: 'engine terminated before the distillation completed' });
-    }
-  }
-
   /**
    * S1/H2: polls `getContextUsage()` with retry-with-settle. A THROW from
    * the call is the H2 race (or a genuine transport failure -- the two are
@@ -829,7 +869,7 @@ export class SdkEngine implements Engine {
    * itself succeeded; retrying would not change a structurally-absent
    * field).
    */
-  private async pollContextUsage(): Promise<void> {
+  private async pollContextUsage(opts: { compacted?: boolean } = {}): Promise<void> {
     for (let attempt = 1; attempt <= CONTEXT_USAGE_MAX_ATTEMPTS; attempt++) {
       let response: SDKControlGetContextUsageResponse;
       try {
@@ -844,12 +884,15 @@ export class SdkEngine implements Engine {
         await this.sleep(CONTEXT_USAGE_SETTLE_DELAY_MS);
         continue;
       }
-      this.emitContextUsageIfUsable(response);
+      this.emitContextUsageIfUsable(response, opts.compacted === true);
       return;
     }
   }
 
-  private emitContextUsageIfUsable(response: SDKControlGetContextUsageResponse): void {
+  private emitContextUsageIfUsable(
+    response: SDKControlGetContextUsageResponse,
+    compacted: boolean,
+  ): void {
     const totalTokens = response?.totalTokens;
     if (typeof totalTokens !== 'number' || !Number.isFinite(totalTokens)) {
       console.warn(
@@ -857,21 +900,38 @@ export class SdkEngine implements Engine {
       );
       return;
     }
-    this.checkForMaterialDrop(totalTokens);
+    this.checkForMaterialDrop(totalTokens, compacted);
     this.deps.emit({ v: 1, type: 'context-usage', promptTokens: totalTokens, estimated: false });
     this.previousTotalTokens = totalTokens;
   }
 
-  /** S2's PS1 tripwire: see this file's `MATERIAL_DROP_RATIO` doc comment. */
-  private checkForMaterialDrop(totalTokens: number): void {
+  /**
+   * S2's PS1 tripwire, made mode-aware. Four quadrants, and only two of them
+   * warn:
+   *
+   * - toggle OFF, material drop, no boundary -> WARN. The original PS1
+   *   violation: the SDK compacted despite `autoCompactEnabled: false`.
+   * - toggle ON, material drop, boundary observed -> silent. This is the
+   *   feature working; the boundary marker is what tells the user.
+   * - toggle ON, material drop, NO boundary -> WARN. An unexplained
+   *   shrinkage is a genuine anomaly regardless of mode, and this quadrant
+   *   is the whole reason the tripwire is not simply deleted when the toggle
+   *   is on.
+   * - no material drop -> silent, in either mode.
+   *
+   * See `MATERIAL_DROP_RATIO` for why the ratio is configuration-relative
+   * and why the boundary event, not this check, is the primary detector.
+   */
+  private checkForMaterialDrop(totalTokens: number, compacted: boolean): void {
+    if (compacted) return;
     if (
       this.previousTotalTokens !== null &&
       totalTokens < this.previousTotalTokens * (1 - MATERIAL_DROP_RATIO)
     ) {
       console.warn(
         `[sdk-engine] PS1 tripwire: totalTokens dropped from ${this.previousTotalTokens} to ${totalTokens} ` +
-          `(>${MATERIAL_DROP_RATIO * 100}% drop) with no intervening handoff -- possible SDK-side compaction ` +
-          'despite autoCompactEnabled:false (docs/design/embedded-agent-sdk-engine.md §5 PS1)',
+          `(>${MATERIAL_DROP_RATIO * 100}% drop) with no accompanying compact_boundary ` +
+          `(autoCompactEnabled=${this.autoCompaction}) -- see docs/design/embedded-agent-sdk-engine.md §5 PS1`,
       );
     }
   }
@@ -883,9 +943,7 @@ export class SdkEngine implements Engine {
    * `runTurn` fails loudly instead of hanging, and settles any pending turn
    * (resolve, not reject -- mirrors how a `turn-error` always still
    * resolves the caller's promise; the `fatal` event is what tells the
-   * client something is actually wrong). Also settles any pending
-   * distillation turn (see `settlePendingDistillation`'s doc comment) --
-   * `handoff()` awaits that separately from a normal turn. Idempotent.
+   * client something is actually wrong). Idempotent.
    */
   private handleFatal(message: string): void {
     if (this.dead) return;
@@ -893,6 +951,5 @@ export class SdkEngine implements Engine {
     this.deps.emit({ v: 1, type: 'fatal', message });
     this.dispose();
     this.settlePendingTurn();
-    this.settlePendingDistillation();
   }
 }

@@ -25,7 +25,6 @@ import {
   EmbeddedAgentWorkerService,
   EmbeddedMessageDeliveryError,
   type SendUserMessageResult,
-  type TriggerHandoffResult,
 } from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn, runAsUser } from './privilege-elevation.js';
 import type { LookupOsUserFn } from './os-user-lookup.js';
@@ -737,9 +736,35 @@ export class SessionManager {
     return this.embeddedAgentWorkerService.cancel(sessionId, workerId);
   }
 
-  /** Forward a handoff trigger to an embedded-agent worker's loop. Rejects with TURN_IN_PROGRESS when a turn is already active. */
-  async triggerEmbeddedAgentHandoff(sessionId: string, workerId: string): Promise<TriggerHandoffResult> {
-    return this.embeddedAgentWorkerService.triggerHandoff(sessionId, workerId);
+  /**
+   * Compaction: set an embedded-agent worker's auto-compaction toggle.
+   *
+   * The durable write comes first and is what the return value reports on; a
+   * live subprocess is told afterwards as a best-effort convenience so the
+   * change applies without waiting for reactivation. A worker with no running
+   * subprocess is a completely ordinary case (the toggle is meaningful before
+   * activation and after a server restart), so failing to reach one is not an
+   * error.
+   *
+   * Returns `null` when the session or worker does not exist, or the worker
+   * is not an embedded-agent worker; otherwise the updated public worker.
+   */
+  async setEmbeddedAgentAutoCompaction(
+    sessionId: string,
+    workerId: string,
+    enabled: boolean,
+  ): Promise<Worker | null> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return null;
+    const worker = session.workers.get(workerId);
+    if (!worker || worker.type !== 'embedded-agent') return null;
+
+    worker.autoCompaction = enabled;
+    await this.persistSession(session);
+    this.embeddedAgentWorkerService.forwardAutoCompaction(workerId, enabled);
+    this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
+
+    return this.workerManager.toPublicWorker(worker);
   }
 
   /** Gracefully deactivate an embedded-agent worker's loop subprocess. */

@@ -40,6 +40,10 @@ const EmbeddedAgentWorkerSchema = v.strictObject({
   type: v.literal('embedded-agent'),
   embeddedAgentId: v.string(),
   activated: v.boolean(),
+  // Compaction's per-worker auto toggle. Mirrors EmbeddedAgentWorker in
+  // types/worker.ts -- this object is strict, so the field must exist here
+  // or it is stripped off the wire with no error on either side.
+  autoCompaction: v.boolean(),
 });
 
 const WorkerSchema = v.union([

@@ -240,6 +240,7 @@ export class SessionConverterService {
           createdAt: w.createdAt,
           embeddedAgentId: w.embeddedAgentId,
           activated: false, // Paused sessions have no active subprocess
+          autoCompaction: w.autoCompaction,
         };
       } else {
         const _exhaustive: never = w;

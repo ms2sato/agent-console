@@ -40,6 +40,7 @@ const initCommand = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
     v: 1,
     type: 'init',
+    compaction: { auto: false },
     engine: 'openai-api',
     mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
     provider: { baseUrl: 'http://provider/v1', model: 'm' },
@@ -76,6 +77,7 @@ class CapturingAdapter implements ProviderAdapter {
 class NoopEngine implements Engine {
   async runTurn(): Promise<void> {}
   cancel(): void {}
+  setAutoCompaction(): void {}
   async handoff(): Promise<void> {}
 }
 
@@ -117,7 +119,7 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     createAdapter: () => new StubAdapter(),
     loadInstructions: async () => ({ segments: [] }),
     loadOptInInstructions: async () => [],
-    loadHandoffPrompt: async () => ({ content: 'DEFAULT_HANDOFF_PROMPT_STUB', origin: 'bundled-default' }),
+    loadCompactionPrompt: async () => ({ content: 'DEFAULT_COMPACTION_PROMPT_STUB', origin: 'bundled-default' }),
     createSdkEngine: () => new NoopEngine(),
     ...overrides,
   };
@@ -238,7 +240,45 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
     expect(await runLoop(io, factories)).toBe(0);
     expect(adapter.capturedToolsCalls).toHaveLength(1);
     const toolNames = adapter.capturedToolsCalls[0].map((t) => t.name).sort();
-    expect(toolNames).toEqual(['Glob', 'Grep', 'Read']);
+    // `Compact` sits alongside the builtins but is not one of them: the loop
+    // prepends it itself, outside the registry `enabledTools` configures.
+    expect(toolNames).toEqual(['Compact', 'Glob', 'Grep', 'Read']);
+  });
+
+  it('drops an MCP tool that collides with the reserved Compact name, and says so', async () => {
+    // The loop intercepts `Compact` by name before dispatch, so an MCP tool
+    // published under it would be permanently unreachable with no diagnostic,
+    // and the provider would receive two definitions sharing one name.
+    const adapter = new CapturingAdapter();
+    const { io, errors } = makeIo([
+      initCommand({ enabledTools: [] }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+    class McpPublishingCompact extends StubMcpClient {
+      async listTools() {
+        return [
+          { name: 'Compact', description: 'an unrelated MCP tool', parameters: {} },
+          { name: 'close_session', description: 'closes', parameters: {} },
+        ];
+      }
+    }
+    const factories = makeFactories({
+      createAdapter: () => adapter,
+      createMcpClient: () => new McpPublishingCompact(),
+    });
+
+    expect(await runLoop(io, factories)).toBe(0);
+    const published = adapter.capturedToolsCalls[0];
+    // Exactly one `Compact` reaches the provider, and it is the loop's own.
+    expect(published.filter((t) => t.name === 'Compact')).toHaveLength(1);
+    expect(published.find((t) => t.name === 'Compact')?.description).not.toBe(
+      'an unrelated MCP tool',
+    );
+    // Unrelated MCP tools are untouched.
+    expect(published.map((t) => t.name)).toContain('close_session');
+    // The shadowing is reported rather than silent.
+    expect(errors.join('\n')).toContain('collides with the loop\'s reserved compaction tool');
   });
 
   it('passes ONLY the MCP tools (zero builtins) when enabledTools is an explicit empty array', async () => {
@@ -260,9 +300,16 @@ describe('runLoop — builtin tool merging (enabledTools)', () => {
 
     expect(await runLoop(io, factories)).toBe(0);
     expect(adapter.capturedToolsCalls).toHaveLength(1);
-    expect(adapter.capturedToolsCalls[0]).toEqual([
-      { name: 'close_session', description: 'closes', parameters: {} },
-    ]);
+    // `enabledTools: []` is the strongest form of "every builtin off" -- and
+    // `Compact` is still published, because no representable value of
+    // `enabledTools` can reach it (see compact-tool.ts's self-management
+    // tool class). Only the MCP tool and Compact are present; zero builtins.
+    expect(adapter.capturedToolsCalls[0].map((t) => t.name)).toEqual(['Compact', 'close_session']);
+    expect(adapter.capturedToolsCalls[0]).toContainEqual({
+      name: 'close_session',
+      description: 'closes',
+      parameters: {},
+    });
   });
 });
 
@@ -404,6 +451,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     const command = {
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5', apiKey: 'sk-leaked' },
@@ -418,6 +466,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     const command = {
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -440,6 +489,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
     const claudeSdkInitCommand = JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -463,11 +513,12 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
   });
 });
 
-describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () => {
+describe('runLoop — the retired handoff command (#1401)', () => {
   const claudeSdkInitCommand = () =>
     JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -475,43 +526,20 @@ describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () 
       maxToolIterations: 5,
     });
 
-  // A `handoff` command received while a turn is active is rejected at
-  // main.ts's dispatch layer (the same `turnActive` gate `user-message` is
-  // subject to) BEFORE it ever reaches `Engine.handoff()` -- this is
-  // engine-agnostic dispatch-loop behavior, so the openai-api and
-  // claude-sdk engines observe an IDENTICAL contract here by construction,
-  // with no engine-specific code needed on either side. This is the
-  // verification for docs/design/embedded-agent-sdk-engine.md's S3 AC line
-  // "Handoff during an active turn: match the native engine's observable
-  // contract."
-  it('ignores a handoff command received while a turn is active, and never calls Engine.handoff()', async () => {
-    let handoffCalled = false;
-    let resolveTurn: (() => void) | null = null;
-    class HangingEngine implements Engine {
-      async runTurn(): Promise<void> {
-        return new Promise<void>((resolve) => {
-          resolveTurn = resolve;
-        });
-      }
-      cancel(): void {
-        resolveTurn?.();
-      }
-      async handoff(): Promise<void> {
-        handoffCalled = true;
-      }
-    }
-
+  it('ignores a `handoff` command as an unknown type, without exiting', async () => {
+    // `handoff` left `EmbeddedAgentCommand` with the compaction swap.
+    // Commands are not persisted, so nothing replays one -- but a server
+    // running an older build could still write one, and the forward-compat
+    // unknown-type branch is what must catch it: logged and skipped, never a
+    // protocol exit that would kill an otherwise healthy worker.
     const { io, errors } = makeIo([
       claudeSdkInitCommand(),
-      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hi' }),
       JSON.stringify({ v: 1, type: 'handoff' }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
     ]);
-    const factories = makeFactories({ createSdkEngine: () => new HangingEngine() });
 
-    expect(await runLoop(io, factories)).toBe(0);
-    expect(handoffCalled).toBe(false);
-    expect(errors.some((e) => e.includes('Ignoring handoff received while a turn is active'))).toBe(true);
+    expect(await runLoop(io, makeFactories())).toBe(0);
+    expect(errors.some((e) => e.includes('unknown type: handoff'))).toBe(true);
   });
 });
 
@@ -520,6 +548,7 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },
@@ -581,23 +610,6 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
   });
 
-  it('wires loadHandoffPrompt to factories.loadHandoffPrompt (S3): the SAME single-writer prompt source the openai-api engine uses', async () => {
-    const { io } = makeIo([claudeSdkInitCommand()]);
-    let capturedDeps: SdkEngineDeps | undefined;
-    const factories = makeFactories({
-      loadHandoffPrompt: async ({ cwd }) => {
-        expect(cwd).toBe('/tmp');
-        return { content: 'FACTORY_HANDOFF_PROMPT', origin: 'bundled-default' };
-      },
-      createSdkEngine: (deps) => {
-        capturedDeps = deps;
-        return new NoopEngine();
-      },
-    });
-
-    expect(await runLoop(io, factories)).toBe(0);
-    await expect(capturedDeps!.loadHandoffPrompt()).resolves.toBe('FACTORY_HANDOFF_PROMPT');
-  });
 });
 
 // Phase 1's builtin claude-sdk definition (claude-sdk-builtin.ts) bakes
@@ -615,6 +627,7 @@ describe('runLoop — claude-sdk engine: CLAUDE.md opt-in delivery (builtin defi
     JSON.stringify({
       v: 1,
       type: 'init',
+      compaction: { auto: false },
       engine: 'claude-sdk',
       mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
       provider: { model: 'claude-sonnet-5' },

@@ -93,12 +93,13 @@ const EmbeddedAgentFormRawSchema = v.object({
   // re-check duplicates client-side (unlike the server-side schema).
   enabledTools: v.array(v.picklist(EMBEDDED_AGENT_TOOL_NAMES)),
 
-  // Context Handoff (Phase A) fields -- form-specific string inputs
-  // converted on submit (see parseContextWindowTokens/parseHandoffRatio
-  // below), mirroring maxToolIterationsInput's string-state/parse-on-save
-  // pattern exactly. Empty string means "not set". `handoff.auto` is
-  // deliberately NOT exposed here -- see docs/design/embedded-agent-worker.md
-  // "Context Handoff (Phase A)" § Definition config, migration, and forms.
+  // Compaction fields -- form-specific string inputs converted on submit
+  // (see parseContextWindowTokens/parseCompactionThreshold below),
+  // mirroring maxToolIterationsInput's string-state/parse-on-save pattern
+  // exactly. Empty string means "not set". Automatic compaction itself is
+  // NOT configured here: it is a per-WORKER toggle in the worker view, not
+  // a property of the definition -- see docs/design/embedded-agent-worker.md
+  // "Compaction" § The worker-level auto toggle.
   contextWindowTokensInput: v.optional(
     v.pipe(
       v.string(),
@@ -111,23 +112,15 @@ const EmbeddedAgentFormRawSchema = v.object({
   ),
   // Percentage inputs (e.g. "75" maps to 0.75 on save). 0-100 inclusive,
   // matching the server schema's 0-1 minValue/maxValue bounds.
-  handoffSoftRatioInput: v.optional(
+  // 0 is excluded, matching the server schema: a threshold of zero would
+  // compact after every turn including the first.
+  compactionThresholdInput: v.optional(
     v.pipe(
       v.string(),
       v.trim(),
       v.check(
-        (val) => !val || (/^\d+(\.\d+)?$/.test(val) && Number(val) >= 0 && Number(val) <= 100),
-        'Must be a number between 0 and 100'
-      )
-    )
-  ),
-  handoffHardRatioInput: v.optional(
-    v.pipe(
-      v.string(),
-      v.trim(),
-      v.check(
-        (val) => !val || (/^\d+(\.\d+)?$/.test(val) && Number(val) >= 0 && Number(val) <= 100),
-        'Must be a number between 0 and 100'
+        (val) => !val || (/^\d+(\.\d+)?$/.test(val) && Number(val) > 0 && Number(val) <= 100),
+        'Must be a number above 0 and up to 100'
       )
     )
   ),
@@ -140,36 +133,12 @@ const EmbeddedAgentFormRawSchema = v.object({
 });
 
 /**
- * Object-level cross-field check: when both handoff threshold inputs are
- * present, the soft threshold must not exceed the hard threshold (mirrors
- * the server-side `EmbeddedAgentHandoffConfigSchema` invariant on the parsed
- * 0-1 ratios). A value that already failed its own per-field format/range
- * check (`Number.isNaN`) is skipped here -- that field's own error message
- * already explains the problem, so this check does not pile on a second,
- * misleading "soft exceeds hard" message. Attached via `v.forward` to
- * `handoffHardRatioInput` (react-hook-form's valibotResolver silently drops
- * issues with no dot path, so an unforwarded object-level `v.check` would
- * never surface as a visible form error).
+ * With the retired soft/hard pair gone there is no cross-field invariant
+ * left to enforce here (one threshold cannot exceed itself), so the schema
+ * is the raw object directly. The alias is kept so the exported form-data
+ * type and every `EmbeddedAgentFormSchema` reference stay stable.
  */
-const EmbeddedAgentFormSchema = v.pipe(
-  EmbeddedAgentFormRawSchema,
-  v.forward(
-    v.partialCheck(
-      [['handoffSoftRatioInput'], ['handoffHardRatioInput']],
-      ({ handoffSoftRatioInput, handoffHardRatioInput }) => {
-        const soft = handoffSoftRatioInput?.trim();
-        const hard = handoffHardRatioInput?.trim();
-        if (!soft || !hard) return true;
-        const softNum = Number(soft);
-        const hardNum = Number(hard);
-        if (Number.isNaN(softNum) || Number.isNaN(hardNum)) return true;
-        return softNum <= hardNum;
-      },
-      'Soft threshold must not exceed the hard threshold',
-    ),
-    ['handoffHardRatioInput'],
-  ),
-);
+const EmbeddedAgentFormSchema = EmbeddedAgentFormRawSchema;
 
 export type EmbeddedAgentFormData = v.InferOutput<typeof EmbeddedAgentFormSchema>;
 
@@ -208,8 +177,7 @@ export function EmbeddedAgentForm({
       enabledTools: [...DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS],
       instructions: [],
       contextWindowTokensInput: '',
-      handoffSoftRatioInput: '',
-      handoffHardRatioInput: '',
+      compactionThresholdInput: '',
     },
     mode: 'onBlur',
   });
@@ -305,31 +273,21 @@ export function EmbeddedAgentForm({
             />
             <p className="text-xs text-gray-500 mt-1">
               Model's context window size, in tokens. Denominator for the context-usage bar and
-              handoff thresholds; leave empty to show raw token counts with no gauge.
+              the compaction threshold; leave empty to show raw token counts with no gauge and
+              disable automatic compaction.
             </p>
           </FormField>
 
-          <FormField label="Handoff Soft Threshold % (optional)" error={errors.handoffSoftRatioInput}>
+          <FormField label="Compaction Threshold % (optional)" error={errors.compactionThresholdInput}>
             <Input
-              {...register('handoffSoftRatioInput')}
-              placeholder="75"
+              {...register('compactionThresholdInput')}
+              placeholder="85"
               inputMode="decimal"
-              error={errors.handoffSoftRatioInput}
+              error={errors.compactionThresholdInput}
             />
             <p className="text-xs text-gray-500 mt-1">
-              Usage percentage at which the amber "consider a handoff" banner appears. Defaults to 75%.
-            </p>
-          </FormField>
-
-          <FormField label="Handoff Hard Threshold % (optional)" error={errors.handoffHardRatioInput}>
-            <Input
-              {...register('handoffHardRatioInput')}
-              placeholder="90"
-              inputMode="decimal"
-              error={errors.handoffHardRatioInput}
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              Usage percentage at which the red "handoff now" banner appears. Defaults to 90%.
+              Context usage percentage at which the conversation is compacted automatically.
+              Defaults to 85%. Requires a context window size to be set.
             </p>
           </FormField>
 
@@ -459,32 +417,32 @@ export function parseContextWindowTokens(input?: string): number | undefined {
 }
 
 /**
- * Parse a Context Handoff (Phase A) percentage input (e.g. "75") into the
- * request's 0-1 ratio field (e.g. 0.75). Empty string means "not set".
+ * Parse a compaction-threshold percentage input (e.g. "85") into the
+ * request's 0-1 ratio field (e.g. 0.85). Empty string means "not set".
  */
-export function parseHandoffRatio(input?: string): number | undefined {
+export function parseCompactionThreshold(input?: string): number | undefined {
   const trimmed = input?.trim();
   return trimmed ? Number(trimmed) / 100 : undefined;
 }
 
-/** Decimal places `formatHandoffRatioInput` rounds to -- enough to strip
- * floating-point representation noise (e.g. `0.7000000000000001 * 100`)
+/** Decimal places `formatCompactionThresholdInput` rounds to -- enough to
+ * strip floating-point representation noise (e.g. `0.7000000000000001 * 100`)
  * while preserving any genuine decimal precision a stored ratio carries
  * (e.g. `0.756 * 100` stays `75.6`, never rounded to a whole percent). */
-const HANDOFF_RATIO_INPUT_PRECISION = 4;
+const COMPACTION_THRESHOLD_INPUT_PRECISION = 4;
 
 /**
- * Format a 0-1 handoff ratio (e.g. 0.756) back into the form's percentage
- * input string (e.g. "75.6"), for pre-filling the Edit form. `undefined`
- * maps to the empty string. Does NOT round to a whole percent -- a stored
- * decimal threshold must round-trip through Edit unchanged; only
+ * Format a 0-1 compaction threshold (e.g. 0.756) back into the form's
+ * percentage input string (e.g. "75.6"), for pre-filling the Edit form.
+ * `undefined` maps to the empty string. Does NOT round to a whole percent --
+ * a stored decimal threshold must round-trip through Edit unchanged; only
  * floating-point noise from the `* 100` multiplication is stripped (via
  * `Number`'s own trailing-zero-free string conversion after rounding to
- * `HANDOFF_RATIO_INPUT_PRECISION` decimal places).
+ * `COMPACTION_THRESHOLD_INPUT_PRECISION` decimal places).
  */
-export function formatHandoffRatioInput(ratio: number | undefined): string {
+export function formatCompactionThresholdInput(ratio: number | undefined): string {
   if (ratio === undefined) return '';
-  const scale = 10 ** HANDOFF_RATIO_INPUT_PRECISION;
+  const scale = 10 ** COMPACTION_THRESHOLD_INPUT_PRECISION;
   const pct = Math.round(ratio * 100 * scale) / scale;
   return String(pct);
 }

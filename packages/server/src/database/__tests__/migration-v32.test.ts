@@ -238,9 +238,21 @@ describe('migration v32 (embedded_agents.engine native-loop -> openai-api)', () 
     expect(row.enabled_tools).toBe('["Read"]');
     expect(row.instructions).toBe('["docs/note.md"]');
     expect(row.context_window_tokens).toBe(128000);
-    expect(row.handoff_soft_ratio).toBe(0.75);
-    expect(row.handoff_hard_ratio).toBe(0.9);
-    expect(row.handoff_auto).toBe(1);
+    // v31-era columns: migration v36 later dropped these three, so the
+    // current `Database` type no longer declares them. Read them with a typed
+    // raw query rather than casting the Kysely row through `unknown` -- the
+    // same idiom this directory already uses for `PRAGMA` reads, which are
+    // equally undeclared by `Database`.
+    const legacy = await sql<{
+      handoff_soft_ratio: number;
+      handoff_hard_ratio: number;
+      handoff_auto: number;
+    }>`SELECT handoff_soft_ratio, handoff_hard_ratio, handoff_auto FROM embedded_agents WHERE id = 'def-full'`.execute(
+      db,
+    );
+    expect(legacy.rows[0]?.handoff_soft_ratio).toBe(0.75);
+    expect(legacy.rows[0]?.handoff_hard_ratio).toBe(0.9);
+    expect(legacy.rows[0]?.handoff_auto).toBe(1);
     expect(row.is_built_in).toBe(0);
     expect(row.created_by).toBe('user-1');
 

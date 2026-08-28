@@ -166,9 +166,14 @@ describe('migration v29 (embedded_agents.engine/is_built_in)', () => {
         enabled_tools: null,
         instructions: null,
         context_window_tokens: null,
-        handoff_soft_ratio: null,
-        handoff_hard_ratio: null,
-        handoff_auto: null,
+        // Era-specific columns: this fixture is a v28-shaped table, which
+        // still had the three handoff_* columns migration v36 later dropped.
+        // The current Kysely `Database` type describes the LATEST schema, so
+        // they are supplied through a cast rather than typed here.
+        ...({ handoff_soft_ratio: null, handoff_hard_ratio: null, handoff_auto: null } as Record<
+          string,
+          null
+        >),
         is_built_in: 1,
         created_by: 'system',
         created_at: '2024-01-01T00:00:00.000Z',
@@ -241,9 +246,21 @@ describe('migration v29 (embedded_agents.engine/is_built_in)', () => {
     expect(row.enabled_tools).toBe('["Read"]');
     expect(row.instructions).toBe('["docs/note.md"]');
     expect(row.context_window_tokens).toBe(128000);
-    expect(row.handoff_soft_ratio).toBe(0.75);
-    expect(row.handoff_hard_ratio).toBe(0.9);
-    expect(row.handoff_auto).toBe(1);
+    // v28-era columns: migration v36 later dropped these three, so the
+    // current `Database` type no longer declares them. Read them with a typed
+    // raw query rather than casting the Kysely row through `unknown` -- the
+    // same idiom this directory already uses for `PRAGMA` reads, which are
+    // equally undeclared by `Database`.
+    const legacy = await sql<{
+      handoff_soft_ratio: number;
+      handoff_hard_ratio: number;
+      handoff_auto: number;
+    }>`SELECT handoff_soft_ratio, handoff_hard_ratio, handoff_auto FROM embedded_agents WHERE id = 'def-full'`.execute(
+      db,
+    );
+    expect(legacy.rows[0]?.handoff_soft_ratio).toBe(0.75);
+    expect(legacy.rows[0]?.handoff_hard_ratio).toBe(0.9);
+    expect(legacy.rows[0]?.handoff_auto).toBe(1);
     expect(row.created_by).toBe('user-1');
 
     await db.destroy();

@@ -67,6 +67,21 @@ export const DEFAULT_EMBEDDED_AGENT_ENABLED_TOOLS: readonly EmbeddedAgentToolNam
 ];
 
 /**
+ * Ratio of `contextWindowTokens` at which the `openai-api` engine compacts
+ * automatically, when a definition leaves `compaction.threshold` unset.
+ *
+ * The 15% of the window this leaves unused is not slack for its own sake: the
+ * distillation is itself a provider request made against the still-uncompacted
+ * conversation, so it needs room to run. A threshold at 1.0 would make the
+ * request that is supposed to relieve the pressure the one that overflows.
+ *
+ * Lives in shared because two independent consumers read it: the loop (the
+ * fire decision) and the client (the usage bar's colour bands escalate
+ * against the same number the engine acts on).
+ */
+export const DEFAULT_COMPACTION_THRESHOLD = 0.85;
+
+/**
  * Fields shared by both engine arms of {@link EmbeddedAgentDefinition}. See
  * docs/design/embedded-agent-sdk-engine.md §3.1 "Engine selection: a
  * structural discriminant, never inference" — the discriminant lives on the
@@ -86,8 +101,8 @@ interface EmbeddedAgentDefinitionBase {
   // session's locationPath via resolveConfinedPath before being read into the
   // system prompt — see docs/design/embedded-agent-worker.md "AGENTS.md loader"
   instructions?: string[];
-  contextWindowTokens?: number;  // Context Handoff (Phase A); operator-declared model context window, denominator for the usage ratio
-  handoff?: { softRatio?: number; hardRatio?: number; auto?: boolean }; // Context Handoff (Phase A); auto is accepted/persisted but NOT read until Phase B
+  contextWindowTokens?: number;  // Compaction; operator-declared model context window, denominator for the usage ratio
+  compaction?: { threshold?: number }; // Compaction; the openai-api engine's auto-fire ratio, default DEFAULT_COMPACTION_THRESHOLD
   isBuiltIn: boolean;          // mirrors AgentDefinition.isBuiltIn (types/agent.ts); true only for the claude-sdk builtin (Phase 1) -- see services/embedded-agents/claude-sdk-builtin.ts
   createdBy: string;          // users.id of the creator (same UUID space as session.createdBy)
   createdAt: string;
@@ -137,6 +152,19 @@ type EmbeddedAgentInitCommandBase = {
   instructions?: string[];
   maxToolIterations: number;
   restoredConversation?: EmbeddedAgentRestoredMessage[]; // Transcript Restore (#1123); absent = fresh conversation (today's v1 behavior)
+  /**
+   * Compaction's activation-time configuration. `auto` is the WORKER's
+   * toggle (`EmbeddedAgentWorker.autoCompaction`), not a definition field --
+   * the decision belongs to the conversation in front of the user. The other
+   * two come from the definition and are only meaningful to `openai-api`,
+   * which computes the ratio itself; `claude-sdk` hands `auto` to the SDK
+   * and lets it decide when.
+   *
+   * `contextWindowTokens` absent means `openai-api` auto compaction can
+   * never fire: no denominator, therefore no ratio. That is a deliberate
+   * structural gate, not a defaulted guess at the model's window.
+   */
+  compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number };
 };
 
 /**
@@ -156,7 +184,13 @@ export type EmbeddedAgentCommand =
     })
   | { v: 1; type: 'user-message'; id: string; text: string }
   | { v: 1; type: 'cancel' }
-  | { v: 1; type: 'handoff' }  // Context Handoff (Phase A); manual trigger
+  /**
+   * Compaction: the worker's auto-compaction toggle was changed while the
+   * subprocess was running. Sent so the change applies without waiting for
+   * the next activation. Not persisted (no command is), and idempotent --
+   * re-sending the current value is a no-op.
+   */
+  | { v: 1; type: 'set-auto-compaction'; enabled: boolean }
   | { v: 1; type: 'shutdown' };
 
 /**
@@ -174,12 +208,55 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'tool-result'; turnId: string; callId: string; ok: boolean; result: string }
   | { v: 1; type: 'turn-error'; turnId: string; message: string }
   | { v: 1; type: 'fatal'; message: string }
-  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean }  // Context Handoff (Phase A); emitted after every turn/handoff attempt that produced a usable value
-  | { v: 1; type: 'context-handoff'; distillation: string }  // Context Handoff (Phase A); persisted marker, emitted immediately before the atomic conversation reset
+  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean }  // Compaction; emitted after every turn/compaction attempt that produced a usable value
+  /**
+   * Compaction's persisted boundary marker -- "one line marking the
+   * compaction boundary appears in the transcript". Emitted immediately
+   * before the atomic conversation replacement on `openai-api`, and on the
+   * SDK's own `compact_boundary` for `claude-sdk`.
+   *
+   * `summary` is OPTIONAL because the two engines differ in what they can
+   * offer: `openai-api` always has one (it authored the distillation),
+   * while `claude-sdk` only has one if the SDK exposes it. A missing
+   * summary renders as a plain boundary line, never as an error.
+   *
+   * `preTokens`/`postTokens` are how much context the compaction consumed
+   * and produced. They exist because SDK-side compaction fidelity was
+   * measured NON-DETERMINISTIC (see docs/design/embedded-agent-worker.md
+   * § Compaction, "Summary fidelity"): the chosen response to that is to
+   * make each compaction's aggressiveness VISIBLE rather than to build
+   * machinery that tries to prevent it. A 102k -> 2.7k boundary reports its
+   * own severity to the user. Both are optional for the same reason
+   * `summary` is -- an engine that cannot supply them renders the plain
+   * marker instead of a fabricated number.
+   */
+  | {
+      v: 1;
+      type: 'context-compacted';
+      source: 'auto' | 'manual';
+      summary?: string;
+      preTokens?: number;
+      postTokens?: number;
+    }
+  /**
+   * RETIRED (Context Handoff, #1122): no engine emits this any more --
+   * `context-compacted` above replaced it in #1401.
+   *
+   * The member is deliberately RETAINED, along with its runtime schema, its
+   * restore-boundary handling, and the client's render path. Persisted
+   * transcripts written before the swap contain these rows; removing the
+   * type would break replay at the PARSE step, before rendering is even
+   * reached. Emission is retired; parse and render are legacy-only.
+   */
+  | { v: 1; type: 'context-handoff'; distillation: string }
   /**
    * SDK engine only; native engine never emits this. Emitted on activation
-   * and on every SDK-session replacement (e.g. Phase 2's context-handoff
-   * reseed) — the worker's CURRENT SDK session id is X, last-write-wins.
+   * and on every SDK-session replacement — the worker's CURRENT SDK session
+   * id is X, last-write-wins. (Phase 2's context-handoff reseed was the only
+   * replacement that ever happened; #1401 retired it, so today the id is
+   * emitted once per activation. The event stays a dedicated one rather than
+   * a `ready` field because a future re-session — idle eviction's `resume`,
+   * #1336 — would replace it again.)
    * See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
    *
    * IMPORTANT: because `ready` is decoupled from the SDK's own

@@ -26,6 +26,19 @@ export interface EmbeddedAgentWorker extends WorkerBase {
   embeddedAgentId: string;
   /** Whether the agent subprocess is running (false after server restart until reactivated). */
   activated: boolean;
+  /**
+   * Compaction's automatic-firing toggle. Deliberately per-WORKER, not per
+   * definition: two workers built from the same embedded agent can differ,
+   * because the decision belongs to the conversation in front of the user.
+   * Defaults ON (`workers.auto_compaction NOT NULL DEFAULT 1`), including
+   * for rows that predate the column.
+   *
+   * Crossing the wire requires the matching field on
+   * `EmbeddedAgentWorkerSchema` (schemas/app-server-message.ts) -- that
+   * schema is a `strictObject`, so a type-only addition here would be
+   * silently stripped at the boundary.
+   */
+  autoCompaction: boolean;
 }
 
 export type Worker = AgentWorker | TerminalWorker | GitDiffWorker | EmbeddedAgentWorker;

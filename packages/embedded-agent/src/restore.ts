@@ -6,18 +6,18 @@
  * fresh-epoch-and-truncate activation reset. Pure over already-fetched
  * data: the caller (EmbeddedAgentWorkerService) reads the persisted stream
  * and reassembles the system prompt (loadInstructions + assembleSystemPrompt
- * -- identical regardless of whether a context-handoff boundary exists); this
+ * -- identical regardless of whether a compaction boundary exists); this
  * module never touches the filesystem.
  *
  * See docs/design/embedded-agent-worker.md "Transcript Restore":
  * - "Restore trigger & activation flow" steps 4a-4d
  * - "Runtime abort-repair vs. restore-time repair: parts cross-reference"
- * - "Context-handoff boundary"
+ * - "Compaction boundary"
  */
 import * as v from 'valibot';
 import { EmbeddedAgentStreamEventSchema, type EmbeddedAgentStreamEvent } from '@agent-console/shared';
 import type { ChatMessage, ToolCall } from './providers/types.js';
-import { buildHandoffSeedMessages } from './conversation-seed.js';
+import { buildCompactionSeedMessages } from './conversation-seed.js';
 import { pushSyntheticToolError } from './tool-call-repair.js';
 
 /** Row 4 of the parts cross-reference table: the restore-specific repair reason string. */
@@ -39,23 +39,22 @@ export interface RestoreOutcome {
 }
 
 /**
- * 4a (parse) + 4b (locate context-handoff boundary) + 4c (total
+ * 4a (parse) + 4b (locate the compaction boundary) + 4c (total
  * classification/replay) + 4d (Tier C mid-turn repair). `systemPrompt` is
  * the caller's already-reassembled prompt.
  */
 export function reconstructConversation(streamText: string, systemPrompt: string): RestoreOutcome {
   const events = parseStreamEvents(streamText);
 
-  const handoffIndex = findLastContextHandoffIndex(events);
+  const boundaryIndex = findLastBoundaryIndex(events);
   let conversation: ChatMessage[];
   let windowEvents: EmbeddedAgentStreamEvent[];
-  if (handoffIndex === -1) {
+  if (boundaryIndex === -1) {
     conversation = [{ role: 'system', content: systemPrompt }];
     windowEvents = events;
   } else {
-    const handoffEvent = events[handoffIndex] as Extract<EmbeddedAgentStreamEvent, { type: 'context-handoff' }>;
-    conversation = buildHandoffSeedMessages(systemPrompt, handoffEvent.distillation);
-    windowEvents = events.slice(handoffIndex + 1);
+    conversation = buildCompactionSeedMessages(systemPrompt, boundarySummary(events[boundaryIndex]));
+    windowEvents = events.slice(boundaryIndex + 1);
   }
 
   replayWindow(conversation, windowEvents);
@@ -86,20 +85,51 @@ function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {
   return events;
 }
 
-function findLastContextHandoffIndex(events: EmbeddedAgentStreamEvent[]): number {
+/**
+ * The event kinds that cut the restore window. Both are compaction
+ * boundaries: `context-compacted` is what engines emit today, and
+ * `context-handoff` is the retired marker persisted before compaction
+ * replaced handoff (#1401).
+ *
+ * The legacy kind is NOT optional to handle. A stream that still carries one
+ * would otherwise replay its entire pre-handoff history on every restore --
+ * resurrecting exactly the context the handoff deliberately discarded, and
+ * (once auto compaction exists) undoing the compaction on every activation.
+ */
+const BOUNDARY_EVENT_TYPES = new Set<EmbeddedAgentStreamEvent['type']>([
+  'context-compacted',
+  'context-handoff',
+]);
+
+function findLastBoundaryIndex(events: EmbeddedAgentStreamEvent[]): number {
   for (let i = events.length - 1; i >= 0; i--) {
-    if (events[i].type === 'context-handoff') return i;
+    if (BOUNDARY_EVENT_TYPES.has(events[i].type)) return i;
   }
   return -1;
 }
 
 /**
- * 4c: total classification over all 13 EmbeddedAgentStreamEvent union
- * members (mutates `conversation` in place). Mapped (4): user-message,
- * assistant-message, tool-call, tool-result. Noise (8, skipped):
+ * The summary text a boundary event seeds the reconstructed conversation
+ * with. `context-compacted`'s `summary` is optional on the wire (the
+ * `claude-sdk` engine may have none) -- but that engine's conversation is
+ * owned by the SDK and never reconstructed here, so an absent summary in
+ * this path means a boundary with nothing to carry forward, and the empty
+ * string is the honest seed rather than an invented one.
+ */
+function boundarySummary(event: EmbeddedAgentStreamEvent): string {
+  if (event.type === 'context-compacted') return event.summary ?? '';
+  if (event.type === 'context-handoff') return event.distillation;
+  return '';
+}
+
+/**
+ * 4c: total classification over every EmbeddedAgentStreamEvent union member
+ * (mutates `conversation` in place). Mapped (4): user-message,
+ * assistant-message, tool-call, tool-result. Noise (9, skipped):
  * assistant-delta, assistant-thinking-delta, state, context-usage, ready,
- * exited, turn-error, fatal. Boundary (1, never reached here -- already
- * sliced out by 4b): context-handoff.
+ * exited, turn-error, fatal, sdk-session-id. Boundary (2, never reached here
+ * -- already sliced out by 4b): context-compacted and the legacy
+ * context-handoff.
  */
 function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEvent[]): void {
   let current: Extract<ChatMessage, { role: 'assistant' }> | null = null;
@@ -166,8 +196,10 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
         // content -- it is a bookkeeping marker for the worker's current SDK
         // session id, unrelated to transcript reconstruction.
         break;
+      case 'context-compacted':
       case 'context-handoff':
-        // Boundary: unreachable here -- 4b already excluded it from `events`.
+        // Boundary: unreachable here -- 4b already excluded both from
+        // `events` by slicing strictly after the most recent one.
         break;
       default: {
         const _exhaustive: never = event;

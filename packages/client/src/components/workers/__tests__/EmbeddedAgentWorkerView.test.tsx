@@ -1,10 +1,13 @@
 import { describe, it, expect, mock, spyOn, beforeEach, afterEach } from 'bun:test';
-import { StrictMode } from 'react';
-import { render, screen, cleanup, act, fireEvent, within } from '@testing-library/react';
+import { render, screen, cleanup, act, fireEvent, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { EmbeddedAgentWorkerView } from '../EmbeddedAgentWorkerView';
-import { MockWebSocket, installMockWebSocket, decodeSentMessages } from '../../../test/mock-websocket';
+import {
+  EmbeddedAgentWorkerView,
+  formatTokenCount,
+  formatCompactionBoundaryLabel,
+} from '../EmbeddedAgentWorkerView';
+import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers } from '../embedded-agent-store';
 
 function ndjson(...events: Record<string, unknown>[]): string {
@@ -53,41 +56,23 @@ function embeddedAgentFixture(overrides: Record<string, unknown> = {}) {
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z',
     contextWindowTokens: 1000,
-    handoff: { softRatio: 0.5, hardRatio: 0.8 },
+    compaction: { threshold: 0.8 },
     ...overrides,
   };
 }
 
 /** Render EmbeddedAgentWorkerView with the QueryClientProvider MessagePanel needs. */
-function renderView(props: { sessionId: string; workerId: string; embeddedAgentId?: string }) {
+function renderView(props: {
+  sessionId: string;
+  workerId: string;
+  embeddedAgentId?: string;
+  autoCompaction?: boolean;
+}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <EmbeddedAgentWorkerView {...props} />
     </QueryClientProvider>,
-  );
-}
-
-/**
- * Same as `renderView`, but wrapped in `React.StrictMode`, matching production
- * (`main.tsx` wraps the entire app in `<StrictMode>`). This distinction matters
- * for the Context Handoff (Phase A) threshold-banner tests below: StrictMode's
- * dev-mode double-invoke of the render function is what actually reproduces the
- * real-browser bug where a render-phase `if (...) setState(...)` threshold-crossing
- * check silently failed to keep the banner visible. `renderView` (no StrictMode)
- * cannot reproduce that failure mode -- which is exactly why the original
- * implementation passed every other test in this file while still being broken
- * in the real browser. See the `useEffect` fix + its inline comment in
- * EmbeddedAgentWorkerView.tsx for the full mechanism.
- */
-function renderViewStrict(props: { sessionId: string; workerId: string; embeddedAgentId?: string }) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  return render(
-    <StrictMode>
-      <QueryClientProvider client={queryClient}>
-        <EmbeddedAgentWorkerView {...props} />
-      </QueryClientProvider>
-    </StrictMode>,
   );
 }
 
@@ -1716,7 +1701,7 @@ describe('EmbeddedAgentWorkerView', () => {
     });
   });
 
-  describe('Context Handoff (Phase A)', () => {
+  describe('Compaction', () => {
     it('renders an indeterminate progressbar with no aria-value* attributes when the worker has no contextWindowTokens configured', () => {
       renderView({ sessionId: 's-ctx-1', workerId: 'w-ctx-1' });
 
@@ -1726,7 +1711,8 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bar.getAttribute('aria-valuemax')).toBeNull();
     });
 
-    it('renders a determinate progressbar with aria-valuenow and color bands driven by context-usage events', async () => {
+    it('renders a determinate progressbar with aria-valuenow and colour bands driven by context-usage events', async () => {
+      // Fixture threshold is 0.8, so the amber band opens at 0.65.
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
       renderView({ sessionId: 's-ctx-2', workerId: 'w-ctx-2', embeddedAgentId: 'ea-1' });
       const ws = MockWebSocket.getLastInstance();
@@ -1735,7 +1721,6 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      // Below soft threshold: 300/1000 = 30% < 50%.
       act(() => {
         const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 300, estimated: false });
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
@@ -1745,17 +1730,15 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bar.getAttribute('aria-valuenow')).toBe('30');
       expect(bar.querySelector('div')?.className).toContain('bg-gray-500');
 
-      // Soft band: 600/1000 = 60%, between 50% and 80%.
       act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 700, estimated: false });
         ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
       });
       await flush();
       bar = screen.getByRole('progressbar');
-      expect(bar.getAttribute('aria-valuenow')).toBe('60');
+      expect(bar.getAttribute('aria-valuenow')).toBe('70');
       expect(bar.querySelector('div')?.className).toContain('bg-amber-500');
 
-      // Hard band: 900/1000 = 90% >= 80%.
       act(() => {
         const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 900, estimated: false });
         ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
@@ -1766,9 +1749,12 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(bar.querySelector('div')?.className).toContain('bg-red-600');
     });
 
-    it('shows the soft banner on crossing; dismissing hides it until the ratio dips below the threshold and crosses again', async () => {
+    it('never shows a threshold banner or a manual-compaction CTA, however high usage climbs', async () => {
+      // The banners and their "Handoff now" CTA are deleted: automatic
+      // compaction is the toggle, and manual compaction is a request made to
+      // the agent in the message box. A banner here would point at a button
+      // that no longer exists.
       globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      const user = userEvent.setup();
       renderView({ sessionId: 's-ctx-3', workerId: 'w-ctx-3', embeddedAgentId: 'ea-1' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -1776,105 +1762,18 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      // Cross soft (50%) but stay below hard (80%): 600/1000 = 60%.
       act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 990, estimated: false });
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
       await flush();
-      expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
 
-      await user.click(screen.getByRole('button', { name: 'Dismiss' }));
       expect(screen.queryByText(/Context is/)).toBeNull();
-
-      // Still above threshold -- must NOT reappear without a fresh crossing.
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 650, estimated: false });
-        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
-      });
-      await flush();
-      expect(screen.queryByText(/Context is/)).toBeNull();
-
-      // Dip below the soft threshold.
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 300, estimated: false });
-        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
-      });
-      await flush();
-      expect(screen.queryByText(/Context is/)).toBeNull();
-
-      // Re-cross -- the banner reappears.
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 700, estimated: false });
-        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
-      });
-      await flush();
-      expect(screen.getByText(/Context is 70% full/)).toBeTruthy();
+      expect(screen.queryByRole('button', { name: /Handoff/i })).toBeNull();
     });
 
-    it('auto-hides both banners once usage drops back below their thresholds (no dismiss click required), and re-shows on a fresh upward crossing (CodeRabbit: downward-crossing regression)', async () => {
-      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      renderView({ sessionId: 's-ctx-3b', workerId: 'w-ctx-3b', embeddedAgentId: 'ea-1' });
-      const ws = MockWebSocket.getLastInstance();
-      act(() => {
-        ws?.simulateOpen();
-      });
-      await flush();
-
-      // Cross both soft (50%) and hard (80%) in one update: 900/1000 = 90%.
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 900, estimated: false });
-        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
-      });
-      await flush();
-      expect(screen.getByText(/consider starting a handoff/)).toBeTruthy();
-      expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
-
-      // Drop below BOTH thresholds without dismissing either banner first
-      // (e.g. a successful handoff): 200/1000 = 20%. Both banners must
-      // disappear on their own.
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 200, estimated: false });
-        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
-      });
-      await flush();
-      expect(screen.queryByText(/consider starting a handoff/)).toBeNull();
-      expect(screen.queryByText(/start a handoff now to avoid losing/)).toBeNull();
-
-      // A fresh upward crossing re-arms and re-shows both banners.
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 950, estimated: false });
-        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
-      });
-      await flush();
-      expect(screen.getByText(/consider starting a handoff/)).toBeTruthy();
-      expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
-    });
-
-    it('shows both soft and hard banners simultaneously when a single update crosses both thresholds', async () => {
-      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      renderView({ sessionId: 's-ctx-4', workerId: 'w-ctx-4', embeddedAgentId: 'ea-1' });
-      const ws = MockWebSocket.getLastInstance();
-      act(() => {
-        ws?.simulateOpen();
-      });
-      await flush();
-
-      // 950/1000 = 95% crosses both soft (50%) and hard (80%) in one update.
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 950, estimated: false });
-        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
-      });
-      await flush();
-
-      expect(screen.getByText(/consider starting a handoff/)).toBeTruthy();
-      expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
-    });
-
-    it('a banner CTA click sends embedded-handoff; the transcript divider appears on context-handoff', async () => {
-      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      const user = userEvent.setup();
-      renderView({ sessionId: 's-ctx-5', workerId: 'w-ctx-5', embeddedAgentId: 'ea-1' });
+    it('renders the boundary marker with an expandable summary on a context-compacted event', async () => {
+      renderView({ sessionId: 's-ctx-4', workerId: 'w-ctx-4' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
@@ -1882,36 +1781,27 @@ describe('EmbeddedAgentWorkerView', () => {
       await flush();
 
       act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        const data = ndjson({
+          v: 1,
+          type: 'context-compacted',
+          source: 'auto',
+          summary: 'THE SUMMARY',
+          preTokens: 102150,
+          postTokens: 2710,
+        });
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
       await flush();
 
-      await user.click(screen.getByRole('button', { name: 'Handoff now' }));
-
-      const sent = decodeSentMessages(ws!.send.mock.calls);
-      expect(sent).toContainEqual({ type: 'embedded-handoff' });
-
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-handoff', distillation: 'the distilled summary text' });
-        ws?.simulateMessage(JSON.stringify({ type: 'output', data, offset: data.length }));
-      });
-      await flush();
-
-      const summary = screen.getByText('— Context handoff: conversation restarted from summary —');
-      const details = summary.closest('details') as HTMLDetailsElement;
-      expect(details).toBeTruthy();
-      expect(details.open).toBe(false);
-      expect(screen.getByText('the distilled summary text')).toBeTruthy();
-
-      fireEvent.click(summary);
-      expect(details.open).toBe(true);
+      // A statement of fact, carrying the compaction's own severity -- see
+      // formatCompactionBoundaryLabel's doc comment for why it must never be
+      // a preservation promise.
+      expect(screen.getByText('— Context compacted (102k → 2.7k) —')).toBeTruthy();
+      expect(screen.getByText('THE SUMMARY')).toBeTruthy();
     });
 
-    it('disables the banner "Handoff now" CTA once handoffInFlight is set, and clicking it again does not send a second embedded-handoff', async () => {
-      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      const user = userEvent.setup();
-      renderView({ sessionId: 's-ctx-5b', workerId: 'w-ctx-5b', embeddedAgentId: 'ea-1' });
+    it('renders the boundary marker as a plain line when the event carries no summary', async () => {
+      renderView({ sessionId: 's-ctx-5', workerId: 'w-ctx-5' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
@@ -1919,30 +1809,22 @@ describe('EmbeddedAgentWorkerView', () => {
       await flush();
 
       act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        const data = ndjson({ v: 1, type: 'context-compacted', source: 'manual' });
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
       await flush();
 
-      const banner = screen.getByRole('button', { name: 'Handoff now' }) as HTMLButtonElement;
-      expect(banner.disabled).toBe(false);
-
-      await user.click(banner);
-      expect(banner.disabled).toBe(true);
-
-      // userEvent respects the `disabled` attribute and will not dispatch a
-      // click, but exercise the underlying handler directly too (defense in
-      // depth against the store's own admission-atomicity guard, not only
-      // the DOM-level disabled attribute) by firing a raw click event.
-      fireEvent.click(banner);
-
-      const handoffSends = decodeSentMessages(ws!.send.mock.calls).filter(
-        (m) => m.type === 'embedded-handoff',
-      );
-      expect(handoffSends).toHaveLength(1);
+      expect(screen.getByText('— Context compacted —')).toBeTruthy();
+      // No disclosure to open: an empty <details> would invite a click onto
+      // nothing.
+      expect(document.querySelector('details')).toBeNull();
     });
 
-    it('does not render an always-visible "Start handoff" chrome button (removed per owner UX critique)', async () => {
+    it('REGRESSION (#1401): still renders a LEGACY context-handoff row from a historical stream', async () => {
+      // Persisted transcripts written before the compaction swap contain
+      // `context-handoff` rows and replay them on every history load. The
+      // fixture is a whole historical stream, so this also pins that the
+      // surrounding rows still render in order around the legacy boundary.
       renderView({ sessionId: 's-ctx-6', workerId: 'w-ctx-6' });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
@@ -1950,115 +1832,114 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      expect(screen.queryByRole('button', { name: 'Start handoff' })).toBeNull();
-    });
-
-    it('blocks Send (morphs to Cancel) while a handoff is in flight, mirroring an active turn', async () => {
-      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-      renderView({ sessionId: 's-ctx-7', workerId: 'w-ctx-7', embeddedAgentId: 'ea-1' });
-      const ws = MockWebSocket.getLastInstance();
       act(() => {
-        ws?.simulateOpen();
-      });
-
-      act(() => {
-        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
+        const data = ndjson(
+          { v: 1, type: 'user-message', id: 'm1', text: 'before the handoff' },
+          { v: 1, type: 'context-handoff', distillation: 'THE OLD DISTILLATION' },
+          { v: 1, type: 'user-message', id: 'm2', text: 'after the handoff' },
+        );
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
       await flush();
 
-      expect(screen.queryByText('Cancel')).toBeNull();
-
-      const banner = screen.getByRole('button', { name: 'Handoff now' });
-      await act(async () => {
-        fireEvent.click(banner);
-      });
-
-      expect(screen.queryByText('Send')).toBeNull();
-      expect(screen.getByText('Cancel')).toBeTruthy();
+      expect(screen.getByText('— Context handoff: conversation restarted from summary —')).toBeTruthy();
+      expect(screen.getByText('THE OLD DISTILLATION')).toBeTruthy();
+      expect(screen.getByText('before the handoff')).toBeTruthy();
+      expect(screen.getByText('after the handoff')).toBeTruthy();
     });
 
-    describe('StrictMode threshold-crossing regression (real-browser bug, dogfood #1122 Phase A)', () => {
-      // These tests render via `renderViewStrict` (React.StrictMode), not the
-      // plain `renderView` used everywhere else in this file -- see
-      // `renderViewStrict`'s doc comment. Without StrictMode, the ORIGINAL
-      // render-phase `if (ratio !== null) { ...; setSoftBannerShown(true); ... }`
-      // implementation passed all of the crossing/dismiss tests above despite
-      // being broken in the real browser: StrictMode's double-invoke of the
-      // render function, combined with mutating `prevRatioRef` and setting React
-      // state from the same render-phase conditional, let a later render observe
-      // a stale `false` banner even though the ref had already advanced past the
-      // crossing. These tests pin the actual observed failure shape.
+    describe('the auto-compaction toggle', () => {
+      it('reflects the worker\'s server value', () => {
+        renderView({ sessionId: 's-tog-1', workerId: 'w-tog-1', autoCompaction: false });
 
-      it('shows the soft banner under StrictMode immediately after a threshold-crossing update', async () => {
-        globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-        renderViewStrict({ sessionId: 's-ctx-strict-1', workerId: 'w-ctx-strict-1', embeddedAgentId: 'ea-1' });
-        const ws = MockWebSocket.getLastInstance();
-        act(() => {
-          ws?.simulateOpen();
+        const toggle = screen.getByRole('checkbox', {
+          name: /Compact automatically when the context fills up/,
         });
-        await flush();
-
-        // Cross soft (50%): 600/1000 = 60%.
-        act(() => {
-          const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
-          ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
-        });
-        await flush();
-
-        expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
+        expect((toggle as HTMLInputElement).checked).toBe(false);
       });
 
-      it('keeps the soft banner shown across a SEPARATE, unrelated store update (activityState) that never touches ratio -- the exact interleaving that clobbered the banner back to hidden under the old render-phase implementation', async () => {
-        globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-        renderViewStrict({ sessionId: 's-ctx-strict-2', workerId: 'w-ctx-strict-2', embeddedAgentId: 'ea-1' });
-        const ws = MockWebSocket.getLastInstance();
-        act(() => {
-          ws?.simulateOpen();
-        });
-        await flush();
+      it('is ON when the worker says so', () => {
+        renderView({ sessionId: 's-tog-2', workerId: 'w-tog-2', autoCompaction: true });
 
-        act(() => {
-          const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 600, estimated: false });
-          ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+        const toggle = screen.getByRole('checkbox', {
+          name: /Compact automatically when the context fills up/,
         });
-        await flush();
-        expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
-
-        // A SEPARATE WS event, delivered via its own store patch()/notify() (a
-        // separate `act()`, mirroring two distinct WebSocket message events in
-        // the real browser), that does not touch contextUsage/ratio at all.
-        act(() => {
-          ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'idle' }));
-        });
-        await flush();
-
-        expect(screen.getByText(/Context is 60% full/)).toBeTruthy();
+        expect((toggle as HTMLInputElement).checked).toBe(true);
       });
 
-      it('shows the hard banner under StrictMode and keeps it shown across an unrelated activityState update', async () => {
-        globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
-        renderViewStrict({ sessionId: 's-ctx-strict-3', workerId: 'w-ctx-strict-3', embeddedAgentId: 'ea-1' });
-        const ws = MockWebSocket.getLastInstance();
-        act(() => {
-          ws?.simulateOpen();
-        });
-        await flush();
+      it('does NOT substitute the ON default when the server value is unknown, and is not clickable then', async () => {
+        // The ON default belongs to the server (`workers.auto_compaction NOT
+        // NULL DEFAULT 1`). Repeating it here would give one fact two
+        // sources, so a field dropped at the wire would render as a confident
+        // ON and look perfectly normal -- the Gap-Scan Q10 failure shape,
+        // which this PR already hit once at a different gate. Unknown must
+        // therefore read as "not available", and must not be writable: a
+        // click from a guessed baseline would PATCH a value the user never
+        // saw the truth of.
+        // Parameters declared so `mock.calls` carries them -- an argument-less
+        // mock records a zero-length tuple, and the PATCH assertion below has
+        // to read the request init.
+        const fetchMock = mock(
+          async (_input: RequestInfo | URL, _init?: RequestInit) =>
+            new Response(JSON.stringify([]), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+        );
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        renderView({ sessionId: 's-tog-unknown', workerId: 'w-tog-unknown' });
 
-        // Cross hard (80%): 900/1000 = 90%.
-        act(() => {
-          const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 900, estimated: false });
-          ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
-        });
-        await flush();
-        expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
+        const toggle = screen.getByRole('checkbox', {
+          name: /Compact automatically when the context fills up/,
+        }) as HTMLInputElement;
+        expect(toggle.checked).toBe(false);
+        expect(toggle.disabled).toBe(true);
 
-        act(() => {
-          ws?.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
-        });
-        await flush();
+        await userEvent.setup().click(toggle).catch(() => {});
+        expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+      });
 
-        expect(screen.getByText(/start a handoff now to avoid losing/)).toBeTruthy();
+      it('never names an engine or a mechanism in its wording', () => {
+        // §3.1's no-leak principle: from the user's side this is one
+        // feature, however differently the two engines implement it.
+        renderView({ sessionId: 's-tog-3', workerId: 'w-tog-3', autoCompaction: true });
+
+        const label = screen.getByText(/Compact automatically when the context fills up/);
+        expect(label.textContent).not.toMatch(/engine|SDK|openai/i);
+      });
+
+      it('PATCHes the worker when clicked', async () => {
+        const fetchMock = mock(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          if (url.includes('/api/sessions/') && init?.method === 'PATCH') {
+            return new Response(JSON.stringify({ worker: {} }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            });
+          }
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        });
+        globalThis.fetch = Object.assign(fetchMock, { preconnect: () => {} });
+        const user = userEvent.setup();
+        renderView({ sessionId: 's-tog-4', workerId: 'w-tog-4', autoCompaction: true });
+
+        await user.click(
+          screen.getByRole('checkbox', { name: /Compact automatically when the context fills up/ }),
+        );
+
+        await waitFor(() => {
+          const patchCall = fetchMock.mock.calls.find(
+            ([, init]) => (init as RequestInit | undefined)?.method === 'PATCH',
+          );
+          expect(patchCall).toBeDefined();
+          expect(String(patchCall![0])).toContain('/api/sessions/s-tog-4/workers/w-tog-4');
+          expect(JSON.parse(String((patchCall![1] as RequestInit).body))).toEqual({
+            autoCompaction: false,
+          });
+        });
       });
     });
   });
@@ -2358,5 +2239,51 @@ describe('EmbeddedAgentWorkerView', () => {
         await flush();
       });
     });
+  });
+});
+
+describe('formatTokenCount', () => {
+  it('leaves counts under a thousand alone', () => {
+    expect(formatTokenCount(950)).toBe('950');
+    expect(formatTokenCount(0)).toBe('0');
+  });
+
+  it('keeps one decimal below ten thousand, where the tenth is meaningful', () => {
+    expect(formatTokenCount(2710)).toBe('2.7k');
+    expect(formatTokenCount(1000)).toBe('1k');
+  });
+
+  it('drops the decimal above ten thousand, where it is noise', () => {
+    expect(formatTokenCount(102150)).toBe('102k');
+    expect(formatTokenCount(25335)).toBe('25k');
+  });
+});
+
+describe('formatCompactionBoundaryLabel', () => {
+  it('states what happened, with the numbers', () => {
+    expect(formatCompactionBoundaryLabel(102150, 2710)).toBe(
+      '— Context compacted (102k → 2.7k) —',
+    );
+  });
+
+  it('never promises that anything was preserved -- in EITHER label shape', () => {
+    // The line is a fact, not a guarantee: SDK-side fidelity is measured
+    // non-deterministic, so a preservation claim would be falsified by a
+    // single counterexample.
+    //
+    // Both shapes are checked deliberately. A polarity run found that
+    // asserting only the with-numbers branch left the bare-marker fallback
+    // unguarded -- which is the branch a future implementer is most likely to
+    // "improve" with a reassuring clause, precisely because it has no numbers
+    // to carry the meaning.
+    const forbidden = /preserv|retain|kept|safe|nothing (is |was )?lost/;
+    expect(formatCompactionBoundaryLabel(102150, 2710).toLowerCase()).not.toMatch(forbidden);
+    expect(formatCompactionBoundaryLabel(undefined, undefined).toLowerCase()).not.toMatch(forbidden);
+  });
+
+  it('falls back to the bare marker when the engine supplied no figures', () => {
+    expect(formatCompactionBoundaryLabel(undefined, undefined)).toBe('— Context compacted —');
+    expect(formatCompactionBoundaryLabel(102150, undefined)).toBe('— Context compacted —');
+    expect(formatCompactionBoundaryLabel(undefined, 2710)).toBe('— Context compacted —');
   });
 });

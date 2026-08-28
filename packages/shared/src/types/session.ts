@@ -156,8 +156,7 @@ export type WorkerClientMessage =
  */
 export type EmbeddedAgentClientMessage =
   | { type: 'embedded-user-message'; text: string; clientMessageId?: string }
-  | { type: 'embedded-cancel' }
-  | { type: 'embedded-handoff' };  // Context Handoff (Phase A); -> EmbeddedAgentWorkerService.triggerHandoff
+  | { type: 'embedded-cancel' };
 
 /**
  * Valid message types for WorkerServerMessage.

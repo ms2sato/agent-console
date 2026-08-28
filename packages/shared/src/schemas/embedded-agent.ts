@@ -65,22 +65,18 @@ export const EmbeddedAgentSdkProviderSchema = v.strictObject({
 });
 
 /**
- * Context Handoff (Phase A) threshold/auto-fire config. `auto` is accepted
- * and persisted here for forward-compat but is NOT read by any Phase A code
- * path — see docs/design/embedded-agent-worker.md "Context Handoff (Phase A)".
+ * Compaction config. One threshold, not the retired soft/hard pair: there is
+ * a single behavior (compact) rather than a two-stage banner escalation, so
+ * there is a single ratio. Unset means DEFAULT_COMPACTION_THRESHOLD -- see
+ * docs/design/embedded-agent-worker.md "Compaction".
+ *
+ * `0` is excluded rather than merely allowed-and-odd: a threshold of zero
+ * would compact after every turn including the first, which no operator
+ * means by "compact when the context fills up".
  */
-export const EmbeddedAgentHandoffConfigSchema = v.pipe(
-  v.strictObject({
-    softRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
-    hardRatio: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1))),
-    auto: v.optional(v.boolean()),
-  }),
-  v.check(
-    (val) =>
-      val.softRatio === undefined || val.hardRatio === undefined || val.softRatio <= val.hardRatio,
-    'softRatio must be less than or equal to hardRatio',
-  ),
-);
+export const EmbeddedAgentCompactionConfigSchema = v.strictObject({
+  threshold: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1), v.notValue(0))),
+});
 
 /**
  * Fields shared by both `engine` arms of {@link EmbeddedAgentDefinitionSchema}.
@@ -97,7 +93,7 @@ const EmbeddedAgentDefinitionBaseFields = {
   enabledTools: v.optional(EnabledToolsSchema),
   instructions: v.optional(InstructionsListSchema),
   contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
-  handoff: v.optional(EmbeddedAgentHandoffConfigSchema),
+  compaction: v.optional(EmbeddedAgentCompactionConfigSchema),
   isBuiltIn: v.boolean(),
   createdBy: v.string(),
   createdAt: v.string(),
@@ -136,16 +132,16 @@ export const CreateEmbeddedAgentRequestSchema = v.strictObject({
   enabledTools: v.optional(EnabledToolsSchema),
   instructions: v.optional(InstructionsListSchema),
   contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
-  handoff: v.optional(EmbeddedAgentHandoffConfigSchema),
+  compaction: v.optional(EmbeddedAgentCompactionConfigSchema),
 });
 
 /**
  * Schema for updating an embedded agent definition.
  * PATCH semantics: null = clear the field, undefined = no change.
  * `provider` is a whole-object replacement (no partial provider updates);
- * `handoff` follows the same whole-object replacement convention (no
+ * `compaction` follows the same whole-object replacement convention (no
  * per-subfield PATCH merging — see docs/design/embedded-agent-worker.md
- * "Context Handoff (Phase A)" § Definition config, migration, and forms).
+ * "Compaction" § Definition config, migration, and forms).
  */
 export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   name: v.optional(v.pipe(v.string(), v.trim(), v.minLength(1, 'Name cannot be empty'))),
@@ -156,7 +152,7 @@ export const UpdateEmbeddedAgentRequestSchema = v.strictObject({
   enabledTools: v.optional(v.nullable(EnabledToolsSchema)),
   instructions: v.optional(v.nullable(InstructionsListSchema)),
   contextWindowTokens: v.optional(v.nullable(v.pipe(v.number(), v.integer(), v.minValue(1)))),
-  handoff: v.optional(v.nullable(EmbeddedAgentHandoffConfigSchema)),
+  compaction: v.optional(v.nullable(EmbeddedAgentCompactionConfigSchema)),
 });
 
 // === Protocol schemas ===
@@ -184,6 +180,11 @@ const EmbeddedAgentInitCommandBaseFields = {
   instructions: v.optional(InstructionsListSchema),
   maxToolIterations: v.number(),
   restoredConversation: v.optional(v.array(EmbeddedAgentRestoredMessageSchema)),
+  compaction: v.strictObject({
+    auto: v.boolean(),
+    contextWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
+    threshold: v.optional(v.pipe(v.number(), v.minValue(0), v.maxValue(1), v.notValue(0))),
+  }),
 };
 
 /**
@@ -219,7 +220,11 @@ export const EmbeddedAgentCommandSchema = v.union([
     text: v.string(),
   }),
   v.strictObject({ v: v.literal(1), type: v.literal('cancel') }),
-  v.strictObject({ v: v.literal(1), type: v.literal('handoff') }),
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('set-auto-compaction'),
+    enabled: v.boolean(),
+  }),
   v.strictObject({ v: v.literal(1), type: v.literal('shutdown') }),
 ]);
 
@@ -277,6 +282,20 @@ export const EmbeddedAgentEventSchema = v.union([
     promptTokens: v.pipe(v.number(), v.integer(), v.minValue(0)),
     estimated: v.boolean(),
   }),
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('context-compacted'),
+    source: v.picklist(['auto', 'manual']),
+    summary: v.optional(v.string()),
+    preTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+    postTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+  }),
+  /**
+   * RETIRED emission, RETAINED parse (#1401). Persisted transcripts written
+   * before the compaction swap carry these rows, and this union is what
+   * replay parses them with -- dropping the member would break replay before
+   * rendering is reached. No engine emits it any more.
+   */
   v.strictObject({
     v: v.literal(1),
     type: v.literal('context-handoff'),

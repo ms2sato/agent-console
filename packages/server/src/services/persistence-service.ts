@@ -79,6 +79,8 @@ export interface PersistedEmbeddedAgentWorker extends PersistedWorkerBase {
   deliverInitialPromptOnActivation: boolean;
   /** See `InternalEmbeddedAgentWorker.sdkSessionId`. */
   sdkSessionId: string | null;
+  /** See `InternalEmbeddedAgentWorker.autoCompaction`. */
+  autoCompaction: boolean;
 }
 
 export type PersistedWorker =

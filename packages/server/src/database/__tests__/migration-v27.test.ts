@@ -1,17 +1,25 @@
 /**
- * Migration v27 tests — Context Handoff (Phase A) columns on `embedded_agents`.
+ * Migration v27 tests — `embedded_agents.context_window_tokens`.
  *
- * v27 adds four nullable columns to `embedded_agents`: `context_window_tokens`
- * (INTEGER), `handoff_soft_ratio` (REAL), `handoff_hard_ratio` (REAL), and
- * `handoff_auto` (INTEGER 0/1, matching the `deliver_initial_prompt_on_activation`
- * boolean convention). `handoff_auto` is persisted but NOT read by any Phase A
- * code path (Phase B concern). See
- * docs/design/embedded-agent-worker.md "Context Handoff (Phase A)".
+ * v27 originally added FOUR nullable columns: `context_window_tokens`
+ * (INTEGER) plus `handoff_soft_ratio` / `handoff_hard_ratio` / `handoff_auto`
+ * for the since-retired Context Handoff feature. **Migration v36 dropped
+ * those three** and replaced them with `compaction_threshold` (Issue #1401),
+ * so the surviving contribution of v27 to the current schema is
+ * `context_window_tokens` alone.
+ *
+ * Every test in this file asserts the outcome of the FULL migration chain
+ * (`initializeDatabase` runs all of them), which is what these tests always
+ * did -- so the right adaptation to v36 is to narrow the subject, not to keep
+ * asserting columns the chain now removes. The three retired columns get one
+ * explicit absence assertion here, because "v27's columns are gone" is the
+ * fact a future reader of this file most needs, and finding it asserted where
+ * they were introduced is cheaper than inferring it from v36's own test.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { sql } from 'kysely';
-import { initializeDatabase, closeDatabase, migrateToV27 } from '../connection.js';
+import { initializeDatabase, closeDatabase } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 
 const TEST_CONFIG_DIR = '/test/config';
@@ -27,13 +35,7 @@ interface PragmaTableInfoRow {
 
 async function seedEmbeddedAgent(
   db: Awaited<ReturnType<typeof initializeDatabase>>,
-  overrides: {
-    id: string;
-    context_window_tokens?: number | null;
-    handoff_soft_ratio?: number | null;
-    handoff_hard_ratio?: number | null;
-    handoff_auto?: number | null;
-  }
+  overrides: { id: string; context_window_tokens?: number | null }
 ): Promise<void> {
   await db
     .insertInto('embedded_agents')
@@ -50,16 +52,14 @@ async function seedEmbeddedAgent(
       enabled_tools: null,
       instructions: null,
       context_window_tokens: overrides.context_window_tokens ?? null,
-      handoff_soft_ratio: overrides.handoff_soft_ratio ?? null,
-      handoff_hard_ratio: overrides.handoff_hard_ratio ?? null,
-      handoff_auto: overrides.handoff_auto ?? null,
+      compaction_threshold: null,
       is_built_in: 0,
       created_by: 'user-1',
     })
     .execute();
 }
 
-describe('migration v27 (embedded_agents Context Handoff Phase A columns)', () => {
+describe('migration v27 (embedded_agents.context_window_tokens)', () => {
   beforeEach(async () => {
     await closeDatabase();
     setupMemfs({
@@ -73,7 +73,7 @@ describe('migration v27 (embedded_agents Context Handoff Phase A columns)', () =
     cleanupMemfs();
   });
 
-  it('adds all four columns to embedded_agents, nullable with no default', async () => {
+  it('leaves context_window_tokens on embedded_agents, nullable with no default', async () => {
     const db = await initializeDatabase(':memory:');
 
     const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(embedded_agents)`.execute(db);
@@ -84,75 +84,42 @@ describe('migration v27 (embedded_agents Context Handoff Phase A columns)', () =
     expect(contextWindowTokens!.type.toUpperCase()).toBe('INTEGER');
     expect(contextWindowTokens!.notnull).toBe(0);
     expect(contextWindowTokens!.dflt_value).toBeNull();
-
-    const softRatio = byName.get('handoff_soft_ratio');
-    expect(softRatio).toBeDefined();
-    expect(softRatio!.type.toUpperCase()).toBe('REAL');
-    expect(softRatio!.notnull).toBe(0);
-    expect(softRatio!.dflt_value).toBeNull();
-
-    const hardRatio = byName.get('handoff_hard_ratio');
-    expect(hardRatio).toBeDefined();
-    expect(hardRatio!.type.toUpperCase()).toBe('REAL');
-    expect(hardRatio!.notnull).toBe(0);
-    expect(hardRatio!.dflt_value).toBeNull();
-
-    const auto = byName.get('handoff_auto');
-    expect(auto).toBeDefined();
-    expect(auto!.type.toUpperCase()).toBe('INTEGER');
-    expect(auto!.notnull).toBe(0);
-    expect(auto!.dflt_value).toBeNull();
   });
 
-  it('round-trips non-null values for all four columns', async () => {
+  it("no longer carries v27's three handoff columns after the chain runs (v36 dropped them)", async () => {
     const db = await initializeDatabase(':memory:');
-    await seedEmbeddedAgent(db, {
-      id: 'agent-configured',
-      context_window_tokens: 128000,
-      handoff_soft_ratio: 0.75,
-      handoff_hard_ratio: 0.9,
-      handoff_auto: 1,
-    });
+
+    const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(embedded_agents)`.execute(db);
+    const byName = new Set(columns.rows.map((c) => c.name));
+
+    expect(byName.has('handoff_soft_ratio')).toBe(false);
+    expect(byName.has('handoff_hard_ratio')).toBe(false);
+    expect(byName.has('handoff_auto')).toBe(false);
+  });
+
+  it('round-trips a non-null context_window_tokens', async () => {
+    const db = await initializeDatabase(':memory:');
+    await seedEmbeddedAgent(db, { id: 'agent-configured', context_window_tokens: 128000 });
 
     const row = await db
       .selectFrom('embedded_agents')
       .where('id', '=', 'agent-configured')
-      .select(['context_window_tokens', 'handoff_soft_ratio', 'handoff_hard_ratio', 'handoff_auto'])
+      .select(['context_window_tokens'])
       .executeTakeFirstOrThrow();
 
     expect(row.context_window_tokens).toBe(128000);
-    expect(row.handoff_soft_ratio).toBe(0.75);
-    expect(row.handoff_hard_ratio).toBe(0.9);
-    expect(row.handoff_auto).toBe(1);
   });
 
-  it('round-trips null values for all four columns (legacy row / unconfigured)', async () => {
+  it('round-trips a null context_window_tokens (legacy row / unconfigured)', async () => {
     const db = await initializeDatabase(':memory:');
     await seedEmbeddedAgent(db, { id: 'agent-unconfigured' });
 
     const row = await db
       .selectFrom('embedded_agents')
       .where('id', '=', 'agent-unconfigured')
-      .select(['context_window_tokens', 'handoff_soft_ratio', 'handoff_hard_ratio', 'handoff_auto'])
+      .select(['context_window_tokens'])
       .executeTakeFirstOrThrow();
 
     expect(row.context_window_tokens).toBeNull();
-    expect(row.handoff_soft_ratio).toBeNull();
-    expect(row.handoff_hard_ratio).toBeNull();
-    expect(row.handoff_auto).toBeNull();
-  });
-
-  it('is idempotent when re-applied (duplicate columns are ignored)', async () => {
-    const db = await initializeDatabase(':memory:');
-
-    await expect(migrateToV27(db)).resolves.toBeUndefined();
-    await expect(migrateToV27(db)).resolves.toBeUndefined();
-
-    const columns = await sql<PragmaTableInfoRow>`PRAGMA table_info(embedded_agents)`.execute(db);
-    const byName = new Set(columns.rows.map((c) => c.name));
-    expect(byName.has('context_window_tokens')).toBe(true);
-    expect(byName.has('handoff_soft_ratio')).toBe(true);
-    expect(byName.has('handoff_hard_ratio')).toBe(true);
-    expect(byName.has('handoff_auto')).toBe(true);
   });
 });
