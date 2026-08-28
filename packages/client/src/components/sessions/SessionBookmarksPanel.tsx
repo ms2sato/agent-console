@@ -149,7 +149,7 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
                   </span>
                 )}
               </div>
-              <span className="block text-xs text-gray-500">{bookmarkHost(bookmark.url)}</span>
+              <span className="block break-all text-xs text-gray-500">{bookmarkHost(bookmark.url)}</span>
             </div>
             <button
               onClick={() => deleteBookmark(bookmark.id)}

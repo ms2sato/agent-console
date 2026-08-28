@@ -278,6 +278,38 @@ describe('SessionBookmarksPanel', () => {
     expect(link.contains(hostNode)).toBe(false);
   });
 
+  it('wraps the host line instead of clipping it, even for an attacker-controlled long host (structural pin)', async () => {
+    // A maliciously long, unbroken host (up to 253 chars via many DNS
+    // labels) must wrap across lines rather than overflow -- an ellipsis or
+    // any other clipping would hide the host's true suffix, defeating P4's
+    // "host is visible at click time" guarantee via a different mechanism
+    // than title-crowding (design doc §7). happy-dom does not lay out CSS,
+    // so this test pins the *class*, not actual visual wrapping.
+    const longLabel = 'a'.repeat(63);
+    const longHost = `github.com.${longLabel}.${longLabel}.${longLabel}.attacker.example`;
+    mockFetch.mockResolvedValue(
+      jsonResponse({
+        bookmarks: [
+          {
+            id: 'bookmark-1',
+            url: `https://${longHost}/`,
+            title: 'Long Host Bookmark',
+            createdAt: '2026-08-20T00:00:00.000Z',
+            origin: 'user',
+          },
+        ],
+      })
+    );
+
+    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+
+    await waitFor(() => expect(screen.getByText('Long Host Bookmark')).toBeTruthy());
+
+    const hostNode = screen.getByText(longHost);
+    expect(hostNode.className).toContain('break-all');
+    expect(hostNode.className).not.toContain('truncate');
+  });
+
   it('derives the host from the URL, not from a title containing a fake host string', async () => {
     mockFetch.mockResolvedValue(
       jsonResponse({
