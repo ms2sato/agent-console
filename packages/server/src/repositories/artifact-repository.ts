@@ -51,10 +51,12 @@ export interface ArtifactRepository {
   /**
    * Find all artifacts owned by a user AND originating from a given
    * session, newest first (wire shape -- no `userId`). Both conditions are
-   * scoped in the SQL query itself, never as a post-fetch filter: a JS-side
-   * session filter applied after an already-capped user-scoped fetch could
-   * hide the caller's own older rows (from the target session) behind the
-   * same caller's own newer artifacts from other sessions.
+   * scoped in the SQL query itself, never as a post-fetch filter -- see
+   * docs/design/html-artifacts.md §4.2 (single writer of the "why") for the
+   * full rationale. In short: a user-scoped fetch has no other users' rows
+   * to be crowded out by; a post-fetch filter would instead lose the
+   * caller's own older rows in this session, pushed out by the caller's own
+   * newer rows from other sessions.
    *
    * Session ownership is deliberately NOT checked here: `userId` already
    * constrains the result set to the caller's own artifacts, so
