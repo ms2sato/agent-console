@@ -446,7 +446,7 @@ describe('embedded-agent worker in SessionPage page-state', () => {
       type: 'embedded-agent',
       name: 'Local GPT',
       embeddedAgentId: 'embedded-agent-1',
-      activated: true,
+      activated: true, autoCompaction: true,
       createdAt: new Date().toISOString(),
     };
     const session = createMockSession({ status: 'active', workers: [embeddedWorker] });
@@ -520,7 +520,7 @@ describe('resolveActiveEmbeddedAgentId (Context Handoff Phase A, Issue #1122)', 
       type: 'embedded-agent',
       name: 'Local GPT',
       embeddedAgentId: 'embedded-agent-1',
-      activated: true,
+      activated: true, autoCompaction: true,
       createdAt: new Date().toISOString(),
     };
     const workers: Worker[] = [

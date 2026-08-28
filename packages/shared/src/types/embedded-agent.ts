@@ -220,8 +220,25 @@ export type EmbeddedAgentEvent =
    * offer: `openai-api` always has one (it authored the distillation),
    * while `claude-sdk` only has one if the SDK exposes it. A missing
    * summary renders as a plain boundary line, never as an error.
+   *
+   * `preTokens`/`postTokens` are how much context the compaction consumed
+   * and produced. They exist because SDK-side compaction fidelity was
+   * measured NON-DETERMINISTIC (see docs/design/embedded-agent-worker.md
+   * § Compaction, "Summary fidelity"): the chosen response to that is to
+   * make each compaction's aggressiveness VISIBLE rather than to build
+   * machinery that tries to prevent it. A 102k -> 2.7k boundary reports its
+   * own severity to the user. Both are optional for the same reason
+   * `summary` is -- an engine that cannot supply them renders the plain
+   * marker instead of a fabricated number.
    */
-  | { v: 1; type: 'context-compacted'; source: 'auto' | 'manual'; summary?: string }
+  | {
+      v: 1;
+      type: 'context-compacted';
+      source: 'auto' | 'manual';
+      summary?: string;
+      preTokens?: number;
+      postTokens?: number;
+    }
   /**
    * RETIRED (Context Handoff, #1122): no engine emits this any more --
    * `context-compacted` above replaced it in #1401.

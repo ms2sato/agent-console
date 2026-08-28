@@ -142,7 +142,7 @@ describe('AgentLoop.compact() — failure invariant (polarity, mandatory)', () =
     await loop.compact('manual');
 
     const compactedEvent = events.find((e) => e.type === 'context-compacted');
-    expect(compactedEvent).toEqual({
+    expect(compactedEvent).toMatchObject({
       v: 1,
       type: 'context-compacted',
       source: 'manual',
@@ -269,7 +269,7 @@ describe('AgentLoop.compact() — additional behaviors', () => {
     expect(events.find((e) => e.type === 'assistant-delta')).toBeUndefined();
     expect(events.find((e) => e.type === 'assistant-thinking-delta')).toBeUndefined();
     expect(events.find((e) => e.type === 'assistant-message')).toBeUndefined();
-    expect(events.find((e) => e.type === 'context-compacted')).toEqual({
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({
       v: 1,
       type: 'context-compacted',
       source: 'manual',
@@ -794,5 +794,60 @@ describe('Compaction — the Compact tool and its turn-boundary reservation', ()
     deps.adapter = followUp;
     await loop.runTurn('t2', 'anything');
     expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
+});
+
+describe('Compaction — the boundary marker reports its own severity', () => {
+  it('carries preTokens from the distillation call and postTokens from the seed', async () => {
+    // Visibility, not prevention: SDK-side compaction fidelity measured
+    // non-deterministic, and the chosen response is to let each compaction
+    // declare how aggressive it was rather than to build machinery that
+    // tries to stop it. See the event's doc comment in shared.
+    const adapter = new ScriptedAdapter([textResponseWithUsage('A SHORT SUMMARY', 50_000)]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    const marker = events.find((e) => e.type === 'context-compacted');
+    expect(marker).toMatchObject({ preTokens: 50_000 });
+    // The post value is the seed's own chars/4 estimate -- small, and
+    // strictly smaller than the pre value, which is the whole point.
+    const postTokens = (marker as { postTokens?: number }).postTokens;
+    expect(typeof postTokens).toBe('number');
+    expect(postTokens!).toBeLessThan(50_000);
+  });
+
+  it('reports preTokens from the chars/4 fallback when the provider sends no usage of its own', async () => {
+    // `preTokens` is optional on the wire because an engine may have no
+    // figure -- but THIS engine always does: a provider that reports nothing
+    // falls back to the chars/4 estimate over the request it just made, so
+    // the marker is never silently missing its severity on this path.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t0', 'a message long enough to estimate from');
+    events.length = 0;
+    await loop.compact('manual');
+
+    const marker = events.find((e) => e.type === 'context-compacted') as { preTokens?: number };
+    expect(typeof marker.preTokens).toBe('number');
+    expect(marker.preTokens!).toBeGreaterThan(0);
+  });
+
+  it('reports the post value on the context-usage event too, so the bar and the marker cannot disagree', async () => {
+    const adapter = new ScriptedAdapter([textResponseWithUsage('SUMMARY', 50_000)]);
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    await loop.compact('manual');
+
+    const marker = events.find((e) => e.type === 'context-compacted') as { postTokens?: number };
+    const usageEvents = events.filter((e) => e.type === 'context-usage');
+    expect(usageEvents.at(-1)).toMatchObject({
+      promptTokens: marker.postTokens,
+      estimated: true,
+    });
   });
 });

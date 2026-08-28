@@ -1000,7 +1000,7 @@ describe('SessionManager', () => {
       if (updated?.type === 'embedded-agent') {
         expect(updated.autoCompaction).toBe(false);
       }
-      const readBack = manager.getSession(sessionId)!.workers.find((w) => w.id === workerId)!;
+      const readBack = manager.getSession(sessionId)!.workers.find((w: Worker) => w.id === workerId)!;
       expect(readBack.type).toBe('embedded-agent');
       if (readBack.type === 'embedded-agent') {
         expect(readBack.autoCompaction).toBe(false);

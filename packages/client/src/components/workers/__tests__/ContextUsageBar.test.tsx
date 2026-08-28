@@ -14,8 +14,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={{ promptTokens: 300, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -30,8 +29,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={{ promptTokens: 300, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -41,13 +39,12 @@ describe('ContextUsageBar', () => {
       expect(fill?.style.width).toBe('30%');
     });
 
-    it('colors the fill gray below the soft threshold', () => {
+    it('colors the fill gray well below the compaction threshold', () => {
       render(
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={{ promptTokens: 300, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -55,13 +52,12 @@ describe('ContextUsageBar', () => {
       expect(bar.querySelector('div')?.className).toContain('bg-gray-500');
     });
 
-    it('colors the fill amber between the soft and hard thresholds', () => {
+    it('colors the fill amber inside the margin below the threshold (0.8 - 0.15 = 0.65)', () => {
       render(
         <ContextUsageBar
           contextWindowTokens={1000}
-          contextUsage={{ promptTokens: 600, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          contextUsage={{ promptTokens: 700, estimated: false }}
+          threshold={0.8}
         />,
       );
 
@@ -69,13 +65,12 @@ describe('ContextUsageBar', () => {
       expect(bar.querySelector('div')?.className).toContain('bg-amber-500');
     });
 
-    it('colors the fill red at or above the hard threshold', () => {
+    it('colors the fill red above the compaction threshold', () => {
       render(
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={{ promptTokens: 900, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -83,18 +78,46 @@ describe('ContextUsageBar', () => {
       expect(bar.querySelector('div')?.className).toContain('bg-red-600');
     });
 
-    it('colors the fill red exactly at the hard threshold boundary (ratio >= hardRatio)', () => {
+    it('colors the fill red exactly AT the threshold (the comparison is >=, matching the engine\'s own fire condition)', () => {
       render(
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={{ promptTokens: 800, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
       const bar = screen.getByRole('progressbar');
       expect(bar.querySelector('div')?.className).toContain('bg-red-600');
+    });
+
+    it('colors the fill amber exactly at the amber band\'s lower edge (threshold - 0.15)', () => {
+      // The margin is what makes compaction visible as it approaches. Its
+      // lower edge is inclusive for the same reason the threshold itself is:
+      // an exactly-at reading is already inside the band.
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1000}
+          contextUsage={{ promptTokens: 650, estimated: false }}
+          threshold={0.8}
+        />,
+      );
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.querySelector('div')?.className).toContain('bg-amber-500');
+    });
+
+    it('colors the fill gray just below the amber band\'s lower edge', () => {
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1000}
+          contextUsage={{ promptTokens: 649, estimated: false }}
+          threshold={0.8}
+        />,
+      );
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.querySelector('div')?.className).toContain('bg-gray-500');
     });
 
     it('shows a hover tooltip with rounded percentage and raw token counts, with no estimate indicator when the reading is provider-reported (estimated: false)', () => {
@@ -102,8 +125,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={{ promptTokens: 300, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -116,8 +138,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={{ promptTokens: 300, estimated: true }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -130,8 +151,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={1000}
           contextUsage={null}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -149,8 +169,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={{ promptTokens: 300, estimated: true }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -165,8 +184,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={{ promptTokens: 300, estimated: true }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -181,8 +199,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={{ promptTokens: 300, estimated: true }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -197,8 +214,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={{ promptTokens: 300, estimated: false }}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -211,8 +227,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={null}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -227,8 +242,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={undefined}
           contextUsage={null}
-          softRatio={0.5}
-          hardRatio={0.8}
+          threshold={0.8}
         />,
       );
 
@@ -241,8 +255,7 @@ describe('ContextUsageBar', () => {
         <ContextUsageBar
           contextWindowTokens={128000}
           contextUsage={usage}
-          softRatio={0.75}
-          hardRatio={0.9}
+          threshold={0.9}
         />,
       );
 

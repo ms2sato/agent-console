@@ -8,7 +8,7 @@ import {
   parseMaxToolIterations,
   toInstructionPaths,
   parseContextWindowTokens,
-  parseHandoffRatio,
+  parseCompactionThreshold,
   type EmbeddedAgentFormData,
 } from './EmbeddedAgentForm';
 
@@ -48,15 +48,14 @@ export function EditEmbeddedAgentForm({
 
   const handleSubmit = (data: EmbeddedAgentFormData) => {
     setError(null);
-    const softRatio = parseHandoffRatio(data.handoffSoftRatioInput);
-    const hardRatio = parseHandoffRatio(data.handoffHardRatioInput);
-    // Context Handoff (Phase A): handoff is a whole-object PATCH replace
-    // (no per-subfield merge) -- both ratios empty means "clear to null",
-    // matching the description/systemPrompt/instructions pattern below.
-    // handoff.auto is deliberately never written by this form -- see
-    // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" §
-    // Definition config, migration, and forms.
-    const handoff = softRatio !== undefined || hardRatio !== undefined ? { softRatio, hardRatio } : null;
+    const threshold = parseCompactionThreshold(data.compactionThresholdInput);
+    // Compaction is a whole-object PATCH replace (no per-subfield merge) --
+    // an empty threshold input means "clear to null", matching the
+    // description/systemPrompt/instructions pattern below. Automatic
+    // compaction itself is a per-worker toggle, never written here -- see
+    // docs/design/embedded-agent-worker.md "Compaction" § Definition config,
+    // migration, and forms.
+    const compaction = threshold !== undefined ? { threshold } : null;
     updateMutation.mutate({
       name: data.name,
       // Send null to clear optional fields (server interprets null as
@@ -78,7 +77,7 @@ export function EditEmbeddedAgentForm({
       // the description/systemPrompt/maxToolIterations pattern above.
       instructions: data.instructions.length > 0 ? toInstructionPaths(data.instructions) : null,
       contextWindowTokens: parseContextWindowTokens(data.contextWindowTokensInput) ?? null,
-      handoff,
+      compaction,
     });
   };
 

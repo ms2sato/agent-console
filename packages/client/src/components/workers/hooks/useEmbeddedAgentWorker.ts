@@ -20,7 +20,6 @@ interface UseEmbeddedAgentWorkerReturn {
   workerError: { message: string; code?: WorkerErrorCode } | null;
   loadingHistory: boolean;
   contextUsage: EmbeddedAgentContextUsage | null;
-  handoffInFlight: boolean;
   /** Transcript Restore (#1123). See `EmbeddedAgentSnapshot.restoring` doc comment. */
   restoring: boolean;
   /** Transcript Restore (#1123). See `EmbeddedAgentSnapshot.restoredMessageCount` doc comment. */
@@ -30,7 +29,6 @@ interface UseEmbeddedAgentWorkerReturn {
   restart: () => void;
   retry: () => void;
   dismissError: () => void;
-  triggerHandoff: () => void;
 }
 
 /**
@@ -79,10 +77,6 @@ export function useEmbeddedAgentWorker(
     getOrCreateEmbeddedAgentWorker(sessionId, workerId).dismissError();
   }, [sessionId, workerId]);
 
-  const triggerHandoff = useCallback(() => {
-    getOrCreateEmbeddedAgentWorker(sessionId, workerId).triggerHandoff();
-  }, [sessionId, workerId]);
-
   return {
     status: snapshot.status,
     entries: snapshot.entries,
@@ -90,7 +84,6 @@ export function useEmbeddedAgentWorker(
     workerError: snapshot.workerError,
     loadingHistory: snapshot.loadingHistory,
     contextUsage: snapshot.contextUsage,
-    handoffInFlight: snapshot.handoffInFlight,
     restoring: snapshot.restoring,
     restoredMessageCount: snapshot.restoredMessageCount,
     sendUserMessage,
@@ -98,6 +91,5 @@ export function useEmbeddedAgentWorker(
     restart,
     retry,
     dismissError,
-    triggerHandoff,
   };
 }

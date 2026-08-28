@@ -2002,8 +2002,8 @@ export async function migrateToV34(database: Kysely<Database>): Promise<void> {
 
 /**
  * Migration v35: Add `auto_compaction` column to `workers` -- Compaction's
- * per-worker automatic-firing toggle (Issue #1401,
- * docs/design/embedded-agent-worker.md "Compaction").
+ * per-worker automatic-firing toggle. See
+ * docs/design/embedded-agent-worker.md "Compaction".
  *
  * `NOT NULL DEFAULT 1` backfills every pre-existing row to ON, which is what
  * the owner's 2026-08-28 decision means: the swap exists to end the state
@@ -2034,7 +2034,8 @@ export async function migrateToV35(database: Kysely<Database>): Promise<void> {
 /**
  * Migration v36: Replace `embedded_agents`' three Context Handoff columns
  * (`handoff_soft_ratio`, `handoff_hard_ratio`, `handoff_auto`) with a single
- * `compaction_threshold REAL` (Issue #1401).
+ * `compaction_threshold REAL`. See docs/design/embedded-agent-worker.md
+ * "Compaction" § Definition config, migration, and forms.
  *
  * SQLite has no portable in-place column drop at the version this project
  * targets, so this follows `migrateToV32`'s table-recreation template for
@@ -2047,7 +2048,7 @@ export async function migrateToV35(database: Kysely<Database>): Promise<void> {
  * never chose. `handoff_auto` was a per-definition flag that no code path
  * ever read, and its replacement lives on the worker (v35), not here. Every
  * existing definition therefore lands on `compaction_threshold = NULL`,
- * i.e. the DEFAULT_COMPACTION_THRESHOLD default.
+ * i.e. the `DEFAULT_COMPACTION_THRESHOLD` default.
  *
  * @internal Exported for testing.
  */

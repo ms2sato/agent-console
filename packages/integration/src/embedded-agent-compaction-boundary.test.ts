@@ -1,21 +1,26 @@
 /**
- * Cross-Package Boundary Test: Context Handoff (Phase A) wire round trips.
+ * Cross-Package Boundary Test: Compaction wire round trips.
  *
  * This is the Q10 wire-boundary test `docs/design/embedded-agent-worker.md`
- * "Context Handoff (Phase A)" > Testing > Integration explicitly requires,
- * extending the pattern established by
- * `embedded-agent-client-message-id-boundary.test.ts` to the two new pieces
- * Context Handoff (Phase A) added to the shared schemas:
+ * "Compaction" > Testing > Integration explicitly requires, extending the
+ * pattern established by `embedded-agent-client-message-id-boundary.test.ts`
+ * to the pieces Compaction added to the shared schemas:
  *
- *  1. The `context-usage` / `context-handoff` NDJSON stream events: loop
+ *  1. The `context-usage` / `context-compacted` NDJSON stream events: loop
  *     stdout -> `EmbeddedAgentWorkerService`'s `KNOWN_EVENT_TYPES` +
  *     `EmbeddedAgentEventSchema` validation -> persisted append -> history
  *     replay -> the client's REAL `EmbeddedAgentStreamEventSchema` parser.
- *  2. `EmbeddedAgentDefinition.contextWindowTokens` / `handoff`: REST create
- *     -> SQLite round trip (`toEmbeddedAgentRow` / `toEmbeddedAgentDefinition`)
- *     -> the REAL `EmbeddedAgentDefinitionSchema` (the same schema backing
- *     the `embedded-agent-created` / `embedded-agent-updated` registry
- *     broadcast) -> PATCH-clear semantics.
+ *     The LEGACY `context-handoff` event is exercised on the same path, since
+ *     retiring its emission must not retire its parse (#1401).
+ *  2. `EmbeddedAgentDefinition.contextWindowTokens` / `compaction`: REST
+ *     create -> SQLite round trip (`toEmbeddedAgentRow` /
+ *     `toEmbeddedAgentDefinition`) -> the REAL
+ *     `EmbeddedAgentDefinitionSchema` (the same schema backing the
+ *     `embedded-agent-created` / `embedded-agent-updated` registry broadcast)
+ *     -> PATCH-clear semantics.
+ *  3. `EmbeddedAgentWorker.autoCompaction`: the per-worker toggle across the
+ *     `strictObject` worker schema inside the app-state broadcast, which is
+ *     precisely where a type-only addition would be silently stripped.
  *
  * Per pre-pr-completeness.md Question 10: valibot's default strip-unknown-
  * fields behavior means a missed schema edit (TS type updated but the
@@ -146,7 +151,7 @@ function parseReplayLines(data: string): { events: EmbeddedAgentStreamEvent[]; p
   return { events, parseFailures };
 }
 
-describe('Client-Server Boundary: Context Handoff (Phase A) wire round trips', () => {
+describe('Client-Server Boundary: Compaction wire round trips', () => {
   let sessionManager: SessionManager;
   let embeddedAgentManager: EmbeddedAgentManager;
   let jobQueue: JobQueue;
@@ -194,7 +199,7 @@ describe('Client-Server Boundary: Context Handoff (Phase A) wire round trips', (
     cleanupMemfs();
   });
 
-  it('context-usage and context-handoff NDJSON lines survive the full loop stdout -> persisted-file -> client-parse round trip', async () => {
+  it('context-usage and context-compacted NDJSON lines survive the full loop stdout -> persisted-file -> client-parse round trip', async () => {
     const userRepository = new SqliteUserRepository(getDatabase());
     const owner = await userRepository.upsertByOsUid(24680, 'owner', '/home/owner');
 
@@ -217,14 +222,19 @@ describe('Client-Server Boundary: Context Handoff (Phase A) wire round trips', (
     expect(fake.captured.length).toBe(1);
 
     // Simulate the loop emitting a context-usage reading followed by a
-    // successful handoff's distillation marker (the two Context Handoff
-    // (Phase A) event shapes) directly on the fake subprocess's stdout.
+    // successful compaction's boundary marker, directly on the fake
+    // subprocess's stdout.
     fake.pushStdoutLine({ v: 1, type: 'context-usage', promptTokens: 1234, estimated: false });
-    fake.pushStdoutLine({ v: 1, type: 'context-handoff', distillation: 'a distilled summary' });
+    fake.pushStdoutLine({
+      v: 1,
+      type: 'context-compacted',
+      source: 'auto',
+      summary: 'a distilled summary',
+    });
 
     await waitFor(async () => {
       const hist = await sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
-      return !!hist && hist.data.includes('context-handoff');
+      return !!hist && hist.data.includes('context-compacted');
     });
     const history = await sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
     expect(history).not.toBeNull();
@@ -240,24 +250,65 @@ describe('Client-Server Boundary: Context Handoff (Phase A) wire round trips', (
       estimated: false,
     });
 
-    const handoffEvent = events.find((e) => e.type === 'context-handoff');
-    expect(handoffEvent).toBeDefined();
-    expect(handoffEvent).toMatchObject({
-      type: 'context-handoff',
-      distillation: 'a distilled summary',
+    const compactedEvent = events.find((e) => e.type === 'context-compacted');
+    expect(compactedEvent).toBeDefined();
+    expect(compactedEvent).toMatchObject({
+      type: 'context-compacted',
+      source: 'auto',
+      summary: 'a distilled summary',
     });
   });
 
-  it('EmbeddedAgentDefinition.contextWindowTokens/handoff survive create, the SQLite round trip, the registry broadcast schema, and PATCH-clear', async () => {
+  it('REGRESSION (#1401): a LEGACY context-handoff line still survives the same round trip', async () => {
+    // Emission is retired; parse is not. A worker whose persisted stream
+    // predates the compaction swap still replays these rows through the
+    // server's KNOWN_EVENT_TYPES gate and the client's schema -- and if
+    // either had dropped the member, replay would fail at the PARSE step,
+    // before any rendering decision is reached.
+    const userRepository = new SqliteUserRepository(getDatabase());
+    const owner = await userRepository.upsertByOsUid(24681, 'legacy-owner', '/home/legacy');
+
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: owner.id },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    const workerId = worker!.id;
+
+    await sessionManager.activateEmbeddedAgentWorker(session.id, workerId);
+    fake.pushStdoutLine({ v: 1, type: 'context-handoff', distillation: 'a legacy distillation' });
+
+    await waitFor(async () => {
+      const hist = await sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
+      return !!hist && hist.data.includes('context-handoff');
+    });
+    const history = await sessionManager.getWorkerOutputHistory(session.id, workerId, 0);
+
+    const { events, parseFailures } = parseReplayLines(history!.data);
+    expect(parseFailures).toEqual([]);
+    expect(events.find((e) => e.type === 'context-handoff')).toMatchObject({
+      type: 'context-handoff',
+      distillation: 'a legacy distillation',
+    });
+  });
+
+  it('EmbeddedAgentDefinition.contextWindowTokens/compaction survive create, the SQLite round trip, the registry broadcast schema, and PATCH-clear', async () => {
     const userRepository = new SqliteUserRepository(getDatabase());
     const owner = await userRepository.upsertByOsUid(13570, 'owner2', '/home/owner2');
 
     const created = await embeddedAgentManager.createEmbeddedAgent(
       {
-        name: 'Handoff-capable model',
+        name: 'Compaction-configured model',
         provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
         contextWindowTokens: 128000,
-        handoff: { softRatio: 0.8, hardRatio: 0.95 },
+        compaction: { threshold: 0.8 },
       },
       owner.id,
     );
@@ -267,7 +318,7 @@ describe('Client-Server Boundary: Context Handoff (Phase A) wire round trips', (
     // registry broadcast payload.
     const parsedCreated = v.parse(EmbeddedAgentDefinitionSchema, created);
     expect(parsedCreated.contextWindowTokens).toBe(128000);
-    expect(parsedCreated.handoff).toEqual({ softRatio: 0.8, hardRatio: 0.95 });
+    expect(parsedCreated.compaction).toEqual({ threshold: 0.8 });
 
     // Extra rigor: parse through the wrapper schema backing the actual WS
     // broadcast envelope (embedded-agent-created), proving the field survives
@@ -280,27 +331,67 @@ describe('Client-Server Boundary: Context Handoff (Phase A) wire round trips', (
       throw new Error(`expected embedded-agent-created, got ${parsedBroadcast.type}`);
     }
     expect(parsedBroadcast.embeddedAgent.contextWindowTokens).toBe(128000);
-    expect(parsedBroadcast.embeddedAgent.handoff).toEqual({ softRatio: 0.8, hardRatio: 0.95 });
+    expect(parsedBroadcast.embeddedAgent.compaction).toEqual({ threshold: 0.8 });
 
     // Prove the SQLite round trip (toEmbeddedAgentRow / toEmbeddedAgentDefinition)
     // also preserves the fields, not just the in-memory object create() returned.
     const fetched = embeddedAgentManager.getEmbeddedAgent(created.id);
     expect(fetched).toBeDefined();
     expect(fetched!.contextWindowTokens).toBe(128000);
-    expect(fetched!.handoff).toEqual({ softRatio: 0.8, hardRatio: 0.95 });
+    expect(fetched!.compaction).toEqual({ threshold: 0.8 });
     const parsedFetched = v.parse(EmbeddedAgentDefinitionSchema, fetched);
     expect(parsedFetched.contextWindowTokens).toBe(128000);
-    expect(parsedFetched.handoff).toEqual({ softRatio: 0.8, hardRatio: 0.95 });
+    expect(parsedFetched.compaction).toEqual({ threshold: 0.8 });
 
-    // PATCH-clear: `handoff: null` clears to undefined, whole-object-replace
+    // PATCH-clear: `compaction: null` clears to undefined, whole-object-replace
     // semantics independent of contextWindowTokens (which is left untouched).
-    const updated = await embeddedAgentManager.updateEmbeddedAgent(created.id, { handoff: null });
+    const updated = await embeddedAgentManager.updateEmbeddedAgent(created.id, { compaction: null });
     expect(updated).not.toBeNull();
-    expect(updated!.handoff).toBeUndefined();
+    expect(updated!.compaction).toBeUndefined();
     expect(updated!.contextWindowTokens).toBe(128000);
 
     const parsedUpdated = v.parse(EmbeddedAgentDefinitionSchema, updated);
-    expect(parsedUpdated.handoff).toBeUndefined();
+    expect(parsedUpdated.compaction).toBeUndefined();
     expect(parsedUpdated.contextWindowTokens).toBe(128000);
+  });
+
+  it('EmbeddedAgentWorker.autoCompaction survives the app-state broadcast schema (Gap-Scan Q10)', async () => {
+    // The wire schema for a worker is a `strictObject`, so a TypeScript-only
+    // field addition would be silently stripped here with no error on either
+    // side -- the exact failure this test exists to make loud. It therefore
+    // parses through the REAL AppServerMessageSchema, not the worker type.
+    const userRepository = new SqliteUserRepository(getDatabase());
+    const owner = await userRepository.upsertByOsUid(13571, 'owner3', '/home/owner3');
+
+    const definition = await embeddedAgentManager.createEmbeddedAgent(
+      { name: 'Local model', provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' } },
+      owner.id,
+    );
+    const session = await sessionManager.createSession(
+      { type: 'quick', locationPath: '/test/path' },
+      { createdBy: owner.id },
+    );
+    const worker = await sessionManager.createWorker(session.id, {
+      type: 'embedded-agent',
+      embeddedAgentId: definition.id,
+    });
+    const workerId = worker!.id;
+
+    const parseSession = (s: unknown) => {
+      const parsed = v.parse(AppServerMessageSchema, { type: 'session-created', session: s });
+      if (parsed.type !== 'session-created') throw new Error('expected session-created');
+      const w = parsed.session.workers.find((x) => x.id === workerId);
+      if (w?.type !== 'embedded-agent') throw new Error('expected an embedded-agent worker');
+      return w;
+    };
+
+    // Default ON, all the way across the wire.
+    expect(parseSession(sessionManager.getSession(session.id)).autoCompaction).toBe(true);
+
+    await sessionManager.setEmbeddedAgentAutoCompaction(session.id, workerId, false);
+
+    // And an explicit OFF, which is the value a stripped field would silently
+    // turn back into `undefined` (rendering as ON in the client's own default).
+    expect(parseSession(sessionManager.getSession(session.id)).autoCompaction).toBe(false);
   });
 });

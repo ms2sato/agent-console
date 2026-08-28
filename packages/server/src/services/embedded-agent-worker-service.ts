@@ -154,6 +154,10 @@ const KNOWN_EVENT_TYPES = new Set<string>([
   'turn-error',
   'fatal',
   'context-usage',
+  'context-compacted',
+  // LEGACY: no engine emits this any more, but a persisted stream written
+  // before the compaction swap replays through this same gate. Removing it
+  // would make every historical row fail the unknown-type check.
   'context-handoff',
   'sdk-session-id',
 ]);

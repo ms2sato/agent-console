@@ -288,6 +288,8 @@ export const EmbeddedAgentEventSchema = v.union([
     type: v.literal('context-compacted'),
     source: v.picklist(['auto', 'manual']),
     summary: v.optional(v.string()),
+    preTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+    postTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
   }),
   /**
    * RETIRED emission, RETAINED parse (#1401). Persisted transcripts written

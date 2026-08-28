@@ -587,18 +587,34 @@ export class AgentLoop {
         newSystemPrompt = this.deps.systemPrompt;
       }
 
+      // The seed is built BEFORE the marker is emitted so the marker can
+      // carry the post-compaction size -- but nothing is MUTATED yet, so the
+      // failure invariant is untouched: `this.conversation` is still the
+      // pre-compaction array at this point.
+      const seed = buildCompactionSeedMessages(newSystemPrompt, summary);
+      const postTokens = estimateTokensFromChars(seed);
+
       // Emitted BEFORE the conversation mutation, and with no `await` between
       // this line and the splice below -- the persisted/broadcast marker is
       // never followed by an async gap that could leave a completed-compaction
       // marker persisted while the old conversation is still intact.
-      this.deps.emit({ v: 1, type: 'context-compacted', source, summary });
-
-      this.conversation.splice(0, this.conversation.length, ...buildCompactionSeedMessages(newSystemPrompt, summary));
-
-      this.emitContextUsageIfKnown({
-        promptTokens: estimateTokensFromChars(this.conversation),
-        estimated: true,
+      //
+      // `preTokens` is the distillation call's own prompt size, i.e. the
+      // conversation as it stood going in; `postTokens` is the seed's
+      // estimate. Reporting both is how a compaction declares its own
+      // severity (see the event's doc comment in shared).
+      this.deps.emit({
+        v: 1,
+        type: 'context-compacted',
+        source,
+        summary,
+        ...(outcome.usage !== undefined ? { preTokens: outcome.usage.promptTokens } : {}),
+        postTokens,
       });
+
+      this.conversation.splice(0, this.conversation.length, ...seed);
+
+      this.emitContextUsageIfKnown({ promptTokens: postTokens, estimated: true });
       this.emitIdle();
     } finally {
       this.currentAbort = null;

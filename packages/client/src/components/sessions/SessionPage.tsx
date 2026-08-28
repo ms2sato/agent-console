@@ -49,9 +49,9 @@ function getRepositoryId(session: Session): string {
  * Resolve the `embeddedAgentId` prop passed to `EmbeddedAgentWorkerView` for
  * the active tab's worker -- undefined when the active worker isn't an
  * embedded-agent type. Extracted (mirroring `sessionToPageState`'s export
- * above) so this Context Handoff (Phase A) wiring -- see
- * docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI -- is
- * testable without a full SessionPage render.
+ * above) so this Compaction wiring -- see
+ * docs/design/embedded-agent-worker.md "Compaction" § UI -- is testable
+ * without a full SessionPage render.
  */
 export function resolveActiveEmbeddedAgentId(
   workers: Worker[],
@@ -59,6 +59,19 @@ export function resolveActiveEmbeddedAgentId(
 ): string | undefined {
   const activeWorker = workers.find(w => w.id === activeTabId);
   return activeWorker?.type === 'embedded-agent' ? activeWorker.embeddedAgentId : undefined;
+}
+
+/**
+ * Resolve the `autoCompaction` prop for the active tab's worker -- undefined
+ * when the active worker isn't an embedded-agent type. Same extraction
+ * rationale as `resolveActiveEmbeddedAgentId` above.
+ */
+export function resolveActiveEmbeddedAutoCompaction(
+  workers: Worker[],
+  activeTabId: string | null,
+): boolean | undefined {
+  const activeWorker = workers.find(w => w.id === activeTabId);
+  return activeWorker?.type === 'embedded-agent' ? activeWorker.autoCompaction : undefined;
 }
 
 // Error fallback UI for worker tabs
@@ -478,10 +491,18 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
   const activeTab = tabs.find(t => t.id === activeTabId);
 
   const shouldStripScrollback = resolveShouldStripScrollback(session.workers, activeTabId, agents);
-  // Context Handoff (Phase A): resolved so EmbeddedAgentWorkerView can look up
-  // the definition's contextWindowTokens/handoff -- see
-  // docs/design/embedded-agent-worker.md "Context Handoff (Phase A)" § UI.
+  // Compaction: resolved so EmbeddedAgentWorkerView can look up the
+  // definition's contextWindowTokens/compaction -- see
+  // docs/design/embedded-agent-worker.md "Compaction" § UI.
   const activeEmbeddedAgentId = resolveActiveEmbeddedAgentId(session.workers, activeTabId);
+  // Compaction: the toggle's SERVER value for the active worker. Read from
+  // `session.workers` on every render rather than held locally, so a
+  // session-updated broadcast (the server's echo of a PATCH, or another
+  // client's change) is what moves the control.
+  const activeEmbeddedAutoCompaction = resolveActiveEmbeddedAutoCompaction(
+    session.workers,
+    activeTabId,
+  );
   const statusWorkerType = activeTab?.workerType ?? 'agent';
   const statusColor = getConnectionStatusColor(connectionStatus, activityState, statusWorkerType);
   const statusText = getConnectionStatusText(connectionStatus, activityState, exitInfo ?? null, statusWorkerType);
@@ -551,6 +572,7 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
             sessionId={sessionId}
             workerId={activeTab.id}
             embeddedAgentId={activeEmbeddedAgentId}
+            autoCompaction={activeEmbeddedAutoCompaction}
             onStatusChange={handleStatusChange}
           />
         ) : activeTab.workerType === 'git-diff' ? (

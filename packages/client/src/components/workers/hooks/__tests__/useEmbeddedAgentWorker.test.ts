@@ -86,24 +86,6 @@ describe('useEmbeddedAgentWorker', () => {
     expect(sent).toContainEqual({ type: 'embedded-cancel' });
   });
 
-  it('triggerHandoff forwards embedded-handoff to the store and reflects handoffInFlight', () => {
-    const { result } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's4b', workerId: 'w4b' }));
-    const ws = MockWebSocket.getLastInstance();
-    act(() => {
-      ws?.simulateOpen();
-    });
-
-    expect(result.current.handoffInFlight).toBe(false);
-
-    act(() => {
-      result.current.triggerHandoff();
-    });
-
-    const sent = decodeSentMessages(ws!.send.mock.calls);
-    expect(sent).toContainEqual({ type: 'embedded-handoff' });
-    expect(result.current.handoffInFlight).toBe(true);
-  });
-
   it('exposes contextUsage from the store, updated by a context-usage NDJSON row', () => {
     const { result } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's4c', workerId: 'w4c' }));
     const ws = MockWebSocket.getLastInstance();
