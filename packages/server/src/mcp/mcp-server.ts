@@ -11,6 +11,7 @@ import { Hono } from 'hono';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPTransport } from '@hono/mcp';
 import { z } from 'zod';
+import * as v from 'valibot';
 import { randomUUID } from 'node:crypto';
 
 import type { SessionManager } from '../services/session-manager.js';
@@ -29,6 +30,7 @@ import type { OpenPrInfo } from '../services/github-pr-service.js';
 import type { UserRepository } from '../repositories/user-repository.js';
 import type { RepositoryUpdates } from '../repositories/repository-repository.js';
 import type { ArtifactRepository } from '../repositories/artifact-repository.js';
+import type { BookmarkRepository } from '../repositories/bookmark-repository.js';
 import { getCurrentBranch } from '../lib/git.js';
 import { CLAUDE_CODE_AGENT_ID } from '../services/agent-manager.js';
 import type { SuggestSessionMetadataFn } from '../services/session-metadata-suggester.js';
@@ -51,7 +53,7 @@ import {
   createMcpAuthMiddleware,
 } from './mcp-auth.js';
 import type { Session, Worker, AgentActivityState, AppServerMessage } from '@agent-console/shared';
-import { isPtyBackedWorker, canReceiveSessionMessages } from '@agent-console/shared';
+import { isPtyBackedWorker, canReceiveSessionMessages, CreateBookmarkRequestSchema } from '@agent-console/shared';
 
 const logger = createLogger('mcp');
 
@@ -322,6 +324,8 @@ export interface McpDependencies {
   userRepository: UserRepository;
   /** HTML artifact metadata + storage repository, backing `create_html_artifact` (see docs/design/html-artifacts.md). */
   artifactRepository: ArtifactRepository;
+  /** Bookmark repository, backing `create_bookmark` / `delete_bookmark` (see docs/design/session-bookmarks.md). */
+  bookmarkRepository: BookmarkRepository;
   broadcastToApp: (msg: AppServerMessage) => void;
   /**
    * Fetch PR URL for a branch. 3rd arg is `requestUsername`, threaded by
@@ -360,7 +364,7 @@ export interface McpDependencies {
  * All MCP tool handlers use the provided dependencies instead of singleton getters.
  */
 export function createMcpApp(deps: McpDependencies): Hono {
-  const { sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, broadcastToApp, findOpenPullRequest } = deps;
+  const { sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService, suggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, bookmarkRepository, broadcastToApp, findOpenPullRequest } = deps;
 
   // MCP caller identity (spec: docs/design/embedded-agent-worker.md § "MCP
   // caller identity"). The registry defaults to empty and the mode resolves
@@ -1907,9 +1911,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // Sixth session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, and delete_html_artifact. No
-  // mechanical registry enumerates these tools; this comment is the
-  // convention-only marker.
+  // create_conditional_wakeup, run_process, delete_html_artifact,
+  // create_bookmark, and delete_bookmark. No mechanical registry
+  // enumerates these tools; this comment is the convention-only marker.
   mcpServer.tool(
     'create_html_artifact',
     'Upload an HTML document (optionally with inline JavaScript/CSS) and receive a URL to view it in a browser. ' +
@@ -1996,9 +2000,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   // Seventh session-claiming tool (checkCallerOwnsSession), alongside
   // send_session_message, delegate_to_worktree, remove_worktree,
-  // create_conditional_wakeup, run_process, and create_html_artifact. No
-  // mechanical registry enumerates these tools; this comment is the
-  // convention-only marker.
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // create_bookmark, and delete_bookmark. No mechanical registry
+  // enumerates these tools; this comment is the convention-only marker.
   mcpServer.tool(
     'delete_html_artifact',
     'Permanently delete a previously created HTML artifact. This is irreversible: any URL already shared for ' +
@@ -2057,6 +2061,157 @@ export function createMcpApp(deps: McpDependencies): Hono {
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
         logger.error({ err, artifactId, sessionId }, 'delete_html_artifact failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: create_bookmark ----------
+
+  // Eighth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, and delete_bookmark. No mechanical registry
+  // enumerates these tools; this comment is the convention-only marker.
+  mcpServer.tool(
+    'create_bookmark',
+    'Register a URL (plus an optional title) as a bookmark, visible in the session sidebar. ' +
+      'The URL scheme must be http: or https:; other schemes are rejected.',
+    {
+      url: z.string().describe('The URL to bookmark. Must use the http: or https: scheme.'),
+      title: z.string().optional().describe(
+        'Optional display title (max 200 characters). When omitted, the client displays the URL instead.',
+      ),
+      sessionId: z.string().describe(
+        "The calling session's ID, used to attribute the bookmark to that session's owner (session.createdBy). " +
+          'Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+      ),
+    },
+    async ({ url, title, sessionId }) => {
+      try {
+        // CreateBookmarkRequestSchema is the SINGLE writer of scheme and
+        // length validation (docs/design/session-bookmarks.md §8) -- the
+        // zod shape above validates only shape, never re-implements the
+        // scheme allowlist or the title length cap.
+        const result = v.safeParse(CreateBookmarkRequestSchema, { url, title, sessionId });
+        if (!result.success) {
+          return errorResult(result.issues.map((issue) => issue.message).join('; '));
+        }
+
+        // Resolve the calling session. Attribution below MUST derive from
+        // session.createdBy, NEVER from getMcpCallerIdentity() -- the same
+        // layering McpCallerIdentity's JSDoc in mcp-auth.ts documents:
+        // MCP caller identity authorizes, the session ownership chain
+        // attributes. getMcpCallerIdentity() is used ONLY for
+        // checkCallerOwnsSession below.
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; creating a bookmark from an ownerless (legacy) session is not possible`,
+          );
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'create_bookmark' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const created = await bookmarkRepository.create({
+          id: randomUUID(),
+          userId: session.createdBy,
+          url: result.output.url,
+          title: result.output.title && result.output.title.length > 0 ? result.output.title : null,
+          sourceSessionId: sessionId,
+          origin: 'agent',
+        });
+
+        logger.info(
+          { bookmarkId: created.id, sessionId, userId: session.createdBy },
+          'Bookmark created via MCP',
+        );
+
+        // `create` returns the server-internal BookmarkRecord (wire summary
+        // + userId); strip userId before it crosses the wire (see
+        // packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
+        const { userId: _userId, ...bookmark } = created;
+        return textResult(bookmark);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, sessionId }, 'create_bookmark failed');
+        return errorResult(message);
+      }
+    },
+  );
+
+  // ---------- Tool: delete_bookmark ----------
+
+  // Ninth session-claiming tool (checkCallerOwnsSession), alongside
+  // send_session_message, delegate_to_worktree, remove_worktree,
+  // create_conditional_wakeup, run_process, create_html_artifact,
+  // delete_html_artifact, and create_bookmark. No mechanical registry
+  // enumerates these tools; this comment is the convention-only marker.
+  mcpServer.tool(
+    'delete_bookmark',
+    'Permanently delete a previously registered bookmark.',
+    {
+      bookmarkId: z.string().describe('The id of the bookmark to delete, as returned by create_bookmark.'),
+      sessionId: z.string().describe(
+        "The calling session's ID, used to resolve that session's owner (session.createdBy) for the ownership " +
+          'check. Use your own AGENT_CONSOLE_SESSION_ID environment variable.',
+      ),
+    },
+    async ({ bookmarkId, sessionId }) => {
+      try {
+        // Resolve the calling session. Ownership comparison below MUST
+        // derive from session.createdBy, NEVER from getMcpCallerIdentity()
+        // -- same layering as create_bookmark above: getMcpCallerIdentity()
+        // is used ONLY for checkCallerOwnsSession.
+        const session = sessionManager.getSession(sessionId);
+        if (!session) {
+          return errorResult(`Session not found: ${sessionId}`);
+        }
+        if (!session.createdBy) {
+          return errorResult(
+            `Session ${sessionId} has no createdBy; deleting a bookmark from an ownerless (legacy) session is not possible`,
+          );
+        }
+
+        const authError = checkCallerOwnsSession(
+          getMcpCallerIdentity(),
+          { sessionId, createdBy: session.createdBy },
+          mcpAuthMode,
+          { toolName: 'delete_bookmark' },
+        );
+        if (authError) return errorResult(authError.error);
+
+        const bookmark = await bookmarkRepository.findById(bookmarkId);
+        if (!bookmark) {
+          return errorResult(`Bookmark not found: ${bookmarkId}`);
+        }
+        if (bookmark.userId !== session.createdBy) {
+          return errorResult(
+            `You do not own this bookmark (${bookmarkId}); only the owner can delete it`,
+          );
+        }
+
+        const deleted = await bookmarkRepository.delete(bookmarkId);
+        if (!deleted) {
+          // Deleted between the existence check and delete (race); idempotent-style not-found, matching the REST route.
+          return errorResult(`Bookmark not found: ${bookmarkId}`);
+        }
+
+        logger.info({ bookmarkId, sessionId, userId: session.createdBy }, 'Bookmark deleted via MCP');
+
+        return textResult({ deleted: true, bookmarkId });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Unknown error';
+        logger.error({ err, bookmarkId, sessionId }, 'delete_bookmark failed');
         return errorResult(message);
       }
     },

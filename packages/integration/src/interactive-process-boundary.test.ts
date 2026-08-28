@@ -26,6 +26,7 @@ import { AgentDirectory } from '@agent-console/server/src/services/agent-directo
 import { ConditionalWakeupManager } from '@agent-console/server/src/services/conditional-wakeup-manager';
 import { SqliteUserRepository } from '@agent-console/server/src/repositories/sqlite-user-repository';
 import { SqliteArtifactRepository } from '@agent-console/server/src/repositories/sqlite-artifact-repository';
+import { SqliteBookmarkRepository } from '@agent-console/server/src/repositories/sqlite-bookmark-repository';
 import { InteractiveProcessManager } from '@agent-console/server/src/services/interactive-process-manager';
 import { InterSessionMessageService } from '@agent-console/server/src/services/inter-session-message-service';
 import { TimerManager } from '@agent-console/server/src/services/timer-manager';
@@ -172,6 +173,7 @@ describe('Interactive Process MCP boundary: shared type contract', () => {
       deleteWorktree,
       userRepository: new SqliteUserRepository(db),
       artifactRepository: new SqliteArtifactRepository(db),
+      bookmarkRepository: new SqliteBookmarkRepository(db),
       broadcastToApp: () => {},
       findOpenPullRequest: mock(async () => null) as any,
       fetchPullRequestUrl: mock(async () => null) as any,

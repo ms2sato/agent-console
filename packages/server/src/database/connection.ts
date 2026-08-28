@@ -361,6 +361,10 @@ async function runMigrations(database: Kysely<Database>, dbPath: string): Promis
   if (currentVersion < 33) {
     await migrateToV33(database);
   }
+
+  if (currentVersion < 34) {
+    await migrateToV34(database);
+  }
 }
 
 /**
@@ -1961,6 +1965,31 @@ export async function migrateToV33(database: Kysely<Database>): Promise<void> {
   await sql`PRAGMA user_version = 33`.execute(database);
 
   logger.info('Migration to v33 completed');
+}
+
+/**
+ * Migration v34: Add `origin` column to `bookmarks` -- who registered it.
+ * `'user'` (registered through the sidebar form) or `'agent'` (registered
+ * via an MCP tool call) -- provenance only, never an authorization scope.
+ * NOT NULL DEFAULT 'user' backfills every pre-existing row correctly: every
+ * row created before this migration was, by construction, human-registered
+ * (see docs/design/session-bookmarks.md §4.1).
+ *
+ * @internal Exported for testing.
+ */
+export async function migrateToV34(database: Kysely<Database>): Promise<void> {
+  logger.info("Running migration to v34: Adding origin column to bookmarks");
+
+  try {
+    await sql`ALTER TABLE bookmarks ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'`.execute(database);
+  } catch (error) {
+    if (!isDuplicateColumnError(error)) throw error;
+    logger.info('Column origin already exists, skipping');
+  }
+
+  await sql`PRAGMA user_version = 34`.execute(database);
+
+  logger.info('Migration to v34 completed');
 }
 
 /**

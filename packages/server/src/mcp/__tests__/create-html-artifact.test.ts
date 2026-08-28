@@ -35,6 +35,7 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
+import { SqliteBookmarkRepository } from '../../repositories/sqlite-bookmark-repository.js';
 import { WorktreeService } from '../../services/worktree-service.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { ConditionalWakeupManager } from '../../services/conditional-wakeup-manager.js';
@@ -63,6 +64,7 @@ describe('create_html_artifact', () => {
   let agentManager: AgentManager;
   let userRepository: SqliteUserRepository;
   let artifactRepository: SqliteArtifactRepository;
+  let bookmarkRepository: SqliteBookmarkRepository;
   let testJobQueue: JobQueue;
   let mcpSessionId: string;
   let nextId: number;
@@ -104,6 +106,7 @@ describe('create_html_artifact', () => {
       deleteWorktree,
       userRepository,
       artifactRepository,
+      bookmarkRepository,
       broadcastToApp: () => {},
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,
@@ -150,6 +153,7 @@ describe('create_html_artifact', () => {
     const embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(db));
     userRepository = new SqliteUserRepository(db);
     artifactRepository = new SqliteArtifactRepository(db);
+    bookmarkRepository = new SqliteBookmarkRepository(db);
 
     const sessionRepository = new JsonSessionRepository(`${process.env.AGENT_CONSOLE_HOME}/sessions.json`);
     sessionManager = await SessionManager.create({

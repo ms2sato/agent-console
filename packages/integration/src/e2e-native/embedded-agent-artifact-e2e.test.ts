@@ -302,6 +302,7 @@ describe('E2E: create_html_artifact through the embedded-agent shipping path (P3
         deleteWorktree,
         userRepository: ctx.userRepository,
         artifactRepository: ctx.artifactRepository,
+        bookmarkRepository: ctx.bookmarkRepository,
         broadcastToApp: ctx.broadcastToApp,
         fetchPullRequestUrl: ctx.fetchPullRequestUrl,
         findOpenPullRequest: ctx.findOpenPullRequest,

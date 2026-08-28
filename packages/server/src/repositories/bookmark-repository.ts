@@ -14,6 +14,13 @@ export interface CreateBookmarkParams {
    * `findByUserIdAndSourceSessionId`; never as an authorization check.
    */
   sourceSessionId: string | null;
+  /**
+   * Who is registering this bookmark: `'user'` (REST, `POST /api/bookmarks`)
+   * or `'agent'` (MCP, `create_bookmark`). Provenance only, not an
+   * authorization scope -- ownership is always `userId` regardless of
+   * origin (see `docs/design/session-bookmarks.md` §4.1).
+   */
+  origin: 'user' | 'agent';
 }
 
 /**

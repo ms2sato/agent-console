@@ -70,7 +70,7 @@ describe('migration v30 (workers.sdk_session_id)', () => {
   it('advances the schema version to 30', async () => {
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(33);
+    expect(versionRes.rows[0]?.user_version).toBe(34);
   });
 
   it('adds the sdk_session_id column to workers, nullable with no default', async () => {

@@ -42,6 +42,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com',
         title: 'My Bookmark',
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
 
       expect(bookmark).toEqual({
@@ -50,13 +51,14 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com',
         title: 'My Bookmark',
         createdAt: bookmark.createdAt,
+        origin: 'user',
       });
       // `create`/`findById` return the server-internal BookmarkRecord (wire
       // summary + userId, needed by route handlers to enforce owner-only
       // delete -- see repositories/bookmark-repository.ts). `userId` is NOT
       // part of the wire `Bookmark` type and must never be serialized into
       // an HTTP response (see packages/shared/src/types/bookmark.ts).
-      expect(Object.keys(bookmark).sort()).toEqual(['createdAt', 'id', 'title', 'url', 'userId'].sort());
+      expect(Object.keys(bookmark).sort()).toEqual(['createdAt', 'id', 'origin', 'title', 'url', 'userId'].sort());
     });
 
     it('creates a bookmark with a null title', async () => {
@@ -66,9 +68,40 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com',
         title: null,
         sourceSessionId: null,
+        origin: 'user',
       });
 
       expect(bookmark.title).toBeNull();
+    });
+
+    it("round-trips origin: 'agent' through create/findById", async () => {
+      const bookmark = await repository.create({
+        id: 'bookmark-agent-origin',
+        userId: 'user-1',
+        url: 'https://example.com',
+        title: 'Agent bookmark',
+        sourceSessionId: 'session-1',
+        origin: 'agent',
+      });
+
+      expect(bookmark.origin).toBe('agent');
+      const found = await repository.findById('bookmark-agent-origin');
+      expect(found?.origin).toBe('agent');
+    });
+
+    it("round-trips origin: 'user' through create/findById", async () => {
+      const bookmark = await repository.create({
+        id: 'bookmark-user-origin',
+        userId: 'user-1',
+        url: 'https://example.com',
+        title: 'User bookmark',
+        sourceSessionId: 'session-1',
+        origin: 'user',
+      });
+
+      expect(bookmark.origin).toBe('user');
+      const found = await repository.findById('bookmark-user-origin');
+      expect(found?.origin).toBe('user');
     });
   });
 
@@ -84,6 +117,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/found',
         title: 'Found Me',
         sourceSessionId: null,
+        origin: 'user',
       });
 
       const found = await repository.findById('bookmark-2');
@@ -100,6 +134,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/old',
         title: 'Old',
         sourceSessionId: null,
+        origin: 'user',
       });
       await new Promise((r) => setTimeout(r, 2));
       await repository.create({
@@ -108,6 +143,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/new',
         title: 'New',
         sourceSessionId: null,
+        origin: 'user',
       });
       await repository.create({
         id: 'bookmark-other-user',
@@ -115,6 +151,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/other',
         title: 'Other user',
         sourceSessionId: null,
+        origin: 'user',
       });
 
       const results = await repository.findByUserId('user-1');
@@ -134,6 +171,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/old',
         title: 'Session Old',
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
       await new Promise((r) => setTimeout(r, 2));
       await repository.create({
@@ -142,6 +180,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/new',
         title: 'Session New',
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
       // Same user, but a different session -- must not appear.
       await repository.create({
@@ -150,6 +189,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/other-session',
         title: 'Other session',
         sourceSessionId: 'session-2',
+        origin: 'user',
       });
 
       const results = await repository.findByUserIdAndSourceSessionId('user-1', 'session-1');
@@ -163,6 +203,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/mine',
         title: 'Mine',
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
       await repository.create({
         id: 'bookmark-theirs',
@@ -170,6 +211,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/theirs',
         title: 'Theirs',
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
 
       const results = await repository.findByUserIdAndSourceSessionId('user-1', 'session-1');
@@ -183,6 +225,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/s1',
         title: 'Session 1',
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
       await repository.create({
         id: 'bookmark-session-2',
@@ -190,6 +233,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/s2',
         title: 'Session 2',
         sourceSessionId: 'session-2',
+        origin: 'user',
       });
 
       const results = await repository.findByUserIdAndSourceSessionId('user-1', 'session-1');
@@ -203,6 +247,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/target',
         title: "Caller's own, in target session, created first",
         sourceSessionId: 'session-1',
+        origin: 'user',
       });
 
       // 10 of the SAME user's bookmarks in OTHER sessions, all created
@@ -222,6 +267,7 @@ describe('SqliteBookmarkRepository', () => {
           url: `https://example.com/other-${i}`,
           title: `Other session ${i}`,
           sourceSessionId: 'session-2',
+          origin: 'user',
         });
       }
 
@@ -242,6 +288,7 @@ describe('SqliteBookmarkRepository', () => {
         url: 'https://example.com/delete-me',
         title: 'To delete',
         sourceSessionId: null,
+        origin: 'user',
       });
 
       const deleted = await repository.delete('bookmark-3');

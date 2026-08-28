@@ -177,6 +177,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
         deleteWorktree,
         userRepository: ctx.userRepository,
         artifactRepository: ctx.artifactRepository,
+        bookmarkRepository: ctx.bookmarkRepository,
         broadcastToApp: ctx.broadcastToApp,
         fetchPullRequestUrl: ctx.fetchPullRequestUrl,
         findOpenPullRequest: ctx.findOpenPullRequest,

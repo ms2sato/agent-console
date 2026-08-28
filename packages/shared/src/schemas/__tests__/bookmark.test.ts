@@ -13,6 +13,7 @@ describe('BookmarkSchema', () => {
       url: 'https://example.com',
       title: 'Example',
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user',
     };
 
     const result = v.safeParse(BookmarkSchema, bookmark);
@@ -28,6 +29,7 @@ describe('BookmarkSchema', () => {
       url: 'https://example.com',
       title: null,
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user',
     };
 
     const result = v.safeParse(BookmarkSchema, bookmark);
@@ -39,6 +41,7 @@ describe('BookmarkSchema', () => {
       id: 'bookmark-1',
       url: 'https://example.com',
       title: null,
+      origin: 'user',
       // createdAt omitted
     });
     expect(result.success).toBe(false);
@@ -50,6 +53,7 @@ describe('BookmarkSchema', () => {
       url: 'https://example.com',
       title: null,
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user',
     });
     expect(result.success).toBe(false);
   });
@@ -60,6 +64,7 @@ describe('BookmarkSchema', () => {
       url: '',
       title: null,
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user',
     });
     expect(result.success).toBe(false);
   });
@@ -69,6 +74,7 @@ describe('BookmarkSchema', () => {
       id: 'bookmark-1',
       url: 'https://example.com',
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user',
     });
     expect(result.success).toBe(false);
   });
@@ -79,6 +85,7 @@ describe('BookmarkSchema', () => {
       url: 'https://example.com',
       title: null,
       createdAt: '2026-08-20T00:00:00.000Z',
+      origin: 'user',
       userId: 'user-1',
     });
     expect(result.success).toBe(false);
@@ -86,13 +93,48 @@ describe('BookmarkSchema', () => {
       expect(JSON.stringify(result.issues)).toContain('userId');
     }
   });
+
+  describe('origin field', () => {
+    const base = {
+      id: 'bookmark-1',
+      url: 'https://example.com',
+      title: null,
+      createdAt: '2026-08-20T00:00:00.000Z',
+    };
+
+    it("round-trips origin: 'user'", () => {
+      const result = v.safeParse(BookmarkSchema, { ...base, origin: 'user' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.origin).toBe('user');
+      }
+    });
+
+    it("round-trips origin: 'agent'", () => {
+      const result = v.safeParse(BookmarkSchema, { ...base, origin: 'agent' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output.origin).toBe('agent');
+      }
+    });
+
+    it('rejects an origin value outside the picklist', () => {
+      const result = v.safeParse(BookmarkSchema, { ...base, origin: 'admin' });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a missing origin field (strictObject requires the key present)', () => {
+      const result = v.safeParse(BookmarkSchema, base);
+      expect(result.success).toBe(false);
+    });
+  });
 });
 
 describe('BookmarksListResponseSchema', () => {
   it('accepts a well-formed { bookmarks: [...] } response', () => {
     const bookmarks: Bookmark[] = [
-      { id: 'bookmark-1', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z' },
-      { id: 'bookmark-2', url: 'http://example.org', title: null, createdAt: '2026-08-19T00:00:00.000Z' },
+      { id: 'bookmark-1', url: 'https://example.com', title: 'Example', createdAt: '2026-08-20T00:00:00.000Z', origin: 'user' },
+      { id: 'bookmark-2', url: 'http://example.org', title: null, createdAt: '2026-08-19T00:00:00.000Z', origin: 'agent' },
     ];
 
     const result = v.safeParse(BookmarksListResponseSchema, { bookmarks });
@@ -209,5 +251,17 @@ describe('CreateBookmarkRequestSchema', () => {
   it('rejects an unknown key (strict-parse contract)', () => {
     const result = v.safeParse(CreateBookmarkRequestSchema, { ...validBase, extra: 'nope' });
     expect(result.success).toBe(false);
+  });
+
+  describe('title length cap (200 characters)', () => {
+    it('accepts a title exactly at the 200-character cap', () => {
+      const result = v.safeParse(CreateBookmarkRequestSchema, { ...validBase, title: 'a'.repeat(200) });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects a title one character over the 200-character cap', () => {
+      const result = v.safeParse(CreateBookmarkRequestSchema, { ...validBase, title: 'a'.repeat(201) });
+      expect(result.success).toBe(false);
+    });
   });
 });

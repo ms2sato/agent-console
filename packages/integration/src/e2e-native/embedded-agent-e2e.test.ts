@@ -291,6 +291,7 @@ describe('E2E: EmbeddedAgentWorker shipping path (single-user)', () => {
         deleteWorktree,
         userRepository: ctx.userRepository,
         artifactRepository: ctx.artifactRepository,
+        bookmarkRepository: ctx.bookmarkRepository,
         broadcastToApp: ctx.broadcastToApp,
         fetchPullRequestUrl: ctx.fetchPullRequestUrl,
         findOpenPullRequest: ctx.findOpenPullRequest,

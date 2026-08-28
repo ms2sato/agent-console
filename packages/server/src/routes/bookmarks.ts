@@ -50,6 +50,11 @@ const bookmarks = new Hono<AppBindings>()
       url: body.url,
       title: body.title && body.title.length > 0 ? body.title : null,
       sourceSessionId: body.sessionId,
+      // REST is human-only by construction (a browser session cookie is
+      // the only way to reach this handler) -- there is no REST path to
+      // register an 'agent'-origin bookmark (see
+      // docs/design/session-bookmarks.md §6.1).
+      origin: 'user',
     });
     // `create` returns the server-internal BookmarkRecord (wire summary +
     // userId); strip userId before it crosses the wire (see

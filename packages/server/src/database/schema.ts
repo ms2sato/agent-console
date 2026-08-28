@@ -522,6 +522,17 @@ export interface BookmarksTable {
   title: string | null;
   /** Creation timestamp as ISO 8601 string */
   created_at: string;
+  /**
+   * Provenance: `'user'` (registered through the sidebar form) or `'agent'`
+   * (registered via an MCP tool call). NOT NULL DEFAULT 'user' (migration
+   * v34) -- every pre-migration row was, definitionally, human-registered.
+   * Provenance only, not an authorization scope (see
+   * `docs/design/session-bookmarks.md` §4.1). `Generated<>` (not a plain
+   * union, mirroring `recovery_state` above) since the SQL DEFAULT makes
+   * this column insert-optional; the underlying storage is still plain
+   * TEXT, so `mappers.ts`'s `toBookmark` still validates at runtime.
+   */
+  origin: Generated<'user' | 'agent'>;
 }
 
 /** Bookmark row as returned from SELECT queries */

@@ -43,6 +43,7 @@ import { JsonSessionRepository } from '../../repositories/index.js';
 import { SqliteRepositoryRepository } from '../../repositories/sqlite-repository-repository.js';
 import { SqliteUserRepository } from '../../repositories/sqlite-user-repository.js';
 import { SqliteArtifactRepository } from '../../repositories/sqlite-artifact-repository.js';
+import { SqliteBookmarkRepository } from '../../repositories/sqlite-bookmark-repository.js';
 import { WorktreeService } from '../../services/worktree-service.js';
 import { TimerManager } from '../../services/timer-manager.js';
 import { ConditionalWakeupManager } from '../../services/conditional-wakeup-manager.js';
@@ -216,6 +217,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
     embeddedAgentManager = await EmbeddedAgentManager.create(new SqliteEmbeddedAgentRepository(db));
     userRepository = new SqliteUserRepository(db);
     const artifactRepository = new SqliteArtifactRepository(db);
+    const bookmarkRepository = new SqliteBookmarkRepository(db);
 
     const sessionRepository = new JsonSessionRepository(`${TEST_CONFIG_DIR}/sessions.json`);
     sessionManager = await SessionManager.create({
@@ -280,6 +282,7 @@ describe('delegate_to_worktree: embedded-agent auto-activation (Issue #1260 PR-1
       deleteWorktree,
       userRepository,
       artifactRepository,
+      bookmarkRepository,
       broadcastToApp: () => {},
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,

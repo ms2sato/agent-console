@@ -70,6 +70,19 @@ describe('Client-Server Boundary: /api/bookmarks', () => {
     expect(typeof result[0].createdAt).toBe('string');
   });
 
+  it(
+    "survives the create -> server -> JSON wire -> BookmarksListResponseSchema parse round-trip with origin: 'user' " +
+      '(Q10 wire-layer check for the #1390 origin field -- REST is human-only by construction)',
+    async () => {
+      await createBookmark('https://example.com', 'My bookmark', 'session-1');
+
+      const result = await fetchBookmarks('session-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0].origin).toBe('user');
+    },
+  );
+
   it("returns only the caller's own bookmarks, scoped at the real wire", async () => {
     await createBookmark('https://example.com/mine', 'Mine', 'session-1');
 
@@ -87,6 +100,7 @@ describe('Client-Server Boundary: /api/bookmarks', () => {
       url: 'https://example.com/theirs',
       title: "Not the caller's",
       sourceSessionId: null,
+      origin: 'user',
     });
 
     const result = await fetchBookmarks();

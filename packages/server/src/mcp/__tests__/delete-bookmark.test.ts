@@ -1,25 +1,20 @@
 /**
- * `delete_html_artifact` MCP tool tests (Issue #1371).
+ * `delete_bookmark` MCP tool tests (Issue #1390, agent registration over
+ * MCP -- session bookmarks).
  *
- * Drives the REAL `createMcpApp` `delete_html_artifact` handler chain via
+ * Drives the REAL `createMcpApp` `delete_bookmark` handler chain via
  * `callTool` (real MCP JSON-RPC transport), backed by a real
- * `SqliteArtifactRepository` against an in-memory DB. Mirrors
- * `create-html-artifact.test.ts`'s harness setup (see that file's header
- * for why `AGENT_CONSOLE_HOME` points at a REAL directory under
- * `os.tmpdir()`, not a memfs-only path).
+ * `SqliteBookmarkRepository` against an in-memory DB. Mirrors
+ * `delete-html-artifact.test.ts`'s harness setup.
  *
- * The REST route (`DELETE /api/artifacts/:id`) already covers owner-only
+ * The REST route (`DELETE /api/bookmarks/:id`) already covers owner-only
  * deletion at its own layer; this file protects the SEPARATE MCP tool code
  * path, which resolves ownership via `session.createdBy` rather than an
  * `authUser`.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Hono } from 'hono';
-import * as path from 'path';
-import * as os from 'os';
-import { randomUUID } from 'crypto';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
-import { readArtifactFile } from '../../lib/artifact-storage.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { mockProcess, resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
 import { resetGitMocks } from '../../__tests__/utils/mock-git-helper.js';
@@ -52,11 +47,11 @@ import { createWorktreeWithSession } from '../../services/worktree-creation-serv
 import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
 
-const TEST_CONFIG_DIR_PREFIX = 'agent-console-delete-html-artifact-test-';
-const TEST_REPO_PATH = '/test/repo-1371';
-const TEST_REPO_ID = 'repo-1371';
+const TEST_CONFIG_DIR = '/test/config-1390-delete';
+const TEST_REPO_PATH = '/test/repo-1390-delete';
+const TEST_REPO_ID = 'repo-1390-delete';
 
-describe('delete_html_artifact', () => {
+describe('delete_bookmark', () => {
   const ptyFactory = createMockPtyFactory();
   let app: Hono;
   let sessionManager: SessionManager;
@@ -70,9 +65,6 @@ describe('delete_html_artifact', () => {
   let nextId: number;
   let worktreeService: WorktreeService;
   let agentDirectory: AgentDirectory;
-  const originalAgentConsoleHome = process.env.AGENT_CONSOLE_HOME;
-  /** Real (non-memfs) directory; see create-html-artifact.test.ts's file header for why. */
-  let testConfigDir: string | undefined;
 
   async function mountMcpApp(authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry }): Promise<void> {
     const mcpApp = createMcpApp({
@@ -116,11 +108,10 @@ describe('delete_html_artifact', () => {
 
   beforeEach(async () => {
     await closeDatabase();
-    testConfigDir = path.join(os.tmpdir(), `${TEST_CONFIG_DIR_PREFIX}${randomUUID()}`);
     setupMemfs({
       [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
     });
-    process.env.AGENT_CONSOLE_HOME = testConfigDir;
+    process.env.AGENT_CONSOLE_HOME = TEST_CONFIG_DIR;
 
     await initializeDatabase(':memory:');
     testJobQueue = new JobQueue(getDatabase(), { concurrency: 1 });
@@ -180,15 +171,7 @@ describe('delete_html_artifact', () => {
     await testJobQueue.stop();
     await closeDatabase();
     cleanupMemfs();
-    if (testConfigDir) {
-      Bun.spawnSync(['rm', '-rf', testConfigDir]);
-      testConfigDir = undefined;
-    }
-    if (originalAgentConsoleHome !== undefined) {
-      process.env.AGENT_CONSOLE_HOME = originalAgentConsoleHome;
-    } else {
-      delete process.env.AGENT_CONSOLE_HOME;
-    }
+    delete process.env.AGENT_CONSOLE_HOME;
   });
 
   async function createOwnedSession(
@@ -203,83 +186,71 @@ describe('delete_html_artifact', () => {
     return { sessionId: session.id, userId: owner.id, workerId: session.workers[0].id };
   }
 
-  async function createArtifactViaTool(sessionId: string, content = '<html><body>to be deleted</body></html>'): Promise<string> {
-    const response = await callTool(app, mcpSessionId, 'create_html_artifact', { content, sessionId }, nextId++);
+  async function createBookmarkViaTool(sessionId: string, url = 'https://example.com/to-be-deleted'): Promise<string> {
+    const response = await callTool(app, mcpSessionId, 'create_bookmark', { url, sessionId }, nextId++);
     expect(response.result?.isError).toBeUndefined();
-    const data = parseToolResult(response) as { artifactId: string };
-    return data.artifactId;
+    const data = parseToolResult(response) as { id: string };
+    return data.id;
   }
 
-  // ---------- (a) happy path: owner deletes their own artifact ----------
+  // ---------- (a) happy path: owner deletes their own bookmark ----------
 
-  it('deletes an artifact owned by the calling session, removing both the DB row and the backing file', async () => {
-    const { sessionId } = await createOwnedSession(7001, 'artifact-deleter');
-    const artifactId = await createArtifactViaTool(sessionId);
+  it('deletes a bookmark owned by the calling session', async () => {
+    const { sessionId } = await createOwnedSession(9001, 'bookmark-deleter');
+    const bookmarkId = await createBookmarkViaTool(sessionId);
 
-    // Confirm the artifact exists before deletion (both DB row and file).
-    const beforeRecord = await artifactRepository.findById(artifactId);
-    expect(beforeRecord).not.toBeNull();
+    expect(await bookmarkRepository.findById(bookmarkId)).not.toBeNull();
 
-    const response = await callTool(app, mcpSessionId, 'delete_html_artifact', { artifactId, sessionId }, nextId++);
+    const response = await callTool(app, mcpSessionId, 'delete_bookmark', { bookmarkId, sessionId }, nextId++);
 
     expect(response.result?.isError).toBeUndefined();
-    const data = parseToolResult(response) as { deleted: boolean; artifactId: string };
+    const data = parseToolResult(response) as { deleted: boolean; bookmarkId: string };
     expect(data.deleted).toBe(true);
-    expect(data.artifactId).toBe(artifactId);
+    expect(data.bookmarkId).toBe(bookmarkId);
 
-    // DB row is gone.
-    expect(await artifactRepository.findById(artifactId)).toBeNull();
-
-    // Backing file is gone too: readArtifactFile is the same production
-    // helper artifact-storage.ts uses to serve artifacts, so this exercises
-    // the real on-disk layout rather than re-deriving the path scheme.
-    expect(await readArtifactFile(beforeRecord!.userId, artifactId)).toBeNull();
+    expect(await bookmarkRepository.findById(bookmarkId)).toBeNull();
   });
 
   // ---------- (b) cross-owner rejection (the polarity case) ----------
 
   it(
-    'rejects deletion when the calling session is owned by a DIFFERENT user than the artifact owner, ' +
-      'and the artifact survives untouched',
+    'rejects deletion when the calling session is owned by a DIFFERENT user than the bookmark owner, ' +
+      'and the bookmark survives untouched',
     async () => {
-      const { sessionId: sessionAId } = await createOwnedSession(7002, 'artifact-owner-a');
-      const { sessionId: sessionBId } = await createOwnedSession(7003, 'artifact-owner-b');
+      const { sessionId: sessionAId } = await createOwnedSession(9002, 'bookmark-owner-a');
+      const { sessionId: sessionBId } = await createOwnedSession(9003, 'bookmark-owner-b');
 
-      // Artifact created via session B (owned by user B).
-      const artifactId = await createArtifactViaTool(sessionBId, '<html><body>owned by B</body></html>');
+      const bookmarkId = await createBookmarkViaTool(sessionBId, 'https://example.com/owned-by-b');
 
-      // Caller claims session A (owned by user A) and attempts to delete
-      // user B's artifact.
       const response = await callTool(
         app,
         mcpSessionId,
-        'delete_html_artifact',
-        { artifactId, sessionId: sessionAId },
+        'delete_bookmark',
+        { bookmarkId, sessionId: sessionAId },
         nextId++,
       );
 
       expect(response.result?.isError).toBe(true);
       const data = parseToolResult(response) as { error: string };
       expect(data.error).toContain('do not own');
-      expect(data.error).toContain(artifactId);
+      expect(data.error).toContain(bookmarkId);
 
-      // The artifact still exists afterward -- no deletion occurred.
-      const stillThere = await artifactRepository.findById(artifactId);
+      const stillThere = await bookmarkRepository.findById(bookmarkId);
       expect(stillThere).not.toBeNull();
-      expect(stillThere?.id).toBe(artifactId);
+      expect(stillThere?.id).toBe(bookmarkId);
     },
   );
 
-  // ---------- (c) unknown artifactId ----------
+  // ---------- (c) unknown bookmarkId ----------
 
-  it('rejects with a not-found error for an unknown artifactId, without any session-ownership false-success', async () => {
-    const { sessionId } = await createOwnedSession(7004, 'artifact-owner-c');
+  it('rejects with a not-found error for an unknown bookmarkId, without any false-success', async () => {
+    const { sessionId } = await createOwnedSession(9004, 'bookmark-owner-c');
 
     const response = await callTool(
       app,
       mcpSessionId,
-      'delete_html_artifact',
-      { artifactId: 'does-not-exist', sessionId },
+      'delete_bookmark',
+      { bookmarkId: 'does-not-exist', sessionId },
       nextId++,
     );
 
@@ -292,16 +263,16 @@ describe('delete_html_artifact', () => {
   // ---------- (d) ownerless/legacy session ----------
 
   it('rejects with a loud error when the calling session has no createdBy (ownerless/legacy session)', async () => {
-    const { sessionId: ownerSessionId } = await createOwnedSession(7005, 'artifact-owner-d');
-    const artifactId = await createArtifactViaTool(ownerSessionId);
+    const { sessionId: ownerSessionId } = await createOwnedSession(9005, 'bookmark-owner-d');
+    const bookmarkId = await createBookmarkViaTool(ownerSessionId);
 
     const ownerlessSession = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH });
 
     const response = await callTool(
       app,
       mcpSessionId,
-      'delete_html_artifact',
-      { artifactId, sessionId: ownerlessSession.id },
+      'delete_bookmark',
+      { bookmarkId, sessionId: ownerlessSession.id },
       nextId++,
     );
 
@@ -310,25 +281,36 @@ describe('delete_html_artifact', () => {
     expect(data.error).toContain('has no createdBy');
     expect(data.error).toContain('ownerless');
 
-    // No deletion occurred: the artifact survives.
-    expect(await artifactRepository.findById(artifactId)).not.toBeNull();
+    expect(await bookmarkRepository.findById(bookmarkId)).not.toBeNull();
   });
 
-  // ---------- Authorization: checkCallerOwnsSession (session-claiming, seventh tool) ----------
+  // ---------- (e) idempotent-not-found on a delete-mid-race ----------
+
+  it('is idempotent-not-found (not a throw) when the same bookmark is deleted twice in a row', async () => {
+    const { sessionId } = await createOwnedSession(9006, 'bookmark-owner-e');
+    const bookmarkId = await createBookmarkViaTool(sessionId);
+
+    const first = await callTool(app, mcpSessionId, 'delete_bookmark', { bookmarkId, sessionId }, nextId++);
+    expect(first.result?.isError).toBeUndefined();
+    expect((parseToolResult(first) as { deleted: boolean }).deleted).toBe(true);
+
+    const second = await callTool(app, mcpSessionId, 'delete_bookmark', { bookmarkId, sessionId }, nextId++);
+    expect(second.result?.isError).toBe(true);
+    const data = parseToolResult(second) as { error: string };
+    expect(data.error).toContain(bookmarkId);
+    expect(data.error.toLowerCase()).toContain('not found');
+  });
+
+  // ---------- Authorization: checkCallerOwnsSession (session-claiming tool) ----------
 
   describe('authorization (checkCallerOwnsSession)', () => {
     it(
       'enforce mode: a caller whose verified identity belongs to a DIFFERENT session is rejected when claiming ' +
-        "another user's sessionId (impersonation), and the artifact is not deleted",
+        "another user's sessionId (impersonation), and the bookmark is not deleted",
       async () => {
-        // Session A: the caller's OWN session/identity, minted into the bearer token.
-        const { sessionId: sessionAId, userId: userAId, workerId: workerAId } = await createOwnedSession(7006, 'artifact-owner-e');
-        // Session B: a DIFFERENT user's session -- the impersonation target, and also the artifact owner.
-        const { sessionId: sessionBId } = await createOwnedSession(7007, 'artifact-owner-f');
-        // Create the artifact under the default (off/warn) mount, BEFORE
-        // switching the mount to enforce mode below -- the tool itself
-        // requires a verified bearer token once enforce is active.
-        const artifactId = await createArtifactViaTool(sessionBId, '<html><body>owned by f</body></html>');
+        const { sessionId: sessionAId, userId: userAId, workerId: workerAId } = await createOwnedSession(9007, 'bookmark-owner-f');
+        const { sessionId: sessionBId } = await createOwnedSession(9008, 'bookmark-owner-g');
+        const bookmarkId = await createBookmarkViaTool(sessionBId, 'https://example.com/owned-by-g');
 
         const registry = new McpTokenRegistry();
         await mountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
@@ -337,8 +319,8 @@ describe('delete_html_artifact', () => {
         const response = await callTool(
           app,
           mcpSessionId,
-          'delete_html_artifact',
-          { artifactId, sessionId: sessionBId },
+          'delete_bookmark',
+          { bookmarkId, sessionId: sessionBId },
           nextId++,
           { Authorization: `Bearer ${token}` },
         );
@@ -348,17 +330,13 @@ describe('delete_html_artifact', () => {
         expect(data.error).toContain('identity mismatch');
         expect(data.error).toContain(sessionBId);
 
-        // The authz gate ran BEFORE the artifact-ownership comparison and
-        // the delete call: the artifact survives.
-        expect(await artifactRepository.findById(artifactId)).not.toBeNull();
+        expect(await bookmarkRepository.findById(bookmarkId)).not.toBeNull();
       },
     );
 
-    it('enforce mode: a caller claiming their OWN session, deleting their OWN artifact, succeeds', async () => {
-      const { sessionId, userId, workerId } = await createOwnedSession(7008, 'artifact-owner-g');
-      // Create the artifact under the default (off/warn) mount, before
-      // switching to enforce mode below.
-      const artifactId = await createArtifactViaTool(sessionId);
+    it('enforce mode: a caller claiming their OWN session, deleting their OWN bookmark, succeeds', async () => {
+      const { sessionId, userId, workerId } = await createOwnedSession(9009, 'bookmark-owner-h');
+      const bookmarkId = await createBookmarkViaTool(sessionId);
 
       const registry = new McpTokenRegistry();
       await mountMcpApp({ mcpAuthMode: 'enforce', mcpTokenRegistry: registry });
@@ -367,8 +345,8 @@ describe('delete_html_artifact', () => {
       const response = await callTool(
         app,
         mcpSessionId,
-        'delete_html_artifact',
-        { artifactId, sessionId },
+        'delete_bookmark',
+        { bookmarkId, sessionId },
         nextId++,
         { Authorization: `Bearer ${token}` },
       );
@@ -376,7 +354,7 @@ describe('delete_html_artifact', () => {
       expect(response.result?.isError).toBeUndefined();
       const data = parseToolResult(response) as { deleted: boolean };
       expect(data.deleted).toBe(true);
-      expect(await artifactRepository.findById(artifactId)).toBeNull();
+      expect(await bookmarkRepository.findById(bookmarkId)).toBeNull();
     });
   });
 });
