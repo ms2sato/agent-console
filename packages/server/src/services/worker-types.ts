@@ -160,7 +160,7 @@ export interface InternalEmbeddedAgentWorker extends InternalWorkerBase {
    * The worker's CURRENT Claude Agent SDK session id (SDK engine only; stays
    * `null` for `openai-api` engine workers). Set from the `sdk-session-id`
    * event, emitted on activation and on every SDK-session replacement (e.g.
-   * Phase 2's context-handoff reseed) -- last-write-wins, mirroring
+   * a future re-session) -- last-write-wins, mirroring
    * `subprocess`/`stdin`'s null-when-not-applicable convention. Persisted via
    * `PersistedEmbeddedAgentWorker.sdkSessionId` and survives server restart.
    * See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.

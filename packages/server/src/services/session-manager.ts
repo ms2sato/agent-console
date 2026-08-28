@@ -25,7 +25,6 @@ import {
   EmbeddedAgentWorkerService,
   EmbeddedMessageDeliveryError,
   type SendUserMessageResult,
-  type TriggerHandoffResult,
 } from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn, runAsUser } from './privilege-elevation.js';
 import type { LookupOsUserFn } from './os-user-lookup.js';
@@ -766,11 +765,6 @@ export class SessionManager {
     this.sessionLifecycleCallbacks?.onSessionUpdated?.(this.toPublicSession(session));
 
     return this.workerManager.toPublicWorker(worker);
-  }
-
-  /** Forward a handoff trigger to an embedded-agent worker's loop. Rejects with TURN_IN_PROGRESS when a turn is already active. */
-  async triggerEmbeddedAgentHandoff(sessionId: string, workerId: string): Promise<TriggerHandoffResult> {
-    return this.embeddedAgentWorkerService.triggerHandoff(sessionId, workerId);
   }
 
   /** Gracefully deactivate an embedded-agent worker's loop subprocess. */

@@ -122,7 +122,6 @@ export class MockWebSocket {
 const EMBEDDED_AGENT_SENT_MESSAGE_TYPES = [
   'embedded-user-message',
   'embedded-cancel',
-  'embedded-handoff',
   'request-history',
   'request-history-range',
 ] as const satisfies readonly EmbeddedAgentSentMessage['type'][];
@@ -140,7 +139,6 @@ const SENT_MESSAGE_VALIDATORS: {
 } = {
   'embedded-user-message': (value) => typeof value.text === 'string',
   'embedded-cancel': () => true,
-  'embedded-handoff': () => true,
   'request-history': () => true,
   'request-history-range': (value) =>
     typeof value.requestId === 'number' && typeof value.beforeOffset === 'number',

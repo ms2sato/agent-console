@@ -477,7 +477,7 @@ describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () 
   });
 });
 
-describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () => {
+describe('runLoop — the retired handoff command (#1401)', () => {
   const claudeSdkInitCommand = () =>
     JSON.stringify({
       v: 1,
@@ -490,44 +490,20 @@ describe('runLoop — claude-sdk engine: handoff dispatch gate (S3, #1334)', () 
       maxToolIterations: 5,
     });
 
-  // A `handoff` command received while a turn is active is rejected at
-  // main.ts's dispatch layer (the same `turnActive` gate `user-message` is
-  // subject to) BEFORE it ever reaches `Engine.handoff()` -- this is
-  // engine-agnostic dispatch-loop behavior, so the openai-api and
-  // claude-sdk engines observe an IDENTICAL contract here by construction,
-  // with no engine-specific code needed on either side. This is the
-  // verification for docs/design/embedded-agent-sdk-engine.md's S3 AC line
-  // "Handoff during an active turn: match the native engine's observable
-  // contract."
-  it('ignores a handoff command received while a turn is active, and never calls Engine.handoff()', async () => {
-    let handoffCalled = false;
-    let resolveTurn: (() => void) | null = null;
-    class HangingEngine implements Engine {
-      async runTurn(): Promise<void> {
-        return new Promise<void>((resolve) => {
-          resolveTurn = resolve;
-        });
-      }
-      cancel(): void {
-        resolveTurn?.();
-      }
-      setAutoCompaction(): void {}
-      async handoff(): Promise<void> {
-        handoffCalled = true;
-      }
-    }
-
+  it('ignores a `handoff` command as an unknown type, without exiting', async () => {
+    // `handoff` left `EmbeddedAgentCommand` with the compaction swap.
+    // Commands are not persisted, so nothing replays one -- but a server
+    // running an older build could still write one, and the forward-compat
+    // unknown-type branch is what must catch it: logged and skipped, never a
+    // protocol exit that would kill an otherwise healthy worker.
     const { io, errors } = makeIo([
       claudeSdkInitCommand(),
-      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hi' }),
       JSON.stringify({ v: 1, type: 'handoff' }),
       JSON.stringify({ v: 1, type: 'shutdown' }),
     ]);
-    const factories = makeFactories({ createSdkEngine: () => new HangingEngine() });
 
-    expect(await runLoop(io, factories)).toBe(0);
-    expect(handoffCalled).toBe(false);
-    expect(errors.some((e) => e.includes('Ignoring handoff received while a turn is active'))).toBe(true);
+    expect(await runLoop(io, makeFactories())).toBe(0);
+    expect(errors.some((e) => e.includes('unknown type: handoff'))).toBe(true);
   });
 });
 
@@ -598,23 +574,6 @@ describe('runLoop — claude-sdk engine: opt-in instructions threading', () => {
     expect(capturedDeps?.systemPromptAppend).toBe('OPERATOR_ONLY');
   });
 
-  it('wires loadHandoffPrompt to factories.loadCompactionPrompt (S3): the SAME single-writer prompt source the openai-api engine uses', async () => {
-    const { io } = makeIo([claudeSdkInitCommand()]);
-    let capturedDeps: SdkEngineDeps | undefined;
-    const factories = makeFactories({
-      loadCompactionPrompt: async ({ cwd }: { cwd: string }) => {
-        expect(cwd).toBe('/tmp');
-        return { content: 'FACTORY_HANDOFF_PROMPT', origin: 'bundled-default' as const };
-      },
-      createSdkEngine: (deps) => {
-        capturedDeps = deps;
-        return new NoopEngine();
-      },
-    });
-
-    expect(await runLoop(io, factories)).toBe(0);
-    await expect(capturedDeps!.loadHandoffPrompt()).resolves.toBe('FACTORY_HANDOFF_PROMPT');
-  });
 });
 
 // Phase 1's builtin claude-sdk definition (claude-sdk-builtin.ts) bakes

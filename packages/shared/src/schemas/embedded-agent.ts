@@ -220,7 +220,6 @@ export const EmbeddedAgentCommandSchema = v.union([
     text: v.string(),
   }),
   v.strictObject({ v: v.literal(1), type: v.literal('cancel') }),
-  v.strictObject({ v: v.literal(1), type: v.literal('handoff') }),
   v.strictObject({
     v: v.literal(1),
     type: v.literal('set-auto-compaction'),

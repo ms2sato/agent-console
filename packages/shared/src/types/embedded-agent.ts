@@ -184,7 +184,6 @@ export type EmbeddedAgentCommand =
     })
   | { v: 1; type: 'user-message'; id: string; text: string }
   | { v: 1; type: 'cancel' }
-  | { v: 1; type: 'handoff' }  // Context Handoff (Phase A); manual trigger
   /**
    * Compaction: the worker's auto-compaction toggle was changed while the
    * subprocess was running. Sent so the change applies without waiting for
@@ -252,8 +251,12 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'context-handoff'; distillation: string }
   /**
    * SDK engine only; native engine never emits this. Emitted on activation
-   * and on every SDK-session replacement (e.g. Phase 2's context-handoff
-   * reseed) — the worker's CURRENT SDK session id is X, last-write-wins.
+   * and on every SDK-session replacement — the worker's CURRENT SDK session
+   * id is X, last-write-wins. (Phase 2's context-handoff reseed was the only
+   * replacement that ever happened; #1401 retired it, so today the id is
+   * emitted once per activation. The event stays a dedicated one rather than
+   * a `ready` field because a future re-session — idle eviction's `resume`,
+   * #1336 — would replace it again.)
    * See docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
    *
    * IMPORTANT: because `ready` is decoupled from the SDK's own

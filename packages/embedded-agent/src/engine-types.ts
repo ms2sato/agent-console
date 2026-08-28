@@ -36,14 +36,6 @@ export interface Engine {
    */
   setAutoCompaction(enabled: boolean): void;
   /**
-   * RETIRING (#1401): Context Handoff's manual trigger. Optional because
-   * `AgentLoop` no longer implements it -- the openai-api engine's context
-   * management is Compaction now. Still implemented by `SdkEngine` until the
-   * SDK-compaction probe (#1400) confirms its replacement, at which point
-   * this member and every implementation of it are deleted.
-   */
-  handoff?(): Promise<void>;
-  /**
    * Release any underlying resources held outside process memory (e.g. the
    * SDK engine's `Query`/child `claude` process). Optional because the
    * native engine has nothing to release beyond normal GC.

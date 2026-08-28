@@ -37,7 +37,6 @@ const KNOWN_COMMAND_TYPES = new Set([
   'init',
   'user-message',
   'cancel',
-  'handoff',
   'set-auto-compaction',
   'shutdown',
 ]);
@@ -156,30 +155,6 @@ export async function runLoop(io: LoopIO, factories: LoopFactories): Promise<num
           });
         break;
       }
-      case 'handoff': {
-        // RETIRING (#1401): only the claude-sdk engine still implements
-        // handoff. The openai-api engine's context management is Compaction
-        // now, which needs no command -- auto fires inside the loop and
-        // manual arrives as a `Compact` tool call.
-        const engineHandoff = loop.handoff?.bind(loop);
-        if (engineHandoff === undefined) {
-          io.logError('Ignoring handoff: this engine does not support it');
-          break;
-        }
-        if (turnActive) {
-          io.logError('Ignoring handoff received while a turn is active');
-          break;
-        }
-        turnActive = true;
-        currentTurn = engineHandoff()
-          .catch((err) => {
-            io.logError(`Handoff failed: ${err instanceof Error ? err.message : String(err)}`);
-          })
-          .finally(() => {
-            turnActive = false;
-          });
-        break;
-      }
       case 'set-auto-compaction':
         // Deliberately NOT gated on `turnActive`: the flag is only read at
         // the turn boundary, so recording it mid-turn is safe and means the
@@ -251,7 +226,7 @@ async function initializeLoop(
         // as the REQUESTING user and already computed a
         // correctly-permissioned `systemPrompt` above -- use it instead of the
         // server's placeholder, for both restore shapes (fresh system-prompt
-        // seed and the context-handoff seed pair both start with a system
+        // seed and the compaction seed pair both start with a system
         // message at index 0).
         restoredConversation = [{ ...first, content: systemPrompt }, ...rest];
       }
@@ -329,10 +304,7 @@ async function initializeLoop(
       enabledTools: init.enabledTools,
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
-      loadHandoffPrompt: async () => {
-        const { content } = await factories.loadCompactionPrompt({ cwd: init.context.cwd });
-        return content;
-      },
+      autoCompaction: init.compaction.auto,
     });
   } catch (err) {
     const message = `SDK engine construction failed: ${err instanceof Error ? err.message : String(err)}`;

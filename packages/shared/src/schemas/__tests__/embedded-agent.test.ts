@@ -595,17 +595,40 @@ describe('EmbeddedAgentCommandSchema', () => {
       v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'user-message', id: 'm1', text: 'hi' }).success
     ).toBe(true);
     expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'cancel' }).success).toBe(true);
-    expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'handoff' }).success).toBe(true);
+    expect(
+      v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'set-auto-compaction', enabled: false })
+        .success
+    ).toBe(true);
     expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'shutdown' }).success).toBe(true);
   });
 
-  it('rejects a handoff command with an unknown field (strictObject)', () => {
-    const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'handoff', reason: 'manual' });
+  it('REJECTS the retired handoff command (#1401)', () => {
+    // Commands are not persisted, so nothing replays one -- but a server on
+    // an older build could still write it, and it must fail the schema
+    // rather than being quietly accepted and dropped somewhere downstream.
+    expect(v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'handoff' }).success).toBe(false);
+  });
+
+  it('rejects a set-auto-compaction command with an unknown field (strictObject)', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, {
+      v: 1,
+      type: 'set-auto-compaction',
+      enabled: true,
+      reason: 'manual',
+    });
     expect(result.success).toBe(false);
   });
 
-  it('rejects a handoff command missing v', () => {
-    const result = v.safeParse(EmbeddedAgentCommandSchema, { type: 'handoff' });
+  it('rejects a set-auto-compaction command missing enabled', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, { v: 1, type: 'set-auto-compaction' });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a set-auto-compaction command missing v', () => {
+    const result = v.safeParse(EmbeddedAgentCommandSchema, {
+      type: 'set-auto-compaction',
+      enabled: true,
+    });
     expect(result.success).toBe(false);
   });
 

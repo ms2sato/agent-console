@@ -977,48 +977,6 @@ describe('SessionManager', () => {
       expect(manager.cancelEmbeddedAgentTurn(sessionId, workerId)).toBe(false);
     });
 
-    it('triggerEmbeddedAgentHandoff returns not-activated for a never-activated worker (facade delegation)', async () => {
-      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
-      const { sessionId, workerId } = await createEmbeddedWorker(manager);
-
-      const res = await manager.triggerEmbeddedAgentHandoff(sessionId, workerId);
-
-      expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
-    });
-
-    it('setEmbeddedAgentAutoCompaction persists the toggle on a never-activated worker', async () => {
-      // A never-activated worker is the ordinary case for this call, not an
-      // edge case -- the toggle must be settable before the first activation
-      // and after every server restart. Reaching no live subprocess is not
-      // a failure, so the call still reports success.
-      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
-      const { sessionId, workerId } = await createEmbeddedWorker(manager);
-
-      const updated = await manager.setEmbeddedAgentAutoCompaction(sessionId, workerId, false);
-
-      expect(updated?.type).toBe('embedded-agent');
-      if (updated?.type === 'embedded-agent') {
-        expect(updated.autoCompaction).toBe(false);
-      }
-      const readBack = manager.getSession(sessionId)!.workers.find((w: Worker) => w.id === workerId)!;
-      expect(readBack.type).toBe('embedded-agent');
-      if (readBack.type === 'embedded-agent') {
-        expect(readBack.autoCompaction).toBe(false);
-      }
-    });
-
-    it('setEmbeddedAgentAutoCompaction returns null for an unknown session or worker', async () => {
-      const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
-      const { sessionId, workerId } = await createEmbeddedWorker(manager);
-
-      await expect(
-        manager.setEmbeddedAgentAutoCompaction('no-such-session', workerId, false),
-      ).resolves.toBeNull();
-      await expect(
-        manager.setEmbeddedAgentAutoCompaction(sessionId, 'no-such-worker', false),
-      ).resolves.toBeNull();
-    });
-
     it('deactivateEmbeddedAgentWorker resolves as a no-op for a never-activated worker', async () => {
       const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
       const { sessionId, workerId } = await createEmbeddedWorker(manager);

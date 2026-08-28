@@ -226,18 +226,6 @@ export type SendUserMessageResult =
   | { ok: true; id: string }
   | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
 
-/**
- * Result of {@link EmbeddedAgentWorkerService.triggerHandoff}. Deliberately
- * NOT `SendUserMessageResult` -- the success case there carries an `id` that
- * has no meaning for a handoff trigger (there is no `EmbeddedAgentServerEvent`
- * appended for this command; the loop's own `context-handoff` event IS the
- * persisted marker once it succeeds). See docs/design/embedded-agent-worker.md
- * "Context Handoff (Phase A)".
- */
-export type TriggerHandoffResult =
-  | { ok: true }
-  | { ok: false; code: 'NOT_ACTIVATED' | 'TURN_IN_PROGRESS' | 'WRITE_FAILED'; error: string };
-
 export interface EmbeddedAgentWorkerServiceDeps {
   getSession: (sessionId: string) => InternalSession | undefined;
   persistSession: (session: InternalSession) => Promise<void>;
@@ -816,52 +804,6 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
-   * Forward a manual Context Handoff (Phase A) trigger to the loop. Admission
-   * mirrors {@link sendUserMessage} exactly (the same synchronous
-   * check-and-set gate, reused for a second command type) -- see
-   * docs/design/embedded-agent-worker.md "Context Handoff (Phase A)"
-   * § `AgentLoop.handoff()` Admission.
-   *
-   * Unlike `sendUserMessage`, there is no `EmbeddedAgentServerEvent` to
-   * append to the persisted stream here: the loop's own `context-handoff`
-   * event IS the persisted marker once the handoff succeeds, so this method
-   * does not call `appendEvent`.
-   */
-  async triggerHandoff(sessionId: string, workerId: string): Promise<TriggerHandoffResult> {
-    const session = this.deps.getSession(sessionId);
-    const worker = session?.workers.get(workerId);
-    const runtime = this.runtimes.get(workerId);
-
-    // --- synchronous admission (no await before turnActive is set) ---
-    if (
-      !session ||
-      !worker ||
-      worker.type !== 'embedded-agent' ||
-      worker.subprocess === null ||
-      !worker.stdin ||
-      !runtime
-    ) {
-      return { ok: false, code: 'NOT_ACTIVATED', error: 'not activated' };
-    }
-    const stdin = worker.stdin;
-    if (runtime.turnActive) {
-      return { ok: false, code: 'TURN_IN_PROGRESS', error: 'turn in progress' };
-    }
-    runtime.turnActive = true;
-    // --- end synchronous admission ---
-
-    try {
-      this.writeCommand(stdin, { v: 1, type: 'handoff' });
-    } catch (err) {
-      runtime.turnActive = false;
-      logger.warn({ sessionId, workerId, err }, 'Failed to forward handoff to embedded-agent stdin');
-      return { ok: false, code: 'WRITE_FAILED', error: 'failed to write to subprocess stdin' };
-    }
-
-    return { ok: true };
-  }
-
-  /**
    * Deliver the session's initialPrompt as this embedded worker's first user
    * message, exactly once, right after the loop reports readiness. Reuses
    * the normal sendUserMessage path (turn admission, transcript append, WS
@@ -1122,7 +1064,7 @@ export class EmbeddedAgentWorkerService {
 
     // (e): SDK engine only -- persist the worker's CURRENT SDK session id.
     // Emitted on activation and on every future SDK-session replacement
-    // (e.g. Phase 2's context-handoff reseed); last-write-wins. Persisted
+    // (a future re-session); last-write-wins. Persisted
     // immediately per-event rather than batched: this event fires rarely
     // (activation, and later occasional reseed), unlike a chatty streaming
     // event, so inline persistence (mirroring maybeDeliverInitialPrompt's

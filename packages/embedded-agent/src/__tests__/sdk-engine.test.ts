@@ -16,7 +16,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { EmbeddedAgentEvent } from '@agent-console/shared';
 import type { Options, Query, SDKControlGetContextUsageResponse, SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import { SdkEngine, spawnClaudeCodeProcess, type SdkEngineDeps } from '../sdk-engine.js';
+import { createSdkCompactTool, SdkEngine, spawnClaudeCodeProcess, type SdkEngineDeps } from '../sdk-engine.js';
 import { composeSdkSystemPromptAppend } from '../system-prompt.js';
 
 // ---------------------------------------------------------------------------
@@ -160,84 +160,6 @@ function makeFakeQuery(
   };
 }
 
-/** One `queryFn()` invocation's fixture spec, for handoff tests that need
- * MULTIPLE sequential sessions (the original query, then one successor per
- * reseed). */
-interface SessionSpec {
-  source: SDKMessage[] | (() => AsyncGenerator<SDKMessage, void>);
-  getContextUsage?: () => Promise<SDKControlGetContextUsageResponse>;
-}
-
-interface MultiSessionHandle {
-  queryFn: QueryFn;
-  callCount: () => number;
-  capturedOptionsAt: (index: number) => Options | undefined;
-  isClosedAt: (index: number) => boolean;
-  interruptCallCountAt: (index: number) => number;
-  contextUsageCallCountAt: (index: number) => number;
-}
-
-/**
- * Like `makeFakeQuery`, but the DI seam is called once PER SPEC in order --
- * models a handoff reseed (S3/S4), where `queryFn` is invoked a second time
- * for the successor session. Calling it more times than specs provided is a
- * test-authoring bug and throws loudly rather than silently reusing the last
- * spec.
- */
-function makeMultiSessionFakeQuery(specs: SessionSpec[]): MultiSessionHandle {
-  const capturedOptionsList: (Options | undefined)[] = [];
-  const closedList: boolean[] = [];
-  const interruptCountList: number[] = [];
-  const contextUsageCountList: number[] = [];
-  let callIndex = 0;
-
-  const queryFn: QueryFn = (params) => {
-    const idx = callIndex++;
-    const spec = specs[idx];
-    if (!spec) {
-      throw new Error(
-        `makeMultiSessionFakeQuery: queryFn called ${idx + 1} times but only ${specs.length} spec(s) provided`,
-      );
-    }
-    capturedOptionsList[idx] = params.options;
-    closedList[idx] = false;
-    interruptCountList[idx] = 0;
-    contextUsageCountList[idx] = 0;
-
-    const gen =
-      typeof spec.source === 'function'
-        ? spec.source()
-        : (async function* (): AsyncGenerator<SDKMessage, void> {
-            for (const m of spec.source as SDKMessage[]) yield m;
-            await new Promise<never>(() => {});
-          })();
-    const getContextUsageImpl = spec.getContextUsage ?? (async () => usableContextUsage(1000));
-    const fake = Object.assign(gen, {
-      interrupt: async () => {
-        interruptCountList[idx]++;
-        return undefined;
-      },
-      close: () => {
-        closedList[idx] = true;
-      },
-      getContextUsage: async () => {
-        contextUsageCountList[idx]++;
-        return getContextUsageImpl();
-      },
-    });
-    return asQuery(fake);
-  };
-
-  return {
-    queryFn,
-    callCount: () => callIndex,
-    capturedOptionsAt: (index) => capturedOptionsList[index],
-    isClosedAt: (index) => closedList[index] ?? false,
-    interruptCallCountAt: (index) => interruptCountList[index] ?? 0,
-    contextUsageCallCountAt: (index) => contextUsageCountList[index] ?? 0,
-  };
-}
-
 /** A generator that never yields and never resolves -- models "system:init
  * never arrives" for the ready/system:init decoupling regression guard. */
 function neverYieldingGenerator(): AsyncGenerator<SDKMessage, void> {
@@ -271,12 +193,33 @@ function instantSleep(recorded: number[] = []): (ms: number) => Promise<void> {
   };
 }
 
+/**
+ * `JSON.stringify` over a live `query()` Options object, tolerant of the
+ * cycles the in-process SDK MCP server instance introduces. Used only by the
+ * "no apiKey-derived value anywhere in the options" containment assertions,
+ * which must walk the whole structure -- checking only the fields we expect
+ * would defeat the point of the check.
+ */
+function stringifyOptionsForContainment(options: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(options, (_key, value: unknown) => {
+    if (typeof value === 'object' && value !== null) {
+      if (seen.has(value)) return '[Circular]';
+      seen.add(value);
+    }
+    return value;
+  });
+}
+
 const baseDeps = (overrides: Partial<SdkEngineDeps> = {}): SdkEngineDeps => ({
   cwd: '/tmp/work',
   model: 'claude-sonnet-5',
   mcp: { baseUrl: 'http://mcp.local', token: 'tok-123' },
   emit: () => {},
-  loadHandoffPrompt: async () => 'DISTILL_THE_CONVERSATION',
+  // Compaction: OFF by default so the SDK's own auto-compaction is not the
+  // subject of tests that are about something else; the compaction describe
+  // below opts in explicitly.
+  autoCompaction: false,
   sleep: instantSleep(),
   ...overrides,
 });
@@ -461,14 +404,16 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     expect(options.includePartialMessages).toBe(true);
     expect(options.settingSources).toEqual([]);
     expect(options.settings).toEqual({ autoCompactEnabled: false });
-    expect(options.mcpServers).toEqual({
-      'agent-console': {
-        type: 'http',
-        url: 'http://mcp.local',
-        headers: { Authorization: 'Bearer tok-123' },
-        alwaysLoad: true,
-      },
+    expect(options.mcpServers?.['agent-console']).toEqual({
+      type: 'http',
+      url: 'http://mcp.local',
+      headers: { Authorization: 'Bearer tok-123' },
+      alwaysLoad: true,
     });
+    // Compaction's `Compact` tool is served by a SECOND, in-process SDK MCP
+    // server. Asserted by presence rather than deep equality: the value is a
+    // live server instance, not a config literal.
+    expect(Object.keys(options.mcpServers ?? {}).sort()).toEqual(['agent-console', 'console']);
     // No `resume` key at all -- not merely `undefined`.
     expect('resume' in options).toBe(false);
     // No apiKey-derived value anywhere in the constructed options: the
@@ -476,7 +421,7 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     // shared discriminated schema -- see main.test.ts's containment test),
     // and this engine never reads or forwards such a field. Defensive
     // structural check on the actual constructed object, not just the type.
-    expect(JSON.stringify(options)).not.toContain('apiKey');
+    expect(stringifyOptionsForContainment(options)).not.toContain('apiKey');
   });
 
   it('appends the definition system prompt onto the SDK preset when configured', () => {
@@ -498,19 +443,25 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
   it('uses the definition enabledTools array for options.tools when provided', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, enabledTools: ['Read', 'Bash'] }));
-    expect(captured.options?.tools).toEqual(['Read', 'Bash']);
+    // `Compact` rides along outside `enabledTools` -- see the empty-array
+    // test below for the containment property this is one half of.
+    expect(captured.options?.tools).toEqual(['Read', 'Bash', 'mcp__console__Compact']);
   });
 
   it('defaults options.tools to the read-only default set when enabledTools is absent', () => {
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn }));
-    expect(captured.options?.tools).toEqual(['Read', 'Glob', 'Grep']);
+    expect(captured.options?.tools).toEqual(['Read', 'Glob', 'Grep', 'mcp__console__Compact']);
   });
 
-  it('passes an explicit empty array (not the preset object) when enabledTools is []', () => {
+  it('allowlists ONLY Compact when enabledTools is the explicit empty array', () => {
+    // `enabledTools: []` is the strongest form of "every capability tool
+    // off", and `Compact` survives it -- the containment property from
+    // compact-tool.ts, asserted here at the SDK boundary where it takes
+    // effect. No representable definition can remove it.
     const { queryFn, captured } = makeFakeQuery([]);
     new SdkEngine(baseDeps({ queryFn, enabledTools: [] }));
-    expect(captured.options?.tools).toEqual([]);
+    expect(captured.options?.tools).toEqual(['mcp__console__Compact']);
   });
 
   // Instruction loader forwarding (CodeRabbit finding, docs/design/embedded-
@@ -568,14 +519,13 @@ describe('SdkEngine — construction seam containment (Pin 1(b))', () => {
     return out;
   }
 
-  it('invokes the SDK query() function from exactly two production call sites, both in sdk-engine.ts (construction + S3 reseed)', () => {
-    // Phase 1 pinned this at exactly one call site; Phase 2 (S3) legitimately
-    // adds a second -- `reseed`'s handoff-successor construction, reusing
-    // the SAME DI seam (`this.queryFn(`) and the SAME options builder
-    // (`buildOptions`) as the constructor. The containment property this
-    // test guards is unchanged: every call to the SDK's raw `query()`
-    // function goes through `this.queryFn(`, and `this.queryFn(` itself
-    // appears in NO file other than sdk-engine.ts.
+  it('invokes the SDK query() function from exactly ONE production call site, in sdk-engine.ts', () => {
+    // Phase 1 pinned this at one call site; Phase 2's handoff `reseed` added
+    // a second; #1401 retired handoff and took the reseed with it, so
+    // containment is exact again. The property guarded throughout is the
+    // same: every call to the SDK's raw `query()` goes through
+    // `this.queryFn(`, and `this.queryFn(` appears in NO file other than
+    // sdk-engine.ts.
     const srcDir = join(import.meta.dir, '..');
     const files = collectProductionTsFiles(srcDir);
     const hits: string[] = [];
@@ -584,7 +534,7 @@ describe('SdkEngine — construction seam containment (Pin 1(b))', () => {
       const matches = content.match(/this\.queryFn\(/g);
       if (matches) hits.push(...matches.map(() => file));
     }
-    expect(hits).toEqual([join(srcDir, 'sdk-engine.ts'), join(srcDir, 'sdk-engine.ts')]);
+    expect(hits).toEqual([join(srcDir, 'sdk-engine.ts')]);
   });
 
   it('defines exactly one spawnClaudeCodeProcess override function in production code', () => {
@@ -1034,7 +984,7 @@ describe('SdkEngine — context-usage polling (S1)', () => {
     ]);
   });
 
-  it('never polls getContextUsage absent a completed turn or handoff attempt (no timer/interval polling)', async () => {
+  it('never polls getContextUsage absent a completed turn (no timer/interval polling)', async () => {
     const { queryFn, contextUsageCallCount } = makeFakeQuery([systemInit()]);
     new SdkEngine(baseDeps({ queryFn }));
     await flush();
@@ -1223,367 +1173,6 @@ describe('SdkEngine — PS2 must-not-assume containment (S2)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// S3/S4 -- session-boundary handoff, and the reseed-vs-clean-stream-end guard
-// ---------------------------------------------------------------------------
-
-/**
- * A source for handoff tests: yields `systemInit` immediately, then gates
- * `messagesAfterGate` behind a REAL macrotask boundary (`setTimeout(...,0)`).
- * `makeFakeQuery`/`makeMultiSessionFakeQuery`'s replay is push-BLIND (see
- * their doc comments) -- it streams canned messages purely on the
- * consumer's pull cadence, never gated on what was actually pushed onto the
- * SDK's prompt queue. For a normal turn (Phase 1's tests), that is harmless
- * because `runTurn` pushes synchronously with no `await` in front of it, so
- * calling `runTurn` as the very next synchronous statement after
- * construction beats the fake's own consumption. `handoff()` is different:
- * it has a real `await this.deps.loadHandoffPrompt()` BEFORE its push, and
- * pure-microtask work (draining a small canned array with no internal
- * timers) reliably outruns that single await -- observed directly as a
- * hang/timeout while developing these tests, since the fake's finite array
- * would fully drain (with `turnMode` still `'normal'`) before `handoff()`
- * ever reached its push, leaving nothing to respond once it finally did.
- * Gating the response behind a real timer sidesteps the race: microtask
- * work (including handoff's own push, and a follow-up `runTurn`'s push) is
- * guaranteed to fully drain before ANY timer fires, so by the time this
- * generator resumes past the gate, the engine's `turnMode`/`currentTurnId`
- * has already been set correctly -- matching what a REAL SDK response
- * (arriving after the push, over a real process boundary) would look like.
- */
-function gatedSession(
-  messagesAfterGate: SDKMessage[],
-  opts: { sessionId?: string } = {},
-): () => AsyncGenerator<SDKMessage, void> {
-  return () =>
-    (async function* (): AsyncGenerator<SDKMessage, void> {
-      yield systemInit({ sessionId: opts.sessionId });
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
-      for (const m of messagesAfterGate) yield m;
-      await new Promise<never>(() => {});
-    })();
-}
-
-describe('SdkEngine — session-boundary handoff (S3)', () => {
-  it('distills, emits context-handoff, terminates the old query, and reseeds a successor -- no fatal, no second ready, wire-suppressed distillation turn', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    const successorSessionId = '33333333-3333-3333-3333-333333333333';
-    const { queryFn, callCount, capturedOptionsAt, isClosedAt, contextUsageCallCountAt } = makeMultiSessionFakeQuery([
-      { source: gatedSession([textDeltaEvent('DISTILLED_SUMMARY'), messageStopEvent(), resultSuccess()]) },
-      {
-        source: gatedSession([textDeltaEvent('post-handoff reply'), messageStopEvent(), resultSuccess()], {
-          sessionId: successorSessionId,
-        }),
-      },
-    ]);
-    const engine = new SdkEngine(
-      baseDeps({ emit: (e) => events.push(e), queryFn, systemPromptAppend: 'ORIGINAL_APPEND' }),
-    );
-
-    await engine.handoff();
-
-    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
-    expect(eventsOfType(events, 'ready')).toHaveLength(1); // ready is construction-time only, no second ready
-    expect(eventsOfType(events, 'context-handoff')).toEqual([
-      { v: 1, type: 'context-handoff', distillation: 'DISTILLED_SUMMARY' },
-    ]);
-    // The distillation turn itself never streamed to the wire as an ordinary turn.
-    expect(eventsOfType(events, 'assistant-delta')).toHaveLength(0);
-    expect(eventsOfType(events, 'assistant-message')).toHaveLength(0);
-    expect(eventsOfType(events, 'state').map((e) => e.state)).toEqual(['active', 'idle']);
-    // S1: exactly one poll for the handoff attempt.
-    expect(contextUsageCallCountAt(0)).toBe(1);
-
-    expect(callCount()).toBe(2);
-    expect(isClosedAt(0)).toBe(true);
-
-    // Successor options via the SAME builder (S3): every Phase 1 pin holds.
-    const successorOptions = capturedOptionsAt(1)!;
-    expect(successorOptions.spawnClaudeCodeProcess).toBe(spawnClaudeCodeProcess);
-    expect(successorOptions.executable).toBe('bun');
-    expect(successorOptions.cwd).toBe('/tmp/work');
-    expect(successorOptions.model).toBe('claude-sonnet-5');
-    expect(successorOptions.permissionMode).toBe('bypassPermissions');
-    expect(successorOptions.allowDangerouslySkipPermissions).toBe(true);
-    expect(successorOptions.includePartialMessages).toBe(true);
-    expect(successorOptions.settingSources).toEqual([]);
-    expect(successorOptions.settings).toEqual({ autoCompactEnabled: false });
-    expect('resume' in successorOptions).toBe(false);
-    expect(JSON.stringify(successorOptions)).not.toContain('apiKey');
-
-    // systemPrompt.append composition: original first, distillation last.
-    const append = (successorOptions.systemPrompt as { append: string }).append;
-    expect(append).toBe('ORIGINAL_APPEND\n\nDISTILLED_SUMMARY');
-
-    // Engine stays alive: a post-handoff turn works on the successor session.
-    // (Deferred until after this awaits: the successor's OWN system:init has
-    // not necessarily arrived yet the instant handoff() resolves -- its
-    // background consumer only just started -- so the sdk-session-id
-    // assertion below reads the events AFTER this turn has fully round-
-    // tripped through the successor session, guaranteeing system:init has
-    // been processed by then.)
-    await engine.runTurn('u2', 'continue');
-    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
-    expect(eventsOfType(events, 'assistant-message')).toContainEqual({
-      v: 1,
-      type: 'assistant-message',
-      turnId: 'u2',
-      text: 'post-handoff reply',
-    });
-
-    // sdk-session-id re-emits (last-write-wins) for the successor's own system:init.
-    const sessionIds = eventsOfType(events, 'sdk-session-id').map((e) => e.sdkSessionId);
-    expect(sessionIds[sessionIds.length - 1]).toBe(successorSessionId);
-  });
-
-  it('composes systemPrompt.append from the distillation alone when no original append was configured', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    const { queryFn, capturedOptionsAt } = makeMultiSessionFakeQuery([
-      { source: gatedSession([textDeltaEvent('ONLY_DISTILLATION'), messageStopEvent(), resultSuccess()]) },
-      { source: [systemInit()] },
-    ]);
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-    await engine.handoff();
-
-    const append = (capturedOptionsAt(1)?.systemPrompt as { append: string }).append;
-    expect(append).toBe('ONLY_DISTILLATION');
-  });
-
-  it('a second handoff composes from the ORIGINAL append plus the LATEST distillation, not an accumulating chain', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    const { queryFn, capturedOptionsAt } = makeMultiSessionFakeQuery([
-      { source: gatedSession([textDeltaEvent('FIRST_DISTILLATION'), messageStopEvent(), resultSuccess()]) },
-      {
-        source: gatedSession([textDeltaEvent('SECOND_DISTILLATION'), messageStopEvent(), resultSuccess()], {
-          sessionId: '55555555-5555-5555-5555-555555555555',
-        }),
-      },
-      { source: [systemInit({ sessionId: '66666666-6666-6666-6666-666666666666' })] },
-    ]);
-    const engine = new SdkEngine(
-      baseDeps({ emit: (e) => events.push(e), queryFn, systemPromptAppend: 'ORIGINAL_APPEND' }),
-    );
-    await engine.handoff();
-    await engine.handoff();
-
-    const append = (capturedOptionsAt(2)?.systemPrompt as { append: string }).append;
-    expect(append).toBe('ORIGINAL_APPEND\n\nSECOND_DISTILLATION');
-  });
-
-  it('handoff failure (distillation turn errors): emits a labeled turn-error, no context-handoff, no reseed', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    const { queryFn, callCount } = makeMultiSessionFakeQuery([
-      { source: gatedSession([resultError('error_during_execution', ['boom'])]) },
-    ]);
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-    await engine.handoff();
-
-    expect(eventsOfType(events, 'context-handoff')).toHaveLength(0);
-    expect(eventsOfType(events, 'turn-error')).toEqual([
-      { v: 1, type: 'turn-error', turnId: expect.any(String), message: 'Context handoff failed: SDK turn failed: boom' },
-    ]);
-    expect(eventsOfType(events, 'state').map((e) => e.state)).toEqual(['active', 'idle']);
-    expect(callCount()).toBe(1); // no successor session constructed
-  });
-
-  it('handoff failure (distillation produced only a tool call, no usable text): emits a labeled turn-error, no reseed', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    const { queryFn, callCount } = makeMultiSessionFakeQuery([
-      {
-        source: gatedSession([
-          assistantToolUseMessage('call-1', 'Read', {}),
-          messageStopEvent(),
-          userToolResultMessage('call-1', 'result'),
-          resultSuccess(),
-        ]),
-      },
-    ]);
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-    await engine.handoff();
-
-    expect(eventsOfType(events, 'context-handoff')).toHaveLength(0);
-    expect(eventsOfType(events, 'tool-call')).toHaveLength(0); // not surfaced during distillation
-    expect(eventsOfType(events, 'tool-result')).toHaveLength(0);
-    expect(eventsOfType(events, 'turn-error')[0].message).toContain('no usable distillation');
-    expect(callCount()).toBe(1);
-  });
-
-  it('handoff failure (loadHandoffPrompt throws): emits a labeled turn-error, never attempts a distillation turn', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    const { queryFn, callCount } = makeMultiSessionFakeQuery([{ source: [systemInit()] }]);
-    const engine = new SdkEngine(
-      baseDeps({
-        emit: (e) => events.push(e),
-        queryFn,
-        loadHandoffPrompt: async () => {
-          throw new Error('disk exploded');
-        },
-      }),
-    );
-    await engine.handoff();
-
-    expect(eventsOfType(events, 'turn-error')[0].message).toContain('failed to load handoff prompt');
-    expect(eventsOfType(events, 'state').map((e) => e.state)).toEqual(['active', 'idle']);
-    expect(callCount()).toBe(1);
-  });
-
-  it('H2 exhaustion during the post-attempt poll: goes fatal and does NOT reseed', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    const { queryFn, callCount } = makeMultiSessionFakeQuery([
-      {
-        source: gatedSession([textDeltaEvent('DISTILLED'), messageStopEvent(), resultSuccess()]),
-        getContextUsage: async () => {
-          throw new Error('ProcessTransport is not ready for writing');
-        },
-      },
-    ]);
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn, sleep: instantSleep() }));
-    await engine.handoff();
-
-    expect(eventsOfType(events, 'fatal')).toHaveLength(1);
-    expect(eventsOfType(events, 'context-handoff')).toHaveLength(0);
-    expect(callCount()).toBe(1); // no successor session constructed
-  });
-
-  it('BUG FIX: a transport crash mid-distillation settles handoff() with fatal instead of hanging forever', async () => {
-    // Without settling `distillationDeferred` in handleFatal, this test
-    // times out (bun:test's default per-test timeout) rather than failing
-    // fast -- `handoff()`'s `await this.runDistillationTurn(...)` would
-    // never resolve.
-    const events: EmbeddedAgentEvent[] = [];
-    const { queryFn, callCount } = makeMultiSessionFakeQuery([
-      {
-        source: () =>
-          (async function* (): AsyncGenerator<SDKMessage, void> {
-            yield systemInit();
-            await new Promise<void>((resolve) => setTimeout(resolve, 0)); // gate, see gatedSession's doc comment
-            throw new Error('transport exploded mid-distillation');
-          })(),
-      },
-    ]);
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-
-    await engine.handoff();
-
-    const fatalEvents = eventsOfType(events, 'fatal');
-    expect(fatalEvents).toHaveLength(1);
-    expect(fatalEvents[0].message).toContain('transport exploded mid-distillation');
-    expect(eventsOfType(events, 'context-handoff')).toHaveLength(0);
-    expect(callCount()).toBe(1); // no successor session constructed
-  });
-
-  it('BUG FIX: a synchronous throw constructing the successor query on reseed goes fatal instead of leaving the engine stuck', async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    let callIndex = 0;
-    const queryFn: QueryFn = () => {
-      const idx = callIndex++;
-      if (idx === 0) {
-        const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
-          yield systemInit();
-          await new Promise<void>((resolve) => setTimeout(resolve, 0)); // gate, see gatedSession's doc comment
-          yield textDeltaEvent('DISTILLED');
-          yield messageStopEvent();
-          yield resultSuccess();
-          await new Promise<never>(() => {});
-        })();
-        return asQuery(
-          Object.assign(gen, {
-            interrupt: async () => undefined,
-            close: () => {},
-            getContextUsage: async () => usableContextUsage(1000),
-          }),
-        );
-      }
-      // The successor's queryFn call (S3's second production call site)
-      // throws synchronously -- models the SDK rejecting the reseed's
-      // options battery.
-      throw new Error('malformed successor options rejected by the SDK');
-    };
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-
-    await engine.handoff();
-
-    // The distillation itself succeeded (context-handoff was already
-    // emitted) -- only the successor construction failed.
-    expect(eventsOfType(events, 'context-handoff')).toHaveLength(1);
-    const fatalEvents = eventsOfType(events, 'fatal');
-    expect(fatalEvents).toHaveLength(1);
-    expect(fatalEvents[0].message).toContain('reseed construction failed');
-    expect(fatalEvents[0].message).toContain('malformed successor options rejected by the SDK');
-    // No spurious state:idle emitted after the fatal.
-    expect(eventsOfType(events, 'state').map((e) => e.state)).toEqual(['active']);
-
-    // A later runTurn fails loudly rather than hanging.
-    events.length = 0;
-    await engine.runTurn('u2', 'hi');
-    expect(events).toEqual([
-      { v: 1, type: 'fatal', message: 'SDK engine session already terminated; cannot start a new turn' },
-    ]);
-  });
-});
-
-describe('SdkEngine — S4: reseed vs the clean-stream-end guard', () => {
-  it("the OLD query's stream ending as a DIRECT RESULT of reseed's close() does not emit a spurious fatal (generation guard)", async () => {
-    const events: EmbeddedAgentEvent[] = [];
-    let resolveOldClose: (() => void) | null = null;
-    const oldCloseSignal = new Promise<void>((resolve) => {
-      resolveOldClose = resolve;
-    });
-    let oldCloseCallCount = 0;
-    const successorSessionId = '77777777-7777-7777-7777-777777777777';
-    let callIndex = 0;
-
-    const queryFn: QueryFn = () => {
-      const idx = callIndex++;
-      if (idx === 0) {
-        const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
-          yield systemInit();
-          await new Promise<void>((resolve) => setTimeout(resolve, 0)); // gate, see gatedSession's doc comment
-          yield textDeltaEvent('DISTILLED');
-          yield messageStopEvent();
-          yield resultSuccess();
-          // Blocks here until reseed()'s close() resolves this -- mirrors
-          // the real SDK's stream ending as a direct consequence of
-          // close(), not independently of it (S4).
-          await oldCloseSignal;
-        })();
-        return asQuery(
-          Object.assign(gen, {
-            interrupt: async () => undefined,
-            close: () => {
-              oldCloseCallCount++;
-              resolveOldClose?.();
-            },
-            getContextUsage: async () => usableContextUsage(1000),
-          }),
-        );
-      }
-      const gen = (async function* (): AsyncGenerator<SDKMessage, void> {
-        yield systemInit({ sessionId: successorSessionId });
-        await new Promise<never>(() => {});
-      })();
-      return asQuery(
-        Object.assign(gen, {
-          interrupt: async () => undefined,
-          close: () => {},
-          getContextUsage: async () => usableContextUsage(1000),
-        }),
-      );
-    };
-
-    const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-    await engine.handoff();
-    await flush(); // let the old generator's blocked `await oldCloseSignal` resolve and its for-await exit
-
-    expect(eventsOfType(events, 'fatal')).toHaveLength(0);
-    expect(oldCloseCallCount).toBe(1);
-
-    // Invariant preservation (S4b): a genuinely unexpected clean end on the
-    // NEW (post-reseed, now-current) query still fires the original guard --
-    // covered end-to-end by the "clean stream end" describe block below,
-    // which never triggers a handoff and so never bumps queryGeneration.
-  });
-});
-
-// ---------------------------------------------------------------------------
 // cancel / dispose
 // ---------------------------------------------------------------------------
 
@@ -1730,5 +1319,407 @@ describe('SdkEngine — discriminant containment (compile-level)', () => {
     const deps: SdkEngineDeps = baseDeps();
     expect('apiKey' in deps).toBe(false);
     expect('baseUrl' in deps).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Compaction (#1401)
+// ---------------------------------------------------------------------------
+
+function compactBoundary(
+  metadata: { trigger?: 'manual' | 'auto'; pre_tokens?: number; post_tokens?: number } = {},
+): SDKMessage {
+  return asSdkMessage({
+    type: 'system',
+    subtype: 'compact_boundary',
+    compact_metadata: {
+      trigger: metadata.trigger ?? 'auto',
+      pre_tokens: metadata.pre_tokens ?? 101565,
+      ...(metadata.post_tokens !== undefined ? { post_tokens: metadata.post_tokens } : {}),
+    },
+    uuid: '11111111-1111-1111-1111-11111111111a',
+    session_id: '22222222-2222-2222-2222-222222222222',
+  });
+}
+
+/** Invokes the `PostCompact` hook wired into the captured options, exactly as
+ * the SDK would. Returns false when no such hook was registered. */
+async function firePostCompactHook(options: Options | undefined, summary: string): Promise<boolean> {
+  const matchers = options?.hooks?.PostCompact;
+  if (!matchers || matchers.length === 0) return false;
+  for (const matcher of matchers) {
+    for (const hook of matcher.hooks) {
+      await hook(
+        {
+          hook_event_name: 'PostCompact',
+          trigger: 'auto',
+          compact_summary: summary,
+          session_id: '22222222-2222-2222-2222-222222222222',
+          transcript_path: '/tmp/transcript.jsonl',
+          cwd: '/tmp/work',
+          permission_mode: 'bypassPermissions',
+        } as Parameters<typeof hook>[0],
+        undefined,
+        { signal: new AbortController().signal },
+      );
+    }
+  }
+  return true;
+}
+
+describe('SdkEngine — compaction: the auto toggle', () => {
+  it('composes the worker toggle into the SDK settings, ON', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, autoCompaction: true }));
+    expect(captured.options?.settings).toEqual({ autoCompactEnabled: true });
+  });
+
+  it('composes the worker toggle into the SDK settings, OFF', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, autoCompaction: false }));
+    expect(captured.options?.settings).toEqual({ autoCompactEnabled: false });
+  });
+
+  it('applies a live toggle change to the running session via applyFlagSettings', () => {
+    // Live rather than at-next-activation because probe #1400 P1a measured
+    // the mid-session write actually taking effect.
+    const applied: unknown[] = [];
+    const { queryFn } = makeFakeQuery([]);
+    const wrappedQueryFn: QueryFn = (params) => {
+      const q = queryFn(params);
+      return asQuery(
+        Object.assign(q, {
+          applyFlagSettings: async (settings: unknown) => {
+            applied.push(settings);
+          },
+        }),
+      );
+    };
+    const engine = new SdkEngine(baseDeps({ queryFn: wrappedQueryFn, autoCompaction: false }));
+
+    engine.setAutoCompaction(true);
+
+    expect(applied).toEqual([{ autoCompactEnabled: true }]);
+  });
+
+  it('does not throw when the live write fails -- the durable value still applies at the next activation', async () => {
+    const { queryFn } = makeFakeQuery([]);
+    const wrappedQueryFn: QueryFn = (params) => {
+      const q = queryFn(params);
+      return asQuery(
+        Object.assign(q, {
+          applyFlagSettings: async () => {
+            throw new Error('transport gone');
+          },
+        }),
+      );
+    };
+    const engine = new SdkEngine(baseDeps({ queryFn: wrappedQueryFn, autoCompaction: false }));
+
+    expect(() => engine.setAutoCompaction(true)).not.toThrow();
+    await flush();
+  });
+});
+
+describe('SdkEngine — compaction: the boundary marker', () => {
+  it('emits context-compacted with the summary when the PostCompact hook delivered one', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn, captured } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield compactBoundary({ trigger: 'auto', pre_tokens: 101565, post_tokens: 25367 });
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    const turn = engine.runTurn('u1', 'hello');
+
+    // The hook path is independent of the iterator; fire it before the
+    // boundary reaches `result`, which is one of the two orderings.
+    await flush();
+    expect(await firePostCompactHook(captured.options, 'THE SDK SUMMARY')).toBe(true);
+    await turn;
+
+    expect(eventsOfType(events, 'context-compacted')).toEqual([
+      {
+        v: 1,
+        type: 'context-compacted',
+        source: 'auto',
+        summary: 'THE SDK SUMMARY',
+        preTokens: 101565,
+        postTokens: 25367,
+      },
+    ]);
+  });
+
+  it('STILL emits the marker when no summary ever arrives -- a missing summary must not swallow the boundary', async () => {
+    // The load-bearing polarity. The summary and the boundary travel on
+    // independent paths whose relative order is not a contract we have
+    // measured, and `PostCompact` was probed opportunistically -- so "the
+    // summary never came" has to degrade to a marker without a summary, not
+    // to silence. A compaction that happened and left no trace in the
+    // transcript is the failure this test exists to prevent.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield compactBoundary({ trigger: 'manual', pre_tokens: 25331, post_tokens: 2033 });
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    await engine.runTurn('u1', 'hello');
+
+    const markers = eventsOfType(events, 'context-compacted');
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ source: 'manual', preTokens: 25331, postTokens: 2033 });
+    expect('summary' in markers[0]).toBe(false);
+  });
+
+  it('omits the token pair when the SDK reports no post_tokens, rather than inventing one', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield compactBoundary({ trigger: 'auto', pre_tokens: 101565 });
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    await engine.runTurn('u1', 'hello');
+
+    const marker = eventsOfType(events, 'context-compacted')[0];
+    expect(marker).toBeDefined();
+    expect('preTokens' in marker).toBe(false);
+    expect('postTokens' in marker).toBe(false);
+  });
+
+  it('emits the marker once, before the turn ends, and not again on the next turn', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield compactBoundary();
+        yield resultSuccess();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    await engine.runTurn('u1', 'hello');
+    const types = events.map((e) => e.type);
+    expect(types.indexOf('context-compacted')).toBeLessThan(types.lastIndexOf('state'));
+
+    events.length = 0;
+    await engine.runTurn('u2', 'again');
+    expect(eventsOfType(events, 'context-compacted')).toHaveLength(0);
+  });
+});
+
+describe('SdkEngine — compaction: the PS1 tripwire, made mode-aware', () => {
+  const usage = (total: number) => async () => usableContextUsage(total);
+
+  async function runTwoTurns(opts: {
+    autoCompaction: boolean;
+    totals: [number, number];
+    boundaryOnSecondTurn: boolean;
+  }): Promise<void> {
+    let call = 0;
+    const { queryFn } = makeFakeQuery(
+      () =>
+        (async function* (): AsyncGenerator<SDKMessage, void> {
+          yield systemInit();
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          yield resultSuccess();
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+          if (opts.boundaryOnSecondTurn) yield compactBoundary();
+          yield resultSuccess();
+          await new Promise<never>(() => {});
+        })(),
+      { getContextUsage: async () => usage(opts.totals[Math.min(call++, 1)])() },
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, autoCompaction: opts.autoCompaction }));
+    await engine.runTurn('u1', 'first');
+    await engine.runTurn('u2', 'second');
+  }
+
+  it('OFF + material drop + no boundary -> WARNS (the original PS1 violation)', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runTwoTurns({ autoCompaction: false, totals: [100000, 20000], boundaryOnSecondTurn: false });
+      expect(warn.mock.calls.some(([m]) => String(m).includes('PS1 tripwire'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('ON + material drop + boundary -> SILENT (this is the feature working)', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runTwoTurns({ autoCompaction: true, totals: [100000, 20000], boundaryOnSecondTurn: true });
+      expect(warn.mock.calls.some(([m]) => String(m).includes('PS1 tripwire'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('ON + material drop + NO boundary -> STILL WARNS (unexplained shrinkage is an anomaly in either mode)', async () => {
+    // This quadrant is the entire reason the tripwire is not simply deleted
+    // once the toggle is on.
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runTwoTurns({ autoCompaction: true, totals: [100000, 20000], boundaryOnSecondTurn: false });
+      expect(warn.mock.calls.some(([m]) => String(m).includes('PS1 tripwire'))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('no material drop -> SILENT, in either mode', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await runTwoTurns({ autoCompaction: true, totals: [100000, 95000], boundaryOnSecondTurn: false });
+      await runTwoTurns({ autoCompaction: false, totals: [100000, 95000], boundaryOnSecondTurn: false });
+      expect(warn.mock.calls.some(([m]) => String(m).includes('PS1 tripwire'))).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+describe('SdkEngine — compaction: the Compact tool', () => {
+  it('registers an in-process SDK MCP server and allowlists the namespaced tool name', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, enabledTools: [] }));
+
+    expect(captured.options?.mcpServers?.['console']).toBeDefined();
+    expect(captured.options?.tools).toContain('mcp__console__Compact');
+  });
+
+  it("the tool's handler reserves, and answers with the same wording the openai-api engine uses", async () => {
+    let reserved = 0;
+    const definition = createSdkCompactTool(() => {
+      reserved++;
+    });
+
+    expect(definition.name).toBe('Compact');
+    const result = await definition.handler({}, undefined);
+
+    expect(reserved).toBe(1);
+    expect(JSON.stringify(result)).toContain('Compaction scheduled; runs when this turn completes.');
+  });
+
+  it('sends /compact at the turn boundary, never mid-turn', async () => {
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const pushed: string[] = [];
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+    // Observe what reaches the SDK's own input queue.
+    const queue = (engine as unknown as { queue: { push: (m: { message: { content: string } }) => void } }).queue;
+    const originalPush = queue.push.bind(queue);
+    queue.push = (m) => {
+      pushed.push(m.message.content);
+      originalPush(m);
+    };
+
+    const turn = engine.runTurn('u1', 'please compact');
+    engine.reserveCompaction();
+    // Nothing sent yet: compaction never runs mid-turn.
+    expect(pushed).toEqual(['please compact']);
+
+    await turn;
+    expect(pushed).toEqual(['please compact', '/compact']);
+  });
+
+  it('DISCARDS the reservation on cancel', async () => {
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const pushed: string[] = [];
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+    const queue = (engine as unknown as { queue: { push: (m: { message: { content: string } }) => void } }).queue;
+    const originalPush = queue.push.bind(queue);
+    queue.push = (m) => {
+      pushed.push(m.message.content);
+      originalPush(m);
+    };
+
+    const turn = engine.runTurn('u1', 'compact then cancel');
+    engine.reserveCompaction();
+    engine.cancel();
+    await turn;
+
+    expect(pushed).toEqual(['compact then cancel']);
+  });
+
+  it('DISCARDS the reservation on dispose', async () => {
+    const { queryFn } = makeFakeQuery([]);
+    const engine = new SdkEngine(baseDeps({ queryFn }));
+
+    engine.reserveCompaction();
+    engine.dispose();
+
+    expect(
+      (engine as unknown as { pendingCompactCommand: boolean }).pendingCompactCommand,
+    ).toBe(false);
+  });
+
+  it('a conversation too short to compact produces an ordinary assistant refusal and NO marker -- nothing hangs', async () => {
+    // Probe #1400 recorded this: the SDK answers `/compact` on a short
+    // conversation with "Not enough messages to compact." as normal
+    // assistant output and emits no `compact_boundary`. That is the SDK
+    // declining, not the command being absent -- and NOT a bug to compensate
+    // for. The refusal is visible in the transcript where the user can read
+    // it, which is the whole handling this case needs.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(() =>
+      (async function* (): AsyncGenerator<SDKMessage, void> {
+        yield systemInit();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield resultSuccess();
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        yield textDeltaEvent('Not enough messages to compact.');
+        yield messageStopEvent();
+        yield resultSuccess();
+        await new Promise<never>(() => {});
+      })(),
+    );
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+
+    const turn = engine.runTurn('u1', 'please compact');
+    engine.reserveCompaction();
+    await turn;
+
+    // The `/compact` went out, and the SDK's refusal came back as an
+    // ordinary assistant message on the following turn.
+    await engine.runTurn('u2', 'anything');
+    expect(eventsOfType(events, 'context-compacted')).toHaveLength(0);
+    expect(
+      eventsOfType(events, 'assistant-message').some((e) =>
+        e.text.includes('Not enough messages to compact.'),
+      ),
+    ).toBe(true);
   });
 });
