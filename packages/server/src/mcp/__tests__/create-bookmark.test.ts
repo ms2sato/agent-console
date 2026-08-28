@@ -244,7 +244,7 @@ describe('create_bookmark', () => {
 
   describe('validation (single-writer schema, no zod-level reimplementation)', () => {
     it('rejects a javascript: URL scheme (proves it routes through the shared valibot schema, not a zod-level check)', async () => {
-      const { sessionId } = await createOwnedSession();
+      const { sessionId, userId } = await createOwnedSession();
 
       const response = await callTool(
         app,
@@ -258,8 +258,7 @@ describe('create_bookmark', () => {
       const data = parseToolResult(response) as { error: string };
       expect(data.error).toBeDefined();
 
-      // No bookmark was created for the rejected scheme.
-      const { userId } = await createOwnedSession(8002, 'bookmark-owner-2');
+      // No bookmark was created for the rejected scheme, for the session's actual owner.
       expect(await bookmarkRepository.findByUserId(userId)).toHaveLength(0);
     });
 

@@ -1879,7 +1879,9 @@ describe('mappers', () => {
   });
 
   describe('toBookmark - origin validation', () => {
-    function buildBookmarkRow(overrides: Partial<BookmarkRow> = {}): BookmarkRow {
+    function buildBookmarkRow(
+      overrides: Partial<Omit<BookmarkRow, 'origin'>> & { origin?: string } = {}
+    ): BookmarkRow {
       return {
         id: 'bookmark-1',
         user_id: 'user-1',
@@ -1889,7 +1891,7 @@ describe('mappers', () => {
         created_at: '2026-08-20T00:00:00.000Z',
         origin: 'user',
         ...overrides,
-      };
+      } as BookmarkRow;
     }
 
     it("round-trips origin: 'user'", () => {
@@ -1903,7 +1905,7 @@ describe('mappers', () => {
     });
 
     it('throws DataIntegrityError for an unrecognized origin value', () => {
-      const row = buildBookmarkRow({ origin: 'mystery' as unknown as 'user' | 'agent' });
+      const row = buildBookmarkRow({ origin: 'mystery' });
       expect(() => toBookmark(row)).toThrow(DataIntegrityError);
       expect(() => toBookmark(row)).toThrow(/origin \(unexpected value: mystery\)/);
     });
