@@ -2234,12 +2234,19 @@ describe('formatCompactionBoundaryLabel', () => {
     );
   });
 
-  it('never promises that anything was preserved', () => {
+  it('never promises that anything was preserved -- in EITHER label shape', () => {
     // The line is a fact, not a guarantee: SDK-side fidelity is measured
     // non-deterministic, so a preservation claim would be falsified by a
     // single counterexample.
-    const label = formatCompactionBoundaryLabel(102150, 2710);
-    expect(label.toLowerCase()).not.toMatch(/preserv|retain|kept|safe|nothing (is |was )?lost/);
+    //
+    // Both shapes are checked deliberately. A polarity run found that
+    // asserting only the with-numbers branch left the bare-marker fallback
+    // unguarded -- which is the branch a future implementer is most likely to
+    // "improve" with a reassuring clause, precisely because it has no numbers
+    // to carry the meaning.
+    const forbidden = /preserv|retain|kept|safe|nothing (is |was )?lost/;
+    expect(formatCompactionBoundaryLabel(102150, 2710).toLowerCase()).not.toMatch(forbidden);
+    expect(formatCompactionBoundaryLabel(undefined, undefined).toLowerCase()).not.toMatch(forbidden);
   });
 
   it('falls back to the bare marker when the engine supplied no figures', () => {
