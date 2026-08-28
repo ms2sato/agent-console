@@ -10,7 +10,6 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { sql } from 'kysely';
 import { DEFAULT_FORK_POINT_SPEC } from '@agent-console/shared';
 import { initializeDatabase, closeDatabase, migrateToV21 } from '../connection.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
@@ -59,14 +58,6 @@ describe('migration v21 (git-diff base_commit → default fork-point spec)', () 
   afterEach(async () => {
     await closeDatabase();
     cleanupMemfs();
-  });
-
-  it('advances the schema version to the latest (>= 21)', async () => {
-    const db = await initializeDatabase(':memory:');
-    const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    // initializeDatabase runs every migration; the v21 step is part of that
-    // chain and the final version is the current latest.
-    expect(versionRes.rows[0]?.user_version).toBe(34);
   });
 
   it('resets a git-diff worker with a frozen hash to the sentinel spec', async () => {

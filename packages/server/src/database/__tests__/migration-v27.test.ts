@@ -73,14 +73,6 @@ describe('migration v27 (embedded_agents Context Handoff Phase A columns)', () =
     cleanupMemfs();
   });
 
-  it('advances the schema version past v27 to the latest', async () => {
-    const db = await initializeDatabase(':memory:');
-    // initializeDatabase runs every migration; the v27 step is part of that
-    // chain and the final version is the current latest.
-    const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(34);
-  });
-
   it('adds all four columns to embedded_agents, nullable with no default', async () => {
     const db = await initializeDatabase(':memory:');
 

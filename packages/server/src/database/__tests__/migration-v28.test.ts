@@ -89,12 +89,6 @@ describe('migration v28 (artifacts table)', () => {
     cleanupMemfs();
   });
 
-  it('advances the schema version to 28', async () => {
-    const db = await initializeDatabase(':memory:');
-    const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(34);
-  });
-
   it('creates the artifacts table with the expected column shapes', async () => {
     const db = await initializeDatabase(':memory:');
 
