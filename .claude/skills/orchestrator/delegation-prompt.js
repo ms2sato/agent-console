@@ -136,11 +136,16 @@ The 80% checkpoint (substantially complete, awaiting verification) follows the s
      Keep concise — the Issue is the source of truth.
      Examples: specific constraints, testing approach, files to avoid. -->
 
+## Before You Start (three known traps in this repo, each costing a round trip)
+- **Reading the Issue**: \`gh issue view <N>\` on its own fails here with a Projects-classic GraphQL error — **and still exits 0**, so it looks like it worked. Always pass \`--json\`: \`gh issue view <N> --json title,body --jq '.title, .body'\`. Same root cause as the \`gh pr edit\` failure in step 6.
+- **A fresh worktree has no \`node_modules\`**, so \`bun run test\` dies at \`tsc: command not found\` before running anything. Run \`bun install\` first. This is expected setup, not a dependency change — say so in your report so nobody has to ask.
+- **The CodeRabbit CLI (step 4) can hang on browser auth** in a delegated worktree, which has no browser. If it stalls on \`awaiting_browser_auth\`, kill it and report "headless auth-fail" rather than waiting out a timeout. Do NOT report it as a rate limit — they are different conditions with different dispositions.
+
 ## Completion Steps
-1. Run the FULL test suite (\`bun run test\`) and confirm ALL tests pass — not just your new tests. If any pre-existing test fails, investigate whether your changes caused it.
+1. Run the FULL test suite (\`bun run test\`) and confirm ALL tests pass — not just your new tests. If any pre-existing test fails, investigate whether your changes caused it. Report the result as **pasted output plus the real exit code**, never a summary: \`output=\$(bun run test 2>&1); exitcode=\$?; echo "\$output" | tail -100; echo "TEST_EXIT: \$exitcode"\`. Do not use \`| tail -100; echo \$?\` — that reads \`tail\`'s exit code, not the suite's.
 2. Run typecheck and confirm no errors. For client changes: \`cd packages/client && bunx tsc --noEmit\`. For server changes: \`cd packages/server && bunx tsc --noEmit\`. Skip this step for documentation-only changes.
 3. Do NOT push until both step 1 and step 2 pass.
-4. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH/MEDIUM issues before creating the PR. If CLI is not installed, skip this step.
+4. Run CodeRabbit CLI self-review: \`coderabbit review --agent --base main\`. Fix any CRITICAL/HIGH/MEDIUM issues before creating the PR. If the CLI is not installed, or hangs on browser auth (see "Before You Start"), skip it and record WHICH of the two it was in the PR body — "not installed", "headless auth-fail", and "rate-limited" carry different dispositions.
 5. Create PR: \`[AI] closed #${issueNumber} ${issue.title.replace(/^\[AI\]\s*/, '')}\`. **If Issue #${issueNumber} is a sub-issue of a parent** (its body declares \`Part N of #parent\` or the orchestrator's notes mention multi-slice delivery), the **3-layer cleaning rule** applies — PR title must use \`Part N of #parent ${issue.title.replace(/^\[AI\]\s*/, '')}\` form (NO close keyword for the parent), PR body uses \`Closes #${issueNumber}\` + \`Refs #parent\` only, and the original commit message uses \`Refs #parent\` only. GitHub's auto-close parser scans title / body / commit message; any parent close keyword in any of the three auto-closes the parent on squash merge. See \`core-responsibilities.md § Multi-PR Delivery (Sub-Issue Pattern)\` for the full rule.
 6. Wait for CI green, fix any issues. For CodeRabbit GitHub bot inline findings, push the fix commit, then acknowledge **per-comment** via the \`/replies\` endpoint — a top-level PR comment does NOT mark CodeRabbit threads resolved:
    \`\`\`bash

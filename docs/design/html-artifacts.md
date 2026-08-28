@@ -113,6 +113,8 @@ Design, with no mode-keyed inference anywhere:
 - **Both conditions are scoped in the SQL query** (`WHERE user_id = ? AND source_session_id = ?`), never a post-fetch JS filter over an already-capped user-scoped fetch — the same identity-scoping discipline `design-principles.md` requires generally. A user-scoped fetch already excludes every other user's rows, so a JS-side session filter applied afterward could only be crowded out by the *same* caller's own newer artifacts from other sessions, not by another user's rows; scoping both conditions in the query closes that gap regardless of any future row cap.
 - **Session ownership is deliberately NOT checked.** `authUser.id` already constrains the result set to the caller's own artifacts; `sessionId` is a pure secondary filter, not an authorization boundary. A caller cannot use this parameter to enumerate another user's artifacts — it can only narrow their own.
 
+**This subsection is the single writer of the identity-scoping rationale above.** `ArtifactRepository.findByUserIdAndSourceSessionId` (`packages/server/src/repositories/artifact-repository.ts`) and `BookmarkRepository.findByUserIdAndSourceSessionId` (`packages/server/src/repositories/bookmark-repository.ts` — same shape, a different repository) implement the identical query pattern and point their JSDoc here rather than restating the "why" independently. (Issue #1385: the same explanation, written independently in three places, drifted to a wrong mechanism — "another user's newer rows" — in two of them, because a user-scoped fetch by construction contains no other user's rows to be crowded out by.)
+
 ## 5. Storage, data model, attribution, lifecycle
 
 ### 5.1 Storage — a new top-level per-user namespace
