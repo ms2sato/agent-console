@@ -577,10 +577,12 @@ describe('isCommentOnlyDiff (Issue #1189)', () => {
     expect(isCommentOnlyDiff('', 'foo.ts')).toBe(false);
   });
 
-  it('treats a block comment opened outside the hunk as non-comment (fail-closed default)', () => {
-    // No preceding `/*` in this hunk's own text — the diff alone cannot
-    // confirm this line is inside a block comment that opened earlier in
-    // unchanged context, so it is conservatively NOT treated as comment-only.
+  it('treats a block comment opened outside the hunk as non-comment when no file content is supplied (fail-closed default)', () => {
+    // No preceding `/*` in this hunk's own text, and no opts.baseContent /
+    // opts.headContent to consult — the diff alone cannot confirm this line
+    // is inside a block comment that opened earlier in unchanged context,
+    // so it is conservatively NOT treated as comment-only. See the
+    // "Issue #1394" describe block below for the content-aware case.
     const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -50 +50 @@', '-continuation of a block comment', '+revised continuation'].join('\n');
     expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false);
   });
@@ -633,6 +635,199 @@ describe('isCommentOnlyDiff (Issue #1189)', () => {
   });
 });
 
+describe('isCommentOnlyDiff — opener outside the --unified=0 hunk, seeded via file content (Issue #1394)', () => {
+  it('returns true for a JSDoc body edit whose `/**` opener is outside the hunk, when opts.baseContent/headContent are supplied', () => {
+    const baseContent = ['function foo() {}', '', '/**', ' * old continuation line', ' */', 'const x = 1;'].join('\n');
+    const headContent = ['function foo() {}', '', '/**', ' * new continuation line', ' */', 'const x = 1;'].join('\n');
+    // Hunk starts at line 4 on both sides — the `/**` opener on line 3 is
+    // outside this --unified=0 hunk's own text, same shape as PR #1393.
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -4 +4 @@', '- * old continuation line', '+ * new continuation line'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(true);
+  });
+
+  it('still returns false for a mixed diff (comment body edit + real code change) even with content supplied', () => {
+    const baseContent = ['/**', ' * old note', ' */', 'const x = 1;'].join('\n');
+    const headContent = ['/**', ' * new note', ' */', 'const x = 2;'].join('\n');
+    const diff = [
+      '--- a/foo.ts',
+      '+++ b/foo.ts',
+      '@@ -2 +2 @@',
+      '- * old note',
+      '+ * new note',
+      '@@ -4 +4 @@',
+      '-const x = 1;',
+      '+const x = 2;',
+    ].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(false);
+  });
+
+  it('still fails closed when content is supplied but the changed line is genuinely not inside a block comment', () => {
+    // Same shape as the multiplication-continuation regression above, but
+    // this time with content supplied — confirms content-seeding does not
+    // relax the fail-closed default when the file itself has no open block.
+    const baseContent = ['const y = 1', '  * 2;'].join('\n');
+    const headContent = ['const y = 1', '  * 3;'].join('\n');
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -2 +2 @@', '-  * 2;', '+  * 3;'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(false);
+  });
+
+  it('returns false for a real code change following a phantom `/*` picked up from a string/glob literal (adversarial seed)', () => {
+    // `'packages/server/src/*'` contains the two characters `/*` with no
+    // matching `*/` later on the line, so scanBlockCommentLineStarts reads
+    // it as an unterminated block-comment opener and marks every
+    // subsequent line as "starts inside a block" -- even though the file
+    // has no real block comment at all. Without the shape-check guard in
+    // isCommentOnlyDiff, this phantom seed would make the hunk's actual
+    // code change (`return 1;` -> `return 2;`) look like comment body
+    // (no `*/` on that line either) and silently exempt it from the
+    // sibling-test requirement -- a fail-open in the mechanism that
+    // enforces test coverage. This is the load-bearing negative case for
+    // the shape-check guard.
+    const baseContent = ["const paths = glob('packages/server/src/*');", 'function realCode() {', '  return 1;', '}'].join('\n');
+    const headContent = ["const paths = glob('packages/server/src/*');", 'function realCode() {', '  return 2;', '}'].join('\n');
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -3 +3 @@', '-  return 1;', '+  return 2;'].join('\n');
+    expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(false);
+  });
+
+  it('confirms the JSDoc body edit is actually exempted via the content-seeding path, not by coincidence', () => {
+    // Same fixture as the first test in this block, but calling
+    // isCommentOnlyDiff both without and with opts makes the dependency on
+    // content-seeding explicit within a single test, rather than relying
+    // on the reader to infer it from two separately-written tests.
+    const baseContent = ['function foo() {}', '', '/**', ' * old continuation line', ' */', 'const x = 1;'].join('\n');
+    const headContent = ['function foo() {}', '', '/**', ' * new continuation line', ' */', 'const x = 1;'].join('\n');
+    const diff = ['--- a/foo.ts', '+++ b/foo.ts', '@@ -4 +4 @@', '- * old continuation line', '+ * new continuation line'].join('\n');
+
+    expect(isCommentOnlyDiff(diff, 'foo.ts')).toBe(false); // no content supplied: fail-closed, as before
+    expect(isCommentOnlyDiff(diff, 'foo.ts', { baseContent, headContent })).toBe(true); // content supplied: recognised
+  });
+
+  // Polarity fixture: the actual `sdk-engine.ts` diff from PR #1393
+  // (chore/1338-bump-claude-agent-sdk, comparing origin/main...FETCH_HEAD).
+  // Its hunk edits only the BODY of an existing JSDoc block; the `/**`
+  // opener (file line 44) sits outside the --unified=0 hunk (which starts
+  // at line 46). Before this fix, isCommentOnlyDiff returned false for
+  // this exact input; after the fix it must return true. A regression to
+  // the pre-fix state can be confirmed by commenting out the
+  // scanBlockCommentLineStarts-seeding change in check-utils.js and
+  // re-running this test (see workflow.md's "Demonstrating polarity"
+  // procedure) — it must fail against that unmodified state.
+  const PR_1393_SDK_ENGINE_DIFF = [
+    'diff --git a/packages/embedded-agent/src/sdk-engine.ts b/packages/embedded-agent/src/sdk-engine.ts',
+    'index 0c2dd471..e50dfb56 100644',
+    '--- a/packages/embedded-agent/src/sdk-engine.ts',
+    '+++ b/packages/embedded-agent/src/sdk-engine.ts',
+    "@@ -46,10 +46,10 @@ type ToolResultEvent = Extract<EmbeddedAgentEvent, { type: 'tool-result' }>;",
+    '- * immediately after a turn\'s `result` intermittently threw "ProcessTransport',
+    '- * is not ready for writing" -- an EMPIRICAL observation on SDK 0.3.226/0.3.233',
+    '- * (both-version confirmed), NOT a documented SDK contract. ~300-500ms of',
+    '- * settle reliably fixed it in the probe. Retry-with-settle, not a bare sleep:',
+    '- * the budget below (5 settle gaps at 500ms = 2500ms across 6 attempts)',
+    '- * comfortably exceeds both the observed 300-500ms window and the AC\'s',
+    '- * "at least 3 attempts spanning at least 2s total" floor. Re-verify this',
+    '- * constant pair on every SDK upgrade -- the SDK-bump tracking issue\'s',
+    '- * checklist carries this obligation (docs/design/embedded-agent-sdk-engine.md',
+    '- * §5\'s re-verification note).',
+    '+ * immediately after a turn\'s `result` can throw "ProcessTransport is not',
+    '+ * ready for writing" -- an encoded workaround for empirically observed',
+    '+ * behavior, NOT a documented SDK contract. Retry-with-settle, not a bare',
+    '+ * sleep: the budget below (5 settle gaps at 500ms = 2500ms across 6',
+    '+ * attempts) comfortably exceeds both the originally observed settle window',
+    '+ * and the AC\'s "at least 3 attempts spanning at least 2s total" floor.',
+    '+ * Re-verify this constant pair on every SDK upgrade -- the SDK-bump',
+    '+ * tracking issue\'s checklist carries this obligation. §5 is the canonical',
+    '+ * source for this hazard\'s CURRENT epistemic status; do not infer it from',
+    '+ * this comment.',
+  ].join('\n');
+
+  // File lines 40-58 of packages/embedded-agent/src/sdk-engine.ts, verbatim
+  // from origin/main (base) and FETCH_HEAD (head) of PR #1393 as of this
+  // fixture's capture. Padded with 39 blank lines so array index N-1 lands
+  // on real file line N, matching the diff's own line numbers above (the
+  // `/**` opener is real file line 44).
+  const PR_1393_SDK_ENGINE_BASE_CONTENT = Array(39)
+    .fill('')
+    .concat([
+      "type AssistantMessagePayload = Extract<SDKMessage, { type: 'assistant' }>['message'];",
+      "type UserMessagePayload = Extract<SDKMessage, { type: 'user' }>['message'];",
+      "type ToolResultEvent = Extract<EmbeddedAgentEvent, { type: 'tool-result' }>;",
+      '',
+      '/**',
+      ' * H2 (docs/design/embedded-agent-sdk-engine.md §5): calling `getContextUsage()`',
+      ' * immediately after a turn\'s `result` intermittently threw "ProcessTransport',
+      ' * is not ready for writing" -- an EMPIRICAL observation on SDK 0.3.226/0.3.233',
+      ' * (both-version confirmed), NOT a documented SDK contract. ~300-500ms of',
+      ' * settle reliably fixed it in the probe. Retry-with-settle, not a bare sleep:',
+      ' * the budget below (5 settle gaps at 500ms = 2500ms across 6 attempts)',
+      ' * comfortably exceeds both the observed 300-500ms window and the AC\'s',
+      ' * "at least 3 attempts spanning at least 2s total" floor. Re-verify this',
+      ' * constant pair on every SDK upgrade -- the SDK-bump tracking issue\'s',
+      ' * checklist carries this obligation (docs/design/embedded-agent-sdk-engine.md',
+      ' * §5\'s re-verification note).',
+      ' */',
+      'const CONTEXT_USAGE_SETTLE_DELAY_MS = 500;',
+      'const CONTEXT_USAGE_MAX_ATTEMPTS = 6;',
+    ])
+    .join('\n');
+
+  const PR_1393_SDK_ENGINE_HEAD_CONTENT = Array(39)
+    .fill('')
+    .concat([
+      "type AssistantMessagePayload = Extract<SDKMessage, { type: 'assistant' }>['message'];",
+      "type UserMessagePayload = Extract<SDKMessage, { type: 'user' }>['message'];",
+      "type ToolResultEvent = Extract<EmbeddedAgentEvent, { type: 'tool-result' }>;",
+      '',
+      '/**',
+      ' * H2 (docs/design/embedded-agent-sdk-engine.md §5): calling `getContextUsage()`',
+      ' * immediately after a turn\'s `result` can throw "ProcessTransport is not',
+      ' * ready for writing" -- an encoded workaround for empirically observed',
+      ' * behavior, NOT a documented SDK contract. Retry-with-settle, not a bare',
+      ' * sleep: the budget below (5 settle gaps at 500ms = 2500ms across 6',
+      ' * attempts) comfortably exceeds both the originally observed settle window',
+      ' * and the AC\'s "at least 3 attempts spanning at least 2s total" floor.',
+      ' * Re-verify this constant pair on every SDK upgrade -- the SDK-bump',
+      ' * tracking issue\'s checklist carries this obligation. §5 is the canonical',
+      ' * source for this hazard\'s CURRENT epistemic status; do not infer it from',
+      ' * this comment.',
+      ' */',
+      'const CONTEXT_USAGE_SETTLE_DELAY_MS = 500;',
+      'const CONTEXT_USAGE_MAX_ATTEMPTS = 6;',
+    ])
+    .join('\n');
+
+  it('returns true for the exact PR #1393 sdk-engine.ts diff (comment-body edit, opener outside the hunk)', () => {
+    // Explicit content-path dependency: without base/head content this
+    // exact diff still fails closed (same as before this fix), so the
+    // `true` below is demonstrably coming from the content-seeding path,
+    // not from some incidental change in the hunk-local logic.
+    expect(isCommentOnlyDiff(PR_1393_SDK_ENGINE_DIFF, 'packages/embedded-agent/src/sdk-engine.ts')).toBe(false);
+    expect(
+      isCommentOnlyDiff(PR_1393_SDK_ENGINE_DIFF, 'packages/embedded-agent/src/sdk-engine.ts', {
+        baseContent: PR_1393_SDK_ENGINE_BASE_CONTENT,
+        headContent: PR_1393_SDK_ENGINE_HEAD_CONTENT,
+      }),
+    ).toBe(true);
+  });
+
+  it('returns false when the same PR #1393-shaped diff also carries one real code line change', () => {
+    // Append a second hunk that changes real code (line 58 in both files:
+    // CONTEXT_USAGE_MAX_ATTEMPTS 6 -> 7) to the exact same comment-only
+    // hunk above. The mixed diff must not be exempted.
+    const mixedDiff = [
+      PR_1393_SDK_ENGINE_DIFF,
+      '@@ -58 +58 @@',
+      '-const CONTEXT_USAGE_MAX_ATTEMPTS = 6;',
+      '+const CONTEXT_USAGE_MAX_ATTEMPTS = 7;',
+    ].join('\n');
+    expect(
+      isCommentOnlyDiff(mixedDiff, 'packages/embedded-agent/src/sdk-engine.ts', {
+        baseContent: PR_1393_SDK_ENGINE_BASE_CONTENT,
+        headContent: PR_1393_SDK_ENGINE_HEAD_CONTENT,
+      }),
+    ).toBe(false);
+  });
+});
+
 describe('isCommentOnlyFileDiff (git integration)', () => {
   function makeTempGitRepo() {
     const root = mkdtempSync(join(tmpdir(), 'comment-only-repo-'));
@@ -675,6 +870,42 @@ describe('isCommentOnlyFileDiff (git integration)', () => {
 
       const result = isCommentOnlyFileDiff('foo.ts', 'HEAD~1', root);
       expect(result).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('returns true for an edit to the body of an existing JSDoc block, where the `/**` opener is outside the --unified=0 hunk (Issue #1394)', () => {
+    const root = makeTempGitRepo();
+    try {
+      const before = [
+        'export function foo() {}',
+        '',
+        '/**',
+        ' * H2: this JSDoc block has several lines so the opener falls',
+        ' * outside a --unified=0 hunk that only edits a later line.',
+        ' */',
+        'const X = 1;',
+        '',
+      ].join('\n');
+      const after = [
+        'export function foo() {}',
+        '',
+        '/**',
+        ' * H2: this JSDoc block has several lines so the opener falls',
+        ' * outside a --unified=0 hunk that only edits THIS revised line.',
+        ' */',
+        'const X = 1;',
+        '',
+      ].join('\n');
+
+      writeFileSync(join(root, 'foo.ts'), before);
+      commit(root, 'initial');
+      writeFileSync(join(root, 'foo.ts'), after);
+      commit(root, 'jsdoc body tweak');
+
+      const result = isCommentOnlyFileDiff('foo.ts', 'HEAD~1', root);
+      expect(result).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
