@@ -71,12 +71,6 @@ describe('migration v35 (workers.auto_compaction column)', () => {
     cleanupMemfs();
   });
 
-  it('advances the schema version past v35 to the latest', async () => {
-    const db = await initializeDatabase(':memory:');
-    const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    expect(versionRes.rows[0]?.user_version).toBe(36);
-  });
-
   it('adds auto_compaction as INTEGER NOT NULL DEFAULT 1', async () => {
     const db = await initializeDatabase(':memory:');
 

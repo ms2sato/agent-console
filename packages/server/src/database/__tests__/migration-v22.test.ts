@@ -63,14 +63,6 @@ describe('migration v22 (embedded-agent support)', () => {
     cleanupMemfs();
   });
 
-  it('advances the schema version past v22 to the latest', async () => {
-    const db = await initializeDatabase(':memory:');
-    const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
-    // initializeDatabase runs every migration; the v22 step is part of that
-    // chain and the final version is the current latest.
-    expect(versionRes.rows[0]?.user_version).toBe(36);
-  });
-
   it('adds the embedded_agent_id column to workers, null for existing rows', async () => {
     const db = await initializeDatabase(':memory:');
     await seedSession(db, 'sess-1');

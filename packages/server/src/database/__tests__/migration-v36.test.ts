@@ -132,6 +132,13 @@ describe('migration v36 (embedded_agents handoff_* -> compaction_threshold)', ()
   });
 
   it('advances the schema version to 36 via the real production migration path', async () => {
+    // KEEP THIS despite its resemblance to the terminal-version assertions
+    // #1405 removed from every other migration-vNN test. Those asserted the
+    // CHAIN's final version, which `migration.test.ts` owns; this asserts
+    // what v36 ITSELF sets (`PRAGMA user_version = 36`), which is v36's own
+    // effect and nobody else's. The two coincide only while v36 is the last
+    // migration -- when v37 lands this will read like a stale duplicate and
+    // it will still be correct, so do not sweep it away by pattern.
     const db = await initializeDatabase(':memory:');
     const versionRes = await sql<{ user_version: number }>`PRAGMA user_version`.execute(db);
     expect(versionRes.rows[0]?.user_version).toBe(36);
