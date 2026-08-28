@@ -48,7 +48,9 @@
  *      before trusting the production-faithful script's own results in
  *      isolation, the same way the pair was cross-checked during the SDK
  *      bump re-verification
- *   2  bad usage / probe could not run
+ *   2  bad usage / probe could not run (including an invalid/unrecognized
+ *      argument -- checked before any trial runs, so a typo never
+ *      silently burns billable API usage)
  */
 
 // See the sibling probe script for why this resolves via a relative path
@@ -61,8 +63,14 @@ import {
 import { spawnClaudeCodeProcess, UserMessageQueue } from '../../packages/embedded-agent/src/sdk-engine.js';
 
 const args = process.argv.slice(2);
-const trialsArg = args.find((a) => /^\d+$/.test(a));
-const trials = trialsArg ? Number(trialsArg) : 5;
+const invalidUsage = args.length > 1 || (args.length === 1 && !/^[1-9]\d*$/.test(args[0]));
+
+if (invalidUsage) {
+  console.error(`Usage: bun scripts/smoke/probe-sdk-h2-transport-settle-negative-control.ts [trials]\n  trials must be a positive integer (>= 1). Got: ${args.join(' ')}`);
+  process.exit(2);
+}
+
+const trials = args.length === 1 ? Number(args[0]) : 5;
 const RETRY_ATTEMPTS = 6;
 const RETRY_DELAY_MS = 500;
 

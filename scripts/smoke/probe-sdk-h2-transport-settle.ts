@@ -56,7 +56,9 @@
  *      something shaped like it) reproduced; this is DATA, not necessarily
  *      a failure of this script -- see docs/design/embedded-agent-sdk-engine.md
  *      §5's H2 entry for how to interpret and record this
- *   2  bad usage / probe could not run (e.g. no `claude` auth)
+ *   2  bad usage / probe could not run (e.g. no `claude` auth, or an
+ *      invalid/unrecognized argument -- checked before any trial runs, so
+ *      a typo never silently burns billable API usage)
  */
 
 // Resolved via a relative path into packages/embedded-agent's own
@@ -74,9 +76,23 @@ import {
 import { spawnClaudeCodeProcess, UserMessageQueue } from '../../packages/embedded-agent/src/sdk-engine.js';
 
 const args = process.argv.slice(2);
-const withTool = args.includes('--with-tool');
-const trialsArg = args.find((a) => /^\d+$/.test(a));
-const trials = trialsArg ? Number(trialsArg) : 5;
+const knownFlags = new Set(['--with-tool']);
+const positional = args.filter((a) => !a.startsWith('--'));
+const flags = args.filter((a) => a.startsWith('--'));
+
+const unknownFlags = flags.filter((f) => !knownFlags.has(f));
+const invalidUsage =
+  unknownFlags.length > 0 ||
+  positional.length > 1 ||
+  (positional.length === 1 && !/^[1-9]\d*$/.test(positional[0]));
+
+if (invalidUsage) {
+  console.error(`Usage: bun scripts/smoke/probe-sdk-h2-transport-settle.ts [trials] [--with-tool]\n  trials must be a positive integer (>= 1). Unrecognized argument(s): ${[...unknownFlags, ...(positional.length > 1 ? positional.slice(1) : [])].join(', ') || '(invalid trial count)'}`);
+  process.exit(2);
+}
+
+const withTool = flags.includes('--with-tool');
+const trials = positional.length === 1 ? Number(positional[0]) : 5;
 
 function buildOptions(): Options {
   return {
