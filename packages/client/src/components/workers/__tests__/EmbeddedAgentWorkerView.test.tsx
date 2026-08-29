@@ -536,6 +536,58 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(secondWs).not.toBe(ws);
   });
 
+  describe('exited row -- idle eviction (reason === evicted)', () => {
+    /** Renders a view whose replayed history is a single `exited` row, optionally carrying `reason`. */
+    async function renderExitedRow(idSuffix: string, reason?: string) {
+      renderView({ sessionId: `s7-${idSuffix}`, workerId: `w7-${idSuffix}` });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const data = ndjson({ v: 1, type: 'exited', code: 0, ...(reason !== undefined ? { reason } : {}) });
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+    }
+
+    it('renders a quiet paused line and NO Restart button for reason: evicted', async () => {
+      await renderExitedRow('evicted', 'evicted');
+
+      expect(screen.getByText(/paused to free memory/)).toBeTruthy();
+      // Asserted by role, not just by the new text: the point of the branch
+      // is the absence of an action the user does not need to take.
+      expect(screen.queryByRole('button', { name: /Restart/ })).toBeNull();
+      expect(screen.queryByText(/Agent process exited/)).toBeNull();
+    });
+
+    it("renders today's output (exit line + Restart) when `reason` is ABSENT", async () => {
+      // Regression guard for rows persisted by a server older than idle
+      // eviction. A `!reason` check would fold these in with a live eviction
+      // and silently take the Restart button away from them.
+      await renderExitedRow('noreason');
+
+      expect(screen.getByText(/Agent process exited/)).toBeTruthy();
+      expect(screen.getByRole('button', { name: /Restart/ })).toBeTruthy();
+      expect(screen.queryByText(/paused to free memory/)).toBeNull();
+    });
+
+    // These two are the tests that fail if someone writes a truthiness check
+    // (`entry.reason ? ... : ...`) instead of `entry.reason === 'evicted'`:
+    // both values are present and truthy, and both must render exactly as an
+    // unreasoned exit does.
+    for (const reason of ['managed', 'unexpected'] as const) {
+      it(`renders today's output (exit line + Restart) for reason: ${reason}`, async () => {
+        await renderExitedRow(reason, reason);
+
+        expect(screen.getByText(/Agent process exited/)).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Restart/ })).toBeTruthy();
+        expect(screen.queryByText(/paused to free memory/)).toBeNull();
+      });
+    }
+  });
+
   it('renders a tool-call card paired with its tool-result, including error styling data', async () => {
     renderView({ sessionId: 's8', workerId: 'w8' });
     const ws = MockWebSocket.getLastInstance();

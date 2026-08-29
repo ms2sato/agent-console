@@ -53,6 +53,7 @@ export {
   EmbeddedAgentEventSchema,
   EmbeddedAgentServerEventSchema,
   EmbeddedAgentStreamEventSchema,
+  ExitReasonSchema,
   type CreateEmbeddedAgentRequest,
   type UpdateEmbeddedAgentRequest,
 } from './embedded-agent.js';

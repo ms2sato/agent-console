@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Hono } from 'hono';
-import type { Worker } from '@agent-console/shared';
+import type { ExitReason, Worker } from '@agent-console/shared';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { resetProcessMock } from '../../__tests__/utils/mock-process-helper.js';
@@ -120,6 +120,64 @@ describe('WebSocket routes notifications', () => {
       { id: agentWorker.id },
       0
     );
+  });
+
+  /**
+   * Idle eviction: an evicted worker's subprocess exit is a deliberate resource
+   * decision the user is meant not to notice (the next message wakes it), so it
+   * must not reach the notification pipeline. Notifying would ping the owner
+   * once per idle threshold, per idle worker, forever.
+   *
+   * The registered callback is captured at wiring time rather than driven
+   * through a real eviction, because the branch under test is routes.ts's own
+   * dispatch, not the service that decides the reason.
+   */
+  describe('worker-exit notification by exit reason', () => {
+    async function captureGlobalWorkerExitCallback(): Promise<
+      (sessionId: string, workerId: string, exitCode: number, reason: ExitReason) => void
+    > {
+      const setSpy = spyOn(sessionManager, 'setGlobalWorkerExitCallback');
+      const app = new Hono();
+      await setupWebSocketRoutes(app, createUpgradeWebSocketStub(), appContext);
+      expect(setSpy).toHaveBeenCalled();
+      return setSpy.mock.calls[0][0] as (
+        sessionId: string,
+        workerId: string,
+        exitCode: number,
+        reason: ExitReason,
+      ) => void;
+    }
+
+    it('suppresses the notification for an `evicted` exit', async () => {
+      const onExit = await captureGlobalWorkerExitCallback();
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const onWorkerExitSpy = spyOn(notificationManager, 'onWorkerExit');
+
+      onExit(session.id, worker.id, 0, 'evicted');
+
+      expect(onWorkerExitSpy).not.toHaveBeenCalled();
+    });
+
+    it('still notifies for `managed` and `unexpected` exits', async () => {
+      const onExit = await captureGlobalWorkerExitCallback();
+      const session = await sessionManager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: 'claude-code',
+      });
+      const worker = session.workers.find((w: Worker) => w.type === 'agent')!;
+      const onWorkerExitSpy = spyOn(notificationManager, 'onWorkerExit');
+
+      onExit(session.id, worker.id, 0, 'managed');
+      onExit(session.id, worker.id, 1, 'unexpected');
+
+      expect(onWorkerExitSpy).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('should set repository info to null for quick session worker exits', async () => {

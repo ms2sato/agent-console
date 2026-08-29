@@ -353,7 +353,13 @@ export async function setupWebSocketRoutes(
   completedSteps.add('setGlobalActivityCallback');
 
   // Set up global worker exit callback to send notifications
-  sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode, _reason) => {
+  sessionManager.setGlobalWorkerExitCallback((sessionId, workerId, exitCode, reason) => {
+    // An idle eviction is a deliberate resource decision the user is meant not
+    // to notice: the worker stays logically alive and the next message wakes
+    // it. Notifying would ping the owner once per idle threshold, per idle
+    // worker, forever. `managed` and `unexpected` still notify exactly as
+    // before.
+    if (reason === 'evicted') return;
     const session = sessionManager.getSession(sessionId);
     if (session) {
       notificationManager.onWorkerExit(

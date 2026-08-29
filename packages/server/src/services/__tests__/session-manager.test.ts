@@ -964,13 +964,22 @@ describe('SessionManager', () => {
       return { sessionId: session.id, workerId: worker!.id };
     }
 
-    it('sendEmbeddedAgentUserMessage returns not-activated for a never-activated worker', async () => {
+    it('sendEmbeddedAgentUserMessage surfaces a failed wake rather than dropping the message', async () => {
+      // Idle eviction made delivery responsible for waking a worker with no
+      // live subprocess, so "never activated" is no longer a terminal answer.
+      // This worker's session has no owner, so the wake cannot mint an MCP
+      // identity -- and the failure must reach the caller, not be swallowed.
       const manager = await createManagerWithEmbedded(new Map([['stub-def', STUB_DEF]]));
       const { sessionId, workerId } = await createEmbeddedWorker(manager);
 
       const res = await manager.sendEmbeddedAgentUserMessage(sessionId, workerId, 'hi');
 
-      expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
+      expect(res.ok).toBe(false);
+      expect(res).toEqual({
+        ok: false,
+        code: 'NOT_ACTIVATED',
+        error: expect.stringContaining('Cannot activate embedded-agent worker'),
+      });
     });
 
     it('cancelEmbeddedAgentTurn returns false for a never-activated worker', async () => {

@@ -84,3 +84,19 @@ export function parseOptionalBoolean(raw: string | undefined): boolean | undefin
   }
   throw new Error(`Expected 'true', 'false', or unset, got: '${raw}'`);
 }
+
+/**
+ * Parse an integer environment variable value, falling back to `defaultValue`
+ * when it is unset, empty, or not a number.
+ *
+ * The NaN fallback is the point: `parseInt('thirty')` is `NaN`, and a `NaN`
+ * threshold compares false against every bound, so a typo would silently
+ * behave like the feature's disabled value rather than like a mistake. Callers
+ * that DO want a disabled state must express it with a real value (e.g. `0`),
+ * not by mistyping one.
+ */
+export function parseIntWithDefault(raw: string | undefined, defaultValue: number): number {
+  if (raw === undefined || raw.trim() === '') return defaultValue;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isNaN(parsed) ? defaultValue : parsed;
+}

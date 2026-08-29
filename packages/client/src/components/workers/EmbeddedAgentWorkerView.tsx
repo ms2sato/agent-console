@@ -634,6 +634,21 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
         </div>
       );
     case 'exited':
+      // Idle eviction: the server dropped this subprocess on purpose, and the
+      // next message brings it back with no user action -- so this branch is a
+      // boundary marker in the same visual register as `context-compacted`,
+      // with no Restart button to offer work the user does not have to do.
+      //
+      // The test is `=== 'evicted'` and nothing else: `reason` is absent on a
+      // row written by an older server, and an absent reason must render as
+      // the ordinary exit line below, exactly as it always did.
+      if (entry.reason === 'evicted') {
+        return (
+          <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2 text-xs">
+            — The agent was paused to free memory; sending a message resumes it —
+          </div>
+        );
+      }
       return (
         <div className="flex items-center gap-3 text-sm text-gray-400 bg-slate-800/60 rounded px-3 py-2">
           <span>Agent process exited{entry.code !== null ? ` (code: ${entry.code})` : ''}.</span>

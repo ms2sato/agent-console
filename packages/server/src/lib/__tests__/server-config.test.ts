@@ -61,6 +61,40 @@ describe('server-config', () => {
       expect(serverConfig.HOST).toBe('0.0.0.0');
     });
 
+    it('should default EMBEDDED_AGENT_IDLE_EVICTION_MS to 30 minutes when not set', async () => {
+      delete process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS;
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_IDLE_EVICTION_MS).toBe(30 * 60 * 1000);
+    });
+
+    it('should use an explicit EMBEDDED_AGENT_IDLE_EVICTION_MS value', async () => {
+      process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS = '60000';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_IDLE_EVICTION_MS).toBe(60000);
+    });
+
+    it('should keep EMBEDDED_AGENT_IDLE_EVICTION_MS=0 as the disabled value', async () => {
+      process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS = '0';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_IDLE_EVICTION_MS).toBe(0);
+    });
+
+    it('should fall back to the default for an unparseable EMBEDDED_AGENT_IDLE_EVICTION_MS', async () => {
+      // A typo must not silently disable idle eviction: NaN would compare
+      // false against every bound and behave exactly like 0.
+      process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS = 'thirty minutes';
+
+      const { serverConfig } = await importServerConfig();
+
+      expect(serverConfig.EMBEDDED_AGENT_IDLE_EVICTION_MS).toBe(30 * 60 * 1000);
+    });
+
     it('should default AUTH_MODE to none when not set', async () => {
       delete process.env.AUTH_MODE;
 

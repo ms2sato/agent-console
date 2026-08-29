@@ -11,6 +11,7 @@ import {
   type AgentActivityState,
   type AppServerMessage,
   type EmbeddedAgentServerNotification,
+  type ExitReason,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from '../../lib/websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
@@ -66,7 +67,13 @@ export type EmbeddedAgentChatEntry =
     }
   | { key: string; kind: 'turn-error'; turnId: string; message: string }
   | { key: string; kind: 'fatal'; message: string }
-  | { key: string; kind: 'exited'; code: number | null }
+  /**
+   * `reason` mirrors the wire event's field one-to-one, absence included --
+   * see EmbeddedAgentServerEvent's `exited` doc comment. The store carries it
+   * verbatim so the view has no store-side default to undo, and every
+   * consumer tests `reason === 'evicted'` rather than truthiness.
+   */
+  | { key: string; kind: 'exited'; code: number | null; reason?: ExitReason }
   /**
    * Transcript Restore, R1: the turn identified by `turnId` was cut off by a
    * process boundary and never answered. Server-authored -- deliberately a
@@ -857,7 +864,15 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         }
         return true;
       case 'exited':
-        this.pushEntry({ key: `exited-${this.entryKeyCounter++}`, kind: 'exited', code: event.code });
+        this.pushEntry({
+          key: `exited-${this.entryKeyCounter++}`,
+          kind: 'exited',
+          code: event.code,
+          // Verbatim, absence included: an older server's row carries no
+          // `reason` and must stay absent here so the view renders it
+          // exactly as it always did.
+          ...(event.reason !== undefined ? { reason: event.reason } : {}),
+        });
         // Defensive finalize: the process exited while some turn's thinking
         // entry was still open (e.g. a crash mid-turn); no per-turnId signal
         // will ever arrive at this point, so close all open thinking entries.

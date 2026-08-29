@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseEnvVars, parseOptionalBoolean } from '../env-parser.js';
+import { parseEnvVars, parseOptionalBoolean, parseIntWithDefault } from '../env-parser.js';
 
 describe('parseEnvVars', () => {
   it('should return empty object for null input', () => {
@@ -177,5 +177,37 @@ describe('parseOptionalBoolean', () => {
     expect(() => parseOptionalBoolean('TRUE')).toThrow(
       "Expected 'true', 'false', or unset, got: 'TRUE'"
     );
+  });
+});
+
+describe('parseIntWithDefault', () => {
+  it('returns the default for undefined input', () => {
+    expect(parseIntWithDefault(undefined, 42)).toBe(42);
+  });
+
+  it('returns the default for an empty or whitespace-only string', () => {
+    expect(parseIntWithDefault('', 42)).toBe(42);
+    expect(parseIntWithDefault('   ', 42)).toBe(42);
+  });
+
+  it('parses a well-formed integer', () => {
+    expect(parseIntWithDefault('1500', 42)).toBe(1500);
+  });
+
+  it('parses zero as zero, not as unset', () => {
+    // Callers use 0 as a real value (e.g. "feature disabled"), so it must
+    // survive rather than collapsing into the default.
+    expect(parseIntWithDefault('0', 42)).toBe(0);
+  });
+
+  it('returns the default for an unparseable value rather than NaN', () => {
+    // A NaN threshold compares false against every bound, so it would behave
+    // like a disabled feature -- silently, and from a typo.
+    expect(parseIntWithDefault('thirty', 42)).toBe(42);
+    expect(parseIntWithDefault('abc', 42)).toBe(42);
+  });
+
+  it('accepts a negative value verbatim', () => {
+    expect(parseIntWithDefault('-1', 42)).toBe(-1);
   });
 });
