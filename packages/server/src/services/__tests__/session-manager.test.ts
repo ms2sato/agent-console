@@ -1007,7 +1007,7 @@ describe('SessionManager', () => {
       // (#1205) -- a compile-time guard so a future narrowing of this
       // annotation (dropping the field) fails typecheck here rather than only
       // surfacing downstream where a caller actually reads `.completed`.
-      const _typeGuard: { epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null =
+      const _typeGuard: { epoch: number; restoredMessageCount: number; repairedToolCallIds: string[]; completed: boolean } | null =
         info;
       void _typeGuard;
     });
@@ -5830,8 +5830,8 @@ describe('SessionManager.getEmbeddedAgentRestoreInfo return type (R1, #1410)', (
     type Info = NonNullable<ReturnType<SessionManager['getEmbeddedAgentRestoreInfo']>>;
     // Fails to compile if `sdkResumed` is missing from the annotation, or is
     // required rather than optional (absence is a real wire state).
-    const withField: Info = { epoch: 1, messageCount: 2, repairedToolCallIds: [], completed: true, sdkResumed: false };
-    const withoutField: Info = { epoch: 1, messageCount: 2, repairedToolCallIds: [], completed: true };
+    const withField: Info = { epoch: 1, restoredMessageCount: 2, repairedToolCallIds: [], completed: true, sdkResumed: false };
+    const withoutField: Info = { epoch: 1, restoredMessageCount: 2, repairedToolCallIds: [], completed: true };
     expect(withField.sdkResumed).toBe(false);
     expect(withoutField.sdkResumed).toBeUndefined();
   });

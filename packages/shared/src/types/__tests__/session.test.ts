@@ -22,14 +22,14 @@ describe('WorkerServerMessage — restore-info variant (Transcript Restore #1123
     const message: WorkerServerMessage = {
       type: 'restore-info',
       epoch: 42,
-      messageCount: 5,
+      restoredMessageCount: 5,
       repairedToolCallIds: ['call-1'],
       completed: true,
     };
     expect(message.type).toBe('restore-info');
     if (message.type === 'restore-info') {
       expect(message.epoch).toBe(42);
-      expect(message.messageCount).toBe(5);
+      expect(message.restoredMessageCount).toBe(5);
       expect(message.repairedToolCallIds).toEqual(['call-1']);
       expect(message.completed).toBe(true);
     }
@@ -39,7 +39,7 @@ describe('WorkerServerMessage — restore-info variant (Transcript Restore #1123
     const message: WorkerServerMessage = {
       type: 'restore-info',
       epoch: 1,
-      messageCount: 0,
+      restoredMessageCount: 0,
       repairedToolCallIds: [],
       completed: false,
     };
@@ -50,7 +50,7 @@ describe('WorkerServerMessage — restore-info variant (Transcript Restore #1123
     const notYetReady: WorkerServerMessage = {
       type: 'restore-info',
       epoch: 7,
-      messageCount: 3,
+      restoredMessageCount: 3,
       repairedToolCallIds: [],
       completed: false,
     };

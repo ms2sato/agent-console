@@ -776,7 +776,9 @@ describe('Worker WebSocket: embedded-agent branch', () => {
 
       await waitFor(() => mockWs.sentMessages.some((m) => JSON.parse(m).type === 'restore-info'));
       const restoreInfoMsg = mockWs.sentMessages.map((m) => JSON.parse(m)).find((m) => m.type === 'restore-info');
-      expect(restoreInfoMsg.messageCount).toBe(3); // system + user + assistant
+      // user + assistant only -- the synthetic system prompt is not restored
+      // content and does not count.
+      expect(restoreInfoMsg.restoredMessageCount).toBe(2);
       expect(restoreInfoMsg.repairedToolCallIds).toEqual([]);
       expect(typeof restoreInfoMsg.epoch).toBe('number');
       // Issue #1205: the loop's `ready` event is not simulated in this test,
@@ -801,7 +803,7 @@ describe('Worker WebSocket: embedded-agent branch', () => {
       const secondRestoreInfo = second.mockWs.sentMessages
         .map((m) => JSON.parse(m))
         .find((m) => m.type === 'restore-info');
-      expect(secondRestoreInfo.messageCount).toBe(3);
+      expect(secondRestoreInfo.restoredMessageCount).toBe(2);
       expect(secondRestoreInfo.completed).toBe(false);
     });
 

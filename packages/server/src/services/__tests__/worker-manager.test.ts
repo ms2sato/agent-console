@@ -460,7 +460,7 @@ describe('WorkerManager', () => {
       expect(stored).toEqual(callbacks);
       // Presence is not reachability: invoke through the stored reference.
       expect(stored?.onRestoreInfo).toBeDefined();
-      stored?.onRestoreInfo?.({ messageCount: 1, repairedToolCallIds: [], completed: true });
+      stored?.onRestoreInfo?.({ restoredMessageCount: 1, repairedToolCallIds: [], completed: true });
       expect(callbacks.onRestoreInfo).toHaveBeenCalledTimes(1);
     });
 

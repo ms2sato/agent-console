@@ -153,7 +153,13 @@ export const DeleteSessionRequestSchema = v.strictObject({});
 export const RestoreInfoMessageSchema = v.strictObject({
   type: v.literal('restore-info'),
   epoch: v.pipe(v.number(), v.integer(), v.minValue(0)),
-  messageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  /**
+   * Entries restored from the persisted transcript: replayed messages plus a
+   * compaction summary, excluding only the freshly-assembled system prompt.
+   * `0` is a real, reachable value (a worker activated but never spoken to)
+   * and the client's restore notice is gated on it being non-zero.
+   */
+  restoredMessageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
   repairedToolCallIds: v.array(v.string()),
   completed: v.boolean(),
   /**

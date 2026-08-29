@@ -27,7 +27,7 @@ import {
 } from '@agent-console/shared';
 
 function restoreInfoWire(extra: Record<string, unknown> = {}): unknown {
-  return { type: 'restore-info', epoch: 7, messageCount: 3, repairedToolCallIds: [], completed: true, ...extra };
+  return { type: 'restore-info', epoch: 7, restoredMessageCount: 3, repairedToolCallIds: [], completed: true, ...extra };
 }
 
 describe('restore-info.sdkResumed survives the wire schema (R1, Q10)', () => {
@@ -54,6 +54,40 @@ describe('restore-info.sdkResumed survives the wire schema (R1, Q10)', () => {
 
   it('rejects a non-boolean sdkResumed', () => {
     expect(v.safeParse(RestoreInfoMessageSchema, restoreInfoWire({ sdkResumed: 'yes' })).success).toBe(false);
+  });
+});
+
+describe('restore-info.restoredMessageCount survives the wire schema, including 0 (Q10)', () => {
+  // The field was renamed from `messageCount` when its MEANING changed: it now
+  // counts only entries that came from the persisted transcript (replayed
+  // messages plus a compaction summary), excluding the synthetic system
+  // prompt. A same-named field with a changed meaning is the drift a later
+  // reader gets wrong, and `restore-info` is a live message rather than a
+  // persisted row, so there is no old-log compatibility to keep.
+  it('keeps a 0 count through the parse instead of stripping or rejecting it', () => {
+    // 0 is the whole point of the change: a worker activated but never spoken
+    // to restores nothing, and the client gates its "may not have carried
+    // over" notice on `> 0`. A schema that dropped the field would leave the
+    // client reading `undefined`.
+    const parsed = v.parse(RestoreInfoMessageSchema, restoreInfoWire({ restoredMessageCount: 0 }));
+    expect(parsed.restoredMessageCount).toBe(0);
+    expect('restoredMessageCount' in parsed).toBe(true);
+  });
+
+  it('PRESENCE CONTROL: a non-zero count also survives the parse', () => {
+    // Pairs with the 0 case: on its own, "the parse produced 0" cannot tell a
+    // preserved 0 apart from a field that is always 0 on the far side.
+    const parsed = v.parse(RestoreInfoMessageSchema, restoreInfoWire({ restoredMessageCount: 4 }));
+    expect(parsed.restoredMessageCount).toBe(4);
+  });
+
+  it('rejects the pre-rename field name outright rather than silently accepting it', () => {
+    // `RestoreInfoMessageSchema` is a strictObject, so the rename fails loudly
+    // on both halves: an unknown `messageCount` is rejected, and the now-
+    // required `restoredMessageCount` is missing. A permissive object would
+    // have made a half-renamed server look fine on the wire.
+    const stale = { type: 'restore-info', epoch: 7, messageCount: 3, repairedToolCallIds: [], completed: true };
+    expect(v.safeParse(RestoreInfoMessageSchema, stale).success).toBe(false);
   });
 });
 

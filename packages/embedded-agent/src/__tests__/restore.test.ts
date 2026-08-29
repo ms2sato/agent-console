@@ -467,3 +467,155 @@ describe('reconstructConversation — R1 events are Noise (#1410)', () => {
     expect(outcome.conversation.some((m) => JSON.stringify(m).includes('turn-interrupted'))).toBe(false);
   });
 });
+
+/**
+ * `restoredMessageCount` -- the count the client turns into both "Loading N
+ * previous messages..." and the `> 0` gate on its "your conversation may not
+ * have carried over" notice.
+ *
+ * Definition under test: entries that ORIGINATE FROM THE PERSISTED
+ * TRANSCRIPT -- replayed messages plus a compaction summary -- with only the
+ * synthetic system prompt excluded.
+ *
+ * The seed shape differs between the two branches (one message with no
+ * boundary, two past one), which is exactly why the count cannot be derived
+ * outside this module and why each branch is pinned separately below.
+ */
+describe('reconstructConversation — restoredMessageCount', () => {
+  it('counts the replayed messages and NOT the system prompt (seed of 1)', () => {
+    // Mutation reach: returning `conversation.length` (the pre-fix
+    // behaviour) gives 3; dropping the replay gives 0.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello there' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation.length).toBe(3); // [system, user, assistant]
+    expect(outcome.restoredMessageCount).toBe(2);
+  });
+
+  it('counts the compaction summary as restored content (seed of 2)', () => {
+    // The summary is reconstructed FROM the persisted log -- it is restored
+    // content, unlike the system prompt which is reassembled fresh from the
+    // agent definition on every activation. Mutation reach: subtracting the
+    // whole seed (`- 2` past a boundary) gives 2 here instead of 3.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm0', text: 'pre-boundary, discarded' },
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'summary text' },
+      { v: 1, type: 'user-message', id: 'm1', text: 'after1' },
+      { v: 1, type: 'assistant-message', turnId: 't2', text: 'after2' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    // [system, summary, user, assistant] -- summary + the 2 replayed = 3.
+    expect(outcome.conversation.length).toBe(4);
+    expect(outcome.restoredMessageCount).toBe(3);
+  });
+
+  it('reports 1 -- not 0 -- for a boundary with NOTHING replayed after it', () => {
+    // THE CORRECTED EDGE. An earlier definition said "exclude the seed: 1
+    // normally, 2 past a boundary", which reports 0 here -- a worker killed
+    // immediately after a compaction, before saying anything else.
+    //
+    // What the user would have seen under that definition: no "may not have
+    // carried over" notice at all, because the client gates it on `> 0` --
+    // and yet the transcript holds a whole compacted-away history that a
+    // model which failed to resume knows nothing about. The notice would
+    // disappear at precisely the moment it is most needed.
+    //
+    // Mutation reach: `- 2` in the boundary branch gives 0 and fails; so
+    // does dropping the summary from the seed.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm0', text: 'pre-boundary, discarded' },
+      { v: 1, type: 'assistant-message', turnId: 't0', text: 'also discarded' },
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'a rich history, compacted' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation.length).toBe(2); // [system, summary]
+    expect(outcome.restoredMessageCount).toBe(1);
+  });
+
+  /**
+   * 0 must be REACHABLE. This is the whole defect: with the count taken as
+   * `conversation.length`, the seed alone floors it at 1, the client's `> 0`
+   * gate always fires, and a worker that was activated but never spoken to
+   * tells the user their conversation may not have carried over -- when
+   * there was no conversation. A false warning of that kind trains the user
+   * to ignore it, right before it becomes true.
+   *
+   * Each absence assertion here is paired with a PRESENCE CONTROL in the
+   * same block: "the count was 0" cannot distinguish "nothing was restored"
+   * from "the count is broken and always 0" without one.
+   */
+  describe('reachability of 0 (with presence controls)', () => {
+    it('reports 0 for an empty transcript', () => {
+      const outcome = reconstructConversation('', SYSTEM_PROMPT);
+      expect(outcome.conversation).toEqual([{ role: 'system', content: SYSTEM_PROMPT }]);
+      expect(outcome.restoredMessageCount).toBe(0);
+    });
+
+    it('reports 0 for a transcript of nothing but Noise events (activated, never spoken to)', () => {
+      // The production shape of the empty case: an activated worker's log is
+      // never literally empty (the server treats an empty read as an I/O
+      // failure) -- it holds lifecycle rows that carry no conversation.
+      const events: EmbeddedAgentStreamEvent[] = [
+        { v: 1, type: 'ready' },
+        { v: 1, type: 'state', state: 'idle' },
+        { v: 1, type: 'context-usage', promptTokens: 12, estimated: false },
+        { v: 1, type: 'exited', code: 0 },
+      ];
+
+      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+      expect(outcome.restoredMessageCount).toBe(0);
+    });
+
+    it('PRESENCE CONTROL: the same call reports non-zero the moment one real message exists', () => {
+      // Without this, both assertions above are satisfied by a broken
+      // implementation that returns 0 unconditionally.
+      const events: EmbeddedAgentStreamEvent[] = [
+        { v: 1, type: 'ready' },
+        { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
+        { v: 1, type: 'exited', code: 0 },
+      ];
+
+      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+      expect(outcome.restoredMessageCount).toBe(1);
+    });
+
+    it('PRESENCE CONTROL: a compaction boundary alone is non-zero even with nothing after it', () => {
+      // The other direction of the same control: 0 must not be reachable by
+      // a stream that DOES carry restored content.
+      const outcome = reconstructConversation(
+        linesOf([{ v: 1, type: 'context-compacted', source: 'manual', summary: 'carried forward' }]),
+        SYSTEM_PROMPT,
+      );
+
+      expect(outcome.restoredMessageCount).toBe(1);
+    });
+  });
+
+  it('counts a Tier C synthetic repair, because only the system prompt is excluded', () => {
+    // The definition's second half is "ONLY the synthetic system prompt is
+    // excluded", so a mid-turn repair message counts like any other entry.
+    // Pinned so a future reader does not silently narrow the exclusion set.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'reply' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: {} },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.repairedToolCallIds).toEqual(['c1']);
+    // [system, user, assistant(+tool_calls), synthetic tool result]
+    expect(outcome.conversation.length).toBe(4);
+    expect(outcome.restoredMessageCount).toBe(3);
+  });
+});

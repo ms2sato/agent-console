@@ -36,6 +36,37 @@ export interface RestoreOutcome {
   conversation: ChatMessage[];
   /** Tool-call ids repaired by Tier C mid-turn repair (4d); empty when none needed. */
   repairedToolCallIds: string[];
+  /**
+   * How many restored entries originate from the persisted transcript:
+   * replayed messages plus a compaction summary. ONLY the synthetic system
+   * prompt is excluded -- it is assembled fresh on every activation from the
+   * agent definition and the instructions files, so it says nothing about
+   * what the previous incarnation and the user actually exchanged.
+   *
+   * A compaction summary DOES count, and that is the load-bearing part of
+   * this definition rather than an incidental detail. The summary is
+   * restored content: it is reconstructed from the boundary event in the
+   * persisted log, and it stands in for the whole conversation head the
+   * compaction replaced. Excluding it would make a worker killed
+   * immediately after a compaction -- with nothing yet replayed after the
+   * boundary -- report zero, i.e. "nothing was restored", at the exact
+   * moment the transcript holds a rich history that a failed resume has
+   * lost. The client's "your conversation may not have carried over" notice
+   * is gated on this being non-zero, so it would vanish precisely where it
+   * matters most.
+   *
+   * Two edges, both deliberate:
+   * - Empty transcript (activated, never spoken to) -> 0. Reachable, and
+   *   the reason this is not simply `conversation.length`: the seed alone
+   *   must not read as a restored conversation.
+   * - Compaction boundary with zero following messages -> 1, the summary.
+   *
+   * This is the SINGLE WRITER of the count. The server must not recompute
+   * it: subtracting the seed requires knowing the seed's shape, which is
+   * this module's private business (one message normally, two past a
+   * boundary).
+   */
+  restoredMessageCount: number;
 }
 
 /**
@@ -60,7 +91,16 @@ export function reconstructConversation(streamText: string, systemPrompt: string
   replayWindow(conversation, windowEvents);
   const repairResult = repairDanglingToolCalls(conversation);
 
-  return { conversation: repairResult.conversation, repairedToolCallIds: repairResult.repairedToolCallIds };
+  // Every entry except the leading synthetic system prompt came from the
+  // persisted transcript -- the boundary branch's summary included, since it
+  // is reconstructed from the boundary event rather than assembled fresh.
+  const restoredMessageCount = repairResult.conversation.length - 1;
+
+  return {
+    conversation: repairResult.conversation,
+    repairedToolCallIds: repairResult.repairedToolCallIds,
+    restoredMessageCount,
+  };
 }
 
 function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {
