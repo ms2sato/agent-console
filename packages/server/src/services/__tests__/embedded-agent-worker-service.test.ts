@@ -703,13 +703,21 @@ describe('EmbeddedAgentWorkerService.activate', () => {
 /**
  * A persisted stream that fails reconstruction.
  *
- * The malformed line is deliberately the SECOND one. These tests are about
- * what the SERVICE does when restore fails -- reset with sidecar, null
- * restore-info, no `onRestoreInfo` push -- and a bad first line stopped being
- * a restore failure once the restore side began tolerating a rotation
- * fragment at the head (#1445). A lone `{not valid json` now reads as a
- * window that is nothing but a fragment, is skipped, and reconstructs to an
- * empty conversation, so it can no longer drive these tests' subject.
+ * The malformed line is deliberately the SECOND one, and NOT because the
+ * first position stopped failing under this harness -- it did not.
+ *
+ * These tests are about what the SERVICE does when restore fails: reset with
+ * sidecar, null restore-info, no `onRestoreInfo` push. The head tolerance
+ * (#1445) is gated on `truncated`, which this harness pins to false
+ * (`startOffset: 0`), so a lone `{not valid json` still throws here on the
+ * corruption path. The original single-line fixture would still work.
+ *
+ * The fixture is position-independent anyway, because position became
+ * load-bearing elsewhere: for a caller that does pass `truncated: true`, the
+ * first record is the one the parser may drop. A test whose subject is the
+ * service's failure handling should not quietly depend on which line is
+ * malformed -- so this one states its own opening record rather than
+ * inheriting a guarantee from a flag it never sets.
  */
 const RESTORE_FAILING_STREAM = `${JSON.stringify({ v: 1, type: 'user-message', id: 'm0', text: 'opens the window' })}\n{not valid json`;
 

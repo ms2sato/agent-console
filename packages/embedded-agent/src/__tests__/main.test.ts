@@ -105,8 +105,21 @@ function makeIo(lines: string[]): Captured {
   const events: EmbeddedAgentEvent[] = [];
   const errors: string[] = [];
   const io: LoopIO = {
+    // Paced deliberately: in production every stdin line arrives as its own
+    // I/O event, so a command is always dispatched with the previous one's
+    // synchronous handling already finished and the event loop already turned
+    // over. Yielding the array without that gap collapses "run a turn, then
+    // shut down" into "run a turn and shut down simultaneously" -- the
+    // shutdown reaches `gracefulExit`, which cancels the still-in-flight turn.
+    // Tests written about lifecycle, threading, or the restore boundary then
+    // silently became tests of a cancellation nobody asked for. Anything that
+    // genuinely wants the no-gap delivery drives its own unpaced generator
+    // (see the same-flush cancellation test below).
     async *readCommands() {
-      for (const line of lines) yield line;
+      for (const line of lines) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        yield line;
+      }
     },
     writeEvent: (event) => events.push(event),
     logError: (message) => errors.push(message),
@@ -187,6 +200,56 @@ describe('runLoop — lifecycle', () => {
     expect(await runLoop(io, makeFactories())).toBe(0);
     const assistant = events.find((e) => e.type === 'assistant-message');
     expect(assistant).toMatchObject({ turnId: 'u1', text: 'hi' });
+  });
+
+  it('CANCELS the turn when a shutdown arrives in the SAME stdin flush as the user-message, emitting no assistant-message', async () => {
+    // The intentional replacement for coverage that used to be incidental.
+    // Before `makeIo` was paced, every test above delivered its commands with
+    // no gap, so this cancellation happened everywhere and was asserted
+    // nowhere -- and while the abort was reaching a turn that ignored it, the
+    // wrong answer was indistinguishable from the right one. Both halves are
+    // now explicit: the paced default is what the other tests are about, and
+    // this test owns the unpaced delivery.
+    //
+    // `SlowStubAdapter` makes the ordering a construction rather than a race:
+    // it parks on a timer, so the shutdown -- delivered over microtasks --
+    // always lands first. It also never consults the signal, ending its
+    // stream normally with whatever text it had accumulated, which is the
+    // abort style `runProviderWithRetries` classifies at the source.
+    //
+    // Reach (measured): pacing this local generator the way `makeIo` now
+    // paces its own fails this test (the turn completes and `hi` is
+    // emitted); independently, reverting the source-level abort
+    // classification in `runProviderWithRetries` also fails it (the aborted
+    // turn's outcome comes back `ok` and the assistant-message is emitted).
+    class SlowStubAdapter implements ProviderAdapter {
+      async *run(): AsyncIterable<ProviderEvent> {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        yield { type: 'text-delta', text: 'hi' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+    const lines = [
+      initCommand(),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ];
+    const events: EmbeddedAgentEvent[] = [];
+    const io: LoopIO = {
+      async *readCommands() {
+        for (const line of lines) yield line;
+      },
+      writeEvent: (event) => events.push(event),
+      logError: () => {},
+    };
+
+    expect(await runLoop(io, makeFactories({ createAdapter: () => new SlowStubAdapter() }))).toBe(0);
+
+    expect(events.filter((e) => e.type === 'assistant-message')).toHaveLength(0);
+    expect(events.find((e) => e.type === 'turn-error')).toMatchObject({
+      turnId: 'u1',
+      message: 'turn canceled',
+    });
   });
 
   it('emits a fatal event and exits 1 when MCP connection fails', async () => {
@@ -1157,5 +1220,101 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
     expect(turnError && 'message' in turnError ? turnError.message : '').toContain(
       'maximum context length',
     );
+  });
+
+  it('does NOT let the boundary budget timer reach a turn that starts after ready', async () => {
+    // The budget timer's action is `loop.cancel()`, and `cancel` stops
+    // whatever cancellable operation currently holds the loop's abort
+    // controller (see the contract at `AgentLoop`'s `currentAbort`). A turn is
+    // such an operation, so nothing in the timer's own shape keeps it away
+    // from one. What keeps it away today is ORDERING plus the `clearTimeout`:
+    // the timer is disarmed in a `finally` before `ready` is emitted, and
+    // `runLoop`'s serial `for await` over stdin cannot reach a `user-message`
+    // until `initializeLoop` has returned. That is a true statement about the
+    // current arrangement rather than a property of the mechanism -- which is
+    // why it is pinned rather than left to be re-derived.
+    //
+    // The harness withholds `shutdown` until the turn has produced its own
+    // outcome, because `shutdown` cancels the in-flight turn by design and
+    // would mask exactly the difference under test.
+    //
+    // MEASURED REACH (mutation, run -- not predicted):
+    //
+    //   m1  delete the `finally { clearTimeout(budgetTimer); }` in
+    //       `initializeLoop`, leaving the timer armed past `ready`.
+    //       -> 1 fail: the timer fires during the post-ready turn, the turn
+    //          is canceled, and no assistant-message is emitted.
+    const BUDGET_MS = 30;
+    const TURN_MS = 150;
+    /** Fast for the boundary distillation, slow for every turn after it -- so
+     * the compaction finishes far inside the budget, and the turn is still in
+     * flight when a surviving timer would fire. Ends its stream cleanly on
+     * abort rather than throwing, which is the abort style that reaches the
+     * source classification in `runProviderWithRetries`. */
+    class FastDistillThenSlowTurnAdapter implements ProviderAdapter {
+      private calls = 0;
+      async *run(): AsyncIterable<ProviderEvent> {
+        const index = this.calls++;
+        if (index === 0) {
+          yield { type: 'text-delta', text: 'DISTILLED' };
+          yield { type: 'done', finishReason: 'stop' };
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, TURN_MS));
+        yield { type: 'text-delta', text: 'hi' };
+        yield { type: 'done', finishReason: 'stop' };
+      }
+    }
+
+    const events: EmbeddedAgentEvent[] = [];
+    let releaseShutdown!: () => void;
+    const turnSettled = new Promise<void>((resolve) => {
+      releaseShutdown = resolve;
+    });
+    const io: LoopIO = {
+      async *readCommands() {
+        yield initCommand({
+          compaction: { auto: true, contextWindowTokens: WINDOW },
+          restoredConversation: restoredOf('U'.repeat(3000)),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        yield JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'after ready' });
+        await turnSettled;
+        yield JSON.stringify({ v: 1, type: 'shutdown' });
+      },
+      writeEvent: (event) => {
+        events.push(event);
+        // Either outcome of the turn releases the shutdown, so the harness
+        // does not deadlock in the direction the mutation produces.
+        if (event.type === 'assistant-message' || event.type === 'turn-error') releaseShutdown();
+      },
+      logError: () => {},
+    };
+
+    expect(
+      await runLoop(
+        io,
+        makeFactories({
+          createAdapter: () => new FastDistillThenSlowTurnAdapter(),
+          restoreBoundaryCompactionBudgetMs: BUDGET_MS,
+        }),
+      ),
+    ).toBe(0);
+
+    // The timer really was armed: the boundary compaction ran, and completed
+    // before `ready`.
+    const markerIndex = events.findIndex((e) => e.type === 'context-compacted');
+    const readyIndex = events.findIndex((e) => e.type === 'ready');
+    expect(markerIndex).toBeGreaterThanOrEqual(0);
+    expect(markerIndex).toBeLessThan(readyIndex);
+
+    // ...and the turn that started after `ready` -- and outlived the budget --
+    // was not touched by it.
+    // Asserted before the assistant-message so a regression reports the
+    // cancellation itself rather than a missing event downstream of it.
+    expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
+    const assistantIndex = events.findIndex((e) => e.type === 'assistant-message');
+    expect(events[assistantIndex]).toMatchObject({ turnId: 'u1', text: 'hi' });
+    expect(assistantIndex).toBeGreaterThan(readyIndex);
   });
 });
