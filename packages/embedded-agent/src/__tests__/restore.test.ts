@@ -414,3 +414,56 @@ describe('reconstructConversation — wire-faithful tool_calls.arguments reconst
     }
   });
 });
+
+describe('reconstructConversation — R1 events are Noise (#1410)', () => {
+  // `turn-interrupted` and `sdk-resume-failed` say something about the
+  // PROCESS's history, not about what was said. Both must be classified as
+  // Noise: feeding either into the reconstructed conversation would put a
+  // claim in front of the model that no participant ever made.
+  //
+  // `turn-interrupted` matters most. It describes a turn that WAS cut off,
+  // which is also what Mid-turn Repair acts on -- so if it leaked into the
+  // array it would become a second, contradictory writer of the same repair.
+  it('ignores turn-interrupted and sdk-resume-failed entirely', () => {
+    const withoutR1 = reconstructConversation(
+      linesOf([
+        { v: 1, type: 'user-message', id: 'u1', text: 'hello' },
+        { v: 1, type: 'assistant-message', turnId: 'u1', text: 'hi' },
+      ]),
+      SYSTEM_PROMPT,
+    );
+    const withR1 = reconstructConversation(
+      linesOf([
+        { v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: 'sess-gone', reason: 'not-found' },
+        { v: 1, type: 'user-message', id: 'u1', text: 'hello' },
+        { v: 1, type: 'turn-interrupted', turnId: 'u1' },
+        { v: 1, type: 'assistant-message', turnId: 'u1', text: 'hi' },
+      ]),
+      SYSTEM_PROMPT,
+    );
+
+    // Byte-identical to the same stream without them: the strongest form of
+    // "contributes nothing", and it fails if either event ever starts
+    // producing a message, changing ordering, or tripping the repair.
+    expect(withR1.conversation).toEqual(withoutR1.conversation);
+    expect(withR1.repairedToolCallIds).toEqual([]);
+  });
+
+  it('does not treat a turn-interrupted row as an unanswered tool call', () => {
+    // Adversarial placement: immediately after an assistant message carrying
+    // a tool call, which is exactly where Tier C looks for a dangling call.
+    const outcome = reconstructConversation(
+      linesOf([
+        { v: 1, type: 'user-message', id: 'u1', text: 'do a thing' },
+        { v: 1, type: 'assistant-message', turnId: 'u1', text: 'reading it now' },
+        { v: 1, type: 'tool-call', turnId: 'u1', callId: 'c1', name: 'Read', args: '{}' },
+        { v: 1, type: 'turn-interrupted', turnId: 'u1' },
+      ]),
+      SYSTEM_PROMPT,
+    );
+    // The dangling call IS repaired -- by Mid-turn Repair, on its own terms.
+    // What must not happen is the marker adding a message of its own.
+    expect(outcome.repairedToolCallIds).toEqual(['c1']);
+    expect(outcome.conversation.some((m) => JSON.stringify(m).includes('turn-interrupted'))).toBe(false);
+  });
+});

@@ -1206,3 +1206,138 @@ describe('EmbeddedAgentStreamEventSchema', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('Transcript Restore R1 wire additions (#1410)', () => {
+  const sdkInit = {
+    v: 1,
+    type: 'init',
+    compaction: { auto: false },
+    engine: 'claude-sdk',
+    mcp: { baseUrl: 'http://localhost:3457/mcp', token: 'tok' },
+    provider: { model: 'claude-sonnet-5' },
+    context: { sessionId: 's1', workerId: 'w1', cwd: '/work' },
+    maxToolIterations: 25,
+  };
+
+  describe('init.resume', () => {
+    it('carries the session id through the parse on the claude-sdk arm', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, { ...sdkInit, resume: { sdkSessionId: 'sess-abc' } });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init' && result.output.engine === 'claude-sdk') {
+        // Not "the command was accepted" -- a schema missing this member
+        // accepts it just as happily and drops the id, and every
+        // re-activation would silently start fresh.
+        expect(result.output.resume).toEqual({ sdkSessionId: 'sess-abc' });
+      }
+    });
+
+    it('is optional (a first-ever activation carries none)', () => {
+      const result = v.safeParse(EmbeddedAgentCommandSchema, sdkInit);
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'init') {
+        expect('resume' in result.output).toBe(false);
+      }
+    });
+
+    it('is REJECTED on the openai-api arm', () => {
+      // Structural containment rather than convention: the other engine has
+      // no concept of a resume, so an init carrying one is not representable.
+      const result = v.safeParse(EmbeddedAgentCommandSchema, {
+        ...sdkInit,
+        engine: 'openai-api',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'llama3' },
+        resume: { sdkSessionId: 'sess-abc' },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects an empty session id', () => {
+      expect(v.safeParse(EmbeddedAgentCommandSchema, { ...sdkInit, resume: { sdkSessionId: '' } }).success).toBe(false);
+    });
+
+    it('rejects unknown keys inside resume', () => {
+      expect(
+        v.safeParse(EmbeddedAgentCommandSchema, {
+          ...sdkInit,
+          resume: { sdkSessionId: 'sess-abc', forkSession: true },
+        }).success,
+      ).toBe(false);
+    });
+  });
+
+  describe('sdk-resume-failed', () => {
+    it('carries requestedSdkSessionId and reason through the parse', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'sdk-resume-failed',
+        requestedSdkSessionId: 'sess-gone',
+        reason: 'not-found',
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'sdk-resume-failed') {
+        // The server branches on `reason`, so a stripped one would turn every
+        // refusal into the do-nothing branch and leave the worker wedged.
+        expect(result.output.reason).toBe('not-found');
+        expect(result.output.requestedSdkSessionId).toBe('sess-gone');
+      }
+    });
+
+    it('accepts `refused` as well', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'sdk-resume-failed',
+          requestedSdkSessionId: 'sess-gone',
+          reason: 'refused',
+        }).success,
+      ).toBe(true);
+    });
+
+    it('rejects an unknown reason', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'sdk-resume-failed',
+          requestedSdkSessionId: 'sess-gone',
+          reason: 'gave-up',
+        }).success,
+      ).toBe(false);
+    });
+
+    it('rejects a missing reason', () => {
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'sdk-resume-failed',
+          requestedSdkSessionId: 'sess-gone',
+        }).success,
+      ).toBe(false);
+    });
+  });
+
+  describe('turn-interrupted', () => {
+    it('parses as a SERVER event and carries its turnId', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'turn-interrupted', turnId: 'u9' });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'turn-interrupted') {
+        expect(result.output.turnId).toBe('u9');
+      }
+    });
+
+    it('is NOT a loop event -- the subprocess never emits it', () => {
+      // Server-authored by design (Appendix A.3): the server does not forge
+      // engine-authored events, and the loop has no business claiming a turn
+      // was interrupted. Keeping it out of the loop union is what makes that
+      // structural rather than a convention.
+      expect(v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'turn-interrupted', turnId: 'u9' }).success).toBe(
+        false,
+      );
+    });
+
+    it('rejects an empty turnId', () => {
+      expect(v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'turn-interrupted', turnId: '' }).success).toBe(
+        false,
+      );
+    });
+  });
+});
