@@ -136,15 +136,33 @@ function expect(cond: boolean, label: string, detail?: string): void {
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Whether a pid is present in /proc. */
+/**
+ * Whether a pid is a RUNNING process — deliberately not "whether the pid
+ * exists".
+ *
+ * A zombie has already died and released its memory; it lingers only as an
+ * exit-status entry until its parent reaps it. But it keeps a `/proc/<pid>`
+ * directory and still answers `kill(pid, 0)`, so both of the obvious liveness
+ * checks report it as alive.
+ *
+ * That matters in opposite directions for this script's two uses, and one of
+ * them is unsafe. Asserting the subject's child is GONE, a zombie-blind check
+ * merely waits longer than it needs to — conservative. Asserting the negative
+ * control is STILL ALIVE, a zombie-blind check would pass on a process that
+ * had already died, making the control vacuous while it reported success.
+ * Reading the state field is what separates the two.
+ */
 function pidAlive(pid: number): boolean {
-  try {
-    // `kill(pid, 0)` would also answer this, but only for processes this user
-    // may signal; reading /proc is the same check without that qualification.
-    return Bun.spawnSync(['test', '-d', `/proc/${pid}`]).exitCode === 0;
-  } catch {
-    return false;
-  }
+  const res = Bun.spawnSync(['cat', `/proc/${pid}/stat`]);
+  if (res.exitCode !== 0) return false;
+  const stat = new TextDecoder().decode(res.stdout);
+  // `comm` is parenthesised and may itself contain spaces or parens, so the
+  // state field is located from the LAST ')' rather than by splitting.
+  const close = stat.lastIndexOf(')');
+  if (close === -1) return false;
+  const state = stat.slice(close + 1).trim().charAt(0);
+  // Z = zombie (dead, unreaped), X = dead. Everything else is a real process.
+  return state !== 'Z' && state !== 'X';
 }
 
 /** Every descendant pid of `root`, walking /proc's ppid links breadth-first. */
@@ -177,6 +195,10 @@ function descendantPids(root: number): number[] {
 function claudeDescendantPids(harnessPid: number): number[] {
   const found: number[] = [];
   for (const pid of descendantPids(harnessPid)) {
+    // `pgrep` lists zombies, and a zombie still has a readable `comm`. Filter
+    // through the state-aware check so a "still alive" control cannot be
+    // satisfied by a process that has already died — see `pidAlive`.
+    if (!pidAlive(pid)) continue;
     let comm = '';
     try {
       comm = new TextDecoder()
