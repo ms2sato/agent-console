@@ -858,6 +858,22 @@ class WindowedAdapter implements ProviderAdapter {
   }
 }
 
+/** A stream that keeps producing data and never ends, and never idles out.
+ * This is the shape the activation budget exists for: the adapter's own
+ * per-attempt timeout does not fire (data keeps arriving), so without a bound
+ * `ready` waits on the adapter's total timeout times the retry count. */
+class NeverEndingAdapter implements ProviderAdapter {
+  runs = 0;
+  async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+    this.runs++;
+    for (;;) {
+      if (req.signal.aborted) return;
+      yield { type: 'text-delta', text: '.' };
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+  }
+}
+
 /** Every provider call fails immediately and non-retryably — the shape of a
  * provider that is simply not there at activation time. Non-retryable
  * deliberately: `AgentLoop`'s backoff sleeps are not injectable through
@@ -925,6 +941,41 @@ describe('runLoop — compaction at the restore boundary (#1411)', () => {
     // provider, which is the point -- the failure is the PROVIDER's, not a
     // wedged activation).
     expect(events.filter((e) => e.type === 'turn-error').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('BOUNDS the boundary compaction: a provider stream that emits forever does not hold ready hostage', async () => {
+    // Without the budget this test would hang for the adapter's total timeout
+    // times the retry count -- and `cancel`/`shutdown` sit behind the same
+    // await as `ready`, so the worker would be unstoppable meanwhile. The
+    // budget aborts the in-flight distillation through `AgentLoop.cancel()`,
+    // which lands in `compact()`'s existing canceled branch.
+    const adapter = new NeverEndingAdapter();
+    const { io, events } = makeIo([
+      initCommand({
+        compaction: { auto: true, contextWindowTokens: WINDOW },
+        restoredConversation: restoredOf('U'.repeat(3000)),
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    const started = Date.now();
+    expect(
+      await runLoop(
+        io,
+        makeFactories({ createAdapter: () => adapter, restoreBoundaryCompactionBudgetMs: 40 }),
+      ),
+    ).toBe(0);
+
+    // The compaction was attempted, abandoned, and reported as a failure...
+    expect(adapter.runs).toBeGreaterThan(0);
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError && 'message' in turnError ? turnError.message : '').toBe(
+      'Context compaction failed: turn canceled',
+    );
+    // ...and activation completed anyway, well inside the unbounded exposure.
+    expect(events.filter((e) => e.type === 'ready')).toHaveLength(1);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 
   it('E2E: a restored conversation past the window is partially distilled, and the first user turn does not go over the window', async () => {

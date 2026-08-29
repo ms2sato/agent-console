@@ -712,7 +712,17 @@ export class AgentLoop {
       const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal, {
         emitDeltas: false,
       });
-      if (outcome.kind === 'canceled') {
+      // `outcome.kind === 'canceled'` only covers an adapter that THROWS on
+      // abort (the shape `OpenAIChatAdapter`'s fetch produces). An adapter
+      // that instead ends its stream cleanly when the signal trips returns a
+      // perfectly ordinary `ok` carrying whatever partial text had
+      // accumulated -- which would then be spliced over the conversation as
+      // if it were a finished summary. Consulting the signal directly is what
+      // makes the failure invariant independent of the adapter's abort style.
+      // This became load-bearing when the restore boundary started cancelling
+      // on a budget: what used to be an exotic mid-compaction user cancel is
+      // now a routine path.
+      if (outcome.kind === 'canceled' || abort.signal.aborted) {
         this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
         return;
       }
