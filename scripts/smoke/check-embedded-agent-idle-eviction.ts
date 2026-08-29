@@ -58,7 +58,14 @@
  *
  * COST: five real Claude turns (two to seed, one to wake-and-recall, one for
  * the control, one spare in the retry budget). Small, but real money and real
- * usage -- this is a manual tool, never a CI gate, hence no `check:` alias.
+ * usage -- this is a manual tool, never a CI gate.
+ *
+ * It is nonetheless registered: `bun run check:embedded-agent-idle-eviction`,
+ * with the files that oblige a run named in `.claude/rules/test-trigger.md`.
+ * Being manual is a reason not to wire it into CI; it is not a reason to
+ * leave it reachable only by knowing its path. Registration is about
+ * reachability, automation is about CI, and every smoke in this directory is
+ * manual and registered both.
  *
  * REQUIREMENTS
  *   - A real, authenticated `claude` CLI for the invoking OS user (the
