@@ -125,7 +125,7 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     // R1: default the pre-flight to "the session exists" so the vast
     // majority of tests, which are not about resume at all, exercise the
     // resume-is-honoured path. The resume tests override it explicitly.
-    sdkSessionExists: async () => true,
+    probeSdkSession: async () => 'found',
     ...overrides,
   };
 }
@@ -756,9 +756,9 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
     await runLoop(
       io,
       makeFactories({
-        sdkSessionExists: async (id, cwd) => {
+        probeSdkSession: async (id, cwd) => {
           preflightCalls.push({ id, cwd });
-          return true;
+          return 'found';
         },
         createSdkEngine: (deps) => {
           capturedDeps = deps;
@@ -782,7 +782,7 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
     await runLoop(
       io,
       makeFactories({
-        sdkSessionExists: async () => false,
+        probeSdkSession: async () => 'not-found',
         createSdkEngine: (deps) => {
           capturedDeps = deps;
           return new NoopEngine();
@@ -796,6 +796,38 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
     expect(failures[0]).toMatchObject({ requestedSdkSessionId: 'sess-gone', reason: 'not-found' });
   });
 
+  it('starts fresh and reports `lookup-failed` when the pre-flight could not run', async () => {
+    // The distinction this whole change exists to carry. `not-found` and
+    // `error` do the SAME thing here -- both start fresh -- so a mapping
+    // that flattened them would look completely correct at this layer and
+    // still cost the server the one bit it needs to decide whether the
+    // persisted id is worth keeping.
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io, events } = makeIo([sdkInit({ sdkSessionId: 'sess-unreadable' })]);
+    await runLoop(
+      io,
+      makeFactories({
+        probeSdkSession: async () => 'error',
+        createSdkEngine: (deps) => {
+          capturedDeps = deps;
+          return new NoopEngine();
+        },
+      }),
+    );
+
+    // Same fresh start as `not-found` -- an unreadable store is no more
+    // resumable, right now, than a missing session.
+    expect(capturedDeps?.resume).toBeUndefined();
+    const failures = events.filter((e) => e.type === 'sdk-resume-failed');
+    expect(failures).toHaveLength(1);
+    // Polarity measured by mutation: changing the `'error'` arm to emit
+    // `reason: 'not-found'` fails ONLY this assertion in this file, and
+    // nothing else in the package. The `toHaveLength(1)` and the
+    // `resume === undefined` above both pass under the flattened mapping,
+    // which is exactly why they are not the pin.
+    expect(failures[0]).toMatchObject({ requestedSdkSessionId: 'sess-unreadable', reason: 'lookup-failed' });
+  });
+
   it('does not pre-flight at all when the init carries no resume', async () => {
     // A first-ever activation must not consult the session store: there is
     // nothing to look up, and a lookup here would be the engine inventing a
@@ -806,9 +838,9 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
     await runLoop(
       io,
       makeFactories({
-        sdkSessionExists: async () => {
+        probeSdkSession: async () => {
           preflightCalls++;
-          return true;
+          return 'found';
         },
         createSdkEngine: (deps) => {
           capturedDeps = deps;

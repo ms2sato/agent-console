@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition, ExitReason } from '@agent-console/shared';
+import type { EmbeddedAgentDefinition, ExitReason, SdkResumeFailureReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
@@ -1956,13 +1956,50 @@ describe('EmbeddedAgentWorkerService — restore-info.sdkResumed (R1)', () => {
 });
 
 describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () => {
-  function sdkResumeFailed(reason: 'not-found' | 'refused', id = 'sess-prev'): string {
+  function sdkResumeFailed(reason: SdkResumeFailureReason, id = 'sess-prev'): string {
     return `${JSON.stringify({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: id, reason })}\n`;
   }
 
-  it('clears the persisted sdkSessionId so the next activation cannot retry it', async () => {
-    // "There is never a second resume attempt" is enforced here, by removing
-    // the id, rather than by a later heuristic reconsidering it.
+  it('clears the persisted sdkSessionId on `refused`, so a REFUSED id is never retried', async () => {
+    // The surviving half of an invariant that used to read "there is never a
+    // second resume attempt, on any path". Its justification was always a
+    // property of refusal specifically -- offering the id again repeats the
+    // damage, because a refused resume costs the turn in flight and kills the
+    // query. That reasoning never covered `not-found`, so the invariant
+    // narrowed, and this is the case where it still binds.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
+
+    h.fake.pushStdout(sdkResumeFailed('refused'));
+    await waitFor(() => h.worker.sdkSessionId === null);
+
+    expect(h.worker.sdkSessionId).toBeNull();
+  });
+
+  it('KEEPS the persisted sdkSessionId on `not-found`, so a transient absence is recoverable', async () => {
+    // The production-reachable half of this change, and the one that fixes
+    // the reported symptom. Every filesystem fault measured against the real
+    // SDK -- EACCES on the session file, on its project directory, or on
+    // `~/.claude`; EISDIR; ENOTDIR; malformed JSON; a missing or unset HOME
+    // -- arrives HERE as `not-found`, because the SDK's store swallows read
+    // errors and reports "no session". Clearing on that turned a transient
+    // filesystem state into a permanently discarded conversation.
+    //
+    // Polarity measured by mutation: restoring the unconditional clear fails
+    // this with `null !== 'sess-prev'`.
+    //
+    // The `waitFor` is keyed on `sdkResumed`, which `handleResumeFailed`
+    // flips BEFORE it would reach the clear -- so the id is read only after
+    // the handler has demonstrably run past that point. A fixed sleep would
+    // let a slow handler pass without ever getting there.
     const h = setup({
       definition: SDK_DEFINITION,
       everActivated: true,
@@ -1970,11 +2007,14 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
       readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
     });
     await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
 
     h.fake.pushStdout(sdkResumeFailed('not-found'));
-    await waitFor(() => h.worker.sdkSessionId === null);
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
 
-    expect(h.worker.sdkSessionId).toBeNull();
+    expect(h.worker.sdkSessionId).toBe('sess-prev');
+    // Nothing durable changed, so nothing is written back.
+    expect(h.persistSession).not.toHaveBeenCalled();
   });
 
   it('corrects restore-info to sdkResumed false', async () => {
@@ -1994,9 +2034,46 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
   });
 
   it('does NOT clobber a fresh session id that already replaced the failed one', async () => {
-    // The subprocess starts fresh on a `not-found` and reports the new
-    // session's id. Clearing unconditionally would throw that live session
-    // away and guarantee the NEXT activation is fresh too.
+    // Retargeted from `not-found` to `refused` when the clear narrowed: this
+    // guard only has a subject on the branch that actually clears, and after
+    // the narrowing that is `refused` alone. Left on `not-found` it would
+    // have kept passing while pinning nothing, since nothing clears there any
+    // more -- an assertion true for a reason unrelated to its own name.
+    //
+    // Belt for a future SDK rather than a path production reaches today: a
+    // refused resume produces no `system:init`, so no `sdk-session-id`
+    // arrives before the refusal. If one ever did, clearing unconditionally
+    // would throw away a live session and guarantee the NEXT activation is
+    // fresh too.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
+
+    h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"sess-fresh"}\n');
+    await waitFor(() => h.worker.sdkSessionId === 'sess-fresh');
+    h.fake.pushStdout(sdkResumeFailed('refused'));
+    await new Promise((r) => setTimeout(r, 60));
+
+    expect(h.worker.sdkSessionId).toBe('sess-fresh');
+  });
+
+  it('lets the fresh session SUPERSEDE a kept id at its first sdk-session-id', async () => {
+    // What clears a kept id now that no branch does it eagerly, and the
+    // accepted residual stated as an executable fact: if the user speaks
+    // before the worker recovers, the fresh session reports its own id, that
+    // id wins last-write-wins, and the original session is gone for good.
+    //
+    // Pinned rather than merely tolerated, because keeping the id is only
+    // safe if this still happens -- without supersession a worker would
+    // re-offer a stale id forever while a live session it never recorded
+    // accumulated the real conversation.
     const h = setup({
       definition: SDK_DEFINITION,
       everActivated: true,
@@ -2005,12 +2082,15 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
     });
     await h.service.activate(h.sessionId, h.workerId);
 
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+    expect(h.worker.sdkSessionId).toBe('sess-prev');
+
     h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"sess-fresh"}\n');
     await waitFor(() => h.worker.sdkSessionId === 'sess-fresh');
-    h.fake.pushStdout(sdkResumeFailed('not-found'));
-    await new Promise((r) => setTimeout(r, 40));
 
     expect(h.worker.sdkSessionId).toBe('sess-fresh');
+    expect(h.persistSession).toHaveBeenCalled();
   });
 
   it('does NOT replace the incarnation on `not-found` (nothing is broken)', async () => {
@@ -2022,12 +2102,10 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
     // were added after MEASURING that this test had no reach without them.
     // As originally written -- default windows, no `setOnKill`, a 40 ms wait
     // -- deleting `handleResumeFailed`'s entire `not-found` early return left
-    // all 130 tests in this file green: a replacement WAS started, but
-    // `deactivate` stalls on a fake child that never exits, so the re-spawn
-    // lands well after the assertion. The assertion was satisfied by the
-    // stall, not by the branch it names, and `not-found` could have silently
-    // acquired a full teardown-and-respawn of a healthy worker with nothing
-    // noticing.
+    // the whole suite green: a replacement WAS started, but `deactivate`
+    // stalls on a fake child that never exits, so the re-spawn lands well
+    // after the assertion. The assertion was satisfied by the stall, not by
+    // the branch it names.
     //
     // The `refused` test below is the positive control for the window: with
     // these identical seams it observes its replacement spawn.
@@ -2044,7 +2122,7 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
     const spawnsBefore = h.fake.captured.length;
 
     h.fake.pushStdout(sdkResumeFailed('not-found'));
-    await waitFor(() => h.worker.sdkSessionId === null);
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
     await new Promise((r) => setTimeout(r, 300));
 
     expect(h.fake.captured.length).toBe(spawnsBefore);
@@ -2100,6 +2178,158 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
 
     // A second recovery would deactivate the replacement this one just made.
     expect(h.fake.captured.length).toBe(spawnsBefore + 1);
+  });
+
+  it('KEEPS the persisted sdkSessionId on `lookup-failed`, because nothing was learned about the session', async () => {
+    // The same branch as `not-found`, pinned separately because the reason
+    // is what the server is handed and a future change could split them
+    // again. Measured note for the next reader: this reason is currently
+    // UNREACHABLE in production -- SDK 0.3.238 reports every store-level
+    // fault as `undefined`, never a throw (see PS7's table in
+    // docs/design/embedded-agent-sdk-engine.md). It is pinned as the shape
+    // for a version that does propagate the error, not as live traffic.
+    //
+    // Polarity measured by mutation: narrowing `handleResumeFailed`'s guard
+    // from `reason !== 'refused'` back to `reason === 'refused'`-only-clears
+    // -- i.e. restoring the unconditional clear -- fails this with
+    // `null !== 'sess-prev'`. Verified by running the mutation, not by
+    // reading the code.
+    //
+    // The assertion is NOT satisfiable by a mechanism other than the branch:
+    // `waitFor` below is keyed on `sdkResumed` flipping to false, which the
+    // shared prologue of `handleResumeFailed` does BEFORE the branch runs.
+    // So by the time the id is read, the handler has demonstrably executed
+    // past the point where the old code would have nulled it. Sequencing the
+    // wait on a timeout instead would let a slow handler pass this test
+    // without ever reaching the branch.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.persistSession.mockClear();
+
+    h.fake.pushStdout(sdkResumeFailed('lookup-failed'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+
+    expect(h.worker.sdkSessionId).toBe('sess-prev');
+    // No durable state changed, so nothing is written back. A persist here
+    // would be harmless but would record, in the store's own history, a
+    // decision this route deliberately does not make.
+    expect(h.persistSession).not.toHaveBeenCalled();
+  });
+
+  it('still reports sdkResumed false on `lookup-failed` -- this incarnation did not resume', async () => {
+    // §4.3's widened definition: `false` means "this incarnation's SDK
+    // session did not resume", not "a resume was attempted and refused".
+    // Keeping the id does not make the transcript agree with the model NOW,
+    // so the notice is correct here and suppressing it would be the lie.
+    //
+    // Polarity measured by mutation: moving the keep-the-id early return
+    // ABOVE `markResumeNotResumed` fails this test. It also fails the other
+    // three `lookup-failed` tests, which all key their `waitFor` on the same
+    // flag -- so the ordering is pinned by the group, not by this test alone.
+    // Recorded because the first draft of this comment claimed exclusivity
+    // and the measurement said otherwise; the reach a pin actually has is
+    // what the next reader inherits.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(true);
+
+    h.fake.pushStdout(sdkResumeFailed('lookup-failed'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(false);
+  });
+
+  it('does NOT replace the incarnation on `lookup-failed` (nothing died)', async () => {
+    // Same reasoning as `not-found`: the subprocess decided before attempting
+    // a resume, so the harness and its query are both healthy. Only `refused`
+    // leaves a dead query inside a live harness.
+    //
+    // The kill handler and the short escalation windows are what give this
+    // pin its reach, and they were added AFTER measuring that it had none.
+    // First draft: default windows, no `setOnKill`, a 40 ms wait -- and it
+    // passed with the keep-the-id branch deleted, because a replacement
+    // WOULD have been started but `deactivate` stalls on a fake child that
+    // never exits, so no re-spawn lands inside 40 ms. The assertion was true
+    // for a reason unrelated to the branch it names.
+    //
+    // With this setup the same mutation fails it. The positive control that
+    // the window is long enough lives in this same describe: the `refused`
+    // test uses the identical seams and observes its replacement spawn.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
+    const spawnsBefore = h.fake.captured.length;
+
+    h.fake.pushStdout(sdkResumeFailed('lookup-failed'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(h.fake.captured.length).toBe(spawnsBefore);
+  });
+
+  it('recovers: after `not-found` the NEXT activation re-offers the same id and asks for a resume', async () => {
+    // The recovery path itself, end to end at this layer -- not merely "the
+    // id was not cleared", which is also true of a worker that never had one.
+    // This drives the whole loop: a real activation carrying the id, a
+    // `not-found`, a teardown, and a second real activation whose init is
+    // read for what it actually asks the subprocess to do.
+    //
+    // The half this layer cannot own is the pre-flight's verdict on the
+    // retry -- that runs in the subprocess, and `main.test.ts`'s "forwards
+    // the resume id to the engine when the pre-flight finds the session"
+    // pins it. Together they are the transient-failure recovery: the store
+    // becomes readable again, the same id is offered again, and it resumes.
+    //
+    // Polarity measured by mutation: restoring the unconditional clear makes
+    // the second init carry no `resume` key at all, failing both assertions
+    // below. `lookup-failed` takes the identical branch and is pinned for
+    // id-retention separately; it is not re-driven here, because the branch
+    // being exercised is the same one.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    const firstInit = JSON.parse(h.fake.stdinWrites[0]);
+    expect(firstInit.resume).toEqual({ sdkSessionId: 'sess-prev' });
+
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
+    await h.service.deactivate(h.sessionId, h.workerId);
+    const writesBefore = h.fake.stdinWrites.length;
+    await h.service.activate(h.sessionId, h.workerId);
+    await waitFor(() => h.fake.stdinWrites.length > writesBefore);
+
+    const reinit = JSON.parse(h.fake.stdinWrites[writesBefore]);
+    expect(reinit.type).toBe('init');
+    expect(reinit.resume).toEqual({ sdkSessionId: 'sess-prev' });
+    // The server's own claim about the retry, which is what drives the UI:
+    // it is asking for a resume again, so the notice is not pre-emptively
+    // shown. It would be corrected downward again if this attempt also fails.
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(true);
   });
 });
 

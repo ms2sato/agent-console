@@ -131,6 +131,49 @@ describe('R1 events survive their schemas (Q10)', () => {
     expect(parsed.requestedSdkSessionId).toBe('sess-gone');
   });
 
+  it('parses sdk-resume-failed with reason `lookup-failed` intact', () => {
+    // The reason the server reads to decide whether the persisted
+    // `sdkSessionId` survives. Q10's actual hazard is the silent strip: a
+    // picklist missing this member does not drop the field, it REJECTS the
+    // whole event -- the subprocess would emit it, the server would log a
+    // parse failure, and the id-keeping branch would never run. Either way
+    // the observable is the same as the bug this fixes.
+    //
+    // Polarity measured by mutation: removing `'lookup-failed'` from
+    // SDK_RESUME_FAILURE_REASONS makes `v.parse` throw here. The assertion
+    // reads the reason back rather than stopping at "it parsed", so a
+    // picklist that accepted the value and a schema that carried it are
+    // distinguished.
+    const parsed = v.parse(EmbeddedAgentEventSchema, {
+      v: 1,
+      type: 'sdk-resume-failed',
+      requestedSdkSessionId: 'sess-unreadable',
+      reason: 'lookup-failed',
+    });
+    if (parsed.type !== 'sdk-resume-failed') throw new Error('unexpected parse output');
+    expect(parsed.reason).toBe('lookup-failed');
+    expect(parsed.requestedSdkSessionId).toBe('sess-unreadable');
+  });
+
+  it('still parses an OLD persisted log whose rows predate the third reason', () => {
+    // Widening a union is only safe forward if it is also safe BACKWARD: the
+    // rows already on disk carry the two original reasons, and every
+    // activation replays them. A widening that (say) made `reason` a
+    // required-plus-renamed field, or moved to a shape the old rows do not
+    // match, would fail the replay of every worker that ever hit a resume
+    // failure -- an activation-time regression with no relation to the
+    // change's own subject.
+    //
+    // Read through the STREAM union, which is the one replay actually uses;
+    // the loop-only union above is not what a persisted line is parsed with.
+    for (const reason of ['not-found', 'refused'] as const) {
+      const line = JSON.stringify({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: 'sess-old', reason });
+      const parsed = v.parse(EmbeddedAgentStreamEventSchema, JSON.parse(line));
+      if (parsed.type !== 'sdk-resume-failed') throw new Error('unexpected parse output');
+      expect(parsed.reason).toBe(reason);
+    }
+  });
+
   it('rejects an unknown sdk-resume-failed reason', () => {
     expect(
       v.safeParse(EmbeddedAgentEventSchema, {

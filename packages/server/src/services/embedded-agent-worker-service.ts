@@ -37,6 +37,7 @@ import {
   type EmbeddedAgentRestoredMessage,
   type AgentActivityState,
   type ExitReason,
+  type SdkResumeFailureReason,
 } from '@agent-console/shared';
 import { loadInstructions, assembleSystemPrompt } from '@agent-console/embedded-agent/src/system-prompt.js';
 import { reconstructConversation, RestoreReconstructionError } from '@agent-console/embedded-agent/src/restore.js';
@@ -1667,25 +1668,49 @@ export class EmbeddedAgentWorkerService {
   /**
    * R1: recover from a resume the subprocess could not use.
    *
-   * Both reasons converge on the same durable state -- the persisted
-   * `sdkSessionId` is cleared, so the next activation starts fresh instead of
-   * retrying an id that has already failed once. **There is never a second
-   * resume attempt**, which is why the id is cleared here rather than left
-   * for a later heuristic to reconsider.
+   * All three reasons agree on this incarnation: it runs on a fresh SDK
+   * session, and `restore-info.sdkResumed` is corrected to `false` so the
+   * divergence notice tells the user their transcript is now ahead of the
+   * model's memory. They differ on the two questions below.
    *
-   * They differ in what else has to happen:
+   * **Is the persisted `sdkSessionId` cleared here?** Only for `refused`.
    *
-   * - `not-found` -- the subprocess pre-flighted the id, did not find it, and
-   *   started fresh on its own. The incarnation is healthy and mid-activation;
-   *   nothing needs replacing, and no turn was lost.
-   * - `refused` -- a resume was attempted and the SDK rejected it, which
-   *   leaves the SDK query dead while the harness process stays alive. That
-   *   is exactly the shape of #1414: the server would never observe an exit,
-   *   `turnActive` would stay set, and the worker would be bricked. So the
-   *   incarnation is replaced through `deactivate` -- a path the exit
-   *   observer covers -- and then re-activated once. The user's message is
-   *   already in the transcript and the engine's own `turn-error` has told
-   *   them to resend it.
+   * - `refused` -- yes. The id was offered to the SDK and the SDK said no.
+   *   Re-offering it would repeat the damage that made it a refusal: a
+   *   refused resume costs the turn in flight and leaves the query dead. So
+   *   **a refused id is never retried** -- the narrowed form of an invariant
+   *   that used to read "there is never a second resume attempt, on any
+   *   path", and whose justification was always this property of refusal
+   *   specifically.
+   * - `not-found` -- no. The session was looked for and was not there, but
+   *   the lookup reads a filesystem whose state can change between
+   *   activations, and re-checking costs one pre-flight (6-63 ms) with no
+   *   resume sent and so no turn at risk. Clearing bought nothing and cost
+   *   the conversation whenever the absence was transient.
+   * - `lookup-failed` -- no, and here the id is not even evidence: the
+   *   lookup did not run (an unreadable session store, an EACCES under a
+   *   different OS user, an I/O blip), so nothing was learned about the
+   *   session at all.
+   *
+   * **What clears a kept id, then?** The fresh session does, by
+   * superseding it: its first turn reports a `sdk-session-id`, which
+   * overwrites and persists last-write-wins. That is the right moment and
+   * the right authority -- once the user has spoken to the fresh session,
+   * the fresh session IS the conversation, and reviving the old one would
+   * abandon what was just said. So a kept id is retried only in the window
+   * before the user speaks again, which is exactly the window in which
+   * retrying is free.
+   *
+   * **Does the incarnation have to be replaced?** Again only for `refused`,
+   * and for an unrelated reason: a rejected resume leaves the SDK query dead
+   * while the harness process stays alive. That is the shape of #1414 -- the
+   * server would never observe an exit, `turnActive` would stay set, and the
+   * worker would be bricked. So the incarnation is replaced through
+   * `deactivate`, a path the exit observer covers, and re-activated once.
+   * The user's message is already in the transcript and the engine's own
+   * `turn-error` has told them to resend it. `not-found` and `lookup-failed`
+   * are decided BEFORE a resume is attempted, so their subprocess is healthy
+   * and mid-activation; replacing it would throw away a working process.
    *
    * Guarded so one recovery runs per incarnation: the refusal is observable
    * from more than one place inside the engine, and a second recovery would
@@ -1694,7 +1719,7 @@ export class EmbeddedAgentWorkerService {
   private async handleResumeFailed(
     runtime: Runtime,
     requestedSdkSessionId: string,
-    reason: 'not-found' | 'refused',
+    reason: SdkResumeFailureReason,
   ): Promise<void> {
     const { sessionId, workerId, worker } = runtime.ctx;
     if (runtime.resumeRecoveryStarted) return;
@@ -1702,9 +1727,20 @@ export class EmbeddedAgentWorkerService {
     runtime.requestedResumeId = null;
     this.markResumeNotResumed(runtime);
 
+    if (reason !== 'refused') {
+      // No durable state changes, so nothing is written back either -- a
+      // persist of an unchanged session would only obscure, in the store's
+      // own history, that these routes deliberately leave the id alone.
+      logger.info(
+        { sessionId, workerId, requestedSdkSessionId, reason },
+        'Embedded-agent SDK session was not resumed; keeping the stored session id so the next activation pre-flights it again',
+      );
+      return;
+    }
+
     logger.info(
       { sessionId, workerId, requestedSdkSessionId, reason },
-      'Embedded-agent SDK session could not be resumed; clearing the stored session id',
+      'Embedded-agent SDK session resume was refused; clearing the stored session id so it is never retried',
     );
 
     // Clear only if it is still the id that failed. A `sdk-session-id` from
@@ -1718,8 +1754,6 @@ export class EmbeddedAgentWorkerService {
     if (session) {
       await this.deps.persistSession(session);
     }
-
-    if (reason === 'not-found') return;
 
     // `refused`: the SDK query is dead while the harness stays alive, which
     // is #1414's exact shape -- no exit the server can observe, `turnActive`
