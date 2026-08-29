@@ -301,6 +301,12 @@ The existing no-resume pin **test** is re-scoped the same way: it asserted `resu
 
 Recorded as the AC author's own miss, at their instruction. The general lesson is the one this document keeps re-learning: an anticipated failure shape is a hypothesis, and a gate that measures it before implementation is what keeps the hypothesis from being built on. Both anticipated shapes were plausible; the gate cost one probe and changed the mechanism, the detector, and the layer the fallback lives in.
 
+**Correction trail — the pre-flight's layer was unspecified, and the obvious reading was wrong (R1, 2026-08-29).** The ruling that introduced the `getSessionInfo` pre-flight said to run it *before constructing the query* and did not name **which process** runs it. The natural reading — the server, which is where the resume id is decided — is broken in the deployment this feature exists for. `getSessionInfo` reads the **calling OS user's** own session store, and in multi-user mode the server is a different user from the worker: a server-side pre-flight would find nothing for every worker but its own, report "no session" every time, and silently convert every re-activation into a fresh start. The failure is invisible in single-user dev, where the two users coincide.
+
+It runs in the subprocess, which is already spawned as the requesting user. Same mechanism, same gate, correct in both modes.
+
+Recorded, again at the AC author's instruction, as the third defect in that ruling — and the one whose shape is most reusable: it is `pre-pr-completeness.md` Q9's target-environment cross-check, not applied by its author to their own ruling. Q13 names the role-switch blind spot for verification plans; this is the same blindness one layer over, in a design decision. **A layer that is left unstated has a default reading, and the default is not neutral** -- it is whichever layer the writer happened to be thinking from.
+
 **Removed row — `handoff` (#1401, 2026-08-28).** The `handoff` command is gone from `EmbeddedAgentCommand` entirely, so it has no row: commands are not persisted, and a union member no client or server can send is dead weight. Its replacement is not a command at all — auto compaction fires inside the engine, and manual compaction arrives as a `Compact` tool call. The engine-level mechanism it named (distill → terminate → reseed) is deleted from `sdk-engine.ts` along with it.
 
 ### A.2 Events (engine → stdout)
