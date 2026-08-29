@@ -636,3 +636,126 @@ describe('reconstructConversation — restoredMessageCount', () => {
     expect(outcome.restoredMessageCount).toBe(2);
   });
 });
+
+/**
+ * Issue #1419 seed extraction. The unit under test is the rule "the newest
+ * authoritative reading, and never one from before the last boundary" -- the
+ * number that replaces the estimator as the restore-boundary compaction
+ * check's input.
+ *
+ * MEASURED REACH (mutation, per the standing requirement -- a pin is not
+ * believed until something that should break it does). Each row is a run, not
+ * a prediction; two of the four counts came out higher than the author's
+ * guess, which is the reason the requirement exists.
+ *
+ *   m1  `findRestoredUsageSeed` returns undefined unconditionally
+ *       -> 6 of 8 fail. The 2 survivors are the two "no reading" cases, which
+ *          assert undefined; they are load-bearing for the FALLBACK, not for
+ *          extraction, and m3 is what measures them.
+ *   m2  drop the `i > boundaryIndex` guard to `i >= 0` (scan the whole
+ *       stream, ignoring the boundary) -- the exact defect the AC names
+ *       -> 3 fail: 'ignores a reading from BEFORE the last boundary',
+ *          'reports a boundary postTokens seed as an estimate', and 'yields
+ *          nothing when the only boundary carries no postTokens'. The 'mixed'
+ *          case does NOT fail under m2 and never could: its newest reading is
+ *          post-boundary and last in the stream either way, so it pins the
+ *          preference order and not the boundary guard.
+ *   m3  return `{ promptTokens: 0, estimated: true }` instead of undefined
+ *       when no reading exists
+ *       -> 2 fail, both "no reading" cases. Without m3 those two assertions
+ *          would be satisfied by any implementation that never finds
+ *          anything, including m1's.
+ *   m4  return `estimated: false` for the postTokens branch
+ *       -> 3 fail. Pins that a compaction's own post-size is the loop's
+ *          chars/4 estimate of the seed it built, and must not arrive at the
+ *          next incarnation claiming to be a provider measurement.
+ */
+describe('findRestoredUsageSeed — the newest authoritative reading (#1419)', () => {
+  const usage = (promptTokens: number, estimated = false): EmbeddedAgentStreamEvent =>
+    ({ v: 1, type: 'context-usage', promptTokens, estimated });
+  const turn = (n: string): EmbeddedAgentStreamEvent[] => [
+    { v: 1, type: 'user-message', id: n, text: `q${n}` },
+    { v: 1, type: 'assistant-message', turnId: n, text: `a${n}` },
+  ];
+
+  function seedOf(events: EmbeddedAgentStreamEvent[]) {
+    return reconstructConversation(linesOf(events), SYSTEM_PROMPT).usageSeed;
+  }
+
+  it('takes the LAST context-usage when the log has only readings', () => {
+    expect(seedOf([...turn('1'), usage(4000), ...turn('2'), usage(6722)])).toEqual({
+      promptTokens: 6722,
+      estimated: false,
+    });
+  });
+
+  it('carries the reading’s own `estimated` flag rather than recomputing it', () => {
+    // A previous incarnation whose provider never sent `usage` fell back to
+    // the estimator. That reading is still the newest one, but it must not
+    // arrive at the next incarnation dressed as a measurement.
+    expect(seedOf([...turn('1'), usage(1102, true)])).toEqual({
+      promptTokens: 1102,
+      estimated: true,
+    });
+  });
+
+  it('ignores a reading from BEFORE the last boundary and uses postTokens instead', () => {
+    // The pre-boundary 90000 measures a conversation the compaction then
+    // discarded; seeding from it would overstate what remains by nearly
+    // everything the compaction removed.
+    expect(
+      seedOf([
+        ...turn('1'),
+        usage(90000),
+        { v: 1, type: 'context-compacted', source: 'auto', summary: 's', preTokens: 90000, postTokens: 2700 },
+      ]),
+    ).toEqual({ promptTokens: 2700, estimated: true });
+  });
+
+  it('reports a boundary postTokens seed as an estimate, never as a measurement', () => {
+    const seed = seedOf([
+      ...turn('1'),
+      usage(90000),
+      { v: 1, type: 'context-compacted', source: 'auto', postTokens: 2700 },
+    ]);
+    // postTokens is estimateTokensFromChars(seed) inside compact() -- the
+    // loop's own chars/4 number, never a provider one.
+    expect(seed?.estimated).toBe(true);
+  });
+
+  it('mixed: prefers a reading that lands AFTER the boundary over that boundary’s postTokens', () => {
+    expect(
+      seedOf([
+        ...turn('1'),
+        usage(90000),
+        { v: 1, type: 'context-compacted', source: 'auto', postTokens: 2700 },
+        ...turn('2'),
+        usage(9100),
+      ]),
+    ).toEqual({ promptTokens: 9100, estimated: false });
+  });
+
+  it('yields nothing when the log holds no reading at all', () => {
+    // A worker killed before completing any turn. Legitimate state, not a
+    // fault: the subprocess falls back to the estimator, bias and all.
+    expect(seedOf([...turn('1')])).toBeUndefined();
+  });
+
+  it('yields nothing when the only boundary carries no postTokens', () => {
+    // The legacy `context-handoff` never had a post-size, and a
+    // `context-compacted` from an engine that cannot supply one is the same
+    // shape. Neither is a reading.
+    expect(
+      seedOf([...turn('1'), usage(90000), { v: 1, type: 'context-handoff', distillation: 'd' }]),
+    ).toBeUndefined();
+  });
+
+  it('takes the boundary postTokens when the boundary is the very last event', () => {
+    expect(
+      seedOf([
+        ...turn('1'),
+        { v: 1, type: 'context-compacted', source: 'auto', postTokens: 512 },
+      ]),
+    ).toEqual({ promptTokens: 512, estimated: true });
+  });
+});

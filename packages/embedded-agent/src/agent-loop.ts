@@ -9,7 +9,11 @@
  * continue.
  */
 
-import { DEFAULT_COMPACTION_THRESHOLD, type EmbeddedAgentEvent } from '@agent-console/shared';
+import {
+  DEFAULT_COMPACTION_THRESHOLD,
+  type EmbeddedAgentEvent,
+  type EmbeddedAgentRestoredUsage,
+} from '@agent-console/shared';
 import type { ToolExecutor } from './mcp.js';
 import {
   ProviderError,
@@ -121,6 +125,15 @@ export interface AgentLoopDeps {
   compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number };
   /** Transcript Restore (#1123): seeds this.conversation directly from a server-reconstructed array, skipping the fresh [{role:'system',...}] seed. Absent = today's v1 fresh-conversation behavior. */
   restoredConversation?: ChatMessage[];
+  /**
+   * The newest authoritative context reading from the persisted log,
+   * extracted server-side at restore reconstruction. See
+   * docs/design/embedded-agent-worker.md "Seed extraction". Absent when the
+   * worker never produced one -- the estimator fallback then stands, bias and
+   * all. Read ONLY by `compactAtRestoreBoundaryIfNeeded`; once a turn has run,
+   * that turn's own reading supersedes it.
+   */
+  restoredUsage?: EmbeddedAgentRestoredUsage;
 }
 
 interface ProviderToolCall {
@@ -266,10 +279,26 @@ export class AgentLoop {
   /** The last turn's terminal usage reading -- the auto threshold's input. */
   private lastTurnUsage: TurnUsage | undefined;
   /**
-   * Whether this loop was seeded from a restored conversation rather than a
-   * fresh system-prompt-only one. Gates the restore-boundary compaction: a
-   * fresh conversation is one system message, and evaluating the ratio
-   * against it is the vacuous case the threshold semantics already exclude.
+   * Whether this loop was seeded from a restored conversation that actually
+   * CARRIES something, rather than a bare system-prompt head. Gates the
+   * restore-boundary compaction: evaluating the ratio against a lone system
+   * message is the vacuous case the threshold semantics already exclude.
+   *
+   * The test is `> 1`, not `> 0`, and the difference is load-bearing now that
+   * the check is decided by a persisted reading rather than by estimating the
+   * array in front of it. A reconstruction legitimately yields a length-1
+   * array -- the server sends `[{role:'system'}]` whenever the restore window
+   * replayed no messages, which a rotated live window can produce by starting
+   * after the last `assistant-message` and before the `context-usage` that
+   * followed it. Under `> 0` that array counted as a restore; the estimate of
+   * one system message is tiny, so nothing fired and the flaw stayed
+   * invisible. A reading does not shrink with the window it outlived, so it
+   * WOULD fire -- distilling a conversation consisting only of the system
+   * prompt, and replacing it with a seed announcing a summary of earlier
+   * messages that were never in front of the model.
+   *
+   * The post-compaction seed pair (`[system, seedUser]`) is length 2 and
+   * still qualifies, which is the case that must keep working.
    */
   private readonly restoredAtActivation: boolean;
 
@@ -278,7 +307,7 @@ export class AgentLoop {
     this.retryDelaysMs = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     this.sleep = deps.sleep ?? defaultSleep;
     this.conversation = deps.restoredConversation ?? [{ role: 'system', content: deps.systemPrompt }];
-    this.restoredAtActivation = (deps.restoredConversation?.length ?? 0) > 0;
+    this.restoredAtActivation = (deps.restoredConversation?.length ?? 0) > 1;
     this.tools = [compactToolDefinition, ...deps.tools];
     this.autoCompaction = deps.compaction.auto;
   }
@@ -320,20 +349,62 @@ export class AgentLoop {
   async compactAtRestoreBoundaryIfNeeded(): Promise<void> {
     if (!this.restoredAtActivation) return;
 
-    const estimated = estimateTokensFromChars(this.conversation);
-    this.emitContextUsageIfKnown({ promptTokens: estimated, estimated: true });
+    const usage = this.resolveRestoreBoundaryUsage();
+    this.emitContextUsageIfKnown(usage);
 
     const windowTokens = this.deps.compaction.contextWindowTokens;
     if (windowTokens === undefined) return;
     if (!this.shouldAutoCompact()) return;
 
-    if (estimated <= FULL_DISTILL_MAX_RATIO * windowTokens) {
+    if (usage.promptTokens <= FULL_DISTILL_MAX_RATIO * windowTokens) {
       await this.compact('auto');
       return;
     }
     await this.compact('auto', {
       budgetTokens: Math.floor(PARTIAL_DISTILL_INPUT_RATIO * windowTokens),
     });
+  }
+
+  /**
+   * The number the restore-boundary check is decided by (`S` in
+   * docs/design/embedded-agent-worker.md "Compaction at the restore
+   * boundary") -- the LARGER of the persisted reading and the estimate of the
+   * reconstructed conversation.
+   *
+   * Both are lower bounds on the request the provider will actually price,
+   * and for different reasons, which is why the larger is taken rather than
+   * either being preferred outright:
+   *
+   * - The **reading** measures a real request, tool schemas included, but
+   *   measures the conversation as it stood when it was published. Messages
+   *   appended after it are not in it.
+   * - The **estimate** covers every message present now, but sums `.content`
+   *   only -- it omits the published tool schemas entirely, which is the
+   *   systematic under-count this seeding exists to remove (measured: 1102
+   *   against 6722 reported for the same request).
+   *
+   * Taking the maximum is therefore the tightest bound available without
+   * attributing individual restored messages to a position in the log, which
+   * would put a message-index correspondence on the wire for no gain: the
+   * reading already carries the constant that dominates, and the estimate
+   * already carries every late message's text.
+   *
+   * It cannot over-fire from a stale reading in the ordinary case, because
+   * readings only grow within a compaction window and the server never seeds
+   * from one taken before the last boundary.
+   */
+  private resolveRestoreBoundaryUsage(): TurnUsage {
+    const estimate: TurnUsage = {
+      promptTokens: estimateTokensFromChars(this.conversation),
+      estimated: true,
+    };
+    const seed = this.deps.restoredUsage;
+    // `<`, not `<=`: on a tie the seed wins. The two carry the same number
+    // but not the same standing, and the estimate's `estimated: true` would
+    // republish a provider-reported figure as one nobody reported -- the exact
+    // inversion the flag is carried across the process boundary to prevent.
+    if (seed === undefined || seed.promptTokens < estimate.promptTokens) return estimate;
+    return { promptTokens: seed.promptTokens, estimated: seed.estimated };
   }
 
   /**

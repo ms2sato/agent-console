@@ -15,7 +15,11 @@
  * - "Compaction boundary"
  */
 import * as v from 'valibot';
-import { EmbeddedAgentStreamEventSchema, type EmbeddedAgentStreamEvent } from '@agent-console/shared';
+import {
+  EmbeddedAgentStreamEventSchema,
+  type EmbeddedAgentRestoredUsage,
+  type EmbeddedAgentStreamEvent,
+} from '@agent-console/shared';
 import type { ChatMessage, ToolCall } from './providers/types.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
 import { pushSyntheticToolError } from './tool-call-repair.js';
@@ -72,9 +76,26 @@ export interface RestoreOutcome {
    * This is the SINGLE WRITER of the count. The server must not recompute
    * it from the returned array: applying the criterion needs the shape of
    * the seed (one message normally, two past a boundary) and the identity of
-   * every synthetic entry, both of which are this module's private business.
+   * every synthetic entry.
+   *
+   * The seed's shape is NOT this module's private business, though it reads
+   * that way. `agent-loop`'s `restoredAtActivation` gates on
+   * `restoredConversation.length > 1` -- a second deliberate consumer, in
+   * another package, of the same invariant this count rests on: **the
+   * synthetic prefix of a restored conversation is exactly one leading
+   * system message.** That `> 1` is the subprocess-local projection of the
+   * criterion above, and the two coincide on every reachable shape. Changing
+   * the seed's shape therefore breaks two sites, and nothing but this
+   * sentence connects them.
    */
   restoredMessageCount: number;
+  /**
+   * The newest authoritative context reading in the log, for the subprocess's
+   * restore-boundary compaction check to be decided by, in place of
+   * re-estimating the reconstructed text. Absent when the log holds no
+   * reading at all -- see {@link findRestoredUsageSeed}.
+   */
+  usageSeed?: EmbeddedAgentRestoredUsage;
 }
 
 /**
@@ -109,11 +130,72 @@ export function reconstructConversation(streamText: string, systemPrompt: string
 
   const repairResult = repairDanglingToolCalls(conversation);
 
+  // The seed is read off the SAME parse and the SAME boundary index the
+  // conversation was built from, rather than re-walking the stream: the rule
+  // "never a reading from before the last boundary" is not a second policy to
+  // keep in step with 4b, it IS 4b's window.
+  const usageSeed = findRestoredUsageSeed(events, boundaryIndex);
+
   return {
     conversation: repairResult.conversation,
     repairedToolCallIds: repairResult.repairedToolCallIds,
     restoredMessageCount,
+    ...(usageSeed !== undefined ? { usageSeed } : {}),
   };
+}
+
+/**
+ * The newest **authoritative context reading** in a restored worker's
+ * persisted log -- the number that seeds the restore-boundary
+ * compaction check in place of re-estimating the reconstructed text.
+ *
+ * Two event kinds are readings, and the newer of them wins:
+ *
+ * - a `context-usage`, which is what the loop publishes after every turn (and
+ *   after every compaction attempt) that produced a usable value;
+ * - a `context-compacted`'s `postTokens`, which is itself a reading -- the
+ *   size of the conversation the compaction left behind.
+ *
+ * `boundaryIndex` is 4b's own result, and passing it in is what makes the
+ * ordering rule structural rather than a second implementation of it. A
+ * `context-usage` from **before** the last boundary must never be the seed:
+ * it measures a conversation that boundary then discarded, so it overstates
+ * what remains by however much the compaction removed -- which for an
+ * aggressive one is nearly everything. Only readings strictly after the
+ * boundary are eligible; if there are none, the boundary's own `postTokens`
+ * is the newest reading there is.
+ *
+ * Returns undefined when the log holds no reading at all. That is a
+ * legitimate state, not a fault: a worker killed before completing any turn
+ * never published one, and the subprocess's estimator fallback -- bias and
+ * all -- is what remains for it.
+ *
+ * `estimated` travels with the number rather than being recomputed here. A
+ * reading the previous incarnation had to estimate must not arrive at the
+ * next one dressed as a measurement.
+ */
+export function findRestoredUsageSeed(
+  events: EmbeddedAgentStreamEvent[],
+  boundaryIndex: number,
+): EmbeddedAgentRestoredUsage | undefined {
+  for (let i = events.length - 1; i > boundaryIndex; i--) {
+    const event = events[i];
+    if (event.type === 'context-usage') {
+      return { promptTokens: event.promptTokens, estimated: event.estimated };
+    }
+  }
+  if (boundaryIndex === -1) return undefined;
+  const boundary = events[boundaryIndex];
+  // Only `context-compacted` carries a post-size. The legacy
+  // `context-handoff` never did, so a stream cut by one has no reading at or
+  // after its boundary and correctly yields nothing.
+  if (boundary.type === 'context-compacted' && boundary.postTokens !== undefined) {
+    // A compaction's own post-size is the loop's chars/4 estimate of the seed
+    // it just built, never a provider number -- so it reports itself as an
+    // estimate even though it is the newest reading available.
+    return { promptTokens: boundary.postTokens, estimated: true };
+  }
+  return undefined;
 }
 
 function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {

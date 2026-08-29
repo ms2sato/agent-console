@@ -1375,3 +1375,41 @@ describe('Transcript Restore R1 wire additions (#1410)', () => {
     });
   });
 });
+
+/**
+ * Issue #1419's wire addition. The behavioural cases (survives the parse,
+ * arm containment, malformed rejection) live in
+ * `packages/integration/src/embedded-agent-restored-usage-boundary.test.ts`
+ * as a Q10 boundary test; what is pinned HERE is the one thing that test
+ * cannot reach -- that the field survives the actual TRANSPORT, which for the
+ * stdio protocol is a serialized single-line JSON string rather than an
+ * object literal handed straight to valibot.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m14  remove `restoredUsage` from the openai-api arm of the schema
+ *        -> 1 fails (this test). It measures the same defect as the
+ *           integration test's m9 but through a serialized line, so a
+ *           serialization-only regression -- a field that survives valibot
+ *           but not `JSON.stringify` -- would surface here and nowhere else.
+ */
+describe('init.restoredUsage survives the serialized stdio line (#1419)', () => {
+  it('round-trips through JSON.stringify + JSON.parse + schema parse', () => {
+    const line = JSON.stringify({
+      v: 1,
+      type: 'init',
+      engine: 'openai-api',
+      compaction: { auto: true, contextWindowTokens: 20_000 },
+      mcp: { baseUrl: 'http://mcp.local', token: 'tok' },
+      provider: { baseUrl: 'http://p/v1', model: 'm' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp/work' },
+      maxToolIterations: 25,
+      restoredUsage: { promptTokens: 6722, estimated: false },
+    });
+
+    const parsed = v.parse(EmbeddedAgentCommandSchema, JSON.parse(line));
+
+    if (parsed.type !== 'init' || parsed.engine !== 'openai-api') throw new Error('unexpected parse output');
+    expect(parsed.restoredUsage).toEqual({ promptTokens: 6722, estimated: false });
+  });
+});
