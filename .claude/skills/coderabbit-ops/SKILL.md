@@ -76,15 +76,27 @@ gh api repos/<owner>/<repo>/commits/$SHA/status \
   -q '[.statuses[] | select(.context=="CodeRabbit") | "\(.state) | \(.description) | \(.updated_at)"] | .[0]'
 ```
 
-Three descriptions observed, all with `state=success`:
+Descriptions observed, all with `state=success`:
 
 | `description` | Meaning | Action |
 |---|---|---|
 | `Review completed` | A real review ran | Proceed to surfaces 2, 3 and 5 |
-| `Review rate limited` | **The bot never reviewed this commit** | Wait, or apply the `troubleshooting.md` disposition |
+| `Review rate limited` | **The bot never reviewed this commit** — and this may not be the whole reason; see below | Re-read against the comment body before deciding to wait |
+| `Review skipped: N files exceed the limit of 100` | **Structural.** The PR is over the plan's file cap and waiting will never clear it | Reduce the diff (see `troubleshooting.md`); no disposition can substitute for a review that cannot start |
 | `Review skipped: ignored keyword in the PR title` | Deliberately skipped by `.coderabbit.yaml` config (the `docs:` carve-out above) | Surface 2 is N/A — verify the diff really is docs-only |
 
 Note the `updated_at` too: the status is re-issued per head SHA, so **updating a PR branch resets it**. A `Review completed` from before a rebase says nothing about the current head.
+
+**`Review rate limited` does not mean "wait and it will open".** A round that the quota blocked can only report the quota — a *structural* skip beneath it (the file cap, a title keyword) is invisible from that round's status. The two look identical and only one of them clears with time.
+
+Two ways to reach the real reason, and they agree when you have it:
+
+1. **Read the bot's issue comment body**, which states the structural reason outright ("Too many files! This PR contains 107 files, which is 7 over the limit of 100.") even while the commit status still says `Review rate limited`.
+2. **Retrigger explicitly** with `@coderabbitai review` and re-read the description — it self-corrects to the structural reason once a round actually attempts the review.
+
+**Agreement between the description and the comment body is the signal that you have reached the true reason**; a description alone, from a round the quota blocked, is not. That agreement is also the stopping condition — without it there is no principled point at which to stop reading.
+
+(Lesson: Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — 107 files, 7 over the cap. The status read `Review rate limited` for over an hour across several rounds while the bot's own comment said the PR was too large and named the number. The Orchestrator was instructing the delegate to keep waiting for a window that could never open; the delegate read the comment body and stopped it. A first-pass generalisation — "the description misreports the reason" — was then narrowed by measurement: at 16:55 the description said the file cap and the body said the file cap; at 17:36 both said the quota. The description is not unreliable in general, it is silent about anything the blocked round did not get far enough to see.)
 
 **This is `workflow.md` Sub-pattern 7 (stale state carried across idle) wearing a CodeRabbit costume, and it is easiest to miss on the *last* push.** Once a genuine review has landed mid-PR, "CodeRabbit is handled for this PR" quietly becomes a background fact, and the next push is evaluated on CI alone. The re-read discipline is not "check the description once per PR" but **"check it for the head you are about to merge"** — including a head whose only change is a test, and including a head you pushed yourself thirty seconds ago.
 
@@ -113,6 +125,20 @@ The tell in the body is a `⚠️ Outside diff range comments (N)` block. Its fi
 **Zero inline comments is not evidence of zero findings.** When surface 3 comes back empty, that is precisely when surface 5 must be read, not when the check is over.
 
 (Sprint 2026-08-05 PR #1276 — CodeRabbit posted a formal review whose body held a Major finding: session-resume rollback freed PTY workers but not the embedded-agent worker the same change had just activated, leaking a subprocess and a minted MCP token that became unreachable once the session was deleted. `reviewDecision` was empty, inline comments were 0, and the commit status said `Review completed`. The Orchestrator reported "findings zero" to the owner on that basis; the Architect's independent audit had also missed the rollback asymmetry. It surfaced only because the delegate re-examined the CodeRabbit state on their own initiative and reported the ambiguity rather than accepting the Orchestrator's summary. A process that depends on a delegate doubting the Orchestrator is not a process — this section is what replaces it.)
+
+### Two ways the query itself lies to you
+
+Both of the following produce a confident, wrong "there is nothing there", and both were hit in one sitting while checking a PR whose walkthrough did exist:
+
+- **The bot's login is `coderabbitai[bot]`, not `coderabbitai`.** An exact-match filter — `select(.user.login == "coderabbitai")` — returns an empty set and reads as "the bot posted nothing". Use `startswith("coderabbitai")`.
+- **Walkthrough bodies are long and multi-line.** Piping a comment listing through `head -N` truncates *inside the first comment*, so a later one never appears. Do not bound this output by line count; filter by author instead.
+
+```bash
+gh api repos/<owner>/<repo>/issues/<N>/comments --paginate \
+  --jq '.[] | select(.user.login | startswith("coderabbitai")) | .body'
+```
+
+The failure mode is worth naming because of what it invites: an empty result from a broken query looks exactly like a real absence, and "the bot never posted a walkthrough" is a strange enough state to send you investigating the bot rather than the query. Confirm an absence with a second query shaped differently before believing it.
 
 ## Case-by-case dispositions
 
