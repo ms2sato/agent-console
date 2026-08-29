@@ -384,6 +384,7 @@ type EmbeddedAgentCommand =
       enabledTools?: EmbeddedAgentToolName[]; // FF-1a; server forwards the definition's raw value unchanged, incl. undefined — the loop applies the undefined -> default rule itself (see Built-in tools)
       instructions?: string[];                // opt-in instruction-file list, forwarded unchanged; the loop resolves + confines + loads them — see AGENTS.md loader
       compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number }; // Compaction; `auto` is the WORKER's toggle, the other two the definition's
+      restoredUsage?: { promptTokens: number; estimated: boolean }; // #1419; openai-api ARM ONLY. The newest authoritative context reading in the persisted log, seeding the restore-boundary check. Absent = no reading in the log (the estimator fallback stands). `estimated` is the reading's OWN honesty, carried forward unchanged
       resume?: { sdkSessionId: string } }     // Transcript Restore R1 (#1410); claude-sdk ARM ONLY (the real type is engine-discriminated -- an openai-api init carrying one is not representable). Absent = fresh session. The id comes from the workers row and nowhere else
   | { v: 1; type: 'user-message'; id: string; text: string } // id minted by server, echoed in events
   | { v: 1; type: 'cancel' }                                 // abort the in-flight turn (AbortController)
@@ -799,18 +800,47 @@ Auto compaction as specified above fires **at turn end**. That is the wrong mome
 
 The fix is a second evaluation of the *same* predicate at a second point: **right after `init`, before the first user turn**.
 
-Let `E` = `estimateTokensFromChars(conversation)` (the same chars/4 estimator the turn-end path falls back to), `W` = `compaction.contextWindowTokens`, `T` = the auto threshold, `F` = the full-distillation ceiling, and `P` = the partial-distillation input budget ratio.
+Let `S` = the check's input (defined immediately below), `W` = `compaction.contextWindowTokens`, `T` = the auto threshold, `F` = the full-distillation ceiling, and `P` = the partial-distillation input budget ratio.
+
+**`S` is a measurement where one exists, and an estimate otherwise (#1419).** Write `E` = `estimateTokensFromChars(conversation)` (the same chars/4 estimator the turn-end path falls back to) and `R` = `init.restoredUsage`, the newest authoritative reading the server extracted from the persisted log. Then:
+
+```text
+S = max(E, R)     when the log carried a reading
+S = E             otherwise
+```
+
+The maximum rather than a preference, because **both are lower bounds on the request the provider will actually price, and each misses what the other catches**: `R` measures a real request — tool schemas included — but measures the conversation as it stood when it was published, so messages appended after it are not in it; `E` covers every message present now but sums `.content` only, omitting the published tool schemas entirely. Taking the larger is the tightest bound available without attributing individual restored messages to positions in the log, which would put a message-index correspondence on the wire to recover a term `R` already contains. `S` cannot over-fire from a stale reading in the ordinary case, because readings only grow within a compaction window and the server never seeds from one taken before the last boundary (see "Seed extraction" below).
 
 | Condition | Behaviour |
 |---|---|
-| `W` unset | Nothing. No denominator means auto is inert — the same ruling the threshold semantics above make — and the provider's 400 stays Tier A's accepted behaviour |
-| `E < T×W` | Nothing. Growth from here is turn-end auto's job |
-| `T×W ≤ E ≤ F×W` | **Compact at the restore boundary.** `compact('auto')`, unchanged, whole conversation as the distillation input — byte-identical to what the live turn-end path does at the same size. Only the trigger point is new |
-| `E > F×W` | **Partial distillation.** The whole-conversation distillation call would itself overflow, so only the largest tail suffix that fits `P×W` becomes its input |
+| `W` unset | Nothing. No denominator means auto is inert — the same ruling the threshold semantics above make — and the provider's 400 stays Tier A's accepted behaviour. `S` is still PUBLISHED as the restored worker's pre-turn reading; nothing is decided by it |
+| `S < T×W` | Nothing. Growth from here is turn-end auto's job |
+| `T×W ≤ S ≤ F×W` | **Compact at the restore boundary.** `compact('auto')`, unchanged, whole conversation as the distillation input — byte-identical to what the live turn-end path does at the same size. Only the trigger point is new |
+| `S > F×W` | **Partial distillation.** The whole-conversation distillation call would itself overflow, so only the largest tail suffix that fits `P×W` becomes its input |
 
-The check runs **only when the loop was seeded from a restored conversation**. A fresh worker's conversation is one system message; evaluating the ratio against it would be the vacuous case the threshold semantics above already exclude.
+#### Seed extraction (#1419)
 
-The worker-level `auto` toggle gates the whole check exactly as it gates the turn-end one — the predicate *is* `shouldAutoCompact()`, reached by seeding `lastTurnUsage` with `{ promptTokens: E, estimated: true }` before consulting it. The seeding is not merely plumbing to reuse a function: it is also the usage reading a restored worker publishes before its first turn, which previously stayed absent until a turn had completed.
+The server extracts `R` during the same reconstruction pass that produces the conversation (4a–4d), so the ordering rule below is not a second policy kept in step with 4b — it *is* 4b's window.
+
+Two event kinds are readings, and the newer of them wins: a `context-usage` (published after every turn and every compaction attempt that produced a usable value), and a `context-compacted`'s `postTokens` (the size of the conversation that compaction left behind, which is itself a reading). Concretely:
+
+1. The last `context-usage` **strictly after** the last compaction boundary, if any.
+2. Otherwise that boundary's own `postTokens`, if it carries one.
+3. Otherwise nothing.
+
+**A reading from before the last boundary is never eligible.** It measures a conversation that boundary then discarded, so it overstates what remains by however much the compaction removed — which for an aggressive one is nearly everything. The legacy `context-handoff` carries no post-size, so a stream cut by one correctly yields nothing.
+
+`estimated` travels with the number rather than being recomputed. A reading the previous incarnation had to estimate must not arrive at the next one dressed as a measurement — and a boundary's `postTokens` is always `estimateTokensFromChars(seed)`, the loop's own chars/4 number, so it reports itself as an estimate even when it is the newest reading available.
+
+**Both paths are required.** A worker killed before completing any turn published no reading, and the field is simply absent: the estimator remains, bias and all. That is a legitimate state, not a fault, and it is the residual this Issue does not close (see below).
+
+**Scope is the `openai-api` arm.** `claude-sdk` carries its own context state through the SDK resume and computes no ratio of its own, so the field is not representable on its arm — the same structural containment `resume` gets from the other direction.
+
+The check runs **only when the loop was seeded from a restored conversation that carries something** -- more than a bare system-prompt head. Evaluating the ratio against a lone system message is the vacuous case the threshold semantics above already exclude.
+
+The distinction is `> 1` rather than `> 0`, and it became load-bearing when `S` started reading a measurement. A reconstruction legitimately yields a length-1 array: the server sends `[{role:'system'}]` whenever the restore window replayed no messages, which a rotated live window produces by starting after a turn's last `assistant-message` and before the `context-usage` that followed it (restore reads only the live window -- archived segments are excluded by construction). Under `> 0` that counted as a restore, and nothing came of it because the estimate of one system message is a few tokens. **A reading does not shrink with the window it outlived**, so the same array would now clear the threshold and distil a conversation consisting only of the system prompt -- replacing it with a seed announcing a summary of earlier messages that were never in front of the model. The post-compaction seed pair (`[system, seedUser]`) is length 2 and still qualifies, which is the case that must keep working.
+
+The worker-level `auto` toggle gates the whole check exactly as it gates the turn-end one — the predicate *is* `shouldAutoCompact()`, reached by seeding `lastTurnUsage` with `S` before consulting it -- carrying the reading's own `estimated` flag, so a measurement seed is published as one and an estimated seed is not dressed up as a measurement. The seeding is not merely plumbing to reuse a function: it is also the usage reading a restored worker publishes before its first turn, which previously stayed absent until a turn had completed.
 
 **Ordering: after the compaction FINISHES, not after it succeeds.** The compaction is awaited inside the subprocess's `init` handling, and `ready` is emitted only afterwards — but it is emitted **unconditionally**, including when the compaction failed. A provider that is down at activation time must not be able to wedge the worker: the failure path is `compact()`'s existing preserve-on-failure (a `turn-error`, conversation untouched), after which the worker is fully usable and the first user turn simply overflows the way the `W`-unset row already does. "Do not emit `ready` before the compaction" means *before it finishes*, never *before it succeeds*.
 
@@ -839,12 +869,22 @@ Two consequences, neither of which changes the design but both of which a reader
 
 1. **The boundary check under-fires**, by that constant. Against a realistic window (100k+) a few thousand tokens of schema is a rounding error and the rows behave as written. Against a small declared window it is the dominant term, and a conversation that would overflow can sit below `T×W` and compact nothing.
 
+   **When that is reachable, as an inequality.** With `G` the tool-schema gap, the two halves must hold at once — the check must not fire (`E < T×W`) and the request must exceed the model's real limit `L`. Declaring `W` honestly at `L` gives `W ≤ E + G < T×W + G`, so:
+
+   > **`W < G / (1 − T)`** — with the measured `G = 5620` and the default `T = 0.85`, about **37,500 tokens**.
+
+   The inequality is the useful form because it tells a later reader whether this is live for them. On a 32k model it is; on a 128k model it is not. Measured on the instance this was investigated on (2026-08-29): the smallest context window across its provider's whole catalogue was 196,608, so the wedge was **not reachable there at all** — a fact about that provider, not about the defect. Pushing `G` up does not close it: the entire published builtin tool list serializes to ~1.1k tokens, and the measured 5620 is dominated by the MCP tool list.
+
+   **The harm is not necessarily a 400.** A strict provider rejects the over-window request and the wedge below follows. A lenient one *silently truncates* instead — measured on the same instance, one model capped its reported `prompt_tokens` exactly at its window and answered anyway. That path produces no error at all: the model simply stops seeing the earliest part of the conversation, with nothing surfaced to the user and nothing for the server to observe. It is the worse of the two, and a reader who concludes "no 400, therefore no problem" has it backwards.
+
    **State the consequence at its real size, because "under-fires" understates it.** When that happens the first user turn overflows and ends in `error` — and `settleCompactionAtTurnBoundary` returns early on any ending other than `completed`, so the turn-end path never fires either. Every subsequent turn repeats it. The `Compact` tool is no escape: the request fails before the model can call anything. The worker is **wedged**, recoverable only by raising the declared window or resetting the transcript.
 
-   **This is pre-existing, and narrowed rather than created here.** A restored over-window conversation has always failed its first turn and always ended that turn in `error`, with the turn-end trigger never firing — that chain predates the restore boundary entirely. What this section adds is a check that closes the common case; what it does not do is close the case where the estimate is the thing that is wrong. The distinction matters for who owns the fix: a claim this design introduces must be made true here, while a pre-existing defect it merely narrows may be a follow-up. This is the latter, and the follow-up is the `context-usage` seeding described just above.
+   **This is pre-existing, and narrowed rather than created here.** A restored over-window conversation has always failed its first turn and always ended that turn in `error`, with the turn-end trigger never firing — that chain predates the restore boundary entirely. What this section adds is a check that closes the common case; what it does not do is close the case where the estimate is the thing that is wrong. The distinction matters for who owns the fix: a claim this design introduces must be made true here, while a pre-existing defect it merely narrows may be a follow-up. This is the latter, and the follow-up was the `context-usage` seeding described just above, shipped as #1419.
 2. **`P×W` bounds our estimate of the request, not the request.** A partial distillation's suffix is chosen so the *estimated* input fits the budget; the wire request is larger by the same constant. The conservatism `P = 0.7` buys is what absorbs it, which is the second half of that constant's premise doing exactly its job — but it is absorbing a known bias, not merely noise.
 
-Closing this properly means either counting the tool schemas in the estimate, or seeding the boundary check from the last **real** `context-usage` reading already sitting in the persisted log rather than re-estimating from the reconstructed text. The second is the more attractive of the two and is a change to what the server passes at `init`, so it belongs to its own Issue rather than to #1411.
+**Closed by [#1419](https://github.com/ms2sato/agent-console/issues/1419), for every worker that ever produced a reading.** Of the two ways to close it — counting the tool schemas in the estimate, or seeding the check from the real reading already sitting in the persisted log — the second was taken: it replaces an estimate with a measurement rather than improving the estimate, and it needs no per-provider tokenizer knowledge. `S`'s definition above and "Seed extraction" are that change; this subsection is retained because the bias it measures is still what the fallback path lives with.
+
+**The residual, which #1419 does not close.** A worker that never completed a turn has no reading, so `S = E` and the under-count is exactly as described above. The estimator's bias is unchanged for that population; what has changed is that it is now the *only* population exposed to it. Closing it further needs a different mechanism — an error-path escape that forces a partial compaction when a request comes back over-window — rather than a better number up front.
 
 With the defaults `T = 0.85` and `F = 0.9`, the full-compaction band `[0.85W, 0.9W]` is **non-empty**, so both the full row and the partial row are reachable — and testable — without overriding `compaction.threshold`.
 

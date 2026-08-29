@@ -1246,3 +1246,409 @@ describe('selectPartialDistillationMessages — suffix selection rules', () => {
     ]);
   });
 });
+
+/**
+ * Issue #1419: the restore-boundary check decided by the persisted
+ * MEASUREMENT rather than by re-estimating the reconstructed text.
+ *
+ * The estimator sums message `.content` only; the request a provider prices
+ * also carries every published tool schema, so the estimate is low by roughly
+ * a fixed per-worker constant (measured on a real instance: 1102 estimated
+ * against 6722 reported). Against a small declared window that constant is
+ * the dominant term, and a conversation that would overflow sits below the
+ * threshold and compacts nothing.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m5  `resolveRestoreBoundaryUsage` ignores the seed and returns the
+ *       estimate (i.e. revert to the pre-#1419 behaviour)
+ *       -> 4 fail, including 'fires on the SEED where the estimate alone
+ *          would not'. That test is the defect itself and is the one this
+ *          block exists for.
+ *   m6  prefer the seed unconditionally instead of taking the larger
+ *       -> 1 fails: 'keeps the ESTIMATE when the seed is smaller'. Measures
+ *          that the max rule, not merely the seed's presence, is pinned --
+ *          a seed measuring a prefix must not shrink a conversation that has
+ *          grown since it was taken.
+ *   m7  hard-code `estimated: true` on the emitted reading
+ *       -> 1 fails: 'publishes the seed as a MEASUREMENT'. Without it the
+ *          honesty flag could silently regress while every numeric assertion
+ *          still passed.
+ *   m17 revert the activation guard to `> 0` -- the seed-inclusive predicate
+ *       this change tightened
+ *       -> 1 fail, the bare-system-head test alone. That test is the only
+ *          thing standing between a persisted reading and a distillation of
+ *          a conversation containing nothing but the system prompt.
+ *   m18 over-correct the guard to `> 2`
+ *       -> 10 fail, including the post-compaction seed-pair case. Measured
+ *          because a guard can be wrong in two directions and m17 only
+ *          measures one; `> 2` would silently stop restoring every worker
+ *          that came back across a compaction boundary.
+ *   m19 revert the tie-break to `<=`, so the estimate wins on equality
+ *       -> 1 fail, the equality test alone. The two readings carry the same
+ *          NUMBER, so every numeric assertion in this file passes under the
+ *          mutation; only the provenance flag moves. That is why the test
+ *          asserts the whole event rather than `promptTokens`.
+ *   m16 move `emitContextUsageIfKnown` BELOW the `contextWindowTokens`
+ *       undefined return, so an undeclared window publishes nothing
+ *       -> 1 fails: 'stays inert when contextWindowTokens is unset'. Added
+ *          after review noted that test asserted only the "nothing fires"
+ *          half of the `W` unset row while its comment claimed the other
+ *          half too; before the added assertion this mutation was inert.
+ */
+describe('Compaction at the restore boundary — seeded from the persisted reading (#1419)', () => {
+  const WINDOW = 1000;
+
+  function restoredOfSize(tokens: number): ChatMessage[] {
+    const systemChars = 40;
+    return [
+      { role: 'system', content: 'S'.repeat(systemChars) },
+      { role: 'user', content: 'U'.repeat(tokens * 4 - systemChars) },
+    ];
+  }
+
+  it('fires on the SEED where the estimate alone would not — the defect itself', async () => {
+    // The wedge at unit scale: the reconstructed text estimates 600/1000
+    // (0.60, below the 0.85 threshold), while the previous incarnation's real
+    // reported reading was 900/1000 (0.90). Pre-#1419 this compacted nothing
+    // and the first turn went out over-window.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(600),
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeDefined();
+    expect(adapter.calls).toBe(1);
+  });
+
+  it('publishes the seed as a MEASUREMENT, carrying its own estimated flag', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(600),
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    const usage = events.find((e) => e.type === 'context-usage');
+    expect(usage).toEqual({ v: 1, type: 'context-usage', promptTokens: 900, estimated: false });
+  });
+
+  it('falls back to the estimator when the log held no reading', async () => {
+    // A worker killed before completing any turn. Legitimate state: the
+    // estimator remains, bias and all, and the pre-#1419 behaviour is
+    // byte-identical here.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(600),
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    expect(events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 600,
+      estimated: true,
+    });
+  });
+
+  it('keeps the ESTIMATE when the seed is smaller — messages appended after the reading still count', async () => {
+    // The reading measures the conversation as it stood when it was
+    // published; messages appended after it are not in it. Both numbers are
+    // lower bounds on the real request, so the larger is the tighter one.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(880),
+      restoredUsage: { promptTokens: 300, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 880,
+      estimated: true,
+    });
+    expect(events.find((e) => e.type === 'context-compacted')).toBeDefined();
+  });
+
+  it('keeps the seed’s MEASURED standing when the two numbers are equal', async () => {
+    // The tie is where the max rule stops being about size and becomes about
+    // provenance: both carry 900, but only one of them was reported by a
+    // provider. Publishing the estimate here would republish a measured figure
+    // as an estimated one -- the inversion the flag travels to prevent, and
+    // the one that would make the estimator's bias unauditable in exactly the
+    // logs a future reader would use to measure it.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(900),
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 900,
+      estimated: false,
+    });
+  });
+
+  it('lets the seed drive the FULL/PARTIAL cut, not just the fire decision', async () => {
+    // Eight 100-token messages plus a 10-token system head: the estimate is
+    // 810 either way, which on its own is below T=0.85 and would fire
+    // nothing. The two runs differ ONLY in the seed, and the seed alone
+    // decides which row is taken -- so the assertion is on the distillation
+    // input the provider actually received, since both rows emit the same
+    // marker and are otherwise indistinguishable from events.
+    function multiMessageRestore(): ChatMessage[] {
+      const messages: ChatMessage[] = [{ role: 'system', content: 'S'.repeat(40) }];
+      for (let i = 0; i < 8; i++) {
+        messages.push({ role: i % 2 === 0 ? 'user' : 'assistant', content: `${i}`.repeat(400) });
+      }
+      return messages;
+    }
+    const WHOLE_REQUEST_LENGTH = 9 + 1; // system + 8 messages + the compaction prompt
+
+    // Seed 880: inside [T×W, F×W] -> FULL row, whole conversation as input.
+    const fullAdapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const full = makeDeps({
+      adapter: fullAdapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: multiMessageRestore(),
+      restoredUsage: { promptTokens: 880, estimated: false },
+    });
+    await new AgentLoop(full.deps).compactAtRestoreBoundaryIfNeeded();
+
+    // Seed 950: above F×W -> PARTIAL row, narrowed to the largest tail suffix
+    // fitting P×W = 700.
+    const partialAdapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const partial = makeDeps({
+      adapter: partialAdapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: multiMessageRestore(),
+      restoredUsage: { promptTokens: 950, estimated: false },
+    });
+    await new AgentLoop(partial.deps).compactAtRestoreBoundaryIfNeeded();
+
+    expect(fullAdapter.calls).toBe(1);
+    expect(partialAdapter.calls).toBe(1);
+    expect(fullAdapter.capturedMessages[0].length).toBe(WHOLE_REQUEST_LENGTH);
+    expect(partialAdapter.capturedMessages[0].length).toBeLessThan(WHOLE_REQUEST_LENGTH);
+    // The narrowed input still leads with the system head, which is always
+    // kept and always counted.
+    expect(partialAdapter.capturedMessages[0][0].role).toBe('system');
+  });
+
+  it('stays inert when contextWindowTokens is unset, however large the seed', async () => {
+    // No denominator, no ratio -- unchanged by #1419. The seed is still
+    // PUBLISHED (it is the reading a restored worker shows before its first
+    // turn), but nothing is decided by it.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true },
+      restoredConversation: restoredOfSize(10),
+      restoredUsage: { promptTokens: 9_999_999, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    // The other half of the `W` unset row, which the assertions above cannot
+    // see: the reading is still PUBLISHED. It is what a restored worker shows
+    // before its first turn, and an implementation that returned early before
+    // emitting would satisfy every "nothing happened" assertion here.
+    expect(events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 9_999_999,
+      estimated: false,
+    });
+  });
+
+  it('does NOT fire on a bare system-prompt head, however large the reading', async () => {
+    // The reconstruction legitimately yields a length-1 array whenever the
+    // restore window replayed no messages -- a rotated live window can start
+    // after the last `assistant-message` and before the `context-usage` that
+    // followed it, and `readHistoryWithOffset` reads only that live window.
+    //
+    // Seeding the check from a reading is what made this reachable: the
+    // estimate of one system message is ~10 tokens and fired nothing, while a
+    // reading does not shrink with the window it outlived. Firing here would
+    // distill a conversation consisting only of the system prompt and then
+    // replace it with a seed announcing a summary of earlier messages that
+    // were never in front of the model -- a claim no participant made.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: [{ role: 'system', content: 'S'.repeat(40) }],
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    // Nothing is published either: with nothing restored there is no reading
+    // this worker can honestly claim as its own pre-turn usage.
+    expect(events.find((e) => e.type === 'context-usage')).toBeUndefined();
+  });
+
+  it('DOES fire on the post-compaction seed pair, which is a real restore', async () => {
+    // The guard must not over-correct: `[system, seedUser]` is length 2 and is
+    // exactly what a worker restored across a compaction boundary looks like.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: [
+        { role: 'system', content: 'S'.repeat(40) },
+        { role: 'user', content: 'U'.repeat(200) },
+      ],
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeDefined();
+    expect(adapter.calls).toBe(1);
+  });
+
+  it('is not consulted for a fresh (non-restored) worker', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredUsage: { promptTokens: 9_999_999, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-usage')).toBeUndefined();
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+  });
+});
+
+/**
+ * The wedge's SECOND link, pinned because the fix does not remove it: once a
+ * restored worker's turn fails, `settleCompactionAtTurnBoundary` returns
+ * early on any ending other than `completed`, so the turn-end trigger never
+ * fires either -- and the `Compact` tool is no escape, because the request
+ * dies before the model can call anything.
+ *
+ * This is the link the E2E deliberately does NOT reproduce: producing the
+ * over-window 400 that starts it needs a declared window under
+ * `G/(1-T) ~= 37,467` tokens, and the smallest context window available on
+ * the instance's provider is 196,608 (see the PR body's arithmetic). So it is
+ * pinned here, where the turn's ending is directly constructible. Architect
+ * ruling, 2026-08-29.
+ *
+ * REACHING the guard is the whole difficulty, and this test measured INERT
+ * twice before it did. Both maskings are recorded because neither is visible
+ * from the test's own text, and a future edit that reintroduces either would
+ * look like a simplification:
+ *
+ *   1. `shouldAutoCompact()` is consulted BEFORE the ending guard, so usage
+ *      below the threshold never reaches it. The first draft raised usage by
+ *      running the restore-boundary compaction first -- but `compact()` ends
+ *      by publishing the POST-compaction size as the new reading, which put
+ *      usage back under the threshold. The guard was unreachable and the
+ *      assertion was being satisfied by the ratio.
+ *   2. With usage fixed, the guard was still inert: `ScriptedAdapter` repeats
+ *      its LAST entry once the script is exhausted, so the compaction a
+ *      removed guard would attempt hit the same throw the turn did and
+ *      emitted no `context-compacted` either. The absence the test asserts
+ *      was produced by the adapter, not by the guard.
+ *
+ * The setup below closes both. It fails a turn that had ALREADY made
+ * progress -- first iteration returns a tool call and a provider-reported
+ * 900/1000, second iteration exhausts its three attempts -- so the error path
+ * re-publishes that 900 and the threshold is satisfied at the boundary; and
+ * the script ends with a usable summary response that ONLY a compaction can
+ * consume.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m8   delete `if (ending !== 'completed') return;`
+ *        -> 0 fail against draft 1 and draft 2 (inert, per the two maskings
+ *           above); 1 fail against the setup below -- this test, with a
+ *           `context-compacted` appearing after the failed turn.
+ *   m8b  weaken the guard to `if (ending === 'canceled') return;`
+ *        -> 1 fail. The pin discriminates `error` specifically, rather than
+ *           merely rejecting some one ending.
+ */
+describe('Compaction — a turn that ends in error settles nothing (#1419, the wedge\u2019s second link)', () => {
+  it('does not compact after a failed turn whose usage is over the threshold', async () => {
+    const adapter = new ScriptedAdapter([
+      {
+        kind: 'events',
+        events: [
+          { type: 'tool-call', callId: 'c1', name: 'T', argsJson: '{}' },
+          { type: 'done', finishReason: 'tool_calls', usage: { promptTokens: 900, completionTokens: 1, totalTokens: 901 } },
+        ],
+      },
+      // Three throws: MAX_PROVIDER_ATTEMPTS, so the second iteration exhausts
+      // its retries and the turn ends in `error`.
+      { kind: 'throw', error: new Error('context length exceeded') },
+      { kind: 'throw', error: new Error('context length exceeded') },
+      { kind: 'throw', error: new Error('context length exceeded') },
+      // A summary response that is reachable ONLY if a compaction is
+      // attempted after the failed turn. Without it the scripted adapter's
+      // last-entry-repeats rule makes the compaction call throw as well, and
+      // a removed guard produces no `context-compacted` for a reason that has
+      // nothing to do with the guard -- which is exactly how the previous
+      // draft of this test measured inert.
+      textResponse('SUMMARY'),
+    ]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: 1000 },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'hello');
+
+    expect(events.some((e) => e.type === 'turn-error')).toBe(true);
+    // The threshold IS satisfied -- this is what makes the assertion below
+    // rest on the ending guard rather than on the ratio.
+    expect(events.filter((e) => e.type === 'context-usage').at(-1)).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 900,
+      estimated: false,
+    });
+    expect(events.some((e) => e.type === 'context-compacted')).toBe(false);
+  });
+});
