@@ -135,15 +135,22 @@ export interface EmbeddedAgentSnapshot {
    */
   restoring: boolean;
   /**
-   * The `messageCount` from the most recently accepted `restore-info` for
-   * the current epoch; null before any has been received this epoch. Used
-   * to render "Loading N previous messages..." (wording is deliberately
-   * engine-neutral -- see EmbeddedAgentWorkerView.tsx's comment above that
-   * block, or docs/design/embedded-agent-sdk-engine.md §4.3). This field's
-   * persistence past `restoring` flipping back to false (see the `restoring`
-   * doc comment above) is also depended on by EmbeddedAgentWorkerView.tsx's
-   * SDK-engine restore-divergence notice (`hadPriorTranscriptThisIncarnation`),
-   * so a future change to when this field resets to null must account for it.
+   * The `restoredMessageCount` from the most recently accepted
+   * `restore-info` for the current epoch; null before any has been received
+   * this epoch. The wire field and this snapshot field are deliberately the
+   * same name because they are the same concept end to end: how many entries
+   * were recovered from the persisted transcript (replayed messages plus a
+   * compaction summary, excluding only the freshly-assembled system prompt).
+   * It is therefore genuinely 0 for a worker that was activated but never
+   * spoken to -- it is NOT a reconstruction array's length, and has no
+   * floor of 1. Used to render "Loading N previous messages..." (wording is
+   * deliberately engine-neutral -- see EmbeddedAgentWorkerView.tsx's comment
+   * above that block, or docs/design/embedded-agent-sdk-engine.md §4.3).
+   * This field's persistence past `restoring` flipping back to false (see
+   * the `restoring` doc comment above) is also depended on by
+   * EmbeddedAgentWorkerView.tsx's SDK-engine restore-divergence notice
+   * (`hadPriorTranscriptThisIncarnation`), so a future change to when this
+   * field resets to null must account for it.
    */
   restoredMessageCount: number | null;
   /**
@@ -567,7 +574,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         this.acceptEpoch(message.epoch);
         if (this.epoch === message.epoch) {
           this.applyRestoreInfo(
-            message.messageCount,
+            message.restoredMessageCount,
             message.repairedToolCallIds,
             message.completed,
             message.sdkResumed,
@@ -719,13 +726,13 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
    * that wipes `entries` correctly re-renders it from the redelivered data.
    */
   private applyRestoreInfo(
-    messageCount: number,
+    restoredMessageCount: number,
     repairedToolCallIds: string[],
     completed: boolean,
     sdkResumed: boolean | undefined,
   ): void {
     const patch: Partial<EmbeddedAgentSnapshot> = {
-      restoredMessageCount: messageCount,
+      restoredMessageCount,
       restoring: completed === false,
       // R1: carried through verbatim, absence included. The server re-pushes
       // this whole message to correct the flag downward when a resume turns

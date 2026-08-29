@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition, ExitReason } from '@agent-console/shared';
+import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
@@ -307,10 +307,10 @@ function setup(opts?: {
     onRestoreInfo: mock(() => {}),
   };
   worker.connectionCallbacks.set('conn-1', {
-    onData: recorder.onData as unknown as (data: string, offset: number, epoch: number) => void,
-    onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: ExitReason) => void,
-    onActivityChange: recorder.onActivityChange as unknown as (state: 'active' | 'idle' | 'asking' | 'unknown') => void,
-    onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { messageCount: number; repairedToolCallIds: string[]; completed: boolean }) => void,
+    onData: recorder.onData,
+    onExit: recorder.onExit,
+    onActivityChange: recorder.onActivityChange,
+    onRestoreInfo: recorder.onRestoreInfo,
   });
 
   const service = new EmbeddedAgentWorkerService({
@@ -831,7 +831,9 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       const info = h.service.getRestoreInfo(h.workerId);
       expect(info).not.toBeNull();
       expect(info!.epoch).toBe(h.worker.epoch);
-      expect(info!.messageCount).toBe(3); // system + user + assistant
+      // user + assistant. The synthetic system prompt is NOT restored content
+      // and is excluded from the count.
+      expect(info!.restoredMessageCount).toBe(2);
       expect(info!.repairedToolCallIds).toEqual([]);
       expect(info!.completed).toBe(false);
     });
@@ -841,6 +843,41 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+
+    it('reports restoredMessageCount 0 for a worker that was activated but never spoken to', async () => {
+      // The count the client gates its "your conversation may not have
+      // carried over" notice on. It has to be able to reach 0, or that
+      // notice fires on a worker with no conversation at all -- a false
+      // warning that teaches the user to ignore the real one.
+      //
+      // An activated worker's persisted stream is never literally empty (the
+      // service treats an empty read as an I/O failure), so the reachable
+      // production shape is a stream of lifecycle rows carrying no
+      // conversation.
+      const noiseOnlyStream = [
+        JSON.stringify({ v: 1, type: 'ready' }),
+        JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
+        JSON.stringify({ v: 1, type: 'exited', code: 0 }),
+      ].join('\n');
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: noiseOnlyStream } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const info = h.service.getRestoreInfo(h.workerId);
+      // Restore SUCCEEDED -- this is not the null-on-failure path above.
+      expect(info).not.toBeNull();
+      expect(info!.restoredMessageCount).toBe(0);
+    });
+
+    it('PRESENCE CONTROL: the same path reports non-zero once the stream carries real messages', async () => {
+      // Pairs with the 0 assertion directly above. On its own, "the count
+      // was 0" cannot tell "nothing was restored" apart from "this service
+      // stopped reporting a count at all"; this control is what makes the
+      // 0 meaningful.
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.service.getRestoreInfo(h.workerId)!.restoredMessageCount).toBe(2);
     });
 
     it('returns null after a first-ever activation (nothing to restore)', async () => {
@@ -864,7 +901,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
 
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({
-        messageCount: 3,
+        restoredMessageCount: 2,
         repairedToolCallIds: [],
         completed: false,
       });
@@ -903,7 +940,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
 
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(2);
       expect(h.recorder.onRestoreInfo).toHaveBeenNthCalledWith(2, {
-        messageCount: 3,
+        restoredMessageCount: 2,
         repairedToolCallIds: [],
         completed: true,
       });

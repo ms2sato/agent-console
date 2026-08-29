@@ -30,7 +30,7 @@ export interface WorkerCallbacks {
   // has no such concept, `false` means a resume did not take. Consumers must
   // test `=== false`, never `!sdkResumed`.
   onRestoreInfo?: (info: {
-    messageCount: number;
+    restoredMessageCount: number;
     repairedToolCallIds: string[];
     completed: boolean;
     sdkResumed?: boolean;

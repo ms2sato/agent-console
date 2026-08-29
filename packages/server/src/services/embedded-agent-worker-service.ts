@@ -434,7 +434,15 @@ interface Runtime {
  * `openai-api` worker, which is why consumers test `=== false`.
  */
 export interface RestoreInfo {
-  messageCount: number;
+  /**
+   * Passed through verbatim from `reconstructConversation`'s outcome, which
+   * is the single writer of this count -- see its JSDoc for the definition
+   * (transcript-derived entries, compaction summary included, synthetic
+   * system prompt excluded). This layer must not derive it from the
+   * conversation array: doing so requires knowing the seed's shape, which is
+   * the restore module's private business.
+   */
+  restoredMessageCount: number;
   repairedToolCallIds: string[];
   completed: boolean;
   sdkResumed?: boolean;
@@ -728,7 +736,7 @@ export class EmbeddedAgentWorkerService {
           // fired yet at this point in runActivation; handleLoopLine flips it
           // to true (and re-pushes) once `ready` arrives (#1205).
           restoreInfo = {
-            messageCount: outcome.conversation.length,
+            restoredMessageCount: outcome.restoredMessageCount,
             repairedToolCallIds: outcome.repairedToolCallIds,
             completed: false,
             // R1: optimistic for `claude-sdk`, and corrected downward by the
