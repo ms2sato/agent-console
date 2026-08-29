@@ -68,8 +68,9 @@ When you form a conclusion from a *secondary signal* — a derived, lagging, or 
 | CodeRabbit review | absence of new comments; pre-merge checks passing; a stale `CHANGES_REQUESTED`; a rate-limit message; **`CodeRabbit=SUCCESS` in `statusCheckRollup`** | every surface in the [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md) verdict-surface checklist, re-read at decision time — including the commit status's `description` (`state` is `success` even when the bot never reviewed) and the **body of each formal review** (a finding outside the diff appears there and in no inline comment) |
 | Cross-repo issue | "this symptom looks like the other repo's known bug / shared pattern" | reproduce in *this* repo's own code path before filing, blaming, or claiming applicability |
 | Runtime observation | a dev-server log line / websocket frame / UI render / channel assumption taken as proof a path ran or a notification arrived | the authoritative store / server-side state / a deterministic probe / per-channel confirmation |
+| Issue tracker state | an **open** Issue read as "not built yet"; a **closed** one read as "shipped and working" | the code and the merge history — read what is actually in `main` before scoping work from an Issue's status |
 
-The six sub-patterns below are specializations of this single rule. Each names the inference trap, the verify procedure, and its Lesson source. Sub-patterns 1-4 cover over-trusting a weak signal; 5 covers the inverse (a signal that never arrives), and 6 covers the search strategy that produces the wrong signals in the first place.
+The sub-patterns below are specializations of this single rule. Each names the inference trap, the verify procedure, and its Lesson source. Sub-patterns 1-4 cover over-trusting a weak signal; 5 covers the inverse (a signal that never arrives); 6 covers the search strategy that produces the wrong signals in the first place; 7 covers a signal that was strong once and has since expired; and 8 covers a signal about a *record* rather than about the system.
 
 Read this if the rules feel arbitrary: [`docs/narratives/2026-07-27-four-days-red-and-four-wrong-hypotheses.md`](../../docs/narratives/2026-07-27-four-days-red-and-four-wrong-hypotheses.md) — four disproven hypotheses in one day, and what a wrong hypothesis feels like from the inside while you hold it.
 
@@ -194,6 +195,14 @@ Claims of the form "**still waiting on** X" are the highest-risk shape, because 
 
 (Lessons, both Sprint 2026-08-05: the Architect held "PR #1270 is awaiting owner gate" across two days of intermittent turns, restating it in each status summary without re-reading, then raised an urgent warning that a commit-message keyword would close an Issue on merge — the PR had merged two days earlier and the Issue had closed with it. Separately, the Orchestrator left a self-check timer whose action text still described a PR merged hours before; it fired repeatedly while a delegate's completed PR sat unreviewed for six hours, and the stall was surfaced by the owner asking what the hold-up was, not by the timer.)
 
+### Sub-pattern 8: the record, mistaken for the system
+
+**Inference trap.** An Issue's status read as a statement about the code — **open** as "not built yet", **closed** as "shipped and working". The tracker records intent and attention, and drifts from the repository in both directions. This is worst at *scoping* time, where the error is invisible: planning to build something that already exists looks exactly like work.
+
+**Verify procedure.** Read `main` — the code and the merge history — before scoping from a status. For an open Issue ask: **built nothing, or confirmed nothing?** Those call for entirely different work.
+
+(Lesson: Sprint 2026-08-29 — a phase was scoped as "the main body of #1123, a rewrite" from that Issue being open. The implementation had shipped in PR #1201 and its follow-ups; #1123 was open only because a dogfood E2E that failed on 2026-07-18 was never re-run after the fix landed. The phase collapsed to finishing one verification.)
+
 ## Cheap refutation: universal claims
 
 A sister criterion to Inference vs Verification, and a different axis. That rule asks *which signal you are treating as ground truth*. This one asks *what shape the claim has*, regardless of who made it.
@@ -209,6 +218,20 @@ It fires on the claim's form, not its source — a subagent's report, a review c
 This names a point several existing disciplines already circle: the vacuous truth of `[].every()` in boundary-value testing, and the way an "accepted risk" paragraph can quietly remove something from the verification surface. All three are the same shape — a universal, an empty set, or a negation, cheap to state and expensive to have wrong.
 
 (Lessons, both Sprint 2026-08-20: a specialist reported "no dedicated sibling test anywhere else in the codebase either", which the delegate refuted with one `ls` — the precedent existed and the gap was real, requiring a re-delegation. Separately, the Orchestrator inferred that a `queryFn` signature trap was silently affecting 18 sibling call sites, framed it to the owner as a probable latent-debt finding, and had a delegate measure it: `typecheck` catches it at every site. Both claims were plausible, both were refutable in under a minute, and only one of them was actually checked before it travelled.)
+
+## A check's existence is not its detection power
+
+Third sibling of the two criteria above. They ask which signal you are trusting and what shape your claim has; this asks whether **the check you already have would notice**. A test exists, a rule was followed, a pin was named — none of that is evidence any of them would catch what they were placed for, and because they read as coverage they end the search.
+
+**Break the thing the check should catch, and watch it fail.** If it stays green it is not doing that job, whatever its name. This is `testing.md`'s polarity requirement generalised past bug fixes to any check being relied on.
+
+Three moments where the illusion is strongest:
+
+- **A check placed to satisfy a rule.** Satisfying the rule and having its detection power are different achievements; the first is what gets reported.
+- **A pin on a contract you just documented.** A pin fixes the contract's *content*, not its *scope*. Ask separately what path makes the contract false, and whether the pin sees it.
+- **A check you inherited.** Nobody re-derives what a green test asserts; its greenness answers whatever question is currently asked of it.
+
+(Lessons, Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403). A test placed to satisfy Gap-Scan Q10 read an in-memory map instead of the persisted row: mutating the mapper to drop the field **fails with the fix and passes without it** — Q10's name, none of its detection power. A pin fixing which turn an injected `/compact` belongs to **passes under the old ordering too**, the ordering in which that contract silently breaks; that measurement is how much the pin was protecting. Both surfaced from CodeRabbit, after an implementation and an independent audit had called the area clean.)
 
 ## Commands
 

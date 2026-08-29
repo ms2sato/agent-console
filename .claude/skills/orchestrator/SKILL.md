@@ -133,6 +133,13 @@ The Architect observes no ambient state — no CI, no PR status, no dogfood, no 
 
 Full rationale and the ambient-observation guarantee: [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §6.
 
+**Label each claim by how you know it, and keep quotes separate from your reading of them.** You are the only input either side has to the other, so both directions of relay pass through you unchecked.
+
+- **An unverified claim, relayed flat.** A package mixing "I read this in the code" with "the delegate told me this" reads as one level of confidence. Mark them per claim — a blanket "I have not checked everything" does not say *which* thing to doubt.
+- **Attribution, inflated in transit.** "No change needed" easily becomes "your judgment was right", which grants something the original did not. **Quote the original; mark your reading as yours.** The receiver cannot reliably catch this — one delegate refused such a claim only because the wording felt off, and said a smoother version would have been accepted.
+
+(Lessons, both Sprint 2026-08-28: a delegate's "already recorded in Appendix A" was relayed into an audit package; it was not recorded, and the Architect audited under a false premise. Separately, the Architect's "no additional test needed" was relayed as "your decision not to add one was correct" — a decision the delegate had never made, and declined on that ground.)
+
 ### When the Architect stops answering
 
 `get_session_status` reports `activityState: idle` both for "replied and waiting" and for "stuck" — the field describes the worker, not the exchange. Re-sending into silence is the default failure mode; it produced four unanswered pushes in one sprint before anyone checked.
@@ -175,6 +182,20 @@ resolved. Your judgment that it is resolved is what I need to see, not infer.
 The failure is not disobedience. A worker who resolves a scope question correctly has, from their side, *handled* it — and "handled" collapses into "no longer outstanding" unless the report is named as a separate obligation. What you lose is exactly the judgment call you would have wanted to see.
 
 (Lesson: Sprint 2026-07-18b — a delegate prompt said "you may consult the architect directly — no need to route through me", meaning no pre-approval. The Architect ruled on whether a PR needed a production-side extraction — which decides whether it is Orchestrator-mergeable or owner-gated — and explicitly asked for the outcome to reach the Orchestrator. It never did; the Orchestrator found the exchange by reading message files during the retro. The ruling happened to land on the test-only branch, so nothing broke. Asked directly, the delegate confirmed they knew who the Orchestrator was and had reported everything else correctly — the gap was the prompt's wording, not role confusion.)
+
+## Writing instructions: specify gates and properties, delegate mechanisms and claims about the code
+
+You see the code through a model of it; the delegate sees the code. Instruction defects sort into two kinds needing different fixes.
+
+**A claim about the code, issued as a step** — "take main's side, it is a pure deletion", "three edge cases need tests", "twelve files match". Each is a fact dressed as a procedure, and it breaks the moment the model and the repository disagree. The delegate then follows a correct-looking instruction into a wrong result, often invisibly: a conflict resolved as you said, silently reverting a rename they had made. **The fix costs one clause** — write it as something to check: *"main's side should be a pure deletion — confirm before taking it, and report if it is not."*
+
+**A mechanism, specified before it can be known** — "consolidate the guard into one place". Mechanism emerges while implementing; naming it up front replaces the implementer's information with yours. **Specify the property instead**: "don't create a second writer for the same fact" reaches the same place and can be satisfied better by someone who has read the code. Told to consolidate a guard, one delegate made a single writer of the *definition* and had each site consult it — the audit judged that better than the instruction, since collapsing the sites would have discarded the context each verdict carries.
+
+**What is worth specifying tightly is a gate.** "Report anything MEDIUM or above before fixing it" names no mechanism, only a moment to stop — and it stopped a defensive fallback that would have re-created, in a second file, the duplicate source of truth that same delegate had removed hours earlier.
+
+**Keep the proportion honest.** Over-specifying costs round trips; what costs orders of magnitude more is what nobody specified or verified at all. A retrospective centring on "I was too prescriptive" is measuring the cheap failure.
+
+(Lesson: Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — the delegate's retrospective sorted six Orchestrator instruction defects into these two classes, supplied both fixes, then pushed back on the Orchestrator's summary of them: *"what was expensive was the two things neither of us specified."* Both had been found by the external reviewer, after the implementation and an independent audit called the area clean.)
 
 ## Core Responsibilities
 

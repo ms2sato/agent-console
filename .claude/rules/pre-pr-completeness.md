@@ -68,6 +68,12 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
    (Lesson: Sprint 2026-05-10 PR #770 — `activate*Pty` async migration produced ~50 call-site changes in tests; the bulk-replace script was rerun twice (the first pass had a 14-space indent bug). Counting up-front would have set churn expectations and surfaced the indent assumption earlier.)
 
+   **8.5 (review-mechanism ceiling) — for any PR that must land atomically:** the count has a second reader. **CodeRabbit skips a PR over 100 changed files entirely** (see [`coderabbit-ops`](../skills/coderabbit-ops/SKILL.md)), and a PR that cannot be reviewed cannot satisfy the Definition of Done — no fallback disposition substitutes for a review that never started.
+
+   **Estimate the file count while writing the AC, not at the gate.** Near the ceiling, choose the mitigation there: a preceding PR removing mechanical fan-out, or a stacked review that still merges as one move. **Do not split the atomic change itself to fit a tool** — the window atomicity protects is measured in review round-trips, not minutes.
+
+   (Lesson: Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — 107 files, found at the gate and reported as `Review rate limited`, which reads as "wait" for a condition that never clears. Twelve were migration tests whose entire diff bumped an assertion another test already owned; removing that duplication was right on its own merits, took the PR to 95, and let a real review run — which found a Major.)
+
 9. **Target-environment cross-check — for bug fix PRs:**
 
    When this PR is a bug fix, enumerate every environment / mode the affected code path supports (single-user vs multi-user, AUTH_MODE=none vs multi-user, server-spawn vs elevated-spawn, dev vs prod, with-cache vs no-cache, etc.) and verify the fix design works in **all** of them, not just the one where the bug was first observed.

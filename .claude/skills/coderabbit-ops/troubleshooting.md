@@ -2,6 +2,22 @@
 
 Case-by-case dispositions for CodeRabbit issues. The verdict-surface checklist, CLI invocation, and LOW / NITPICK findings policy live in [`SKILL.md`](SKILL.md); this file covers the exception paths.
 
+## The plan's limits are permanent, not incidents
+
+**This repository is on CodeRabbit's free plan** (owner-confirmed, 2026-08-28): **one included review per hour** (the remaining count is stated at the end of each review body) and **a hundred changed files per PR**, over which the bot skips the review entirely.
+
+**Do not investigate these as misconfiguration.** A review body can carry `Plan: Pro Plus` next to `You've used all free OSS reviews` — the first is display text, not this repository's contract state.
+
+Three consequences:
+
+1. **A slot given to one PR is an hour taken from another.** Decide the allocation deliberately rather than letting whichever branch pushes next consume the window. The claim is strongest for a PR with **no genuine round yet** and a large production diff; weakest for one with real rounds already and a small remaining gap — that case has the dual-clean disposition below, and a zero-round PR does not.
+2. **Batch the fixes.** Three pushes in response to one review spends three hours to get two reviews.
+3. **The `docs:` carve-out is an allocation tool.** A retro or spec PR titled `docs:` skips auto-review by config, preserving the window for code PRs waiting on it.
+
+**Over the file cap, no disposition substitutes for the review** — it never started, so there is nothing to have confidence in. Reduce the diff, and before splitting the change itself look for **accidental fan-out**: files touched for reasons unrelated to the change's subject. Removing that is usually right on its own merits and leaves the design intact; splitting a deliberately atomic change does not.
+
+(Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — 107 files. Twelve were migration tests whose entire diff bumped an assertion `migration.test.ts` already owned: every migration added had been touching every migration test. Removing it took the PR to 95 and let a real review run, which found a Major that an independent audit and the acceptance check had both missed. Splitting the swap itself was rejected — the window where one engine has no context management is measured in review round-trips, not minutes.)
+
 ## Q: The local CodeRabbit CLI is rate-limited. What do I do?
 
 **Rate-limit fallback (closes Issue #653).** When the local CLI is rate-limited (typically 48-min wait window), proceed to PR creation, rely on the GitHub-side CodeRabbit bot review (separate token, runs on PR open), and add a note to the PR body:
