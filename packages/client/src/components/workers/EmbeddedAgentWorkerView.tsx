@@ -198,8 +198,10 @@ export function EmbeddedAgentWorkerView({
     restoredMessageCount !== null && restoredMessageCount > 0;
   // R1: `sdkResumed` is THREE-valued -- `undefined` means "this engine has
   // no such concept" (every `openai-api` worker, and a `claude-sdk` worker
-  // before its first restore-info), `false` means "a resume was attempted or
-  // intended and did not take". Only the latter may show the notice, so this
+  // before its first restore-info), `false` means "this incarnation's SDK
+  // session did not resume" -- the OUTCOME, never an attempt or an intent;
+  // the route list lives with the wire type in `@agent-console/shared`'s
+  // `types/session.ts`. Only the latter may show the notice, so this
   // is an explicit `=== false`, never `!sdkResumed`: the negation would
   // collapse the two and put a permanent false warning on every
   // `openai-api` worker. Same trap as the engine discriminant above, which

@@ -172,10 +172,16 @@ export const RestoreInfoMessageSchema = v.strictObject({
    * entirely, because it has no such concept.
    *
    * Three-valued, and the third value is not a loading race: `absent` means
-   * "this engine does not have the concept", `false` means "a resume was
-   * attempted and did not take". Reading absence as `false` collapses those
-   * two and would show a divergence notice on every `openai-api` worker, so
-   * the client tests `=== false` explicitly and never `!sdkResumed`.
+   * "this engine does not have the concept", `false` means "this
+   * incarnation's SDK session did not resume" -- defined by the OUTCOME,
+   * never by an attempt, since three of its four routes never send a
+   * `resume`. The route list lives with the wire type in
+   * `types/session.ts`'s `restore-info` member; this comment does not
+   * restate it.
+   *
+   * Reading absence as `false` collapses those two and would show a
+   * divergence notice on every `openai-api` worker, so the client tests
+   * `=== false` explicitly and never `!sdkResumed`.
    */
   sdkResumed: v.optional(v.boolean()),
 });
