@@ -2017,18 +2017,35 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
     // The pre-flight caught it before a resume was attempted, so the
     // subprocess is healthy and mid-activation. Replacing it would throw away
     // a working incarnation.
+    //
+    // The kill handler and the short escalation windows are load-bearing, and
+    // were added after MEASURING that this test had no reach without them.
+    // As originally written -- default windows, no `setOnKill`, a 40 ms wait
+    // -- deleting `handleResumeFailed`'s entire `not-found` early return left
+    // all 130 tests in this file green: a replacement WAS started, but
+    // `deactivate` stalls on a fake child that never exits, so the re-spawn
+    // lands well after the assertion. The assertion was satisfied by the
+    // stall, not by the branch it names, and `not-found` could have silently
+    // acquired a full teardown-and-respawn of a healthy worker with nothing
+    // noticing.
+    //
+    // The `refused` test below is the positive control for the window: with
+    // these identical seams it observes its replacement spawn.
     const h = setup({
       definition: SDK_DEFINITION,
       everActivated: true,
       sdkSessionId: 'sess-prev',
       readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
     });
     await h.service.activate(h.sessionId, h.workerId);
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
     const spawnsBefore = h.fake.captured.length;
 
     h.fake.pushStdout(sdkResumeFailed('not-found'));
     await waitFor(() => h.worker.sdkSessionId === null);
-    await new Promise((r) => setTimeout(r, 40));
+    await new Promise((r) => setTimeout(r, 300));
 
     expect(h.fake.captured.length).toBe(spawnsBefore);
   });
