@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition, ExitReason } from '@agent-console/shared';
+import type { EmbeddedAgentDefinition } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
@@ -307,10 +307,10 @@ function setup(opts?: {
     onRestoreInfo: mock(() => {}),
   };
   worker.connectionCallbacks.set('conn-1', {
-    onData: recorder.onData as unknown as (data: string, offset: number, epoch: number) => void,
-    onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: ExitReason) => void,
-    onActivityChange: recorder.onActivityChange as unknown as (state: 'active' | 'idle' | 'asking' | 'unknown') => void,
-    onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { restoredMessageCount: number; repairedToolCallIds: string[]; completed: boolean }) => void,
+    onData: recorder.onData,
+    onExit: recorder.onExit,
+    onActivityChange: recorder.onActivityChange,
+    onRestoreInfo: recorder.onRestoreInfo,
   });
 
   const service = new EmbeddedAgentWorkerService({
