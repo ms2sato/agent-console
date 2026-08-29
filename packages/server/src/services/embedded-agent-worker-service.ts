@@ -1333,9 +1333,15 @@ export class EmbeddedAgentWorkerService {
    * **This method clears nothing itself.** It routes the incarnation into
    * `deactivate`, whose exit the observer covers, and the observer's single
    * existing choke point collects both dangling obligations (`turnActive`,
-   * `revokeByWorker`) exactly as it does for an ordinary death. Adding a
-   * third `turnActive` writer here would break the single-writer property
-   * that made this bug findable at all.
+   * `revokeByWorker`) exactly as it does for an ordinary death.
+   *
+   * The property being preserved is about TURN-ENDING writers, of which there
+   * are two: the `state: 'idle'` arm and the exit observer. `deliverUserTurn`
+   * assigns the flag in two more places, and neither is a counterexample --
+   * the optimistic set at admission, and the rollback in its `writeCommand`
+   * catch, which undoes that set for a message the subprocess never received,
+   * so no turn ever began. A genuine third turn-ending writer here is what
+   * would break the property that made this bug findable at all.
    *
    * Ordering, stated: the incarnation's own `fatal` has ALREADY been appended
    * and fanned out by the time this runs (the append is unconditional, above)

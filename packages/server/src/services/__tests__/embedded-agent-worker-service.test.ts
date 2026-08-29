@@ -2504,3 +2504,65 @@ describe('EmbeddedAgentWorkerService — fatal during a requested shutdown (#141
     expect(h.worker.subprocess).toBeNull();
   });
 });
+
+describe('EmbeddedAgentWorkerService — a refused resume and a fatal from the same transport error', () => {
+  it('replaces the incarnation ONCE when both events arrive together', async () => {
+    // `sdk-engine`'s transport-error path calls `reportRefusedResume()` and
+    // then `handleFatal()` in sequence, so one dead transport emits BOTH a
+    // `sdk-resume-failed` row and a `fatal` row. The two recoveries have
+    // independent guards (`resumeRecoveryStarted`, `fatalReplacementStarted`)
+    // that know nothing about each other, so what actually prevents a second
+    // teardown is `deactivate`'s synchronous prefix setting
+    // `shutdownRequested` before the reader reaches the `fatal` line.
+    //
+    // That protection is a property of statement ordering, and this test is
+    // its pin. Its reach was MEASURED rather than assumed, because the first
+    // two assertions that looked like they pinned it did not:
+    //
+    // - Spawn count alone is masked. Remove the guard and the fatal path does
+    //   start a second teardown, but `activate`'s in-flight map collapses the
+    //   two re-activations back into one spawn, so the count stays 2.
+    // - A single `await Promise.resolve()` inserted before the `deactivate`
+    //   call does NOT break the contract. Its continuation is queued before
+    //   the reader's own, so the guard is still set by the time the `fatal`
+    //   line is handled. The ordering tolerates one microtask.
+    // - A deferral that outlasts the reader's next line (a timer, or any real
+    //   I/O await) DOES break it, and this test fails on it.
+    //
+    // So the observable that is not masked is the teardown itself: each
+    // `deactivate` writes one `shutdown` command, and a second one means the
+    // fatal was not absorbed.
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      spawnAsUserFnOverride: fake.fn,
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    // Both rows, in the order the engine emits them.
+    fake.children[0].pushStdout(
+      `${JSON.stringify({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: 'sess-prev', reason: 'refused' })}\n`,
+    );
+    fake.children[0].pushStdout(FATAL_LINE);
+
+    await waitFor(() => fake.children.length >= 2, 3000);
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(fake.children.length).toBe(2);
+    expect(h.worker.subprocess).not.toBeNull();
+    // The spawn count alone does NOT pin the ordering property: with the
+    // guard removed the fatal path still starts a second teardown, and
+    // `activate`'s in-flight map quietly collapses the two re-activations
+    // back into one spawn. The teardown itself is the observable that does
+    // not get masked -- each `deactivate` writes one `shutdown` command, so
+    // a second one means the fatal was not absorbed.
+    const shutdowns = fake.children[0].stdinWrites.filter((w) => w.includes('"shutdown"')).length;
+    expect(shutdowns).toBe(1);
+  });
+});
