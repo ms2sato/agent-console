@@ -518,6 +518,16 @@ async function main(): Promise<void> {
         'the replacement to recall the planted word',
       );
       check(recalled, `the conversation survived the process boundary (recalled ${SECRET_WORD})`);
+      // Settle the turn BEFORE snapshotting: `recalled` resolves on the first
+      // matching assistant message, and a `tool-call` can still be appended
+      // after it and before `idle`. Reading the stream at the match would let
+      // the pin below pass on a turn that did use a tool -- the pin exists to
+      // measure the route stayed closed, so its own window has to cover the
+      // whole turn.
+      check(
+        await waitForIdleAfter(sessionId, workerId, before, 'the recall turn to complete'),
+        'the recall turn completed',
+      );
       // Deleting the file closes the route; this measures that it stayed
       // closed. A later change that leaves the file behind would reopen the
       // hole silently, and the assertion above would keep passing for the
@@ -530,8 +540,6 @@ async function main(): Promise<void> {
         'the recall came from the conversation, not from a tool reading the file back',
         `events: ${recallEvents.map((e) => e.type).join(',')}`,
       );
-      // Settle the recall turn before sending the control into the same worker.
-      await waitForIdleAfter(sessionId, workerId, before, 'the recall turn to complete');
 
       // NEGATIVE CONTROL for the recall assertion directly above.
       //
@@ -559,24 +567,26 @@ async function main(): Promise<void> {
           'Answer with the number itself, or the single word UNKNOWN if you do not have one.',
       );
       check(control.ok === true, 'the control question is admitted', JSON.stringify(control));
-      let controlReply = '';
-      const declined = await waitFor(
-        async () => {
-          const evs3 = (await readEvents(sessionId, workerId)).slice(beforeControl);
-          const msg = evs3.filter((e) => e.type === 'assistant-message' && String(e.text ?? '').trim() !== '').pop();
-          if (!msg) return false;
-          controlReply = String(msg.text ?? '').trim();
-          return true;
-        },
-        TURN_TIMEOUT_MS,
-        'the control question to be answered',
+      // Same reason as the recall above: read the answer once the turn has
+      // ENDED, not at the first message. A later message could carry the digit
+      // this assertion exists to reject.
+      const controlSettled = await waitForIdleAfter(
+        sessionId,
+        workerId,
+        beforeControl,
+        'the control turn to complete',
       );
+      const controlReply = (await readEvents(sessionId, workerId))
+        .slice(beforeControl)
+        .filter((e) => e.type === 'assistant-message')
+        .map((e) => String(e.text ?? '').trim())
+        .filter((t) => t !== '')
+        .join(' ');
       check(
-        declined && /UNKNOWN/i.test(controlReply) && !/\d/.test(controlReply),
+        controlSettled && /UNKNOWN/i.test(controlReply) && !/\d/.test(controlReply),
         'CONTROL: a number was never planted, and the worker declines rather than inventing one',
-        `reply=${JSON.stringify(controlReply.slice(0, 120))}`,
+        `reply=${JSON.stringify(controlReply.slice(0, 160))}`,
       );
-      await waitForIdleAfter(sessionId, workerId, beforeControl, 'the control turn to complete');
     }
 
     if (EXPECT_BRICK) {
