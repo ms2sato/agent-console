@@ -236,10 +236,8 @@ export function EmbeddedAgentWorkerView({
           confession that the live session started fresh. R1 resumes the
           session, so a successful restore now shows nothing -- the
           conversation genuinely did continue -- and this survives only as the
-          fallback confession, for the case where this incarnation's SDK
-          session did not resume -- by any of its four routes, most of which
-          never send a resume at all. Porting the old unconditional rule
-          forward would put a
+          fallback confession, for the case where a resume was attempted and
+          did not take. Porting the old unconditional rule forward would put a
           permanent false warning on every successful resume; see
           docs/design/embedded-agent-sdk-engine.md §4.3's polarity table and
           its correction trail. The wording states what is true and promises
