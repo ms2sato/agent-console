@@ -102,6 +102,7 @@ describe('rotation -> restore: a fragment head no longer poisons the gate', () =
     const fragment = 'lId":"c1","name":"run","args":{}}\n';
     const live =
       fragment +
+      line({ v: 1, type: 'context-compacted', source: 'manual', summary: 'earlier turns' }) +
       line({ v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'done' }) +
       line({ v: 1, type: 'assistant-message', turnId: 't1', text: 'after' });
     const window = await seedAlreadyRotated(live, 4096);
@@ -110,7 +111,7 @@ describe('rotation -> restore: a fragment head no longer poisons the gate', () =
 
     let message = '';
     try {
-      reconstructConversation(window, SYSTEM_PROMPT);
+      reconstructConversation(window, SYSTEM_PROMPT, true);
       throw new Error('expected a RestoreReconstructionError');
     } catch (err) {
       expect(err).toBeInstanceOf(RestoreReconstructionError);
@@ -138,11 +139,12 @@ describe('rotation -> restore: a fragment head no longer poisons the gate', () =
     // is self-consistent, so it reconstructs instead of resetting.
     const live =
       'ext":"the tail of an archived record"}\n' +
+      line({ v: 1, type: 'context-compacted', source: 'manual', summary: 'earlier turns' }) +
       line({ v: 1, type: 'user-message', id: 'm9', text: 'still here' }) +
       line({ v: 1, type: 'assistant-message', turnId: 't9', text: 'and so is this' });
     const window = await seedAlreadyRotated(live, 8192);
 
-    const outcome = reconstructConversation(window, SYSTEM_PROMPT);
+    const outcome = reconstructConversation(window, SYSTEM_PROMPT, true);
     expect(outcome.conversation.at(-1)).toMatchObject({ role: 'assistant', content: 'and so is this' });
   });
 
@@ -155,7 +157,7 @@ describe('rotation -> restore: a fragment head no longer poisons the gate', () =
     ];
     const window = await rotateSplittingInside(records, 2);
 
-    const outcome = reconstructConversation(window, SYSTEM_PROMPT);
+    const outcome = reconstructConversation(window, SYSTEM_PROMPT, true);
     expect(outcome.conversation.at(-1)).toMatchObject({ role: 'assistant', content: 'second answer' });
   });
 
@@ -178,7 +180,7 @@ describe('rotation -> restore: a fragment head no longer poisons the gate', () =
     ];
     const window = await rotateSplittingInside(records, 3);
 
-    const outcome = reconstructConversation(window, SYSTEM_PROMPT);
+    const outcome = reconstructConversation(window, SYSTEM_PROMPT, true);
     expect(outcome.conversation.at(-1)).toMatchObject({ role: 'assistant', content: 'later answer' });
   });
 

@@ -103,10 +103,47 @@ export interface RestoreOutcome {
  * classification/replay) + 4d (Tier C mid-turn repair). `systemPrompt` is
  * the caller's already-reassembled prompt.
  */
-export function reconstructConversation(streamText: string, systemPrompt: string): RestoreOutcome {
-  const events = parseStreamEvents(streamText);
+export function reconstructConversation(
+  streamText: string,
+  systemPrompt: string,
+  /**
+   * Did the caller's output file rotate? `true` iff the live window's base
+   * offset is non-zero -- a fact the READER cannot see (it gets text) and the
+   * CALLER always has (`readHistoryWithOffset`'s `startOffset`).
+   *
+   * Required rather than defaulted, because a wrong answer is silent in both
+   * directions: `false` on a rotated file loses a recoverable conversation,
+   * and `true` on an intact one spends the corruption detection below. There
+   * is one production caller; every other is a test declaring which world it
+   * is in.
+   */
+  truncated: boolean,
+): RestoreOutcome {
+  const { events, skippedFragment } = parseStreamEvents(streamText, truncated);
 
   const boundaryIndex = findLastBoundaryIndex(events);
+
+  // A rescued fragment window is only restored from a DECLARED discard.
+  //
+  // Skipping the fragment is not by itself enough to make the result honest:
+  // the window still opens wherever the byte cut fell, so a restore from it
+  // would be a partial conversation presented as a whole one -- an answer to
+  // a question the user cannot see, with nothing saying so. Whether that is
+  // acceptable is #1202 Gap 1's judgment and it has not been made.
+  //
+  // A compaction boundary is the one case that needs no such judgment: it is
+  // an ALREADY-DECLARED discard, and slicing at it drops the mid-turn debris
+  // the cut produced, so the window starts at a turn boundary. Restoring from
+  // there is honest in the sense the divergence notice means.
+  //
+  // Everything else keeps today's behaviour -- reset with the log preserved
+  // to a sidecar -- so the design space stays open instead of being settled
+  // by a side effect of this fix.
+  if (skippedFragment && boundaryIndex === -1) {
+    throw new RestoreReconstructionError(
+      'Rotation fragment skipped but the window holds no compaction boundary; a partial restore here would be undeclared',
+    );
+  }
   let conversation: ChatMessage[];
   let windowEvents: EmbeddedAgentStreamEvent[];
   if (boundaryIndex === -1) {
@@ -198,8 +235,12 @@ export function findRestoredUsageSeed(
   return undefined;
 }
 
-function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {
+function parseStreamEvents(
+  streamText: string,
+  allowLeadingFragment: boolean,
+): { events: EmbeddedAgentStreamEvent[]; skippedFragment: boolean } {
   const events: EmbeddedAgentStreamEvent[] = [];
+  let skippedFragment = false;
   // The window this reads starts at the live file's base offset, and rotation
   // cuts that file at a byte offset. The cut is newline-aligned now, but two
   // cases still hand this function a partial first record: a file rotated
@@ -215,20 +256,28 @@ function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {
   // mid-write. That is a real corruption signal and it must stay loud. Making
   // the tail tolerant would convert every such truncation into a silent
   // partial restore.
+  //
+  // **Gated on the file having actually rotated.** A fragment at the head of a
+  // file that was never cut is not a fragment -- it is corruption, and this
+  // function is the only thing that detects it. An unconditional skip would
+  // trade that detection away for a rescue the caller does not even need.
   let isFirstContentLine = true;
   for (const rawLine of streamText.split('\n')) {
     const line = rawLine.trim();
     if (line === '') continue;
     // Consumed whether or not this line turns out to be valid: the allowance
     // is "the first record may be a fragment", not "one bad line anywhere".
-    const mayBeRotationFragment = isFirstContentLine;
+    const mayBeRotationFragment = allowLeadingFragment && isFirstContentLine;
     isFirstContentLine = false;
 
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch (err) {
-      if (mayBeRotationFragment) continue;
+      if (mayBeRotationFragment) {
+        skippedFragment = true;
+        continue;
+      }
       throw new RestoreReconstructionError(
         `Unparseable line in persisted stream: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -240,12 +289,15 @@ function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {
       // object, say -- and produce a well-formed value that is not an event.
       // Tolerating only the parse error would leave that case failing exactly
       // as before, for a reason a reader would have to reconstruct.
-      if (mayBeRotationFragment) continue;
+      if (mayBeRotationFragment) {
+        skippedFragment = true;
+        continue;
+      }
       throw new RestoreReconstructionError('Persisted stream line failed EmbeddedAgentStreamEvent schema validation');
     }
     events.push(result.output);
   }
-  return events;
+  return { events, skippedFragment };
 }
 
 /**
