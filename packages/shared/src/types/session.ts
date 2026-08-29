@@ -1,6 +1,6 @@
 import type * as v from 'valibot';
 import type { AppServerMessageSchema } from '../schemas/app-server-message.js';
-import type { Worker, AgentActivityState } from './worker.js';
+import type { Worker, AgentActivityState, ExitReason } from './worker.js';
 
 // Re-export schema-derived types
 export type {
@@ -21,25 +21,6 @@ export type {
   CreateWorkerRequest,
   RestartWorkerRequest,
 } from '../schemas/worker.js';
-
-/**
- * Reason a worker's process exited.
- * - 'managed': a shutdown someone asked for (delete, restart, pause, explicit
- *   deactivate).
- * - 'unexpected': the process died on its own (crash, user exit, signal).
- * - 'evicted': the server dropped an idle worker's subprocess on purpose. The
- *   worker stays logically alive and the next message transparently wakes it,
- *   so the user is meant not to notice.
- *
- * `evicted` is a strict SUBSET of what used to be reported as `managed`:
- * eviction routes through the same deactivation path, so a worker being
- * evicted also has its shutdown-requested flag set and would have been
- * reported as `managed` before this value existed. Every consumer that
- * branches on `managed` must therefore be re-checked when this value is
- * introduced -- a branch that means "a human asked for this" now needs to
- * exclude `evicted`, while a branch that means "not a crash" does not.
- */
-export type ExitReason = 'managed' | 'unexpected' | 'evicted';
 
 export type SessionStatus = 'active' | 'inactive';
 

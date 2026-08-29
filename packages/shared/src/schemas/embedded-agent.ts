@@ -1,7 +1,7 @@
 import * as v from 'valibot';
 import { EMBEDDED_AGENT_TOOL_NAMES } from '../types/embedded-agent.js';
 import { PTY_NOTIFICATION_KINDS } from '../types/system-events.js';
-import type { ExitReason } from '../types/session.js';
+import type { ExitReason } from '../types/worker.js';
 
 /**
  * Valibot schemas for embedded agent definitions and the stdio protocol.
@@ -339,7 +339,7 @@ const EmbeddedAgentServerNotificationSchema = v.strictObject({
 });
 
 /**
- * Wire half of the hand-written `ExitReason` union in types/session.ts.
+ * Wire half of the hand-written `ExitReason` union in types/worker.ts.
  *
  * The two are pinned to each other below rather than one deriving from the
  * other, following how the rest of this file lets the hand-written domain

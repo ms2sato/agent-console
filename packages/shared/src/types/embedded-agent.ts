@@ -12,7 +12,7 @@
  */
 
 import type { PtyNotificationKind } from './system-events.js';
-import type { ExitReason } from './session.js';
+import type { ExitReason } from './worker.js';
 
 /**
  * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
