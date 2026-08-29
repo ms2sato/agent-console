@@ -1350,6 +1350,20 @@ export class EmbeddedAgentWorkerService {
     const { sessionId, workerId } = runtime.ctx;
     if (!runtime.fatalRoutedToReplacement) return;
     if (runtime.fatalReplacementStarted) return;
+    // A shutdown is already in flight for this incarnation, so its death is
+    // going to be observed by the path that requested it. Replacing here would
+    // revive a worker somebody deliberately took down -- `deactivate` sets this
+    // flag synchronously, before the shutdown command is even written, so a
+    // fatal emitted while the engine is being torn down (the escalation kills
+    // the SDK's child, and the transport throw beats the harness's own exit)
+    // lands after the flag rather than racing it.
+    if (runtime.shutdownRequested) {
+      logger.debug(
+        { sessionId, workerId },
+        'Embedded-agent engine reported fatal during a requested shutdown; leaving it to the shutdown path',
+      );
+      return;
+    }
     runtime.fatalReplacementStarted = true;
 
     // Crash-loop bound. A persistent cause (a bad definition, an

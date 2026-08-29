@@ -2472,3 +2472,35 @@ describe('EmbeddedAgentWorkerService — fatal racing a natural exit (#1414 Haza
     expect(fake.children[0].killSignals.length).toBe(0);
   });
 });
+
+describe('EmbeddedAgentWorkerService — fatal during a requested shutdown (#1414)', () => {
+  it('does NOT revive a worker somebody deliberately deactivated', async () => {
+    // `deactivate`'s escalation can kill the SDK's child before the harness
+    // itself goes, and the transport throw beats the exit. Replacing on that
+    // fatal would bring back a worker the user (or an eviction policy) just
+    // took down. `shutdownRequested` is set synchronously by `deactivate`,
+    // so the fatal always lands after it rather than racing it.
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      spawnAsUserFnOverride: fake.fn,
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    // The child emits a fatal on its way out, then exits -- the shape a
+    // signalled teardown of a live SDK session produces.
+    fake.children[0].setOnKill(() => {
+      fake.children[0].pushStdout(FATAL_LINE);
+      setTimeout(() => fake.children[0].simulateExit(143), 5);
+    });
+
+    await h.service.deactivate(h.sessionId, h.workerId);
+    await new Promise((r) => setTimeout(r, 120));
+
+    expect(fake.children.length).toBe(1);
+    expect(h.worker.subprocess).toBeNull();
+  });
+});
