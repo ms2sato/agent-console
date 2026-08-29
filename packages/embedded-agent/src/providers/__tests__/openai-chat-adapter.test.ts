@@ -38,6 +38,22 @@ function hangingStream(signal: AbortSignal): ReadableStream<Uint8Array> {
 }
 
 /** A body stream whose first read rejects, e.g. a dropped connection mid-body. */
+/** A body that keeps producing bytes forever and only stops when aborted --
+ * the shape the activation budget defends against, and the one a merely
+ * hanging stream does not exercise (an idle timeout would catch that). */
+function emittingForeverStream(signal: AbortSignal): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (signal.aborted) {
+        controller.error(new DOMException('aborted', 'AbortError'));
+        return;
+      }
+      controller.enqueue(encoder.encode(': keep-alive\n\n'));
+      await new Promise((r) => setTimeout(r, 5));
+    },
+  });
+}
+
 function rejectingStream(): ReadableStream<Uint8Array> {
   return new ReadableStream({
     pull() {
@@ -807,6 +823,47 @@ describe('OpenAIChatAdapter — deadlines and cancellation', () => {
     }
     expect(caught).toBeInstanceOf(ProviderError);
     expect((caught as ProviderError).retryable).toBe(true);
+  });
+
+  it('settles promptly when the caller aborts a stream that is still emitting (ProviderAdapter contract)', async () => {
+    // The `ProviderAdapter.run` contract requires an implementation to settle
+    // on abort even while data keeps arriving. Two consumers depend on it:
+    // `AgentLoop.cancel()` is implemented as an abort, and the embedded
+    // agent's activation budget bounds the restore-boundary compaction by
+    // cancelling it. A non-cooperative adapter turns both into no-ops.
+    //
+    // Deliberately an ever-EMITTING body rather than a hanging one: a hanging
+    // stream is already caught by the idle timeout, so it cannot distinguish
+    // "honours the signal" from "timed out anyway". Both timeouts here are
+    // far longer than the assertion window, so only the abort can settle it.
+    const caller = new AbortController();
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      idleTimeoutMs: 60_000,
+      totalTimeoutMs: 60_000,
+      fetchFn: async (_url, init) => mockResponse({ body: emittingForeverStream(init!.signal!) }),
+    });
+
+    const startedAt = Date.now();
+    const settled = (async (): Promise<'ok' | 'threw'> => {
+      try {
+        await collect(adapter.run({ model: 'm', messages, tools: [], signal: caller.signal }));
+        return 'ok';
+      } catch {
+        return 'threw';
+      }
+    })();
+
+    await new Promise((r) => setTimeout(r, 25));
+    caller.abort();
+
+    const outcome = await Promise.race([
+      settled,
+      new Promise<'hung'>((r) => setTimeout(() => r('hung'), 2000)),
+    ]);
+
+    expect(outcome).not.toBe('hung');
+    expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 
   it('rethrows caller cancellation as a non-ProviderError', async () => {

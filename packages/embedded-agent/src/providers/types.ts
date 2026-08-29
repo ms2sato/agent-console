@@ -48,6 +48,28 @@ export interface ProviderRunRequest {
 }
 
 export interface ProviderAdapter {
+  /**
+   * Stream one provider request.
+   *
+   * **Contract: an implementation MUST settle once `req.signal` aborts** --
+   * by returning or by throwing, promptly, and even while data is still
+   * arriving. This is an obligation on the implementation, not a courtesy:
+   * an iterator that ignores the signal cannot be stopped by its consumer at
+   * all, because `for await` has no way to abandon a pending `next()`.
+   *
+   * Callers rely on it for more than tidiness. `AgentLoop.cancel()` is
+   * implemented as an abort, so a non-cooperative adapter makes cancel a
+   * no-op; and the embedded-agent's activation budget (`main.ts`'s
+   * `RESTORE_BOUNDARY_COMPACTION_BUDGET_MS`) bounds the restore-boundary
+   * compaction by cancelling it, so a non-cooperative adapter would leave
+   * `ready` blocked exactly as if there were no budget.
+   *
+   * `OpenAIChatAdapter` satisfies this by passing the signal to `fetch` and
+   * reading the body through the resulting stream -- and that is pinned by a
+   * test rather than asserted, including for a body that keeps emitting
+   * rather than merely hanging (see openai-chat-adapter.test.ts, "settles
+   * promptly when the caller aborts a stream that is still emitting").
+   */
   run(req: ProviderRunRequest): AsyncIterable<ProviderEvent>;
 }
 

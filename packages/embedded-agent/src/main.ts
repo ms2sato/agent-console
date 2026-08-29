@@ -66,6 +66,22 @@ const TURN_DRAIN_TIMEOUT_MS = 2500;
  * other. If the adapter's idle timeout ever changes, that is not by itself a
  * reason for this constant to follow -- do NOT import one from the other to
  * "keep them in sync".
+ *
+ * **Named premise -- what this budget does NOT bound.** It bounds the
+ * **provider round-trip**, and nothing else. `compact()` also awaits
+ * `loadCompactionPrompt()` before that round-trip and
+ * `reassembleSystemPrompt()` after it; neither takes a signal, so neither is
+ * interrupted here. Both are local filesystem reads and are **assumed
+ * prompt** -- the same assumption every other activation-time filesystem read
+ * already makes. Threading a signal into only compaction's two reads would be
+ * asymmetric theater: if the filesystem hangs, activation has already hung
+ * elsewhere for the same reason. The exposure this budget was built against
+ * is specific to a provider stream that keeps emitting without ending, which
+ * has no filesystem analogue.
+ *
+ * The claim and the implementation are made to match by narrowing the claim,
+ * not by widening the code -- so the guarantee is "one bounded compaction
+ * operation", not "activation completes within 60 s no matter what".
  */
 const RESTORE_BOUNDARY_COMPACTION_BUDGET_MS = 60_000;
 

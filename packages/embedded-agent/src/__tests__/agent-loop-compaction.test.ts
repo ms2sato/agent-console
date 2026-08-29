@@ -864,6 +864,62 @@ describe('Compaction — the boundary marker reports its own severity', () => {
  * for why `FULL_DISTILL_MAX_RATIO` (0.9) and `PARTIAL_DISTILL_INPUT_RATIO`
  * (0.7) are two constants rather than one.
  */
+describe('AgentLoop.compact() — the commit point', () => {
+  it('a cancel landing DURING reassembly is still honoured: no marker, no splice, and the conversation survives', async () => {
+    // The window CodeRabbit found on the second pass. Every abort check used
+    // to sit upstream of `reassembleSystemPrompt()`, which is itself an
+    // await — so a cancel arriving while reassembly was in flight passed all
+    // of them and the compaction committed anyway, making this method's
+    // stated invariant false. The commit-point check closes it.
+    //
+    // Timing is driven rather than raced: reassembly parks on a gate, the
+    // test cancels while it is parked, then releases it.
+    let reassemblyStarted!: () => void;
+    let releaseReassembly!: () => void;
+    const started = new Promise<void>((resolve) => {
+      reassemblyStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      releaseReassembly = resolve;
+    });
+
+    const restored: ChatMessage[] = [
+      { role: 'system', content: 'ORIGINAL_SYSTEM_PROMPT' },
+      { role: 'user', content: 'earlier question' },
+      { role: 'assistant', content: 'earlier answer' },
+    ];
+    const expectedNextTurnRequest: ChatMessage[] = [...restored, { role: 'user', content: 'after' }];
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY'), textResponse('reply')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      restoredConversation: restored,
+      reassembleSystemPrompt: async () => {
+        reassemblyStarted();
+        await gate;
+        return 'ORIGINAL_SYSTEM_PROMPT';
+      },
+    });
+    const loop = new AgentLoop(deps);
+
+    const compaction = loop.compact('manual');
+    await started;
+    loop.cancel();
+    releaseReassembly();
+    await compaction;
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError && 'message' in turnError ? turnError.message : '').toBe(
+      'Context compaction failed: turn canceled',
+    );
+
+    // The conversation is what proves it: a subsequent turn must see the
+    // pre-compaction array, not a seed pair.
+    await loop.runTurn('t1', 'after');
+    expect(adapter.capturedMessages.at(-1)).toEqual(expectedNextTurnRequest);
+  });
+});
+
 describe('Compaction at the restore boundary — the four boundary cases', () => {
   // 1000-token window, default 0.85 threshold, 0.9 full-distill ceiling.
   // estimateTokensFromChars is round(totalChars / 4), so `4 * n` characters

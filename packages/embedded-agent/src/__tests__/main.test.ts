@@ -861,7 +861,15 @@ class WindowedAdapter implements ProviderAdapter {
 /** A stream that keeps producing data and never ends, and never idles out.
  * This is the shape the activation budget exists for: the adapter's own
  * per-attempt timeout does not fire (data keeps arriving), so without a bound
- * `ready` waits on the adapter's total timeout times the retry count. */
+ * `ready` waits on the adapter's total timeout times the retry count.
+ *
+ * SCOPE, stated honestly: this adapter COOPERATES with the abort signal, so
+ * the test below proves the bound works against a cooperating adapter and
+ * says nothing about one that ignores the signal. That is not a gap in the
+ * test but a division of labour -- an iterator that never settles cannot be
+ * stopped by any consumer, so the obligation lives in the `ProviderAdapter`
+ * contract (see its `run` doc comment) and is measured against the shipping
+ * adapter in openai-chat-adapter.test.ts, not here. */
 class NeverEndingAdapter implements ProviderAdapter {
   runs = 0;
   async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {

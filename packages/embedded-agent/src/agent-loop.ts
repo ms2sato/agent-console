@@ -723,6 +723,10 @@ export class AgentLoop {
       // on a budget: what used to be an exotic mid-compaction user cancel is
       // now a routine path.
       //
+      // This check is CLASSIFICATION plus early-exit economy -- it is NOT the
+      // commit boundary. The boundary is the one immediately before the
+      // marker emit below; see the comment there.
+      //
       // The sibling check in `runUserTurn` is deliberately left kind-only,
       // not overlooked: a clean-abort adapter there yields a VISIBLE partial
       // assistant-message rather than a silent splice over the conversation,
@@ -800,6 +804,31 @@ export class AgentLoop {
       // schemas and measures low -- see the design doc's "Measured: `E`
       // under-counts" note), besides mixing a provider count and an estimate
       // in one field.
+      // === THE COMMIT POINT ===
+      //
+      // The last abort check in this method, and the boundary the whole
+      // cancellation story is defined against. BEFORE it, cancellation is
+      // always honoured and the conversation is never touched. AFTER it, no
+      // `await` exists until the splice below has completed, so cancellation
+      // has nothing left to act on -- the compaction has happened.
+      //
+      // It exists because the checks above are all upstream of
+      // `reassembleSystemPrompt()`, which is itself an await: a cancel landing
+      // during reassembly used to pass every guard and still emit the marker
+      // and splice, making this method's stated invariant false in a
+      // reachable window.
+      //
+      // RULE FOR FUTURE EDITS, which is the point of naming the boundary at
+      // all: a new `await` may only be placed ABOVE this check. Between here
+      // and the end of the splice the code must stay synchronous. Adding an
+      // await below reopens exactly the window this check closed, and does so
+      // invisibly -- `deps.emit` is typed to return void precisely so it
+      // cannot yield.
+      if (abort.signal.aborted) {
+        this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
+        return;
+      }
+
       this.deps.emit({
         v: 1,
         type: 'context-compacted',
