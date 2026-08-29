@@ -47,7 +47,7 @@
  * `agent-loop-compaction.test.ts` instead, where a turn's ending is directly
  * constructible.
  *
- * THE SETUP, and why each number is what it is. `W = 20000` is declared on a
+ * THE SETUP, and why each number is what it is. `W = 12000` is declared on a
  * definition whose provider window is far larger -- a conservative operator
  * declaration, which is what makes the gap dominant without needing a small
  * model. Turns are grown with auto compaction OFF so the conversation can be
@@ -440,7 +440,13 @@ async function main(): Promise<void> {
           'the first post-restore turn to complete',
         );
         check(completed, 'the first post-restore turn completes');
-        const post = lastUsage(await readEvents(sessionId, workerId));
+        // Scoped to THIS turn, unlike a whole-history read: `compact()` ends by
+        // publishing its own post-compaction size (542 in the recorded run),
+        // which is comfortably below the threshold. A turn that published no
+        // reading at all would leave that number as the newest one, and the
+        // assertion below would pass on it -- reporting the compaction's own
+        // output as though it were the next request's size.
+        const post = lastUsage((await readEvents(sessionId, workerId)).slice(nextMarker));
         if (post) {
           check(
             (post.promptTokens as number) < THRESHOLD_TOKENS,

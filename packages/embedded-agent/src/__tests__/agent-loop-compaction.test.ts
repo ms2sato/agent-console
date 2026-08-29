@@ -1274,6 +1274,12 @@ describe('selectPartialDistillationMessages — suffix selection rules', () => {
  *       -> 1 fails: 'publishes the seed as a MEASUREMENT'. Without it the
  *          honesty flag could silently regress while every numeric assertion
  *          still passed.
+ *   m16 move `emitContextUsageIfKnown` BELOW the `contextWindowTokens`
+ *       undefined return, so an undeclared window publishes nothing
+ *       -> 1 fails: 'stays inert when contextWindowTokens is unset'. Added
+ *          after review noted that test asserted only the "nothing fires"
+ *          half of the `W` unset row while its comment claimed the other
+ *          half too; before the added assertion this mutation was inert.
  */
 describe('Compaction at the restore boundary — seeded from the persisted reading (#1419)', () => {
   const WINDOW = 1000;
@@ -1434,6 +1440,16 @@ describe('Compaction at the restore boundary — seeded from the persisted readi
     expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
     expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
     expect(adapter.calls).toBe(0);
+    // The other half of the `W` unset row, which the assertions above cannot
+    // see: the reading is still PUBLISHED. It is what a restored worker shows
+    // before its first turn, and an implementation that returned early before
+    // emitting would satisfy every "nothing happened" assertion here.
+    expect(events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 9_999_999,
+      estimated: false,
+    });
   });
 
   it('is not consulted for a fresh (non-restored) worker', async () => {

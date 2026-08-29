@@ -9,7 +9,11 @@
  * continue.
  */
 
-import { DEFAULT_COMPACTION_THRESHOLD, type EmbeddedAgentEvent } from '@agent-console/shared';
+import {
+  DEFAULT_COMPACTION_THRESHOLD,
+  type EmbeddedAgentEvent,
+  type EmbeddedAgentRestoredUsage,
+} from '@agent-console/shared';
 import type { ToolExecutor } from './mcp.js';
 import {
   ProviderError,
@@ -129,7 +133,7 @@ export interface AgentLoopDeps {
    * all. Read ONLY by `compactAtRestoreBoundaryIfNeeded`; once a turn has run,
    * that turn's own reading supersedes it.
    */
-  restoredUsage?: { promptTokens: number; estimated: boolean };
+  restoredUsage?: EmbeddedAgentRestoredUsage;
 }
 
 interface ProviderToolCall {

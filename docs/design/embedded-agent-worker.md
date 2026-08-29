@@ -804,7 +804,7 @@ Let `S` = the check's input (defined immediately below), `W` = `compaction.conte
 
 **`S` is a measurement where one exists, and an estimate otherwise (#1419).** Write `E` = `estimateTokensFromChars(conversation)` (the same chars/4 estimator the turn-end path falls back to) and `R` = `init.restoredUsage`, the newest authoritative reading the server extracted from the persisted log. Then:
 
-```
+```text
 S = max(E, R)     when the log carried a reading
 S = E             otherwise
 ```
@@ -838,7 +838,7 @@ Two event kinds are readings, and the newer of them wins: a `context-usage` (pub
 
 The check runs **only when the loop was seeded from a restored conversation**. A fresh worker's conversation is one system message; evaluating the ratio against it would be the vacuous case the threshold semantics above already exclude.
 
-The worker-level `auto` toggle gates the whole check exactly as it gates the turn-end one — the predicate *is* `shouldAutoCompact()`, reached by seeding `lastTurnUsage` with `{ promptTokens: E, estimated: true }` before consulting it. The seeding is not merely plumbing to reuse a function: it is also the usage reading a restored worker publishes before its first turn, which previously stayed absent until a turn had completed.
+The worker-level `auto` toggle gates the whole check exactly as it gates the turn-end one — the predicate *is* `shouldAutoCompact()`, reached by seeding `lastTurnUsage` with `S` before consulting it -- carrying the reading's own `estimated` flag, so a measurement seed is published as one and an estimated seed is not dressed up as a measurement. The seeding is not merely plumbing to reuse a function: it is also the usage reading a restored worker publishes before its first turn, which previously stayed absent until a turn had completed.
 
 **Ordering: after the compaction FINISHES, not after it succeeds.** The compaction is awaited inside the subprocess's `init` handling, and `ready` is emitted only afterwards — but it is emitted **unconditionally**, including when the compaction failed. A provider that is down at activation time must not be able to wedge the worker: the failure path is `compact()`'s existing preserve-on-failure (a `turn-error`, conversation untouched), after which the worker is fully usable and the first user turn simply overflows the way the `W`-unset row already does. "Do not emit `ready` before the compaction" means *before it finishes*, never *before it succeeds*.
 
