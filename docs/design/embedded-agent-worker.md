@@ -829,6 +829,15 @@ An earlier draft of this section carried a single constant `D = 0.7` serving as 
 
 Neither is operator-configurable. Both are internal safety margins on our own estimator, not policies an operator has the information to set.
 
+**Measured: `E` under-counts, and in one direction.** An earlier draft of this subsection said the estimate "can be wrong in either direction". A real-instance run during #1411 measured otherwise: `estimateTokensFromChars` sums only each message's `.content`, while the request the provider actually prices also carries the **tool schemas** — every builtin, every MCP tool, plus `Compact`. On a small conversation the schemas dominate: `E` read 1102 where the provider reported 6722 prompt tokens for the same (already narrowed) request. So the error is systematic and one-signed — `E` is always low by roughly a fixed per-worker constant, the size of the published tool list.
+
+Two consequences, neither of which changes the design but both of which a reader should have:
+
+1. **The boundary check under-fires**, by that constant. Against a realistic window (100k+) a few thousand tokens of schema is a rounding error and the rows behave as written. Against a small declared window it is the dominant term, and a conversation that would overflow can sit below `T×W` and compact nothing.
+2. **`P×W` bounds our estimate of the request, not the request.** A partial distillation's suffix is chosen so the *estimated* input fits the budget; the wire request is larger by the same constant. The conservatism `P = 0.7` buys is what absorbs it, which is the second half of that constant's premise doing exactly its job — but it is absorbing a known bias, not merely noise.
+
+Closing this properly means either counting the tool schemas in the estimate, or seeding the boundary check from the last **real** `context-usage` reading already sitting in the persisted log rather than re-estimating from the reconstructed text. The second is the more attractive of the two and is a change to what the server passes at `init`, so it belongs to its own Issue rather than to #1411.
+
 With the defaults `T = 0.85` and `F = 0.9`, the full-compaction band `[0.85W, 0.9W]` is **non-empty**, so both the full row and the partial row are reachable — and testable — without overriding `compaction.threshold`.
 
 **A remaining asymmetry, recorded as an observation, not fixed here.** The live turn-end path has no `F` ceiling of its own: it always sends the whole conversation. A live conversation that overshoots past `0.9W` within a single turn will therefore attempt a whole-conversation distillation that the restore boundary would have declined to attempt. If that call overflows, `compact()`'s preserve-on-failure already handles it — a `turn-error`, conversation intact. Teaching the live path the same ceiling is a change to a shipped, working path and is out of scope for #1411; it is noted so a later reader finds this asymmetry documented rather than surprising.
