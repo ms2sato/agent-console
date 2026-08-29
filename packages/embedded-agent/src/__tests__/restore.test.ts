@@ -716,17 +716,37 @@ describe('reconstructConversation — restoredMessageCount', () => {
  *          question to the design decision that owns it.
  *   m2  drop the `implicitAssistantOpen` merge, so the engine's own flush
  *       pushes a second assistant message
- *       -> 3 fail: the claude-sdk order case, the single-turn assertion, and
- *          the equivalence pin. The reconstruction still SUCCEEDS under this
- *          mutation -- it just splits one assistant turn into two -- which is
- *          why every one of those three compares whole conversations rather
- *          than asserting no throw. A pin that only checked "did not throw"
- *          would pass here.
+ *       -> 3 fail, all in this describe:
+ *            'reconstructs the claude-sdk order, where the tool-call precedes
+ *             its assistant-message'
+ *            'does not split one assistant turn into two'
+ *            'reconstructs BOTH orders of the same conversation identically'
+ *          The reconstruction still SUCCEEDS under this mutation -- it just
+ *          splits one assistant turn into two -- which is why all three
+ *          compare whole conversations rather than asserting no throw. A pin
+ *          that only checked "did not throw" would pass here.
  *   m3  make the implicit open unconditional (drop `current === null`)
- *       -> 4 fail, across three other describes -- every case where a
- *          tool-call belongs with an assistant message already open. Wider
- *          than predicted, and the width is the point: that condition is load
- *          bearing for the ordinary path, not only for this fixture.
+ *       -> 5 fail. NOTE the count was recorded as 4 when first measured and
+ *          was stale by the time it was read: the equivalence pin below was
+ *          added AFTER that run, and it catches this mutation too. A mutation
+ *          record is a measurement with a timestamp, and adding a test
+ *          invalidates every earlier record without touching one -- re-run
+ *          before trusting a count you did not just produce.
+ *          The five, one of them in this describe:
+ *            4c total classification >
+ *              'reconstructs only the four Mapped event kinds, in order, and
+ *               skips every Noise kind'
+ *            wire-faithful tool_calls.arguments reconstruction >
+ *              'JSON-stringifies a plain-object args field'
+ *              'uses an already-capped string args field verbatim'
+ *            restoredMessageCount >
+ *              'does NOT count a Tier C synthetic repair marker'
+ *            either engine write order (this describe) >
+ *              'reconstructs BOTH orders of the same conversation identically'
+ *          Wider than predicted, and the width is the point: `current ===
+ *          null` is load bearing for the ORDINARY path, not only for this
+ *          fixture -- which is why the four that catch it are the ones this
+ *          change never went near.
  */
 describe('replayWindow — either engine write order (#1457 fixtures)', () => {
   const fixture = (name: string) =>
