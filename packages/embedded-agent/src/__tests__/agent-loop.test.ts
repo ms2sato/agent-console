@@ -799,17 +799,19 @@ describe('AgentLoop — an abort is classified at the source, not only in the ca
     const adapter = new CleanAbortAdapter('PARTIAL TEXT');
     const { loop } = makeLoopWithAdapter(adapter);
     const controller = new AbortController();
-    // Private-method seam: the outcome shape is what this test is about, and
-    // it is not observable from any public entry point.
-    const seam = loop as unknown as {
-      runProviderWithRetries: (
-        messages: ChatMessage[],
-        turnId: string,
-        signal: AbortSignal,
-      ) => Promise<{ kind: string; partialText?: string }>;
-    };
-
-    const outcome = seam.runProviderWithRetries(
+    // Private-method seam by ELEMENT ACCESS, not a cast. The outcome shape is
+    // what this test is about and is not observable from any public entry
+    // point, so reaching a private member is deliberate -- but bracket access
+    // needs no assertion at all and keeps the real signature, where a
+    // hand-written `as unknown as { ... }` seam has to restate it.
+    //
+    // Restating it is what makes the cast worse than a style question here:
+    // the seam this replaced declared the return as `{ kind: string }`, which
+    // accepts any string. This test's entire subject is the discriminant, so
+    // the cast was quietly weakening the assertion the pin exists to make,
+    // while staying green. Element access enforces the union at the call
+    // site.
+    const outcome = loop['runProviderWithRetries'](
       [{ role: 'user', content: 'hello' }],
       't1',
       controller.signal,
