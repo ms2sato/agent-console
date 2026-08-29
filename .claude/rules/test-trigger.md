@@ -52,6 +52,17 @@ PRs touching `packages/server/src/routes/artifacts.ts` (the `ARTIFACT_SERVING_CS
 
 Those same PRs must also run `bun run check:artifact-server-story-e2e`. This runs `scripts/smoke/check-artifact-server-story-e2e.mjs`, the real-HTTP server-story E2E for `docs/design/html-artifacts.md` §8's per-surface E2E (terminal half) and the create→serve→list→delete→serve round trip: it boots its own disposable multi-user-mode server instance, creates an artifact via a real `/mcp` JSON-RPC call (the actual terminal-agent-shaped call), verifies the artifact's stored `user_id` against the session's `createdBy` via a direct read of the disposable instance's SQLite file (the wire responses never expose `userId`), then drives the full `GET /:id` (exact CSP header) → `GET /` (list) → `DELETE /:id` → `GET /:id` (404) sequence as real HTTP. This check is a real-HTTP regression gate for the routes' shipping-path caller, not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
 
+## Additional Verification: Fatal Incarnation Replacement Real-Tree E2E
+
+PRs touching `handleEngineFatal` / `collectFatalIncarnation` / `fatalLeavesHarnessAlive` / the `fatalChainReplacementSpent` set in `packages/server/src/services/embedded-agent-worker-service.ts`, or that file's `deactivate` escalation, must run `bun run check:fatal-incarnation-replacement` locally before pushing. This runs `scripts/smoke/check-fatal-incarnation-replacement.ts`, the real-process E2E for the defect where a `claude-sdk` worker's `claude` grandchild dies while its harness stays alive: it boots a disposable server instance with a real `AppContext` and a real `/mcp` on a real port, drives a real `claude-sdk` incarnation through a real `sh` -> `bun` -> `claude` tree, and SIGKILLs **only the grandchild** -- the one death shape that produces no OS exit for the server to observe. It then asserts the incarnation is replaced, the stranded processes are gone, the dead incarnation's MCP token no longer verifies **against the token registry itself** (no frame can substitute for that), and that the conversation survived the process boundary by recalling a word planted before the kill. A mid-turn kill covers the `turn-interrupted` marker, and a whole-tree kill in the same run is the positive control proving the healthy path was not what changed.
+
+This is a real-process regression gate for a defect the unit layer structurally cannot catch -- the wedge only exists because a live harness hides a dead engine, and every fake spawn has an exit the observer sees. It is not a sibling-test requirement, so it is not part of the `preflight-check.js` coverage patterns above.
+
+Two properties of the script that matter when re-running it:
+
+- **It is billable and needs a real, authenticated `claude` CLI** for the invoking OS user, like the SDK probes under `scripts/smoke/`. It is a manual gate, never a CI job.
+- **It has a polarity mode.** `bun run check:fatal-incarnation-replacement -- --expect-brick`, run against a build whose fatal routing is removed, **asserts the bug reproduces** rather than merely tolerating a failure -- a run that silently recovers is reported as a polarity failure. Use it to confirm the apparatus still reaches the defect before trusting a green run, per `workflow.md`'s "A check's existence is not its detection power".
+
 ## Before Creating a PR
 
 Run the coverage check to verify all production files have corresponding tests:
