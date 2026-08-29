@@ -85,8 +85,19 @@ import * as path from 'node:path';
 
 const EXPECT_UNDERFIRE = process.argv.includes('--expect-underfire');
 
-/** The declared window. Deliberately below the provider's real limit. */
-const WINDOW_TOKENS = 20_000;
+/**
+ * The declared window. Deliberately far below the provider's real limit
+ * (measured 983,616 for the default model), which is what makes the
+ * tool-schema mass the dominant term rather than a rounding error -- and it
+ * sits inside the `W < G/(1-T)` regime the header derives.
+ *
+ * 12,000 rather than something larger because the margin scales with it: the
+ * gap is roughly fixed at the published tool list's size, so the smaller the
+ * declared window, the more comfortably the estimate falls below `T x W`
+ * while the reading clears it. At 20,000 the margin was thin enough that a
+ * few turns either way could have decided the outcome.
+ */
+const WINDOW_TOKENS = 12_000;
 /** The default auto threshold; `T x W` is the line both numbers straddle. */
 const THRESHOLD_TOKENS = 0.85 * WINDOW_TOKENS;
 
@@ -143,10 +154,18 @@ interface StreamEvent {
  * is the size of that divergence.
  */
 function filler(nWords: number): string {
-  const vocabulary =
+  // The parentheses are load-bearing: without them `.split(' ')` binds to the
+  // LAST literal only, the concatenation coerces the resulting array back to a
+  // string, and the indexing below walks CHARACTERS. That produced
+  // single-letter "words" tokenizing at ~2 chars/token, which inflated the
+  // measured estimate-vs-reading gap by roughly 2x -- a tokenization artifact
+  // masquerading as this Issue's defect. Caught by noticing the persisted
+  // `user-message` rows were 1865 chars where ~5000 was intended.
+  const vocabulary = (
     'the quick brown fox jumps over a lazy dog while several curious badgers observe from beneath ' +
     'the old stone bridge and consider whether the afternoon light will hold long enough for them ' +
-    'to finish counting every pebble in the shallow water below'.split(' ');
+    'to finish counting every pebble in the shallow water below'
+  ).split(' ');
   const words: string[] = [];
   for (let i = 0; i < nWords; i++) words.push(vocabulary[i % vocabulary.length]);
   return words.join(' ');
