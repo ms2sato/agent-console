@@ -799,6 +799,60 @@ describe('Compaction — the Compact tool and its turn-boundary reservation', ()
     await loop.runTurn('t2', 'anything');
     expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
   });
+
+  it('DISCARDS the reservation when the turn is canceled by a CLEANLY-ABORTING adapter', async () => {
+    // Sibling of the test above, which pins the same guarantee only for an
+    // adapter that THROWS on abort. `ProviderAdapter` does not mandate an
+    // abort style, and the shape this one uses -- ending the stream cleanly
+    // with an ordinary terminal `done` -- is the one its sibling cannot
+    // reach: the throw is what put that one into the retry loop's catch.
+    //
+    // Reach (measured): reverting the source classification in
+    // `runProviderWithRetries` fails this on the emitted marker.
+    let signalProviderParked!: () => void;
+    const providerParked = new Promise<void>((resolve) => {
+      signalProviderParked = resolve;
+    });
+    let call = 0;
+    const adapter: ProviderAdapter = {
+      async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+        const index = call++;
+        if (index === 0) {
+          yield { type: 'tool-call', callId: 'c1', name: 'Compact', argsJson: '{}' };
+          yield { type: 'done', finishReason: 'tool_calls' };
+          return;
+        }
+        if (index === 1) {
+          yield { type: 'text-delta', text: 'PARTIAL' };
+          signalProviderParked();
+          await new Promise<void>((resolve) => {
+            req.signal.addEventListener('abort', () => resolve(), { once: true });
+          });
+          yield { type: 'done', finishReason: 'stop' };
+          return;
+        }
+        // Any later call is the distillation the reservation would have
+        // triggered. Scripted to SUCCEED so that a surviving reservation
+        // surfaces as an emitted marker rather than as a hang.
+        yield { type: 'text-delta', text: 'SUMMARY' };
+        yield { type: 'done', finishReason: 'stop' };
+      },
+    };
+    const { deps, events } = makeDeps({ adapter });
+    const loop = new AgentLoop(deps);
+
+    const turn = loop.runTurn('t1', 'compact then cancel');
+    await providerParked;
+    loop.cancel();
+    await turn;
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+
+    // And the reservation is genuinely gone, not merely deferred: a later
+    // clean turn does not suddenly compact.
+    await loop.runTurn('t2', 'anything');
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+  });
 });
 
 describe('Compaction — the boundary marker reports its own severity', () => {
@@ -1650,5 +1704,133 @@ describe('Compaction — a turn that ends in error settles nothing (#1419, the w
       estimated: false,
     });
     expect(events.some((e) => e.type === 'context-compacted')).toBe(false);
+  });
+});
+
+/**
+ * The cross-path cancel rule, stated at `AgentLoop`'s `currentAbort`
+ * declaration: `cancel` stops whatever cancellable operation currently holds
+ * that field. After a turn has ended and the turn boundary has started
+ * distilling, the holder is the COMPACTION -- so a user cancel arriving then
+ * aborts the compaction, and the turn it followed is already finished and
+ * untouched.
+ *
+ * This is the pin for that rule. It is deliberately not written as "cancel
+ * during compaction fails the compaction" (which the mid-flight cancel test
+ * earlier in this file already covers for a directly-invoked `compact()`) but
+ * as the whole boundary shape: one `runTurn` call, one cancel, and every
+ * consequence the rule claims.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m1  delete `this.currentAbort = abort;` from `compact()` -- the minimal
+ *       form of "give turns and compactions separate controllers", the change
+ *       the declaration's comment says requires re-ruling.
+ *       -> 1 fail: the cancel reaches nothing, the adapter's escape hatch
+ *          lets the distillation finish normally, and the compaction commits
+ *          (a `context-compacted` marker and a spliced conversation).
+ *
+ * The adapter's escape hatch is what makes that mutation FAIL rather than
+ * HANG: a stub that only ever unblocks on abort would leave the mutant
+ * waiting forever, which measures nothing.
+ */
+describe('Compaction — a cancel during the turn-boundary compaction aborts the COMPACTION', () => {
+  it('aborts the boundary distillation, leaves the conversation untouched, reaches idle, and leaves the turn’s own result standing', async () => {
+    const WINDOW = 1000;
+    let signalDistillStarted!: () => void;
+    const distillStarted = new Promise<void>((resolve) => {
+      signalDistillStarted = resolve;
+    });
+    const capturedMessages: ChatMessage[][] = [];
+    let call = 0;
+    const adapter: ProviderAdapter = {
+      async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+        const index = call++;
+        capturedMessages.push([...req.messages]);
+        if (index === 0) {
+          // The user turn itself: succeeds, and reports usage over the 0.85
+          // threshold so the boundary schedules an automatic compaction.
+          yield { type: 'text-delta', text: 'turn reply' };
+          yield {
+            type: 'done',
+            finishReason: 'stop',
+            usage: { promptTokens: 900, completionTokens: 1, totalTokens: 901 },
+          };
+          return;
+        }
+        if (index === 1) {
+          // The boundary distillation. Parks until either the signal trips or
+          // a short escape hatch elapses, then ends its stream CLEANLY with a
+          // usable summary -- so "the compaction did not commit" can only be
+          // explained by the cancel having reached it.
+          signalDistillStarted();
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 200);
+            req.signal.addEventListener(
+              'abort',
+              () => {
+                clearTimeout(timer);
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          yield { type: 'text-delta', text: 'SUMMARY' };
+          yield { type: 'done', finishReason: 'stop' };
+          return;
+        }
+        // The follow-up turn, whose request is the evidence for what the
+        // conversation actually holds. Low usage so its own boundary settles
+        // nothing.
+        yield { type: 'text-delta', text: 'follow-up reply' };
+        yield {
+          type: 'done',
+          finishReason: 'stop',
+          usage: { promptTokens: 10, completionTokens: 1, totalTokens: 11 },
+        };
+      },
+    };
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    const turn = loop.runTurn('t1', 'hello');
+    await distillStarted;
+    loop.cancel();
+    await turn;
+
+    // The compaction was the thing that stopped: classified as a
+    // cancellation, and no marker -- so no splice either.
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const turnErrors = events.filter((e) => e.type === 'turn-error');
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0]).toMatchObject({ message: 'Context compaction failed: turn canceled' });
+    // ...and it was NOT the user turn that was reported as canceled: the
+    // compaction runs under a turn id of its own.
+    expect('turnId' in turnErrors[0] ? turnErrors[0].turnId : '').not.toBe('t1');
+
+    // The turn's own result is unchanged by the cancel that followed it.
+    expect(events.filter((e) => e.type === 'assistant-message')).toMatchObject([
+      { turnId: 't1', text: 'turn reply' },
+    ]);
+
+    // The worker reaches idle rather than sitting active behind an abandoned
+    // compaction.
+    expect(events.at(-1)).toEqual({ v: 1, type: 'state', state: 'idle' });
+
+    // The conversation really is the pre-compaction one: the next request
+    // still carries the turn verbatim, and carries no trace of the summary
+    // the distillation had already produced.
+    await loop.runTurn('t2', 'next');
+    const followUp = capturedMessages.at(-1)!;
+    expect(followUp).toEqual([
+      { role: 'system', content: 'ORIGINAL_SYSTEM_PROMPT' },
+      { role: 'user', content: 'hello' },
+      { role: 'assistant', content: 'turn reply' },
+      { role: 'user', content: 'next' },
+    ]);
+    expect(followUp.some((m) => m.content.includes('SUMMARY'))).toBe(false);
   });
 });
