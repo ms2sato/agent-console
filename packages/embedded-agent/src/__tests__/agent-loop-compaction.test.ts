@@ -1274,6 +1274,16 @@ describe('selectPartialDistillationMessages — suffix selection rules', () => {
  *       -> 1 fails: 'publishes the seed as a MEASUREMENT'. Without it the
  *          honesty flag could silently regress while every numeric assertion
  *          still passed.
+ *   m17 revert the activation guard to `> 0` -- the seed-inclusive predicate
+ *       this change tightened
+ *       -> 1 fail, the bare-system-head test alone. That test is the only
+ *          thing standing between a persisted reading and a distillation of
+ *          a conversation containing nothing but the system prompt.
+ *   m18 over-correct the guard to `> 2`
+ *       -> 10 fail, including the post-compaction seed-pair case. Measured
+ *          because a guard can be wrong in two directions and m17 only
+ *          measures one; `> 2` would silently stop restoring every worker
+ *          that came back across a compaction boundary.
  *   m16 move `emitContextUsageIfKnown` BELOW the `contextWindowTokens`
  *       undefined return, so an undeclared window publishes nothing
  *       -> 1 fails: 'stays inert when contextWindowTokens is unset'. Added
@@ -1450,6 +1460,57 @@ describe('Compaction at the restore boundary — seeded from the persisted readi
       promptTokens: 9_999_999,
       estimated: false,
     });
+  });
+
+  it('does NOT fire on a bare system-prompt head, however large the reading', async () => {
+    // The reconstruction legitimately yields a length-1 array whenever the
+    // restore window replayed no messages -- a rotated live window can start
+    // after the last `assistant-message` and before the `context-usage` that
+    // followed it, and `readHistoryWithOffset` reads only that live window.
+    //
+    // Seeding the check from a reading is what made this reachable: the
+    // estimate of one system message is ~10 tokens and fired nothing, while a
+    // reading does not shrink with the window it outlived. Firing here would
+    // distill a conversation consisting only of the system prompt and then
+    // replace it with a seed announcing a summary of earlier messages that
+    // were never in front of the model -- a claim no participant made.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: [{ role: 'system', content: 'S'.repeat(40) }],
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    // Nothing is published either: with nothing restored there is no reading
+    // this worker can honestly claim as its own pre-turn usage.
+    expect(events.find((e) => e.type === 'context-usage')).toBeUndefined();
+  });
+
+  it('DOES fire on the post-compaction seed pair, which is a real restore', async () => {
+    // The guard must not over-correct: `[system, seedUser]` is length 2 and is
+    // exactly what a worker restored across a compaction boundary looks like.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: [
+        { role: 'system', content: 'S'.repeat(40) },
+        { role: 'user', content: 'U'.repeat(200) },
+      ],
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeDefined();
+    expect(adapter.calls).toBe(1);
   });
 
   it('is not consulted for a fresh (non-restored) worker', async () => {

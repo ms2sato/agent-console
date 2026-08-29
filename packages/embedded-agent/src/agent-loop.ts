@@ -279,10 +279,26 @@ export class AgentLoop {
   /** The last turn's terminal usage reading -- the auto threshold's input. */
   private lastTurnUsage: TurnUsage | undefined;
   /**
-   * Whether this loop was seeded from a restored conversation rather than a
-   * fresh system-prompt-only one. Gates the restore-boundary compaction: a
-   * fresh conversation is one system message, and evaluating the ratio
-   * against it is the vacuous case the threshold semantics already exclude.
+   * Whether this loop was seeded from a restored conversation that actually
+   * CARRIES something, rather than a bare system-prompt head. Gates the
+   * restore-boundary compaction: evaluating the ratio against a lone system
+   * message is the vacuous case the threshold semantics already exclude.
+   *
+   * The test is `> 1`, not `> 0`, and the difference is load-bearing now that
+   * the check is decided by a persisted reading rather than by estimating the
+   * array in front of it. A reconstruction legitimately yields a length-1
+   * array -- the server sends `[{role:'system'}]` whenever the restore window
+   * replayed no messages, which a rotated live window can produce by starting
+   * after the last `assistant-message` and before the `context-usage` that
+   * followed it. Under `> 0` that array counted as a restore; the estimate of
+   * one system message is tiny, so nothing fired and the flaw stayed
+   * invisible. A reading does not shrink with the window it outlived, so it
+   * WOULD fire -- distilling a conversation consisting only of the system
+   * prompt, and replacing it with a seed announcing a summary of earlier
+   * messages that were never in front of the model.
+   *
+   * The post-compaction seed pair (`[system, seedUser]`) is length 2 and
+   * still qualifies, which is the case that must keep working.
    */
   private readonly restoredAtActivation: boolean;
 
@@ -291,7 +307,7 @@ export class AgentLoop {
     this.retryDelaysMs = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     this.sleep = deps.sleep ?? defaultSleep;
     this.conversation = deps.restoredConversation ?? [{ role: 'system', content: deps.systemPrompt }];
-    this.restoredAtActivation = (deps.restoredConversation?.length ?? 0) > 0;
+    this.restoredAtActivation = (deps.restoredConversation?.length ?? 0) > 1;
     this.tools = [compactToolDefinition, ...deps.tools];
     this.autoCompaction = deps.compaction.auto;
   }
