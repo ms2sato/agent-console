@@ -47,10 +47,17 @@ One thing that looks like a surface and is not: a **future-tense reply from the 
 | 3 | **Inline comments** | `gh api repos/<owner>/<repo>/pulls/<N>/comments` | Resolved or addressed if actionable |
 | 4 | **Commit-status `description`** | see "The commit-status surface" below | `Review completed` — `state` is `success` even when no review ran |
 | 5 | **Formal review bodies** | see "The review-body surface" below | No unaddressed findings in any review's `body` |
+| 6 | **Review freshness** | see "The staleness surface" below | Some review's `commit_id` equals the PR's current HEAD |
 
 An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception 1: under the rate-limit fallback in `troubleshooting.md`, an empty state may persist; in that exception path, follow the fallback's verification steps before merge. Exception 2: a completed walkthrough with 0 actionable inline comments can also leave `reviewDecision` empty — CodeRabbit does not always submit a formal review event when it finds nothing to flag. See "the walkthrough-exists rubric" in `troubleshooting.md` before assuming "not yet reviewed" from an empty field alone.)
 
-**Docs-only PR carve-out (by configuration).** `.coderabbit.yaml` sets `reviews.auto_review.ignore_title_keywords: ["docs:"]`, so PRs titled with the conventional `docs:` prefix are skipped by auto-review ON PURPOSE (quota preservation — docs-only PRs were rate-limiting code PRs during PR-dense sprints). For such PRs an empty `reviewDecision` with no bot activity is the EXPECTED state, not a wait condition: verify the diff is genuinely docs-only (no production code), then treat surface 2 as N/A. When a docs PR warrants a bot pass anyway (e.g. a large design doc), trigger one manually with an `@coderabbitai review` comment — the manual path is unaffected by the title skip. Note the file also carries the review profile (`chill`) previously configured in the web UI, because a repo config file takes precedence over UI settings.
+**Docs-only PR carve-out (by configuration).** `.coderabbit.yaml` sets `reviews.auto_review.ignore_title_keywords: ["docs:"]`, so a PR whose title **contains the literal substring `docs:`** is skipped by auto-review ON PURPOSE (quota preservation — docs-only PRs were rate-limiting code PRs during PR-dense sprints). Once the skip is confirmed (next paragraph), an empty `reviewDecision` with no bot activity is the EXPECTED state for that PR, not a wait condition: verify the diff is genuinely docs-only (no production code), then treat surface 2 as N/A. When a docs PR warrants a bot pass anyway (e.g. a large design doc), trigger one manually with an `@coderabbitai review` comment — the manual path is unaffected by the title skip. Note the file also carries the review profile (`chill`) previously configured in the web UI, because a repo config file takes precedence over UI settings.
+
+**Confirm the skip at surface 4; never infer it from surface 2.** A skipped PR and a rate-limited one are *identical* at surface 2 — empty `reviewDecision`, no bot activity, no comments — so that surface cannot distinguish "never will run" from "has not run yet", and reading a skip out of it is the failure this paragraph most often causes. The description says which, in words: **`Review skipped: ignored keyword in the PR title`** for a real skip, **`Review rate limited`** for a PR that simply never got a window. Both carry `state=success`, so only the description discriminates them.
+
+**Consequence: the conventional-commit *scoped* form is not covered.** `docs(embedded-agent):`, `docs(orchestrator):`, `docs(workflow):` — the form most docs PRs here use — does not contain `docs:`, so none of them is skipped. Such a PR competes for the quota exactly like a code PR, and does so invisibly, because its empty `reviewDecision` looks like the carve-out working. Reading the substring rule out of the config rather than out of the convention it resembles is what separates these two cases; in conventional-commits vocabulary `docs(scope):` **is** the docs prefix, so a reader who knows the convention will otherwise assume it matches, correctly by that vocabulary and wrongly by this config.
+
+(Lesson: Sprint 2026-08-29 — three docs PRs were merged that day on the reasoning "the `docs:` prefix means auto-review is skipped by configuration; an empty `reviewDecision` is the expected state rather than a wait condition", written into one of their bodies as a durable claim. All three were scoped titles, none was skipped, and all three read `Review rate limited` at surface 4 — the surface that would have refuted the claim in one query was on the same commit, saying something else. Measured with a control the same afternoon: retitling a PR from `docs(design-principles):` to a bare `docs:` moved its description from `Review rate limited` to `Review skipped: ignored keyword in the PR title`. Config fix tracked in [#1440](https://github.com/ms2sato/agent-console/issues/1440); this paragraph is the reading discipline that holds whatever the config says.)
 
 "CodeRabbit clean" requires every surface. Pre-merge checks alone are insufficient. (Sprint 2026-04-25 PR #694 — agent declared "clean" based on pre-merge 5/5 while review state was `CHANGES_REQUESTED` with 3 actionable issues.)
 
@@ -138,6 +145,30 @@ The danger is social rather than technical, and it is worse than the `SUCCESS` f
 The rule is the same one that governs the rest of this list, applied to a surface that talks back: **check the state, not the promise.**
 
 (Sprint 2026-08-29 PR #1415 — a delegate retriggered against the current head. The bot replied within ninety seconds naming the specific change it would review; the commit status updated fourteen seconds after that to `Review rate limited`, and the walkthrough comment, updated in the same minute, said the included review was spent with the next one 35 minutes out. The delegate reported the disagreement between the bot's two mouths rather than the reply, explicitly flagging that "the bot said it would review" was the thing most likely to be passed upward as progress. The Orchestrator confirmed they would have relayed exactly that had they seen only the reply.)
+
+### The staleness surface: a review of the previous head is `SUCCESS` too
+
+Every other surface asks *what* the bot said. This one asks *about which commit*.
+
+Push a fix after a review — which is what happens on every PR that receives findings — and the rollup keeps reading `CodeRabbit: SUCCESS`. It is not lying: the check succeeded, **for the commit before yours**. Nothing in the rollup entry names a commit.
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<N>/reviews \
+  -q '.[] | select(.user.login=="coderabbitai[bot]") | "\(.submitted_at) \(.commit_id)"'
+gh pr view <N> --json headRefOid -q .headRefOid
+```
+
+**Clean requires some review's `commit_id` to equal the current HEAD.** Not "a review exists" — reviews are per-commit and they accumulate.
+
+**Why the other surfaces do not catch it.** Surface 4's documented trap is `SUCCESS` with `Review rate limited` in the `description`; here the description is **empty**, so a description check passes. Surface 5 finds a real review body with real findings, all of them dispositioned. Surface 2's `reviewDecision` is empty — which is the only hint, and it is the hint a reader most reasonably discounts, because empty is also the normal state for "has not reviewed yet" on a PR that visibly *has* a review.
+
+This is `workflow.md`'s Sub-pattern 7 — a signal that was strong when observed and has since expired — reaching you through a surface the checklist otherwise treats as current. The expiry event is your own push.
+
+**The practical consequence**: a fix commit is the diff most worth reviewing (it was written under time pressure, in response to a finding, often in code the author had just been told they got wrong) and it is the diff this surface silently exempts. Twice on 2026-08-29 a PR merged with its final head unreviewed; both were caught by reconstructing the range by hand, and neither by walking the list.
+
+**When the final head genuinely will not get a pass** — a quota window that will not reopen before merge, or a delta small enough that waiting costs more than it buys — that is a decision, not a clean verdict. Record it in the PR body: the reviewed range, the unreviewed delta with its diffstat, and who judged it acceptable. "CodeRabbit clean" and "a person decided this specific delta did not need a pass" are different claims, and a later reader auditing what reviewed what should not have to work out which one applied.
+
+(Sprint 2026-08-29 PR [#1432](https://github.com/ms2sato/agent-console/pull/1432) — a delegate walked all five surfaces after pushing fixes, found `SUCCESS` with an empty description, and read the reviews directly rather than stopping: the only review's `commit_id` was the previous head. They declined to report the gate satisfied. The same staleness had gone unnoticed on two PRs merged earlier the same day, where it was reconstructed narratively after the fact rather than caught by the walk.)
 
 ### Two ways the query itself lies to you
 
