@@ -101,6 +101,25 @@ const WINDOW_TOKENS = 12_000;
 /** The default auto threshold; `T x W` is the line both numbers straddle. */
 const THRESHOLD_TOKENS = 0.85 * WINDOW_TOKENS;
 
+/**
+ * How far the growth loop pushes before restarting, as a ratio of the window.
+ *
+ * It exists because the branch this script exercises was otherwise NOT under
+ * its control. Growth stops at the first reading at or above `T x W`, and a
+ * turn moves the reading by roughly 970 tokens -- more than the 600-token gap
+ * between `T x W` and `F x W` at this window size. So the stopping reading
+ * lands above the full-distillation ceiling or below it depending on where a
+ * turn happens to fall, and the run silently exercises the FULL branch or the
+ * PARTIAL one. Two runs minutes apart took different branches, and a failure
+ * in one of them could not be attributed to a branch at all.
+ *
+ * Default keeps the historical behaviour (stop at the threshold); set it above
+ * `FULL_DISTILL_MAX_RATIO` to drive the partial path deliberately. Both are
+ * verified against the real provider: FULL at 0.876, PARTIAL at 0.956.
+ */
+const GROWTH_TARGET_RATIO = Number(process.env.SMOKE_GROWTH_TARGET_RATIO ?? 0.85);
+const GROWTH_TARGET_TOKENS = GROWTH_TARGET_RATIO * WINDOW_TOKENS;
+
 const PROVIDER_BASE_URL = process.env.PROVIDER_BASE_URL ?? 'https://opencode.ai/zen/go/v1';
 const PROVIDER_MODEL = process.env.PROVIDER_MODEL ?? 'qwen3.8-flash';
 const PROVIDER_KEY_REF = process.env.PROVIDER_KEY_REF ?? 'opencode-go';
@@ -310,7 +329,7 @@ async function main(): Promise<void> {
     // ====================================================================
     // GROW: real turns until the provider's own reading clears T x W.
     // ====================================================================
-    console.log(`\n==> growing the conversation until reported usage >= ${THRESHOLD_TOKENS}`);
+    console.log(`\n==> growing the conversation until reported usage >= ${GROWTH_TARGET_TOKENS}`);
     let reported = 0;
     for (let turn = 1; turn <= MAX_GROWTH_TURNS; turn++) {
       const marker = (await readEvents(sessionId, workerId)).length;
@@ -338,10 +357,10 @@ async function main(): Promise<void> {
       }
       reported = usage.promptTokens as number;
       console.log(`    turn ${turn}: reported prompt_tokens = ${reported}`);
-      if (reported >= THRESHOLD_TOKENS) break;
+      if (reported >= GROWTH_TARGET_TOKENS) break;
     }
-    if (reported < THRESHOLD_TOKENS) {
-      bail(`after ${MAX_GROWTH_TURNS} turns the reported usage is still ${reported} (< ${THRESHOLD_TOKENS})`);
+    if (reported < GROWTH_TARGET_TOKENS) {
+      bail(`after ${MAX_GROWTH_TURNS} turns the reported usage is still ${reported} (< ${GROWTH_TARGET_TOKENS})`);
     }
 
     // The reading that will become the seed, read from the persisted log --
@@ -397,6 +416,18 @@ async function main(): Promise<void> {
     console.log(
       `    (the persisted reading was ${seedReading?.promptTokens}; the gap between them is the tool-schema mass ` +
         'the estimator omits)',
+    );
+    // Every reason a boundary compaction declines to happen is reported as a
+    // `turn-error`, and without printing it a failed run says only that
+    // nothing compacted -- which is the observation, not the cause. Added
+    // after a run failed here and left nothing to distinguish a provider
+    // timeout from an empty distillation input.
+    for (const err of afterRestart.filter((e) => e.type === 'turn-error')) {
+      console.log(`    turn-error at the boundary: ${String(err.message)}`);
+    }
+    const ratio = boundaryTokens / WINDOW_TOKENS;
+    console.log(
+      `    ratio=${ratio.toFixed(3)} -> ${ratio > 0.9 ? 'PARTIAL' : ratio >= 0.85 ? 'FULL' : 'no fire'} branch`,
     );
 
     console.log('');
