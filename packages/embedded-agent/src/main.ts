@@ -19,7 +19,7 @@ import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
 import { SdkEngine, type SdkEngineDeps } from './sdk-engine.js';
-import { sdkSessionExists } from './sdk-session-preflight.js';
+import { probeSdkSession, type SdkSessionProbe } from './sdk-session-preflight.js';
 import {
   assembleSystemPrompt,
   composeSdkSystemPromptAppend,
@@ -116,8 +116,8 @@ export interface LoopFactories {
    * own `queryFn` seam. Defaults to `(deps) => new SdkEngine(deps)`. */
   createSdkEngine(deps: SdkEngineDeps): Engine;
   /** DI seam for the R1 resume pre-flight, which otherwise reads the real
-   * `~/.claude` of whoever is running. Defaults to `sdkSessionExists`. */
-  sdkSessionExists(sdkSessionId: string, cwd: string): Promise<boolean>;
+   * `~/.claude` of whoever is running. Defaults to `probeSdkSession`. */
+  probeSdkSession(sdkSessionId: string, cwd: string): Promise<SdkSessionProbe>;
   /** Documented test seam: overrides
    * {@link RESTORE_BOUNDARY_COMPACTION_BUDGET_MS} so a test can drive the
    * budget-exceeded path without waiting a real minute. Production never sets
@@ -414,16 +414,40 @@ async function initializeLoop(
     // once a turn is in flight, and takes the user's first message with it.
     // Checking here turns that into a filesystem read (see
     // sdk-session-preflight.ts for why this runs in the subprocess rather
-    // than on the server). A miss starts fresh and says so; the resume is
-    // never retried.
+    // than on the server).
+    //
+    // The probe's `not-found` and `error` both start this session fresh, and
+    // the server today keeps the persisted id on both -- only a `refused`
+    // resume clears it. They are still reported as DIFFERENT reasons rather
+    // than as one "the pre-flight said no", because they assert different
+    // things: `not-found` is the SDK saying it could not find the session,
+    // `error` is the lookup not running at all. That difference is what the
+    // persisted transcript row records, and it is what a future SDK -- one
+    // whose store propagates read errors instead of swallowing them -- would
+    // need in order to act on the two differently. Flattening them here
+    // would make that unrecoverable downstream.
     let resume: string | undefined;
     if (init.resume !== undefined) {
       const requested = init.resume.sdkSessionId;
-      if (await factories.sdkSessionExists(requested, init.context.cwd)) {
-        resume = requested;
-      } else {
-        io.writeEvent({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: requested, reason: 'not-found' });
-        io.logError(`SDK session ${requested} not found at activation; starting a fresh session`);
+      const probe = await factories.probeSdkSession(requested, init.context.cwd);
+      switch (probe) {
+        case 'found':
+          resume = requested;
+          break;
+        case 'not-found':
+          io.writeEvent({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: requested, reason: 'not-found' });
+          io.logError(`SDK session ${requested} not found at activation; starting a fresh session`);
+          break;
+        case 'error':
+          io.writeEvent({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: requested, reason: 'lookup-failed' });
+          io.logError(
+            `SDK session ${requested} could not be looked up at activation; starting a fresh session and keeping the id for the next activation`,
+          );
+          break;
+        default: {
+          const _exhaustive: never = probe;
+          void _exhaustive;
+        }
       }
     }
 
@@ -438,7 +462,7 @@ async function initializeLoop(
       // Transcript Restore, R1: the ONLY path by which a resume id reaches
       // the engine. Absent means a fresh session -- a first-ever
       // activation, a worker with no persisted id, or an id the pre-flight
-      // above could not find.
+      // above could not find or could not look up.
       ...(resume !== undefined ? { resume } : {}),
     });
   } catch (err) {
@@ -492,7 +516,7 @@ if (import.meta.main) {
     loadOptInInstructions,
     loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
-    sdkSessionExists,
+    probeSdkSession,
   };
   runLoop(io, factories)
     .then((code) => process.exit(code))
