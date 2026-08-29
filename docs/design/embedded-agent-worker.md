@@ -1102,7 +1102,7 @@ The mechanism is engine-specific, and deliberately so. `openai-api` reconstructs
 
 **One writer for what the user sees.** The transcript rendered on revival is always a replay of our persisted stream, on both engines. The SDK's session state is never a second source of what gets displayed; on `claude-sdk` it is what makes the *model's* memory agree with that display. Keeping this asymmetric is deliberate: two writers for one transcript is the shape this codebase has repeatedly paid for.
 
-**Decomposition.** R1 ([#1410](https://github.com/ms2sato/agent-console/issues/1410)) = `claude-sdk` resume plus the local half of [#1273](https://github.com/ms2sato/agent-console/issues/1273) · R2 ([#1411](https://github.com/ms2sato/agent-console/issues/1411)) = `openai-api` reconstruction, Tiers B/C · R3 ([#1412](https://github.com/ms2sato/agent-console/issues/1412)) = eviction policy.
+**Decomposition.** R1 ([#1410](https://github.com/ms2sato/agent-console/issues/1410)) = `claude-sdk` resume plus the local half of [#1273](https://github.com/ms2sato/agent-console/issues/1273) · R2 ([#1411](https://github.com/ms2sato/agent-console/issues/1411)) = compaction at the restore boundary, plus closing out Transcript Restore's verification (the `openai-api` reconstruction and Tiers B/C had already shipped in [#1201](https://github.com/ms2sato/agent-console/pull/1201) / #1205 — see #1411's own scope correction) · R3 ([#1412](https://github.com/ms2sato/agent-console/issues/1412)) = eviction policy.
 
 ### Definition
 
