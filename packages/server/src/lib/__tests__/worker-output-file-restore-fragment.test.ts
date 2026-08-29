@@ -124,11 +124,21 @@ describe('rotation -> restore: a fragment head no longer poisons the gate', () =
     // hand over control. Naming the orphan proves the fragment was skipped and
     // `replayWindow` actually ran.
     //
-    // Reach measured by mutation: removing (b)'s head allowance flips this
-    // message back to the parse error and fails this test. Measured, not
-    // assumed -- an earlier version of this test drove a REAL rotation, which
-    // (a) newline-aligns, so there was no fragment for (b) to skip and the
-    // whole file passed with (b) deleted.
+    // Reach measured by mutation, by name rather than by count. Removing
+    // (b)'s head allowance fails TWO tests in this file:
+    //
+    //   "reaches the orphan guard, which the parse gate used to pre-empt"
+    //   "restores an already-rotated worker that used to fall to the
+    //    destructive reset"
+    //
+    // An earlier note here said "fails this test" and under-reported it by
+    // one. Measured, not assumed -- and worth the correction, because a
+    // reach recorded as smaller than it is invites someone to weaken the
+    // other test believing nothing covers it.
+    //
+    // The measurement also caught this test being inert once: an earlier
+    // version drove a REAL rotation, which (a) newline-aligns, so there was
+    // no fragment for (b) to skip and the whole file passed with (b) deleted.
     expect(message).toContain('tool-result');
     expect(message).toContain('no owning tool-call');
     expect(message).not.toContain('Unparseable line');

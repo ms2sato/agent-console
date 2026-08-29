@@ -830,10 +830,20 @@ describe('reconstructConversation — rotation fragment at the head', () => {
   it('rescues a rotated window that contains a compaction boundary', () => {
     // The whole rescue population, and the only one.
     //
-    // Reach measured by mutation: gating the skip off (`truncated` forced
-    // false) throws on the fragment; removing the boundary check lets the
-    // no-boundary test below through instead. Each half fails a different
-    // test, which is how they are known to be doing separate work.
+    // Reach measured by mutation, and recorded by the FAILING TEST'S NAME
+    // rather than by a count -- two mutations that each fail "1 test" may be
+    // failing the same one, in which case there is one gate wearing two
+    // names. Measured:
+    //
+    //   ignore `truncated` (always allow the skip)
+    //     -> fails ONLY "throws when the file was never cut, even though the
+    //        head would parse as a fragment"
+    //   remove the boundary check
+    //     -> fails ONLY "throws when the window was cut but holds no
+    //        compaction boundary"
+    //
+    // Disjoint, so the two gates are doing separate work. Neither mutation
+    // touches this test, which is the rescue path both gates guard.
     const outcome = reconstructConversation(
       `${FRAGMENT}\n${linesOf([BOUNDARY, ...AFTER_BOUNDARY])}`,
       SYSTEM_PROMPT,
