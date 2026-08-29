@@ -36,6 +36,8 @@ GitHub scatters CodeRabbit information across several unrelated surfaces. **Ever
 
 This section is the **single writer** for the surface list. Other documents (`workflow.md`, `core-responsibilities.md`) link here rather than restating it; when a new surface is discovered, add it here only.
 
+One thing that looks like a surface and is not: a **future-tense reply from the bot** ("I will review …"). See "Not a surface" below before counting it as anything.
+
 > **Why this section is not called "the N-layer verdict" anymore.** It was "the 3-layer clean verdict" for months, then a 4th surface was documented in a separate subsection, and then a 5th (below) was found the hard way — a Major finding sat in a place none of the named layers read, on a PR both the Orchestrator and the Architect had already called clean. A name that encodes a count asserts completeness the list does not have, and invites checking "the three" and stopping. Treat the list as open: the next surface is not yet in it.
 
 | # | Surface | Verification | Clean state |
@@ -122,6 +124,20 @@ The tell in the body is a `⚠️ Outside diff range comments (N)` block. Its fi
 **Zero inline comments is not evidence of zero findings.** When surface 3 comes back empty, that is precisely when surface 5 must be read, not when the check is over.
 
 (Sprint 2026-08-05 PR #1276 — CodeRabbit posted a formal review whose body held a Major finding: session-resume rollback freed PTY workers but not the embedded-agent worker the same change had just activated, leaking a subprocess and a minted MCP token that became unreachable once the session was deleted. `reviewDecision` was empty, inline comments were 0, and the commit status said `Review completed`. The Orchestrator reported "findings zero" to the owner on that basis; the Architect's independent audit had also missed the rollback asymmetry. It surfaced only because the delegate re-examined the CodeRabbit state on their own initiative and reported the ambiguity rather than accepting the Orchestrator's summary. A process that depends on a delegate doubting the Orchestrator is not a process — this section is what replaces it.)
+
+### Not a surface: a future-tense reply from the bot
+
+Every surface in the checklist is **state** — a status, a review decision, a comment list, a review body, a walkthrough. When you retrigger with `@coderabbitai review`, the bot may also answer conversationally, and that reply is none of those things:
+
+> `@user`, I will review the current head of #NNNN, including the `compact()` commit-point change and the four implemented dispositions.
+
+**A future-tense reply is an acknowledgement that a command was received. It is not evidence that a review ran — it is closer to evidence that one has not.** When it arrives while the commit status still reads `Review rate limited`, it confirms the limit rather than reporting progress against it. Only the artifacts of a *completed* review count toward a verdict: a formal review body, inline comments, or an actual walkthrough update.
+
+The danger is social rather than technical, and it is worse than the `SUCCESS` false-clean for that reason. `SUCCESS` has to be misread. A sentence naming the exact change you are waiting on, in the first person, reads as a commitment — and a commitment is the easiest thing in this whole list to relay upward as progress. "The bot said it will review the commit-point change" is a sentence someone can say in good faith while nothing has happened.
+
+The rule is the same one that governs the rest of this list, applied to a surface that talks back: **check the state, not the promise.**
+
+(Sprint 2026-08-29 PR #1415 — a delegate retriggered against the current head. The bot replied within ninety seconds naming the specific change it would review; the commit status updated fourteen seconds after that to `Review rate limited`, and the walkthrough comment, updated in the same minute, said the included review was spent with the next one 35 minutes out. The delegate reported the disagreement between the bot's two mouths rather than the reply, explicitly flagging that "the bot said it would review" was the thing most likely to be passed upward as progress. The Orchestrator confirmed they would have relayed exactly that had they seen only the reply.)
 
 ### Two ways the query itself lies to you
 
