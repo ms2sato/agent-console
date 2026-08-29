@@ -82,7 +82,7 @@ const PARTIAL_DISTILL_INPUT_RATIO = 0.7;
  *
  * See docs/design/embedded-agent-worker.md "Compaction at the restore
  * boundary" for the named degradation this accepts (the outer sentence says
- * "the earlier part"; this line corrects it in band).
+ * "the earlier part"; this line corrects it in-band).
  */
 const PARTIAL_DISTILL_CAVEAT_LINE =
   '[Earlier messages exceeded the context window and are not covered by this summary.]';
