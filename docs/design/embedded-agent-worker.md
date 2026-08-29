@@ -1098,7 +1098,7 @@ All three become reasonable the moment the conditions are separated and the mech
 
 The mechanism is engine-specific, and deliberately so. `openai-api` reconstructs the conversation from our own persisted NDJSON stream and hands it back to the provider. `claude-sdk` asks the SDK to resume its own session state ([embedded-agent-sdk-engine.md §4](embedded-agent-sdk-engine.md), Transcript restore row) and never sends it a reconstruction. Two mechanisms, one promise — which is why §4's row reads **mechanism parity** rather than `mapped`.
 
-**What eviction adds, and what it does not.** Idle eviction ([#1336](https://github.com/ms2sato/agent-console/issues/1336) / [#1412](https://github.com/ms2sato/agent-console/issues/1412)) contributes only the decision to drop a process *on purpose*. Bringing it back is this section's mechanism, unchanged. A reader scoping eviction should expect to write a policy, not a restore path — and should read [#1414](https://github.com/ms2sato/agent-console/issues/1414) first, because a kill the server does not observe reproduces a defect by design.
+**What eviction adds, and what it does not.** Idle eviction ([#1336](https://github.com/ms2sato/agent-console/issues/1336) / [#1412](https://github.com/ms2sato/agent-console/issues/1412), now shipped — see [Idle eviction](#idle-eviction-r3-issue-1412)) contributes only the decision to drop a process *on purpose*. Bringing it back is this section's mechanism, unchanged: the eviction phase wrote a policy, not a restore path. The prediction that it would also have to read [#1414](https://github.com/ms2sato/agent-console/issues/1414) first held — a kill the server does not observe reproduces that defect by design, which is why eviction routes through the existing deactivation path rather than inventing a kill.
 
 **One writer for what the user sees.** The transcript rendered on revival is always a replay of our persisted stream, on both engines. The SDK's session state is never a second source of what gets displayed; on `claude-sdk` it is what makes the *model's* memory agree with that display. Keeping this asymmetric is deliberate: two writers for one transcript is the shape this codebase has repeatedly paid for.
 
@@ -1247,6 +1247,78 @@ Four properties carry it, and each answers a way the naive version fails:
 **Ordering, stated.** The dying incarnation's own `fatal` is appended and fanned out first, unchanged; the replacement runs after it; an unfinished turn's user-facing marker is the [`turn-interrupted`](#interrupted-turns-detection-and-the-local-signal-r1-the-local-half-of-1273) row the *fresh* incarnation appends. **No `turn-error` is synthesized**, for two independent reasons: `turn-error` is in `findInterruptedTurnId`'s terminal set, so authoring one here would close the turn and make `turn-interrupted` structurally unreachable for the very turn it describes; and the refused-resume `turn-error`'s wording ("not something this agent now remembers") is *false* on this path, where the SDK resume is expected to succeed and carry the conversation across.
 
 **The detection limit is accepted.** Nothing polls for a dead engine; a proactive watchdog is deliberately out of scope, and idle eviction ([#1412](https://github.com/ms2sato/agent-console/issues/1412)) supplies the practical bound on a zombie's residency. What the measurement showed is that the limit is narrower than feared: the SDK engine's consumer loop is always iterating the message stream, so the transport throw — and therefore the `fatal` — arrives within ~100 ms of the child's death, without waiting for a message.
+### Idle eviction (R3, Issue [#1412](https://github.com/ms2sato/agent-console/issues/1412))
+
+**Status:** shipped. This is the phase [#1336](https://github.com/ms2sato/agent-console/issues/1336) reserved, and it lifts [embedded-agent-sdk-engine.md §4](embedded-agent-sdk-engine.md)'s process-lifetime row from `reserved`.
+
+Eviction contributes exactly one thing: **the decision to drop a process on purpose.** Bringing it back is the restore mechanism specified above, unchanged. There is no eviction-specific restore path, and there must never be one.
+
+#### Why the process is worth dropping
+
+Measured on a live `claude-sdk` worker tree (R1's memory appendix, `/proc/<pid>/smaps_rollup`, PSS for fleet reasoning per [#1332](https://github.com/ms2sato/agent-console/issues/1332)): 483 MB RSS / 372 MB PSS for the tree, of which the `claude` child is ~74%. With the child gone the surviving harness holds 126 MB RSS / 90 MB PSS. **Three quarters of an idle worker is the evictable part** — which is what makes keeping many agents alive a different proposition than it is today.
+
+#### The hazard line: eviction kills through the exit observer, or not at all
+
+[#1414](https://github.com/ms2sato/agent-console/issues/1414) documents a worker that is **permanently bricked and looks healthy**: its `claude` grandchild dies, the harness survives, the server observes no exit, `turnActive` is never cleared, and every later message returns `TURN_IN_PROGRESS` forever.
+
+**An eviction that terminates the subprocess through a path the exit observer does not cover reproduces that defect by design, on a timer.** This is the one constraint on the mechanism that is not negotiable, and it is why the implementation is a call into `deactivate()` — the existing deactivation path, SIGTERM escalation, `endStdinSafely`, token revocation and all — rather than a kill of its own. R1's refused-resume recovery routes the same way for the same reason.
+
+#### Policy
+
+| | |
+|---|---|
+| **Eligibility** | `claude-sdk` embedded workers only. `openai-api` is out of scope — its reconstruction path is R2's, and mixing the two would make the policy depend on which engine's restore had landed. |
+| **Signal** | Idle time alone. Usage volume is deliberately **not** mixed in: a policy that weighed "how much this worker has been used" would evict the workers a user is most invested in and is unanswerable without usage data that does not exist yet. |
+| **Threshold** | `EMBEDDED_AGENT_IDLE_EVICTION_MS`, default 30 minutes. Non-positive disables eviction entirely. Tests set it to milliseconds. |
+| **Wake** | The existing activation path, unchanged — which is also what keeps multi-user correct, since the subprocess-side resume pre-flight travels with it. |
+| **Layer** | The timer and the decision run **in the server**. It owns `activityState` and the deactivation machinery, and a subprocess cannot outlive its own eviction. |
+
+#### The commit point
+
+The countdown is armed when the worker looks idle. Everything can have changed by the time it fires, so the decision is re-made at the moment of the kill rather than trusted from the moment of the arm:
+
+- **A worker mid-turn is never evicted.** `turnActive` is re-read when the countdown elapses; if a turn is in flight the countdown simply restarts.
+- **The re-read and the commitment are one synchronous section.** Splitting the `turnActive` read from the `evicting` write would open a third race in the same shape as the timer-fire-to-kill window the re-check exists to close.
+- `turn-interrupted` at the next activation would catch a lost race, and it is deliberately built to (its terminal set excludes `exited` precisely because a deliberate eviction produces one). **The backstop is not the mechanism** and must not be reasoned about as one.
+
+**The countdown is armed only after the incarnation reports `ready` and its initial-prompt obligation is discharged**, and that ordering is load-bearing rather than cosmetic. `maybeDeliverInitialPrompt` reaches the delivery path from *inside the stdout reader*; the delivery choke point below awaits any in-flight eviction; an eviction awaits `deactivate` → `exitSettled` → `streamsDone` → that same reader. A countdown that could fire before `ready` finished being handled would let the reader await an eviction waiting on the reader — the exact deadlock R1's refused-resume recovery hit. Gating the arm on a per-incarnation `ready` flag removes the window structurally, in whatever order the engine chooses to emit its events.
+
+#### The delivery invariant
+
+**Every path that delivers input to a worker passes one choke point, which either wakes the worker or fails loudly. Silently dropping input into an evicted worker is the one non-reversible failure in this design.**
+
+That choke point is `deliverUserTurn`: `sendUserMessage` and `sendSystemNotification` both delegate to it, and the WebSocket, inter-session and MCP paths all end at one of those two. Before admission it awaits any eviction already in flight, then wakes the worker if there is no live subprocess.
+
+**The wake condition is "there is no live subprocess" — deliberately not "the worker is marked evicted".** A marker-gated check covers only the states someone remembered to enumerate, and the enumeration is what rots. Testing for the absence of a process instead makes a silent drop unrepresentable for callers that have not been written yet. The cost is that a worker stopped by the user is also woken by an incoming message, which is both semantically right (a message is an address) and, at every call site that exists today, already the behaviour: all three of them call `activateEmbeddedAgentWorker` immediately before delivering.
+
+The admission check-and-set stays **synchronous, and after that await**. It remains the single commit point for admission, resting on `activate()`'s existing idempotency: two concurrent messages to an evicted worker produce one activation and one admitted turn, with the loser getting `TURN_IN_PROGRESS` exactly as it would against a live worker.
+
+A wake that fails returns `NOT_ACTIVATED` carrying the classified activation message — the same classification `websocket/routes.ts` applies — never a success and never silence.
+
+#### `reason: 'evicted'` — one identifier for the concept
+
+The exit observer is the path the hazard line requires, and it did two things that made a deliberate eviction look like a failure. Both are fixed here, and both hang off a single field.
+
+[`ExitReason`](../glossary.md#exitreason) gains `evicted`, and the same value rides on the persisted `exited` event. There is deliberately **no parallel boolean**: two writers for one concept is the shape this codebase has repeatedly paid for.
+
+- **The notification.** The global worker-exit callback fed `notificationManager.onWorkerExit`, so an idle worker would have pinged the owner **once per threshold period, per idle worker, forever**. That is not a rendering blemish — it is the feature harassing the person it exists to help, on a timer, scaling with exactly the thing it is trying to make cheap. Evictions are suppressed there; `managed` and `unexpected` notify as before.
+- **The transcript row.** The `exited` row renders as *"Agent process exited (code: 0)"* with a **Restart** button — an instruction to take a manual action the user does not need, since the next message wakes the worker by itself. An evicted row renders instead as a quiet line with no button.
+
+**The field is three-valued and must be read as such.** Absent means the row was written by a server that predates it, and absent renders exactly as it always did. Consumers test `reason === 'evicted'`, **never** `!reason` or truthiness — the same discipline `sdkResumed` carries in [§4.3](embedded-agent-sdk-engine.md), where a negation would have shown a divergence notice on every `openai-api` worker.
+
+This is the one place R3 touches the UI, and it is a subtraction: the assumption it overrides ("a transparent resume has nothing to show") had a false premise, because eviction was never visually silent. The choice was between a misleading rendering and an accurate one, not between none and some.
+
+#### Assumptions, stated rather than settled
+
+Recorded here because they are policy the owner may reverse without any change to the mechanism:
+
+- **30 minutes.** Sized from the memory measurement above, not from usage data, which does not exist yet.
+- **Wake triggers: user message, inter-session message, WebSocket connect.** The first two pass the choke point by construction. The third is the pre-existing activate-on-open in `websocket/routes.ts` and costs no new code — but note what it means: **merely opening a tab re-inflates ~74% of the tree even if no message follows.** Dropping view-path wake is a live option and requires no mechanism change.
+- **No new chrome.** Eviction and resume are meant to be invisible; the `evicted` rendering above removes a misleading control rather than adding a state. Revisit only if measured wake latency turns out to be large enough for a user to notice.
+
+#### Not in scope
+
+The `openai-api` engine (R2's reconstruction path is a prerequisite, and the policy should not straddle two restore mechanisms mid-track) · usage-weighted or memory-pressure-driven policy · any UI beyond the row above · #1414 itself, which is a distinct exit-detection defect and stays filed on its own.
 
 ### Testing (design-time polarity signal -- AC 5)
 

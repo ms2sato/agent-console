@@ -46,6 +46,7 @@ import type { SessionDataPathResolver } from '../lib/session-data-path-resolver.
 import type { McpTokenRegistry } from '../mcp/mcp-auth.js';
 import type { WorkerOutputFileManager } from '../lib/worker-output-file.js';
 import { spawnAsUser, shellEscape, type SpawnAsUserFn } from './privilege-elevation.js';
+import { IdleEvictionTimers } from './embedded-agent-idle-eviction.js';
 import { loadProviderKey, ProviderKeyStoreError, PROVIDER_KEY_STORE_UI_MESSAGES } from './provider-key-store.js';
 import {
   buildPtyNotificationText,
@@ -256,6 +257,8 @@ export interface EmbeddedAgentWorkerServiceDeps {
   getGlobalWorkerExitCallback: () => ((sessionId: string, workerId: string, exitCode: number, reason: ExitReason) => void) | undefined;
   shutdownGraceMs?: number;
   sigtermTimeoutMs?: number;
+  /** Test seam for the idle-eviction threshold (defaults to `serverConfig.EMBEDDED_AGENT_IDLE_EVICTION_MS`). */
+  idleEvictionMs?: number;
 }
 
 /**
@@ -396,6 +399,29 @@ interface Runtime {
    * replacement the previous one just started.
    */
   fatalReplacementStarted: boolean;
+  /**
+   * Idle eviction: the countdown may only be armed once this incarnation has
+   * reported `ready` AND its initial-prompt obligation has been discharged.
+   *
+   * The ordering is load-bearing, not cosmetic -- see the `ready` branch of
+   * {@link EmbeddedAgentWorkerService.handleLoopLine} for the deadlock it
+   * removes. {@link EmbeddedAgentWorkerService.touchIdle}'s `!ready` guard is
+   * what makes the ordering hold no matter which event the engine emits
+   * first.
+   */
+  ready: boolean;
+  /**
+   * Idle eviction commit point: set SYNCHRONOUSLY, in the same synchronous
+   * section that re-reads `turnActive`, immediately before the deactivation
+   * that drops this incarnation.
+   *
+   * Splitting the `turnActive` read from this write -- by awaiting anything
+   * between them -- would open a third race in the same shape as the one the
+   * commit-point re-check exists to close.
+   */
+  evicting: boolean;
+  /** Idle eviction applies to the `claude-sdk` engine only. */
+  evictable: boolean;
 }
 
 /**
@@ -474,6 +500,18 @@ export class EmbeddedAgentWorkerService {
    * is meant to count.
    */
   private readonly fatalChainReplacementSpent = new Set<string>();
+  /**
+   * Idle eviction: in-flight evictions keyed by workerId, so the delivery
+   * choke point ({@link ensureDeliverable}) can await one before deciding
+   * whether there is a subprocess to deliver into.
+   *
+   * Keyed separately from {@link runtimes} rather than hung off the runtime,
+   * because the eviction outlives the runtime it drops: the exit observer
+   * deletes the runtime partway through, so a promise stored there would be
+   * unreachable exactly when a concurrent delivery needs to await it.
+   */
+  private readonly evictions = new Map<string, Promise<void>>();
+  private readonly idleEviction: IdleEvictionTimers;
   private readonly spawnAsUserFn: SpawnAsUserFn;
   private readonly loadProviderKeyFn: typeof loadProviderKey;
   private readonly entryPath: string;
@@ -488,6 +526,10 @@ export class EmbeddedAgentWorkerService {
     this.bunPath = deps.embeddedAgentBunPath ?? serverConfig.EMBEDDED_AGENT_BUN_PATH;
     this.shutdownGraceMs = deps.shutdownGraceMs ?? DEFAULT_SHUTDOWN_GRACE_MS;
     this.sigtermTimeoutMs = deps.sigtermTimeoutMs ?? DEFAULT_SIGTERM_TIMEOUT_MS;
+    this.idleEviction = new IdleEvictionTimers({
+      idleTimeoutMs: deps.idleEvictionMs ?? serverConfig.EMBEDDED_AGENT_IDLE_EVICTION_MS,
+      onExpire: (workerId) => this.onIdleExpired(workerId),
+    });
   }
 
   /**
@@ -811,6 +853,9 @@ export class EmbeddedAgentWorkerService {
         resumeRecoveryStarted: false,
         fatalRoutedToReplacement: fatalLeavesHarnessAlive(definition.engine),
         fatalReplacementStarted: false,
+        ready: false,
+        evicting: false,
+        evictable: definition.engine === 'claude-sdk',
       };
       this.runtimes.set(workerId, runtime);
 
@@ -865,6 +910,9 @@ export class EmbeddedAgentWorkerService {
       // Safe to delete unconditionally: the in-flight activation guard prevents
       // a concurrent activation from having installed a different runtime here.
       this.runtimes.delete(workerId);
+      // Idle eviction: there is no incarnation left to drop, so a countdown
+      // armed by this activation must not survive it.
+      this.idleEviction.clear(workerId);
       logger.warn({ sessionId, workerId, err }, 'Embedded-agent activation failed; revoked token and cleaned up');
       throw err;
     }
@@ -926,6 +974,9 @@ export class EmbeddedAgentWorkerService {
     text: string,
     opts: { clientMessageId?: string; notification?: EmbeddedAgentServerNotification } = {},
   ): Promise<SendUserMessageResult> {
+    const failure = await this.ensureDeliverable(sessionId, workerId);
+    if (failure !== null) return failure;
+
     const session = this.deps.getSession(sessionId);
     const worker = session?.workers.get(workerId);
     const runtime = this.runtimes.get(workerId);
@@ -947,6 +998,9 @@ export class EmbeddedAgentWorkerService {
     }
     runtime.turnActive = true;
     // --- end synchronous admission ---
+
+    // Idle eviction: the worker just did something, so the countdown restarts.
+    this.touchIdle(workerId);
 
     const id = crypto.randomUUID();
     // Two separate objects: `command` (stdin, loop protocol -- unchanged
@@ -980,6 +1034,133 @@ export class EmbeddedAgentWorkerService {
     this.appendEvent(runtime.ctx, event);
 
     return { ok: true, id };
+  }
+
+  /**
+   * Idle eviction, the delivery invariant.
+   *
+   * This is the SINGLE choke point every input path passes on its way to a
+   * worker: `sendUserMessage` and `sendSystemNotification` both delegate to
+   * {@link deliverUserTurn}, and WebSocket delivery, inter-session delivery
+   * and MCP delivery all end there. It either wakes the worker or fails
+   * loudly -- it NEVER silently drops a message.
+   *
+   * The wake condition is "there is no live subprocess", and it is
+   * deliberately NOT gated on an evicted marker. A marker-gated check would
+   * only cover the states someone remembered to enumerate; the point of
+   * checking the subprocess itself is to make a silent drop unrepresentable
+   * for callers that do not exist yet.
+   *
+   * Returns `null` when delivery may proceed (including when the worker or
+   * session is missing -- the caller's existing synchronous admission block
+   * reports that, and duplicating its error strings here would let the two
+   * drift). Returns a failure result only when a wake was attempted and
+   * failed.
+   */
+  private async ensureDeliverable(
+    sessionId: string,
+    workerId: string,
+  ): Promise<SendUserMessageResult | null> {
+    // An eviction that started before this message arrived is still tearing
+    // the subprocess down. Delivering into it would echo the message into a
+    // transcript that dies with the process, so wait it out first.
+    const eviction = this.evictions.get(workerId);
+    if (eviction) {
+      await eviction;
+    }
+
+    const session = this.deps.getSession(sessionId);
+    const worker = session?.workers.get(workerId);
+    if (!session || !worker || worker.type !== 'embedded-agent') return null;
+    if (worker.subprocess !== null) return null;
+
+    try {
+      await this.activate(sessionId, workerId);
+      return null;
+    } catch (err) {
+      // Same classification websocket/routes.ts applies to an activation
+      // failure: an EmbeddedAgentActivationError's message is from a curated
+      // allowlist and is client-safe; anything else stays server-side.
+      const message =
+        err instanceof EmbeddedAgentActivationError
+          ? err.message
+          : GENERIC_EMBEDDED_ACTIVATION_FAILURE_MESSAGE;
+      logger.warn(
+        { sessionId, workerId, err },
+        'Failed to wake an embedded-agent worker for message delivery',
+      );
+      return { ok: false, code: 'NOT_ACTIVATED', error: message };
+    }
+  }
+
+  /**
+   * Idle eviction: (re)start this worker's idle countdown, if it is a worker
+   * idle eviction applies to at all.
+   *
+   * The `ready` guard is load-bearing -- see the `ready` branch of
+   * {@link handleLoopLine}. Until an incarnation has reported readiness and
+   * discharged its initial-prompt obligation, an expiring countdown could
+   * deadlock the stdout reader against an eviction waiting on that same
+   * reader.
+   */
+  private touchIdle(workerId: string): void {
+    const runtime = this.runtimes.get(workerId);
+    if (!runtime || !runtime.evictable || !runtime.ready) return;
+    this.idleEviction.touch(workerId);
+  }
+
+  /**
+   * Idle eviction commit point: the countdown for `workerId` has elapsed.
+   *
+   * The countdown was armed at a moment when the worker looked idle, and
+   * everything can have changed by the time it fires. So this re-reads the
+   * two conditions that make an eviction wrong right now:
+   *
+   * - `turnActive` -- a worker is NEVER evicted mid-turn. The countdown
+   *   simply restarts.
+   * - `evicting` -- an eviction is already in flight; a second one would tear
+   *   down the incarnation the first one's wake goes on to create.
+   *
+   * The re-check and the `evicting` write are one synchronous section with no
+   * `await` between them, which is what makes "checked idle, then evicted"
+   * atomic with respect to a concurrently-admitted turn.
+   *
+   * If that race were lost, the next activation's `turn-interrupted` marker
+   * would eventually describe the killed turn -- but the marker is a backstop
+   * for exits nobody chose, NOT the mechanism keeping this one correct.
+   *
+   * The eviction itself is the ordinary {@link deactivate} path, unchanged
+   * and with no kill of its own: the exit observer must cover this exit, and
+   * routing through `deactivate` is what guarantees it does.
+   */
+  private onIdleExpired(workerId: string): void {
+    const runtime = this.runtimes.get(workerId);
+    // The worker exited between the arm and the fire; nothing to drop.
+    if (!runtime) return;
+    if (!runtime.evictable) return;
+    if (runtime.turnActive || runtime.evicting) {
+      this.idleEviction.touch(workerId);
+      return;
+    }
+    runtime.evicting = true;
+    const { sessionId } = runtime.ctx;
+
+    logger.info({ sessionId, workerId }, 'Evicting idle embedded-agent worker');
+
+    const p = this.deactivate(sessionId, workerId)
+      .catch((err) => {
+        // A failed eviction leaves the worker as it was; it must never
+        // surface as an unhandled rejection.
+        logger.warn({ sessionId, workerId, err }, 'Idle eviction failed');
+      })
+      .finally(() => {
+        // Superseding guard, same shape as `activate()`'s: only clear the
+        // slot if it still holds THIS eviction.
+        if (this.evictions.get(workerId) === p) {
+          this.evictions.delete(workerId);
+        }
+      });
+    this.evictions.set(workerId, p);
   }
 
   /**
@@ -1256,6 +1437,11 @@ export class EmbeddedAgentWorkerService {
         // persistent that no turn completes at all.
         this.fatalChainReplacementSpent.delete(ctx.workerId);
       }
+      // Idle eviction: any state report is the worker being alive, so the
+      // countdown restarts on all of them -- not only on `idle`. A long
+      // `active` stretch must not accumulate toward an eviction it would then
+      // have to refuse at the commit point.
+      this.touchIdle(ctx.workerId);
     }
 
     // (d): deliver the session's initialPrompt as this worker's first user
@@ -1273,6 +1459,27 @@ export class EmbeddedAgentWorkerService {
         runtime.restoreInfo = { ...runtime.restoreInfo, completed: true };
         this.pushRestoreInfoToConnections(ctx.worker, runtime.restoreInfo);
       }
+
+      // Idle eviction: the countdown is armed HERE, and not one line earlier,
+      // and the delay is structural rather than arbitrary.
+      //
+      // `maybeDeliverInitialPrompt` above calls into the delivery path from
+      // INSIDE the stdout reader. The delivery choke point awaits any
+      // in-flight eviction; an eviction awaits `deactivate` -> `exitSettled`
+      // -> `streamsDone` -> that same reader. So a countdown armed before
+      // this point could fire while the reader is still inside the initial
+      // prompt, and the reader would end up awaiting an eviction that is
+      // waiting on the reader. A millisecond-scale threshold makes that
+      // trivially reachable, and it is the same deadlock shape the
+      // refused-resume recovery hit (see
+      // `replaceIncarnationAfterRefusedResume`).
+      //
+      // Arming only once the incarnation is ready AND its initial-prompt
+      // obligation is discharged removes the window structurally instead of
+      // by timing luck. `touchIdle`'s `!ready` guard is what enforces it for
+      // every other arm site, whatever order the engine emits its events in.
+      runtime.ready = true;
+      this.touchIdle(ctx.workerId);
     }
 
     // (e): SDK engine only -- persist the worker's CURRENT SDK session id.
@@ -1589,8 +1796,24 @@ export class EmbeddedAgentWorkerService {
       return;
     }
 
+    // Computed BEFORE the append so the persisted row can carry it.
+    //
+    // `evicting` is checked before `shutdownRequested` because an eviction
+    // routes through `deactivate` and therefore sets BOTH -- `evicted` is the
+    // more specific truth, and the order is what keeps it from being reported
+    // as the `managed` it technically also is.
+    const reason: ExitReason = runtime.evicting
+      ? 'evicted'
+      : runtime.shutdownRequested
+        ? 'managed'
+        : 'unexpected';
+
     // Append the server-authored exited row so the on-disk log is complete.
-    this.appendEvent(ctx, { v: 1, type: 'exited', code: code ?? null });
+    this.appendEvent(ctx, { v: 1, type: 'exited', code: code ?? null, reason });
+
+    // Idle eviction: there is no subprocess left to drop, so any countdown
+    // still in flight for this worker is meaningless.
+    this.idleEviction.clear(workerId);
 
     this.endStdinSafely(worker.stdin);
     worker.subprocess = null;
@@ -1607,7 +1830,6 @@ export class EmbeddedAgentWorkerService {
       await this.deps.persistSession(session);
     }
 
-    const reason: ExitReason = runtime.shutdownRequested ? 'managed' : 'unexpected';
     const snapshot = Array.from(worker.connectionCallbacks.values());
     for (const cb of snapshot) {
       cb.onExit(code ?? 0, null, reason);

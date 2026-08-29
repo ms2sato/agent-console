@@ -1046,6 +1046,40 @@ describe('EmbeddedAgentServerEventSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  describe("the exited event's `reason` (idle eviction)", () => {
+    it('parses a historical exited row that carries no reason at all', () => {
+      // A transcript written by a server older than idle eviction. It must
+      // keep parsing, which is why `reason` is optional rather than defaulted
+      // -- an absent reason is a distinct state from any of the three values.
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'exited', code: 0 });
+      expect(result.success).toBe(true);
+      expect((result.output as { reason?: string }).reason).toBeUndefined();
+    });
+
+    it('parses each of the three reasons a live server stamps', () => {
+      for (const reason of ['managed', 'unexpected', 'evicted'] as const) {
+        const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+          v: 1,
+          type: 'exited',
+          code: 0,
+          reason,
+        });
+        expect(result.success).toBe(true);
+        expect((result.output as { reason?: string }).reason).toBe(reason);
+      }
+    });
+
+    it('rejects a reason outside the ExitReason union', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'exited',
+        code: 0,
+        reason: 'hibernated',
+      });
+      expect(result.success).toBe(false);
+    });
+  });
+
   it('parses a user-message event with the optional clientMessageId field', () => {
     const result = v.safeParse(EmbeddedAgentServerEventSchema, {
       v: 1,

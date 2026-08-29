@@ -1,6 +1,7 @@
 import * as v from 'valibot';
 import { EMBEDDED_AGENT_TOOL_NAMES } from '../types/embedded-agent.js';
 import { PTY_NOTIFICATION_KINDS } from '../types/system-events.js';
+import type { ExitReason } from '../types/worker.js';
 
 /**
  * Valibot schemas for embedded agent definitions and the stdio protocol.
@@ -337,6 +338,32 @@ const EmbeddedAgentServerNotificationSchema = v.strictObject({
   summary: v.optional(v.string()),
 });
 
+/**
+ * Wire half of the hand-written `ExitReason` union in types/worker.ts.
+ *
+ * The two are pinned to each other below rather than one deriving from the
+ * other, following how the rest of this file lets the hand-written domain
+ * types and the boundary schemas coexist.
+ */
+export const ExitReasonSchema = v.picklist(['managed', 'unexpected', 'evicted']);
+
+// === Compile-time Type Assertions ===
+
+/**
+ * Bidirectional pin between {@link ExitReasonSchema} and the hand-written
+ * `ExitReason`. Remove these and the two can drift silently: a value added to
+ * one side only would either be rejected at the wire boundary while type-
+ * checking fine (schema too narrow), or accepted at the boundary and then
+ * handled by no consumer (schema too wide). Both failures are invisible to
+ * every test that does not happen to use the new value.
+ */
+type _AssertExitReasonSchemaWidensToType =
+  v.InferOutput<typeof ExitReasonSchema> extends ExitReason ? true : never;
+type _AssertExitReasonTypeWidensToSchema =
+  ExitReason extends v.InferOutput<typeof ExitReasonSchema> ? true : never;
+declare const _exitReasonParityAssertions: _AssertExitReasonSchemaWidensToType &
+  _AssertExitReasonTypeWidensToSchema;
+
 export const EmbeddedAgentServerEventSchema = v.union([
   v.strictObject({
     v: v.literal(1),
@@ -357,6 +384,11 @@ export const EmbeddedAgentServerEventSchema = v.union([
     v: v.literal(1),
     type: v.literal('exited'),
     code: v.nullable(v.number()),
+    // Optional, and that is a contract rather than laxness: a persisted row
+    // written by a server older than idle eviction carries no `reason`, and
+    // must keep parsing. See the type's doc comment for why consumers test
+    // `reason === 'evicted'` instead of truthiness.
+    reason: v.optional(ExitReasonSchema),
   }),
 ]);
 

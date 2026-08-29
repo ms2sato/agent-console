@@ -12,6 +12,7 @@
  */
 
 import type { PtyNotificationKind } from './system-events.js';
+import type { ExitReason } from './worker.js';
 
 /**
  * Builtin subprocess-local tool names. This is the SINGLE WRITER of builtin
@@ -395,7 +396,25 @@ export type EmbeddedAgentServerEvent =
    * attach the marker to that turn rather than guessing from position.
    */
   | { v: 1; type: 'turn-interrupted'; turnId: string }
-  | { v: 1; type: 'exited'; code: number | null };
+  /**
+   * The server observed this incarnation's subprocess exit.
+   *
+   * `reason` is THREE-VALUED and its absence is a fourth state, so read it
+   * with an equality test and nothing else:
+   *
+   * - The server stamps `reason` on every `exited` row it appends, so a live
+   *   server always writes one of the three {@link ExitReason} values.
+   * - **Absent means the row predates this field** -- a persisted transcript
+   *   written by an older server. An absent `reason` must render exactly as
+   *   it always did, which is why the field is optional rather than
+   *   defaulted.
+   * - Consumers therefore test `reason === 'evicted'`, NEVER `!reason` or a
+   *   truthiness check: `!reason` folds a historical row in with a live
+   *   eviction, and truthiness folds `managed` in with `evicted`.
+   * - This is the single identifier for "this exit was an idle eviction".
+   *   There is deliberately no parallel boolean to drift against it.
+   */
+  | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason };
 
 /**
  * What actually lives in the worker output file and is replayed to clients.

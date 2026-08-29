@@ -368,6 +368,41 @@ describe('embedded-agent-store', () => {
     expect(entries[0]).toMatchObject({ kind: 'exited', code: 1 });
   });
 
+  it('carries an exited row `reason: evicted` through onto the entry (idle eviction)', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s5-evicted', 'w5-evicted');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'exited', code: 0, reason: 'evicted' });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'exited', code: 0, reason: 'evicted' });
+  });
+
+  it('leaves `reason` ABSENT on an exited row written by a server older than idle eviction', async () => {
+    // Absence is a real wire state (a persisted transcript predating the
+    // field), and the store must not translate it into `null` or a default
+    // like `'managed'` -- the view distinguishes the two by an equality test
+    // on `'evicted'`, so a store-side default would be a lie it has to undo.
+    const instance = getOrCreateEmbeddedAgentWorker('s5-noreason', 'w5-noreason');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const data = ndjson({ v: 1, type: 'exited', code: 0 });
+    ws!.simulateMessage(historyMessage(data, data.length));
+    await flush();
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    const entry = entries[0] as Extract<EmbeddedAgentChatEntry, { kind: 'exited' }>;
+    expect(entry.kind).toBe('exited');
+    expect(Object.prototype.hasOwnProperty.call(entry, 'reason')).toBe(false);
+    expect(entry.reason).toBeUndefined();
+  });
+
   it('folds a user-message server-authored event from replayed history', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s5b', 'w5b');
     const ws = MockWebSocket.getLastInstance();

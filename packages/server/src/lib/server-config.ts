@@ -1,4 +1,4 @@
-import { parseOptionalBoolean } from './env-parser.js';
+import { parseOptionalBoolean, parseIntWithDefault } from './env-parser.js';
 
 /**
  * Centralized server-specific environment configuration.
@@ -188,6 +188,26 @@ export const serverConfig = {
    * elevated commands must not resolve binaries by PATH-only name.
    */
   EMBEDDED_AGENT_BUN_PATH: process.env.EMBEDDED_AGENT_BUN_PATH || 'bun',
+  /**
+   * Milliseconds of continuous idleness after which a `claude-sdk` embedded-agent
+   * worker's subprocess is evicted. Governs that engine only -- `openai-api`
+   * workers are never evicted.
+   *
+   * Eviction drops the subprocess; the worker stays logically alive and the
+   * next message delivered to it transparently wakes it (re-activating and
+   * resuming the conversation), so the user is meant not to notice.
+   *
+   * `0` -- or any non-positive value -- disables eviction entirely. An
+   * unparseable value falls back to the default rather than disabling: a typo
+   * in an env var silently switching off memory management is a footgun, and
+   * this is a system boundary where the one guard is worth it.
+   *
+   * Default: 30 minutes. Tests set it to a handful of milliseconds.
+   */
+  EMBEDDED_AGENT_IDLE_EVICTION_MS: parseIntWithDefault(
+    process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS,
+    30 * 60 * 1000,
+  ),
   /**
    * The origin the server believes it is reachable at by human viewers
    * (e.g. 'http://192.168.1.12:6340'). Used to mint absolute artifact-viewer

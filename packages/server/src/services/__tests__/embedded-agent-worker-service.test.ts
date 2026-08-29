@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition } from '@agent-console/shared';
+import type { EmbeddedAgentDefinition, ExitReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
@@ -308,7 +308,7 @@ function setup(opts?: {
   };
   worker.connectionCallbacks.set('conn-1', {
     onData: recorder.onData as unknown as (data: string, offset: number, epoch: number) => void,
-    onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: 'managed' | 'unexpected') => void,
+    onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: ExitReason) => void,
     onActivityChange: recorder.onActivityChange as unknown as (state: 'active' | 'idle' | 'asking' | 'unknown') => void,
     onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { messageCount: number; repairedToolCallIds: string[]; completed: boolean }) => void,
   });
@@ -1276,7 +1276,7 @@ describe('EmbeddedAgentWorkerService exit handling', () => {
     h.fake.simulateExit(1);
     await waitFor(() => h.worker.subprocess === null);
 
-    expect(appendedLines(h.bufferOutput)).toContain('{"v":1,"type":"exited","code":1}');
+    expect(appendedLines(h.bufferOutput)).toContain('{"v":1,"type":"exited","code":1,"reason":"unexpected"}');
     expect(h.revokeByWorker).toHaveBeenCalledWith(h.workerId);
     expect(h.worker.subprocess).toBeNull();
     expect(h.worker.stdin).toBeNull();
@@ -1323,7 +1323,7 @@ describe('EmbeddedAgentWorkerService exit handling', () => {
     expect(h.worker.subprocess).toBe(replacement.subprocess);
     expect(h.worker.stdin).toBe(replacement.stdin);
     expect(h.revokeByWorker).not.toHaveBeenCalled();
-    expect(appendedLines(h.bufferOutput)).not.toContain('{"v":1,"type":"exited","code":1}');
+    expect(appendedLines(h.bufferOutput).some((l) => l.includes('"type":"exited"'))).toBe(false);
     expect(h.globalExit).not.toHaveBeenCalled();
   });
 });
@@ -1458,10 +1458,18 @@ describe('EmbeddedAgentWorkerService.sendUserMessage', () => {
     expect('clientMessageId' in forwarded).toBe(false);
   });
 
-  it('rejects with not activated when the subprocess is null', async () => {
+  it('wakes a worker with no live subprocess instead of rejecting (the delivery invariant)', async () => {
+    // Idle eviction made delivery responsible for waking: the choke point
+    // checks for a live subprocess, deliberately NOT for an evicted marker, so
+    // "never activated" and "evicted" take the same path. A silent drop is not
+    // representable here -- delivery either wakes the worker or fails loudly
+    // (see embedded-agent-idle-eviction-service.test.ts for the failure half).
     const h = setup();
     const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'hi');
-    expect(res).toEqual({ ok: false, code: 'NOT_ACTIVATED', error: 'not activated' });
+
+    expect(res.ok).toBe(true);
+    expect(h.fake.captured.length).toBe(1);
+    expect(h.fake.stdinWrites.some((w) => w.includes('"text":"hi"'))).toBe(true);
   });
 
   it('a plain sendUserMessage call never sets a notification marker on the appended event (Issue #1351 invariant)', async () => {

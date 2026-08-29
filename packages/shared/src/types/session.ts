@@ -1,6 +1,6 @@
 import type * as v from 'valibot';
 import type { AppServerMessageSchema } from '../schemas/app-server-message.js';
-import type { Worker, AgentActivityState } from './worker.js';
+import type { Worker, AgentActivityState, ExitReason } from './worker.js';
 
 // Re-export schema-derived types
 export type {
@@ -21,13 +21,6 @@ export type {
   CreateWorkerRequest,
   RestartWorkerRequest,
 } from '../schemas/worker.js';
-
-/**
- * Reason a worker's PTY exited.
- * - 'managed': Intentional kill via API (delete, restart, pause, etc.)
- * - 'unexpected': Process exited on its own (crash, user exit, signal)
- */
-export type ExitReason = 'managed' | 'unexpected';
 
 export type SessionStatus = 'active' | 'inactive';
 
