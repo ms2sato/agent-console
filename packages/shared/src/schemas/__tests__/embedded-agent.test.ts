@@ -10,6 +10,7 @@ import {
   EmbeddedAgentServerEventSchema,
   EmbeddedAgentStreamEventSchema,
 } from '../embedded-agent.js';
+import { SDK_RESUME_FAILURE_REASONS } from '../../types/embedded-agent.js';
 
 const validDefinition = {
   id: 'def-1',
@@ -1325,6 +1326,47 @@ describe('Transcript Restore R1 wire additions (#1410)', () => {
           reason: 'refused',
         }).success,
       ).toBe(true);
+    });
+
+    it('accepts `lookup-failed` and hands it back unchanged', () => {
+      // The reason whose entire job is to be DIFFERENT from `not-found` at
+      // the server. A picklist that omitted it would reject the payload
+      // outright -- the subprocess would emit an event the server drops as
+      // malformed, and the id-keeping branch would be unreachable code that
+      // still typechecks.
+      //
+      // Polarity measured by mutation: removing `'lookup-failed'` from
+      // SDK_RESUME_FAILURE_REASONS fails this test (and the typecheck of the
+      // production branch). Asserting only `.success` would be the weaker
+      // pin, so the reason is read back out.
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'sdk-resume-failed',
+        requestedSdkSessionId: 'sess-unreadable',
+        reason: 'lookup-failed',
+      });
+      expect(result.success).toBe(true);
+      if (result.success && result.output.type === 'sdk-resume-failed') {
+        expect(result.output.reason).toBe('lookup-failed');
+      }
+    });
+
+    it('has a picklist that matches the shared reason constant exactly', () => {
+      // The constant is the single writer; this pins that the schema is
+      // actually reading it rather than restating the literals next to it.
+      // Every reason the type admits must survive a parse, and the count
+      // must match -- so a reason added to the constant but silently dropped
+      // from the picklist fails here rather than at the wire.
+      for (const reason of SDK_RESUME_FAILURE_REASONS) {
+        const result = v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'sdk-resume-failed',
+          requestedSdkSessionId: 'sess-x',
+          reason,
+        });
+        expect(result.success).toBe(true);
+      }
+      expect(SDK_RESUME_FAILURE_REASONS).toEqual(['not-found', 'lookup-failed', 'refused']);
     });
 
     it('rejects an unknown reason', () => {

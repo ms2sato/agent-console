@@ -251,6 +251,45 @@ export type EmbeddedAgentCommand =
   | { v: 1; type: 'shutdown' };
 
 /**
+ * Why a `sdk-resume-failed` could not resume. SINGLE WRITER of these literals
+ * -- the valibot picklist and every branch that reads the reason derive from
+ * this constant rather than restating it, so a new reason cannot reach the
+ * type without also reaching the wire schema.
+ *
+ * - `not-found`: the activation-time pre-flight RAN and the SDK reported that
+ *   it could not find the session. **Not proof that the session is absent**
+ *   -- on SDK `0.3.238` the store swallows read errors, so an EACCES, an
+ *   EISDIR, or a malformed transcript all arrive here too (measured; see
+ *   PS7's table in docs/design/embedded-agent-sdk-engine.md). It is a
+ *   statement about one moment's read, which is exactly why the persisted id
+ *   is kept for the next activation to try again. No resume was attempted
+ *   and no turn was lost; the engine started fresh.
+ * - `lookup-failed`: the pre-flight could not run at all -- the lookup itself
+ *   raised. Not a verdict about the session either. Currently unreachable for
+ *   the same measured reason `not-found` is over-broad: the SDK returns
+ *   rather than throws. Kept as the shape for a version that propagates the
+ *   error.
+ * - `refused`: a resume WAS attempted and the SDK rejected it, which costs
+ *   the turn that was in flight and leaves the query dead inside a live
+ *   harness -- the server has to replace the incarnation, and a `turn-error`
+ *   telling the user to resend is emitted alongside this event.
+ *
+ * **Only `refused` clears the persisted `sdkSessionId`.** The id was offered
+ * and rejected, and re-offering it repeats the damage; the other two decided
+ * before a resume was ever sent, so re-checking costs one pre-flight and no
+ * turn. What clears a kept id is the fresh session superseding it at its
+ * first `sdk-session-id` -- the right authority, because once the user has
+ * spoken to the fresh session that session is the conversation.
+ *
+ * One event with a reason rather than three events: the reasons share a
+ * subject (this id did not resume) and differ only in what the server does
+ * next.
+ */
+export const SDK_RESUME_FAILURE_REASONS = ['not-found', 'lookup-failed', 'refused'] as const;
+
+export type SdkResumeFailureReason = (typeof SDK_RESUME_FAILURE_REASONS)[number];
+
+/**
  * Events the subprocess writes to stdout (one single-line JSON per line). These
  * are authored by the loop itself; the server parses them with the narrow
  * schema at the process boundary.
@@ -354,20 +393,8 @@ export type EmbeddedAgentEvent =
       v: 1;
       type: 'sdk-resume-failed';
       requestedSdkSessionId: string;
-      /**
-       * `not-found`: the activation-time pre-flight could not find the
-       * session, so no resume was ever attempted and no turn was lost. The
-       * engine simply started fresh and this event is the only trace.
-       * `refused`: a resume WAS attempted and the SDK rejected it, which
-       * costs the turn that was in flight and leaves the query dead -- the
-       * server has to replace the incarnation, and a `turn-error` telling
-       * the user to resend is emitted alongside this event.
-       *
-       * The server's durable action is identical for both (clear the id,
-       * report `sdkResumed: false`); they differ in what else has to happen,
-       * which is why one event with a reason beats two events.
-       */
-      reason: 'not-found' | 'refused';
+      /** See {@link SdkResumeFailureReason}. */
+      reason: SdkResumeFailureReason;
     };
 
 /**

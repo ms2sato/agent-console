@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import { EMBEDDED_AGENT_TOOL_NAMES } from '../types/embedded-agent.js';
+import { EMBEDDED_AGENT_TOOL_NAMES, SDK_RESUME_FAILURE_REASONS } from '../types/embedded-agent.js';
 import { PTY_NOTIFICATION_KINDS } from '../types/system-events.js';
 import type { ExitReason } from '../types/worker.js';
 
@@ -324,13 +324,19 @@ export const EmbeddedAgentEventSchema = v.union([
     type: v.literal('sdk-session-id'),
     sdkSessionId: v.string(),
   }),
-  // Transcript Restore, R1. The machine-readable half of a refused resume;
-  // the `turn-error` emitted alongside it is the human-readable half.
+  // Transcript Restore, R1. The machine-readable half of a resume that did
+  // not take; the `turn-error` emitted alongside a refusal is the
+  // human-readable half of that one.
+  //
+  // `reason` reads the shared constant rather than restating the literals:
+  // the server branches on this value, so a reason present in the type and
+  // absent from the picklist would be rejected at the wire and the branch
+  // would be dead code that typechecks.
   v.strictObject({
     v: v.literal(1),
     type: v.literal('sdk-resume-failed'),
     requestedSdkSessionId: v.pipe(v.string(), v.minLength(1)),
-    reason: v.picklist(['not-found', 'refused']),
+    reason: v.picklist(SDK_RESUME_FAILURE_REASONS),
   }),
 ]);
 
