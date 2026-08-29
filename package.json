@@ -23,6 +23,7 @@
     "check:artifact-sandbox-boundary": "bun scripts/smoke/check-artifact-sandbox-boundary.mjs",
     "check:artifact-server-story-e2e": "bun scripts/smoke/check-artifact-server-story-e2e.mjs",
     "check:pty-fd-leak": "bun scripts/smoke/check-pty-fd-leak.ts",
+    "check:fatal-incarnation-replacement": "bun scripts/smoke/check-fatal-incarnation-replacement.ts",
     "check:pty-early-output": "bun scripts/smoke/check-pty-early-output.ts",
     "check:pty-als-data": "bun scripts/smoke/check-pty-als-data.ts",
     "check:stdin-sink-leak": "bun scripts/smoke/check-stdin-sink-leak.ts",

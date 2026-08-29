@@ -17,6 +17,7 @@ import {
   EmbeddedMessageDeliveryError,
   resolveEmbeddedAgentEntryPath,
   hasUndeliveredInitialPrompt,
+  fatalLeavesHarnessAlive,
 } from '../embedded-agent-worker-service.js';
 import {
   ProviderKeyStoreError,
@@ -2133,5 +2134,435 @@ describe('EmbeddedAgentWorkerService — turn-interrupted marker (R1, local half
 
     const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
     expect(appended.some((line) => line.includes('"turn-interrupted"'))).toBe(true);
+  });
+});
+
+/**
+ * #1414: an engine `fatal` that leaves the harness process alive.
+ *
+ * The shared `makeFakeSpawn` above hands out ONE child for every spawn, which
+ * is enough for the refused-resume tests (they only count spawns) but not for
+ * these: the crash-loop bound is about the REPLACEMENT incarnation fataling
+ * too, so each spawn needs its own stdout to push a second `fatal` into. This
+ * local fake is that, and nothing else -- same shapes, one child per spawn.
+ */
+interface FakeChild {
+  stdinWrites: string[];
+  killSignals: number[];
+  pushStdout: (s: string) => void;
+  simulateExit: (code: number) => void;
+  setOnKill: (fn: (signal: number) => void) => void;
+}
+
+interface MultiChildFakeSpawn {
+  fn: SpawnAsUserFn;
+  children: FakeChild[];
+}
+
+function makeMultiChildFakeSpawn(): MultiChildFakeSpawn {
+  const children: FakeChild[] = [];
+  const fn: SpawnAsUserFn = () => {
+    const stdout = makeControllableStream();
+    const stderr = makeControllableStream();
+    const stdinWrites: string[] = [];
+    const killSignals: number[] = [];
+    let onKill: ((signal: number) => void) | undefined;
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => {
+      resolveExited = resolve;
+    });
+    const stdin: FakeFileSink = {
+      write: (chunk) => {
+        stdinWrites.push(typeof chunk === 'string' ? chunk : new TextDecoder().decode(chunk));
+        return 0;
+      },
+      end: () => {},
+      flush: () => 0,
+    };
+    const subprocess: FakeSubprocess = {
+      pid: 5000 + children.length,
+      exited,
+      stdin,
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      kill: (signal) => {
+        killSignals.push(signal ?? 15);
+        onKill?.(signal ?? 15);
+      },
+    };
+    children.push({
+      stdinWrites,
+      killSignals,
+      pushStdout: stdout.push,
+      simulateExit: (code: number) => {
+        resolveExited(code);
+        stdout.close();
+        stderr.close();
+      },
+      setOnKill: (f) => {
+        onKill = f;
+      },
+    });
+    const result: Pick<SpawnAsUserResult, 'elevated'> & { subprocess: FakeSubprocess; stdin: FakeFileSink } = {
+      subprocess,
+      stdin,
+      elevated: false,
+    };
+    return result as SpawnAsUserResult;
+  };
+  return { fn, children };
+}
+
+const FATAL_LINE = `${JSON.stringify({
+  v: 1,
+  type: 'fatal',
+  message: 'SDK transport error: Claude Code process terminated by signal SIGKILL',
+})}\n`;
+
+const IDLE_LINE = `${JSON.stringify({ v: 1, type: 'state', state: 'idle' })}\n`;
+
+describe('EmbeddedAgentWorkerService — fatalLeavesHarnessAlive (#1414)', () => {
+  it('routes claude-sdk, because its engine dies inside a harness that keeps running', () => {
+    expect(fatalLeavesHarnessAlive('claude-sdk')).toBe(true);
+  });
+
+  it('does NOT route openai-api, whose every fatal takes the harness down with it', () => {
+    expect(fatalLeavesHarnessAlive('openai-api')).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — fatal incarnation replacement (#1414)', () => {
+  /**
+   * The whole fix in one arrangement: a live claude-sdk worker whose child
+   * only exits when signalled, so `deactivate` has to walk its escalation --
+   * which is also what would deadlock if the replacement were awaited from
+   * inside the stdout reader.
+   */
+  function setupFatal(opts?: { sdkSessionId?: string }) {
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      spawnAsUserFnOverride: fake.fn,
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+      ...(opts?.sdkSessionId !== undefined ? { sdkSessionId: opts.sdkSessionId } : {}),
+    });
+    return { h, fake };
+  }
+
+  it('replaces the incarnation, so a worker whose engine died alone comes back', async () => {
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    await waitFor(() => fake.children.length === 2, 3000);
+
+    expect(fake.children.length).toBe(2);
+    expect(h.worker.subprocess).not.toBeNull();
+  });
+
+  it('clears turnActive THROUGH the exit observer, so the next message is admitted', async () => {
+    // The Issue's symptom, stated as a test: with a turn admitted and the
+    // engine dead, every later message was refused with TURN_IN_PROGRESS
+    // forever. Nothing here clears `turnActive` directly -- the replacement
+    // reaches the observer, which is the existing writer.
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    const admitted = await h.service.sendUserMessage(h.sessionId, h.workerId, 'first message after the SDK died');
+    expect(admitted.ok).toBe(true);
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    await waitFor(() => fake.children.length === 2, 3000);
+
+    const afterRecovery = await h.service.sendUserMessage(h.sessionId, h.workerId, 'second message after the SDK died');
+    expect(afterRecovery.ok).toBe(true);
+  });
+
+  it('revokes the MCP token, the other obligation the unobserved exit stranded', async () => {
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+    expect(h.revokeByWorker).not.toHaveBeenCalled();
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    await waitFor(() => fake.children.length === 2, 3000);
+
+    expect(h.revokeByWorker).toHaveBeenCalled();
+  });
+
+  it('appends the server-authored exited row the unobserved death never produced', async () => {
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    await waitFor(() => fake.children.length === 2, 3000);
+
+    const appended = appendedLines(h.bufferOutput);
+    expect(appended.some((line) => line.includes('"exited"'))).toBe(true);
+  });
+
+  it('does NOT synthesize a turn-error, which would close the turn turn-interrupted describes', async () => {
+    // findInterruptedTurnId's terminal set includes `turn-error`, so a
+    // server-authored one here would make the marker structurally unreachable
+    // for the very turn it is about. R1 made the same call for the same reason.
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    await waitFor(() => fake.children.length === 2, 3000);
+
+    const appended = appendedLines(h.bufferOutput);
+    expect(appended.some((line) => line.includes('"turn-error"'))).toBe(false);
+  });
+
+  it('runs one replacement even when the engine reports the death twice', async () => {
+    // The engine reports it from the transport throw, and again from every
+    // later `runTurn`. A second replacement would deactivate the incarnation
+    // the first one just started.
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    fake.children[0].pushStdout(FATAL_LINE);
+    await waitFor(() => fake.children.length === 2, 3000);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(fake.children.length).toBe(2);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — fatal crash-loop bound (#1414)', () => {
+  function setupFatal() {
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      spawnAsUserFnOverride: fake.fn,
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    return { h, fake };
+  }
+
+  /** Drive a fatal on the newest child and wait for the chain to settle. */
+  async function fatalOn(fake: MultiChildFakeSpawn, index: number, expectSpawns: number | null): Promise<void> {
+    fake.children[index].setOnKill(() => fake.children[index].simulateExit(137));
+    fake.children[index].pushStdout(FATAL_LINE);
+    if (expectSpawns !== null) {
+      await waitFor(() => fake.children.length === expectSpawns, 3000);
+    }
+    await new Promise((r) => setTimeout(r, 80));
+  }
+
+  it('stops after ONE replacement when the cause is persistent', async () => {
+    // An infinite respawn is worse than the brick. The second fatal in a
+    // chain gets the teardown but not the replacement.
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    await fatalOn(fake, 0, 2);
+    expect(fake.children.length).toBe(2);
+
+    await fatalOn(fake, 1, null);
+
+    expect(fake.children.length).toBe(2);
+  });
+
+  it('leaves the worker VISIBLY exited once the bound is reached', async () => {
+    // "Stop replacing" must not mean "stop collecting". Skipping the teardown
+    // at the bound would leave the worker in this Issue's own
+    // dead-but-unobserved state, permanently.
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    await fatalOn(fake, 0, 2);
+    await fatalOn(fake, 1, null);
+
+    expect(h.worker.subprocess).toBeNull();
+    expect(h.worker.activityState).toBe('idle');
+    expect(h.globalExit).toHaveBeenCalled();
+  });
+
+  it('resets the chain on a completed turn, so a later unrelated fatal is replaced again', async () => {
+    const { h, fake } = setupFatal();
+    await h.service.activate(h.sessionId, h.workerId);
+
+    await fatalOn(fake, 0, 2);
+    expect(fake.children.length).toBe(2);
+
+    // The replacement round-trips a turn: the chain is over.
+    fake.children[1].pushStdout(IDLE_LINE);
+    await new Promise((r) => setTimeout(r, 40));
+
+    await fatalOn(fake, 1, 3);
+
+    expect(fake.children.length).toBe(3);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — fatal routing leaves openai-api alone (#1414)', () => {
+  it('does not replace an openai-api incarnation on fatal', async () => {
+    // Every openai-api fatal is a construction failure that exits(1) on its
+    // own, and "activation failed, stay exited" is the behaviour that engine
+    // must keep. The routing is never entered for it -- not merely idempotent.
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({ spawnAsUserFnOverride: fake.fn, shutdownGraceMs: 10, sigtermTimeoutMs: 10 });
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(fake.children.length).toBe(1);
+    expect(fake.children[0].killSignals.length).toBe(0);
+  });
+
+  it('still lets the exit observer collect the openai-api fatal alone', async () => {
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({ spawnAsUserFnOverride: fake.fn, shutdownGraceMs: 10, sigtermTimeoutMs: 10 });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    fake.children[0].pushStdout(FATAL_LINE);
+    fake.children[0].simulateExit(1);
+    await waitFor(() => h.worker.subprocess === null, 3000);
+
+    expect(h.revokeByWorker).toHaveBeenCalledTimes(1);
+    expect(h.globalExit).toHaveBeenCalledTimes(1);
+    expect(fake.children.length).toBe(1);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — fatal racing a natural exit (#1414 Hazard 2)', () => {
+  it('collects exactly once when a claude-sdk construction fatal takes the harness down too', async () => {
+    // The one remaining case where the harness exits on its own AND the
+    // routing fires: `main.ts`'s SDK-engine construction failure emits `fatal`
+    // and then returns null, so the process exits underneath the replacement's
+    // `deactivate`. The observer must still run once -- no double revoke, no
+    // double exit callback -- and the bound still allows the single retry.
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      spawnAsUserFnOverride: fake.fn,
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    // fatal and the natural exit arrive together, as construction failure does.
+    fake.children[0].pushStdout(FATAL_LINE);
+    fake.children[0].simulateExit(1);
+    await waitFor(() => fake.children.length === 2, 3000);
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(fake.children.length).toBe(2);
+    // One collection for the dead incarnation; the replacement is still live.
+    expect(h.revokeByWorker).toHaveBeenCalledTimes(1);
+    expect(h.globalExit).toHaveBeenCalledTimes(1);
+    expect(fake.children[0].killSignals.length).toBe(0);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — fatal during a requested shutdown (#1414)', () => {
+  it('does NOT revive a worker somebody deliberately deactivated', async () => {
+    // `deactivate`'s escalation can kill the SDK's child before the harness
+    // itself goes, and the transport throw beats the exit. Replacing on that
+    // fatal would bring back a worker the user (or an eviction policy) just
+    // took down. `shutdownRequested` is set synchronously by `deactivate`,
+    // so the fatal always lands after it rather than racing it.
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      spawnAsUserFnOverride: fake.fn,
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    // The child emits a fatal on its way out, then exits -- the shape a
+    // signalled teardown of a live SDK session produces.
+    fake.children[0].setOnKill(() => {
+      fake.children[0].pushStdout(FATAL_LINE);
+      setTimeout(() => fake.children[0].simulateExit(143), 5);
+    });
+
+    await h.service.deactivate(h.sessionId, h.workerId);
+    await new Promise((r) => setTimeout(r, 120));
+
+    expect(fake.children.length).toBe(1);
+    expect(h.worker.subprocess).toBeNull();
+  });
+});
+
+describe('EmbeddedAgentWorkerService — a refused resume and a fatal from the same transport error', () => {
+  it('replaces the incarnation ONCE when both events arrive together', async () => {
+    // `sdk-engine`'s transport-error path calls `reportRefusedResume()` and
+    // then `handleFatal()` in sequence, so one dead transport emits BOTH a
+    // `sdk-resume-failed` row and a `fatal` row. The two recoveries have
+    // independent guards (`resumeRecoveryStarted`, `fatalReplacementStarted`)
+    // that know nothing about each other, so what actually prevents a second
+    // teardown is `deactivate`'s synchronous prefix setting
+    // `shutdownRequested` before the reader reaches the `fatal` line.
+    //
+    // That protection is a property of statement ordering, and this test is
+    // its pin. Its reach was MEASURED rather than assumed, because the first
+    // two assertions that looked like they pinned it did not:
+    //
+    // - Spawn count alone is masked. Remove the guard and the fatal path does
+    //   start a second teardown, but `activate`'s in-flight map collapses the
+    //   two re-activations back into one spawn, so the count stays 2.
+    // - A single `await Promise.resolve()` inserted before the `deactivate`
+    //   call does NOT break the contract. Its continuation is queued before
+    //   the reader's own, so the guard is still set by the time the `fatal`
+    //   line is handled. The ordering tolerates one microtask.
+    // - A deferral that outlasts the reader's next line (a timer, or any real
+    //   I/O await) DOES break it, and this test fails on it.
+    //
+    // So the observable that is not masked is the teardown itself: each
+    // `deactivate` writes one `shutdown` command, and a second one means the
+    // fatal was not absorbed.
+    const fake = makeMultiChildFakeSpawn();
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      spawnAsUserFnOverride: fake.fn,
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    fake.children[0].setOnKill(() => fake.children[0].simulateExit(137));
+
+    // Both rows, in the order the engine emits them.
+    fake.children[0].pushStdout(
+      `${JSON.stringify({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: 'sess-prev', reason: 'refused' })}\n`,
+    );
+    fake.children[0].pushStdout(FATAL_LINE);
+
+    await waitFor(() => fake.children.length >= 2, 3000);
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(fake.children.length).toBe(2);
+    expect(h.worker.subprocess).not.toBeNull();
+    // The spawn count alone does NOT pin the ordering property: with the
+    // guard removed the fatal path still starts a second teardown, and
+    // `activate`'s in-flight map quietly collapses the two re-activations
+    // back into one spawn. The teardown itself is the observable that does
+    // not get masked -- each `deactivate` writes one `shutdown` command, so
+    // a second one means the fatal was not absorbed.
+    const shutdowns = fake.children[0].stdinWrites.filter((w) => w.includes('"shutdown"')).length;
+    expect(shutdowns).toBe(1);
   });
 });

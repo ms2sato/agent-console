@@ -321,6 +321,32 @@ export function findInterruptedTurnId(streamText: string): string | null {
   return pendingTurnId;
 }
 
+/**
+ * Whether a `fatal` from this engine can leave the harness process resident.
+ *
+ * This is the discriminator for the #1414 wedge, and it is engine-specific
+ * because the wedge is:
+ *
+ * - `claude-sdk` -- `SdkEngine.handleFatal` marks the engine dead, disposes
+ *   the query and settles the pending turn INSIDE the harness. The harness
+ *   itself keeps serving stdin, so no exit ever reaches the exit observer.
+ *   That is the dead-but-unobserved state #1414 is about, and the only state
+ *   the fatal routing exists to collect.
+ * - `openai-api` -- has no in-harness fatal at all. Both of its `fatal` sites
+ *   are construction failures in `main.ts` (MCP connect, engine construction)
+ *   which `return null` and take the harness down with `exit(1)`, so the exit
+ *   observer already collects them and the worker correctly stays `exited`.
+ *   Routing those would turn "activation failed, stay exited" into a respawn,
+ *   which is a behaviour change this engine must not get.
+ *
+ * A future engine opts in by name here rather than inheriting the routing,
+ * because "my harness outlives my engine" is a property of the engine's own
+ * failure handling and cannot be inferred from the event.
+ */
+export function fatalLeavesHarnessAlive(engine: EmbeddedAgentDefinition['engine']): boolean {
+  return engine === 'claude-sdk';
+}
+
 /** Immutable references shared by the readers, the exit observer, and the command writers. */
 interface StreamContext {
   sessionId: string;
@@ -354,6 +380,22 @@ interface Runtime {
   requestedResumeId: string | null;
   /** R1: a `sdk-resume-failed` recovery is already in flight; do not start a second. */
   resumeRecoveryStarted: boolean;
+  /**
+   * #1414: whether this incarnation's engine can die while its harness stays
+   * alive, i.e. whether a `fatal` from it must be routed into a replacement.
+   * Resolved once at activation from the definition rather than re-read at
+   * the fatal, so a definition edited mid-incarnation cannot change how the
+   * incarnation already running is torn down.
+   */
+  fatalRoutedToReplacement: boolean;
+  /**
+   * #1414: a fatal-driven replacement has already been started for THIS
+   * incarnation; do not start a second. The engine reports its death from
+   * more than one place (the transport throw, then again from `runTurn` for
+   * every later message), and each report would otherwise deactivate the
+   * replacement the previous one just started.
+   */
+  fatalReplacementStarted: boolean;
 }
 
 /**
@@ -414,6 +456,24 @@ export class EmbeddedAgentWorkerService {
    * the SAME promise as the first instead of proceeding independently.
    */
   private readonly activations = new Map<string, Promise<void>>();
+  /**
+   * #1414 crash-loop bound: workers whose CURRENT fatal chain has already
+   * spent its one replacement. Present means "the next fatal tears this
+   * worker down and leaves it `exited` instead of replacing it again".
+   *
+   * Lives here rather than on the {@link Runtime} because it must outlive the
+   * incarnation it describes -- the whole point is to be readable by the
+   * replacement incarnation's own fatal. Recorded BEFORE the replacement is
+   * started, not after it succeeds, so a fatal arriving immediately on the
+   * fresh incarnation (a persistent cause, which is exactly the case the
+   * bound exists for) cannot race ahead of the bookkeeping.
+   *
+   * Cleared by a completed turn -- see the `state: 'idle'` arm in
+   * {@link handleLoopLine}. Deliberately NOT cleared on exit: the fatal path
+   * produces an exit of its own, so clearing there would reset the chain it
+   * is meant to count.
+   */
+  private readonly fatalChainReplacementSpent = new Set<string>();
   private readonly spawnAsUserFn: SpawnAsUserFn;
   private readonly loadProviderKeyFn: typeof loadProviderKey;
   private readonly entryPath: string;
@@ -749,6 +809,8 @@ export class EmbeddedAgentWorkerService {
         restoreInfo,
         requestedResumeId: resumeId,
         resumeRecoveryStarted: false,
+        fatalRoutedToReplacement: fatalLeavesHarnessAlive(definition.engine),
+        fatalReplacementStarted: false,
       };
       this.runtimes.set(workerId, runtime);
 
@@ -1187,6 +1249,12 @@ export class EmbeddedAgentWorkerService {
       this.broadcastActivity(ctx, event.state);
       if (event.state === 'idle') {
         runtime.turnActive = false;
+        // Ending a fatal chain: a turn that reached its own end is the engine
+        // demonstrating it still round-trips. An errored
+        // turn counts -- `turn-error` is followed by `idle` and still proves
+        // the loop is alive; what the bound guards against is a cause so
+        // persistent that no turn completes at all.
+        this.fatalChainReplacementSpent.delete(ctx.workerId);
       }
     }
 
@@ -1244,6 +1312,129 @@ export class EmbeddedAgentWorkerService {
     // session it was given.
     if (event.type === 'sdk-resume-failed') {
       await this.handleResumeFailed(runtime, event.requestedSdkSessionId, event.reason);
+    }
+
+    // (g) #1414: the engine is reporting its own death.
+    if (event.type === 'fatal') {
+      this.handleEngineFatal(runtime);
+    }
+  }
+
+  /**
+   * #1414: route an engine `fatal` into an observed death, and replace the
+   * incarnation once per fatal chain.
+   *
+   * The wedge this closes: on `claude-sdk` the engine dies inside a harness
+   * that stays alive, so no exit reaches the exit observer. `turnActive` is
+   * never cleared, the MCP token is never revoked, and every later message is
+   * refused with `TURN_IN_PROGRESS` forever while the worker looks healthy
+   * from every surface the client can see.
+   *
+   * **This method clears nothing itself.** It routes the incarnation into
+   * `deactivate`, whose exit the observer covers, and the observer's single
+   * existing choke point collects both dangling obligations (`turnActive`,
+   * `revokeByWorker`) exactly as it does for an ordinary death.
+   *
+   * The property being preserved is about TURN-ENDING writers, of which there
+   * are two: the `state: 'idle'` arm and the exit observer. `deliverUserTurn`
+   * assigns the flag in two more places, and neither is a counterexample --
+   * the optimistic set at admission, and the rollback in its `writeCommand`
+   * catch, which undoes that set for a message the subprocess never received,
+   * so no turn ever began. A genuine third turn-ending writer here is what
+   * would break the property that made this bug findable at all.
+   *
+   * Ordering, stated: the incarnation's own `fatal` has ALREADY been appended
+   * and fanned out by the time this runs (the append is unconditional, above)
+   * and the replacement runs after it. An unfinished turn's user-facing
+   * marker is the `turn-interrupted` row the FRESH incarnation appends from
+   * `findInterruptedTurnId` -- so it lands after the replacement, not before.
+   * No `turn-error` is synthesized here: it would close the turn for
+   * `findInterruptedTurnId`, whose terminal set includes `turn-error`, and
+   * make that marker structurally unreachable for the one turn it describes.
+   */
+  private handleEngineFatal(runtime: Runtime): void {
+    const { sessionId, workerId } = runtime.ctx;
+    if (!runtime.fatalRoutedToReplacement) return;
+    if (runtime.fatalReplacementStarted) return;
+    // A shutdown is already in flight for this incarnation, so its death is
+    // going to be observed by the path that requested it. Replacing here would
+    // revive a worker somebody deliberately took down -- `deactivate` sets this
+    // flag synchronously, before the shutdown command is even written, so a
+    // fatal emitted while the engine is being torn down (the escalation kills
+    // the SDK's child, and the transport throw beats the harness's own exit)
+    // lands after the flag rather than racing it.
+    if (runtime.shutdownRequested) {
+      logger.debug(
+        { sessionId, workerId },
+        'Embedded-agent engine reported fatal during a requested shutdown; leaving it to the shutdown path',
+      );
+      return;
+    }
+    runtime.fatalReplacementStarted = true;
+
+    // Crash-loop bound. A persistent cause (a bad definition, an
+    // unauthenticated CLI) would otherwise loop fatal -> respawn -> fatal
+    // forever, which is worse than the brick: the second fatal in a chain
+    // tears the worker down and leaves it visibly `exited` instead.
+    const respawn = !this.fatalChainReplacementSpent.has(workerId);
+    if (respawn) {
+      this.fatalChainReplacementSpent.add(workerId);
+    }
+    logger.warn(
+      { sessionId, workerId, respawn },
+      respawn
+        ? 'Embedded-agent engine reported fatal; replacing the incarnation'
+        : 'Embedded-agent engine reported fatal again in the same chain; tearing it down without a replacement',
+    );
+
+    // DETACHED, for the same load-bearing reason as the refused-resume
+    // recovery above: this runs inside the stdout reader's own loop, and
+    // `deactivate` awaits `runtime.exitSettled` -> `runtime.streamsDone` ->
+    // that same reader. Awaiting here deadlocks the reader against itself and
+    // hangs the worker this exists to rescue.
+    void this.collectFatalIncarnation(sessionId, workerId, respawn);
+  }
+
+  /**
+   * #1414: tear the fatal incarnation down through `deactivate` -- the path
+   * the exit observer covers -- and start a fresh one unless the chain's one
+   * replacement is already spent.
+   *
+   * Separate from {@link handleEngineFatal} solely so the deadlock its
+   * caller's comment describes is impossible to reintroduce by adding an
+   * `await`: this function is never called from inside the stream reader.
+   *
+   * Deliberately NOT merged with {@link replaceIncarnationAfterRefusedResume},
+   * whose shape this reuses. What the two share is a two-call sequence; what
+   * they do not share is the policy around it -- a refused resume always
+   * replaces exactly once by construction (the failure cannot recur, because
+   * the id that failed is cleared), whereas a fatal can recur indefinitely and
+   * so carries the chain bound and the leave-it-exited branch. Folding both
+   * into one parameterized method would put two policies behind one
+   * conditional to save six lines.
+   *
+   * The teardown runs in BOTH cases. Skipping it when the bound is reached
+   * would leave the second-fatal worker in the exact dead-but-unobserved
+   * state this Issue is about, only now permanently -- "visibly dead" is what
+   * the bound promises, and only the observed exit delivers it.
+   */
+  private async collectFatalIncarnation(sessionId: string, workerId: string, respawn: boolean): Promise<void> {
+    try {
+      await this.deactivate(sessionId, workerId);
+      if (!respawn) {
+        logger.warn(
+          { sessionId, workerId },
+          'Embedded-agent worker left deactivated after a repeated fatal; it stays exited until it is activated again',
+        );
+        return;
+      }
+      await this.activate(sessionId, workerId);
+      logger.info({ sessionId, workerId }, 'Replaced embedded-agent incarnation after an engine fatal');
+    } catch (err) {
+      logger.error(
+        { sessionId, workerId, err },
+        'Failed to replace embedded-agent incarnation after an engine fatal; it stays deactivated and the next access re-activates it',
+      );
     }
   }
 
