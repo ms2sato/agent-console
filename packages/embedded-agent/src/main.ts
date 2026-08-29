@@ -47,6 +47,44 @@ const KNOWN_COMMAND_TYPES = new Set([
 // shutdown drain gives up.
 const TURN_DRAIN_TIMEOUT_MS = 2500;
 
+/**
+ * Upper bound on the restore-boundary compaction's provider round-trip, after
+ * which the compaction is abandoned and `ready` is reported anyway.
+ *
+ * It is needed because `runLoop`'s serial `for await` holds `cancel` and
+ * `shutdown` behind the same await that holds `ready`: an unbounded
+ * compaction would not merely delay activation, it would make the worker
+ * unstoppable while it waited. Unbounded, the exposure is roughly thirty
+ * minutes -- the adapter's per-attempt total timeout, retried three times,
+ * reachable by a stream that keeps emitting without ever ending.
+ *
+ * **The 60 s figure is the coincidence of two INDEPENDENT arguments, not one
+ * derived from the other:** (a) it is the silence the adapter itself already
+ * calls dead (its default idle timeout happens to be the same number), and
+ * (b) it is a judgement about how long a user may be made to wait at
+ * activation for a distillation they did not ask for. Neither implies the
+ * other. If the adapter's idle timeout ever changes, that is not by itself a
+ * reason for this constant to follow -- do NOT import one from the other to
+ * "keep them in sync".
+ *
+ * **Named premise -- what this budget does NOT bound.** It bounds the
+ * **provider round-trip**, and nothing else. `compact()` also awaits
+ * `loadCompactionPrompt()` before that round-trip and
+ * `reassembleSystemPrompt()` after it; neither takes a signal, so neither is
+ * interrupted here. Both are local filesystem reads and are **assumed
+ * prompt** -- the same assumption every other activation-time filesystem read
+ * already makes. Threading a signal into only compaction's two reads would be
+ * asymmetric theater: if the filesystem hangs, activation has already hung
+ * elsewhere for the same reason. The exposure this budget was built against
+ * is specific to a provider stream that keeps emitting without ending, which
+ * has no filesystem analogue.
+ *
+ * The claim and the implementation are made to match by narrowing the claim,
+ * not by widening the code -- so the guarantee is "one bounded compaction
+ * operation", not "activation completes within 60 s no matter what".
+ */
+const RESTORE_BOUNDARY_COMPACTION_BUDGET_MS = 60_000;
+
 /** IO seam so the loop can be driven by a test harness or the real process. */
 export interface LoopIO {
   readCommands(): AsyncIterable<string>;
@@ -80,6 +118,11 @@ export interface LoopFactories {
   /** DI seam for the R1 resume pre-flight, which otherwise reads the real
    * `~/.claude` of whoever is running. Defaults to `sdkSessionExists`. */
   sdkSessionExists(sdkSessionId: string, cwd: string): Promise<boolean>;
+  /** Documented test seam: overrides
+   * {@link RESTORE_BOUNDARY_COMPACTION_BUDGET_MS} so a test can drive the
+   * budget-exceeded path without waiting a real minute. Production never sets
+   * it. Same class of seam as `AgentLoopDeps`'s `retryDelaysMs` / `sleep`. */
+  restoreBoundaryCompactionBudgetMs?: number;
 }
 
 type InitCommand = Extract<v.InferOutput<typeof EmbeddedAgentCommandSchema>, { type: 'init' }>;
@@ -283,6 +326,44 @@ async function initializeLoop(
         return content;
       },
     });
+
+    // Compaction at the restore boundary (#1411): evaluated here, awaited
+    // BEFORE `ready`. See docs/design/embedded-agent-worker.md "Compaction at
+    // the restore boundary" -- awaiting inside init is by itself what keeps a
+    // `user-message` from interleaving, since this function runs inside
+    // `runLoop`'s serial `for await` over stdin; and the server hangs both
+    // initial-prompt delivery and the restore-info completion flip off
+    // `ready`, so gating it makes both fire against the post-compaction
+    // conversation.
+    //
+    // "Before `ready`" means before the compaction FINISHES, never before it
+    // SUCCEEDS: `ready` is emitted unconditionally below. A provider that is
+    // down at activation must not be able to wedge the worker -- the
+    // preserve-on-failure path leaves the conversation intact and the first
+    // user turn simply overflows, which is the accepted behaviour when no
+    // context window is configured either. The catch enforces that invariant
+    // for the residual class `compact()` does not already swallow.
+    //
+    // The await is BOUNDED rather than raced: `loop.cancel()` aborts the
+    // in-flight distillation, which `compact()` already handles through its
+    // existing canceled branch (turn-error, conversation untouched), and the
+    // await then returns promptly. Racing instead would let `ready` fire
+    // while the compaction was mid-splice, reintroducing exactly the
+    // interleaving this ordering exists to prevent. A timer that fires in the
+    // gap between completion and `clearTimeout` is harmless: `cancel()` is a
+    // no-op once no turn is in flight.
+    const budgetMs =
+      factories.restoreBoundaryCompactionBudgetMs ?? RESTORE_BOUNDARY_COMPACTION_BUDGET_MS;
+    const budgetTimer = setTimeout(() => loop.cancel(), budgetMs);
+    try {
+      await loop.compactAtRestoreBoundaryIfNeeded();
+    } catch (err) {
+      io.logError(
+        `Restore-boundary compaction failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    } finally {
+      clearTimeout(budgetTimer);
+    }
 
     io.writeEvent({ v: 1, type: 'ready' });
     return loop;

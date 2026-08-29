@@ -38,6 +38,66 @@ const DEFAULT_RETRY_DELAYS_MS: [number, number] = [500, 2000];
 const MAX_PROVIDER_ATTEMPTS = 3;
 const MAX_MALFORMED_REASKS = 2;
 
+/**
+ * Compaction at the restore boundary: the ceiling below which the WHOLE
+ * conversation may still be the distillation input.
+ *
+ * It exists because the live turn-end path has no such ceiling -- it always
+ * sends the whole conversation, and does so successfully at and above the
+ * default 0.85 threshold. A single constant serving as both this cut and the
+ * partial input budget would make the same machine treat the same
+ * conversation differently depending only on WHERE it was triggered. The
+ * value leaves room for the compaction prompt, the summary the model is
+ * about to write, and the estimator's own error.
+ */
+const FULL_DISTILL_MAX_RATIO = 0.9;
+
+/**
+ * Compaction at the restore boundary: the input budget for a PARTIAL
+ * distillation's suffix, and only that.
+ *
+ * Named premise: the size going in is a coarse character-count estimate, not
+ * a token count, and can be wrong in either direction for any given
+ * tokenizer -- so the budget measured against it stays conservative; and the
+ * compaction prompt plus the summary need room of their own inside the same
+ * window. Partial distillation is reached precisely BECAUSE the estimate is
+ * already near the wall, which is where a conservative budget earns its keep.
+ *
+ * Neither ratio is operator-configurable: both are internal safety margins on
+ * our own estimator, not policies an operator has the information to set.
+ */
+const PARTIAL_DISTILL_INPUT_RATIO = 0.7;
+
+/**
+ * Prepended to a PARTIAL distillation's summary text, and the single writer
+ * of that caveat.
+ *
+ * It lives inside the `summary` STRING rather than in the seed sentence built
+ * around it, because that string is what the `context-compacted` event
+ * persists: a later Transcript Restore reseeds through the ordinary
+ * `buildCompactionSeedMessages` wording, which has no way to know the
+ * distillation was partial, and the caveat still reaches the model because it
+ * travels in the text. `buildCompactionSeedMessages` therefore stays exactly
+ * the single writer of the seed shape it already was, with no partial branch.
+ *
+ * See docs/design/embedded-agent-worker.md "Compaction at the restore
+ * boundary" for the named degradation this accepts (the outer sentence says
+ * "the earlier part"; this line corrects it in-band).
+ */
+const PARTIAL_DISTILL_CAVEAT_LINE =
+  '[Earlier messages exceeded the context window and are not covered by this summary.]';
+
+/**
+ * Reason carried by the turn-error when a partial distillation has no usable
+ * input at all (a small window against a large system prompt). It names this
+ * cause specifically rather than folding into the generic wording: the
+ * over-window 400 that follows on the first user turn is otherwise
+ * indistinguishable from every other overflow, and this is the one line that
+ * explains it.
+ */
+const PARTIAL_DISTILL_NO_INPUT_REASON =
+  'restore-boundary compaction skipped: conversation exceeds the distillation input budget';
+
 export interface AgentLoopDeps {
   adapter: ProviderAdapter;
   model: string;
@@ -141,6 +201,48 @@ function estimateTokensFromChars(messages: ChatMessage[]): number {
   return Math.round(totalChars / 4);
 }
 
+/**
+ * Compaction at the restore boundary: narrow a distillation request down to
+ * the LARGEST TAIL SUFFIX of the conversation that fits `budgetTokens`.
+ *
+ * The returned array is the request as it will actually be sent -- the
+ * conversation's leading system message (always kept and always counted: it
+ * is the model's operating instructions for the summary it is about to
+ * write), then the selected suffix, then the compaction prompt. Measuring the
+ * assembled request rather than the suffix alone is what keeps the prompt's
+ * own room from being double-counted or forgotten.
+ *
+ * One structural rule governs where a suffix may start: never at a
+ * `{role:'tool'}` message. Doing so would hand the provider a tool result
+ * whose owning assistant `tool_calls` entry is not in the request -- the same
+ * violation mid-turn repair exists to prevent, arriving from the other
+ * direction. Such a candidate is skipped, never accepted and never repaired.
+ *
+ * Returns `null` when not even one message fits, which the caller treats as a
+ * compaction failure rather than distilling nothing.
+ */
+export function selectPartialDistillationMessages(
+  conversation: ChatMessage[],
+  promptMessage: ChatMessage,
+  budgetTokens: number,
+): ChatMessage[] | null {
+  const hasSystemHead = conversation.length > 0 && conversation[0].role === 'system';
+  const head = hasSystemHead ? [conversation[0]] : [];
+  const firstSelectable = hasSystemHead ? 1 : 0;
+
+  let best: ChatMessage[] | null = null;
+  // Walk from the tail toward the head. Total size grows monotonically as the
+  // start index decreases, so the first candidate that overruns the budget
+  // ends the search -- nothing earlier can fit either.
+  for (let start = conversation.length - 1; start >= firstSelectable; start--) {
+    const candidate = [...head, ...conversation.slice(start), promptMessage];
+    if (estimateTokensFromChars(candidate) > budgetTokens) break;
+    if (conversation[start].role === 'tool') continue;
+    best = candidate;
+  }
+  return best;
+}
+
 export class AgentLoop {
   private readonly deps: AgentLoopDeps;
   private readonly retryDelaysMs: [number, number];
@@ -163,12 +265,20 @@ export class AgentLoop {
   private pendingCompact = false;
   /** The last turn's terminal usage reading -- the auto threshold's input. */
   private lastTurnUsage: TurnUsage | undefined;
+  /**
+   * Whether this loop was seeded from a restored conversation rather than a
+   * fresh system-prompt-only one. Gates the restore-boundary compaction: a
+   * fresh conversation is one system message, and evaluating the ratio
+   * against it is the vacuous case the threshold semantics already exclude.
+   */
+  private readonly restoredAtActivation: boolean;
 
   constructor(deps: AgentLoopDeps) {
     this.deps = deps;
     this.retryDelaysMs = deps.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
     this.sleep = deps.sleep ?? defaultSleep;
     this.conversation = deps.restoredConversation ?? [{ role: 'system', content: deps.systemPrompt }];
+    this.restoredAtActivation = (deps.restoredConversation?.length ?? 0) > 0;
     this.tools = [compactToolDefinition, ...deps.tools];
     this.autoCompaction = deps.compaction.auto;
   }
@@ -185,6 +295,45 @@ export class AgentLoop {
    */
   setAutoCompaction(enabled: boolean): void {
     this.autoCompaction = enabled;
+  }
+
+  /**
+   * Compaction at the restore boundary: the SECOND firing point of the same
+   * automatic predicate, evaluated once after `init` and before the first
+   * user turn. See docs/design/embedded-agent-worker.md "Compaction at the
+   * restore boundary".
+   *
+   * The turn-end trigger cannot help a worker whose RESTORED conversation is
+   * already large: its first provider call goes out before any turn has
+   * completed, so the trigger has not run even once and that call overflows.
+   *
+   * Seeding `lastTurnUsage` here is what lets `shouldAutoCompact()` -- the
+   * identical predicate, not a copy of it -- decide. The seed doubles as the
+   * usage reading a restored worker publishes before its first turn, which
+   * previously stayed absent until a turn had completed.
+   *
+   * Never throws for an ordinary compaction failure: `compact()` preserves
+   * the conversation and emits a turn-error, and the caller goes on to report
+   * `ready` regardless. A provider that is down at activation must not be
+   * able to wedge the worker.
+   */
+  async compactAtRestoreBoundaryIfNeeded(): Promise<void> {
+    if (!this.restoredAtActivation) return;
+
+    const estimated = estimateTokensFromChars(this.conversation);
+    this.emitContextUsageIfKnown({ promptTokens: estimated, estimated: true });
+
+    const windowTokens = this.deps.compaction.contextWindowTokens;
+    if (windowTokens === undefined) return;
+    if (!this.shouldAutoCompact()) return;
+
+    if (estimated <= FULL_DISTILL_MAX_RATIO * windowTokens) {
+      await this.compact('auto');
+      return;
+    }
+    await this.compact('auto', {
+      budgetTokens: Math.floor(PARTIAL_DISTILL_INPUT_RATIO * windowTokens),
+    });
   }
 
   /**
@@ -523,7 +672,7 @@ export class AgentLoop {
    * `settleCompactionAtTurnBoundary`). Splicing the conversation array while
    * a provider request is in flight would destroy the in-flight turn.
    */
-  async compact(source: 'auto' | 'manual'): Promise<void> {
+  async compact(source: 'auto' | 'manual', partial?: { budgetTokens: number }): Promise<void> {
     const abort = new AbortController();
     this.currentAbort = abort;
 
@@ -540,15 +689,51 @@ export class AgentLoop {
       }
 
       // Transient request array -- NEVER pushed onto this.conversation.
-      const messages: ChatMessage[] = [
-        ...this.conversation,
-        { role: 'user', content: compactionPromptText },
-      ];
+      const promptMessage: ChatMessage = { role: 'user', content: compactionPromptText };
+      let messages: ChatMessage[];
+      if (partial === undefined) {
+        messages = [...this.conversation, promptMessage];
+      } else {
+        // Partial distillation: the whole-conversation request is the very
+        // thing that would overflow, so the INPUT -- and only the input -- is
+        // narrowed. Everything downstream is this method unchanged.
+        const narrowed = selectPartialDistillationMessages(
+          this.conversation,
+          promptMessage,
+          partial.budgetTokens,
+        );
+        if (narrowed === null) {
+          this.emitTurnError(turnId, `Context compaction failed: ${PARTIAL_DISTILL_NO_INPUT_REASON}`);
+          return;
+        }
+        messages = narrowed;
+      }
 
       const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal, {
         emitDeltas: false,
       });
-      if (outcome.kind === 'canceled') {
+      // `outcome.kind === 'canceled'` only covers an adapter that THROWS on
+      // abort (the shape `OpenAIChatAdapter`'s fetch produces). An adapter
+      // that instead ends its stream cleanly when the signal trips returns a
+      // perfectly ordinary `ok` carrying whatever partial text had
+      // accumulated -- which would then be spliced over the conversation as
+      // if it were a finished summary. Consulting the signal directly is what
+      // makes the failure invariant independent of the adapter's abort style.
+      // This became load-bearing when the restore boundary started cancelling
+      // on a budget: what used to be an exotic mid-compaction user cancel is
+      // now a routine path.
+      //
+      // This check is CLASSIFICATION plus early-exit economy -- it is NOT the
+      // commit boundary. The boundary is the one immediately before the
+      // marker emit below; see the comment there.
+      //
+      // The sibling check in `runUserTurn` is deliberately left kind-only,
+      // not overlooked: a clean-abort adapter there yields a VISIBLE partial
+      // assistant-message rather than a silent splice over the conversation,
+      // its cancel is user-initiated rather than budget-driven, and no
+      // equivalent routine path exists on that side. Tracked as a follow-up
+      // (#1418) rather than changed here.
+      if (outcome.kind === 'canceled' || abort.signal.aborted) {
         this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
         return;
       }
@@ -575,7 +760,12 @@ export class AgentLoop {
       // "Compaction's own usage" in docs/design/embedded-agent-worker.md.
       this.emitContextUsageIfKnown(outcome.usage);
 
-      const summary = truncateToBytes(outcome.text, WIRE_EVENT_MAX_BYTES).text;
+      // The partial caveat is prepended BEFORE the cap so it travels at the
+      // head of the persisted `summary` string, where a later restore's
+      // ordinary seed wording cannot drop it.
+      const summaryText =
+        partial === undefined ? outcome.text : `${PARTIAL_DISTILL_CAVEAT_LINE} ${outcome.text}`;
+      const summary = truncateToBytes(summaryText, WIRE_EVENT_MAX_BYTES).text;
 
       let newSystemPrompt: string;
       try {
@@ -599,10 +789,46 @@ export class AgentLoop {
       // never followed by an async gap that could leave a completed-compaction
       // marker persisted while the old conversation is still intact.
       //
-      // `preTokens` is the distillation call's own prompt size, i.e. the
-      // conversation as it stood going in; `postTokens` is the seed's
-      // estimate. Reporting both is how a compaction declares its own
-      // severity (see the event's doc comment in shared).
+      // `preTokens` is the distillation call's own prompt size and
+      // `postTokens` is the seed's estimate. Reporting both is how a
+      // compaction declares its own severity (see the event's doc comment in
+      // shared).
+      //
+      // For a FULL compaction the distillation's prompt IS the conversation
+      // as it stood going in, so `preTokens` means what it looks like. For a
+      // PARTIAL one it is the narrowed input, which is smaller -- so the
+      // marker under-reports the true before-size in exactly the case that
+      // discarded the most. That is deliberate: it is the only REAL count
+      // available here, and substituting our own chars/4 estimate of the full
+      // conversation would report smaller still (that estimator omits tool
+      // schemas and measures low -- see the design doc's "Measured: `E`
+      // under-counts" note), besides mixing a provider count and an estimate
+      // in one field.
+      // === THE COMMIT POINT ===
+      //
+      // The last abort check in this method, and the boundary the whole
+      // cancellation story is defined against. BEFORE it, cancellation is
+      // always honoured and the conversation is never touched. AFTER it, no
+      // `await` exists until the splice below has completed, so cancellation
+      // has nothing left to act on -- the compaction has happened.
+      //
+      // It exists because the checks above are all upstream of
+      // `reassembleSystemPrompt()`, which is itself an await: a cancel landing
+      // during reassembly used to pass every guard and still emit the marker
+      // and splice, making this method's stated invariant false in a
+      // reachable window.
+      //
+      // RULE FOR FUTURE EDITS, which is the point of naming the boundary at
+      // all: a new `await` may only be placed ABOVE this check. Between here
+      // and the end of the splice the code must stay synchronous. Adding an
+      // await below reopens exactly the window this check closed, and does so
+      // invisibly -- `deps.emit` is typed to return void precisely so it
+      // cannot yield.
+      if (abort.signal.aborted) {
+        this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
+        return;
+      }
+
       this.deps.emit({
         v: 1,
         type: 'context-compacted',

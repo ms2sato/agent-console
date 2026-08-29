@@ -101,6 +101,7 @@ function makeLoop(
     reassembleSystemPrompt?: () => Promise<string>;
     loadCompactionPrompt?: () => Promise<string>;
     restoredConversation?: ChatMessage[];
+    compaction?: AgentLoopDeps['compaction'];
   } = {},
 ): Harness {
   const events: EmbeddedAgentEvent[] = [];
@@ -125,7 +126,7 @@ function makeLoop(
     reassembleSystemPrompt: opts.reassembleSystemPrompt ?? (async () => 'sys'),
     loadCompactionPrompt: opts.loadCompactionPrompt ?? (async () => 'DISTILL_PROMPT'),
     // Auto compaction OFF: this file's subject is the turn cycle itself.
-    compaction: { auto: false },
+    compaction: opts.compaction ?? { auto: false },
     restoredConversation: opts.restoredConversation,
   };
   const loop = new AgentLoop(deps);
@@ -605,6 +606,23 @@ describe('AgentLoop — Transcript Restore (#1123) restoredConversation seeding'
     // Regression guard: the fresh-seed shape (system prompt only) is NOT used
     // when a restoredConversation is supplied.
     expect(sentMessages[0]).not.toEqual({ role: 'system', content: 'sys' });
+  });
+
+  it('treats an EMPTY restoredConversation as NOT restored: the restore-boundary compaction check does not run at all', async () => {
+    // The boundary value of the restored-or-not gate. An empty array is
+    // falsy-shaped but not `undefined`, so the constructor adopts it as the
+    // conversation -- and a length-insensitive gate would then evaluate the
+    // window ratio against an empty conversation, which is the vacuous case
+    // (the ratio is not small, it is absent). Nothing at all should happen:
+    // no usage reading published, no compaction.
+    const h = makeLoop([textResponse('answer')], {
+      restoredConversation: [],
+      compaction: { auto: true, contextWindowTokens: 1000 },
+    });
+
+    await h.loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(h.events).toHaveLength(0);
   });
 
   it('seeds [{role:"system", content: systemPrompt}] when restoredConversation is absent (default v1 behavior, unchanged)', async () => {
