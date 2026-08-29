@@ -2010,7 +2010,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 5,
+            restoredMessageCount: 5,
             repairedToolCallIds: ['call-1', 'call-2'],
             completed: false,
           }),
@@ -2042,7 +2042,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 5,
+            restoredMessageCount: 5,
             repairedToolCallIds: [],
             completed: false,
           }),
@@ -2063,7 +2063,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 5,
+            restoredMessageCount: 5,
             repairedToolCallIds: [],
             completed: true,
           }),
@@ -2095,7 +2095,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 3,
+            restoredMessageCount: 3,
             repairedToolCallIds: [],
             completed: false,
           }),
@@ -2124,7 +2124,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 1,
+            restoredMessageCount: 1,
             repairedToolCallIds: [],
             completed: false,
           }),
@@ -2133,6 +2133,73 @@ describe('EmbeddedAgentWorkerView', () => {
       await flush();
 
       expect(screen.getByText(/Loading \d+ previous messages?\.\.\./i)).toBeTruthy();
+    });
+
+    // The two tests below assert the EXACT rendered string, not a `\d+`
+    // regex, because the number in it is the whole point after #1428:
+    // `restoredMessageCount` now counts entries recovered from the persisted
+    // transcript, so the indicator must report the number the server sent
+    // rather than a reconstruction array's length.
+    //
+    // Mutation reach (measured, see the PR report): breaks under "store drops
+    // the field" (read `message.restoredMessageCount` as the pre-rename
+    // `message.messageCount`, which yields `undefined`) -- the indicator then
+    // renders "Loading undefined previous messages...". NOT broken by
+    // relaxing the divergence gate's `> 0` to `>= 0`, which this block does
+    // not consult.
+    it('renders the received count verbatim in the loading indicator for an ordinary restore (plural form)', async () => {
+      renderView({ sessionId: 's-restore-5', workerId: 'w-restore-5' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            restoredMessageCount: 4,
+            repairedToolCallIds: [],
+            completed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByText('Loading 4 previous messages...')).toBeTruthy();
+    });
+
+    it('renders the SINGULAR form for a past-a-boundary restore that recovered exactly one entry', async () => {
+      // Reachable in production, not a contrived boundary: a worker whose
+      // transcript was compacted and which said nothing afterwards restores
+      // the compaction summary and nothing else, so the server sends exactly
+      // 1. Under the pre-#1428 meaning the count was the reconstruction
+      // array's length and this state reported 2, so the singular branch
+      // rendered only for a one-message-since-activation worker.
+      renderView({ sessionId: 's-restore-6', workerId: 'w-restore-6' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            restoredMessageCount: 1,
+            repairedToolCallIds: [],
+            completed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByText('Loading 1 previous message...')).toBeTruthy();
+      expect(screen.queryByText('Loading 1 previous messages...')).toBeNull();
     });
   });
 
@@ -2158,7 +2225,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 5,
+            restoredMessageCount: 5,
             repairedToolCallIds: [],
             completed: true,
             // R1: `false`, explicitly. Before R1 this test passed with the
@@ -2203,7 +2270,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 5,
+            restoredMessageCount: 5,
             repairedToolCallIds: [],
             completed: true,
             sdkResumed: true,
@@ -2244,7 +2311,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 5,
+            restoredMessageCount: 5,
             repairedToolCallIds: [],
             completed: true,
           }),
@@ -2278,7 +2345,7 @@ describe('EmbeddedAgentWorkerView', () => {
         JSON.stringify({
           type: 'restore-info',
           epoch: 1,
-          messageCount: 5,
+          restoredMessageCount: 5,
           repairedToolCallIds: [],
           completed: true,
           sdkResumed,
@@ -2314,7 +2381,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 5,
+            restoredMessageCount: 5,
             repairedToolCallIds: [],
             completed: true,
           }),
@@ -2328,6 +2395,103 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(
         screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
       ).toBeTruthy();
+    });
+
+    // #1428 PAIR: the reachability case and its presence control, kept
+    // adjacent on purpose. "No notice appeared" on its own cannot tell
+    // "nothing was restored" apart from "the notice logic is broken", so the
+    // second test below drives the notice with the SAME engine, the SAME
+    // `sdkResumed: false`, and only the count changed.
+    it('shows NO divergence notice for a claude-sdk worker whose restore recovered nothing, even though the resume did not take (#1428)', async () => {
+      // THE POINT OF #1428. `restoredMessageCount` used to be the
+      // reconstruction's whole array length including its seed, so it had a
+      // floor of 1 and this state was UNREACHABLE: an activated-but-never-
+      // spoken-to worker reported >= 1 and the notice fired, telling the user
+      // an "earlier conversation" they never had could not be carried over.
+      // The count now excludes the synthetic system prompt, so 0 is a real
+      // wire value and the gate's first conjunct can finally go false.
+      //
+      // Mutation reach (measured): relaxing the gate's `restoredMessageCount
+      // > 0` to `>= 0` in EmbeddedAgentWorkerView.tsx makes this test fail
+      // (the notice reappears) and leaves the control below passing.
+      // NOT broken by "store drops the field" (undefined > 0 is also false).
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-empty', workerId: 'w-sdk-empty', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            restoredMessageCount: 0,
+            repairedToolCallIds: [],
+            completed: true,
+            sdkResumed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.queryByText(/earlier conversation could not be carried over/i)).toBeNull();
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+    });
+
+    it('PRESENCE CONTROL for the test above: the same claude-sdk worker with a non-empty restore DOES show the notice (#1428)', async () => {
+      // Identical setup to the test above -- same engine, same
+      // `sdkResumed: false`, same `completed: true` -- with only
+      // `restoredMessageCount` changed from 0 to 2. If this one also showed
+      // nothing, the absence assertion above would be satisfied by a broken
+      // notice rather than by the count reaching 0, and would keep passing
+      // through any future regression of the divergence notice.
+      //
+      // Mutation reach (measured): breaks under "store drops the field"
+      // (reading the pre-rename `message.messageCount` yields `undefined`,
+      // so `undefined > 0` suppresses the notice). NOT broken by relaxing
+      // the gate's `> 0` to `>= 0`, which only widens what shows the notice.
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-nonempty', workerId: 'w-sdk-nonempty', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            restoredMessageCount: 2,
+            repairedToolCallIds: [],
+            completed: true,
+            sdkResumed: false,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.getByText(/earlier conversation could not be carried over/i)).toBeTruthy();
     });
 
     it('shows neither banner for a claude-sdk engine worker with no prior transcript (fresh worker, no restore-info push)', async () => {
@@ -2377,7 +2541,7 @@ describe('EmbeddedAgentWorkerView', () => {
       });
       await flush();
 
-      // Push a restore-info with a non-empty messageCount WHILE the
+      // Push a restore-info with a non-empty restoredMessageCount WHILE the
       // `/api/embedded-agents` fetch is still pending, so
       // hadPriorTranscriptThisIncarnation is true but the engine is still
       // unresolved -- this is what makes the assertions below non-vacuous:
@@ -2389,7 +2553,7 @@ describe('EmbeddedAgentWorkerView', () => {
           JSON.stringify({
             type: 'restore-info',
             epoch: 1,
-            messageCount: 3,
+            restoredMessageCount: 3,
             repairedToolCallIds: [],
             completed: true,
           }),

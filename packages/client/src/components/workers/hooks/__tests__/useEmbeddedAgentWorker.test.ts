@@ -118,7 +118,7 @@ describe('useEmbeddedAgentWorker', () => {
         JSON.stringify({
           type: 'restore-info',
           epoch: 1,
-          messageCount: 5,
+          restoredMessageCount: 5,
           repairedToolCallIds: [],
           completed: false,
         }),
