@@ -158,7 +158,18 @@ type TurnEnding = 'completed' | 'error' | 'canceled';
 type ProviderOutcome =
   | { kind: 'ok'; text: string; toolCalls: ProviderToolCall[]; usage?: TurnUsage }
   | { kind: 'error'; message: string }
-  | { kind: 'canceled' };
+  | {
+      kind: 'canceled';
+      /**
+       * Whatever text had accumulated before the abort landed, when there was
+       * any. `kind` states WHAT HAPPENED -- the request was aborted -- and this
+       * states WHAT SURVIVED it. Classifying an abort at the source without
+       * carrying the payload would be right about the first and quietly lossy
+       * about the second, foreclosing partial text for every future consumer.
+       * Both of today's consumers end the turn and read only `kind`.
+       */
+      partialText?: string;
+    };
 
 type ParsedToolArgs =
   | { ok: true; value: Record<string, unknown> }
@@ -267,6 +278,49 @@ export class AgentLoop {
    * structurally outside `enabledTools`' reach -- see compact-tool.ts.
    */
   private readonly tools: ToolDefinition[];
+  /**
+   * The controller `cancel()` aborts, and the one field two different
+   * operations take turns owning: `runUserTurn` installs its controller for
+   * the length of a turn, `compact()` installs its own for the length of a
+   * distillation. The contract lives here rather than in either of them
+   * because it is the thing both answer to.
+   *
+   * **`cancel` is not an instruction to a particular turn. It is an
+   * instruction to the incarnation: stop whatever cancellable operation is
+   * currently running.** Which one that is, is decided by whoever holds this
+   * field at the moment the cancel lands -- the turn if one is running, the
+   * boundary compaction if that is. So a user cancel arriving while
+   * `settleCompactionAtTurnBoundary` is distilling aborts the COMPACTION,
+   * not a turn, and that is the intended reading rather than a leak between
+   * two paths that were meant to be separate.
+   *
+   * Measured against what the user actually asked for -- "stop what the
+   * agent is doing" -- stopping the current activity is the right answer. A
+   * boundary compaction is discretionary work the user never requested;
+   * `compact()`'s preserve-on-failure path leaves the conversation exactly as
+   * it was; and abandoning it gets the worker to idle sooner, which is the
+   * observable the user is reaching for.
+   *
+   * **A cancel does not reserve a future operation.** One that arrives in the
+   * gap between the two assignments -- after a turn has cleared the field and
+   * before the boundary compaction installs its own -- does nothing at all.
+   * That is a consequence of the rule above, not a defect to be fixed by
+   * carrying a "cancel requested" flag forward: a flag would let a cancel the
+   * user issued against a finished turn silently kill an operation that had
+   * not started when they issued it.
+   *
+   * Two notes for future edits:
+   *
+   * - The in-flight change that has the distillation core RECEIVE a signal
+   *   rather than own one PRESERVES this rule: the wrapper still installs and
+   *   holds the controller across the boundary call, so the field's single
+   *   holder at any instant is unchanged. Nothing here needs re-deciding for
+   *   it.
+   * - Any change that gives turns and compactions SEPARATE controllers does
+   *   NOT preserve it -- it silently answers "which operation does a cancel
+   *   stop" differently. That question has to be re-ruled, and this comment
+   *   rewritten, in the same change that separates them.
+   */
   private currentAbort: AbortController | null = null;
   /** Compaction: the worker's auto toggle. Mutable -- see setAutoCompaction. */
   private autoCompaction: boolean;
@@ -477,6 +531,11 @@ export class AgentLoop {
 
       for (let iteration = 0; iteration < this.deps.maxToolIterations; iteration++) {
         const outcome = await this.runProviderWithRetries(this.conversation, turnId, abort.signal);
+        // Kind-only on purpose, not by omission: `runProviderWithRetries`
+        // classifies an abort into `canceled` at the source whichever style
+        // the adapter used, so a second `abort.signal.aborted` axis here would
+        // be redundant -- and would re-scatter a convention that now has
+        // exactly one writer.
         if (outcome.kind === 'canceled') {
           this.emitContextUsageIfKnown(turnUsage);
           this.emitTurnError(turnId, 'turn canceled');
@@ -643,7 +702,22 @@ export class AgentLoop {
   ): Promise<ProviderOutcome> {
     for (let attempt = 1; attempt <= MAX_PROVIDER_ATTEMPTS; attempt++) {
       try {
-        return await this.runProviderAttempt(messages, turnId, signal, opts);
+        const outcome = await this.runProviderAttempt(messages, turnId, signal, opts);
+        // The single writer of "an abort became a `canceled` outcome".
+        // `ProviderAdapter` deliberately leaves the abort style unspecified:
+        // `OpenAIChatAdapter` throws, which the catch below classifies, but an
+        // adapter that instead ends its stream cleanly when the signal trips
+        // returns an ordinary `ok` carrying whatever partial text had
+        // accumulated. Converting here -- before any consumer sees the outcome
+        // -- is what makes every caller's `kind === 'canceled'` check
+        // sufficient whichever style the adapter used.
+        if (signal.aborted && outcome.kind === 'ok') {
+          return {
+            kind: 'canceled',
+            ...(outcome.text !== '' ? { partialText: outcome.text } : {}),
+          };
+        }
+        return outcome;
       } catch (err) {
         if (signal.aborted) {
           return { kind: 'canceled' };
@@ -783,27 +857,19 @@ export class AgentLoop {
       const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal, {
         emitDeltas: false,
       });
-      // `outcome.kind === 'canceled'` only covers an adapter that THROWS on
-      // abort (the shape `OpenAIChatAdapter`'s fetch produces). An adapter
-      // that instead ends its stream cleanly when the signal trips returns a
-      // perfectly ordinary `ok` carrying whatever partial text had
-      // accumulated -- which would then be spliced over the conversation as
-      // if it were a finished summary. Consulting the signal directly is what
-      // makes the failure invariant independent of the adapter's abort style.
-      // This became load-bearing when the restore boundary started cancelling
-      // on a budget: what used to be an exotic mid-compaction user cancel is
-      // now a routine path.
+      // `|| abort.signal.aborted` WAS load-bearing: before
+      // `runProviderWithRetries` classified aborts at the source, a `canceled`
+      // outcome only ever came from an adapter that THROWS on abort, so an
+      // adapter that ends its stream cleanly returned an ordinary `ok`
+      // carrying partial text -- which this branch is the only thing that
+      // stopped from being spliced over the conversation as a finished summary.
+      // It stays now that the source classification covers both styles,
+      // because the splice it guards is destructive and unrecoverable, and a
+      // redundant guard in front of that is cheap insurance.
       //
       // This check is CLASSIFICATION plus early-exit economy -- it is NOT the
       // commit boundary. The boundary is the one immediately before the
       // marker emit below; see the comment there.
-      //
-      // The sibling check in `runUserTurn` is deliberately left kind-only,
-      // not overlooked: a clean-abort adapter there yields a VISIBLE partial
-      // assistant-message rather than a silent splice over the conversation,
-      // its cancel is user-initiated rather than budget-driven, and no
-      // equivalent routine path exists on that side. Tracked as a follow-up
-      // (#1418) rather than changed here.
       if (outcome.kind === 'canceled' || abort.signal.aborted) {
         this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
         return;
