@@ -76,6 +76,10 @@
  *   2  bad usage / the smoke could not run (boot failure, no worker tree, ...)
  */
 import { mkdirSync, rmSync } from 'node:fs';
+// Type-only, so it is erased at runtime and does not load the server modules
+// before the env vars below are set (the value imports stay dynamic, further
+// down, for exactly that reason).
+import type { McpDependencies } from '../../packages/server/src/mcp/mcp-server.ts';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -100,9 +104,23 @@ function check(ok: boolean, label: string, detail = ''): void {
   }
 }
 
+/**
+ * Raised by {@link bail}. A dedicated type so the entry point can map it to
+ * exit 2 (the smoke could not run) while every other throw keeps its own
+ * handling.
+ */
+class BailError extends Error {}
+
+/**
+ * The smoke cannot run. THROWS rather than exiting, so `main`'s cleanup block
+ * still runs: by the time most of these fire, a real `sh` -> harness ->
+ * `claude` tree is live, and `process.exit` here would strand it on a shared
+ * host -- on the failure path, which is exactly when nobody is looking for
+ * orphans. The header's own account of a leftover worker producing a false
+ * negative is what this protects the NEXT run from.
+ */
 function bail(message: string): never {
-  console.error(`\nCOULD NOT RUN: ${message}`);
-  process.exit(2);
+  throw new BailError(message);
 }
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -137,8 +155,19 @@ function childrenOf(pid: number): number[] {
     .filter((n) => Number.isFinite(n));
 }
 
+/**
+ * Whether `pid` is a RESIDENT process. `kill -0` alone is not that question: it
+ * succeeds for a zombie, which holds a slot in the table and nothing else. The
+ * harness is this process's grandchild, so between its death and init reaping
+ * it there is a window where "is the stranded process gone" would answer no
+ * while the memory this Issue is about has already been released.
+ */
 function isAlive(pid: number): boolean {
-  return Bun.spawnSync(['kill', '-0', String(pid)]).exitCode === 0;
+  if (Bun.spawnSync(['kill', '-0', String(pid)]).exitCode !== 0) return false;
+  const state = new TextDecoder()
+    .decode(Bun.spawnSync(['ps', '-o', 'state=', '-p', String(pid)]).stdout)
+    .trim();
+  return state !== '' && !state.startsWith('Z');
 }
 
 function commandOf(pid: number): string {
@@ -224,7 +253,7 @@ async function main(): Promise<void> {
   // real HTTP with its real per-worker bearer token. Everything else this
   // script drives goes through `sessionManager` directly -- the same entry
   // point the WebSocket route calls.
-  const mcpApp = createMcpApp({
+  const mcpDeps: McpDependencies = {
     sessionManager: ctx.sessionManager,
     repositoryManager: ctx.repositoryManager,
     agentManager: ctx.agentManager,
@@ -245,7 +274,8 @@ async function main(): Promise<void> {
     fetchPullRequestUrl: ctx.fetchPullRequestUrl,
     findOpenPullRequest: ctx.findOpenPullRequest,
     mcpTokenRegistry: ctx.mcpTokenRegistry,
-  } as never) as { fetch: (req: Request) => Response | Promise<Response> };
+  };
+  const mcpApp = createMcpApp(mcpDeps);
   const server = Bun.serve({ fetch: mcpApp.fetch, port, hostname: '127.0.0.1' });
   console.log(`==> real /mcp served at http://127.0.0.1:${server.port}/mcp`);
 
@@ -389,8 +419,16 @@ async function main(): Promise<void> {
         'the incarnation to be replaced',
       );
       check(replaced, 'the incarnation is replaced', `pid ${shPid} -> ${(await currentPid(workerId))}`);
-      check(!isAlive(tree.harness), 'the stranded harness process is gone, not left resident');
-      check(!isAlive(tree.sh), 'the stranded `sh` is gone too');
+      // Waited, not sampled: the pid changing means the SERVER moved on, which
+      // is not the same instant the OS finished tearing the old tree down.
+      check(
+        await waitFor(() => !isAlive(tree.harness), 15_000, 'the stranded harness to terminate'),
+        'the stranded harness process is gone, not left resident',
+      );
+      check(
+        await waitFor(() => !isAlive(tree.sh), 15_000, 'the stranded `sh` to terminate'),
+        'the stranded `sh` is gone too',
+      );
 
       const evs = await readEvents(sessionId, workerId);
       check(
@@ -464,6 +502,15 @@ async function main(): Promise<void> {
       );
       if (!inFlight.ok) bail(`the mid-turn message was refused: ${JSON.stringify(inFlight)}`);
       const turnId = (inFlight as { id?: string }).id;
+      // Without this the identity check below degenerates to
+      // `e.turnId === undefined`, which a `turn-interrupted` row carrying no
+      // `turnId` satisfies -- so Case 2 could report PASS while proving only
+      // that SOME marker exists, not that the marker names the turn we killed.
+      // This is the apparatus that verifies the fix; an assertion here that can
+      // succeed vacuously is worse than no assertion at all.
+      if (turnId === undefined || turnId === '') {
+        bail('the mid-turn message returned no id, so the turn-interrupted marker could not be attributed');
+      }
 
       // Wait until the turn is genuinely in flight before killing.
       const active = await waitFor(
@@ -526,8 +573,10 @@ async function main(): Promise<void> {
         controlToken !== undefined && registry.verify(controlToken) === null,
         'the control kill revokes its token too',
       );
-      await delay(1000);
-      check(!isAlive(tree3.claude), 'no orphaned `claude` survives the whole-tree kill');
+      check(
+        await waitFor(() => !isAlive(tree3.claude), 15_000, 'the control `claude` to terminate'),
+        'no orphaned `claude` survives the whole-tree kill',
+      );
     }
   } finally {
     try {
@@ -549,6 +598,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  if (err instanceof BailError) {
+    console.error(`\nCOULD NOT RUN: ${err.message}`);
+    process.exit(2);
+  }
   console.error(err);
-  bail(err instanceof Error ? err.message : String(err));
+  console.error('\nCOULD NOT RUN: the smoke threw before it could finish');
+  process.exit(2);
 });
