@@ -700,6 +700,19 @@ describe('EmbeddedAgentWorkerService.activate', () => {
   });
 });
 
+/**
+ * A persisted stream that fails reconstruction.
+ *
+ * The malformed line is deliberately the SECOND one. These tests are about
+ * what the SERVICE does when restore fails -- reset with sidecar, null
+ * restore-info, no `onRestoreInfo` push -- and a bad first line stopped being
+ * a restore failure once the restore side began tolerating a rotation
+ * fragment at the head (#1445). A lone `{not valid json` now reads as a
+ * window that is nothing but a fragment, is skipped, and reconstructs to an
+ * empty conversation, so it can no longer drive these tests' subject.
+ */
+const RESTORE_FAILING_STREAM = `${JSON.stringify({ v: 1, type: 'user-message', id: 'm0', text: 'opens the window' })}\n{not valid json`;
+
 describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   // The trailing `state: 'idle'` is what a real completed turn always
   // carries -- both engines emit it at the turn boundary. It was absent here
@@ -768,7 +781,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   });
 
   it('resets the output stream with preserveToSidecar and omits restoredConversation when restore fails', async () => {
-    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
 
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -839,7 +852,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     });
 
     it('returns null after a restore failure', async () => {
-      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
@@ -908,7 +921,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     });
 
     it('does NOT invoke onRestoreInfo when restore fails', async () => {
-      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
 
       await h.service.activate(h.sessionId, h.workerId);
 

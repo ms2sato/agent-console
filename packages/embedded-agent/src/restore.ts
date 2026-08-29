@@ -200,19 +200,47 @@ export function findRestoredUsageSeed(
 
 function parseStreamEvents(streamText: string): EmbeddedAgentStreamEvent[] {
   const events: EmbeddedAgentStreamEvent[] = [];
+  // The window this reads starts at the live file's base offset, and rotation
+  // cuts that file at a byte offset. The cut is newline-aligned now, but two
+  // cases still hand this function a partial first record: a file rotated
+  // before that alignment existed, and the documented fallback where no usable
+  // newline was available. So the FIRST content line -- and only it -- may be
+  // the tail of a record whose head was archived, and is dropped rather than
+  // failing the reconstruction.
+  //
+  // **The tail deliberately stays strict, and the asymmetry is the contract.**
+  // A broken line anywhere after the first is not explained by the cut: the
+  // only writer appends whole lines, so a bad line in the middle or at the end
+  // means the file was damaged some other way -- most likely a process killed
+  // mid-write. That is a real corruption signal and it must stay loud. Making
+  // the tail tolerant would convert every such truncation into a silent
+  // partial restore.
+  let isFirstContentLine = true;
   for (const rawLine of streamText.split('\n')) {
     const line = rawLine.trim();
     if (line === '') continue;
+    // Consumed whether or not this line turns out to be valid: the allowance
+    // is "the first record may be a fragment", not "one bad line anywhere".
+    const mayBeRotationFragment = isFirstContentLine;
+    isFirstContentLine = false;
+
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
     } catch (err) {
+      if (mayBeRotationFragment) continue;
       throw new RestoreReconstructionError(
         `Unparseable line in persisted stream: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     const result = v.safeParse(EmbeddedAgentStreamEventSchema, parsed);
     if (!result.success) {
+      // Both failure modes are covered, not just the throw: a cut can land
+      // where the remaining bytes happen to be valid JSON -- inside a nested
+      // object, say -- and produce a well-formed value that is not an event.
+      // Tolerating only the parse error would leave that case failing exactly
+      // as before, for a reason a reader would have to reconstruct.
+      if (mayBeRotationFragment) continue;
       throw new RestoreReconstructionError('Persisted stream line failed EmbeddedAgentStreamEvent schema validation');
     }
     events.push(result.output);

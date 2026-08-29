@@ -323,19 +323,38 @@ describe('reconstructConversation — Tier C mid-turn repair (4d)', () => {
 });
 
 describe('reconstructConversation — invariant violations (4f fallback trigger)', () => {
+  /**
+   * A whole record to open the window with, so the malformed line under test
+   * is not ALSO the first line.
+   *
+   * These three tests originally passed the bad line alone. That was brevity,
+   * not intent -- they are about malformed content routing to the fallback,
+   * not about position. Once the head became tolerant of a rotation fragment,
+   * a lone bad line reads as a window that is nothing but a fragment, and is
+   * skipped. Prefixing a valid record keeps each test asking its original
+   * question under the narrowed contract.
+   */
+  const OPENING_RECORD = JSON.stringify({ v: 1, type: 'user-message', id: 'm0', text: 'opens the window' });
+
   it('throws RestoreReconstructionError on an unparseable line', () => {
-    expect(() => reconstructConversation('{not valid json', SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(`${OPENING_RECORD}\n{not valid json`, SYSTEM_PROMPT)).toThrow(
+      RestoreReconstructionError,
+    );
   });
 
   it('throws RestoreReconstructionError on a schema-invalid known-type line', () => {
     // 'user-message' requires id + text; omit text.
     const badLine = JSON.stringify({ v: 1, type: 'user-message', id: 'm1' });
-    expect(() => reconstructConversation(badLine, SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(`${OPENING_RECORD}\n${badLine}`, SYSTEM_PROMPT)).toThrow(
+      RestoreReconstructionError,
+    );
   });
 
   it('throws RestoreReconstructionError on an unrecognized event type', () => {
     const badLine = JSON.stringify({ v: 1, type: 'not-a-real-event' });
-    expect(() => reconstructConversation(badLine, SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(`${OPENING_RECORD}\n${badLine}`, SYSTEM_PROMPT)).toThrow(
+      RestoreReconstructionError,
+    );
   });
 
   it('throws RestoreReconstructionError when a tool-call has no preceding assistant-message in the window', () => {
@@ -757,5 +776,86 @@ describe('findRestoredUsageSeed — the newest authoritative reading (#1419)', (
         { v: 1, type: 'context-compacted', source: 'auto', postTokens: 512 },
       ]),
     ).toEqual({ promptTokens: 512, estimated: true });
+  });
+});
+
+/**
+ * Rotation fragment tolerance: the head only, and the tail deliberately not.
+ *
+ * The live output file is cut at a byte offset when it rotates. The cut is
+ * newline-aligned now, but a file rotated before that existed -- and the
+ * documented fallback where no usable newline was available -- still hand the
+ * restore path a window whose first record is the tail of one whose head was
+ * archived. Before this tolerance every such window failed the whole
+ * reconstruction and fell to the destructive reset.
+ *
+ * The three polarities below are one contract, not three behaviours: the
+ * allowance is positional (the first record may be partial, because the cut
+ * can only ever truncate there) and NOT a general "skip one bad line".
+ */
+describe('reconstructConversation — rotation fragment at the head', () => {
+  const WHOLE: EmbeddedAgentStreamEvent[] = [
+    { v: 1, type: 'user-message', id: 'm1', text: 'first question' },
+    { v: 1, type: 'assistant-message', turnId: 'm1', text: 'first answer' },
+    { v: 1, type: 'user-message', id: 'm2', text: 'second question' },
+    { v: 1, type: 'assistant-message', turnId: 'm2', text: 'second answer' },
+  ];
+
+  it('skips a leading fragment and reconstructs the rest', () => {
+    // The realistic shape: a byte cut lands inside a record, so the window
+    // opens on that record's tail.
+    const whole = linesOf(WHOLE);
+    const fragment = 'ssistant-message","turnId":"m0","text":"answer whose head was archived"}';
+    const outcome = reconstructConversation(`${fragment}\n${whole}`, SYSTEM_PROMPT);
+
+    // Reach measured by mutation: reverting the head allowance (throwing on
+    // the first line as on any other) fails this with
+    // RestoreReconstructionError, and fails ONLY this among the three.
+    expect(outcome.conversation).toHaveLength(WHOLE.length + 1); // + system
+    expect(outcome.conversation.at(-1)).toMatchObject({ role: 'assistant', content: 'second answer' });
+  });
+
+  it('skips a leading fragment that is accidentally VALID JSON but not an event', () => {
+    // The case a JSON.parse-only tolerance would miss. A cut can land where the
+    // remaining bytes happen to close a nested object, yielding a well-formed
+    // value that is not an EmbeddedAgentStreamEvent -- so the allowance has to
+    // cover schema rejection too, not just the throw.
+    //
+    // Reach measured by mutation: narrowing the allowance to the JSON.parse
+    // catch only (leaving the schema branch strict) fails this test and passes
+    // the one above -- which is precisely why both exist.
+    const outcome = reconstructConversation(`{"args":{"path":"/tmp/x"}}\n${linesOf(WHOLE)}`, SYSTEM_PROMPT);
+    expect(outcome.conversation).toHaveLength(WHOLE.length + 1);
+  });
+
+  it('still throws on a broken line in the MIDDLE', () => {
+    // Not explained by the cut: the only writer appends whole lines, so damage
+    // after the first record means the file was harmed some other way.
+    const head = linesOf(WHOLE.slice(0, 2));
+    const tail = linesOf(WHOLE.slice(2));
+    expect(() => reconstructConversation(`${head}\n{"v":1,"type":"user-\n${tail}`, SYSTEM_PROMPT)).toThrow(
+      RestoreReconstructionError,
+    );
+  });
+
+  it('still throws on a broken TAIL', () => {
+    // The killed-mid-write signal. Tolerating this would turn every truncated
+    // file into a silent partial restore, which is the failure the strictness
+    // exists to prevent.
+    expect(() => reconstructConversation(`${linesOf(WHOLE)}\n{"v":1,"type":"assistant-mess`, SYSTEM_PROMPT)).toThrow(
+      RestoreReconstructionError,
+    );
+  });
+
+  it('consumes the allowance on the first record even when that record is fine', () => {
+    // The allowance is positional, not "one bad line anywhere". A clean first
+    // record spends it, so a broken SECOND record still throws.
+    //
+    // Without this, "skip the first line that fails" would silently repair a
+    // corrupt second record for every worker that has never rotated.
+    const [first, ...rest] = WHOLE;
+    expect(() =>
+      reconstructConversation(`${linesOf([first])}\n{"v":1,"typ\n${linesOf(rest)}`, SYSTEM_PROMPT),
+    ).toThrow(RestoreReconstructionError);
   });
 });
