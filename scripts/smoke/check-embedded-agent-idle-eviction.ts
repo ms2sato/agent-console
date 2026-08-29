@@ -415,11 +415,6 @@ async function main(): Promise<void> {
     console.log('==> polarity check (same instant)');
     expect(!aHarnessAlive, 'A: harness process is gone from /proc', `pid ${aHarness}`);
     expect(
-      aClaudeStillAlive.length === 0,
-      'A: every `claude` descendant is gone from /proc',
-      `still alive: ${JSON.stringify(aClaudeStillAlive)}`,
-    );
-    expect(
       bHarnessAlive,
       'B (negative control): harness process is still alive',
       `pid ${bHarness} -- if this fails, A being gone proves nothing about eviction being selective`,
@@ -432,6 +427,33 @@ async function main(): Promise<void> {
     expect(
       harnessPid(b.sessionId, b.workerId) !== null,
       'B (negative control): the server still holds a live subprocess for it',
+    );
+
+    // --- The `claude` child's death is asserted with a bounded settle window,
+    // and the latency is MEASURED rather than assumed away.
+    //
+    // The harness's exit is what the server observes, and the `claude`
+    // grandchild does not necessarily die in the same instant. A first run of
+    // this script asserted "gone" at the moment the harness's exit was
+    // observed and failed -- the child was still winding down. That is a
+    // meaningful distinction, not a nuisance: if the child NEVER died, the
+    // feature would reclaim the harness's ~26% and leave the ~74% it exists
+    // to reclaim running, and every assertion above would still pass. So the
+    // window is bounded and the observed latency is printed, because that
+    // latency IS the answer to "how quickly is the memory actually back".
+    const settleDeadline = Date.now() + 20_000;
+    const settleStart = Date.now();
+    let survivors = aClaudeBefore.filter((pid) => pidAlive(pid));
+    while (survivors.length > 0 && Date.now() < settleDeadline) {
+      await delay(250);
+      survivors = survivors.filter((pid) => pidAlive(pid));
+    }
+    const settleMs = Date.now() - settleStart;
+    console.log(`  A claude-descendant settle latency: ${settleMs} ms`);
+    expect(
+      survivors.length === 0,
+      `A: every \`claude\` descendant is gone from /proc (settled in ${settleMs} ms)`,
+      `still alive after 20 s: ${JSON.stringify(survivors)} -- this would mean eviction reclaims the harness but NOT the child, which is ~74% of the tree`,
     );
 
     // --- The exit was observed, and classified as an eviction.
