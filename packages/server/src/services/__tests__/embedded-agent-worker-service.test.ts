@@ -256,6 +256,8 @@ function setup(opts?: {
   readHistoryWithOffsetThrows?: boolean;
   /** Issue #1230: make the fake stdin sink's `end()` throw (simulates an already-exited child / broken pipe at teardown). */
   spawnEndThrows?: boolean;
+  /** Transcript Restore, R1: a `sdkSessionId` already persisted on the worker, as a re-activation would find. */
+  sdkSessionId?: string;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -265,6 +267,7 @@ function setup(opts?: {
     embeddedAgentId: 'def-1',
     deliverInitialPromptOnActivation: opts?.deliverInitialPromptOnActivation ?? false,
   });
+  if (opts?.sdkSessionId !== undefined) worker.sdkSessionId = opts.sdkSessionId;
   if (opts?.staleEpoch !== undefined) worker.epoch = opts.staleEpoch;
   if (opts?.staleOutputOffset !== undefined) worker.outputOffset = opts.staleOutputOffset;
   const session = buildInternalWorktreeSession([worker], {
@@ -697,9 +700,18 @@ describe('EmbeddedAgentWorkerService.activate', () => {
 });
 
 describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
+  // The trailing `state: 'idle'` is what a real completed turn always
+  // carries -- both engines emit it at the turn boundary. It was absent here
+  // while nothing read it; R1's interrupted-turn detector does read it, and
+  // without it this fixture describes a turn that was cut off rather than one
+  // that finished, which would (correctly) get a `turn-interrupted` marker
+  // appended and shift the offsets these tests assert on. Fixed here rather
+  // than by loosening the detector: the fixture was under-specified, the rule
+  // is not.
   const VALID_RESTORABLE_STREAM = [
     JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
     JSON.stringify({ v: 1, type: 'assistant-message', turnId: 't1', text: 'hello back' }),
+    JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
   ].join('\n');
 
   it('does NOT reset the output stream and forwards a matching restoredConversation when restore succeeds', async () => {
@@ -1815,5 +1827,311 @@ describe('EmbeddedMessageDeliveryError (Issue #1260 PR-2)', () => {
     expect(new EmbeddedMessageDeliveryError('failed to write to subprocess stdin', 'WRITE_FAILED').code).toBe(
       'WRITE_FAILED',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transcript Restore, R1 (#1410)
+// ---------------------------------------------------------------------------
+
+const SDK_DEFINITION: EmbeddedAgentDefinition = {
+  id: 'def-sdk',
+  name: 'Claude',
+  engine: 'claude-sdk',
+  provider: { model: 'claude-sonnet-5' },
+  isBuiltIn: true,
+  createdBy: 'system',
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+/** A persisted stream describing one completed turn -- nothing interrupted. */
+const COMPLETED_TURN_STREAM = [
+  JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
+  JSON.stringify({ v: 1, type: 'assistant-message', turnId: 'm1', text: 'hello back' }),
+  JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
+].join('\n');
+
+describe('EmbeddedAgentWorkerService — sending `resume` in the init command (R1)', () => {
+  it('sends the persisted sdkSessionId on a re-activation of a claude-sdk worker', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.resume).toEqual({ sdkSessionId: 'sess-prev' });
+  });
+
+  it('sends no resume on a first-ever activation, even if an id is somehow present', async () => {
+    // `everActivated: false` is the structural gate. Reading a stale id on a
+    // first-ever activation would be a bug wearing a recovery's clothes.
+    const h = setup({ definition: SDK_DEFINITION, everActivated: false, sdkSessionId: 'sess-stale' });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('resume' in init).toBe(false);
+  });
+
+  it('sends no resume when the worker has no persisted sdkSessionId', async () => {
+    // A LEGITIMATE state, not a fault: `sdk-session-id` does not arrive until
+    // the first turn, so a worker activated but never spoken to has none.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('resume' in init).toBe(false);
+  });
+
+  it('never sends a resume on an openai-api worker, even with an id persisted', async () => {
+    // R2 owns that engine's restore path; this one must not touch it.
+    const h = setup({
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.engine).toBe('openai-api');
+    expect('resume' in init).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — restore-info.sdkResumed (R1)', () => {
+  it('reports sdkResumed true for a claude-sdk re-activation that asked to resume', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(true);
+  });
+
+  it('reports sdkResumed false for a claude-sdk re-activation with no id to resume', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(false);
+  });
+
+  it('OMITS sdkResumed entirely for an openai-api worker', async () => {
+    // The three-valued contract's whole point: absent means "this engine has
+    // no such concept", and `false` would read as a failure that never
+    // happened -- putting a permanent divergence notice on every worker of
+    // the other engine.
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const info = h.service.getRestoreInfo(h.workerId);
+    expect(info).not.toBeNull();
+    expect('sdkResumed' in (info as object)).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () => {
+  function sdkResumeFailed(reason: 'not-found' | 'refused', id = 'sess-prev'): string {
+    return `${JSON.stringify({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: id, reason })}\n`;
+  }
+
+  it('clears the persisted sdkSessionId so the next activation cannot retry it', async () => {
+    // "There is never a second resume attempt" is enforced here, by removing
+    // the id, rather than by a later heuristic reconsidering it.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await waitFor(() => h.worker.sdkSessionId === null);
+
+    expect(h.worker.sdkSessionId).toBeNull();
+  });
+
+  it('corrects restore-info to sdkResumed false', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(true);
+
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(false);
+  });
+
+  it('does NOT clobber a fresh session id that already replaced the failed one', async () => {
+    // The subprocess starts fresh on a `not-found` and reports the new
+    // session's id. Clearing unconditionally would throw that live session
+    // away and guarantee the NEXT activation is fresh too.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    h.fake.pushStdout('{"v":1,"type":"sdk-session-id","sdkSessionId":"sess-fresh"}\n');
+    await waitFor(() => h.worker.sdkSessionId === 'sess-fresh');
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(h.worker.sdkSessionId).toBe('sess-fresh');
+  });
+
+  it('does NOT replace the incarnation on `not-found` (nothing is broken)', async () => {
+    // The pre-flight caught it before a resume was attempted, so the
+    // subprocess is healthy and mid-activation. Replacing it would throw away
+    // a working incarnation.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    const spawnsBefore = h.fake.captured.length;
+
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await waitFor(() => h.worker.sdkSessionId === null);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(h.fake.captured.length).toBe(spawnsBefore);
+  });
+
+  it('replaces the incarnation on `refused`, because the SDK query is dead but the harness is not', async () => {
+    // This is #1414's exact shape: a dead query inside a live harness
+    // produces no exit the server can observe, so the worker would be
+    // permanently wedged. The replacement goes through `deactivate`, a path
+    // the exit observer covers.
+    // Short grace/SIGTERM windows: the fake child never exits on its own, so
+    // `deactivate` walks its full escalation before the re-activation runs.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    // The fake child only exits when told to; deactivate escalates to a
+    // signal, so that is where it exits.
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
+    const spawnsBefore = h.fake.captured.length;
+
+    h.fake.pushStdout(sdkResumeFailed('refused'));
+    await waitFor(() => h.fake.captured.length > spawnsBefore, 3000);
+
+    expect(h.fake.captured.length).toBe(spawnsBefore + 1);
+    // The replacement must not carry the id that just failed.
+    const reinit = JSON.parse(h.fake.stdinWrites[h.fake.stdinWrites.length - 1]);
+    expect('resume' in reinit).toBe(false);
+  });
+
+  it('runs the recovery once even when the refusal is reported twice', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+      shutdownGraceMs: 10,
+      sigtermTimeoutMs: 10,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    h.fake.setOnKill(() => h.fake.simulateExit(137));
+    const spawnsBefore = h.fake.captured.length;
+
+    h.fake.pushStdout(sdkResumeFailed('refused'));
+    h.fake.pushStdout(sdkResumeFailed('refused'));
+    await waitFor(() => h.fake.captured.length > spawnsBefore, 3000);
+    await new Promise((r) => setTimeout(r, 60));
+
+    // A second recovery would deactivate the replacement this one just made.
+    expect(h.fake.captured.length).toBe(spawnsBefore + 1);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — turn-interrupted marker (R1, local half of #1273)', () => {
+  const INTERRUPTED_STREAM = [
+    JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hi there' }),
+    JSON.stringify({ v: 1, type: 'assistant-message', turnId: 'm1', text: 'hello back' }),
+    JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
+    JSON.stringify({ v: 1, type: 'user-message', id: 'm2', text: 'and this one died' }),
+    JSON.stringify({ v: 1, type: 'state', state: 'active' }),
+  ].join('\n');
+
+  it('appends a turn-interrupted row for the turn the previous incarnation never answered', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: INTERRUPTED_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
+    const marker = appended.find((line) => line.includes('"turn-interrupted"'));
+    expect(marker).toBeDefined();
+    expect(JSON.parse(marker as string)).toEqual({ v: 1, type: 'turn-interrupted', turnId: 'm2' });
+  });
+
+  it('appends nothing when the last turn completed', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: COMPLETED_TURN_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
+    expect(appended.some((line) => line.includes('"turn-interrupted"'))).toBe(false);
+  });
+
+  it('appends nothing on a first-ever activation', async () => {
+    // Vacuous by construction: there is no prior stream to have been
+    // interrupted, and the restore branch that detects it never runs.
+    const h = setup({ everActivated: false });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
+    expect(appended.some((line) => line.includes('"turn-interrupted"'))).toBe(false);
+  });
+
+  it('fires for both engines', async () => {
+    // Detection reads the persisted stream, so it is engine-independent by
+    // construction -- asserted rather than assumed, since the rest of R1 is
+    // claude-sdk-only and a reader could reasonably expect this to be too.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: INTERRUPTED_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const appended = h.bufferOutput.mock.calls.map((c) => String(c[2]));
+    expect(appended.some((line) => line.includes('"turn-interrupted"'))).toBe(true);
   });
 });

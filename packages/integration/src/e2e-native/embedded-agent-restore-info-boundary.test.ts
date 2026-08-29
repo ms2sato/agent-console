@@ -305,6 +305,13 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       expect(parsed.output.repairedToolCallIds).toEqual([]);
       expect(typeof parsed.output.epoch).toBe('number');
       expect(parsed.output.completed).toBe(false);
+      // R1: `sdkResumed` must be ABSENT for this engine, verified on the real
+      // wire payload rather than on the service's in-memory object. Absence is
+      // a load-bearing wire state -- the client reads `=== false`, so a field
+      // that leaked in as `false` here would put a permanent divergence notice
+      // on every `openai-api` worker.
+      expect('sdkResumed' in wirePayload).toBe(false);
+      expect('sdkResumed' in parsed.output).toBe(false);
 
       // --- Bootstrap re-delivery equivalent: a SECOND lookup (as a second WS
       // connection's onOpen would perform) returns the SAME restorable shape,

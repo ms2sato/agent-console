@@ -208,6 +208,15 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
     provider: v.strictObject({
       model: v.pipe(v.string(), v.minLength(1)),
     }),
+    // Transcript Restore, R1. On the claude-sdk arm only -- the other
+    // engine has no concept of a resume, so an `openai-api` init carrying
+    // one is not representable. See the type's doc comment for where the
+    // id may (and may not) come from.
+    resume: v.optional(
+      v.strictObject({
+        sdkSessionId: v.pipe(v.string(), v.minLength(1)),
+      }),
+    ),
   }),
 ]);
 
@@ -306,6 +315,14 @@ export const EmbeddedAgentEventSchema = v.union([
     type: v.literal('sdk-session-id'),
     sdkSessionId: v.string(),
   }),
+  // Transcript Restore, R1. The machine-readable half of a refused resume;
+  // the `turn-error` emitted alongside it is the human-readable half.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('sdk-resume-failed'),
+    requestedSdkSessionId: v.pipe(v.string(), v.minLength(1)),
+    reason: v.picklist(['not-found', 'refused']),
+  }),
 ]);
 
 /**
@@ -328,6 +345,13 @@ export const EmbeddedAgentServerEventSchema = v.union([
     text: v.string(),
     clientMessageId: v.optional(v.string()),
     notification: v.optional(EmbeddedAgentServerNotificationSchema),
+  }),
+  // Transcript Restore, R1 (the local half of #1273). Server-authored --
+  // never a synthesized `turn-error`. See the type's doc comment.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('turn-interrupted'),
+    turnId: v.pipe(v.string(), v.minLength(1)),
   }),
   v.strictObject({
     v: v.literal(1),

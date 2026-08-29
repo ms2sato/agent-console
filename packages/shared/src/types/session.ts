@@ -228,7 +228,20 @@ export type WorkerServerMessage =
   // docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
   // `epoch` is a cross-incarnation staleness guard: the client feeds it
   // through the same acceptEpoch gate `history`/`output` already use.
-  | { type: 'restore-info'; epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean };
+  // `sdkResumed` (R1): whether the `claude-sdk` engine's SDK session
+  // actually resumed. Set ONLY by that engine -- `openai-api` omits it,
+  // because it has no such concept. THREE-VALUED: absent means "this engine
+  // does not have the concept", `false` means "a resume was attempted and
+  // did not take". Reading absence as `false` collapses the two, so
+  // consumers test `=== false` explicitly and never `!sdkResumed`.
+  | {
+      type: 'restore-info';
+      epoch: number;
+      messageCount: number;
+      repairedToolCallIds: string[];
+      completed: boolean;
+      sdkResumed?: boolean;
+    };
 
 export interface WorkerActivityInfo {
   sessionId: string;

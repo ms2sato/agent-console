@@ -223,6 +223,15 @@ export interface SdkEngineDeps {
    * ship as a live toggle rather than an at-next-activation one.
    */
   autoCompaction: boolean;
+  /**
+   * Transcript Restore, R1: the SDK session id to resume, or absent for a
+   * fresh session. Comes from `init.resume.sdkSessionId` and NOWHERE else
+   * -- the re-scoped init pin (docs/design/embedded-agent-sdk-engine.md
+   * Appendix A) forbids this engine deriving a resume id of its own, so
+   * there is deliberately no `listSessions()` call, no transcript scan, and
+   * no memory of an earlier query's id anywhere in this file.
+   */
+  resume?: string;
   /** DI seam for tests; defaults to the real SDK `query` function. */
   queryFn?: typeof query;
   /** DI seam for tests: the H2 retry-with-settle delay. Defaults to a real setTimeout-based sleep. */
@@ -247,6 +256,19 @@ export class SdkEngine implements Engine {
   private iterationText = '';
   private currentTurnDeferred: { resolve: () => void } | null = null;
   private dead = false;
+
+  /**
+   * Transcript Restore, R1: has this query ever reported a `system:init`?
+   *
+   * The whole of the refused-resume detector (PS6). A query that was asked
+   * to resume and reaches a terminal error without this ever having been
+   * set did not merely fail a turn -- the session never started, because
+   * the SDK could not find what it was asked to resume. Set once and never
+   * cleared: one query per engine, so "ever" is the right tense.
+   */
+  private sawSystemInit = false;
+  /** R1: a refused resume has already been reported; report it once. */
+  private resumeFailureReported = false;
 
   /** S2: previous poll's usable totalTokens, for the PS1 material-drop
    * tripwire. `null` = no baseline yet. */
@@ -375,6 +397,11 @@ export class SdkEngine implements Engine {
         ],
       },
       spawnClaudeCodeProcess,
+      // Transcript Restore, R1: present iff the deps carried one. The
+      // re-scoped Phase 1 pin (Appendix A's init row) is exactly this
+      // biconditional -- `resume` appears in the options when it came from
+      // deps, and never otherwise.
+      ...(this.deps.resume !== undefined ? { resume: this.deps.resume } : {}),
       ...(systemPromptAppend !== undefined
         ? { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: systemPromptAppend } }
         : {}),
@@ -482,6 +509,13 @@ export class SdkEngine implements Engine {
       // `dispose()` path.
       this.handleFatal('SDK message stream ended unexpectedly');
     } catch (err) {
+      // R1: the refused-resume path reaches here too -- the SDK's iterator
+      // throws right after the error `result`. Reporting is idempotent, so
+      // whichever arrives first wins and the other is a no-op; this arm
+      // exists because a resume can be refused with no turn in flight at
+      // all (nothing pushed a prompt), in which case there is no `result`
+      // for `handleResult` to see.
+      this.reportRefusedResume();
       this.handleFatal(`SDK transport error: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -530,6 +564,10 @@ export class SdkEngine implements Engine {
    * kill the session -- not a design gap.
    */
   private handleSystemInit(message: SystemInitMessage): void {
+    // R1: the positive half of the resume detector. Recorded BEFORE the
+    // emit so no early return below can leave it unset on a session that
+    // demonstrably started.
+    this.sawSystemInit = true;
     this.deps.emit({ v: 1, type: 'sdk-session-id', sdkSessionId: message.session_id });
 
     // Account-level MCP connectors are NOT governed by this containment
@@ -728,7 +766,16 @@ export class SdkEngine implements Engine {
       return;
     }
     if (message.subtype !== 'success') {
-      this.deps.emit({ v: 1, type: 'turn-error', turnId, message: this.buildTurnErrorMessage(message) });
+      // R1: a refused resume surfaces here first, as a non-success result,
+      // and is distinguished from every other non-success result
+      // structurally -- see `reportRefusedResume`.
+      const refusedResume = this.reportRefusedResume();
+      this.deps.emit({
+        v: 1,
+        type: 'turn-error',
+        turnId,
+        message: refusedResume ?? this.buildTurnErrorMessage(message),
+      });
     }
     // Compaction: a `Compact` booked during this turn runs as PART of it --
     // the turn is not over until the injected `/compact` reaches its own
@@ -945,6 +992,39 @@ export class SdkEngine implements Engine {
    * resolves the caller's promise; the `fatal` event is what tells the
    * client something is actually wrong). Idempotent.
    */
+  /**
+   * Transcript Restore, R1: report a resume the SDK refused, if that is what
+   * just happened. Returns the human-readable turn-error message when it
+   * fired, or `null` when this is an ordinary failure.
+   *
+   * **The condition is causal, not textual.** `resume` was requested and no
+   * `system:init` has EVER arrived on this query, so the session never
+   * started. Neither of the two obvious alternatives works: the result
+   * subtype is `error_during_execution`, which is also what an ordinary
+   * `interrupt()` produces, and the SDK's error wording ("No conversation
+   * found with session ID: ...") is undocumented CLI text free to change on
+   * any bump. What separates a cancel from a refused resume is that a
+   * cancel always has a `system:init` behind it -- a turn was running -- and
+   * a refused resume never does.
+   *
+   * Rests on PS6 (docs/design/embedded-agent-sdk-engine.md §5), which is on
+   * the SDK-bump re-verification list: if a future SDK emits a `system:init`
+   * before failing a resume, this returns `null` for every refused resume
+   * and the failure becomes silent. That is the dangerous direction, which
+   * is why the premise is named rather than assumed.
+   *
+   * Emits at most once. The failure is observable from two places (the error
+   * `result`, and the throw the iterator raises immediately after), and the
+   * server acts on the event, so a second copy would drive a second recovery.
+   */
+  private reportRefusedResume(): string | null {
+    const requested = this.deps.resume;
+    if (requested === undefined || this.sawSystemInit || this.resumeFailureReported) return null;
+    this.resumeFailureReported = true;
+    this.deps.emit({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: requested, reason: 'refused' });
+    return 'Could not resume the previous session; this worker is continuing with a fresh one. The conversation above is a record of what was said, not something this agent now remembers. Please send your message again.';
+  }
+
   private handleFatal(message: string): void {
     if (this.dead) return;
     this.dead = true;

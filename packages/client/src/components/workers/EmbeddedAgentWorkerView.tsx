@@ -123,6 +123,7 @@ export function EmbeddedAgentWorkerView({
     contextUsage,
     restoring,
     restoredMessageCount,
+    sdkResumed,
     sendUserMessage,
     cancel,
     restart,
@@ -176,10 +177,10 @@ export function EmbeddedAgentWorkerView({
 
   const isTurnActive = activityState === 'active';
 
-  // `claude-sdk` engine workers do not reconstruct their live SDK session
-  // from the persisted transcript on revival (v1 limitation, see
-  // docs/design/embedded-agent-worker.md) -- the generic restore banner
-  // below is only accurate for `openai-api` engine workers. `engine` is
+  // `claude-sdk` engine workers restore their live SDK session by resuming
+  // it (R1, see docs/design/embedded-agent-sdk-engine.md §4.3), not by being
+  // handed the reconstruction the generic banner below describes -- so that
+  // banner is still only accurate for `openai-api` engine workers. `engine` is
   // genuinely three-valued here ('openai-api' / 'claude-sdk' / unresolved),
   // where "unresolved" covers both the registry still loading and a
   // dangling/unmatched embeddedAgentId -- so the generic banner uses an
@@ -195,6 +196,15 @@ export function EmbeddedAgentWorkerView({
   // transcript" signal, decoupled from the transient restoring state.
   const hadPriorTranscriptThisIncarnation =
     restoredMessageCount !== null && restoredMessageCount > 0;
+  // R1: `sdkResumed` is THREE-valued -- `undefined` means "this engine has
+  // no such concept" (every `openai-api` worker, and a `claude-sdk` worker
+  // before its first restore-info), `false` means "a resume was attempted or
+  // intended and did not take". Only the latter may show the notice, so this
+  // is an explicit `=== false`, never `!sdkResumed`: the negation would
+  // collapse the two and put a permanent false warning on every
+  // `openai-api` worker. Same trap as the engine discriminant above, which
+  // is why both are written positively.
+  const sdkResumeFailed = sdkResumed === false;
 
   const displayItems = useMemo(() => buildDisplayItems(entries), [entries]);
 
@@ -219,15 +229,21 @@ export function EmbeddedAgentWorkerView({
         </div>
       )}
 
-      {/* SDK-engine restore-divergence notice (#1335 Phase 3): `claude-sdk`
-          engine workers do NOT carry conversation context across a restart
-          -- only the transcript display is restored, the live SDK session
-          starts fresh. Shown only when this incarnation actually restored a
-          non-empty prior transcript (nothing to diverge from otherwise). */}
-      {isSdkEngine && hadPriorTranscriptThisIncarnation && (
+      {/* SDK-engine restore-divergence notice. POLARITY INVERTED BY R1
+          (#1410): this was shown on EVERY `claude-sdk` restore, as a standing
+          confession that the live session started fresh. R1 resumes the
+          session, so a successful restore now shows nothing -- the
+          conversation genuinely did continue -- and this survives only as the
+          fallback confession, for the case where a resume was attempted and
+          did not take. Porting the old unconditional rule forward would put a
+          permanent false warning on every successful resume; see
+          docs/design/embedded-agent-sdk-engine.md §4.3's polarity table and
+          its correction trail. The wording states what is true and promises
+          no recovery -- the same prohibition the compaction marker carries. */}
+      {isSdkEngine && hadPriorTranscriptThisIncarnation && sdkResumeFailed && (
         <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
-          This worker's conversation context was not carried over the restart — the messages above
-          are history, not something the agent currently remembers. This turn starts fresh.
+          This worker's earlier conversation could not be carried over — the messages above are a
+          record of what was said, not something the agent currently remembers. This turn starts fresh.
         </div>
       )}
 
@@ -666,6 +682,16 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
               {entry.distillation}
             </div>
           </details>
+        </div>
+      );
+    case 'turn-interrupted':
+      // R1: the process went away before this turn was answered. A distinct
+      // row from `turn-error` on purpose -- nothing reported an error, so
+      // this is styled as a neutral marker rather than a failure, and its
+      // wording says only what the server observed.
+      return (
+        <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2 text-xs">
+          — This turn was interrupted before it finished, and was not answered —
         </div>
       );
     case 'restore-repair':

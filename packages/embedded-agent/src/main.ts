@@ -19,6 +19,7 @@ import { McpToolClient, type ToolExecutor } from './mcp.js';
 import { OpenAIChatAdapter } from './providers/openai-chat-adapter.js';
 import type { ProviderAdapter, ToolDefinition } from './providers/types.js';
 import { SdkEngine, type SdkEngineDeps } from './sdk-engine.js';
+import { sdkSessionExists } from './sdk-session-preflight.js';
 import {
   assembleSystemPrompt,
   composeSdkSystemPromptAppend,
@@ -76,6 +77,9 @@ export interface LoopFactories {
    * factory that throws without needing to reach through to `SdkEngine`'s
    * own `queryFn` seam. Defaults to `(deps) => new SdkEngine(deps)`. */
   createSdkEngine(deps: SdkEngineDeps): Engine;
+  /** DI seam for the R1 resume pre-flight, which otherwise reads the real
+   * `~/.claude` of whoever is running. Defaults to `sdkSessionExists`. */
+  sdkSessionExists(sdkSessionId: string, cwd: string): Promise<boolean>;
 }
 
 type InitCommand = Extract<v.InferOutput<typeof EmbeddedAgentCommandSchema>, { type: 'init' }>;
@@ -288,9 +292,13 @@ async function initializeLoop(
   // claude-sdk engine talks to MCP and builtin tools entirely differently
   // from the native loop -- it does NOT go through McpToolClient /
   // resolveEnabledBuiltinTools / restore-conversation reconstruction.
-  // Transcript Restore is out of scope for this engine in v1 (S7: "fresh
-  // session on revival"); `init.restoredConversation`, if somehow present on
-  // a claude-sdk init command, is intentionally ignored/unused here.
+  // Transcript Restore reaches this engine as `init.resume` (R1), NOT as
+  // `restoredConversation`: the SDK resumes its own session state rather
+  // than being handed a reconstruction. `init.restoredConversation`, if
+  // present on a claude-sdk init command, is still intentionally
+  // ignored/unused here -- the server computes it for the UI's restore-info
+  // on both engines, and feeding it to the SDK as well would make two
+  // writers of one conversation.
   // SdkEngine's own constructor emits `ready` (via the injected `emit`
   // callback below) synchronously, immediately after starting its
   // background stream consumer -- NEVER gated on the SDK's own system:init
@@ -314,6 +322,24 @@ async function initializeLoop(
     const optInSegments = await factories.loadOptInInstructions(init.context.cwd, init.instructions);
     const systemPromptAppend = composeSdkSystemPromptAppend(optInSegments, init.systemPrompt);
 
+    // Transcript Restore, R1: pre-flight the resume id before constructing.
+    // A resume the SDK will refuse does not fail at construction -- it fails
+    // once a turn is in flight, and takes the user's first message with it.
+    // Checking here turns that into a filesystem read (see
+    // sdk-session-preflight.ts for why this runs in the subprocess rather
+    // than on the server). A miss starts fresh and says so; the resume is
+    // never retried.
+    let resume: string | undefined;
+    if (init.resume !== undefined) {
+      const requested = init.resume.sdkSessionId;
+      if (await factories.sdkSessionExists(requested, init.context.cwd)) {
+        resume = requested;
+      } else {
+        io.writeEvent({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: requested, reason: 'not-found' });
+        io.logError(`SDK session ${requested} not found at activation; starting a fresh session`);
+      }
+    }
+
     return factories.createSdkEngine({
       cwd: init.context.cwd,
       model: init.provider.model,
@@ -322,6 +348,11 @@ async function initializeLoop(
       mcp: init.mcp,
       emit: (event) => io.writeEvent(event),
       autoCompaction: init.compaction.auto,
+      // Transcript Restore, R1: the ONLY path by which a resume id reaches
+      // the engine. Absent means a fresh session -- a first-ever
+      // activation, a worker with no persisted id, or an id the pre-flight
+      // above could not find.
+      ...(resume !== undefined ? { resume } : {}),
     });
   } catch (err) {
     const message = `SDK engine construction failed: ${err instanceof Error ? err.message : String(err)}`;
@@ -374,6 +405,7 @@ if (import.meta.main) {
     loadOptInInstructions,
     loadCompactionPrompt,
     createSdkEngine: (deps) => new SdkEngine(deps),
+    sdkSessionExists,
   };
   runLoop(io, factories)
     .then((code) => process.exit(code))

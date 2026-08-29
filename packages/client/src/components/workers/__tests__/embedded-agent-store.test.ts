@@ -43,8 +43,19 @@ function restoreInfoMessage(
   messageCount: number,
   repairedToolCallIds: string[] = [],
   completed = false,
+  // R1: OMITTED by default, not defaulted to a boolean -- absence is a real
+  // wire state (every `openai-api` worker), and a helper that quietly
+  // supplied `false` would make it untestable.
+  sdkResumed?: boolean,
 ) {
-  return JSON.stringify({ type: 'restore-info', epoch, messageCount, repairedToolCallIds, completed });
+  return JSON.stringify({
+    type: 'restore-info',
+    epoch,
+    messageCount,
+    repairedToolCallIds,
+    completed,
+    ...(sdkResumed !== undefined ? { sdkResumed } : {}),
+  });
 }
 
 function ndjson(...events: Record<string, unknown>[]): string {
@@ -1442,3 +1453,145 @@ function _typeCheck(entry: EmbeddedAgentChatEntry): string {
   return entry.kind;
 }
 void _typeCheck;
+
+describe('embedded-agent-store — Transcript Restore R1 (#1410)', () => {
+  // Same fixture wiring as the main suite above (mock socket + a location
+  // shim the store reads when building its URL), repeated rather than shared
+  // because this is a sibling top-level describe.
+  let restoreWebSocket2: () => void;
+  let originalLocation2: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    _resetEmbeddedAgentWorkers();
+    restoreWebSocket2 = installMockWebSocket();
+    originalLocation2 = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    _resetEmbeddedAgentWorkers();
+    restoreWebSocket2();
+    if (originalLocation2) {
+      Object.defineProperty(window, 'location', originalLocation2);
+    }
+  });
+
+  describe('sdkResumed is carried through three-valued', () => {
+    it('is undefined before any restore-info arrives', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r1', 'w1');
+      MockWebSocket.getLastInstance()!.simulateOpen();
+      expect(instance.getSnapshot().sdkResumed).toBeUndefined();
+    });
+
+    it('stays undefined when the message omits the field (the openai-api case)', () => {
+      // The load-bearing one: normalising absence to `false` anywhere along
+      // this path would put a permanent divergence notice on every worker of
+      // the other engine.
+      const instance = getOrCreateEmbeddedAgentWorker('r2', 'w2');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], true));
+      expect(instance.getSnapshot().sdkResumed).toBeUndefined();
+    });
+
+    it('is true when the message says true', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r3', 'w3');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], true, true));
+      expect(instance.getSnapshot().sdkResumed).toBe(true);
+    });
+
+    it('is false when the message says false', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r4', 'w4');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], true, false));
+      expect(instance.getSnapshot().sdkResumed).toBe(false);
+    });
+
+    it('follows the server correcting true down to false on a re-push', () => {
+      // The residual path: the server reported an intended resume optimistically
+      // at activation, then the subprocess said it did not take.
+      const instance = getOrCreateEmbeddedAgentWorker('r5', 'w5');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], false, true));
+      expect(instance.getSnapshot().sdkResumed).toBe(true);
+
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], false, false));
+      expect(instance.getSnapshot().sdkResumed).toBe(false);
+    });
+
+    it('resets to undefined on a newer epoch', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('r6', 'w6');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(restoreInfoMessage(1, 3, [], true, false));
+      expect(instance.getSnapshot().sdkResumed).toBe(false);
+
+      // A newer epoch is a different incarnation; carrying the old answer
+      // forward would describe a restore that did not happen.
+      ws!.simulateMessage(restoreInfoMessage(2, 0, [], true));
+      expect(instance.getSnapshot().sdkResumed).toBeUndefined();
+    });
+  });
+
+  describe('turn-interrupted', () => {
+    it('folds a turn-interrupted event into a marker row', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('t1', 'w1');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(
+        outputMessage(ndjson({ v: 1, type: 'turn-interrupted', turnId: 'u9' }), 100, 1),
+      );
+
+      const entries = instance.getSnapshot().entries;
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({ kind: 'turn-interrupted', turnId: 'u9' });
+    });
+
+    it('keys the row by turnId so a replayed stream does not duplicate it', () => {
+      // The whole stream is replayed on every reconnect; a counter-based key
+      // would render one marker per replay.
+      const instance = getOrCreateEmbeddedAgentWorker('t2', 'w2');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(outputMessage(ndjson({ v: 1, type: 'turn-interrupted', turnId: 'u9' }), 100, 1));
+      const [first] = instance.getSnapshot().entries;
+      expect(first.key).toBe('turn-interrupted-u9');
+    });
+
+    it('is a distinct kind from turn-error', () => {
+      // Nothing errored -- a process went away. Collapsing them would render
+      // an engine-reported failure the engine never reported.
+      const instance = getOrCreateEmbeddedAgentWorker('t3', 'w3');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(outputMessage(ndjson({ v: 1, type: 'turn-interrupted', turnId: 'u9' }), 100, 1));
+      expect(instance.getSnapshot().entries.some((e) => e.kind === 'turn-error')).toBe(false);
+    });
+  });
+
+  describe('sdk-resume-failed', () => {
+    it('produces no chat row (it is server bookkeeping, not something the user reads)', () => {
+      // What the user sees about a refused resume is the engine's own
+      // turn-error plus the notice; this event must not add a second voice.
+      const instance = getOrCreateEmbeddedAgentWorker('s1', 'w1');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+      ws!.simulateMessage(
+        outputMessage(
+          ndjson({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: 'sess-gone', reason: 'refused' }),
+          120,
+          1,
+        ),
+      );
+      expect(instance.getSnapshot().entries).toHaveLength(0);
+    });
+  });
+});

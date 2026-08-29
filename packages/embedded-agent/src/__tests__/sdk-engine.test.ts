@@ -414,7 +414,12 @@ describe('SdkEngine — construction seam: the query() Options battery (Pin 1(a)
     // server. Asserted by presence rather than deep equality: the value is a
     // live server instance, not a config literal.
     expect(Object.keys(options.mcpServers ?? {}).sort()).toEqual(['agent-console', 'console']);
-    // No `resume` key at all -- not merely `undefined`.
+    // R1: the re-scoped Phase 1 pin. `resume` is absent because these deps
+    // carried none -- NOT because the engine cannot pass one. The pin's
+    // other half (present exactly when deps supplied one) is asserted in the
+    // "re-scoped no-resume pin" block below; the two together are the
+    // biconditional, and this half alone would pass against an engine with
+    // no resume support at all.
     expect('resume' in options).toBe(false);
     // No apiKey-derived value anywhere in the constructed options: the
     // claude-sdk init arm's `provider` never carries one (enforced by the
@@ -1849,5 +1854,144 @@ describe('SdkEngine — compaction: the Compact tool', () => {
     // the ordinary tail exactly once. A `/compact` the SDK declines is still
     // a terminal result, which is why no timeout guard is needed here.
     expect(eventsOfType(events, 'state').filter((e) => e.state === 'idle')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transcript Restore, R1 (#1410)
+// ---------------------------------------------------------------------------
+
+describe('SdkEngine — the re-scoped no-resume pin (R1)', () => {
+  // Appendix A's init row: `resume` appears in query() options IF AND ONLY IF
+  // it came from deps. The old pin asserted only "never present", which would
+  // pass against an engine that had no resume support at all -- exactly the
+  // state R1 changes. Both directions are asserted so neither a lost resume
+  // nor an invented one can slip through.
+  it('passes `resume` through to query() options when deps carry one', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn, resume: 'sess-abc' }));
+    expect(captured.options?.resume).toBe('sess-abc');
+  });
+
+  it('omits the `resume` key entirely when deps carry none', () => {
+    const { queryFn, captured } = makeFakeQuery([]);
+    new SdkEngine(baseDeps({ queryFn }));
+    // Absent, not `undefined`: a present-but-undefined key is a different
+    // thing to hand an SDK than no key at all.
+    expect('resume' in (captured.options as object)).toBe(false);
+  });
+
+  it('never derives a resume id of its own from the SDK session it observes', async () => {
+    // The other half of the re-scoped pin: the engine has no source for a
+    // resume id except deps. Observing a `system:init` that reports a session
+    // id must not turn into a `resume` on the options it built.
+    const { queryFn, captured } = makeFakeQuery([systemInit({ sessionId: 'observed-session' })]);
+    new SdkEngine(baseDeps({ queryFn }));
+    await flush();
+    expect('resume' in (captured.options as object)).toBe(false);
+    expect(stringifyOptionsForContainment(captured.options)).not.toContain('observed-session');
+  });
+});
+
+describe('SdkEngine — a resume the SDK refuses (R1, PS6)', () => {
+  // The detector is structural: resume was requested AND no `system:init` ever
+  // arrived. Measured shape (design doc §5, PS6): no system:init, one
+  // `error_during_execution` result, then the iterator throws.
+  function refusedResumeScript(): () => AsyncGenerator<SDKMessage, void> {
+    return async function* () {
+      yield resultError('error_during_execution', []);
+      throw new Error('Claude Code returned an error result: No conversation found with session ID: sess-gone');
+    };
+  }
+
+  it('emits sdk-resume-failed and a resume-specific turn-error when no system:init ever arrived', async () => {
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(refusedResumeScript());
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, resume: 'sess-gone', emit: (e) => events.push(e) }),
+    );
+    void engine.runTurn('t1', 'hello');
+    await flush();
+
+    const failures = eventsOfType(events, 'sdk-resume-failed');
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ requestedSdkSessionId: 'sess-gone', reason: 'refused' });
+
+    // The human-readable half names the cause and asks for a resend, and
+    // promises no recovery (the same prohibition the compaction marker
+    // carries).
+    const turnErrors = eventsOfType(events, 'turn-error');
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).toContain('Could not resume the previous session');
+    expect(turnErrors[0].message).toContain('send your message again');
+  });
+
+  it('does NOT report a refused resume when a system:init was seen first', async () => {
+    // The discriminating case, and the reason the detector cannot key on the
+    // result subtype: an ordinary `interrupt()` produces the SAME
+    // `error_during_execution` subtype. What separates them is that a cancel
+    // always has a system:init behind it -- a turn was running.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery([systemInit(), resultError('error_during_execution', ['aborted'])]);
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, resume: 'sess-live', emit: (e) => events.push(e) }),
+    );
+    void engine.runTurn('t1', 'hello');
+    await flush();
+
+    expect(eventsOfType(events, 'sdk-resume-failed')).toHaveLength(0);
+    // The turn still errors -- it just errors as itself, with the SDK's own
+    // message rather than the resume wording.
+    const turnErrors = eventsOfType(events, 'turn-error');
+    expect(turnErrors).toHaveLength(1);
+    expect(turnErrors[0].message).not.toContain('Could not resume');
+  });
+
+  it('does NOT report a refused resume when no resume was requested', async () => {
+    // A fresh session that errors before system:init is a failure, but not
+    // THIS failure -- there was nothing to resume.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(refusedResumeScript());
+    const engine = new SdkEngine(baseDeps({ queryFn, emit: (e) => events.push(e) }));
+    void engine.runTurn('t1', 'hello');
+    await flush();
+
+    expect(eventsOfType(events, 'sdk-resume-failed')).toHaveLength(0);
+    const turnErrors = eventsOfType(events, 'turn-error');
+    expect(turnErrors[0]?.message).not.toContain('Could not resume');
+  });
+
+  it('reports the refusal exactly once even though both the result and the throw observe it', async () => {
+    // The failure is visible from two places -- the error `result` and the
+    // throw the iterator raises straight after. The server ACTS on this
+    // event (it replaces the incarnation), so a second copy would drive a
+    // second recovery against the replacement.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(refusedResumeScript());
+    const engine = new SdkEngine(
+      baseDeps({ queryFn, resume: 'sess-gone', emit: (e) => events.push(e) }),
+    );
+    void engine.runTurn('t1', 'hello');
+    await flush();
+    await flush();
+
+    expect(eventsOfType(events, 'sdk-resume-failed')).toHaveLength(1);
+  });
+
+  it('reports the refusal even when no turn was ever started', async () => {
+    // A resume can be refused with nothing pushed onto the queue, in which
+    // case there is no `result` for handleResult to see and only the
+    // consumeLoop catch observes it. Without that arm the failure would be
+    // silent on this path.
+    const events: EmbeddedAgentEvent[] = [];
+    const { queryFn } = makeFakeQuery(async function* () {
+      throw new Error('Claude Code returned an error result: No conversation found with session ID: sess-gone');
+    });
+    new SdkEngine(baseDeps({ queryFn, resume: 'sess-gone', emit: (e) => events.push(e) }));
+    await flush();
+
+    const failures = eventsOfType(events, 'sdk-resume-failed');
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ requestedSdkSessionId: 'sess-gone', reason: 'refused' });
   });
 });

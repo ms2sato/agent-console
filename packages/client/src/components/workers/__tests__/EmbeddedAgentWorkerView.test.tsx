@@ -2084,8 +2084,8 @@ describe('EmbeddedAgentWorkerView', () => {
     });
   });
 
-  describe('SDK-engine restore-divergence notice (#1335)', () => {
-    it('shows the divergence notice (not the generic restore banner) for a claude-sdk engine worker that restored a prior transcript', async () => {
+  describe('SDK-engine restore-divergence notice (#1335; polarity inverted by R1 #1410)', () => {
+    it('shows the divergence notice (not the generic restore banner) when a claude-sdk resume did NOT take', async () => {
       globalThis.fetch = Object.assign(
         mock(
           makeEmbeddedViewFetch([
@@ -2109,17 +2109,140 @@ describe('EmbeddedAgentWorkerView', () => {
             messageCount: 5,
             repairedToolCallIds: [],
             completed: true,
+            // R1: `false`, explicitly. Before R1 this test passed with the
+            // field absent -- the notice was unconditional. It is the
+            // presence of `false` that now earns the notice.
+            sdkResumed: false,
           }),
         );
       });
       await flush();
 
       expect(
-        screen.getByText(/conversation context was not carried over the restart/i),
+        screen.getByText(/earlier conversation could not be carried over/i),
       ).toBeTruthy();
       expect(
         screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
       ).toBeNull();
+    });
+
+    it('shows NO notice when a claude-sdk resume DID take -- the inverted case', async () => {
+      // The polarity inversion itself. Before R1 this exact scenario showed
+      // the divergence notice; it must now show nothing, because the
+      // conversation genuinely did continue. A reader who ports the old
+      // unconditional rule forward breaks this test and nothing else.
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-resumed', workerId: 'w-sdk-resumed', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+            sdkResumed: true,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.queryByText(/earlier conversation could not be carried over/i)).toBeNull();
+      // And still not the openai-api banner, whose claim is about a
+      // reconstruction this engine does not do.
+      expect(
+        screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
+      ).toBeNull();
+    });
+
+    it('shows NO notice for a claude-sdk worker whose restore-info omits sdkResumed', async () => {
+      // Absence is not failure. A `claude-sdk` worker can legitimately have
+      // no answer yet, and reading absence as `false` -- the `!sdkResumed`
+      // trap -- would show the notice here and on every openai-api worker.
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-absent', workerId: 'w-sdk-absent', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            messageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+          }),
+        );
+      });
+      await flush();
+
+      expect(screen.queryByText(/earlier conversation could not be carried over/i)).toBeNull();
+    });
+
+    it('shows the notice once the server corrects an optimistic true down to false', async () => {
+      // The residual path end to end on the client: activation reported an
+      // intended resume, the subprocess then said it did not take, and the
+      // server re-pushed. The notice must appear on the correction.
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-sdk-corrected', workerId: 'w-sdk-corrected', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      const restoreInfo = (sdkResumed: boolean) =>
+        JSON.stringify({
+          type: 'restore-info',
+          epoch: 1,
+          messageCount: 5,
+          repairedToolCallIds: [],
+          completed: true,
+          sdkResumed,
+        });
+
+      act(() => {
+        ws?.simulateMessage(restoreInfo(true));
+      });
+      await flush();
+      expect(screen.queryByText(/earlier conversation could not be carried over/i)).toBeNull();
+
+      act(() => {
+        ws?.simulateMessage(restoreInfo(false));
+      });
+      await flush();
+      expect(screen.getByText(/earlier conversation could not be carried over/i)).toBeTruthy();
     });
 
     it('does not show the divergence notice for an openai-api engine worker, and still shows the generic restore banner', async () => {
@@ -2148,7 +2271,7 @@ describe('EmbeddedAgentWorkerView', () => {
       await flush();
 
       expect(
-        screen.queryByText(/conversation context was not carried over the restart/i),
+        screen.queryByText(/earlier conversation could not be carried over/i),
       ).toBeNull();
       expect(
         screen.getByText(/Conversation is restored automatically after a worker or server restart/i),
@@ -2172,7 +2295,7 @@ describe('EmbeddedAgentWorkerView', () => {
       await flush();
 
       expect(
-        screen.queryByText(/conversation context was not carried over the restart/i),
+        screen.queryByText(/earlier conversation could not be carried over/i),
       ).toBeNull();
       expect(
         screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
@@ -2230,7 +2353,7 @@ describe('EmbeddedAgentWorkerView', () => {
         screen.queryByText(/Conversation is restored automatically after a worker or server restart/i),
       ).toBeNull();
       expect(
-        screen.queryByText(/conversation context was not carried over the restart/i),
+        screen.queryByText(/earlier conversation could not be carried over/i),
       ).toBeNull();
 
       // Resolve the pending fetch so it doesn't leak into a later test.

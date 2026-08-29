@@ -67,6 +67,13 @@ export type EmbeddedAgentChatEntry =
   | { key: string; kind: 'turn-error'; turnId: string; message: string }
   | { key: string; kind: 'fatal'; message: string }
   | { key: string; kind: 'exited'; code: number | null }
+  /**
+   * Transcript Restore, R1: the turn identified by `turnId` was cut off by a
+   * process boundary and never answered. Server-authored -- deliberately a
+   * distinct kind from `turn-error`, which represents an error an ENGINE
+   * reported. Nothing errored here; a process went away.
+   */
+  | { key: string; kind: 'turn-interrupted'; turnId: string }
   | {
       key: string;
       kind: 'context-compacted';
@@ -132,6 +139,20 @@ export interface EmbeddedAgentSnapshot {
    * so a future change to when this field resets to null must account for it.
    */
   restoredMessageCount: number | null;
+  /**
+   * Transcript Restore, R1: the `sdkResumed` field of the most recently
+   * accepted `restore-info` for the current epoch, verbatim -- INCLUDING its
+   * absence, which is carried as `undefined` rather than normalised.
+   *
+   * THREE-VALUED, and the third value is the point: `undefined` means "this
+   * engine has no such concept" (an `openai-api` worker never sets it, and
+   * neither does a `claude-sdk` worker before its first `restore-info`),
+   * while `false` means "a resume was attempted or intended and did not
+   * take". Only `false` may drive the divergence notice. Any consumer
+   * writing `!sdkResumed` collapses the two and puts a permanent false
+   * warning on every `openai-api` worker -- test `=== false`.
+   */
+  sdkResumed: boolean | undefined;
 }
 
 export interface EmbeddedAgentInstance {
@@ -266,6 +287,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       contextUsage: null,
       restoring: false,
       restoredMessageCount: null,
+      sdkResumed: undefined,
     };
     this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
     this.connect();
@@ -537,7 +559,12 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // never updates this.epoch, so it is still correctly dropped here.
         this.acceptEpoch(message.epoch);
         if (this.epoch === message.epoch) {
-          this.applyRestoreInfo(message.messageCount, message.repairedToolCallIds, message.completed);
+          this.applyRestoreInfo(
+            message.messageCount,
+            message.repairedToolCallIds,
+            message.completed,
+            message.sdkResumed,
+          );
         }
         break;
       }
@@ -609,7 +636,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // pending that message. Also allows a redelivered restore-repair note to
     // re-render against the wiped list.
     this.restoreRepairRenderedThisLoad = false;
-    this.patch({ entries: [], restoring: false, restoredMessageCount: null });
+    this.patch({ entries: [], restoring: false, restoredMessageCount: null, sdkResumed: undefined });
   }
 
   /**
@@ -688,10 +715,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     messageCount: number,
     repairedToolCallIds: string[],
     completed: boolean,
+    sdkResumed: boolean | undefined,
   ): void {
     const patch: Partial<EmbeddedAgentSnapshot> = {
       restoredMessageCount: messageCount,
       restoring: completed === false,
+      // R1: carried through verbatim, absence included. The server re-pushes
+      // this whole message to correct the flag downward when a resume turns
+      // out to have failed (the same re-push shape `completed` uses), so the
+      // latest accepted message is always the current answer.
+      sdkResumed,
     };
     if (repairedToolCallIds.length > 0 && !this.restoreRepairRenderedThisLoad) {
       this.restoreRepairRenderedThisLoad = true;
@@ -853,12 +886,24 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           distillation: event.distillation,
         });
         return true;
+      case 'turn-interrupted':
+        this.pushEntry({
+          key: `turn-interrupted-${event.turnId}`,
+          kind: 'turn-interrupted',
+          turnId: event.turnId,
+        });
+        // The interrupted turn's thinking entry, if it had one, will never
+        // be finalized by any per-turnId signal -- the incarnation that
+        // owned it is gone. Same defensive close as `exited` and `fatal`.
+        this.closeAllOpenThinking();
+        return true;
       case 'sdk-session-id':
-        // SDK Engine Phase 1 (docs/design/embedded-agent-sdk-engine.md):
-        // server-side bookkeeping only (the worker's current SDK session
-        // id) -- no client UI surface for this event, minimal exhaustiveness
-        // fix so this store keeps typechecking against the new event union
-        // member. Not a chat row.
+      case 'sdk-resume-failed':
+        // Server-side bookkeeping only, no client UI surface: the worker's
+        // current SDK session id, and (R1) the machine-readable half of a
+        // refused resume. What the USER sees about a failed resume is the
+        // engine's own `turn-error` plus the divergence notice driven by
+        // `restore-info.sdkResumed`, not this event. Not chat rows.
         return false;
       default: {
         const _exhaustive: never = event;

@@ -121,6 +121,10 @@ function makeFactories(overrides: Partial<LoopFactories> = {}): LoopFactories {
     loadOptInInstructions: async () => [],
     loadCompactionPrompt: async () => ({ content: 'DEFAULT_COMPACTION_PROMPT_STUB', origin: 'bundled-default' }),
     createSdkEngine: () => new NoopEngine(),
+    // R1: default the pre-flight to "the session exists" so the vast
+    // majority of tests, which are not about resume at all, exercise the
+    // resume-is-honoured path. The resume tests override it explicitly.
+    sdkSessionExists: async () => true,
     ...overrides,
   };
 }
@@ -693,5 +697,127 @@ describe('main subprocess — init-first enforcement', () => {
     proc.stdin.write('this is not json\n');
     await proc.stdin.end();
     expect(await proc.exited).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transcript Restore, R1 (#1410): the resume pre-flight
+// ---------------------------------------------------------------------------
+
+describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
+  function sdkInit(resume?: { sdkSessionId: string }): string {
+    return JSON.stringify({
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      engine: 'claude-sdk',
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      provider: { model: 'claude-sonnet-5' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp/work' },
+      maxToolIterations: 5,
+      ...(resume !== undefined ? { resume } : {}),
+    });
+  }
+
+  it('accepts `resume` on the claude-sdk arm and rejects it on openai-api', () => {
+    // Structural containment, not convention: the field lives on the
+    // claude-sdk arm precisely so an openai-api init carrying one is not
+    // representable. `resume` on the wrong arm must fail the shared schema.
+    const shared = {
+      v: 1,
+      type: 'init',
+      compaction: { auto: false },
+      mcp: { baseUrl: 'http://mcp/local', token: 'tok' },
+      context: { sessionId: 's', workerId: 'w', cwd: '/tmp' },
+      maxToolIterations: 5,
+      resume: { sdkSessionId: 'sess-1' },
+    };
+    expect(
+      v.safeParse(EmbeddedAgentCommandSchema, {
+        ...shared,
+        engine: 'claude-sdk',
+        provider: { model: 'claude-sonnet-5' },
+      }).success,
+    ).toBe(true);
+    expect(
+      v.safeParse(EmbeddedAgentCommandSchema, {
+        ...shared,
+        engine: 'openai-api',
+        provider: { baseUrl: 'http://p/v1', model: 'm' },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('forwards the resume id to the engine when the pre-flight finds the session', async () => {
+    let capturedDeps: SdkEngineDeps | undefined;
+    const preflightCalls: { id: string; cwd: string }[] = [];
+    const { io, events } = makeIo([sdkInit({ sdkSessionId: 'sess-live' })]);
+    await runLoop(
+      io,
+      makeFactories({
+        sdkSessionExists: async (id, cwd) => {
+          preflightCalls.push({ id, cwd });
+          return true;
+        },
+        createSdkEngine: (deps) => {
+          capturedDeps = deps;
+          return new NoopEngine();
+        },
+      }),
+    );
+
+    expect(capturedDeps?.resume).toBe('sess-live');
+    // The `dir` hint is the worker's own cwd -- it scopes the lookup to this
+    // project instead of searching every one on the host.
+    expect(preflightCalls).toEqual([{ id: 'sess-live', cwd: '/tmp/work' }]);
+    expect(events.filter((e) => e.type === 'sdk-resume-failed')).toHaveLength(0);
+  });
+
+  it('starts fresh and reports `not-found` when the pre-flight cannot find the session', async () => {
+    // The common failure, moved off the user's first message: the resume is
+    // never attempted, so no turn is lost and no incarnation needs replacing.
+    let capturedDeps: SdkEngineDeps | undefined;
+    const { io, events } = makeIo([sdkInit({ sdkSessionId: 'sess-gone' })]);
+    await runLoop(
+      io,
+      makeFactories({
+        sdkSessionExists: async () => false,
+        createSdkEngine: (deps) => {
+          capturedDeps = deps;
+          return new NoopEngine();
+        },
+      }),
+    );
+
+    expect(capturedDeps?.resume).toBeUndefined();
+    const failures = events.filter((e) => e.type === 'sdk-resume-failed');
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ requestedSdkSessionId: 'sess-gone', reason: 'not-found' });
+  });
+
+  it('does not pre-flight at all when the init carries no resume', async () => {
+    // A first-ever activation must not consult the session store: there is
+    // nothing to look up, and a lookup here would be the engine inventing a
+    // resume id, which the re-scoped pin forbids.
+    let capturedDeps: SdkEngineDeps | undefined;
+    let preflightCalls = 0;
+    const { io, events } = makeIo([sdkInit()]);
+    await runLoop(
+      io,
+      makeFactories({
+        sdkSessionExists: async () => {
+          preflightCalls++;
+          return true;
+        },
+        createSdkEngine: (deps) => {
+          capturedDeps = deps;
+          return new NoopEngine();
+        },
+      }),
+    );
+
+    expect(preflightCalls).toBe(0);
+    expect(capturedDeps?.resume).toBeUndefined();
+    expect(events.filter((e) => e.type === 'sdk-resume-failed')).toHaveLength(0);
   });
 });

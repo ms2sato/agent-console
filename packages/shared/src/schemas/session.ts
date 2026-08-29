@@ -156,6 +156,18 @@ export const RestoreInfoMessageSchema = v.strictObject({
   messageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
   repairedToolCallIds: v.array(v.string()),
   completed: v.boolean(),
+  /**
+   * Transcript Restore, R1: did the `claude-sdk` engine's SDK session
+   * actually resume? Set ONLY by that engine; `openai-api` omits the field
+   * entirely, because it has no such concept.
+   *
+   * Three-valued, and the third value is not a loading race: `absent` means
+   * "this engine does not have the concept", `false` means "a resume was
+   * attempted and did not take". Reading absence as `false` collapses those
+   * two and would show a divergence notice on every `openai-api` worker, so
+   * the client tests `=== false` explicitly and never `!sdkResumed`.
+   */
+  sdkResumed: v.optional(v.boolean()),
 });
 
 // Inferred types from schemas

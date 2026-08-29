@@ -695,7 +695,14 @@ export class SessionManager {
   getEmbeddedAgentRestoreInfo(
     _sessionId: string,
     workerId: string,
-  ): { epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null {
+  ): {
+    epoch: number;
+    messageCount: number;
+    repairedToolCallIds: string[];
+    completed: boolean;
+    // R1, three-valued -- see EmbeddedAgentWorkerService's RestoreInfo.
+    sdkResumed?: boolean;
+  } | null {
     return this.embeddedAgentWorkerService.getRestoreInfo(workerId);
   }
 

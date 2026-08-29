@@ -26,7 +26,15 @@ export interface WorkerCallbacks {
   onExit: (exitCode: number, signal: string | null, reason?: ExitReason) => void;
   onActivityChange?: (state: AgentActivityState) => void;
   /** Transcript Restore (#1123 / #1205) fast-path push -- see EmbeddedAgentWorkerService. Embedded-agent workers only. */
-  onRestoreInfo?: (info: { messageCount: number; repairedToolCallIds: string[]; completed: boolean }) => void;
+  // `sdkResumed` (R1) is optional and THREE-VALUED: absent means the engine
+  // has no such concept, `false` means a resume did not take. Consumers must
+  // test `=== false`, never `!sdkResumed`.
+  onRestoreInfo?: (info: {
+    messageCount: number;
+    repairedToolCallIds: string[];
+    completed: boolean;
+    sdkResumed?: boolean;
+  }) => void;
 }
 
 /**

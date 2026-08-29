@@ -160,6 +160,11 @@ const KNOWN_EVENT_TYPES = new Set<string>([
   // would make every historical row fail the unknown-type check.
   'context-handoff',
   'sdk-session-id',
+  // Transcript Restore, R1. `turn-interrupted` is deliberately absent: this
+  // gate only sees lines the subprocess writes on stdout, and that event is
+  // server-authored -- same reason `user-message` and `exited` are not
+  // listed either.
+  'sdk-resume-failed',
 ]);
 /** Cap on the per-chunk stderr text forwarded to the debug logger. */
 const STDERR_LOG_CAP = 2048;
@@ -253,6 +258,69 @@ export interface EmbeddedAgentWorkerServiceDeps {
   sigtermTimeoutMs?: number;
 }
 
+/**
+ * Transcript Restore, R1 (the local half of #1273): the id of the turn the
+ * previous incarnation left unanswered, or null when nothing was interrupted.
+ *
+ * The rule, whose single writer is
+ * docs/design/embedded-agent-sdk-engine.md Appendix A.3: a `user-message`
+ * with neither a `state: 'idle'` nor a `turn-error` after it was interrupted.
+ * Only the LAST `user-message` can be unanswered -- an earlier one is closed
+ * by the fact that a later turn started at all -- so this walks the stream
+ * once and reports on that one.
+ *
+ * Two membership decisions carry the rule, and neither is incidental:
+ *
+ * - **`exited` is NOT terminal.** The server appends it on every exit it
+ *   observes, so counting it would leave this firing only when the server
+ *   itself died without appending -- never for a worker death the server DID
+ *   observe, which is the common case and the one a deliberate eviction
+ *   (#1412) creates by design.
+ * - **`turn-error` IS terminal**, and not merely as a synonym for `idle`.
+ *   The `openai-api` loop does emit both (`emitTurnError` calls `emitIdle`
+ *   unconditionally), but `sdk-engine`'s `handleResult` emits `turn-error`
+ *   and then holds the turn open, WITHOUT an `idle`, when a `Compact` was
+ *   booked during it. A death inside that window is a completed-then-erroring
+ *   turn, not an interrupted one.
+ *
+ * Vacuous cases report null, deliberately: an empty stream and a stream whose
+ * last `user-message` is already closed both mean "nothing was interrupted",
+ * and the first of those is only reachable at all because "no terminal event
+ * after the last user-message" reads as true when there is no last
+ * user-message.
+ *
+ * Parses defensively: this runs against a persisted file that a
+ * previous incarnation may have been killed midway through writing, so a
+ * malformed trailing line is skipped rather than thrown on. A detector that
+ * threw here would take activation down over a cosmetic marker.
+ */
+export function findInterruptedTurnId(streamText: string): string | null {
+  let pendingTurnId: string | null = null;
+  for (const line of streamText.split('\n')) {
+    if (line.trim() === '') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const type = (parsed as { type?: unknown }).type;
+    if (type === 'user-message') {
+      const id = (parsed as { id?: unknown }).id;
+      pendingTurnId = typeof id === 'string' && id !== '' ? id : null;
+      continue;
+    }
+    if (type === 'turn-error') {
+      pendingTurnId = null;
+      continue;
+    }
+    if (type === 'state' && (parsed as { state?: unknown }).state === 'idle') {
+      pendingTurnId = null;
+    }
+  }
+  return pendingTurnId;
+}
+
 /** Immutable references shared by the readers, the exit observer, and the command writers. */
 interface StreamContext {
   sessionId: string;
@@ -273,8 +341,34 @@ interface Runtime {
   streamsDone: Promise<void>;
   /** Resolves after the exit observer finished all cleanup (append/revoke/persist/fire). */
   exitSettled: Promise<void>;
-  /** Transcript Restore (#1123): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null when restore did not fire (first-ever activation or restore failure). `completed` starts false (restore succeeded but the new incarnation hasn't reported `ready` yet) and flips true once the loop's `ready` event fires (#1205) -- this is what lets the client distinguish "still restoring" from "restore delivered, incarnation ready" across an epoch-stable restore. */
-  restoreInfo: { messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null;
+  /** Transcript Restore (#1123): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null when restore did not fire (first-ever activation or restore failure). `completed` starts false (restore succeeded but the new incarnation hasn't reported `ready` yet) and flips true once the loop's `ready` event fires (#1205) -- this is what lets the client distinguish "still restoring" from "restore delivered, incarnation ready" across an epoch-stable restore. `sdkResumed` (R1) is set only for `claude-sdk` workers -- see {@link RestoreInfo}. */
+  restoreInfo: RestoreInfo | null;
+  /**
+   * Transcript Restore, R1: the `sdkSessionId` this incarnation was asked to
+   * resume, or null when it was told to start fresh. Kept per-incarnation
+   * rather than read back off the worker, because the worker's own
+   * `sdkSessionId` is overwritten by the NEW session's id as soon as the
+   * subprocess reports one -- so by the time an answer arrives, the worker no
+   * longer remembers what was asked for.
+   */
+  requestedResumeId: string | null;
+  /** R1: a `sdk-resume-failed` recovery is already in flight; do not start a second. */
+  resumeRecoveryStarted: boolean;
+}
+
+/**
+ * Transcript Restore: what the client is told about this incarnation's
+ * restore. `sdkResumed` is R1's addition and is THREE-VALUED -- `undefined`
+ * means "this engine has no such concept" (`openai-api` never sets it),
+ * `false` means "a resume was attempted or intended and did not take".
+ * Collapsing the two with a negation would show a divergence notice on every
+ * `openai-api` worker, which is why consumers test `=== false`.
+ */
+interface RestoreInfo {
+  messageCount: number;
+  repairedToolCallIds: string[];
+  completed: boolean;
+  sdkResumed?: boolean;
 }
 
 type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
@@ -367,9 +461,7 @@ export class EmbeddedAgentWorkerService {
    * not just the one that triggered activation -- see
    * docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
    */
-  getRestoreInfo(
-    workerId: string,
-  ): { epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null {
+  getRestoreInfo(workerId: string): (RestoreInfo & { epoch: number }) | null {
     const runtime = this.runtimes.get(workerId);
     if (!runtime || runtime.restoreInfo === null) return null;
     return { epoch: runtime.ctx.worker.epoch, ...runtime.restoreInfo };
@@ -467,7 +559,12 @@ export class EmbeddedAgentWorkerService {
       // path instead).
       const resolver = this.deps.getPathResolver(session);
       let restoredConversation: EmbeddedAgentRestoredMessage[] | undefined;
-      let restoreInfo: { messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null = null;
+      let restoreInfo: RestoreInfo | null = null;
+      // Transcript Restore, R1: the turn (if any) that the previous
+      // incarnation left unanswered. Detected during the same replay that
+      // reconstructs the conversation, appended after the spawn so the
+      // marker lands in stream order after everything it describes.
+      let interruptedTurnId: string | null = null;
       const restoreContext = {
         sessionId,
         workerId,
@@ -475,6 +572,25 @@ export class EmbeddedAgentWorkerService {
         cwd: session.locationPath,
       };
       const everActivated = await this.deps.workerOutputFileManager.hasEverBeenActivated(sessionId, workerId, resolver);
+      /**
+       * Transcript Restore, R1: the SDK session id this activation will ask
+       * the subprocess to resume, or null for a fresh session.
+       *
+       * Three conditions, all necessary. The engine must be `claude-sdk`
+       * (the other has no such concept). The worker must have been activated
+       * before -- a first-ever activation has nothing to resume by
+       * definition, and reading a stale id on one would be a bug, not a
+       * recovery. And a `sdkSessionId` must actually be persisted; its
+       * absence on an activated worker is a LEGITIMATE state, not a fault
+       * (see the `sdk-session-id` event's own doc comment: it does not
+       * arrive until the first turn, so a worker activated but never spoken
+       * to has none).
+       *
+       * Read from the `workers` row and from nowhere else -- the named
+       * failure mode this Issue lists first.
+       */
+      const resumeId =
+        definition.engine === 'claude-sdk' && everActivated ? worker.sdkSessionId : null;
       if (!everActivated) {
         // First-ever activation: nothing to restore, proceed with today's v1 reset unconditionally.
         const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver);
@@ -505,7 +621,20 @@ export class EmbeddedAgentWorkerService {
             messageCount: outcome.conversation.length,
             repairedToolCallIds: outcome.repairedToolCallIds,
             completed: false,
+            // R1: optimistic for `claude-sdk`, and corrected downward by the
+            // `sdk-resume-failed` handler if the resume does not take. Set
+            // ONLY for this engine -- `openai-api` leaves the field absent,
+            // because it has no session to resume and `false` there would
+            // read as a failure that did not happen. `resumeId === null`
+            // (no persisted id yet) is a fresh session, which is `false`:
+            // there is genuinely no continuity, and the notice should say
+            // so exactly as it did before R1.
+            ...(definition.engine === 'claude-sdk' ? { sdkResumed: resumeId !== null } : {}),
           };
+          // R1 (the local half of #1273): the same replay that produced the
+          // conversation also tells us whether the previous incarnation was
+          // cut off mid-turn.
+          interruptedTurnId = findInterruptedTurnId(streamText);
           // 4e: success -- skip resetWorkerOutput entirely. No new epoch, no
           // truncate. But the in-memory worker object may be stale relative to
           // the on-disk manifest (e.g. freshly reconstructed by WorkerManager
@@ -599,6 +728,13 @@ export class EmbeddedAgentWorkerService {
               ...initCommandShared,
               engine: 'claude-sdk',
               provider: { model: definition.provider.model },
+              // Transcript Restore, R1. Absent = fresh session, which is
+              // what a first-ever activation and a worker with no persisted
+              // id both get. The subprocess pre-flights this id before
+              // handing it to the SDK -- it runs as the requesting OS user
+              // and can read that user's own session store, which this
+              // process cannot in multi-user mode.
+              ...(resumeId !== null ? { resume: { sdkSessionId: resumeId } } : {}),
             };
       this.writeCommand(stdin, initCommand);
 
@@ -611,8 +747,20 @@ export class EmbeddedAgentWorkerService {
         streamsDone: Promise.resolve(),
         exitSettled: Promise.resolve(),
         restoreInfo,
+        requestedResumeId: resumeId,
+        resumeRecoveryStarted: false,
       };
       this.runtimes.set(workerId, runtime);
+
+      // R1 (the local half of #1273): record the previous incarnation's
+      // unanswered turn. Appended here, after the runtime exists and the
+      // new incarnation has been spawned, so the marker sits in the stream
+      // AFTER everything it describes and BEFORE anything this incarnation
+      // goes on to say. Server-authored, and deliberately not a synthesized
+      // `turn-error` -- see the event's doc comment.
+      if (interruptedTurnId !== null) {
+        this.appendEvent(ctx, { v: 1, type: 'turn-interrupted', turnId: interruptedTurnId });
+      }
 
       runtime.streamsDone = Promise.all([
         this.readStdout(runtime, subprocess).catch((err) => {
@@ -928,10 +1076,7 @@ export class EmbeddedAgentWorkerService {
    * time (see routes.ts), so the argument passed here only needs to satisfy
    * the callback's declared parameter type.
    */
-  private pushRestoreInfoToConnections(
-    worker: InternalEmbeddedAgentWorker,
-    info: { messageCount: number; repairedToolCallIds: string[]; completed: boolean },
-  ): void {
+  private pushRestoreInfoToConnections(worker: InternalEmbeddedAgentWorker, info: RestoreInfo): void {
     const snapshot = Array.from(worker.connectionCallbacks.values());
     for (const cb of snapshot) {
       cb.onRestoreInfo?.(info);
@@ -1071,11 +1216,146 @@ export class EmbeddedAgentWorkerService {
     // fetch-and-persist shape) is the right-sized choice for Phase 1. See
     // docs/design/embedded-agent-sdk-engine.md §4 "Process lifetime" row.
     if (event.type === 'sdk-session-id') {
+      // Transcript Restore, R1 (PS5 belt): before overwriting, check whether
+      // the session we asked to resume is the one that came back. A
+      // successful resume reports the id it was asked for, so a DIFFERENT id
+      // means the SDK quietly started fresh. That is not a shape the SDK
+      // exhibits today -- a refused resume produces no `system:init` at all,
+      // which the subprocess reports as `sdk-resume-failed` instead -- so
+      // this arm is a guard against a future SDK changing that, not a path
+      // production reaches. It must run BEFORE the assignment: afterwards
+      // the requested id is gone.
+      if (runtime.requestedResumeId !== null && runtime.requestedResumeId !== event.sdkSessionId) {
+        logger.warn(
+          { sessionId: ctx.sessionId, workerId: ctx.workerId, requested: runtime.requestedResumeId, reported: event.sdkSessionId },
+          'SDK reported a different session id than the one it was asked to resume; treating the resume as failed (PS5)',
+        );
+        this.markResumeNotResumed(runtime);
+      }
+      runtime.requestedResumeId = null;
       ctx.worker.sdkSessionId = event.sdkSessionId;
       const session = this.deps.getSession(ctx.sessionId);
       if (session) {
         await this.deps.persistSession(session);
       }
+    }
+
+    // (f) Transcript Restore, R1: the subprocess could not resume the
+    // session it was given.
+    if (event.type === 'sdk-resume-failed') {
+      await this.handleResumeFailed(runtime, event.requestedSdkSessionId, event.reason);
+    }
+  }
+
+  /**
+   * R1: report `sdkResumed: false` to every attached connection, idempotently.
+   *
+   * Re-pushes the CURRENT restore-info with the flag corrected downward
+   * rather than minting a new one -- the same re-push shape `completed`
+   * already uses (#1205), for the same reason: the client keyed this
+   * incarnation's restore off a message it has already seen, and a second
+   * message with different bookkeeping would look like a second restore.
+   *
+   * A null `restoreInfo` means nothing was restored (first-ever activation,
+   * or a restore failure that already fell back to a reset), and there is
+   * consequently no continuity claim to walk back.
+   */
+  private markResumeNotResumed(runtime: Runtime): void {
+    if (runtime.restoreInfo === null || runtime.restoreInfo.sdkResumed === false) return;
+    runtime.restoreInfo = { ...runtime.restoreInfo, sdkResumed: false };
+    this.pushRestoreInfoToConnections(runtime.ctx.worker, runtime.restoreInfo);
+  }
+
+  /**
+   * R1: recover from a resume the subprocess could not use.
+   *
+   * Both reasons converge on the same durable state -- the persisted
+   * `sdkSessionId` is cleared, so the next activation starts fresh instead of
+   * retrying an id that has already failed once. **There is never a second
+   * resume attempt**, which is why the id is cleared here rather than left
+   * for a later heuristic to reconsider.
+   *
+   * They differ in what else has to happen:
+   *
+   * - `not-found` -- the subprocess pre-flighted the id, did not find it, and
+   *   started fresh on its own. The incarnation is healthy and mid-activation;
+   *   nothing needs replacing, and no turn was lost.
+   * - `refused` -- a resume was attempted and the SDK rejected it, which
+   *   leaves the SDK query dead while the harness process stays alive. That
+   *   is exactly the shape of #1414: the server would never observe an exit,
+   *   `turnActive` would stay set, and the worker would be bricked. So the
+   *   incarnation is replaced through `deactivate` -- a path the exit
+   *   observer covers -- and then re-activated once. The user's message is
+   *   already in the transcript and the engine's own `turn-error` has told
+   *   them to resend it.
+   *
+   * Guarded so one recovery runs per incarnation: the refusal is observable
+   * from more than one place inside the engine, and a second recovery would
+   * deactivate the replacement incarnation this one just started.
+   */
+  private async handleResumeFailed(
+    runtime: Runtime,
+    requestedSdkSessionId: string,
+    reason: 'not-found' | 'refused',
+  ): Promise<void> {
+    const { sessionId, workerId, worker } = runtime.ctx;
+    if (runtime.resumeRecoveryStarted) return;
+    runtime.resumeRecoveryStarted = true;
+    runtime.requestedResumeId = null;
+    this.markResumeNotResumed(runtime);
+
+    logger.info(
+      { sessionId, workerId, requestedSdkSessionId, reason },
+      'Embedded-agent SDK session could not be resumed; clearing the stored session id',
+    );
+
+    // Clear only if it is still the id that failed. A `sdk-session-id` from
+    // the fresh session the subprocess started may have already overwritten
+    // it, and clobbering THAT would throw away a live session and guarantee
+    // the next activation is fresh too.
+    if (worker.sdkSessionId === requestedSdkSessionId) {
+      worker.sdkSessionId = null;
+    }
+    const session = this.deps.getSession(sessionId);
+    if (session) {
+      await this.deps.persistSession(session);
+    }
+
+    if (reason === 'not-found') return;
+
+    // `refused`: the SDK query is dead while the harness stays alive, which
+    // is #1414's exact shape -- no exit the server can observe, `turnActive`
+    // stuck, worker bricked. So the incarnation is replaced through
+    // `deactivate`, a path the exit observer does cover.
+    //
+    // DETACHED, and that is load-bearing rather than stylistic. This method
+    // runs inside the stdout reader's own loop, and `deactivate` awaits
+    // `runtime.exitSettled` -> `runtime.streamsDone` -> that same reader.
+    // Awaiting it here deadlocks the reader against itself, and the worker
+    // hangs instead of recovering -- the failure this recovery exists to
+    // prevent, reintroduced by the recovery. (Found by the test below, not
+    // by review.) The `resumeRecoveryStarted` guard above is what keeps the
+    // detached call single-flight.
+    void this.replaceIncarnationAfterRefusedResume(sessionId, workerId);
+  }
+
+  /**
+   * R1: tear the refused-resume incarnation down and start a fresh one.
+   *
+   * Separate from {@link handleResumeFailed} solely so the deadlock its
+   * caller's comment describes is impossible to reintroduce by adding an
+   * `await`: this function is never called from inside the stream reader.
+   */
+  private async replaceIncarnationAfterRefusedResume(sessionId: string, workerId: string): Promise<void> {
+    try {
+      await this.deactivate(sessionId, workerId);
+      await this.activate(sessionId, workerId);
+      logger.info({ sessionId, workerId }, 'Re-activated embedded-agent worker with a fresh SDK session after a refused resume');
+    } catch (err) {
+      logger.error(
+        { sessionId, workerId, err },
+        'Failed to re-activate embedded-agent worker after a refused resume; it stays deactivated and the next access re-activates it',
+      );
     }
   }
 
