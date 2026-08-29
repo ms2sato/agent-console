@@ -851,6 +851,8 @@ With the defaults `T = 0.85` and `F = 0.9`, the full-compaction band `[0.85W, 0.
 3. **Head.** The conversation's system message is always included and always counted. It is the model's operating instructions for the summary it is being asked to write; dropping it to buy budget would trade the quality of the one output that survives for a few percent of room.
 4. **Everything else is `compact()` unchanged** — same prompt loader, same failure invariant (every early return happens strictly before the `context-compacted` marker is emitted, so the conversation is never mutated on failure), same `emitDeltas: false`, same marker, same `source: 'auto'`.
 
+**One field changes meaning, and it is worth knowing which.** [Token accounting](#token-accounting) says `preTokens` is the distillation call's own prompt size, *i.e. the conversation as it stood going in* — the two are the same thing for a full compaction. For a partial one they are not: `preTokens` is the **narrowed** input, so the boundary marker under-reports the true before-size in precisely the case that discarded the most. It is still the right number to send. It is the only *real* provider count available at that moment; substituting our own estimate of the full conversation would report smaller still, since that estimator measures low (see "Measured: `E` under-counts" above), and would mix a provider count with an estimate inside one field.
+
 **The caveat travels inside the summary, not around it.** A partial distillation prepends one fixed line to the model's distillation output before anything else sees it:
 
 > `[Earlier messages exceeded the context window and are not covered by this summary.]`

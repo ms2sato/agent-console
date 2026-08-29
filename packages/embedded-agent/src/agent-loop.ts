@@ -778,10 +778,21 @@ export class AgentLoop {
       // never followed by an async gap that could leave a completed-compaction
       // marker persisted while the old conversation is still intact.
       //
-      // `preTokens` is the distillation call's own prompt size, i.e. the
-      // conversation as it stood going in; `postTokens` is the seed's
-      // estimate. Reporting both is how a compaction declares its own
-      // severity (see the event's doc comment in shared).
+      // `preTokens` is the distillation call's own prompt size and
+      // `postTokens` is the seed's estimate. Reporting both is how a
+      // compaction declares its own severity (see the event's doc comment in
+      // shared).
+      //
+      // For a FULL compaction the distillation's prompt IS the conversation
+      // as it stood going in, so `preTokens` means what it looks like. For a
+      // PARTIAL one it is the narrowed input, which is smaller -- so the
+      // marker under-reports the true before-size in exactly the case that
+      // discarded the most. That is deliberate: it is the only REAL count
+      // available here, and substituting our own chars/4 estimate of the full
+      // conversation would report smaller still (that estimator omits tool
+      // schemas and measures low -- see the design doc's "Measured: `E`
+      // under-counts" note), besides mixing a provider count and an estimate
+      // in one field.
       this.deps.emit({
         v: 1,
         type: 'context-compacted',
