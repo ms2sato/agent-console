@@ -381,6 +381,21 @@ async function main(): Promise<void> {
     const answered = await waitForIdleAfter(sessionId, workerId, plantMarker, 'the planting turn to complete');
     if (!answered) bail('the first turn never completed; there is nothing to kill');
 
+    // The tool-turn requirement, asserted rather than intended. Instructing the
+    // model to read a file does not make it do so -- it may answer from the
+    // message text, leaving the exchange text-only and this smoke passing
+    // while no longer exercising the event order it exists to cover. That is
+    // the same shape as the defect this requirement came from: a rule
+    // satisfied on paper and broken in fact. The `tool-call` event is in the
+    // persisted stream, so the property is mechanically checkable, and a run
+    // where the model talked its way out fails here instead of looking green.
+    const plantEvents = (await readEvents(sessionId, workerId)).slice(plantMarker);
+    check(
+      plantEvents.some((e) => e.type === 'tool-call'),
+      'the planting turn actually called a tool',
+      `events after the plant: ${plantEvents.map((e) => e.type).join(',')}`,
+    );
+
     const shPid = (await currentPid(workerId));
     if (shPid === null) bail('the server holds no pid for the activated worker');
     const tree = await waitForWorkerTree(shPid, 15_000);

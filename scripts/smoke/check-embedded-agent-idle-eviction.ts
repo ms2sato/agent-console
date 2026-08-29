@@ -133,9 +133,21 @@ const NONCE_FILE = 'qa-note.txt';
 const PLANT_TEXT =
   `Use the Read tool to read ${NONCE_FILE} in the current directory, then remember ` +
   'the secret word it contains. Reply with only the word OK.';
+/**
+ * Asks only about PRESENT possession -- no route, no history, no claim that
+ * the word was ever in the conversation.
+ *
+ * The earlier wording ("the secret word I told you earlier in this
+ * conversation ... UNKNOWN if I never told you one") presupposed both. It was
+ * accurate while the nonce was planted in the message text, and became false
+ * when the planting turn was routed through a tool: the user never tells the
+ * model anything now, a file does. A literal `UNKNOWN` was then correct for
+ * the wrong reason, and could not be told apart from the model genuinely no
+ * longer having the word.
+ */
 const RECALL_TEXT =
-  'What is the secret word I told you earlier in this conversation? ' +
-  'Reply with only the word itself, or the single word UNKNOWN if I never told you one.';
+  'Do you have a secret word available to you right now? ' +
+  'Answer with the word itself, or the single word UNKNOWN if you do not have one.';
 const CONTROL_TEXT = RECALL_TEXT;
 
 const failures: string[] = [];
@@ -403,7 +415,24 @@ async function main(): Promise<void> {
     await ctx.sessionManager.activateEmbeddedAgentWorker(a.sessionId, a.workerId);
     const aHarness = harnessPid(a.sessionId, a.workerId);
     if (aHarness === null) throw new Error('A has no subprocess after activation');
+    // Marker taken before the turn so the assertion below reads only this
+    // turn's events. `runTurn` computes its own internal slice and returns
+    // text, so the stream is re-read here rather than threading a second
+    // return value through every call site.
+    const plantMarker = (await readEvents(a.sessionId, a.workerId)).length;
     const plantReply = await runTurn(a.sessionId, a.workerId, PLANT_TEXT);
+    // Asserted, not intended: instructing the model to read a file does not
+    // make it do so. If it answers from the message text the exchange is
+    // text-only again, and this smoke would keep passing while no longer
+    // exercising the event order a tool-using turn writes -- a rule satisfied
+    // on paper and broken in fact, which is the shape the requirement exists
+    // to prevent. The `tool-call` event is in the persisted stream.
+    const plantEvents = (await readEvents(a.sessionId, a.workerId)).slice(plantMarker);
+    expect(
+      plantEvents.some((e) => e.type === 'tool-call'),
+      'the planting turn actually called a tool',
+      `events after the plant: ${plantEvents.map((e) => e.type).join(',')}`,
+    );
     console.log(`  A harness pid: ${aHarness}`);
     console.log(`  A plant reply: ${plantReply.trim().slice(0, 120)}`);
     const aClaudeBefore = claudeDescendantPids(aHarness);

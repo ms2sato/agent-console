@@ -725,6 +725,15 @@ describe('reconstructConversation — restoredMessageCount', () => {
  *          splits one assistant turn into two -- which is why all three
  *          compare whole conversations rather than asserting no throw. A pin
  *          that only checked "did not throw" would pass here.
+ *   m5  close the merge on an intervening `tool-result` -- the tidy-looking
+ *       refinement a future reader is most likely to attempt
+ *       -> 1 fail, alone:
+ *            'folds the third interleaving -- tool-call, tool-result, THEN
+ *             the flush -- into one turn'
+ *          Nothing else catches it, because both FILE fixtures happen to
+ *          interleave the other way. That pin exists only because a live
+ *          smoke run produced the third order and the engine's own comment
+ *          explained it as a fast-tool race.
  *   m3  make the implicit open unconditional (drop `current === null`)
  *       -> 5 fail. NOTE the count was recorded as 4 when first measured and
  *          was stale by the time it was read: the equivalence pin below was
@@ -803,6 +812,30 @@ describe('replayWindow — either engine write order (#1457 fixtures)', () => {
 
     expect(fromApiOrder.conversation).toEqual(fromSdkOrder.conversation);
     expect(fromApiOrder.restoredMessageCount).toBe(fromSdkOrder.restoredMessageCount);
+  });
+
+  it('folds the third interleaving — tool-call, tool-result, THEN the flush — into one turn', () => {
+    // Observed live: the fatal-replacement smoke's planting turn emitted
+    // `tool-call, tool-result, assistant-message`, a different order from
+    // either fixture. `sdk-engine`'s own comment explains it -- the call is
+    // emitted on observation, so for a FAST tool the iteration's
+    // `assistant-message` can land after the result rather than before it.
+    //
+    // It is still that iteration's flush, so it must fold into the message the
+    // call opened. The merge therefore must NOT be closed by an intervening
+    // `tool-result`: doing so would look like a tidy refinement and would
+    // split the turn in exactly the case the race produces. Nothing else here
+    // pins that, because both file fixtures happen to interleave the other way.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'read the note' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'Read', args: { path: 'qa-note.txt' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'PELICAN-7731' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: '' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'The word is PELICAN-7731.' },
+    ];
+    const out = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    expect(out.conversation.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant']);
+    expect(toolCallsAnsweredImmediately(out.conversation)).toBe(true);
   });
 
   it('debris before any user-message still throws', () => {
