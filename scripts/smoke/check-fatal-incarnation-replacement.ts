@@ -470,10 +470,6 @@ async function main(): Promise<void> {
         evs.slice(eventsBeforeKill).some((e) => e.type === 'exited'),
         'a server-authored `exited` row is appended -- the death is now observed',
       );
-      check(
-        !evs.slice(eventsBeforeKill).some((e) => e.type === 'turn-interrupted'),
-        'no `turn-interrupted` marker: nothing was in flight at an idle kill',
-      );
 
       // AUTHORITATIVE STORE, not frames: the registry itself.
       check(
@@ -492,6 +488,24 @@ async function main(): Promise<void> {
         'the replacement incarnation to report ready',
       );
       check(readyAgain, 'the replacement incarnation reports ready');
+
+      // Asserted HERE, not beside the `exited` check above, and the move is
+      // the point. A `turn-interrupted` marker is written by the NEXT
+      // incarnation -- Case 2 waits for one with the full recovery timeout,
+      // so it lags replacement by a variable amount. Read at the moment
+      // `exited` appears, this absence could hold simply because the
+      // replacement had not started yet, and it would pass whether or not the
+      // marker was coming.
+      //
+      // An absence assertion is only as strong as the latest moment it could
+      // observe. Waiting for the replacement to report ready puts the window
+      // past the point where a marker would be written.
+      const evsAfterReady = (await readEvents(sessionId, workerId)).slice(eventsBeforeKill);
+      check(
+        !evsAfterReady.some((e) => e.type === 'turn-interrupted'),
+        'no `turn-interrupted` marker: nothing was in flight at an idle kill',
+        `events: ${evsAfterReady.map((e) => e.type).join(',')}`,
+      );
 
       const before = (await readEvents(sessionId, workerId)).length;
       const recall = await sm.sendEmbeddedAgentUserMessage(
