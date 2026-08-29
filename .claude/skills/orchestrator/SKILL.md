@@ -103,6 +103,8 @@ The Architect owns the quality of implementation artifacts (AC drafting → code
 ### Routine pushes (default flow, not exceptions)
 
 - **AC drafting for every delegated Issue** — before delegating, push the Issue's scope and context to the Architect and ask for the prescriptive AC. You post the returned AC to the Issue body and delegate. AC content requirements are the Architect's discipline (see [`.claude/skills/architect/SKILL.md`](../architect/SKILL.md) "AC authoring discipline") — you receive and relay, you do not draft.
+
+  **The AC goes in the Issue BODY, not in a comment — and the reason is mechanical, not tidiness.** `acceptance-check.js` reads the Issue body only. An AC posted as a comment makes the script report *"No acceptance criteria (checklist) found"*, and the criterion-to-test mapping in Q3 silently degrades from a mechanical check to the Orchestrator's unaided judgment. Nothing fails; a gate just stops being one. The Architect delivers ACs by message and does not edit Issues, so transcribing into the body at dispatch time is the Orchestrator's step. Reading comments was considered and rejected — it introduces a second ambiguity (which comment, and which revision of it, is authoritative). (Lesson: Sprint 2026-08-29 PR #1427 — the AC was complete and correct in a comment; the script reported none, and the mapping was done by hand without anyone deciding it should be.)
 - **Code appropriateness review for every delivered PR** — after the worker reports implementation-complete and your behavior verification (CI green, dogfood if applicable) passes, push the PR for code appropriateness review. The Architect returns a verdict.
 
 ### Additional triggers
