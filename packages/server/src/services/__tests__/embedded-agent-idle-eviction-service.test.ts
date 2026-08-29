@@ -192,6 +192,14 @@ function setup(opts?: {
   /** Throw from the spawn seam from the Nth spawn onwards (0-based) to fail a wake. */
   failSpawnFrom?: number;
   failSpawnWith?: Error;
+  /**
+   * Simulate a real worker output file spanning incarnations: appended lines
+   * accumulate, `hasEverBeenActivated` flips true once anything has been
+   * written, and `readHistoryWithOffset` replays it. Off by default so the
+   * other tests keep taking the cheap first-ever-activation branch on every
+   * spawn; on for tests where the WAKE must exercise the restore/resume path.
+   */
+  persistAcrossIncarnations?: boolean;
 }): Harness {
   const worker = buildInternalEmbeddedAgentWorker({
     id: 'w-emb',
@@ -204,7 +212,12 @@ function setup(opts?: {
   });
   const spawn = makeSpawnFactory({ exitOnShutdown: opts?.exitOnShutdown });
 
-  const bufferOutput = mock(() => {});
+  // Stands in for the worker's on-disk output file when
+  // `persistAcrossIncarnations` is set.
+  const persisted: string[] = [];
+  const bufferOutput = mock((_sessionId: string, _workerId: string, data: string) => {
+    if (opts?.persistAcrossIncarnations) persisted.push(data);
+  });
   const globalExit = mock(() => {});
   const onExit = mock(() => {});
   worker.connectionCallbacks.set('conn-1', {
@@ -230,10 +243,17 @@ function setup(opts?: {
     resolveSpawnUsername: async () => USERNAME,
     mcpTokenRegistry: { mint: (() => 'mcp-token') as never, revokeByWorker: (() => {}) as never },
     workerOutputFileManager: {
-      resetWorkerOutput: (async () => 4242) as never,
+      resetWorkerOutput: (async () => {
+        persisted.length = 0; // a reset truncates the live file
+        return 4242;
+      }) as never,
       bufferOutput: bufferOutput as never,
-      hasEverBeenActivated: (async () => false) as never,
-      readHistoryWithOffset: (async () => ({ data: '', offset: 0, startOffset: 0, epoch: 0 })) as never,
+      hasEverBeenActivated: (async () =>
+        opts?.persistAcrossIncarnations === true && persisted.length > 0) as never,
+      readHistoryWithOffset: (async () => {
+        const data = persisted.join('');
+        return { data, offset: Buffer.byteLength(data, 'utf-8'), startOffset: 0, epoch: 4242 };
+      }) as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: (async () => 'sk-test') as never,
@@ -387,6 +407,41 @@ describe('idle eviction — the countdown and its commit point', () => {
 
     expect(h.worker.subprocess).not.toBeNull();
     expect(exitedRows(h.bufferOutput)).toEqual([]);
+  });
+
+  it('evicts a worker that never ran a turn, and wakes it into a fresh SDK session', async () => {
+    // The boundary where idle eviction meets the resume machinery: a worker
+    // that was activated, never spoke, and idled out. It has no persisted
+    // `sdkSessionId` -- that id does not arrive until the first turn -- so the
+    // wake has nothing to resume and must not pretend otherwise.
+    //
+    // `persistAcrossIncarnations` is what makes this test non-vacuous: without
+    // it the wake would take the trivial first-ever-activation branch, where
+    // `resume` is absent for a reason that has nothing to do with the null id.
+    const h = setup({ idleEvictionMs: 15, persistAcrossIncarnations: true });
+    await activateAndReady(h);
+    expect(h.worker.sdkSessionId).toBeNull();
+
+    // A null `sdkSessionId` must not exempt the worker from eviction. Nothing
+    // in the eviction policy reads that field, and this is what proves it.
+    await waitFor(() => h.worker.subprocess === null, 2000);
+    expect(exitedRows(h.bufferOutput)).toEqual([
+      expect.objectContaining({ type: 'exited', reason: 'evicted' }),
+    ]);
+
+    const res = await h.service.sendUserMessage(h.sessionId, h.workerId, 'first thing I ever said');
+    expect(res.ok).toBe(true);
+
+    const init = JSON.parse(h.spawn.latest().stdinWrites[0]) as Record<string, unknown>;
+    expect(init.type).toBe('init');
+    expect(init.engine).toBe('claude-sdk');
+    // The wake did take the restore path rather than the first-ever-activation
+    // branch -- this is what makes the absence below load-bearing.
+    expect(Array.isArray(init.restoredConversation)).toBe(true);
+    // Structural ABSENCE, not undefined and not null: `resume` is composed
+    // conditionally from a persisted id, and the engine never invents one. An
+    // explicitly-null `resume` on the wire would be a different, wrong thing.
+    expect('resume' in init).toBe(false);
   });
 });
 
@@ -580,3 +635,4 @@ describe('idle eviction — exit reason reported to the global exit callback', (
     ]);
   });
 });
+
