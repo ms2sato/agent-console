@@ -544,3 +544,63 @@ describe('WorkerOutputFileManager — segmented archive', () => {
     });
   });
 });
+
+/**
+ * The cut is newline-aligned (#1445 (a)).
+ *
+ * A UTF-8 character boundary is not a record boundary. The live file is
+ * NDJSON, and the restore path reads it from its base -- so a cut landing
+ * mid-line hands restore a partial first record. The probability of that is
+ * 1 - 1/(average line length): on real transcripts, about 0.99. It was the
+ * dominant outcome of every rotation, not an edge case.
+ */
+describe('WorkerOutputFileManager — the archive cut lands on a line boundary', () => {
+  /** One whole NDJSON record of a given index, trailing newline included. */
+  const record = (i: number) => `${JSON.stringify({ v: 1, type: 'user-message', id: `m${i}`, text: `body-${i}` })}\n`;
+
+  it('leaves the live window starting at a whole record', async () => {
+    const m = makeManager({ fileMaxSize: 200 });
+    for (let i = 0; i < 12; i++) await writeAndFlush(m, record(i));
+
+    const live = String(vol.readFileSync(logPath, 'utf-8'));
+    expect(segFiles().length).toBeGreaterThan(0); // a cut actually happened
+
+    // The assertion that matters: the first line is a WHOLE record, not a tail.
+    // Reach measured by mutation -- deleting the newline scan (keeping only the
+    // UTF-8 boundary advance) fails this on `JSON.parse`, and fails EXACTLY
+    // this one test across the file. The other two here keep passing under
+    // that mutation by design: both drive the fallback, and the fallback is
+    // what the mutation leaves behind, so only a case with a real line
+    // boundary to find can detect the scan's absence.
+    const firstLine = live.split('\n')[0];
+    expect(() => JSON.parse(firstLine)).not.toThrow();
+    expect(JSON.parse(firstLine)).toMatchObject({ v: 1, type: 'user-message' });
+  });
+
+  it('falls back to the character boundary when nothing after the cut is a newline', async () => {
+    // The AC's documented edge: one record larger than the cut region, so
+    // there is no line boundary to advance to. The cut still happens; the
+    // restore side's head tolerance absorbs the fragment.
+    const m = makeManager({ fileMaxSize: 200 });
+    await writeAndFlush(m, 'z'.repeat(400)); // no newline anywhere
+
+    expect(segFiles().length).toBeGreaterThan(0);
+    const live = String(vol.readFileSync(logPath, 'utf-8'));
+    expect(live.length).toBeGreaterThan(0); // did not archive everything
+    expect(live).toBe('z'.repeat(live.length)); // still a fragment, by design
+  });
+
+  it('does not archive the whole file when the only newline is its final byte', async () => {
+    // Not in the AC, and added deliberately: honouring a trailing-byte newline
+    // would set the cut to the end of the buffer, archive 100%, and leave an
+    // EMPTY live window. That is worse than a fragment -- the restore side can
+    // skip a fragment, and cannot recover a window that is not there. So this
+    // takes the same fallback as the no-newline case.
+    const m = makeManager({ fileMaxSize: 200 });
+    await writeAndFlush(m, `${'z'.repeat(400)}\n`); // sole newline is the last byte
+
+    expect(segFiles().length).toBeGreaterThan(0);
+    const live = String(vol.readFileSync(logPath, 'utf-8'));
+    expect(live.length).toBeGreaterThan(0);
+  });
+});

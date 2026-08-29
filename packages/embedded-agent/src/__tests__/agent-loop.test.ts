@@ -739,3 +739,105 @@ describe('AgentLoop — a turn’s own reading supersedes the restore-boundary s
     expect(h.events.find((e) => e.type === 'context-compacted')).toBeUndefined();
   });
 });
+
+/**
+ * `ProviderAdapter` deliberately leaves the abort style unspecified. This stub
+ * is the shape the shipped `OpenAIChatAdapter` is NOT: on abort it ends its
+ * stream CLEANLY -- an ordinary terminal `done`, no throw -- after some text
+ * has already accumulated. Every test below drives this shape; the throwing
+ * shape is covered by the cancel tests earlier in this file.
+ */
+class CleanAbortAdapter implements ProviderAdapter {
+  /** Resolves once the partial text has streamed and the stub is parked on the signal. */
+  readonly parked: Promise<void>;
+  private signalParked!: () => void;
+
+  constructor(private readonly partialText: string) {
+    this.parked = new Promise<void>((resolve) => {
+      this.signalParked = resolve;
+    });
+  }
+
+  async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+    yield { type: 'text-delta', text: this.partialText };
+    this.signalParked();
+    await new Promise<void>((resolve) => {
+      if (req.signal.aborted) resolve();
+      else req.signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+    yield { type: 'done', finishReason: 'stop' };
+  }
+}
+
+function makeLoopWithAdapter(adapter: ProviderAdapter): {
+  loop: AgentLoop;
+  events: EmbeddedAgentEvent[];
+} {
+  const events: EmbeddedAgentEvent[] = [];
+  const deps: AgentLoopDeps = {
+    adapter,
+    model: 'm',
+    tools: [],
+    executor: new StubExecutor(),
+    emit: (event) => events.push(event),
+    systemPrompt: 'sys',
+    maxToolIterations: 25,
+    sleep: async () => {},
+    reassembleSystemPrompt: async () => 'sys',
+    loadCompactionPrompt: async () => 'DISTILL_PROMPT',
+    compaction: { auto: false },
+  };
+  return { loop: new AgentLoop(deps), events };
+}
+
+describe('AgentLoop — an abort is classified at the source, not only in the catch', () => {
+  it('turns a cleanly-aborting adapter into a canceled outcome that carries its partial text', async () => {
+    // Reach (measured): reverting the classification in
+    // `runProviderWithRetries` fails this on `kind` ('ok' instead of
+    // 'canceled'); keeping the classification but dropping `partialText` from
+    // the returned object fails it on the payload.
+    const adapter = new CleanAbortAdapter('PARTIAL TEXT');
+    const { loop } = makeLoopWithAdapter(adapter);
+    const controller = new AbortController();
+    // Private-method seam by ELEMENT ACCESS, not a cast. The outcome shape is
+    // what this test is about and is not observable from any public entry
+    // point, so reaching a private member is deliberate -- but bracket access
+    // needs no assertion at all and keeps the real signature, where a
+    // hand-written `as unknown as { ... }` seam has to restate it.
+    //
+    // Restating it is what makes the cast worse than a style question here:
+    // the seam this replaced declared the return as `{ kind: string }`, which
+    // accepts any string. This test's entire subject is the discriminant, so
+    // the cast was quietly weakening the assertion the pin exists to make,
+    // while staying green. Element access enforces the union at the call
+    // site.
+    const outcome = loop['runProviderWithRetries'](
+      [{ role: 'user', content: 'hello' }],
+      't1',
+      controller.signal,
+    );
+    await adapter.parked;
+    controller.abort();
+
+    expect(await outcome).toEqual({ kind: 'canceled', partialText: 'PARTIAL TEXT' });
+  });
+
+  it('ends the turn as a cancellation, emitting no assistant-message carrying the partial text', async () => {
+    // The original acceptance criterion, kept alongside the source pin above:
+    // the source pin alone would miss a regression in which the source stays
+    // right and a consumer reads the outcome by some other route.
+    // Reach (measured): reverting the classification in
+    // `runProviderWithRetries` fails this; dropping `partialText` does not
+    // (no consumer reads it), which is exactly why the source pin is separate.
+    const adapter = new CleanAbortAdapter('PARTIAL TEXT');
+    const { loop, events } = makeLoopWithAdapter(adapter);
+
+    const turn = loop.runTurn('t1', 'hello');
+    await adapter.parked;
+    loop.cancel();
+    await turn;
+
+    expect(events.find((e) => e.type === 'turn-error')).toMatchObject({ message: 'turn canceled' });
+    expect(events.filter((e) => e.type === 'assistant-message')).toHaveLength(0);
+  });
+});
