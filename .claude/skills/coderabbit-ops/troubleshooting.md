@@ -4,22 +4,19 @@ Case-by-case dispositions for CodeRabbit issues. The verdict-surface checklist, 
 
 ## The plan's limits are permanent, not incidents
 
-**This repository is on CodeRabbit's free plan** (owner-confirmed, 2026-08-28). Two limits follow from that and will not clear by waiting for a better day:
+**This repository is on CodeRabbit's free plan** (owner-confirmed, 2026-08-28): **one included review per hour** (the remaining count is stated at the end of each review body) and **a hundred changed files per PR**, over which the bot skips the review entirely.
 
-- **One included review per hour.** The count is stated at the end of each review body ("Your plan provides up to 1 included review per hour; 0 remain after this review").
-- **A hundred changed files per PR.** Over that, the bot skips the review entirely.
+**Do not investigate these as misconfiguration.** A review body can carry `Plan: Pro Plus` next to `You've used all free OSS reviews` — the first is display text, not this repository's contract state.
 
-Do not investigate these as misconfiguration. A review body can carry a line reading `Plan: Pro Plus` next to one reading `You've used all free OSS reviews` — the first is display text, not this repository's contract state, and chasing it costs an hour and finds nothing.
+Three consequences:
 
-**Plan around them instead.** Three consequences worth holding:
+1. **A slot given to one PR is an hour taken from another.** Decide the allocation deliberately rather than letting whichever branch pushes next consume the window. The claim is strongest for a PR with **no genuine round yet** and a large production diff; weakest for one with real rounds already and a small remaining gap — that case has the dual-clean disposition below, and a zero-round PR does not.
+2. **Batch the fixes.** Three pushes in response to one review spends three hours to get two reviews.
+3. **The `docs:` carve-out is an allocation tool.** A retro or spec PR titled `docs:` skips auto-review by config, preserving the window for code PRs waiting on it.
 
-1. **A slot given to one PR is an hour taken from another.** When PRs compete, decide the allocation deliberately rather than letting whichever branch happens to push next consume the window. The claim on a slot is strongest for a PR with **no genuine round yet** and a large production diff; it is weakest for one that has already had real rounds and whose remaining gap is small — that case has the dual-clean disposition below, and a zero-round PR does not.
-2. **Batch the fixes.** Responding to a review in three pushes spends three hours to get two reviews. Fix everything the round raised, then push once.
-3. **The `docs:` carve-out is an allocation tool, not just a quota saver.** A retro or spec PR titled `docs:` skips auto-review by config, which preserves the window for code PRs waiting on it.
+**Over the file cap, no disposition substitutes for the review** — it never started, so there is nothing to have confidence in. Reduce the diff, and before splitting the change itself look for **accidental fan-out**: files touched for reasons unrelated to the change's subject. Removing that is usually right on its own merits and leaves the design intact; splitting a deliberately atomic change does not.
 
-**When a PR is over the file cap**, no disposition substitutes for the review — it never started, so there is nothing to have confidence in. Reduce the diff. Before splitting the change itself, look for **accidental fan-out**: files the change touches for reasons unrelated to its subject. Removing that is usually correct on its own merits and leaves the design intact, where splitting a deliberately atomic change does not.
-
-(Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — 107 files against the cap of 100. Twelve of them were migration tests whose entire diff was one line bumping an assertion of the schema's terminal version, a fact `migration.test.ts` already asserted; every migration added had been touching every migration test. Removing that duplication was the right change regardless of the cap, took the PR to 95, and let a real review run — which then found a Major the Architect's audit and the Orchestrator's acceptance check had both missed. Splitting the swap itself was rejected: the window where one engine has no context management is measured in review round-trips, not minutes.)
+(Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — 107 files. Twelve were migration tests whose entire diff bumped an assertion `migration.test.ts` already owned: every migration added had been touching every migration test. Removing it took the PR to 95 and let a real review run, which found a Major that an independent audit and the acceptance check had both missed. Splitting the swap itself was rejected — the window where one engine has no context management is measured in review round-trips, not minutes.)
 
 ## Q: The local CodeRabbit CLI is rate-limited. What do I do?
 

@@ -197,13 +197,11 @@ Claims of the form "**still waiting on** X" are the highest-risk shape, because 
 
 ### Sub-pattern 8: the record, mistaken for the system
 
-**Inference trap.** An Issue's status is read as a statement about the code. **Open** becomes "not built yet"; **closed** becomes "shipped and working". The tracker is a record of intent and attention, and it drifts from the repository in both directions — an Issue stays open because a verification step was never re-run, or closes because the conversation moved on.
+**Inference trap.** An Issue's status read as a statement about the code — **open** as "not built yet", **closed** as "shipped and working". The tracker records intent and attention, and drifts from the repository in both directions. This is worst at *scoping* time, where the error is invisible: planning to build something that already exists looks exactly like work.
 
-This is the most expensive one to get wrong at *scoping* time, because the mis-scope is invisible: work planned to build something that already exists looks exactly like work, right up until someone reads the code.
+**Verify procedure.** Read `main` — the code and the merge history — before scoping from a status. For an open Issue ask: **built nothing, or confirmed nothing?** Those call for entirely different work.
 
-**Verify procedure.** Before scoping work from an Issue's status, read what is actually in `main` — the code and the merge history. An open Issue in particular deserves the question **"open because nothing was built, or open because something was never confirmed?"** They call for completely different work.
-
-(Lesson: Sprint 2026-08-29 — the Architect scoped a phase as "the main body of #1123, a rewrite", from that Issue being open. Reading the code corrected it: the implementation had shipped in PR #1201 and its follow-ups, and #1123 was open only because a dogfood E2E that failed on 2026-07-18 had never been re-run after the fix landed. The phase collapsed from a rewrite to finishing one verification. The correction was self-reported and kept in the Issue's text rather than quietly replaced.)
+(Lesson: Sprint 2026-08-29 — a phase was scoped as "the main body of #1123, a rewrite" from that Issue being open. The implementation had shipped in PR #1201 and its follow-ups; #1123 was open only because a dogfood E2E that failed on 2026-07-18 was never re-run after the fix landed. The phase collapsed to finishing one verification.)
 
 ## Cheap refutation: universal claims
 
@@ -223,19 +221,17 @@ This names a point several existing disciplines already circle: the vacuous trut
 
 ## A check's existence is not its detection power
 
-The third sibling of the two criteria above, and the one that hides best. Those ask whether you are reading the right signal, and what shape your claim has. This one asks whether **the check you already have would actually notice**.
+Third sibling of the two criteria above. They ask which signal you are trusting and what shape your claim has; this asks whether **the check you already have would notice**. A test exists, a rule was followed, a pin was named — none of that is evidence any of them would catch what they were placed for, and because they read as coverage they end the search.
 
-A test exists. A rule was followed. A pin was placed and named. None of that is evidence that any of them would catch the thing they were put there for — and because they *look* like coverage, they are counted as coverage and stop the search exactly where it should continue.
+**Break the thing the check should catch, and watch it fail.** If it stays green it is not doing that job, whatever its name. This is `testing.md`'s polarity requirement generalised past bug fixes to any check being relied on.
 
-**The test is mechanical: break the thing the check is supposed to catch, and watch the check fail.** If it stays green, it is not doing that job, whatever its name says. This is `testing.md`'s polarity requirement generalised past bug fixes to any check that anyone is relying on — and the same reason "No partial polarity" refuses "N of M is enough".
+Three moments where the illusion is strongest:
 
-Ask it at three moments, because they are where the illusion is strongest:
+- **A check placed to satisfy a rule.** Satisfying the rule and having its detection power are different achievements; the first is what gets reported.
+- **A pin on a contract you just documented.** A pin fixes the contract's *content*, not its *scope*. Ask separately what path makes the contract false, and whether the pin sees it.
+- **A check you inherited.** Nobody re-derives what a green test asserts; its greenness answers whatever question is currently asked of it.
 
-- **When a check was placed to satisfy a rule.** Satisfying the rule and having the rule's detection power are different achievements, and the first is what gets reported.
-- **When you add a pin to a contract you just documented.** A pin fixes the contract's *content*; it says nothing about the contract's *scope*. Ask separately: what path makes this contract false, and does the pin see that path?
-- **When a check is inherited rather than written.** Nobody re-derives what an existing green test is asserting; its greenness is read as the answer to whatever question is currently being asked of it.
-
-(Lessons, all Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403). An integration test placed to satisfy Gap-Scan Q10 — the wire-boundary requirement written after [#926](https://github.com/ms2sato/agent-console/issues/926), where valibot silently dropped a field, every unit test passed, and the owner's Browser QA found it three hours later — read the manager's in-memory map rather than the persisted row. Mutating the mapper to drop the field: **fails with the fix, passes without it.** The test carried Q10's name and none of its detection power. The same PR then hit the same class again at a second gate Q10's text does not name. Separately, a pin test was written to fix a wire-semantics decision about which turn an injected `/compact` belongs to, and the Architect's audit called it a model of recording a decision — but it **passes under the old ordering too**, the very ordering in which the contract silently breaks. That one measurement is exactly how much the pin was protecting, and it was found by CodeRabbit after both an implementation and an independent audit had called the area clean.)
+(Lessons, Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403). A test placed to satisfy Gap-Scan Q10 read an in-memory map instead of the persisted row: mutating the mapper to drop the field **fails with the fix and passes without it** — Q10's name, none of its detection power. A pin fixing which turn an injected `/compact` belongs to **passes under the old ordering too**, the ordering in which that contract silently breaks; that measurement is how much the pin was protecting. Both surfaced from CodeRabbit, after an implementation and an independent audit had called the area clean.)
 
 ## Commands
 

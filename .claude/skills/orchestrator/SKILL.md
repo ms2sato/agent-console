@@ -133,14 +133,12 @@ The Architect observes no ambient state — no CI, no PR status, no dogfood, no 
 
 Full rationale and the ambient-observation guarantee: [`docs/design/architect-role.md`](../../../docs/design/architect-role.md) §6.
 
-**Label each claim in the package by how you know it, and keep quotes separate from your reading of them.** You are the only input either side has to the other, so both directions of relay pass through you unchecked.
+**Label each claim by how you know it, and keep quotes separate from your reading of them.** You are the only input either side has to the other, so both directions of relay pass through you unchecked.
 
-Two failures, both cheap to prevent:
+- **An unverified claim, relayed flat.** A package mixing "I read this in the code" with "the delegate told me this" reads as one level of confidence. Mark them per claim — a blanket "I have not checked everything" does not say *which* thing to doubt.
+- **Attribution, inflated in transit.** "No change needed" easily becomes "your judgment was right", which grants something the original did not. **Quote the original; mark your reading as yours.** The receiver cannot reliably catch this — one delegate refused such a claim only because the wording felt off, and said a smoother version would have been accepted.
 
-- **An unverified claim, relayed flat.** A package that mixes "I read this in the code" with "the delegate told me this" reads as one level of confidence. Say which is which per claim — a blanket "I have not checked everything here" does not tell the reader *which* thing to doubt.
-- **Attribution, inflated on the way through.** Passing on a verdict, it is easy to relay "no change needed" as "your judgment was right" — the second grants something the first did not, and the recipient may accept it. **Quote the original and mark your reading as yours.** The receiver cannot reliably catch this: one delegate refused such a claim only because the wording felt off, and said plainly that a smoother version would have been accepted.
-
-(Lessons, both Sprint 2026-08-28: the Orchestrator relayed a delegate's "already recorded in Appendix A" into an audit package; it was not recorded, and the Architect audited under a false premise. Separately, the Architect's "no additional test needed" was relayed as "your decision not to add one was correct" — a decision the delegate had not made, and which they declined on exactly that ground.)
+(Lessons, both Sprint 2026-08-28: a delegate's "already recorded in Appendix A" was relayed into an audit package; it was not recorded, and the Architect audited under a false premise. Separately, the Architect's "no additional test needed" was relayed as "your decision not to add one was correct" — a decision the delegate had never made, and declined on that ground.)
 
 ### When the Architect stops answering
 
@@ -187,21 +185,17 @@ The failure is not disobedience. A worker who resolves a scope question correctl
 
 ## Writing instructions: specify gates and properties, delegate mechanisms and claims about the code
 
-You see the code through a model of it. The delegate sees the code. Most instruction defects come from forgetting which of you is looking at which, and they sort into two kinds that need different fixes.
+You see the code through a model of it; the delegate sees the code. Instruction defects sort into two kinds needing different fixes.
 
-**A claim about the current state of the code, issued as a step.** "Take main's side — it is a pure deletion." "Three edge cases need tests." "Twelve files match." Each is a fact about the repository, dressed as a procedure, and it breaks the moment the model and the repository disagree. The delegate then follows a correct-looking instruction into a wrong result, and the wrongness is often invisible: a conflict resolved the way you said, silently reverting a rename they had made.
+**A claim about the code, issued as a step** — "take main's side, it is a pure deletion", "three edge cases need tests", "twelve files match". Each is a fact dressed as a procedure, and it breaks the moment the model and the repository disagree. The delegate then follows a correct-looking instruction into a wrong result, often invisibly: a conflict resolved as you said, silently reverting a rename they had made. **The fix costs one clause** — write it as something to check: *"main's side should be a pure deletion — confirm before taking it, and report if it is not."*
 
-**The fix costs one clause.** Write the claim as something to check, not as a step: *"main's side should be a pure deletion — confirm before taking it, and report if it is not."* Zero extra work when you are right, and it catches you when you are not.
+**A mechanism, specified before it can be known** — "consolidate the guard into one place". Mechanism emerges while implementing; naming it up front replaces the implementer's information with yours. **Specify the property instead**: "don't create a second writer for the same fact" reaches the same place and can be satisfied better by someone who has read the code. Told to consolidate a guard, one delegate made a single writer of the *definition* and had each site consult it — the audit judged that better than the instruction, since collapsing the sites would have discarded the context each verdict carries.
 
-**A mechanism, specified before it can be known.** "Consolidate the guard into one place." "Add tests for these three edges." Mechanism emerges while implementing; naming it up front replaces the implementer's information with yours.
+**What is worth specifying tightly is a gate.** "Report anything MEDIUM or above before fixing it" names no mechanism, only a moment to stop — and it stopped a defensive fallback that would have re-created, in a second file, the duplicate source of truth that same delegate had removed hours earlier.
 
-**The fix is to specify the property and let them choose the mechanism.** "Don't create a second writer for the same fact" reaches the same destination and can be satisfied by someone who has read the code — often better than the shape you had in mind. One delegate, told to consolidate a guard into one place, instead made a single writer of the *definition* and let each derivation site consult it; the Architect's audit judged the result better than the instruction, because collapsing the sites would have discarded the context each verdict carries.
+**Keep the proportion honest.** Over-specifying costs round trips; what costs orders of magnitude more is what nobody specified or verified at all. A retrospective centring on "I was too prescriptive" is measuring the cheap failure.
 
-**What is worth specifying tightly is a gate.** "Report anything MEDIUM or above before fixing it" names no mechanism at all — it fixes only a moment to stop. That single line was the most load-bearing instruction of the sprint it comes from: it stopped a defensive fallback that would have quietly re-created, in a second file, the very duplicate-source-of-truth the same delegate had removed hours earlier.
-
-**And keep the proportion honest.** Over-specifying costs round trips. What costs orders of magnitude more is what nobody specified or verified at all — in the sprint below, the two most expensive findings appeared in no AC, no instruction and no plan, and were found by the external reviewer after both the implementation and an independent audit had called the area clean. A retrospective that centres on "I was too prescriptive" is measuring the cheap failure.
-
-(Lesson: Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — the delegate's retrospective sorted six Orchestrator instruction defects into exactly these two classes and supplied both fixes, then pushed back on the Orchestrator's own summary of them: *"what was expensive was the two things neither of us specified."*)
+(Lesson: Sprint 2026-08-28 PR [#1403](https://github.com/ms2sato/agent-console/pull/1403) — the delegate's retrospective sorted six Orchestrator instruction defects into these two classes, supplied both fixes, then pushed back on the Orchestrator's summary of them: *"what was expensive was the two things neither of us specified."* Both had been found by the external reviewer, after the implementation and an independent audit called the area clean.)
 
 ## Core Responsibilities
 
