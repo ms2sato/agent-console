@@ -399,6 +399,7 @@ interface Runtime {
    * replacement the previous one just started.
    */
   fatalReplacementStarted: boolean;
+  /**
    * Idle eviction: the countdown may only be armed once this incarnation has
    * reported `ready` AND its initial-prompt obligation has been discharged.
    *
@@ -499,6 +500,7 @@ export class EmbeddedAgentWorkerService {
    * is meant to count.
    */
   private readonly fatalChainReplacementSpent = new Set<string>();
+  /**
    * Idle eviction: in-flight evictions keyed by workerId, so the delivery
    * choke point ({@link ensureDeliverable}) can await one before deciding
    * whether there is a subprocess to deliver into.
