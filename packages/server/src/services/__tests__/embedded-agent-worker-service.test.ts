@@ -700,6 +700,27 @@ describe('EmbeddedAgentWorkerService.activate', () => {
   });
 });
 
+/**
+ * A persisted stream that fails reconstruction.
+ *
+ * The malformed line is deliberately the SECOND one, and NOT because the
+ * first position stopped failing under this harness -- it did not.
+ *
+ * These tests are about what the SERVICE does when restore fails: reset with
+ * sidecar, null restore-info, no `onRestoreInfo` push. The head tolerance
+ * (#1445) is gated on `truncated`, which this harness pins to false
+ * (`startOffset: 0`), so a lone `{not valid json` still throws here on the
+ * corruption path. The original single-line fixture would still work.
+ *
+ * The fixture is position-independent anyway, because position became
+ * load-bearing elsewhere: for a caller that does pass `truncated: true`, the
+ * first record is the one the parser may drop. A test whose subject is the
+ * service's failure handling should not quietly depend on which line is
+ * malformed -- so this one states its own opening record rather than
+ * inheriting a guarantee from a flag it never sets.
+ */
+const RESTORE_FAILING_STREAM = `${JSON.stringify({ v: 1, type: 'user-message', id: 'm0', text: 'opens the window' })}\n{not valid json`;
+
 describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   // The trailing `state: 'idle'` is what a real completed turn always
   // carries -- both engines emit it at the turn boundary. It was absent here
@@ -768,7 +789,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
   });
 
   it('resets the output stream with preserveToSidecar and omits restoredConversation when restore fails', async () => {
-    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
 
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -839,7 +860,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     });
 
     it('returns null after a restore failure', async () => {
-      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
@@ -908,7 +929,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     });
 
     it('does NOT invoke onRestoreInfo when restore fails', async () => {
-      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: '{not valid json' } });
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
 
       await h.service.activate(h.sessionId, h.workerId);
 
