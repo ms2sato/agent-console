@@ -364,7 +364,7 @@ interface Runtime {
  * Collapsing the two with a negation would show a divergence notice on every
  * `openai-api` worker, which is why consumers test `=== false`.
  */
-interface RestoreInfo {
+export interface RestoreInfo {
   messageCount: number;
   repairedToolCallIds: string[];
   completed: boolean;

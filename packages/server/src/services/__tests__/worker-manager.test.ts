@@ -453,11 +453,13 @@ describe('WorkerManager', () => {
 
       const stored = worker.connectionCallbacks.get(connectionId);
       expect(stored).toBeDefined();
-      const storedRecord = stored as unknown as Record<string, unknown>;
-      const dropped = Object.keys(callbacks).filter((k) => storedRecord[k] === undefined);
-      expect(dropped).toEqual([]);
-      // And the stored one is actually callable -- the property being present
-      // is not the same as it being the function that was passed.
+      // Whole-object equality rather than a per-key sweep: it needs no cast,
+      // and it is the stronger assertion -- every member must be present AND
+      // be the same function that was passed, so a member that is stored but
+      // rebound to something else fails here too.
+      expect(stored).toEqual(callbacks);
+      // Presence is not reachability: invoke through the stored reference.
+      expect(stored?.onRestoreInfo).toBeDefined();
       stored?.onRestoreInfo?.({ messageCount: 1, repairedToolCallIds: [], completed: true });
       expect(callbacks.onRestoreInfo).toHaveBeenCalledTimes(1);
     });

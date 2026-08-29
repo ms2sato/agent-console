@@ -383,7 +383,8 @@ type EmbeddedAgentCommand =
       maxToolIterations: number;
       enabledTools?: EmbeddedAgentToolName[]; // FF-1a; server forwards the definition's raw value unchanged, incl. undefined — the loop applies the undefined -> default rule itself (see Built-in tools)
       instructions?: string[];                // opt-in instruction-file list, forwarded unchanged; the loop resolves + confines + loads them — see AGENTS.md loader
-      compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number } } // Compaction; `auto` is the WORKER's toggle, the other two the definition's
+      compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number }; // Compaction; `auto` is the WORKER's toggle, the other two the definition's
+      resume?: { sdkSessionId: string } }     // Transcript Restore R1 (#1410); claude-sdk ARM ONLY (the real type is engine-discriminated -- an openai-api init carrying one is not representable). Absent = fresh session. The id comes from the workers row and nowhere else
   | { v: 1; type: 'user-message'; id: string; text: string } // id minted by server, echoed in events
   | { v: 1; type: 'cancel' }                                 // abort the in-flight turn (AbortController)
   | { v: 1; type: 'set-auto-compaction'; enabled: boolean }  // Compaction; reflects a toggle change into a running subprocess. Not gated on turnActive — the flag is only read at the turn boundary
@@ -405,7 +406,9 @@ type EmbeddedAgentEvent =
   | { v: 1; type: 'fatal'; message: string }                         // loop is about to exit(1)
   | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean } // Compaction; emitted after every turn/compaction attempt that produced a usable value
   | { v: 1; type: 'context-compacted'; source: 'auto' | 'manual'; summary?: string; preTokens?: number; postTokens?: number } // Compaction; persisted boundary marker, emitted immediately before the atomic conversation replacement. The token pair is what the transcript row renders, so an aggressive compaction reports its own severity
-  | { v: 1; type: 'context-handoff'; distillation: string };         // RETIRED (Context Handoff, #1122): no longer emitted; the type and its parse/render path are retained so persisted transcripts written before #1401 still replay
+  | { v: 1; type: 'context-handoff'; distillation: string }          // RETIRED (Context Handoff, #1122): no longer emitted; the type and its parse/render path are retained so persisted transcripts written before #1401 still replay
+  | { v: 1; type: 'sdk-session-id'; sdkSessionId: string }           // claude-sdk only; the worker's CURRENT SDK session id, last-write-wins. Arrives with the first turn, not at activation
+  | { v: 1; type: 'sdk-resume-failed'; requestedSdkSessionId: string; reason: 'not-found' | 'refused' }; // Transcript Restore R1 (#1410); claude-sdk only. The MACHINE-readable half of a refused resume -- the `turn-error` beside it is what the user reads. The server branches on `reason`
 ```
 
 Two further event kinds are written into the persisted stream by the SERVER, not the loop, so that the on-disk log is the complete transcript. The **replay/persistence union includes them** — clients that parsed only `EmbeddedAgentEvent` would silently drop every user message and exit row from replayed history:
@@ -413,6 +416,7 @@ Two further event kinds are written into the persisted stream by the SERVER, not
 ```ts
 type EmbeddedAgentServerEvent =
   | { v: 1; type: 'user-message'; id: string; text: string }  // appended when forwarding to stdin
+  | { v: 1; type: 'turn-interrupted'; turnId: string }        // Transcript Restore R1 (#1410); appended at activation for a turn the previous incarnation never answered. Server-authored on purpose -- never a synthesized `turn-error`
   | { v: 1; type: 'exited'; code: number | null };            // appended when subprocess.exited resolves
 
 /** What actually lives in the worker output file and is replayed to clients. */
@@ -1075,7 +1079,8 @@ New optional `init` field, extending [Stdio protocol](#stdio-protocol-v1) (no ot
 ```ts
 | { v: 1; type: 'init';
     ...
-    restoredConversation?: ChatMessage[]; }  // Transcript Restore (#1123); absent = fresh conversation (today's v1 behavior)
+    restoredConversation?: ChatMessage[];    // Transcript Restore (#1123); openai-api only -- absent = fresh conversation
+    resume?: { sdkSessionId: string }; }     // Transcript Restore R1 (#1410); claude-sdk only -- the SDK resumes its own session state rather than being handed a reconstruction, so these two fields are never both meaningful for one engine
 ```
 
 No new persisted/wire EVENT type is introduced -- consistent with the Issue's own expectation of no new events: restore is pure reconstitution from the existing `EmbeddedAgentStreamEvent` union already on disk, plus one new optional command field to hand the result to the loop.

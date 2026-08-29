@@ -635,19 +635,46 @@ async function itemPostCompact(): Promise<void> {
 async function itemInvalidResume(): Promise<void> {
   h('R1 -- resume an id the SDK cannot find (PS6), and pre-flight it (PS7)');
 
-  // A real session, killed mid-first-turn: the hardest PS7 case, and the
-  // positive control that makes the negatives below mean something.
+  // A real session killed DURING its first turn -- the hardest PS7 case, and
+  // the positive control that makes the negatives below mean something.
+  //
+  // The turn is started WITHOUT being awaited, exactly as `itemMidTurn` does
+  // it, and for the reason that item's own comment already records: awaiting
+  // it means the kill lands after the turn settles, and what gets measured is
+  // an idle kill wearing a mid-first-turn label. The first version of this
+  // item did await it -- the run reported `result=success` and the claim
+  // "killed mid-first-turn" was false of the artifact even though it was true
+  // of the ad-hoc probe this item was preserved from. `turnInFlight` below is
+  // what makes that failure visible instead of silently weakening the case.
   const token = nonce('NONCE-INVALID');
   const origin = new ProbeSession({ label: 'r1-origin', options: buildOptions() });
   await origin.waitForReady();
-  const t1 = await origin.runTurn(
-    `Remember this exact token: ${token}. Then count slowly from 1 to 60, one number per line, with a sentence about each.`,
+  const inFlight = origin.runTurn(
+    `Remember this exact token: ${token}. Then write out the numbers from 1 to 3000, one per line, with no other text. Do not stop early and do not abbreviate.`,
+    180_000,
   );
-  account('r1-origin', t1);
-  console.log(turnLine('turn 1 (long, to be interrupted)', t1));
+  await sleep(5_000);
+  const killedDuringFirstTurn = origin.turnInFlight;
+  // Captured while the turn is still live: the session id has to exist before
+  // the kill for the PS7 lookup below to mean anything.
   const originSessionId = origin.sessionId;
+  console.log(`a first turn was still in flight at kill time: ${killedDuringFirstTurn}`);
   console.log(`origin session id: ${originSessionId ?? '(none)'}`);
   await killChildren(origin, 'r1-origin');
+  const interrupted = await inFlight;
+  account('r1-origin', interrupted);
+  console.log(`${turnLine('turn 1 (interrupted)', interrupted)}`);
+
+  if (!killedDuringFirstTurn) {
+    verdicts.push({
+      item: 'PS7 (getSessionInfo pre-flight)',
+      verdict:
+        'RECORDED NON-RESULT -- the first turn had already settled when the kill fired, so this run measured a COMPLETED-turn session, which is the easy case. The hard case (no assistant reply ever produced) was not exercised. Lengthen the generation or shorten the delay and re-run; do NOT read this run as covering PS7\'s adversarial case',
+      stop: false,
+      control: 'n/a -- the case under test never occurred',
+    });
+    return;
+  }
 
   // --- PS7 ---
   h('PS7 -- getSessionInfo as a pre-flight');
@@ -690,14 +717,23 @@ async function itemInvalidResume(): Promise<void> {
   console.log(`result subtype: ${resultSubtype}  is_error=${t.result?.is_error ?? '(n/a)'}`);
   console.log(`stream ended: ${invalid.streamEnded ?? 'still open'}${invalid.streamError ? ` -- ${invalid.streamError}` : ''}`);
 
+  // PS6 is an ABSENCE claim, so it needs positive evidence that the thing
+  // whose absence is being reported actually ran to a terminal state. Without
+  // this, a harness that silently did nothing -- a turn that timed out AND a
+  // stream wait that returned on its own timeout -- produces exactly the same
+  // observation as a genuine refusal, and would be reported as HOLDS.
+  const reachedTerminal = t.result !== undefined || invalid.streamEnded !== null;
   verdicts.push({
     item: 'PS6 (a failed resume emits no system:init)',
     verdict: sawSystemInit
       ? 'BROKEN: a system:init arrived for a resume that failed -- R1\'s detector now reports every failed resume as a SUCCESS, silently'
-      : 'HOLDS: no system:init of any kind arrived; the failure surfaced as a terminal error instead',
+      : reachedTerminal
+        ? 'HOLDS: no system:init of any kind arrived; the failure surfaced as a terminal error instead'
+        : 'INDETERMINATE: no system:init arrived, but the query never reached a terminal state either (no result, and the stream wait timed out). An absence observed from a harness that did nothing is not evidence -- re-run before reading anything into it',
     stop: sawSystemInit,
-    control:
-      'the origin session above reached system:init normally in this same run, so its absence here is attributable to the invalid resume rather than to the harness',
+    control: reachedTerminal
+      ? 'the origin session above reached system:init normally in this same run, so its absence here is attributable to the invalid resume rather than to the harness'
+      : 'the control cannot be evaluated: the invalid session produced no terminal evidence',
   });
   invalid.close();
 }
