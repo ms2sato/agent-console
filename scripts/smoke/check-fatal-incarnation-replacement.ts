@@ -365,10 +365,17 @@ async function main(): Promise<void> {
     console.log('\n==> CASE 1: idle kill (the Issue\'s repro)');
 
     const plantMarker = (await readEvents(sessionId, workerId)).length;
+    // Routed through a TOOL rather than carrying the word in the message text.
+    // A text-only exchange cannot produce the event order a tool-using turn
+    // writes, and that order is where restore broke: `claude-sdk` emits
+    // `tool-call` before the iteration's (empty) `assistant-message`. Every
+    // shipped restore smoke was text-only, which is why that reached a user.
+    await Bun.write(path.join(workCwd, 'qa-note.txt'), `The secret word is ${SECRET_WORD}.\n`);
     const plant = await sm.sendEmbeddedAgentUserMessage(
       sessionId,
       workerId,
-      `Remember this secret word: ${SECRET_WORD}. Reply with only OK.`,
+      'Use the Read tool to read qa-note.txt in the current directory, then remember ' +
+        'the secret word it contains. Reply with only OK.',
     );
     if (!plant.ok) bail(`the planting message was refused: ${JSON.stringify(plant)}`);
     const answered = await waitForIdleAfter(sessionId, workerId, plantMarker, 'the planting turn to complete');

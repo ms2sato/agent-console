@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'bun:test';
 import type { EmbeddedAgentStreamEvent } from '@agent-console/shared';
 import type { ChatMessage } from '../providers/types.js';
@@ -338,21 +339,37 @@ describe('reconstructConversation — invariant violations (4f fallback trigger)
     expect(() => reconstructConversation(badLine, SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
   });
 
-  it('throws RestoreReconstructionError when a tool-call has no preceding assistant-message in the window', () => {
+  it('RECONSTRUCTS a tool-call that opens a begun turn — this shape used to be asserted as a violation', () => {
+    // CONTRACT CHANGE, and the sharpest evidence in this file that it was
+    // needed: these exact events are the shape one engine actually writes --
+    // a turn whose first act is a tool call, its empty assistant flush
+    // following. The suite pinned it as an invariant VIOLATION, so the defect
+    // was never uncovered; it was covered, and the coverage asserted the
+    // wrong outcome for the right data.
     const events: EmbeddedAgentStreamEvent[] = [
       { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
       { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: {} },
     ];
-    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    const out = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    expect(out.conversation.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'tool']);
+    // The synthesised message carries the call, and mid-turn repair answers it
+    // -- the reconstruction stays provider-valid.
+    expect(toolCallsAnsweredImmediately(out.conversation)).toBe(true);
   });
 
-  it('throws RestoreReconstructionError when a tool-call follows a user-message that reset the current assistant pointer', () => {
+  it('RECONSTRUCTS a second turn that opens with a tool call, after a user-message reset the pointer', () => {
+    // Same contract change, one turn further in. The `user-message` resetting
+    // `current` to null is what the old guard read as "no assistant message",
+    // but it is also precisely what says a turn has begun -- so the reset that
+    // used to condemn this window is now what licenses it.
     const events: EmbeddedAgentStreamEvent[] = [
       { v: 1, type: 'assistant-message', turnId: 't1', text: 'reply1' },
       { v: 1, type: 'user-message', id: 'm2', text: 'next turn' },
       { v: 1, type: 'tool-call', turnId: 't2', callId: 'c1', name: 'run', args: {} },
     ];
-    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    const out = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    expect(out.conversation.map((m) => m.role)).toEqual(['system', 'assistant', 'user', 'assistant', 'tool']);
+    expect(toolCallsAnsweredImmediately(out.conversation)).toBe(true);
   });
 
   it('throws RestoreReconstructionError on an orphan tool-result with no owning tool-call in the window (R1, #1202 rotation-truncated window)', () => {
@@ -670,6 +687,116 @@ describe('reconstructConversation — restoredMessageCount', () => {
  *          chars/4 estimate of the seed it built, and must not arrive at the
  *          next incarnation claiming to be a provider measurement.
  */
+/**
+ * Either write order reconstructs, and debris still does not.
+ *
+ * WHY THE FIXTURES ARE FILES AND NOT ARRAYS. The two engines disagree about
+ * where a turn's `assistant-message` sits relative to its first `tool-call`,
+ * and the reader was written against one of them. Every existing layer passed
+ * for a single reason: **the array a test author writes is the array the
+ * reader already expects.** So the two order fixtures here are copied
+ * byte-for-byte from real persisted streams rather than assembled -- one of
+ * them is the `.restore-failed.log` sidecar the failure itself produced, i.e.
+ * the exact bytes the reader choked on, since a sidecar is an `fs.rename` of
+ * the live file and not a re-serialisation.
+ *
+ * Provenance, and one caution for anyone regenerating them: a sidecar is
+ * SINGLE-SLOT per worker -- the next restore failure on that worker renames
+ * over it. These survived only because they were copied out to a QA artifacts
+ * directory, and were then renamed away from the worker's UUID. A search for
+ * one wants the right roots as much as the right glob.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m1  remove the `turnBegun` guard, so a leading `tool-call` always opens
+ *       an implicit assistant
+ *       -> 1 fails: 'debris before any user-message still throws'. That test
+ *          is the only thing keeping a TRUNCATED window from being presented
+ *          as a whole one, and it is what leaves the truncated-window
+ *          question to the design decision that owns it.
+ *   m2  drop the `implicitAssistantOpen` merge, so the engine's own flush
+ *       pushes a second assistant message
+ *       -> 3 fail: the claude-sdk order case, the single-turn assertion, and
+ *          the equivalence pin. The reconstruction still SUCCEEDS under this
+ *          mutation -- it just splits one assistant turn into two -- which is
+ *          why every one of those three compares whole conversations rather
+ *          than asserting no throw. A pin that only checked "did not throw"
+ *          would pass here.
+ *   m3  make the implicit open unconditional (drop `current === null`)
+ *       -> 4 fail, across three other describes -- every case where a
+ *          tool-call belongs with an assistant message already open. Wider
+ *          than predicted, and the width is the point: that condition is load
+ *          bearing for the ordinary path, not only for this fixture.
+ */
+describe('replayWindow — either engine write order (#1457 fixtures)', () => {
+  const fixture = (name: string) =>
+    readFileSync(new URL(`./__fixtures__/${name}`, import.meta.url), 'utf-8');
+
+  it('reconstructs the claude-sdk order, where the tool-call precedes its assistant-message', () => {
+    // Against the reader as shipped this threw RestoreReconstructionError and
+    // the worker fell to the destructive reset.
+    const out = reconstructConversation(fixture('restore-claude-sdk-tool-first.ndjson'), SYSTEM_PROMPT);
+    expect(out.conversation.map((m) => m.role)).toEqual(['system', 'user', 'assistant', 'tool', 'assistant']);
+    expect(toolCallsAnsweredImmediately(out.conversation)).toBe(true);
+  });
+
+  it('does not split one assistant turn into two', () => {
+    // The engine's own (empty) flush arrives AFTER the call it belongs with.
+    // Adopting it into the message the call opened is what makes the two
+    // orders agree; pushing a second message would also "succeed".
+    const out = reconstructConversation(fixture('restore-claude-sdk-tool-first.ndjson'), SYSTEM_PROMPT);
+    const assistants = out.conversation.filter((m) => m.role === 'assistant');
+    expect(assistants).toHaveLength(2);
+    const [withCall] = assistants;
+    expect(withCall.role === 'assistant' && withCall.tool_calls).toHaveLength(1);
+  });
+
+  it('reconstructs the openai-api order unchanged — the shape the reader was written against', () => {
+    const out = reconstructConversation(fixture('restore-openai-api-assistant-first.ndjson'), SYSTEM_PROMPT);
+    expect(out.conversation[0].role).toBe('system');
+    expect(toolCallsAnsweredImmediately(out.conversation)).toBe(true);
+    expect(out.conversation.some((m) => m.role === 'tool')).toBe(true);
+  });
+
+  it('reconstructs BOTH orders of the same conversation identically', () => {
+    // AC pin: the equivalence itself, which is what stops a future change
+    // fixing one order by breaking the other.
+    //
+    // The second order is DERIVED from the artifact rather than typed out --
+    // the claude-sdk stream with its `tool-call` and the empty
+    // `assistant-message` that follows it transposed, which is exactly the
+    // openai-api shape. Deriving it keeps the comparison anchored to real
+    // bytes on both sides; writing the second array by hand would reintroduce
+    // the very thing these fixtures exist to avoid.
+    const lines = fixture('restore-claude-sdk-tool-first.ndjson').split('\n').filter((l) => l.trim() !== '');
+    const types = lines.map((l) => JSON.parse(l).type as string);
+    const call = types.indexOf('tool-call');
+    const flush = types.indexOf('assistant-message', call);
+    expect(call).toBeGreaterThanOrEqual(0);
+    expect(flush).toBe(call + 1); // the shape this transposition assumes
+
+    const transposed = [...lines];
+    [transposed[call], transposed[flush]] = [transposed[flush], transposed[call]];
+
+    const fromSdkOrder = reconstructConversation(lines.join('\n'), SYSTEM_PROMPT);
+    const fromApiOrder = reconstructConversation(transposed.join('\n'), SYSTEM_PROMPT);
+
+    expect(fromApiOrder.conversation).toEqual(fromSdkOrder.conversation);
+    expect(fromApiOrder.restoredMessageCount).toBe(fromSdkOrder.restoredMessageCount);
+  });
+
+  it('debris before any user-message still throws', () => {
+    // A window whose cut fell inside a turn: the call's own user-message is on
+    // the far side of the cut, so nothing here says a turn began. Tolerating
+    // this would present a TRUNCATED conversation as a whole one, silently.
+    const debris = [
+      JSON.stringify({ v: 1, type: 'tool-call', turnId: 't0', callId: 'orphaned', name: 'Read', args: {} }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'm2', text: 'a later turn' }),
+    ].join('\n');
+    expect(() => reconstructConversation(debris, SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+  });
+});
+
 describe('findRestoredUsageSeed — the newest authoritative reading (#1419)', () => {
   const usage = (promptTokens: number, estimated = false): EmbeddedAgentStreamEvent =>
     ({ v: 1, type: 'context-usage', promptTokens, estimated });

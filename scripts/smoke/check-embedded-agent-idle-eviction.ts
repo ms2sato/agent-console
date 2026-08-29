@@ -121,8 +121,18 @@ import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
 
 const NONCE = `NARWHAL-${Math.floor(Math.random() * 9000 + 1000)}`;
+/**
+ * The file the planting turn reads. The turn goes through a TOOL rather than
+ * carrying the nonce in its own text, because a text-only exchange cannot
+ * exercise the event order a tool-using turn writes -- and that order is
+ * where restore broke: `claude-sdk` emits `tool-call` before the iteration's
+ * (empty) `assistant-message`, which the reader rejected. Every shipped
+ * restore smoke was text-only, which is the whole reason that reached a user.
+ */
+const NONCE_FILE = 'qa-note.txt';
 const PLANT_TEXT =
-  `Remember this secret word exactly: ${NONCE}. Reply with only the word OK.`;
+  `Use the Read tool to read ${NONCE_FILE} in the current directory, then remember ` +
+  'the secret word it contains. Reply with only the word OK.';
 const RECALL_TEXT =
   'What is the secret word I told you earlier in this conversation? ' +
   'Reply with only the word itself, or the single word UNKNOWN if I never told you one.';
@@ -275,6 +285,9 @@ async function main(): Promise<void> {
 
     realCwd = path.join(os.tmpdir(), `ac-eviction-smoke-cwd-${crypto.randomUUID()}`);
     Bun.spawnSync(['mkdir', '-p', realCwd]);
+    // The planting turn reads this rather than being told the nonce directly,
+    // so the turn actually uses a tool. See NONCE_FILE.
+    await Bun.write(path.join(realCwd, NONCE_FILE), `The secret word is ${NONCE}.\n`);
 
     const app = new Hono();
     app.use('*', async (c: { set: (k: string, v: unknown) => void }, next: () => Promise<void>) => {

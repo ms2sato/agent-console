@@ -269,24 +269,82 @@ function boundarySummary(event: EmbeddedAgentStreamEvent): string {
 function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEvent[]): void {
   let current: Extract<ChatMessage, { role: 'assistant' }> | null = null;
   const knownToolCallIds = new Set<string>();
+  /**
+   * Whether a `user-message` has been replayed in this window yet.
+   *
+   * This is the discriminator between the two ways a `tool-call` can arrive
+   * with no assistant message open, which look identical at that point and
+   * deserve opposite treatment:
+   *
+   * - **A turn that legitimately opens with a tool call.** The engine emitted
+   *   the call before the (empty) assistant flush of the same iteration. The
+   *   turn's own `user-message` is in the window, so `turnBegun` is true. The
+   *   conversation is COMPLETE and merely in an unexpected order, and the
+   *   right answer is to open the assistant message the writer had not
+   *   emitted yet.
+   * - **Debris from a window that began mid-turn.** The cut fell inside a
+   *   turn, so that turn's `user-message` is on the other side of it and
+   *   `turnBegun` is still false. The conversation is TRUNCATED, and
+   *   synthesising an assistant message here would present a fragment as
+   *   though it were whole -- silently, since nothing downstream marks a
+   *   reconstruction as partial.
+   *
+   * Only the first is tolerated. The second keeps throwing, which is what
+   * leaves the question of how a truncated window should behave open for the
+   * design decision that owns it rather than answering it by side effect.
+   */
+  let turnBegun = false;
+  /**
+   * Whether `current` is an assistant message this function synthesised for a
+   * leading `tool-call`, and is therefore still waiting for the writer's own
+   * flush of that same iteration.
+   *
+   * It exists so the two orders converge on ONE assistant message rather than
+   * two. Without it the engine's own `assistant-message`, arriving after the
+   * call it belongs with, would push a second message and split one assistant
+   * turn in half -- which the provider sees as a different conversation from
+   * the one the other engine's order produces.
+   */
+  let implicitAssistantOpen = false;
 
   for (const event of events) {
     switch (event.type) {
       case 'user-message':
         conversation.push({ role: 'user', content: event.text });
         current = null;
+        implicitAssistantOpen = false;
+        turnBegun = true;
         break;
       case 'assistant-message': {
+        // The flush of the iteration whose tool call already opened this
+        // message: adopt its text instead of starting a second one. Only the
+        // FIRST assistant-message after a synthesised open may do this -- the
+        // flag is cleared here, so a later message in the same window (the
+        // turn's real prose, after the tool results) still begins its own.
+        if (implicitAssistantOpen && current !== null) {
+          current.content = event.text;
+          implicitAssistantOpen = false;
+          break;
+        }
         const message: Extract<ChatMessage, { role: 'assistant' }> = { role: 'assistant', content: event.text };
         conversation.push(message);
         current = message;
+        implicitAssistantOpen = false;
         break;
       }
       case 'tool-call': {
         if (current === null) {
-          throw new RestoreReconstructionError(
-            `tool-call event (callId=${event.callId}) with no preceding assistant-message in the restore window`,
-          );
+          // Debris, not order: no turn has begun in this window, so the call
+          // belongs to one whose start was cut away. See `turnBegun`.
+          if (!turnBegun) {
+            throw new RestoreReconstructionError(
+              `tool-call event (callId=${event.callId}) with no preceding assistant-message in the restore window`,
+            );
+          }
+          const opened: Extract<ChatMessage, { role: 'assistant' }> = { role: 'assistant', content: '' };
+          conversation.push(opened);
+          current = opened;
+          implicitAssistantOpen = true;
         }
         const toolCall: ToolCall = {
           id: event.callId,
