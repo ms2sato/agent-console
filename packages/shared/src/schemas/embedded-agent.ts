@@ -202,6 +202,14 @@ const EmbeddedAgentInitCommandSchema = v.variant('engine', [
       model: v.string(),
       apiKey: v.optional(v.string()),
     }),
+    // On the openai-api arm only -- `claude-sdk` carries its own context
+    // state through the SDK resume, so a seed there is not representable. See the type's doc comment for what `estimated` means.
+    restoredUsage: v.optional(
+      v.strictObject({
+        promptTokens: v.pipe(v.number(), v.integer(), v.minValue(0)),
+        estimated: v.boolean(),
+      }),
+    ),
   }),
   v.strictObject({
     ...EmbeddedAgentInitCommandBaseFields,

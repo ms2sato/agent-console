@@ -35,6 +35,7 @@ import {
   type EmbeddedAgentServerEvent,
   type EmbeddedAgentServerNotification,
   type EmbeddedAgentRestoredMessage,
+  type EmbeddedAgentRestoredUsage,
   type AgentActivityState,
   type ExitReason,
 } from '@agent-console/shared';
@@ -661,6 +662,12 @@ export class EmbeddedAgentWorkerService {
       // path instead).
       const resolver = this.deps.getPathResolver(session);
       let restoredConversation: EmbeddedAgentRestoredMessage[] | undefined;
+      // The newest authoritative context reading in the log, extracted by the
+      // same reconstruction pass. Passed to the subprocess so
+      // the restore-boundary compaction check is decided by a measurement
+      // instead of by re-estimating the reconstructed text (which omits the
+      // published tool schemas and so is systematically low).
+      let restoredUsage: EmbeddedAgentRestoredUsage | undefined;
       let restoreInfo: RestoreInfo | null = null;
       // Transcript Restore, R1: the turn (if any) that the previous
       // incarnation left unanswered. Detected during the same replay that
@@ -716,6 +723,7 @@ export class EmbeddedAgentWorkerService {
           });
           const outcome = reconstructConversation(streamText, systemPrompt);
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
+          restoredUsage = outcome.usageSeed;
           // `completed: false` -- the new incarnation's `ready` event hasn't
           // fired yet at this point in runActivation; handleLoopLine flips it
           // to true (and re-pushes) once `ready` arrives (#1205).
@@ -825,6 +833,12 @@ export class EmbeddedAgentWorkerService {
                 model: definition.provider.model,
                 ...(apiKey !== undefined ? { apiKey } : {}),
               },
+              // The restore-boundary seed, this arm only: `claude-sdk` carries its own
+              // context state through the SDK resume and computes no ratio,
+              // so a seed there would be a field nothing reads. Absent when
+              // the restored log held no reading, or when there was no
+              // restore at all.
+              ...(restoredUsage !== undefined ? { restoredUsage } : {}),
             }
           : {
               ...initCommandShared,

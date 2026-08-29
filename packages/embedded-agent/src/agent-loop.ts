@@ -121,6 +121,15 @@ export interface AgentLoopDeps {
   compaction: { auto: boolean; contextWindowTokens?: number; threshold?: number };
   /** Transcript Restore (#1123): seeds this.conversation directly from a server-reconstructed array, skipping the fresh [{role:'system',...}] seed. Absent = today's v1 fresh-conversation behavior. */
   restoredConversation?: ChatMessage[];
+  /**
+   * The newest authoritative context reading from the persisted log,
+   * extracted server-side at restore reconstruction. See
+   * docs/design/embedded-agent-worker.md "Seed extraction". Absent when the
+   * worker never produced one -- the estimator fallback then stands, bias and
+   * all. Read ONLY by `compactAtRestoreBoundaryIfNeeded`; once a turn has run,
+   * that turn's own reading supersedes it.
+   */
+  restoredUsage?: { promptTokens: number; estimated: boolean };
 }
 
 interface ProviderToolCall {
@@ -320,20 +329,58 @@ export class AgentLoop {
   async compactAtRestoreBoundaryIfNeeded(): Promise<void> {
     if (!this.restoredAtActivation) return;
 
-    const estimated = estimateTokensFromChars(this.conversation);
-    this.emitContextUsageIfKnown({ promptTokens: estimated, estimated: true });
+    const usage = this.resolveRestoreBoundaryUsage();
+    this.emitContextUsageIfKnown(usage);
 
     const windowTokens = this.deps.compaction.contextWindowTokens;
     if (windowTokens === undefined) return;
     if (!this.shouldAutoCompact()) return;
 
-    if (estimated <= FULL_DISTILL_MAX_RATIO * windowTokens) {
+    if (usage.promptTokens <= FULL_DISTILL_MAX_RATIO * windowTokens) {
       await this.compact('auto');
       return;
     }
     await this.compact('auto', {
       budgetTokens: Math.floor(PARTIAL_DISTILL_INPUT_RATIO * windowTokens),
     });
+  }
+
+  /**
+   * The number the restore-boundary check is decided by (`S` in
+   * docs/design/embedded-agent-worker.md "Compaction at the restore
+   * boundary") -- the LARGER of the persisted reading and the estimate of the
+   * reconstructed conversation.
+   *
+   * Both are lower bounds on the request the provider will actually price,
+   * and for different reasons, which is why the larger is taken rather than
+   * either being preferred outright:
+   *
+   * - The **reading** measures a real request, tool schemas included, but
+   *   measures the conversation as it stood when it was published. Messages
+   *   appended after it are not in it.
+   * - The **estimate** covers every message present now, but sums `.content`
+   *   only -- it omits the published tool schemas entirely, which is the
+   *   systematic under-count this seeding exists to remove (measured: 1102
+   *   against 6722 reported for the same request).
+   *
+   * Taking the maximum is therefore the tightest bound available without
+   * attributing individual restored messages to a position in the log, which
+   * would put a message-index correspondence on the wire for no gain: the
+   * reading already carries the constant that dominates, and the estimate
+   * already carries every late message's text.
+   *
+   * It cannot over-fire from a stale reading in the ordinary case, because
+   * readings only grow within a compaction window and the server never seeds
+   * from one taken before the last boundary.
+   */
+  private resolveRestoreBoundaryUsage(): TurnUsage {
+    const estimate: TurnUsage = {
+      promptTokens: estimateTokensFromChars(this.conversation),
+      estimated: true,
+    };
+    const seed = this.deps.restoredUsage;
+    if (seed === undefined || seed.promptTokens <= estimate.promptTokens) return estimate;
+    return { promptTokens: seed.promptTokens, estimated: seed.estimated };
   }
 
   /**
