@@ -365,12 +365,23 @@ export const ExitReasonSchema = v.picklist(['managed', 'unexpected', 'evicted'])
  * handled by no consumer (schema too wide). Both failures are invisible to
  * every test that does not happen to use the new value.
  */
-type _AssertExitReasonSchemaWidensToType =
-  v.InferOutput<typeof ExitReasonSchema> extends ExitReason ? true : never;
-type _AssertExitReasonTypeWidensToSchema =
-  ExitReason extends v.InferOutput<typeof ExitReasonSchema> ? true : never;
-declare const _exitReasonParityAssertions: _AssertExitReasonSchemaWidensToType &
-  _AssertExitReasonTypeWidensToSchema;
+/**
+ * The constraint is what makes the pin fire. An earlier form resolved to
+ * `never` on drift and declared a `const` of that type -- which compiles
+ * cleanly, because `declare` introduces no assignment and so `never` has
+ * nothing to reject. Measured against this repo's own compiler: drifting the
+ * schema produced zero diagnostics. Both halves of the change are required --
+ * `never` becomes `false`, AND `false` must violate a `extends true`
+ * constraint; either alone leaves the pin inert.
+ */
+type Assert<T extends true> = T;
+type _AssertExitReasonSchemaWidensToType = Assert<
+  v.InferOutput<typeof ExitReasonSchema> extends ExitReason ? true : false
+>;
+type _AssertExitReasonTypeWidensToSchema = Assert<
+  ExitReason extends v.InferOutput<typeof ExitReasonSchema> ? true : false
+>;
+export type { _AssertExitReasonSchemaWidensToType, _AssertExitReasonTypeWidensToSchema };
 
 export const EmbeddedAgentServerEventSchema = v.union([
   v.strictObject({

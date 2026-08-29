@@ -399,7 +399,11 @@ export class AgentLoop {
       estimated: true,
     };
     const seed = this.deps.restoredUsage;
-    if (seed === undefined || seed.promptTokens <= estimate.promptTokens) return estimate;
+    // `<`, not `<=`: on a tie the seed wins. The two carry the same number
+    // but not the same standing, and the estimate's `estimated: true` would
+    // republish a provider-reported figure as one nobody reported -- the exact
+    // inversion the flag is carried across the process boundary to prevent.
+    if (seed === undefined || seed.promptTokens < estimate.promptTokens) return estimate;
     return { promptTokens: seed.promptTokens, estimated: seed.estimated };
   }
 

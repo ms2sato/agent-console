@@ -358,11 +358,20 @@ async function main(): Promise<void> {
     // ====================================================================
     console.log('\n==> restarting the worker (deactivate -> activate)');
     await sm.deactivateEmbeddedAgentWorker(sessionId, workerId);
-    await waitFor(
-      async () => (await readEvents(sessionId, workerId)).some((e) => e.type === 'exited'),
-      60_000,
-      'the subprocess to exit',
-    );
+    // Checked, not merely awaited: on timeout the script would activate over a
+    // still-running incarnation and every assertion after this point would
+    // describe that one instead of a restore boundary -- a green run reporting
+    // on the wrong subject, which is the failure mode this script exists to
+    // detect in the product.
+    if (
+      !(await waitFor(
+        async () => (await readEvents(sessionId, workerId)).some((e) => e.type === 'exited'),
+        60_000,
+        'the subprocess to exit',
+      ))
+    ) {
+      bail('the first incarnation never exited; there is no restore boundary to observe');
+    }
 
     const restartMarker = (await readEvents(sessionId, workerId)).length;
     await sm.activateEmbeddedAgentWorker(sessionId, workerId);

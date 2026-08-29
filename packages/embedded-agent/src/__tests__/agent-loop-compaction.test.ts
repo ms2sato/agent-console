@@ -1284,6 +1284,11 @@ describe('selectPartialDistillationMessages — suffix selection rules', () => {
  *          because a guard can be wrong in two directions and m17 only
  *          measures one; `> 2` would silently stop restoring every worker
  *          that came back across a compaction boundary.
+ *   m19 revert the tie-break to `<=`, so the estimate wins on equality
+ *       -> 1 fail, the equality test alone. The two readings carry the same
+ *          NUMBER, so every numeric assertion in this file passes under the
+ *          mutation; only the provenance flag moves. That is why the test
+ *          asserts the whole event rather than `promptTokens`.
  *   m16 move `emitContextUsageIfKnown` BELOW the `contextWindowTokens`
  *       undefined return, so an undeclared window publishes nothing
  *       -> 1 fails: 'stays inert when contextWindowTokens is unset'. Added
@@ -1384,6 +1389,32 @@ describe('Compaction at the restore boundary — seeded from the persisted readi
       estimated: true,
     });
     expect(events.find((e) => e.type === 'context-compacted')).toBeDefined();
+  });
+
+  it('keeps the seed’s MEASURED standing when the two numbers are equal', async () => {
+    // The tie is where the max rule stops being about size and becomes about
+    // provenance: both carry 900, but only one of them was reported by a
+    // provider. Publishing the estimate here would republish a measured figure
+    // as an estimated one -- the inversion the flag travels to prevent, and
+    // the one that would make the estimator's bias unauditable in exactly the
+    // logs a future reader would use to measure it.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(900),
+      restoredUsage: { promptTokens: 900, estimated: false },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 900,
+      estimated: false,
+    });
   });
 
   it('lets the seed drive the FULL/PARTIAL cut, not just the fire decision', async () => {
