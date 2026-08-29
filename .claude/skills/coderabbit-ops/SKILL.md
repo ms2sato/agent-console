@@ -47,6 +47,7 @@ One thing that looks like a surface and is not: a **future-tense reply from the 
 | 3 | **Inline comments** | `gh api repos/<owner>/<repo>/pulls/<N>/comments` | Resolved or addressed if actionable |
 | 4 | **Commit-status `description`** | see "The commit-status surface" below | `Review completed` — `state` is `success` even when no review ran |
 | 5 | **Formal review bodies** | see "The review-body surface" below | No unaddressed findings in any review's `body` |
+| 6 | **Review freshness** | see "The staleness surface" below | Some review's `commit_id` equals the PR's current HEAD |
 
 An empty `reviewDecision` means the bot has not yet reviewed and the PR is **not** yet clean — wait for the bot to submit, do not merge. (Exception 1: under the rate-limit fallback in `troubleshooting.md`, an empty state may persist; in that exception path, follow the fallback's verification steps before merge. Exception 2: a completed walkthrough with 0 actionable inline comments can also leave `reviewDecision` empty — CodeRabbit does not always submit a formal review event when it finds nothing to flag. See "the walkthrough-exists rubric" in `troubleshooting.md` before assuming "not yet reviewed" from an empty field alone.)
 
@@ -138,6 +139,30 @@ The danger is social rather than technical, and it is worse than the `SUCCESS` f
 The rule is the same one that governs the rest of this list, applied to a surface that talks back: **check the state, not the promise.**
 
 (Sprint 2026-08-29 PR #1415 — a delegate retriggered against the current head. The bot replied within ninety seconds naming the specific change it would review; the commit status updated fourteen seconds after that to `Review rate limited`, and the walkthrough comment, updated in the same minute, said the included review was spent with the next one 35 minutes out. The delegate reported the disagreement between the bot's two mouths rather than the reply, explicitly flagging that "the bot said it would review" was the thing most likely to be passed upward as progress. The Orchestrator confirmed they would have relayed exactly that had they seen only the reply.)
+
+### The staleness surface: a review of the previous head is `SUCCESS` too
+
+Every other surface asks *what* the bot said. This one asks *about which commit*.
+
+Push a fix after a review — which is what happens on every PR that receives findings — and the rollup keeps reading `CodeRabbit: SUCCESS`. It is not lying: the check succeeded, **for the commit before yours**. Nothing in the rollup entry names a commit.
+
+```bash
+gh api repos/<owner>/<repo>/pulls/<N>/reviews \
+  -q '.[] | select(.user.login=="coderabbitai[bot]") | "\(.submitted_at) \(.commit_id)"'
+gh pr view <N> --json headRefOid -q .headRefOid
+```
+
+**Clean requires some review's `commit_id` to equal the current HEAD.** Not "a review exists" — reviews are per-commit and they accumulate.
+
+**Why the other surfaces do not catch it.** Surface 4's documented trap is `SUCCESS` with `Review rate limited` in the `description`; here the description is **empty**, so a description check passes. Surface 5 finds a real review body with real findings, all of them dispositioned. Surface 2's `reviewDecision` is empty — which is the only hint, and it is the hint a reader most reasonably discounts, because empty is also the normal state for "has not reviewed yet" on a PR that visibly *has* a review.
+
+This is `workflow.md`'s Sub-pattern 7 — a signal that was strong when observed and has since expired — reaching you through a surface the checklist otherwise treats as current. The expiry event is your own push.
+
+**The practical consequence**: a fix commit is the diff most worth reviewing (it was written under time pressure, in response to a finding, often in code the author had just been told they got wrong) and it is the diff this surface silently exempts. Twice on 2026-08-29 a PR merged with its final head unreviewed; both were caught by reconstructing the range by hand, and neither by walking the list.
+
+**When the final head genuinely will not get a pass** — a quota window that will not reopen before merge, or a delta small enough that waiting costs more than it buys — that is a decision, not a clean verdict. Record it in the PR body: the reviewed range, the unreviewed delta with its diffstat, and who judged it acceptable. "CodeRabbit clean" and "a person decided this specific delta did not need a pass" are different claims, and a later reader auditing what reviewed what should not have to work out which one applied.
+
+(Sprint 2026-08-29 PR [#1432](https://github.com/ms2sato/agent-console/pull/1432) — a delegate walked all five surfaces after pushing fixes, found `SUCCESS` with an empty description, and read the reviews directly rather than stopping: the only review's `commit_id` was the previous head. They declined to report the gate satisfied. The same staleness had gone unnoticed on two PRs merged earlier the same day, where it was reconstructed narratively after the fact rather than caught by the walk.)
 
 ### Two ways the query itself lies to you
 
