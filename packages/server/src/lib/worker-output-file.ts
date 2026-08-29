@@ -127,6 +127,12 @@ export interface WorkerOutputFileConfig {
  * Manages file-based output persistence for workers.
  * Uses buffering to reduce file I/O frequency.
  */
+/**
+ * `\n` as a byte, for scanning a raw output buffer for record boundaries.
+ * The persisted stream is NDJSON, so a newline is the only record separator.
+ */
+const NEWLINE_BYTE = 0x0a;
+
 export class WorkerOutputFileManager {
   /** Pending buffers waiting to be flushed: sessionId/workerId -> PendingFlush */
   private pendingFlushes = new Map<string, PendingFlush>();
@@ -602,6 +608,30 @@ export class WorkerOutputFileManager {
     // Advance to a UTF-8 character boundary (skip continuation bytes 0x80-0xBF).
     while (slicePoint < buffer.length && (buffer[slicePoint] & 0xc0) === 0x80) {
       slicePoint++;
+    }
+
+    // Then advance to the START OF THE NEXT LINE, so the live window begins
+    // with a whole NDJSON record rather than the tail of one.
+    //
+    // A character boundary is not a record boundary. Without this step the cut
+    // lands mid-line on essentially every rotation -- the probability is
+    // 1 - 1/(average line length), which real transcripts put around 0.99 --
+    // and the restore path reads the live window from its base, so it parses a
+    // fragment as its first line and fails the whole reconstruction.
+    const utf8SlicePoint = slicePoint;
+    const newlineIndex = buffer.indexOf(NEWLINE_BYTE, slicePoint);
+    if (newlineIndex !== -1 && newlineIndex + 1 < buffer.length) {
+      slicePoint = newlineIndex + 1;
+    } else {
+      // No usable newline at or after the character boundary: either the cut
+      // region's remainder holds no newline at all, or the only one is the
+      // final byte and honouring it would archive the entire file and leave an
+      // empty live window -- a silent loss of the visible transcript that the
+      // restore side cannot recover, unlike a leading fragment, which it can.
+      //
+      // So fall back to the character boundary and let the restore side's
+      // head-fragment tolerance absorb the partial first line.
+      slicePoint = utf8SlicePoint;
     }
 
     const headSlice = buffer.subarray(0, slicePoint);

@@ -55,7 +55,7 @@ describe('reconstructConversation — 4c total classification', () => {
       { v: 1, type: 'exited', code: 0 },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation).toEqual([
       { role: 'system', content: SYSTEM_PROMPT },
@@ -95,7 +95,7 @@ describe('reconstructConversation — legacy context-handoff boundary (retained,
       { v: 1, type: 'assistant-message', turnId: 't2', text: 'reply2' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation).toEqual([
       { role: 'system', content: SYSTEM_PROMPT },
@@ -120,7 +120,7 @@ describe('reconstructConversation — legacy context-handoff boundary (retained,
       { v: 1, type: 'user-message', id: 'm2', text: 'after' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation[1]).toEqual({
       role: 'user',
@@ -145,7 +145,7 @@ describe('reconstructConversation — context-compacted boundary', () => {
       { v: 1, type: 'assistant-message', turnId: 't2', text: 'reply2' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation).toEqual([
       { role: 'system', content: SYSTEM_PROMPT },
@@ -168,7 +168,7 @@ describe('reconstructConversation — context-compacted boundary', () => {
       { v: 1, type: 'user-message', id: 'm2', text: 'after' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation[1]).toEqual({
       role: 'user',
@@ -190,7 +190,7 @@ describe('reconstructConversation — context-compacted boundary', () => {
       { v: 1, type: 'user-message', id: 'm2', text: 'after' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation[1]).toEqual({
       role: 'user',
@@ -209,7 +209,7 @@ describe('reconstructConversation — context-compacted boundary', () => {
       { v: 1, type: 'user-message', id: 'm2', text: 'after' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation).toEqual([
       { role: 'system', content: SYSTEM_PROMPT },
@@ -227,7 +227,7 @@ describe('reconstructConversation — no boundary event of either kind in stream
       { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello there' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation).toEqual([
       { role: 'system', content: SYSTEM_PROMPT },
@@ -237,7 +237,7 @@ describe('reconstructConversation — no boundary event of either kind in stream
   });
 
   it('reconstructs just the system message for an empty stream', () => {
-    const outcome = reconstructConversation('', SYSTEM_PROMPT);
+    const outcome = reconstructConversation('', SYSTEM_PROMPT, false);
     expect(outcome.conversation).toEqual([{ role: 'system', content: SYSTEM_PROMPT }]);
     expect(outcome.repairedToolCallIds).toEqual([]);
   });
@@ -251,7 +251,7 @@ describe('reconstructConversation — Tier C mid-turn repair (4d)', () => {
       { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: {} },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.repairedToolCallIds).toEqual(['c1']);
     expect(outcome.conversation.at(-1)).toEqual({
@@ -269,7 +269,7 @@ describe('reconstructConversation — Tier C mid-turn repair (4d)', () => {
       { v: 1, type: 'tool-call', turnId: 't1', callId: 'c2', name: 'run2', args: {} },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.repairedToolCallIds).toEqual(['c1', 'c2']);
   });
@@ -290,7 +290,7 @@ describe('reconstructConversation — Tier C mid-turn repair (4d)', () => {
       { v: 1, type: 'assistant-message', turnId: 't2', text: 'turn2 reply' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.repairedToolCallIds).toEqual(['c1']);
 
@@ -315,7 +315,7 @@ describe('reconstructConversation — Tier C mid-turn repair (4d)', () => {
       { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.repairedToolCallIds).toEqual([]);
     expect(outcome.conversation.at(-1)).toEqual({ role: 'tool', tool_call_id: 'c1', content: 'ok' });
@@ -323,19 +323,38 @@ describe('reconstructConversation — Tier C mid-turn repair (4d)', () => {
 });
 
 describe('reconstructConversation — invariant violations (4f fallback trigger)', () => {
+  /**
+   * A whole record to open the window with, so the malformed line under test
+   * is not ALSO the first line.
+   *
+   * These three tests originally passed the bad line alone. That was brevity,
+   * not intent -- they are about malformed content routing to the fallback,
+   * not about position. Once the head became tolerant of a rotation fragment,
+   * a lone bad line reads as a window that is nothing but a fragment, and is
+   * skipped. Prefixing a valid record keeps each test asking its original
+   * question under the narrowed contract.
+   */
+  const OPENING_RECORD = JSON.stringify({ v: 1, type: 'user-message', id: 'm0', text: 'opens the window' });
+
   it('throws RestoreReconstructionError on an unparseable line', () => {
-    expect(() => reconstructConversation('{not valid json', SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(`${OPENING_RECORD}\n{not valid json`, SYSTEM_PROMPT, false)).toThrow(
+      RestoreReconstructionError,
+    );
   });
 
   it('throws RestoreReconstructionError on a schema-invalid known-type line', () => {
     // 'user-message' requires id + text; omit text.
     const badLine = JSON.stringify({ v: 1, type: 'user-message', id: 'm1' });
-    expect(() => reconstructConversation(badLine, SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(`${OPENING_RECORD}\n${badLine}`, SYSTEM_PROMPT, false)).toThrow(
+      RestoreReconstructionError,
+    );
   });
 
   it('throws RestoreReconstructionError on an unrecognized event type', () => {
     const badLine = JSON.stringify({ v: 1, type: 'not-a-real-event' });
-    expect(() => reconstructConversation(badLine, SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(`${OPENING_RECORD}\n${badLine}`, SYSTEM_PROMPT, false)).toThrow(
+      RestoreReconstructionError,
+    );
   });
 
   it('throws RestoreReconstructionError when a tool-call has no preceding assistant-message in the window', () => {
@@ -343,7 +362,7 @@ describe('reconstructConversation — invariant violations (4f fallback trigger)
       { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
       { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: {} },
     ];
-    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT, false)).toThrow(RestoreReconstructionError);
   });
 
   it('throws RestoreReconstructionError when a tool-call follows a user-message that reset the current assistant pointer', () => {
@@ -352,7 +371,7 @@ describe('reconstructConversation — invariant violations (4f fallback trigger)
       { v: 1, type: 'user-message', id: 'm2', text: 'next turn' },
       { v: 1, type: 'tool-call', turnId: 't2', callId: 'c1', name: 'run', args: {} },
     ];
-    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT, false)).toThrow(RestoreReconstructionError);
   });
 
   it('throws RestoreReconstructionError on an orphan tool-result with no owning tool-call in the window (R1, #1202 rotation-truncated window)', () => {
@@ -362,7 +381,7 @@ describe('reconstructConversation — invariant violations (4f fallback trigger)
     const events: EmbeddedAgentStreamEvent[] = [
       { v: 1, type: 'tool-result', turnId: 't1', callId: 'orphan', ok: true, result: 'done' },
     ];
-    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT, false)).toThrow(RestoreReconstructionError);
   });
 
   it('throws RestoreReconstructionError on an orphan tool-result appearing in-window AFTER a context-handoff boundary', () => {
@@ -376,7 +395,7 @@ describe('reconstructConversation — invariant violations (4f fallback trigger)
       { v: 1, type: 'context-handoff', distillation: 'summary text' },
       { v: 1, type: 'tool-result', turnId: 't2', callId: 'orphan', ok: true, result: 'done' },
     ];
-    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT)).toThrow(RestoreReconstructionError);
+    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT, false)).toThrow(RestoreReconstructionError);
   });
 });
 
@@ -388,7 +407,7 @@ describe('reconstructConversation — wire-faithful tool_calls.arguments reconst
       { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     const assistant = outcome.conversation.find((m) => m.role === 'assistant');
     expect(assistant).toBeDefined();
@@ -405,7 +424,7 @@ describe('reconstructConversation — wire-faithful tool_calls.arguments reconst
       { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'ok' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     const assistant = outcome.conversation.find((m) => m.role === 'assistant');
     expect(assistant).toBeDefined();
@@ -431,6 +450,7 @@ describe('reconstructConversation — R1 events are Noise (#1410)', () => {
         { v: 1, type: 'assistant-message', turnId: 'u1', text: 'hi' },
       ]),
       SYSTEM_PROMPT,
+      false,
     );
     const withR1 = reconstructConversation(
       linesOf([
@@ -440,6 +460,7 @@ describe('reconstructConversation — R1 events are Noise (#1410)', () => {
         { v: 1, type: 'assistant-message', turnId: 'u1', text: 'hi' },
       ]),
       SYSTEM_PROMPT,
+      false,
     );
 
     // Byte-identical to the same stream without them: the strongest form of
@@ -460,6 +481,7 @@ describe('reconstructConversation — R1 events are Noise (#1410)', () => {
         { v: 1, type: 'turn-interrupted', turnId: 'u1' },
       ]),
       SYSTEM_PROMPT,
+      false,
     );
     // The dangling call IS repaired -- by Mid-turn Repair, on its own terms.
     // What must not happen is the marker adding a message of its own.
@@ -493,7 +515,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
       { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello there' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation.length).toBe(3); // [system, user, assistant]
     expect(outcome.restoredMessageCount).toBe(2);
@@ -511,7 +533,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
       { v: 1, type: 'assistant-message', turnId: 't2', text: 'after2' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     // [system, summary, user, assistant] -- summary + the 2 replayed = 3.
     expect(outcome.conversation.length).toBe(4);
@@ -537,7 +559,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
       { v: 1, type: 'context-compacted', source: 'auto', summary: 'a rich history, compacted' },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     expect(outcome.conversation.length).toBe(2); // [system, summary]
     expect(outcome.restoredMessageCount).toBe(1);
@@ -557,7 +579,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
    */
   describe('reachability of 0 (with presence controls)', () => {
     it('reports 0 for an empty transcript', () => {
-      const outcome = reconstructConversation('', SYSTEM_PROMPT);
+      const outcome = reconstructConversation('', SYSTEM_PROMPT, false);
       expect(outcome.conversation).toEqual([{ role: 'system', content: SYSTEM_PROMPT }]);
       expect(outcome.restoredMessageCount).toBe(0);
     });
@@ -573,7 +595,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
         { v: 1, type: 'exited', code: 0 },
       ];
 
-      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
       expect(outcome.restoredMessageCount).toBe(0);
     });
@@ -587,7 +609,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
         { v: 1, type: 'exited', code: 0 },
       ];
 
-      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
       expect(outcome.restoredMessageCount).toBe(1);
     });
@@ -598,6 +620,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
       const outcome = reconstructConversation(
         linesOf([{ v: 1, type: 'context-compacted', source: 'manual', summary: 'carried forward' }]),
         SYSTEM_PROMPT,
+        false,
       );
 
       expect(outcome.restoredMessageCount).toBe(1);
@@ -623,7 +646,7 @@ describe('reconstructConversation — restoredMessageCount', () => {
       { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: {} },
     ];
 
-    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
 
     // LOAD-BEARING. Without it, a fixture that produced no repair at all
     // would satisfy the count assertion below for the wrong reason -- passing
@@ -679,7 +702,7 @@ describe('findRestoredUsageSeed — the newest authoritative reading (#1419)', (
   ];
 
   function seedOf(events: EmbeddedAgentStreamEvent[]) {
-    return reconstructConversation(linesOf(events), SYSTEM_PROMPT).usageSeed;
+    return reconstructConversation(linesOf(events), SYSTEM_PROMPT, false).usageSeed;
   }
 
   it('takes the LAST context-usage when the log has only readings', () => {
@@ -757,5 +780,127 @@ describe('findRestoredUsageSeed — the newest authoritative reading (#1419)', (
         { v: 1, type: 'context-compacted', source: 'auto', postTokens: 512 },
       ]),
     ).toEqual({ promptTokens: 512, estimated: true });
+  });
+});
+
+/**
+ * Rotation fragment tolerance: the head only, and the tail deliberately not.
+ *
+ * The live output file is cut at a byte offset when it rotates. The cut is
+ * newline-aligned now, but a file rotated before that existed -- and the
+ * documented fallback where no usable newline was available -- still hand the
+ * restore path a window whose first record is the tail of one whose head was
+ * archived. Before this tolerance every such window failed the whole
+ * reconstruction and fell to the destructive reset.
+ *
+ * The three polarities below are one contract, not three behaviours: the
+ * allowance is positional (the first record may be partial, because the cut
+ * can only ever truncate there) and NOT a general "skip one bad line".
+ */
+describe('reconstructConversation — rotation fragment at the head', () => {
+  /**
+   * Three polarities on one axis, because the rescue is deliberately narrow.
+   *
+   * A leading fragment is skipped only when the caller says the file rotated,
+   * and the result is restored only when the surviving window contains a
+   * compaction boundary. Both conditions carry their own reason:
+   *
+   * - **`truncated` gates the skip** because a fragment at the head of a file
+   *   that was never cut is not a fragment, it is corruption -- and this is
+   *   the only layer that detects it.
+   * - **The boundary gates the restore** because skipping is not by itself
+   *   enough to make the result honest. The window still opens wherever the
+   *   byte cut fell. A compaction boundary is an already-DECLARED discard, so
+   *   slicing there drops the debris and starts at a turn boundary; without
+   *   one, restoring would answer #1202 Gap 1 ("partially restore, silently")
+   *   as a side effect of a parser change.
+   */
+  const BOUNDARY: EmbeddedAgentStreamEvent = {
+    v: 1,
+    type: 'context-compacted',
+    source: 'manual',
+    summary: 'earlier turns, compacted',
+  };
+  const AFTER_BOUNDARY: EmbeddedAgentStreamEvent[] = [
+    { v: 1, type: 'user-message', id: 'm2', text: 'second question' },
+    { v: 1, type: 'assistant-message', turnId: 'm2', text: 'second answer' },
+  ];
+  const FRAGMENT = 'ssistant-message","turnId":"m0","text":"answer whose head was archived"}';
+
+  it('rescues a rotated window that contains a compaction boundary', () => {
+    // The whole rescue population, and the only one.
+    //
+    // Reach measured by mutation, and recorded by the FAILING TEST'S NAME
+    // rather than by a count -- two mutations that each fail "1 test" may be
+    // failing the same one, in which case there is one gate wearing two
+    // names. Measured:
+    //
+    //   ignore `truncated` (always allow the skip)
+    //     -> fails ONLY "throws when the file was never cut, even though the
+    //        head would parse as a fragment"
+    //   remove the boundary check
+    //     -> fails ONLY "throws when the window was cut but holds no
+    //        compaction boundary"
+    //
+    // Disjoint, so the two gates are doing separate work. Neither mutation
+    // touches this test, which is the rescue path both gates guard.
+    const outcome = reconstructConversation(
+      `${FRAGMENT}\n${linesOf([BOUNDARY, ...AFTER_BOUNDARY])}`,
+      SYSTEM_PROMPT,
+      true,
+    );
+    expect(outcome.conversation.at(-1)).toMatchObject({ role: 'assistant', content: 'second answer' });
+  });
+
+  it('throws when the file was never cut, even though the head would parse as a fragment', () => {
+    // Corruption detection, retained. Identical bytes to the test above; only
+    // the caller's knowledge differs -- which is the point of passing it in
+    // rather than inferring it from the text.
+    expect(() =>
+      reconstructConversation(`${FRAGMENT}\n${linesOf([BOUNDARY, ...AFTER_BOUNDARY])}`, SYSTEM_PROMPT, false),
+    ).toThrow(RestoreReconstructionError);
+  });
+
+  it('throws when the window was cut but holds no compaction boundary', () => {
+    // #1202 Gap 1 stays open. This window would reconstruct perfectly well --
+    // that is exactly why it must not: it would be a partial conversation
+    // presented as a whole one, and nobody has ruled that acceptable.
+    expect(() => reconstructConversation(`${FRAGMENT}\n${linesOf(AFTER_BOUNDARY)}`, SYSTEM_PROMPT, true)).toThrow(
+      RestoreReconstructionError,
+    );
+  });
+
+  it('skips a leading fragment that is accidentally VALID JSON but not an event', () => {
+    // The case a JSON.parse-only tolerance would miss: a cut can land where
+    // the remaining bytes close a nested object, giving a well-formed value
+    // that is not an event. Measured by mutation -- narrowing the allowance
+    // to the parse catch alone fails this and passes the rescue test above.
+    const outcome = reconstructConversation(
+      `{"args":{"path":"/tmp/x"}}\n${linesOf([BOUNDARY, ...AFTER_BOUNDARY])}`,
+      SYSTEM_PROMPT,
+      true,
+    );
+    expect(outcome.conversation.at(-1)).toMatchObject({ role: 'assistant', content: 'second answer' });
+  });
+
+  it('still throws on a broken line in the MIDDLE of a rotated window', () => {
+    // Not explained by the cut: the only writer appends whole lines, so
+    // damage after the first record means the file was harmed some other way.
+    const stream = `${FRAGMENT}\n${linesOf([BOUNDARY])}\n{"v":1,"type":"user-\n${linesOf(AFTER_BOUNDARY)}`;
+    expect(() => reconstructConversation(stream, SYSTEM_PROMPT, true)).toThrow(RestoreReconstructionError);
+  });
+
+  it('still throws on a broken TAIL of a rotated window', () => {
+    // The killed-mid-write signal, which must stay loud even under the
+    // tolerance -- otherwise every truncation becomes a silent partial.
+    const stream = `${FRAGMENT}\n${linesOf([BOUNDARY, ...AFTER_BOUNDARY])}\n{"v":1,"type":"assistant-mess`;
+    expect(() => reconstructConversation(stream, SYSTEM_PROMPT, true)).toThrow(RestoreReconstructionError);
+  });
+
+  it('consumes the allowance on the first record even when that record is fine', () => {
+    // Positional, not "one bad line anywhere": a clean first record spends it,
+    // so a broken SECOND record still throws.
+    const stream = `${linesOf([BOUNDARY])}\n{"v":1,"typ\n${linesOf(AFTER_BOUNDARY)}`;
+    expect(() => reconstructConversation(stream, SYSTEM_PROMPT, true)).toThrow(RestoreReconstructionError);
   });
 });

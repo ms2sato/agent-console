@@ -724,6 +724,7 @@ export class EmbeddedAgentWorkerService {
             data: streamText,
             offset: currentOffset,
             epoch: currentEpoch,
+            startOffset: liveBaseOffset,
           } = await this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver);
           if (streamText.trim() === '') {
             throw new Error('Persisted stream read returned empty despite a non-zero current offset (read failure)');
@@ -734,7 +735,10 @@ export class EmbeddedAgentWorkerService {
             instructions,
             definitionSystemPrompt: definition.systemPrompt,
           });
-          const outcome = reconstructConversation(streamText, systemPrompt);
+          // The reader sees text and cannot tell a rotation fragment from
+          // corruption; the manifest's live base offset is how this side
+          // knows. Non-zero means the head of this file was archived.
+          const outcome = reconstructConversation(streamText, systemPrompt, liveBaseOffset > 0);
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
           restoredUsage = outcome.usageSeed;
           // `completed: false` -- the new incarnation's `ready` event hasn't

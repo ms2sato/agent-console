@@ -135,7 +135,7 @@ describe('Restore-time repair polarity (mandatory, AC 5)', () => {
 
   it('Direction 2 (repair applied): the reconstructed conversation closes the dangling tool_call_id and the turn succeeds', async () => {
     // The FULL reconstructConversation output (4a-4d), used as-is.
-    const outcome = reconstructConversation(linesOf(fixtureEvents), SYSTEM_PROMPT);
+    const outcome = reconstructConversation(linesOf(fixtureEvents), SYSTEM_PROMPT, false);
     expect(outcome.repairedToolCallIds).toEqual(['c1']);
     expect(everyToolCallAnswered(outcome.conversation)).toBe(true);
 
