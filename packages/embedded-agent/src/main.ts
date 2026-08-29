@@ -411,10 +411,15 @@ async function initializeLoop(
     // than on the server).
     //
     // The probe's `not-found` and `error` both start this session fresh, and
-    // that is where their similarity ends -- so they are reported as
-    // DIFFERENT reasons rather than as one "the pre-flight said no". The
-    // server keeps the id on `lookup-failed` and drops it on `not-found`,
-    // and it can only do that if this mapping does not flatten them first.
+    // the server today keeps the persisted id on both -- only a `refused`
+    // resume clears it. They are still reported as DIFFERENT reasons rather
+    // than as one "the pre-flight said no", because they assert different
+    // things: `not-found` is the SDK saying it could not find the session,
+    // `error` is the lookup not running at all. That difference is what the
+    // persisted transcript row records, and it is what a future SDK -- one
+    // whose store propagates read errors instead of swallowing them -- would
+    // need in order to act on the two differently. Flattening them here
+    // would make that unrecoverable downstream.
     let resume: string | undefined;
     if (init.resume !== undefined) {
       const requested = init.resume.sdkSessionId;

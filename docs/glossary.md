@@ -247,7 +247,7 @@ A capability grouping over the concrete worker types: a worker backed by a PTY p
 ### SDK Resume Failed — `sdk-resume-failed`
 **Engine-authored `EmbeddedAgentEvent` (R1, Issue [#1410](https://github.com/ms2sato/agent-console/issues/1410)).** Reports that a `claude-sdk` worker's SDK session could not be resumed. Carries the id that failed and a `reason`, whose three values are enumerated once in `SDK_RESUME_FAILURE_REASONS` (`packages/shared/src/types/embedded-agent.ts`) and read from there by the valibot picklist and by every branch that acts on them:
 
-- `not-found` — the activation-time `getSessionInfo` pre-flight ran and reported that the session is not there. No resume was attempted and no turn was lost.
+- `not-found` — the activation-time `getSessionInfo` pre-flight ran and the SDK reported that it could not find the session. **Not proof of absence**: on SDK `0.3.238` the store swallows read errors, so an EACCES or a malformed transcript arrives here too (measured — see PS7's table in [`embedded-agent-sdk-engine.md`](design/embedded-agent-sdk-engine.md)). No resume was attempted and no turn was lost.
 - `lookup-failed` ([#1426](https://github.com/ms2sato/agent-console/issues/1426)) — the pre-flight could not run at all. Not a verdict about the session. **Currently unreachable on SDK `0.3.238`**, which reports every store-level fault as `undefined`; kept as the correct shape for a version that propagates the error, and documented as unreachable rather than deleted.
 - `refused` — a resume WAS attempted and the SDK rejected it, which costs the turn in flight and leaves the SDK query dead inside a live harness.
 

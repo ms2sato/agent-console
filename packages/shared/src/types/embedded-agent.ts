@@ -218,12 +218,19 @@ export type EmbeddedAgentCommand =
  * this constant rather than restating it, so a new reason cannot reach the
  * type without also reaching the wire schema.
  *
- * - `not-found`: the activation-time pre-flight RAN and reported that the
- *   session is not there. No resume was attempted and no turn was lost; the
- *   engine started fresh and this event is the only trace.
- * - `lookup-failed`: the pre-flight could not run at all -- the session store
- *   was unreadable, an EACCES under a different OS user, an I/O blip. Not a
- *   verdict about the session, which is probably still there.
+ * - `not-found`: the activation-time pre-flight RAN and the SDK reported that
+ *   it could not find the session. **Not proof that the session is absent**
+ *   -- on SDK `0.3.238` the store swallows read errors, so an EACCES, an
+ *   EISDIR, or a malformed transcript all arrive here too (measured; see
+ *   PS7's table in docs/design/embedded-agent-sdk-engine.md). It is a
+ *   statement about one moment's read, which is exactly why the persisted id
+ *   is kept for the next activation to try again. No resume was attempted
+ *   and no turn was lost; the engine started fresh.
+ * - `lookup-failed`: the pre-flight could not run at all -- the lookup itself
+ *   raised. Not a verdict about the session either. Currently unreachable for
+ *   the same measured reason `not-found` is over-broad: the SDK returns
+ *   rather than throws. Kept as the shape for a version that propagates the
+ *   error.
  * - `refused`: a resume WAS attempted and the SDK rejected it, which costs
  *   the turn that was in flight and leaves the query dead inside a live
  *   harness -- the server has to replace the incarnation, and a `turn-error`

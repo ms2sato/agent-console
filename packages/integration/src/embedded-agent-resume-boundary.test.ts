@@ -168,7 +168,11 @@ describe('R1 events survive their schemas (Q10)', () => {
     // the loop-only union above is not what a persisted line is parsed with.
     for (const reason of ['not-found', 'refused'] as const) {
       const line = JSON.stringify({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: 'sess-old', reason });
-      const parsed = v.parse(EmbeddedAgentStreamEventSchema, JSON.parse(line));
+      // `unknown`, not the `any` JSON.parse hands back: this test's whole
+      // subject is what survives validation, and an `any` reaching `v.parse`
+      // would let a type error at the boundary pass silently.
+      const replayed: unknown = JSON.parse(line);
+      const parsed = v.parse(EmbeddedAgentStreamEventSchema, replayed);
       if (parsed.type !== 'sdk-resume-failed') throw new Error('unexpected parse output');
       expect(parsed.reason).toBe(reason);
     }
