@@ -191,10 +191,19 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
       case 'turn-error':
       case 'fatal':
       case 'sdk-session-id':
+      case 'sdk-resume-failed':
+      case 'turn-interrupted':
         // Noise: replay-only, contributes nothing to the conversation array.
         // sdk-session-id (SDK Engine Phase 1) carries no conversational
         // content -- it is a bookkeeping marker for the worker's current SDK
         // session id, unrelated to transcript reconstruction.
+        // sdk-resume-failed and turn-interrupted (R1) are likewise
+        // display-and-bookkeeping only: they say something about the
+        // PROCESS's history, not about what was said. Feeding either into
+        // the conversation array would put a claim in front of the model
+        // that no participant ever made -- and turn-interrupted in
+        // particular must not become a second, contradictory writer of the
+        // repair that Mid-turn Repair already performs on this same array.
         break;
       case 'context-compacted':
       case 'context-handoff':

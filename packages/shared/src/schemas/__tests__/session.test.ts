@@ -657,3 +657,30 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('RestoreInfoMessageSchema — sdkResumed (Transcript Restore R1, #1410)', () => {
+  const base = { type: 'restore-info', epoch: 3, messageCount: 2, repairedToolCallIds: [], completed: true };
+
+  // The field is THREE-valued on the wire, and the schema is where that
+  // survives or is lost: valibot's default object strips unknown keys, so a
+  // member missing here means the field vanishes between server and client
+  // with no error on either side.
+  it('carries `true` through the parse', () => {
+    expect(v.parse(RestoreInfoMessageSchema, { ...base, sdkResumed: true }).sdkResumed).toBe(true);
+  });
+
+  it('carries `false` through the parse', () => {
+    expect(v.parse(RestoreInfoMessageSchema, { ...base, sdkResumed: false }).sdkResumed).toBe(false);
+  });
+
+  it('leaves the field absent rather than defaulting it', () => {
+    // Absence means "this engine has no such concept" and is a different wire
+    // state from `false`. A default here would erase that distinction.
+    const parsed = v.parse(RestoreInfoMessageSchema, base);
+    expect('sdkResumed' in parsed).toBe(false);
+  });
+
+  it('rejects a non-boolean sdkResumed', () => {
+    expect(v.safeParse(RestoreInfoMessageSchema, { ...base, sdkResumed: 1 }).success).toBe(false);
+  });
+});

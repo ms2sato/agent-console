@@ -24,6 +24,7 @@ import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifec
 import {
   EmbeddedAgentWorkerService,
   EmbeddedMessageDeliveryError,
+  type RestoreInfo,
   type SendUserMessageResult,
 } from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn, runAsUser } from './privilege-elevation.js';
@@ -695,7 +696,10 @@ export class SessionManager {
   getEmbeddedAgentRestoreInfo(
     _sessionId: string,
     workerId: string,
-  ): { epoch: number; messageCount: number; repairedToolCallIds: string[]; completed: boolean } | null {
+    // Referenced rather than re-declared: a hand-written copy of this shape
+    // does not fail to compile when RestoreInfo gains a field, so the two
+    // silently drift -- and this method's value is spread onto the wire.
+  ): (RestoreInfo & { epoch: number }) | null {
     return this.embeddedAgentWorkerService.getRestoreInfo(workerId);
   }
 

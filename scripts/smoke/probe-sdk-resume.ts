@@ -20,6 +20,13 @@
  *                      resume. Recorded either way -- a partial turn is a
  *                      legitimate thing for the SDK to drop, and what
  *                      matters is knowing which it does.
+ *   --invalid      R1 (#1410): the NEGATIVE complement of --basic. What does
+ *                  the SDK do when asked to resume a session id it cannot
+ *                  find? Answers PS6 (a failed resume emits no `system:init`)
+ *                  and PS7 (`getSessionInfo` as a pre-flight), the two
+ *                  premises R1's detector and pre-flight rest on. Cheap: the
+ *                  pre-flight cases spend nothing at all, and the refusal
+ *                  cases die before a turn is billed.
  *   --post-compact P5(c), the eviction x compaction composite: build a
  *                  conversation, compact it with `/compact` (P2 established
  *                  that this reaches the CLI), kill, resume -- and check
@@ -78,7 +85,8 @@
  *      argument validation happens before anything billable runs.
  */
 
-import type { Options } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
+import { getSessionInfo, type Options } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
+import { randomUUID } from 'node:crypto';
 import {
   ProbeSession,
   filler,
@@ -98,9 +106,9 @@ import {
 // Argument parsing -- BEFORE anything billable runs.
 // ---------------------------------------------------------------------------
 
-const ITEM_FLAGS = ['--basic', '--post-compact', '--pressure'] as const;
+const ITEM_FLAGS = ['--basic', '--invalid', '--post-compact', '--pressure'] as const;
 /** Single writer of this script's invocation line -- see the file header. */
-const USAGE_TEXT = `Usage: bun scripts/smoke/probe-sdk-resume.ts [--basic] [--post-compact [--pressure]]
+const USAGE_TEXT = `Usage: bun scripts/smoke/probe-sdk-resume.ts [--basic] [--invalid] [--post-compact [--pressure]]
   Default (no item flag) = --basic. --pressure is a modifier for --post-compact.`;
 const argv = process.argv.slice(2);
 const selected = new Set<string>();
@@ -592,6 +600,145 @@ async function itemPostCompact(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// R1 (#1410): what an INVALID resume does -- PS6 and PS7
+// ---------------------------------------------------------------------------
+
+/**
+ * The negative complement of `--basic`. `--basic` establishes that a VALID
+ * resume works; on its own that says nothing about how an invalid one fails,
+ * and R1's whole failure design turns on the answer.
+ *
+ * Two premises, measured in one run:
+ *
+ * - **PS6 -- a failed resume emits no `system:init`.** This is what R1's
+ *   detector keys on, and it has to be structural: the result subtype is
+ *   `error_during_execution`, which an ordinary `interrupt()` also produces,
+ *   and the SDK's error wording is undocumented CLI text. What separates a
+ *   cancel from a refused resume is that a cancel always has a `system:init`
+ *   behind it and a refused resume never does. If this premise breaks, the
+ *   detector reports every failed resume as a SUCCESS -- it fails toward
+ *   silence, which is why it is worth a probe rather than an assumption.
+ * - **PS7 -- `getSessionInfo` does not report `undefined` for a live
+ *   session.** R1 pre-flights the id with it before constructing, which moves
+ *   the failure off the user's first message. The SDK's own contract allows
+ *   `undefined` for a session with "no extractable summary", and a false
+ *   `undefined` would make the pre-flight throw away a resumable
+ *   conversation -- the one way the pre-flight could be worse than not
+ *   having it. So the positive case here is not an easy sample: it is the
+ *   worst shape production creates, a session killed during its FIRST turn
+ *   with no assistant reply ever produced.
+ *
+ * `--basic`'s controls are inherited by construction: this item creates its
+ * own live session first and confirms the harness works before drawing any
+ * conclusion from a negative.
+ */
+async function itemInvalidResume(): Promise<void> {
+  h('R1 -- resume an id the SDK cannot find (PS6), and pre-flight it (PS7)');
+
+  // A real session killed DURING its first turn -- the hardest PS7 case, and
+  // the positive control that makes the negatives below mean something.
+  //
+  // The turn is started WITHOUT being awaited, exactly as `itemMidTurn` does
+  // it, and for the reason that item's own comment already records: awaiting
+  // it means the kill lands after the turn settles, and what gets measured is
+  // an idle kill wearing a mid-first-turn label. The first version of this
+  // item did await it -- the run reported `result=success` and the claim
+  // "killed mid-first-turn" was false of the artifact even though it was true
+  // of the ad-hoc probe this item was preserved from. `turnInFlight` below is
+  // what makes that failure visible instead of silently weakening the case.
+  const token = nonce('NONCE-INVALID');
+  const origin = new ProbeSession({ label: 'r1-origin', options: buildOptions() });
+  await origin.waitForReady();
+  const inFlight = origin.runTurn(
+    `Remember this exact token: ${token}. Then write out the numbers from 1 to 3000, one per line, with no other text. Do not stop early and do not abbreviate.`,
+    180_000,
+  );
+  await sleep(5_000);
+  const killedDuringFirstTurn = origin.turnInFlight;
+  // Captured while the turn is still live: the session id has to exist before
+  // the kill for the PS7 lookup below to mean anything.
+  const originSessionId = origin.sessionId;
+  console.log(`a first turn was still in flight at kill time: ${killedDuringFirstTurn}`);
+  console.log(`origin session id: ${originSessionId ?? '(none)'}`);
+  await killChildren(origin, 'r1-origin');
+  const interrupted = await inFlight;
+  account('r1-origin', interrupted);
+  console.log(`${turnLine('turn 1 (interrupted)', interrupted)}`);
+
+  if (!killedDuringFirstTurn) {
+    verdicts.push({
+      item: 'PS7 (getSessionInfo pre-flight)',
+      verdict:
+        'RECORDED NON-RESULT -- the first turn had already settled when the kill fired, so this run measured a COMPLETED-turn session, which is the easy case. The hard case (no assistant reply ever produced) was not exercised. Lengthen the generation or shorten the delay and re-run; do NOT read this run as covering PS7\'s adversarial case',
+      stop: false,
+      control: 'n/a -- the case under test never occurred',
+    });
+    return;
+  }
+
+  // --- PS7 ---
+  h('PS7 -- getSessionInfo as a pre-flight');
+  const liveLookup = originSessionId
+    ? await getSessionInfo(originSessionId, { dir: process.cwd() })
+    : undefined;
+  const bogusId = randomUUID();
+  const missingLookup = await getSessionInfo(bogusId, { dir: process.cwd() });
+  const malformedLookup = await getSessionInfo('not-a-session-id-@@@', { dir: process.cwd() });
+
+  console.log(`live session (killed mid-first-turn): defined=${liveLookup !== undefined} summary=${JSON.stringify((liveLookup as { summary?: string } | undefined)?.summary ?? null)}`);
+  console.log(`nonexistent uuid: defined=${missingLookup !== undefined}`);
+  console.log(`malformed id:     defined=${malformedLookup !== undefined}`);
+
+  const ps7Holds = liveLookup !== undefined && missingLookup === undefined && malformedLookup === undefined;
+  verdicts.push({
+    item: 'PS7 (getSessionInfo pre-flight)',
+    verdict: !originSessionId
+      ? 'INDETERMINATE: the origin session never reported a session id, so the positive case could not be built'
+      : ps7Holds
+        ? 'HOLDS: a live session (killed mid-first-turn, no assistant reply) is reported; both invalid shapes report undefined, without throwing'
+        : 'BROKEN: see the three lines above -- R1 pre-flights on this, and a false undefined discards a resumable conversation',
+    stop: Boolean(originSessionId) && !ps7Holds,
+    control: originSessionId
+      ? 'the positive case is a REAL session this run created, not a fixture; the two negatives are measured in the same run'
+      : 'no positive case available',
+  });
+
+  // --- PS6 ---
+  h('PS6 -- resume an id the SDK cannot find');
+  const invalid = new ProbeSession({ label: 'r1-invalid', options: buildOptions({ resume: bogusId }) });
+  const t = await invalid.runTurn('Reply with only the word ok.');
+  account('r1-invalid', t);
+  await invalid.waitForStreamEnd(30_000);
+
+  const sawSystemInit = invalid.sessionId !== null && invalid.allMessages.some((m) => m === 'system/init');
+  const resultSubtype = t.result?.subtype ?? '(no result)';
+  console.log(`messages observed: ${invalid.allMessages.join(', ') || '(none)'}`);
+  console.log(`system:init seen: ${sawSystemInit}`);
+  console.log(`result subtype: ${resultSubtype}  is_error=${t.result?.is_error ?? '(n/a)'}`);
+  console.log(`stream ended: ${invalid.streamEnded ?? 'still open'}${invalid.streamError ? ` -- ${invalid.streamError}` : ''}`);
+
+  // PS6 is an ABSENCE claim, so it needs positive evidence that the thing
+  // whose absence is being reported actually ran to a terminal state. Without
+  // this, a harness that silently did nothing -- a turn that timed out AND a
+  // stream wait that returned on its own timeout -- produces exactly the same
+  // observation as a genuine refusal, and would be reported as HOLDS.
+  const reachedTerminal = t.result !== undefined || invalid.streamEnded !== null;
+  verdicts.push({
+    item: 'PS6 (a failed resume emits no system:init)',
+    verdict: sawSystemInit
+      ? 'BROKEN: a system:init arrived for a resume that failed -- R1\'s detector now reports every failed resume as a SUCCESS, silently'
+      : reachedTerminal
+        ? 'HOLDS: no system:init of any kind arrived; the failure surfaced as a terminal error instead'
+        : 'INDETERMINATE: no system:init arrived, but the query never reached a terminal state either (no result, and the stream wait timed out). An absence observed from a harness that did nothing is not evidence -- re-run before reading anything into it',
+    stop: sawSystemInit,
+    control: reachedTerminal
+      ? 'the origin session above reached system:init normally in this same run, so its absence here is attributable to the invalid resume rather than to the harness'
+      : 'the control cannot be evaluated: the invalid session produced no terminal evidence',
+  });
+  invalid.close();
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -605,6 +752,7 @@ async function main(): Promise<number> {
     await itemBasic();
     await itemMidTurn();
   }
+  if (selected.has('--invalid')) await itemInvalidResume();
   if (selected.has('--post-compact')) await itemPostCompact();
 
   const isolation = verifyIsolation(CONFIG_DIR);

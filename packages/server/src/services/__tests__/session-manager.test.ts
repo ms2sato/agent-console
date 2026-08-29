@@ -18,6 +18,9 @@ import { SingleUserMode } from '../user-mode.js';
 import { WorkerManager } from '../worker-manager.js';
 import type { UserMode, PtySpawnRequest } from '../user-mode.js';
 import { PtyMessageInjectionService } from '../pty-message-injection-service.js';
+// Type-only: the suite loads SessionManager dynamically (fresh module per test),
+// but the R1 return-type pin below needs the static type.
+import type { SessionManager } from '../session-manager.js';
 import { UsernameLookupService } from '../username-lookup.js';
 import type { UserRepository } from '../../repositories/user-repository.js';
 import type { AuthUser } from '@agent-console/shared';
@@ -5797,5 +5800,30 @@ describe('SessionManager', () => {
       expect(secondCallback).toHaveBeenCalledTimes(1);
       expect(secondCallback).toHaveBeenCalledWith(session.id);
     });
+  });
+});
+
+/**
+ * Transcript Restore R1 (#1410): `getEmbeddedAgentRestoreInfo` is a pure
+ * delegation to `EmbeddedAgentWorkerService.getRestoreInfo`, so what R1
+ * changed about it is not behaviour but its RETURN TYPE, which previously
+ * did not mention `sdkResumed`.
+ *
+ * That omission is not cosmetic. The value flows through this method to
+ * routes.ts, which spreads it onto the wire; a narrower annotation here means
+ * every consumer is typed as if the field does not exist, and the next person
+ * to build the payload field-by-field instead of spreading drops it without a
+ * compile error. Pinned at the type level because that is the layer that
+ * changed -- a runtime test would pass against the old annotation too.
+ */
+describe('SessionManager.getEmbeddedAgentRestoreInfo return type (R1, #1410)', () => {
+  it('exposes sdkResumed as an optional boolean', () => {
+    type Info = NonNullable<ReturnType<SessionManager['getEmbeddedAgentRestoreInfo']>>;
+    // Fails to compile if `sdkResumed` is missing from the annotation, or is
+    // required rather than optional (absence is a real wire state).
+    const withField: Info = { epoch: 1, messageCount: 2, repairedToolCallIds: [], completed: true, sdkResumed: false };
+    const withoutField: Info = { epoch: 1, messageCount: 2, repairedToolCallIds: [], completed: true };
+    expect(withField.sdkResumed).toBe(false);
+    expect(withoutField.sdkResumed).toBeUndefined();
   });
 });

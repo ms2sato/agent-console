@@ -24,6 +24,9 @@ interface UseEmbeddedAgentWorkerReturn {
   restoring: boolean;
   /** Transcript Restore (#1123). See `EmbeddedAgentSnapshot.restoredMessageCount` doc comment. */
   restoredMessageCount: number | null;
+  /** Transcript Restore, R1. THREE-VALUED -- see `EmbeddedAgentSnapshot.sdkResumed`'s
+   * doc comment before writing any check against it; `!sdkResumed` is wrong. */
+  sdkResumed: boolean | undefined;
   sendUserMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restart: () => void;
@@ -86,6 +89,7 @@ export function useEmbeddedAgentWorker(
     contextUsage: snapshot.contextUsage,
     restoring: snapshot.restoring,
     restoredMessageCount: snapshot.restoredMessageCount,
+    sdkResumed: snapshot.sdkResumed,
     sendUserMessage,
     cancel,
     restart,

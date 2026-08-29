@@ -1085,6 +1085,18 @@ export class WorkerManager {
       onData: callbacks.onData,
       onExit: callbacks.onExit,
       onActivityChange: callbacks.onActivityChange,
+      // Transcript Restore: forwarded like the others. It was MISSING here
+      // from the moment `onRestoreInfo` was introduced, which made every
+      // `pushRestoreInfoToConnections` call a silent no-op -- the optional
+      // call `cb.onRestoreInfo?.(info)` simply found nothing to invoke. The
+      // feature still appeared to work because the bootstrap re-delivery in
+      // routes.ts sends through the connection's sender directly rather than
+      // through this map, and that path is the one the service-layer tests
+      // exercise. What never arrived was every PUSH: the `completed: true`
+      // flip after `ready` (#1205), and R1's correction of `sdkResumed` down
+      // to false. Found by R1's shipping-path E2E, which watched a real
+      // socket rather than asking the service what it would have sent.
+      onRestoreInfo: callbacks.onRestoreInfo,
     });
     return connectionId;
   }

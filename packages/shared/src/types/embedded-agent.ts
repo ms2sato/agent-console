@@ -181,6 +181,24 @@ export type EmbeddedAgentCommand =
       engine: 'claude-sdk';
       // No apiKey -- absent by construction, not merely optional (§3.2).
       provider: { model: string };
+      /**
+       * Transcript Restore, R1: resume THIS SDK session instead of starting
+       * a fresh one. Present only on a re-activation whose worker carries a
+       * persisted `sdkSessionId` that the server's `getSessionInfo`
+       * pre-flight found; absent on a first-ever activation, on a worker
+       * with no id yet, and whenever the pre-flight came back empty.
+       *
+       * Lives on the `claude-sdk` arm rather than the shared base because
+       * the other engine has no concept of it -- an `openai-api` init
+       * carrying a `resume` is not a thing that should be representable.
+       *
+       * The engine has NO other source for a resume id (Appendix A's
+       * re-scoped init pin): not `listSessions()`, not a scan of the SDK's
+       * on-disk transcripts, not a value remembered from an earlier query.
+       * It comes from the `workers` row through this field, or the session
+       * is fresh.
+       */
+      resume?: { sdkSessionId: string };
     })
   | { v: 1; type: 'user-message'; id: string; text: string }
   | { v: 1; type: 'cancel' }
@@ -271,7 +289,47 @@ export type EmbeddedAgentEvent =
    * consumer (e.g. Phase E's resume logic) must treat its absence
    * accordingly, not as an error.
    */
-  | { v: 1; type: 'sdk-session-id'; sdkSessionId: string };
+  | { v: 1; type: 'sdk-session-id'; sdkSessionId: string }
+  /**
+   * Transcript Restore, R1: the engine was asked to `resume` a session and
+   * the SDK refused it. The MACHINE-readable half of the failure -- the
+   * human-readable half is the `turn-error` emitted alongside it, which
+   * names the cause and tells the user their message needs resending.
+   * Deliberately not one event doing both jobs: the server must never have
+   * to string-match a `turn-error` message to decide what happened.
+   *
+   * Detection is structural, not textual (PS6,
+   * docs/design/embedded-agent-sdk-engine.md §5): the query reached a
+   * terminal error without ever having reported a `system:init`. It cannot
+   * key on the result subtype -- `error_during_execution` is also what an
+   * ordinary `interrupt()` produces -- nor on the SDK's error wording,
+   * which is undocumented. What separates the two is causal: a cancel
+   * always has a `system:init` behind it, because a turn was running; a
+   * failed resume never does, because the session never started.
+   *
+   * `requestedSdkSessionId` is the id that failed, echoed so the server can
+   * confirm it is clearing the id it actually asked for rather than one
+   * that changed underneath it.
+   */
+  | {
+      v: 1;
+      type: 'sdk-resume-failed';
+      requestedSdkSessionId: string;
+      /**
+       * `not-found`: the activation-time pre-flight could not find the
+       * session, so no resume was ever attempted and no turn was lost. The
+       * engine simply started fresh and this event is the only trace.
+       * `refused`: a resume WAS attempted and the SDK rejected it, which
+       * costs the turn that was in flight and leaves the query dead -- the
+       * server has to replace the incarnation, and a `turn-error` telling
+       * the user to resend is emitted alongside this event.
+       *
+       * The server's durable action is identical for both (clear the id,
+       * report `sdkResumed: false`); they differ in what else has to happen,
+       * which is why one event with a reason beats two events.
+       */
+      reason: 'not-found' | 'refused';
+    };
 
 /**
  * Events the SERVER (not the loop) appends into the persisted stream so the
@@ -315,6 +373,28 @@ export type EmbeddedAgentServerEvent =
       // disagree with it.
       notification?: EmbeddedAgentServerNotification;
     }
+  /**
+   * Transcript Restore, R1 (the local half of #1273): the turn that was in
+   * flight when this worker's previous incarnation died never reached a
+   * terminal event. Appended at activation, immediately after the replay
+   * that detected it, and rendered as a marker row so a conversation cut
+   * off mid-turn says so instead of ending in silence.
+   *
+   * Detection (single writer:
+   * docs/design/embedded-agent-sdk-engine.md Appendix A.3) is a
+   * `user-message` with neither `state: 'idle'` nor `turn-error` after it.
+   * `exited` is deliberately NOT terminal for this purpose.
+   *
+   * Server-authored, and deliberately NOT a synthesized `turn-error`: A.3's
+   * rule is that the server does not forge engine-authored events. No
+   * engine reported an error here, and inventing one would be a claim about
+   * what the model did. This event states only what the server observed
+   * about its own transcript.
+   *
+   * `turnId` is the unanswered `user-message`'s own `id`, so the client can
+   * attach the marker to that turn rather than guessing from position.
+   */
+  | { v: 1; type: 'turn-interrupted'; turnId: string }
   | { v: 1; type: 'exited'; code: number | null };
 
 /**

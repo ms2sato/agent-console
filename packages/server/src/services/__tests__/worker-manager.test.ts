@@ -427,6 +427,43 @@ describe('WorkerManager', () => {
       expect(receivedData[0]).toBe('output text');
     });
 
+    it('stores EVERY callback it was given, including onRestoreInfo', async () => {
+      // `attachCallbacks` reconstructs the callback object field by field
+      // rather than storing what it was handed, so a new member is silently
+      // dropped unless someone remembers to add a line. `onRestoreInfo` WAS
+      // dropped that way, and nothing noticed for two Issues' worth of
+      // features (#1123's push and #1205's `completed` flip), because the
+      // caller invokes it optionally -- `cb.onRestoreInfo?.(info)` -- so a
+      // missing member is an ordinary no-op rather than an error, and the
+      // service-layer tests only ever asked what the service WOULD send.
+      //
+      // Asserted structurally, over the stored entry rather than over one
+      // named field, so the next member added to `WorkerCallbacks` fails here
+      // instead of shipping the same way.
+      const worker = createTestTerminalWorker();
+      await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
+
+      const callbacks = {
+        onData: mock(() => {}),
+        onExit: mock(() => {}),
+        onActivityChange: mock(() => {}),
+        onRestoreInfo: mock(() => {}),
+      };
+      const connectionId = workerManager.attachCallbacks(worker, callbacks);
+
+      const stored = worker.connectionCallbacks.get(connectionId);
+      expect(stored).toBeDefined();
+      // Whole-object equality rather than a per-key sweep: it needs no cast,
+      // and it is the stronger assertion -- every member must be present AND
+      // be the same function that was passed, so a member that is stored but
+      // rebound to something else fails here too.
+      expect(stored).toEqual(callbacks);
+      // Presence is not reachability: invoke through the stored reference.
+      expect(stored?.onRestoreInfo).toBeDefined();
+      stored?.onRestoreInfo?.({ messageCount: 1, repairedToolCallIds: [], completed: true });
+      expect(callbacks.onRestoreInfo).toHaveBeenCalledTimes(1);
+    });
+
     it('should deliver data to multiple attached callbacks', async () => {
       const worker = createTestTerminalWorker();
       await workerManager.activateTerminalWorkerPty(worker, defaultTerminalActivationParams);
