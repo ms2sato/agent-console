@@ -434,6 +434,18 @@ async function main(): Promise<void> {
     const bHarnessAlive = pidAlive(bHarness);
     const bClaudeNow = claudeDescendantPids(bHarness);
 
+    // The negative control's measured reach, stated so it is not over-read.
+    //
+    // It discriminates "A was evicted" from "everything is being killed at
+    // once" -- that is the hypothesis it was built for, and it covers it.
+    //
+    // It does NOT discriminate "the engine gate was removed", because B's
+    // countdown starts at ITS last activity, which is later than A's. Under a
+    // mutation that makes every engine evictable, B is still inside its own
+    // window at the instant A's elapses, and every assertion below still
+    // passes. That property is pinned in the unit layer instead, by the test
+    // asserting an openai-api worker idle past the same threshold is not
+    // evicted -- and removing the engine gate is what fails it there.
     console.log('==> polarity check (same instant)');
     expect(!aHarnessAlive, 'A: harness process is gone from /proc', `pid ${aHarness}`);
     expect(
@@ -486,6 +498,26 @@ async function main(): Promise<void> {
       aExitedRows.at(-1)?.reason === 'evicted',
       "A: the `exited` row is stamped reason: 'evicted'",
       `got ${JSON.stringify(aExitedRows.at(-1))}`,
+    );
+    // The exit code is what distinguishes "went through the graceful shutdown
+    // protocol" from "was signalled", and it is asserted because a mutation
+    // measurement showed the rest of this script cannot tell them apart.
+    //
+    // Replacing the `deactivate` call with a direct SIGKILL of the harness --
+    // an eviction that invents its own kill instead of routing through the
+    // path the exit observer covers -- passed all twenty other assertions.
+    // The child still died (it loses its stdio pipes when the harness goes),
+    // the observer still fired, and `reason` was still 'evicted'. The only
+    // observables that moved were the settle latency, 1 ms -> 253 ms, and
+    // this: 0 from the shutdown protocol versus a signal-derived code.
+    //
+    // The latency is the more dramatic signal but the worse assertion -- a
+    // timing bound tight enough to separate them invites flake. The exit code
+    // separates them deterministically.
+    expect(
+      aExitedRows.at(-1)?.code === 0,
+      'A: the eviction exited through the graceful shutdown protocol (code 0), not a signal',
+      `got code ${JSON.stringify(aExitedRows.at(-1)?.code)} -- a signal-derived code means the eviction bypassed \`deactivate\``,
     );
     const bEvents = await readEvents(b.sessionId, b.workerId);
     expect(
