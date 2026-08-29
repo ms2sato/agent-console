@@ -473,13 +473,16 @@ describe('reconstructConversation — R1 events are Noise (#1410)', () => {
  * previous messages..." and the `> 0` gate on its "your conversation may not
  * have carried over" notice.
  *
- * Definition under test: entries that ORIGINATE FROM THE PERSISTED
- * TRANSCRIPT -- replayed messages plus a compaction summary -- with only the
- * synthetic system prompt excluded.
+ * Criterion under test: an entry counts if and only if its content
+ * ORIGINATES FROM A LINE OF THE PERSISTED TRANSCRIPT. Replayed messages and
+ * a compaction summary do; the synthetic system prompt and a Tier C repair
+ * marker do not -- both are invented by the reconstruction so the provider
+ * will accept the array.
  *
- * The seed shape differs between the two branches (one message with no
- * boundary, two past one), which is exactly why the count cannot be derived
- * outside this module and why each branch is pinned separately below.
+ * The synthetic entries differ per branch (a seed of one message with no
+ * boundary, two past one; zero or more repair markers), which is exactly why
+ * the count cannot be derived outside the module and why each case is pinned
+ * separately below.
  */
 describe('reconstructConversation — restoredMessageCount', () => {
   it('counts the replayed messages and NOT the system prompt (seed of 1)', () => {
@@ -601,10 +604,19 @@ describe('reconstructConversation — restoredMessageCount', () => {
     });
   });
 
-  it('counts a Tier C synthetic repair, because only the system prompt is excluded', () => {
-    // The definition's second half is "ONLY the synthetic system prompt is
-    // excluded", so a mid-turn repair message counts like any other entry.
-    // Pinned so a future reader does not silently narrow the exclusion set.
+  it('does NOT count a Tier C synthetic repair marker', () => {
+    // A transcript whose tail stops mid-tool-call: the `tool-call` row has no
+    // matching `tool-result`, so Tier C really fires and inserts a marker.
+    //
+    // The marker originates in no transcript line -- it is invented here so
+    // the provider will accept the array -- so the criterion excludes it.
+    // Counting it would double-count an interaction the user sees once: the
+    // tool call is already counted as the assistant message it arrived in.
+    //
+    // Kept as a dedicated named test so the exclusion set cannot be silently
+    // re-widened. The count is taken BEFORE the repair runs, which is exactly
+    // the kind of ordering a later reader can "simplify" away by reading the
+    // repair's output array instead.
     const events: EmbeddedAgentStreamEvent[] = [
       { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
       { v: 1, type: 'assistant-message', turnId: 't1', text: 'reply' },
@@ -613,9 +625,14 @@ describe('reconstructConversation — restoredMessageCount', () => {
 
     const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
 
+    // LOAD-BEARING. Without it, a fixture that produced no repair at all
+    // would satisfy the count assertion below for the wrong reason -- passing
+    // by a mechanism other than the one under test.
     expect(outcome.repairedToolCallIds).toEqual(['c1']);
     // [system, user, assistant(+tool_calls), synthetic tool result]
     expect(outcome.conversation.length).toBe(4);
-    expect(outcome.restoredMessageCount).toBe(3);
+    // user + assistant only. Mutation reach: taking the count after the
+    // repair (the behaviour this replaces) gives 3.
+    expect(outcome.restoredMessageCount).toBe(2);
   });
 });

@@ -37,34 +37,42 @@ export interface RestoreOutcome {
   /** Tool-call ids repaired by Tier C mid-turn repair (4d); empty when none needed. */
   repairedToolCallIds: string[];
   /**
-   * How many restored entries originate from the persisted transcript:
-   * replayed messages plus a compaction summary. ONLY the synthetic system
-   * prompt is excluded -- it is assembled fresh on every activation from the
-   * agent definition and the instructions files, so it says nothing about
-   * what the previous incarnation and the user actually exchanged.
+   * How many restored entries came from the transcript, by this criterion:
    *
-   * A compaction summary DOES count, and that is the load-bearing part of
-   * this definition rather than an incidental detail. The summary is
-   * restored content: it is reconstructed from the boundary event in the
-   * persisted log, and it stands in for the whole conversation head the
-   * compaction replaced. Excluding it would make a worker killed
-   * immediately after a compaction -- with nothing yet replayed after the
-   * boundary -- report zero, i.e. "nothing was restored", at the exact
-   * moment the transcript holds a rich history that a failed resume has
-   * lost. The client's "your conversation may not have carried over" notice
-   * is gated on this being non-zero, so it would vanish precisely where it
-   * matters most.
+   *   An entry counts if and only if its content ORIGINATES FROM A LINE OF
+   *   THE PERSISTED TRANSCRIPT.
    *
-   * Two edges, both deliberate:
+   * The criterion decides every entry on its own. A replayed message counts
+   * -- it originates in its own row. A compaction summary counts -- it is
+   * reconstructed from the `context-compacted` row, and it stands in for the
+   * whole conversation head the compaction replaced. The synthetic system
+   * prompt does NOT, and neither does a Tier C repair marker: both are
+   * invented by this reconstruction so the provider will accept the array,
+   * and neither originates in any row.
+   *
+   * It is written as a criterion rather than a list of exclusions because
+   * the list was tried twice and was wrong twice. "Exclude the seed"
+   * reported 0 for a worker killed immediately after a compaction, with
+   * nothing yet replayed past the boundary -- suppressing the client's "your
+   * conversation may not have carried over" notice, which is gated on this
+   * being non-zero, at the exact moment the model has lost the most.
+   * "Exclude only the system prompt" fixed that edge and silently
+   * mis-classified a third synthetic category, the repair markers: counting
+   * one double-counts an interaction the user sees once, since the tool call
+   * it answers is already counted as the assistant message it arrived in. A
+   * criterion answers for a fourth synthetic category that does not exist
+   * yet; a list answers only for the three someone happened to think of.
+   *
+   * Two edges follow from the criterion, both deliberate:
    * - Empty transcript (activated, never spoken to) -> 0. Reachable, and
    *   the reason this is not simply `conversation.length`: the seed alone
    *   must not read as a restored conversation.
    * - Compaction boundary with zero following messages -> 1, the summary.
    *
    * This is the SINGLE WRITER of the count. The server must not recompute
-   * it: subtracting the seed requires knowing the seed's shape, which is
-   * this module's private business (one message normally, two past a
-   * boundary).
+   * it from the returned array: applying the criterion needs the shape of
+   * the seed (one message normally, two past a boundary) and the identity of
+   * every synthetic entry, both of which are this module's private business.
    */
   restoredMessageCount: number;
 }
@@ -89,12 +97,17 @@ export function reconstructConversation(streamText: string, systemPrompt: string
   }
 
   replayWindow(conversation, windowEvents);
-  const repairResult = repairDanglingToolCalls(conversation);
 
-  // Every entry except the leading synthetic system prompt came from the
-  // persisted transcript -- the boundary branch's summary included, since it
-  // is reconstructed from the boundary event rather than assembled fresh.
-  const restoredMessageCount = repairResult.conversation.length - 1;
+  // Taken BEFORE the repair, which is what applies the criterion to the
+  // markers it inserts: none of them originates in a transcript line, so
+  // none of them counts. At this point every entry does originate in one
+  // except the leading synthetic system prompt -- the boundary branch's
+  // summary included, since it is reconstructed from the boundary event
+  // rather than assembled fresh -- so the count is the length minus that
+  // one seed message.
+  const restoredMessageCount = conversation.length - 1;
+
+  const repairResult = repairDanglingToolCalls(conversation);
 
   return {
     conversation: repairResult.conversation,
