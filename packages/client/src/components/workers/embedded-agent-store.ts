@@ -161,10 +161,13 @@ export interface EmbeddedAgentSnapshot {
    * THREE-VALUED, and the third value is the point: `undefined` means "this
    * engine has no such concept" (an `openai-api` worker never sets it, and
    * neither does a `claude-sdk` worker before its first `restore-info`),
-   * while `false` means "a resume was attempted or intended and did not
-   * take". Only `false` may drive the divergence notice. Any consumer
-   * writing `!sdkResumed` collapses the two and puts a permanent false
-   * warning on every `openai-api` worker -- test `=== false`.
+   * while `false` means "this incarnation's SDK session did not resume" --
+   * the OUTCOME, never an attempt or an intent, since one of its four routes
+   * is a worker with no persisted session id where neither exists. The route
+   * list lives with the wire type in `@agent-console/shared`'s
+   * `types/session.ts`. Only `false` may drive the divergence notice. Any
+   * consumer writing `!sdkResumed` collapses the two and puts a permanent
+   * false warning on every `openai-api` worker -- test `=== false`.
    */
   sdkResumed: boolean | undefined;
 }

@@ -430,9 +430,13 @@ interface Runtime {
  * Transcript Restore: what the client is told about this incarnation's
  * restore. `sdkResumed` is R1's addition and is THREE-VALUED -- `undefined`
  * means "this engine has no such concept" (`openai-api` never sets it),
- * `false` means "a resume was attempted or intended and did not take".
- * Collapsing the two with a negation would show a divergence notice on every
- * `openai-api` worker, which is why consumers test `=== false`.
+ * `false` means "this incarnation's SDK session did not resume" -- defined
+ * by the OUTCOME, never by an attempt or an intent: one of its four routes
+ * is a worker with no persisted session id, where neither exists. The route
+ * list lives with the wire type in `@agent-console/shared`'s
+ * `types/session.ts`. Collapsing `undefined` with `false` via a negation
+ * would show a divergence notice on every `openai-api` worker, which is why
+ * consumers test `=== false`.
  */
 export interface RestoreInfo {
   /**

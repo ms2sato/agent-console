@@ -234,9 +234,21 @@ export type WorkerServerMessage =
   // `sdkResumed` (R1): whether the `claude-sdk` engine's SDK session
   // actually resumed. Set ONLY by that engine -- `openai-api` omits it,
   // because it has no such concept. THREE-VALUED: absent means "this engine
-  // does not have the concept", `false` means "a resume was attempted and
-  // did not take". Reading absence as `false` collapses the two, so
-  // consumers test `=== false` explicitly and never `!sdkResumed`.
+  // does not have the concept", `false` means "this incarnation's SDK
+  // session did not resume".
+  //
+  // Defined by the OUTCOME, never by an attempt. Four routes reach `false`
+  // and only the last of them sends a `resume` at all: no session id was
+  // persisted to resume from; the activation-time pre-flight found no such
+  // session; the pre-flight could not run; the SDK refused a resume that was
+  // sent. Defining the value by the attempt would leave the first three
+  // undefined while they still set it. This comment is the code-side writer
+  // of that list -- the other sites that describe this field point here, and
+  // docs/design/embedded-agent-sdk-engine.md 4.3 carries the full account of
+  // why the wider reading is the correct one.
+  //
+  // Reading absence as `false` collapses absent with false, so consumers
+  // test `=== false` explicitly and never `!sdkResumed`.
   | {
       type: 'restore-info';
       epoch: number;

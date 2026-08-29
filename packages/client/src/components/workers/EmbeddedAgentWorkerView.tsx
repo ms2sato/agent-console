@@ -198,8 +198,10 @@ export function EmbeddedAgentWorkerView({
     restoredMessageCount !== null && restoredMessageCount > 0;
   // R1: `sdkResumed` is THREE-valued -- `undefined` means "this engine has
   // no such concept" (every `openai-api` worker, and a `claude-sdk` worker
-  // before its first restore-info), `false` means "a resume was attempted or
-  // intended and did not take". Only the latter may show the notice, so this
+  // before its first restore-info), `false` means "this incarnation's SDK
+  // session did not resume" -- the OUTCOME, never an attempt or an intent;
+  // the route list lives with the wire type in `@agent-console/shared`'s
+  // `types/session.ts`. Only the latter may show the notice, so this
   // is an explicit `=== false`, never `!sdkResumed`: the negation would
   // collapse the two and put a permanent false warning on every
   // `openai-api` worker. Same trap as the engine discriminant above, which
@@ -234,8 +236,10 @@ export function EmbeddedAgentWorkerView({
           confession that the live session started fresh. R1 resumes the
           session, so a successful restore now shows nothing -- the
           conversation genuinely did continue -- and this survives only as the
-          fallback confession, for the case where a resume was attempted and
-          did not take. Porting the old unconditional rule forward would put a
+          fallback confession, for the case where this incarnation's SDK
+          session did not resume -- by any of its four routes, most of which
+          never send a resume at all. Porting the old unconditional rule
+          forward would put a
           permanent false warning on every successful resume; see
           docs/design/embedded-agent-sdk-engine.md §4.3's polarity table and
           its correction trail. The wording states what is true and promises
