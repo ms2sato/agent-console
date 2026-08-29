@@ -284,6 +284,30 @@ async function initializeLoop(
       },
     });
 
+    // Compaction at the restore boundary (#1411): evaluated here, awaited
+    // BEFORE `ready`. See docs/design/embedded-agent-worker.md "Compaction at
+    // the restore boundary" -- awaiting inside init is by itself what keeps a
+    // `user-message` from interleaving, since this function runs inside
+    // `runLoop`'s serial `for await` over stdin; and the server hangs both
+    // initial-prompt delivery and the restore-info completion flip off
+    // `ready`, so gating it makes both fire against the post-compaction
+    // conversation.
+    //
+    // "Before `ready`" means before the compaction FINISHES, never before it
+    // SUCCEEDS: `ready` is emitted unconditionally below. A provider that is
+    // down at activation must not be able to wedge the worker -- the
+    // preserve-on-failure path leaves the conversation intact and the first
+    // user turn simply overflows, which is the accepted behaviour when no
+    // context window is configured either. The catch enforces that invariant
+    // for the residual class `compact()` does not already swallow.
+    try {
+      await loop.compactAtRestoreBoundaryIfNeeded();
+    } catch (err) {
+      io.logError(
+        `Restore-boundary compaction failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
     io.writeEvent({ v: 1, type: 'ready' });
     return loop;
   }

@@ -13,7 +13,11 @@
  */
 import { describe, it, expect } from 'bun:test';
 import type { EmbeddedAgentEvent } from '@agent-console/shared';
-import { AgentLoop, type AgentLoopDeps } from '../agent-loop.js';
+import {
+  AgentLoop,
+  selectPartialDistillationMessages,
+  type AgentLoopDeps,
+} from '../agent-loop.js';
 import type { ToolCallOutcome, ToolExecutor } from '../mcp.js';
 import type { ChatMessage, ProviderAdapter, ProviderEvent, ProviderRunRequest } from '../providers/types.js';
 
@@ -849,5 +853,340 @@ describe('Compaction — the boundary marker reports its own severity', () => {
       promptTokens: marker.postTokens,
       estimated: true,
     });
+  });
+});
+
+/**
+ * Compaction at the restore boundary (#1411) — the SECOND firing point of the
+ * same automatic predicate, evaluated once after `init` and before the first
+ * user turn. See docs/design/embedded-agent-worker.md "Compaction at the
+ * restore boundary" for the four-row table these boundary values walk, and
+ * for why `FULL_DISTILL_MAX_RATIO` (0.9) and `PARTIAL_DISTILL_INPUT_RATIO`
+ * (0.7) are two constants rather than one.
+ */
+describe('Compaction at the restore boundary — the four boundary cases', () => {
+  // 1000-token window, default 0.85 threshold, 0.9 full-distill ceiling.
+  // estimateTokensFromChars is round(totalChars / 4), so `4 * n` characters
+  // of `.content` across the array is exactly n estimated tokens.
+  const WINDOW = 1000;
+
+  /**
+   * A restored conversation whose total estimate is exactly `tokens`.
+   *
+   * NOTE: `AgentLoop` takes OWNERSHIP of the array handed to it as
+   * `restoredConversation` (`this.conversation = deps.restoredConversation`),
+   * and `compact()` splices that same array in place. Any expectation built
+   * from one of these arrays must therefore be materialised BEFORE the call
+   * under test, or it silently becomes an expectation about the
+   * post-compaction seed. (Production is unaffected: the array there is
+   * freshly parsed out of the init command's JSON.)
+   */
+  function restoredOfSize(tokens: number): ChatMessage[] {
+    const systemChars = 40;
+    return [
+      { role: 'system', content: 'S'.repeat(systemChars) },
+      { role: 'user', content: 'U'.repeat(tokens * 4 - systemChars) },
+    ];
+  }
+
+  it('does NOTHING when contextWindowTokens is unset, however large the restored conversation', async () => {
+    // The same structural gate the turn-end path applies: no denominator, no
+    // ratio, and we do not guess the model's window. The provider's 400 on
+    // the first turn stays Tier A's accepted behaviour.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true },
+      restoredConversation: restoredOfSize(9_999),
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    // Nothing was ATTEMPTED either: a path that skipped the window/toggle gate
+    // and fell through to the partial branch would find nothing fitting and
+    // surface a compaction turn-error without ever calling the provider,
+    // which the two assertions above cannot tell apart from doing nothing.
+    expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
+  });
+
+  it('does NOTHING below the threshold (849/1000)', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(849),
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    // Nothing was ATTEMPTED either: a path that skipped the window/toggle gate
+    // and fell through to the partial branch would find nothing fitting and
+    // surface a compaction turn-error without ever calling the provider,
+    // which the two assertions above cannot tell apart from doing nothing.
+    expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
+  });
+
+  it('compacts in FULL exactly at the threshold (850/1000) — the whole conversation is the distillation input', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const restored = restoredOfSize(850);
+    const expectedInput: ChatMessage[] = [...restored, { role: 'user', content: 'DISTILL_PROMPT' }];
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restored,
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({
+      source: 'auto',
+      summary: 'SUMMARY',
+    });
+    // Full, not partial: every restored message reached the distillation, and
+    // the summary carries no partial caveat.
+    expect(adapter.capturedMessages[0]).toEqual(expectedInput);
+  });
+
+  it('still compacts in FULL exactly at the full-distill ceiling (900/1000) — the comparison is <=, not <', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const restored = restoredOfSize(900);
+    const expectedInput: ChatMessage[] = [...restored, { role: 'user', content: 'DISTILL_PROMPT' }];
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restored,
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toMatchObject({ source: 'auto' });
+    expect(adapter.capturedMessages[0]).toEqual(expectedInput);
+    const compacted = events.find((e) => e.type === 'context-compacted');
+    expect(compacted && 'summary' in compacted ? compacted.summary : undefined).toBe('SUMMARY');
+  });
+
+  it('distills PARTIALLY above the full-distill ceiling (950/1000): a strict tail suffix within the 0.7 budget, and a caveat inside the summary', async () => {
+    // 40 + 1200 + 1200 + 1000 = 3440 chars => 860 tokens... deliberately
+    // sized below so the numbers are stated rather than implied:
+    //   system 400 + A 1200 + B 1200 + C 1000 = 3800 chars => 950 tokens
+    // Budget is floor(0.7 * 1000) = 700 tokens = 2800 chars for the ASSEMBLED
+    // request (system + suffix + the 14-char DISTILL_PROMPT):
+    //   from C:      400 + 1000 + 14 = 1414 chars =>  354 tokens  (fits)
+    //   from B:      400 + 2200 + 14 = 2614 chars =>  654 tokens  (fits)
+    //   from A:      400 + 3400 + 14 = 3814 chars =>  954 tokens  (does not)
+    // so the largest fitting suffix starts at B.
+    const restored: ChatMessage[] = [
+      { role: 'system', content: 'S'.repeat(400) },
+      { role: 'user', content: 'A'.repeat(1200) },
+      { role: 'assistant', content: 'B'.repeat(1200) },
+      { role: 'user', content: 'C'.repeat(1000) },
+    ];
+    const expectedInput: ChatMessage[] = [
+      restored[0],
+      restored[2],
+      restored[3],
+      { role: 'user', content: 'DISTILL_PROMPT' },
+    ];
+    const adapter = new ScriptedAdapter([textResponse('PARTIAL_SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restored,
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(adapter.capturedMessages[0]).toEqual(expectedInput);
+
+    const compacted = events.find((e) => e.type === 'context-compacted');
+    expect(compacted).toBeDefined();
+    const summary = compacted && 'summary' in compacted ? compacted.summary : undefined;
+    // The caveat rides INSIDE the summary string -- that is what makes it
+    // survive into the persisted event, and therefore into a later restore
+    // that reseeds through the ordinary (non-partial) seed wording.
+    expect(summary).toBe(
+      '[Earlier messages exceeded the context window and are not covered by this summary.] PARTIAL_SUMMARY',
+    );
+    // ...and the summary the model sees is the same string, via the unchanged
+    // single-writer seed builder.
+    await loop.runTurn('t1', 'after');
+    const postCompactionRequest = adapter.capturedMessages[1];
+    expect(postCompactionRequest).toHaveLength(3);
+    expect(postCompactionRequest[1].content).toContain(
+      '[Earlier messages exceeded the context window and are not covered by this summary.]',
+    );
+  });
+
+  it('does NOTHING when the worker auto toggle is OFF, however large the restored conversation', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: false, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(9_999),
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    // Nothing was ATTEMPTED either: a path that skipped the window/toggle gate
+    // and fell through to the partial branch would find nothing fitting and
+    // surface a compaction turn-error without ever calling the provider,
+    // which the two assertions above cannot tell apart from doing nothing.
+    expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
+  });
+
+  it('does NOTHING for a loop that was NOT restored — a fresh conversation is the vacuous case, not a small one', async () => {
+    // A fresh loop's conversation is one system message; its estimate is
+    // meaningless as a window ratio. The systemPrompt here is deliberately
+    // far over the window, so only the restored-or-not gate can explain a
+    // pass.
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      systemPrompt: 'S'.repeat(40_000),
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.calls).toBe(0);
+    // Nothing was ATTEMPTED either: a path that skipped the window/toggle gate
+    // and fell through to the partial branch would find nothing fitting and
+    // surface a compaction turn-error without ever calling the provider,
+    // which the two assertions above cannot tell apart from doing nothing.
+    expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
+  });
+
+  it('publishes the restored conversation size as a context-usage reading before any turn has run', async () => {
+    const adapter = new ScriptedAdapter([textResponse('SUMMARY')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: WINDOW },
+      restoredConversation: restoredOfSize(400),
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-usage')).toMatchObject({
+      promptTokens: 400,
+      estimated: true,
+    });
+  });
+});
+
+describe('Compaction at the restore boundary — when nothing fits the distillation budget', () => {
+  it('names the cause specifically and preserves the conversation (polarity: a subsequent turn sees the untouched array)', async () => {
+    // A 100-token window against a system prompt alone larger than the 70-token
+    // budget: no suffix, however short, can fit. The failure must be the same
+    // preserve-on-failure every other compaction failure already uses.
+    const restored: ChatMessage[] = [
+      { role: 'system', content: 'S'.repeat(1200) },
+      { role: 'user', content: 'U'.repeat(400) },
+    ];
+    const expectedNextTurnRequest: ChatMessage[] = [...restored, { role: 'user', content: 'next' }];
+    const adapter = new ScriptedAdapter([textResponse('reply after failure')]);
+    const { deps, events } = makeDeps({
+      adapter,
+      compaction: { auto: true, contextWindowTokens: 100 },
+      restoredConversation: restored,
+    });
+    const loop = new AgentLoop(deps);
+
+    await loop.compactAtRestoreBoundaryIfNeeded();
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError).toBeDefined();
+    expect(turnError && 'message' in turnError ? turnError.message : '').toBe(
+      'Context compaction failed: restore-boundary compaction skipped: conversation exceeds the distillation input budget',
+    );
+    // No provider call was made at all -- the request was never assembled.
+    expect(adapter.calls).toBe(0);
+
+    // Preserve-on-failure: the next turn sees exactly the pre-compaction array.
+    await loop.runTurn('t1', 'next');
+    expect(adapter.capturedMessages[0]).toEqual(expectedNextTurnRequest);
+  });
+});
+
+describe('selectPartialDistillationMessages — suffix selection rules', () => {
+  const PROMPT: ChatMessage = { role: 'user', content: 'P'.repeat(40) }; // 10 tokens
+
+  it('returns the LARGEST tail suffix that fits, keeping the system head', () => {
+    const conversation: ChatMessage[] = [
+      { role: 'system', content: 'S'.repeat(40) },   // 10 tokens
+      { role: 'user', content: 'A'.repeat(400) },    // 100 tokens
+      { role: 'assistant', content: 'B'.repeat(400) }, // 100 tokens
+      { role: 'user', content: 'C'.repeat(400) },    // 100 tokens
+    ];
+    // head 10 + prompt 10 = 20; budget 220 admits two 100-token messages.
+    expect(selectPartialDistillationMessages(conversation, PROMPT, 220)).toEqual([
+      conversation[0],
+      conversation[2],
+      conversation[3],
+      PROMPT,
+    ]);
+  });
+
+  it('never starts a suffix at a tool message — it skips past to the owning assistant message', () => {
+    // Starting at the tool message would hand the provider a tool result whose
+    // owning assistant `tool_calls` entry is not in the request: the exact
+    // structural violation mid-turn repair exists to prevent.
+    const conversation: ChatMessage[] = [
+      { role: 'system', content: 'S'.repeat(40) },
+      { role: 'user', content: 'A'.repeat(400) },
+      {
+        role: 'assistant',
+        content: 'B'.repeat(400),
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'Read', arguments: '{}' } }],
+      },
+      { role: 'tool', tool_call_id: 'c1', content: 'R'.repeat(400) },
+    ];
+    // A budget of 120 would admit the tool message alone (10 + 100 + 10), but
+    // that start is not selectable; the next selectable start (the assistant)
+    // costs 220 and does not fit, so nothing is returned.
+    expect(selectPartialDistillationMessages(conversation, PROMPT, 120)).toBeNull();
+    // Widened to 220, the selection lands on the assistant, carrying its tool
+    // result with it.
+    expect(selectPartialDistillationMessages(conversation, PROMPT, 220)).toEqual([
+      conversation[0],
+      conversation[2],
+      conversation[3],
+      PROMPT,
+    ]);
+  });
+
+  it('returns null when not even the shortest suffix fits alongside the system head', () => {
+    const conversation: ChatMessage[] = [
+      { role: 'system', content: 'S'.repeat(4000) },
+      { role: 'user', content: 'A'.repeat(40) },
+    ];
+    expect(selectPartialDistillationMessages(conversation, PROMPT, 100)).toBeNull();
+  });
+
+  it('can select the whole conversation when it fits, without duplicating the system head', () => {
+    const conversation: ChatMessage[] = [
+      { role: 'system', content: 'S'.repeat(40) },
+      { role: 'user', content: 'A'.repeat(40) },
+    ];
+    expect(selectPartialDistillationMessages(conversation, PROMPT, 10_000)).toEqual([
+      conversation[0],
+      conversation[1],
+      PROMPT,
+    ]);
   });
 });

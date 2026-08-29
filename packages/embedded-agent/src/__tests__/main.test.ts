@@ -10,11 +10,12 @@ import {
   type LoopIO,
   type McpClientLike,
 } from '../main.js';
-import type {
-  ProviderAdapter,
-  ProviderEvent,
-  ProviderRunRequest,
-  ToolDefinition,
+import {
+  ProviderError,
+  type ProviderAdapter,
+  type ProviderEvent,
+  type ProviderRunRequest,
+  type ToolDefinition,
 } from '../providers/types.js';
 import type { ToolCallOutcome } from '../mcp.js';
 import type { Engine } from '../engine-types.js';
@@ -819,5 +820,164 @@ describe('runLoop — claude-sdk resume pre-flight (R1)', () => {
     expect(preflightCalls).toBe(0);
     expect(capturedDeps?.resume).toBeUndefined();
     expect(events.filter((e) => e.type === 'sdk-resume-failed')).toHaveLength(0);
+  });
+});
+
+/**
+ * Compaction at the restore boundary (#1411) — driven through `runLoop`, the
+ * shipping path, rather than against `AgentLoop` directly. What only this
+ * layer can establish: the event ORDER relative to `ready` (the server hangs
+ * both initial-prompt delivery and the restore-info completion flip off
+ * `ready`), and that a first user turn which WOULD have gone over the window
+ * no longer does.
+ *
+ * See docs/design/embedded-agent-worker.md "Compaction at the restore
+ * boundary".
+ */
+
+/** Rejects any request whose chars/4 estimate exceeds the window, the way an
+ * OpenAI-compatible provider rejects an over-window prompt: a non-retryable
+ * 400. Records every request it was given, accepted or rejected. */
+class WindowedAdapter implements ProviderAdapter {
+  readonly requestedTokens: number[] = [];
+  constructor(
+    private readonly windowTokens: number,
+    private readonly replyText = 'ok',
+  ) {}
+  async *run(req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+    const estimate = Math.round(req.messages.reduce((sum, m) => sum + m.content.length, 0) / 4);
+    this.requestedTokens.push(estimate);
+    if (estimate > this.windowTokens) {
+      throw new ProviderError(
+        `400 This model's maximum context length is ${this.windowTokens} tokens`,
+        { retryable: false, status: 400 },
+      );
+    }
+    yield { type: 'text-delta', text: this.replyText };
+    yield { type: 'done', finishReason: 'stop' };
+  }
+}
+
+/** Every provider call fails immediately and non-retryably — the shape of a
+ * provider that is simply not there at activation time. Non-retryable
+ * deliberately: `AgentLoop`'s backoff sleeps are not injectable through
+ * `runLoop`, and a retryable error would buy 2.5s of real waiting for a
+ * distinction this test is not about. */
+class DeadAdapter implements ProviderAdapter {
+  // eslint-disable-next-line require-yield
+  async *run(_req: ProviderRunRequest): AsyncIterable<ProviderEvent> {
+    throw new ProviderError('connection refused', { retryable: false });
+  }
+}
+
+describe('runLoop — compaction at the restore boundary (#1411)', () => {
+  const WINDOW = 1000;
+
+  /** Restored conversation of roughly `chars` characters past the system
+   * message, which `main.ts` replaces with its own ~433-char assembly. */
+  const restoredOf = (...contents: string[]) => [
+    { role: 'system', content: 'SERVER_SIDE_PLACEHOLDER' },
+    ...contents.map((content, i) => ({ role: i % 2 === 0 ? 'user' : 'assistant', content })),
+  ];
+
+  it('emits the context-compacted marker BEFORE ready, and ready exactly once', async () => {
+    // ~433-char system prompt + 3000 chars => ~858 estimated tokens, inside
+    // the [850, 900] full-compaction band for a 1000-token window.
+    const { io, events } = makeIo([
+      initCommand({
+        compaction: { auto: true, contextWindowTokens: WINDOW },
+        restoredConversation: restoredOf('U'.repeat(3000)),
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories())).toBe(0);
+
+    const markerIndex = events.findIndex((e) => e.type === 'context-compacted');
+    const readyIndex = events.findIndex((e) => e.type === 'ready');
+    expect(markerIndex).toBeGreaterThanOrEqual(0);
+    expect(readyIndex).toBeGreaterThanOrEqual(0);
+    expect(markerIndex).toBeLessThan(readyIndex);
+    expect(events.filter((e) => e.type === 'ready')).toHaveLength(1);
+  });
+
+  it('still reports ready when the boundary compaction FAILS — a dead provider at activation must not wedge the worker', async () => {
+    // "Not before ready" means not before the compaction FINISHES, never
+    // before it SUCCEEDS. The conversation is preserved, a turn-error is
+    // surfaced, and the worker goes on to accept commands.
+    const { io, events } = makeIo([
+      initCommand({
+        compaction: { auto: true, contextWindowTokens: WINDOW },
+        restoredConversation: restoredOf('U'.repeat(3000)),
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'still working?' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories({ createAdapter: () => new DeadAdapter() }))).toBe(0);
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(events.find((e) => e.type === 'turn-error')).toBeDefined();
+    const readyEvents = events.filter((e) => e.type === 'ready');
+    expect(readyEvents).toHaveLength(1);
+    // ...and the worker really was usable afterwards: the user-message was
+    // accepted and driven to a turn of its own (it fails against the dead
+    // provider, which is the point -- the failure is the PROVIDER's, not a
+    // wedged activation).
+    expect(events.filter((e) => e.type === 'turn-error').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('E2E: a restored conversation past the window is partially distilled, and the first user turn does not go over the window', async () => {
+    // ~433 system + 4000 + 4000 + 400 = ~8833 chars => ~2208 tokens against a
+    // 1000-token window: far past the 0.9 full-distill ceiling, so the
+    // distillation input itself must be narrowed to the 700-token budget.
+    const adapter = new WindowedAdapter(WINDOW, 'DISTILLED');
+    const { io, events } = makeIo([
+      initCommand({
+        compaction: { auto: true, contextWindowTokens: WINDOW },
+        restoredConversation: restoredOf('A'.repeat(4000), 'B'.repeat(4000), 'C'.repeat(400)),
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories({ createAdapter: () => adapter }))).toBe(0);
+
+    const marker = events.find((e) => e.type === 'context-compacted');
+    expect(marker).toMatchObject({ source: 'auto' });
+    expect(marker && 'summary' in marker ? marker.summary : '').toBe(
+      '[Earlier messages exceeded the context window and are not covered by this summary.] DISTILLED',
+    );
+    // Nothing the provider was asked to answer exceeded the window, so
+    // nothing 400'd -- neither the distillation nor the user turn.
+    expect(adapter.requestedTokens.every((t) => t <= WINDOW)).toBe(true);
+    expect(events.find((e) => e.type === 'turn-error')).toBeUndefined();
+    expect(events.find((e) => e.type === 'assistant-message')).toMatchObject({ text: 'DISTILLED' });
+  });
+
+  it('POLARITY: with the boundary compaction disabled, the very first provider call goes over the window and 400s', async () => {
+    // The control for the E2E above -- identical restored conversation and
+    // identical window, with only the worker's auto toggle turned off, which
+    // is exactly what disables the boundary compaction. If this passes AND
+    // the E2E above passes, the compaction is what made the difference.
+    const adapter = new WindowedAdapter(WINDOW, 'DISTILLED');
+    const { io, events } = makeIo([
+      initCommand({
+        compaction: { auto: false, contextWindowTokens: WINDOW },
+        restoredConversation: restoredOf('A'.repeat(4000), 'B'.repeat(4000), 'C'.repeat(400)),
+      }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'u1', text: 'follow-up' }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories({ createAdapter: () => adapter }))).toBe(0);
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    expect(adapter.requestedTokens).toHaveLength(1);
+    expect(adapter.requestedTokens[0]).toBeGreaterThan(WINDOW);
+    const turnError = events.find((e) => e.type === 'turn-error');
+    expect(turnError && 'message' in turnError ? turnError.message : '').toContain(
+      'maximum context length',
+    );
   });
 });

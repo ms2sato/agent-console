@@ -791,6 +791,75 @@ The auto trigger is evaluated **at turn end only**, never mid-turn: splicing the
 
 A compaction that fires automatically emits exactly the same `context-compacted` event a manual one does, differing only in `source: 'auto'` vs `'manual'`.
 
+### Compaction at the restore boundary
+
+**Status:** Issue [#1411](https://github.com/ms2sato/agent-console/issues/1411). Extends the threshold semantics above with a **second firing point** for the same predicate. It introduces no new event, no new `source` value, and no change to [Transcript Restore](#transcript-restore)'s reconstruction or replay.
+
+Auto compaction as specified above fires **at turn end**. That is the wrong moment for one population: a worker whose *restored* conversation is already large sends its first provider call **before any turn completes**, so the turn-end trigger has not run even once and that first call overflows the window. The population is real but bounded — workers whose logs were written before compaction existed ([#1403](https://github.com/ms2sato/agent-console/pull/1403)), and sessions that ran with the toggle off.
+
+The fix is a second evaluation of the *same* predicate at a second point: **right after `init`, before the first user turn**.
+
+Let `E` = `estimateTokensFromChars(conversation)` (the same chars/4 estimator the turn-end path falls back to), `W` = `compaction.contextWindowTokens`, `T` = the auto threshold, `F` = the full-distillation ceiling, and `P` = the partial-distillation input budget ratio.
+
+| Condition | Behaviour |
+|---|---|
+| `W` unset | Nothing. No denominator means auto is inert — the same ruling the threshold semantics above make — and the provider's 400 stays Tier A's accepted behaviour |
+| `E < T×W` | Nothing. Growth from here is turn-end auto's job |
+| `T×W ≤ E ≤ F×W` | **Compact at the restore boundary.** `compact('auto')`, unchanged, whole conversation as the distillation input — byte-identical to what the live turn-end path does at the same size. Only the trigger point is new |
+| `E > F×W` | **Partial distillation.** The whole-conversation distillation call would itself overflow, so only the largest tail suffix that fits `P×W` becomes its input |
+
+The check runs **only when the loop was seeded from a restored conversation**. A fresh worker's conversation is one system message; evaluating the ratio against it would be the vacuous case the threshold semantics above already exclude.
+
+The worker-level `auto` toggle gates the whole check exactly as it gates the turn-end one — the predicate *is* `shouldAutoCompact()`, reached by seeding `lastTurnUsage` with `{ promptTokens: E, estimated: true }` before consulting it. The seeding is not merely plumbing to reuse a function: it is also the usage reading a restored worker publishes before its first turn, which previously stayed absent until a turn had completed.
+
+**Ordering: after the compaction FINISHES, not after it succeeds.** The compaction is awaited inside the subprocess's `init` handling, and `ready` is emitted only afterwards — but it is emitted **unconditionally**, including when the compaction failed. A provider that is down at activation time must not be able to wedge the worker: the failure path is `compact()`'s existing preserve-on-failure (a `turn-error`, conversation untouched), after which the worker is fully usable and the first user turn simply overflows the way the `W`-unset row already does. "Do not emit `ready` before the compaction" means *before it finishes*, never *before it succeeds*.
+
+Two consequences of the ordering are load-bearing. First, `main.ts`'s command dispatch is a `for await` over stdin, so awaiting inside `init` is by itself what prevents a `user-message` from interleaving with the compaction — no turn-active bookkeeping exists or is needed for this path. Second, the server hangs two things off `ready`: [Initial prompt delivery](#initial-prompt-delivery-issue-1068), and flipping `restore-info`'s `completed` flag ([UI](#ui)). Gating `ready` therefore makes both fire only once the worker is genuinely usable, rather than against a conversation that is about to be spliced. The cost is that `ready` is delayed by one provider round-trip; the server imposes no `ready` timeout anywhere on the activation path, so the delay is safe.
+
+**`restore-info.messageCount` is the PRE-compaction count, and stays so.** The server computes it from the reconstruction (4a-4d) and pushes it before the subprocess is even spawned, so it necessarily predates any boundary compaction. That is the honest number for what it names — how much conversation was recovered from the log — and the `context-compacted` marker that follows says what then happened to it. Recomputing it after the fact would report a smaller restore than actually occurred.
+
+#### The two ratios, and why they are two
+
+An earlier draft of this section carried a single constant `D = 0.7` serving as both the full/partial cut and the partial input budget. That is **internally inconsistent with the live path** and is corrected here (Architect ruling, 2026-08-29, before implementation). The live turn-end compaction sends the **entire** conversation as its distillation input and does so successfully at `E ≈ 0.85W` and above — that is the mechanism running in production today. A single `D = 0.7` would therefore make the same machine treat the same conversation differently depending only on *where* it was triggered: a conversation at `0.87W` gets a whole-conversation distillation from the live path and a truncated one from the restore boundary. The cut and the budget are two different quantities and get two constants:
+
+- **`FULL_DISTILL_MAX_RATIO = 0.9`** (`F`) — the ceiling below which the whole conversation may still be the distillation input. Derived from the live path's demonstrated behaviour at `≥ 0.85W`, plus room for the compaction prompt and the summary the model is about to write, plus margin for the estimator's error.
+- **`PARTIAL_DISTILL_INPUT_RATIO = 0.7`** (`P`) — the input budget for the suffix, and *only* that. **Named premise:** `E` is a coarse character-count estimate, not a token count, and can be wrong in either direction for any given tokenizer, so the budget measured against it stays conservative; and the compaction prompt and the summary need room of their own inside the same window. Partial distillation is the path taken *because* the estimate has already proven to be near the wall, which is exactly where a conservative budget earns its keep.
+
+Neither is operator-configurable. Both are internal safety margins on our own estimator, not policies an operator has the information to set.
+
+With the defaults `T = 0.85` and `F = 0.9`, the full-compaction band `[0.85W, 0.9W]` is **non-empty**, so both the full row and the partial row are reachable — and testable — without overriding `compaction.threshold`.
+
+**A remaining asymmetry, recorded as an observation, not fixed here.** The live turn-end path has no `F` ceiling of its own: it always sends the whole conversation. A live conversation that overshoots past `0.9W` within a single turn will therefore attempt a whole-conversation distillation that the restore boundary would have declined to attempt. If that call overflows, `compact()`'s preserve-on-failure already handles it — a `turn-error`, conversation intact. Teaching the live path the same ceiling is a change to a shipped, working path and is out of scope for #1411; it is noted so a later reader finds this asymmetry documented rather than surprising.
+
+#### Partial distillation
+
+`compact()`'s normal input is `[...conversation, compactionPrompt]`. When `E > F×W` that request is the very thing that would overflow, so the input — and **only** the input — is narrowed:
+
+1. **Budget.** `budgetTokens = floor(P × W)`, measured with the same `estimateTokensFromChars` used for `E`, over the request array actually being assembled (system message + selected suffix + the compaction prompt message). Measuring the assembled request rather than the suffix alone is what keeps the prompt's own room from being double-counted or forgotten.
+2. **Selection.** The **largest tail suffix** of the conversation that fits, subject to one structural rule: a suffix may not begin at a `{role:'tool'}` message. Starting there would hand the provider a tool result whose owning assistant `tool_calls` entry is not in the request — the same structural violation [Mid-turn Repair](#mid-turn-repair) exists to prevent, arriving from the other direction. Candidate start points are scanned from the tail toward the head, and a candidate landing on a `tool` message is skipped rather than accepted or repaired.
+3. **Head.** The conversation's system message is always included and always counted. It is the model's operating instructions for the summary it is being asked to write; dropping it to buy budget would trade the quality of the one output that survives for a few percent of room.
+4. **Everything else is `compact()` unchanged** — same prompt loader, same failure invariant (every early return happens strictly before the `context-compacted` marker is emitted, so the conversation is never mutated on failure), same `emitDeltas: false`, same marker, same `source: 'auto'`.
+
+**The caveat travels inside the summary, not around it.** A partial distillation prepends one fixed line to the model's distillation output before anything else sees it:
+
+> `[Earlier messages exceeded the context window and are not covered by this summary.]`
+
+(`PARTIAL_DISTILL_CAVEAT_LINE` in `agent-loop.ts`, the caveat's single writer.)
+
+That line is part of the `summary` string — the string carried by the `context-compacted` event, persisted to the log, rendered in the transcript, and seeded into the conversation. Putting it *there* rather than in the seed sentence around it is what makes it survive a restart: the persisted event has no field that distinguishes a partial distillation from a full one, so a later [Transcript Restore](#transcript-restore) reseeds through the ordinary `buildCompactionSeedMessages` wording — and the caveat, being in the summary text itself, is still read by the model. `buildCompactionSeedMessages` therefore stays **exactly** the single writer it already was, with no partial/full branch: the one and only writer of the caveat is the partial-distillation path.
+
+**Named degradation (small, and deliberate).** The outer seed sentence still says *"Summary of the earlier part of this conversation, which has been compacted away"*, which overclaims coverage; the embedded line corrects it in band, immediately after the colon. Two sentences that disagree slightly, in the right order, is the accepted cost of not adding a field to a persisted wire event and not touching `restore.ts`. Should it ever need closing properly, the shape is a discriminating field on the marker event read by `4b` — not a second writer of the seed.
+
+**It announces itself, like every other compaction.** `source` stays `'auto'` and the `context-compacted` marker is emitted exactly as always, so a partial distillation immediately after a restore is visible in the transcript rather than silent. That visibility is the point: an aggressive discard the user did not ask for is precisely the kind of event that must not look like a bug.
+
+**What the user keeps, and what is actually lost.** The **UI transcript is unaffected** — it replays our persisted stream, so every message the worker ever wrote is still there to read, before and after the boundary alike. What a compaction discards is the **model's** memory of the conversation, not the user's record of it. For a partial distillation the loss is larger than for a full one: the summary covers only the tail that fit the budget, so the head of the conversation reaches the model neither directly nor in summary. Stating this plainly is part of the spec, because "compaction" is otherwise easy to read as lossless.
+
+**When nothing fits (accepted failure).** If no non-empty suffix fits `budgetTokens` — a small `W` against a large system prompt — there is no usable distillation input. The partial distillation then fails the way every other compaction failure already does: a `turn-error`, and `this.conversation` left exactly as it was. The reason string **names this cause specifically** rather than folding into the generic wording —
+
+> `Context compaction failed: restore-boundary compaction skipped: conversation exceeds the distillation input budget`
+
+— because the 400 that follows on the first user turn is otherwise indistinguishable from every other overflow, and this is the one line that explains it. The alternatives were both worse: splicing in a summary of nothing destroys the conversation to avoid an error, and inventing a smaller working window is the guessed denominator the threshold semantics above already rule out.
+
 ### PS3 and the handoff E2E: a verified but unshipped mechanism
 
 `embedded-agent-sdk-engine.md` §5's **PS3** (session-boundary seeding recalls the distilled context — verified with a real recall test) and PR [#1349](https://github.com/ms2sato/agent-console/pull/1349)'s handoff E2E become **a verified but unshipped mechanism**. The record is not deleted. Its value is that a future re-offering of the feature — which the owner has named as possible — will not need to re-probe it: the mechanism is known to work, and the evidence stays available. Only its *status as the regression floor* moves, to the compaction E2E (`embedded-agent-sdk-engine.md` §7).
