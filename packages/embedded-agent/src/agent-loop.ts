@@ -722,6 +722,13 @@ export class AgentLoop {
       // This became load-bearing when the restore boundary started cancelling
       // on a budget: what used to be an exotic mid-compaction user cancel is
       // now a routine path.
+      //
+      // The sibling check in `runUserTurn` is deliberately left kind-only,
+      // not overlooked: a clean-abort adapter there yields a VISIBLE partial
+      // assistant-message rather than a silent splice over the conversation,
+      // its cancel is user-initiated rather than budget-driven, and no
+      // equivalent routine path exists on that side. Tracked as a follow-up
+      // (#1418) rather than changed here.
       if (outcome.kind === 'canceled' || abort.signal.aborted) {
         this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
         return;
