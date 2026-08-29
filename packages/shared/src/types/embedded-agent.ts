@@ -173,10 +173,48 @@ type EmbeddedAgentInitCommandBase = {
  * line, all carrying `v: 1`). The first command MUST be `init`; the loop exits
  * with code 2 if the first parsed line is not a valid `init`.
  */
+/**
+ * The newest authoritative context reading found in a restored worker's
+ * persisted log, carried on the `init` command so the
+ * subprocess's restore-boundary compaction check can be decided by a
+ * MEASUREMENT rather than by re-estimating the reconstructed text.
+ *
+ * Why it exists: `estimateTokensFromChars` sums message `.content` only,
+ * while the request a provider actually prices also carries every published
+ * tool schema. That makes the estimate systematically low by roughly a fixed
+ * per-worker constant -- measured on a real instance at 1102 estimated
+ * against 6722 reported for the same request. Against a small declared
+ * window that constant is the dominant term, and a conversation that would
+ * overflow can sit below the threshold and compact nothing.
+ *
+ * `estimated` is the reading's OWN honesty, carried forward unchanged: a
+ * provider that never sends `usage` leaves the loop falling back to the
+ * estimator, and a reading born that way must not arrive here claiming to be
+ * a measurement.
+ */
+export interface EmbeddedAgentRestoredUsage {
+  promptTokens: number;
+  estimated: boolean;
+}
+
 export type EmbeddedAgentCommand =
   | (EmbeddedAgentInitCommandBase & {
       engine: 'openai-api';
       provider: { baseUrl: string; model: string; apiKey?: string };
+      /**
+       * Transcript Restore: the newest authoritative context reading from
+       * the persisted log, seeding the restore-boundary compaction check.
+       * See docs/design/embedded-agent-worker.md "Seed extraction". Absent when the worker never completed a turn (and
+       * never compacted), which is a legitimate state -- the subprocess then
+       * falls back to the estimator, bias and all.
+       *
+       * Lives on the `openai-api` arm rather than the shared base for the
+       * same reason `resume` lives on the other one: `claude-sdk` carries
+       * its own context state through the SDK resume and computes no ratio
+       * of its own, so an init for that engine carrying a seed is not a
+       * thing that should be representable.
+       */
+      restoredUsage?: EmbeddedAgentRestoredUsage;
     })
   | (EmbeddedAgentInitCommandBase & {
       engine: 'claude-sdk';

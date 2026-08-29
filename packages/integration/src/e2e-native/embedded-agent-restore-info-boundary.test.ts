@@ -301,7 +301,21 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       if (!parsed.success) {
         throw new Error(`safeParse failed unexpectedly: ${JSON.stringify(parsed.issues.map((i) => i.message))}`);
       }
-      expect(parsed.output.messageCount).toBeGreaterThan(0);
+      // The value the client turns into "Loading N previous messages..." and
+      // into the `> 0` gate on its "may not have carried over" notice. Pinned
+      // to the EXACT number the transcript justifies rather than `> 0`: the
+      // first incarnation said one thing and received one reply, so exactly
+      // two entries originate from the persisted transcript. The system
+      // prompt is reassembled fresh on this activation and is not restored
+      // content -- counting it (the behaviour this replaces) reports 3 here,
+      // and floors the count at 1 for a worker that was never spoken to.
+      const conversationalRows = (await readEvents()).filter(
+        (e) => e.type === 'user-message' || e.type === 'assistant-message',
+      );
+      // Independent oracle read off the real persisted log, so the pin below
+      // is not just this test agreeing with itself.
+      expect(conversationalRows.length).toBe(2);
+      expect(parsed.output.restoredMessageCount).toBe(2);
       expect(parsed.output.repairedToolCallIds).toEqual([]);
       expect(typeof parsed.output.epoch).toBe('number');
       expect(parsed.output.completed).toBe(false);
@@ -322,7 +336,7 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       const parsedAgain = v.safeParse(RestoreInfoMessageSchema, wirePayloadAgain);
       expect(parsedAgain.success).toBe(true);
       if (parsedAgain.success) {
-        expect(parsedAgain.output.messageCount).toBe(parsed.output.messageCount);
+        expect(parsedAgain.output.restoredMessageCount).toBe(parsed.output.restoredMessageCount);
         expect(parsedAgain.output.epoch).toBe(parsed.output.epoch);
         expect(parsedAgain.output.completed).toBe(false);
       }

@@ -153,7 +153,17 @@ export const DeleteSessionRequestSchema = v.strictObject({});
 export const RestoreInfoMessageSchema = v.strictObject({
   type: v.literal('restore-info'),
   epoch: v.pipe(v.number(), v.integer(), v.minValue(0)),
-  messageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  /**
+   * Entries restored from the persisted transcript, by criterion: an entry
+   * counts if and only if its content originates from a line of that
+   * transcript. Replayed messages and a compaction summary do. The
+   * freshly-assembled system prompt and Tier C repair markers do not -- both
+   * are invented by the reconstruction so the provider accepts the array, and
+   * originate in no row.
+   * `0` is a real, reachable value (a worker activated but never spoken to)
+   * and the client's restore notice is gated on it being non-zero.
+   */
+  restoredMessageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
   repairedToolCallIds: v.array(v.string()),
   completed: v.boolean(),
   /**

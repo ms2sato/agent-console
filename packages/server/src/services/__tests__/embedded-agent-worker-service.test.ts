@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { EmbeddedAgentDefinition, ExitReason, SdkResumeFailureReason } from '@agent-console/shared';
+import type { EmbeddedAgentDefinition, SdkResumeFailureReason } from '@agent-console/shared';
 import type { SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../privilege-elevation.js';
 import { SessionDataPathResolver } from '../../lib/session-data-path-resolver.js';
 import { buildPtyNotificationText, buildReplyInstructions, type PtyNotificationParams } from '../../lib/pty-notification.js';
@@ -307,10 +307,10 @@ function setup(opts?: {
     onRestoreInfo: mock(() => {}),
   };
   worker.connectionCallbacks.set('conn-1', {
-    onData: recorder.onData as unknown as (data: string, offset: number, epoch: number) => void,
-    onExit: recorder.onExit as unknown as (code: number, sig: string | null, reason?: ExitReason) => void,
-    onActivityChange: recorder.onActivityChange as unknown as (state: 'active' | 'idle' | 'asking' | 'unknown') => void,
-    onRestoreInfo: recorder.onRestoreInfo as unknown as (info: { messageCount: number; repairedToolCallIds: string[]; completed: boolean }) => void,
+    onData: recorder.onData,
+    onExit: recorder.onExit,
+    onActivityChange: recorder.onActivityChange,
+    onRestoreInfo: recorder.onRestoreInfo,
   });
 
   const service = new EmbeddedAgentWorkerService({
@@ -831,7 +831,9 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       const info = h.service.getRestoreInfo(h.workerId);
       expect(info).not.toBeNull();
       expect(info!.epoch).toBe(h.worker.epoch);
-      expect(info!.messageCount).toBe(3); // system + user + assistant
+      // user + assistant. The synthetic system prompt is NOT restored content
+      // and is excluded from the count.
+      expect(info!.restoredMessageCount).toBe(2);
       expect(info!.repairedToolCallIds).toEqual([]);
       expect(info!.completed).toBe(false);
     });
@@ -841,6 +843,41 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+
+    it('reports restoredMessageCount 0 for a worker that was activated but never spoken to', async () => {
+      // The count the client gates its "your conversation may not have
+      // carried over" notice on. It has to be able to reach 0, or that
+      // notice fires on a worker with no conversation at all -- a false
+      // warning that teaches the user to ignore the real one.
+      //
+      // An activated worker's persisted stream is never literally empty (the
+      // service treats an empty read as an I/O failure), so the reachable
+      // production shape is a stream of lifecycle rows carrying no
+      // conversation.
+      const noiseOnlyStream = [
+        JSON.stringify({ v: 1, type: 'ready' }),
+        JSON.stringify({ v: 1, type: 'state', state: 'idle' }),
+        JSON.stringify({ v: 1, type: 'exited', code: 0 }),
+      ].join('\n');
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: noiseOnlyStream } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      const info = h.service.getRestoreInfo(h.workerId);
+      // Restore SUCCEEDED -- this is not the null-on-failure path above.
+      expect(info).not.toBeNull();
+      expect(info!.restoredMessageCount).toBe(0);
+    });
+
+    it('PRESENCE CONTROL: the same path reports non-zero once the stream carries real messages', async () => {
+      // Pairs with the 0 assertion directly above. On its own, "the count
+      // was 0" cannot tell "nothing was restored" apart from "this service
+      // stopped reporting a count at all"; this control is what makes the
+      // 0 meaningful.
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.service.getRestoreInfo(h.workerId)!.restoredMessageCount).toBe(2);
     });
 
     it('returns null after a first-ever activation (nothing to restore)', async () => {
@@ -864,7 +901,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
 
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({
-        messageCount: 3,
+        restoredMessageCount: 2,
         repairedToolCallIds: [],
         completed: false,
       });
@@ -903,7 +940,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
 
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(2);
       expect(h.recorder.onRestoreInfo).toHaveBeenNthCalledWith(2, {
-        messageCount: 3,
+        restoredMessageCount: 2,
         repairedToolCallIds: [],
         completed: true,
       });
@@ -1911,6 +1948,105 @@ describe('EmbeddedAgentWorkerService — sending `resume` in the init command (R
     const init = JSON.parse(h.fake.stdinWrites[0]);
     expect(init.engine).toBe('openai-api');
     expect('resume' in init).toBe(false);
+  });
+});
+
+/**
+ * Issue #1419: the seed the server extracts from the persisted log and sends
+ * on the `init` command, so the subprocess's restore-boundary compaction
+ * check is decided by a MEASUREMENT rather than by re-estimating the
+ * reconstructed text.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m12  drop `restoredUsage = outcome.usageSeed;` in the restore branch
+ *        -> 2 fail: the two cases that expect a seed on the wire. All three
+ *           absence cases correctly survive -- never assigning is exactly
+ *           what they assert -- including the claude-sdk one, whose
+ *           containment is measured by m13 instead.
+ *   m13  move `...(restoredUsage !== undefined ? { restoredUsage } : {})`
+ *        from the openai-api arm up into `initCommandShared`
+ *        -> 1 fails: 'never sends a seed on a claude-sdk worker'. That is
+ *           the only test that sees the arm containment, and without it the
+ *           field would silently reach an engine that has no use for it.
+ */
+describe('EmbeddedAgentWorkerService — sending `restoredUsage` in the init command (#1419)', () => {
+  const streamWith = (...lines: unknown[]) => lines.map((l) => JSON.stringify(l)).join('\n');
+  const COMPLETED_TURN = [
+    { v: 1, type: 'user-message', id: 'm1', text: 'hi there' },
+    { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello back' },
+    { v: 1, type: 'state', state: 'idle' },
+  ];
+
+  it('sends the last real context-usage from the log', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: {
+        data: streamWith(...COMPLETED_TURN, { v: 1, type: 'context-usage', promptTokens: 6722, estimated: false }),
+      },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.restoredUsage).toEqual({ promptTokens: 6722, estimated: false });
+  });
+
+  it('never sends a reading from before the last compaction boundary', async () => {
+    // The pre-boundary 90000 measures a conversation that compaction then
+    // discarded. Sending it would tell the subprocess the restored
+    // conversation is 33x its real size and fire a compaction on nothing.
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: {
+        data: streamWith(
+          ...COMPLETED_TURN,
+          { v: 1, type: 'context-usage', promptTokens: 90000, estimated: false },
+          { v: 1, type: 'context-compacted', source: 'auto', summary: 'earlier work', postTokens: 2700 },
+        ),
+      },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.restoredUsage).toEqual({ promptTokens: 2700, estimated: true });
+  });
+
+  it('sends no seed when the log holds no reading at all', async () => {
+    // A worker killed before completing any turn. The subprocess falls back
+    // to the estimator, and this is the boundary the AC requires to keep
+    // working.
+    const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: streamWith(...COMPLETED_TURN) } });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('restoredUsage' in init).toBe(false);
+  });
+
+  it('sends no seed on a first-ever activation, which has nothing to restore', async () => {
+    const h = setup({ everActivated: false });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect('restoredUsage' in init).toBe(false);
+  });
+
+  it('never sends a seed on a claude-sdk worker, even with a reading in the log', async () => {
+    // That engine carries its own context state through the SDK resume and
+    // computes no ratio of its own, so the field is not representable on its
+    // arm -- and a server that sent one anyway would be rejected by the
+    // subprocess's own schema at init, killing the worker.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: {
+        data: streamWith(...COMPLETED_TURN, { v: 1, type: 'context-usage', promptTokens: 6722, estimated: false }),
+      },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const init = JSON.parse(h.fake.stdinWrites[0]);
+    expect(init.engine).toBe('claude-sdk');
+    expect('restoredUsage' in init).toBe(false);
   });
 });
 

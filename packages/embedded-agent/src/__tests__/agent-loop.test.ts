@@ -101,6 +101,7 @@ function makeLoop(
     reassembleSystemPrompt?: () => Promise<string>;
     loadCompactionPrompt?: () => Promise<string>;
     restoredConversation?: ChatMessage[];
+    restoredUsage?: AgentLoopDeps['restoredUsage'];
     compaction?: AgentLoopDeps['compaction'];
   } = {},
 ): Harness {
@@ -128,6 +129,7 @@ function makeLoop(
     // Auto compaction OFF: this file's subject is the turn cycle itself.
     compaction: opts.compaction ?? { auto: false },
     restoredConversation: opts.restoredConversation,
+    restoredUsage: opts.restoredUsage,
   };
   const loop = new AgentLoop(deps);
   loopRef.current = loop;
@@ -660,5 +662,80 @@ describe('AgentLoop — pushSyntheticToolError extraction regression', () => {
       tool_call_id: 'c1',
       content: 'Error: tool call canceled',
     });
+  });
+});
+
+/**
+ * The restore-boundary seed's LIFETIME, which is the one thing about it that
+ * belongs to the turn cycle rather than to compaction: it seeds the check
+ * once, at activation, and a turn's own reading supersedes it from then on.
+ *
+ * Worth pinning separately because the seed and the turn-end threshold share
+ * a single field (`lastTurnUsage`) by design -- "the reading the loop just
+ * published IS the one the threshold is compared against" -- so a seed that
+ * failed to be overwritten would keep firing compactions on a stale number
+ * for the rest of the process's life, and every event assertion elsewhere
+ * would still pass.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m15   skip `emitContextUsageIfKnown(turnUsage)` on the turn-completed path
+ *         -> 7 fail, only one of them this test. Too broad to measure this
+ *            pin: six pre-existing accounting/ordering tests catch it first,
+ *            so a green run under a NARROWER regression would prove nothing.
+ *   m15b  keep emitting the reading but stop assigning `this.lastTurnUsage`
+ *         -> 0 fail. INERT, and instructively so: it produces "no reading at
+ *            all", which leaves `shouldAutoCompact()` false and yields the
+ *            same absence this test asserts. An assertion of absence cannot
+ *            distinguish "superseded" from "never recorded".
+ *   m15c  `if (this.lastTurnUsage === undefined) this.lastTurnUsage = usage;`
+ *         -- first-write-wins, i.e. the seed SURVIVES the turn
+ *         -> 1 fail, this test alone. This is the defect the pin is for: the
+ *            stale 900 is still the threshold's input at the turn boundary
+ *            and a compaction fires after a turn that reported 100/1000.
+ */
+describe('AgentLoop — a turn’s own reading supersedes the restore-boundary seed', () => {
+  it('does not compact after a small-usage turn, even though the seed was over threshold', async () => {
+    const h = makeLoop(
+      [
+        {
+          kind: 'events',
+          events: [
+            { type: 'text-delta', text: 'ok' },
+            { type: 'done', finishReason: 'stop', usage: { promptTokens: 100, completionTokens: 1, totalTokens: 101 } },
+          ],
+        },
+        textResponse('SUMMARY'),
+      ],
+      {
+        // Auto OFF for the boundary call, so the seed is PUBLISHED (and
+        // becomes the threshold's input) without a compaction firing there --
+        // isolating the supersession from the boundary behaviour itself.
+        compaction: { auto: false, contextWindowTokens: 1000 },
+        restoredConversation: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'earlier' }],
+        restoredUsage: { promptTokens: 900, estimated: false },
+      },
+    );
+
+    await h.loop.compactAtRestoreBoundaryIfNeeded();
+    expect(h.events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 900,
+      estimated: false,
+    });
+    expect(h.events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+
+    h.loop.setAutoCompaction(true);
+    await h.loop.runTurn('t1', 'hello');
+
+    // The turn's own 100/1000 is what the turn-end threshold sees.
+    expect(h.events.filter((e) => e.type === 'context-usage').at(-1)).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 100,
+      estimated: false,
+    });
+    expect(h.events.find((e) => e.type === 'context-compacted')).toBeUndefined();
   });
 });

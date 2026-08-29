@@ -40,7 +40,7 @@ function outputMessage(data: string, offset: number, epoch = 1) {
 
 function restoreInfoMessage(
   epoch: number,
-  messageCount: number,
+  restoredMessageCount: number,
   repairedToolCallIds: string[] = [],
   completed = false,
   // R1: OMITTED by default, not defaulted to a boolean -- absence is a real
@@ -51,7 +51,7 @@ function restoreInfoMessage(
   return JSON.stringify({
     type: 'restore-info',
     epoch,
-    messageCount,
+    restoredMessageCount,
     repairedToolCallIds,
     completed,
     ...(sdkResumed !== undefined ? { sdkResumed } : {}),
@@ -1359,6 +1359,28 @@ describe('embedded-agent-store', () => {
       expect(snapshot.restoredMessageCount).toBe(5);
     });
 
+    it('keeps a restoredMessageCount of 0 as 0, not null (#1428: 0 is a real wire value now)', () => {
+      // Since #1428 the count excludes the synthetic system prompt, so an
+      // activated-but-never-spoken-to worker legitimately reports 0. The
+      // snapshot must carry that 0 through verbatim: `null` means "no
+      // restore-info accepted this epoch", a different fact, and any falsy
+      // coercion (`count || null`) would collapse the two and re-hide the
+      // very state the fix made reachable.
+      //
+      // Mutation reach (measured): breaks under "store drops the field"
+      // (reading the pre-rename `message.messageCount`, which yields
+      // `undefined`).
+      const instance = getOrCreateEmbeddedAgentWorker('r1-zero', 'w1-zero');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      ws!.simulateMessage(restoreInfoMessage(1, 0, []));
+
+      const snapshot = instance.getSnapshot();
+      expect(snapshot.restoredMessageCount).toBe(0);
+      expect(snapshot.restoring).toBe(true);
+    });
+
     it('clears restoring back to false when a completed:true restore-info push arrives (server-authoritative, #1205)', () => {
       const instance = getOrCreateEmbeddedAgentWorker('r2', 'w2');
       const ws = MockWebSocket.getLastInstance();
@@ -1375,7 +1397,7 @@ describe('embedded-agent-store', () => {
 
       const snapshot = instance.getSnapshot();
       expect(snapshot.restoring).toBe(false);
-      // messageCount is not required to be cleared on completion -- it stays
+      // restoredMessageCount is not required to be cleared on completion -- it stays
       // at its last-known value from the most recently accepted restore-info.
       expect(snapshot.restoredMessageCount).toBe(5);
     });

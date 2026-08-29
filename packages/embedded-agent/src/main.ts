@@ -305,6 +305,12 @@ async function initializeLoop(
       systemPrompt,
       maxToolIterations: init.maxToolIterations,
       restoredConversation,
+      // The restore-boundary seed: openai-api arm only, so `init` is narrowed
+      // to it by the engine check that already gates this whole branch. Absent when the
+      // restored log held no reading -- the loop's estimator fallback stands.
+      ...(init.engine === 'openai-api' && init.restoredUsage !== undefined
+        ? { restoredUsage: init.restoredUsage }
+        : {}),
       compaction: {
         auto: init.compaction.auto,
         contextWindowTokens: init.compaction.contextWindowTokens,

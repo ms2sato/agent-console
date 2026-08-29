@@ -553,7 +553,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: 42,
-      messageCount: 5,
+      restoredMessageCount: 5,
       repairedToolCallIds: ['call-1', 'call-2'],
       completed: true,
     });
@@ -562,7 +562,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
       expect(result.output).toEqual({
         type: 'restore-info',
         epoch: 42,
-        messageCount: 5,
+        restoredMessageCount: 5,
         repairedToolCallIds: ['call-1', 'call-2'],
         completed: true,
       });
@@ -573,7 +573,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: 1,
-      messageCount: 0,
+      restoredMessageCount: 0,
       repairedToolCallIds: [],
       completed: false,
     });
@@ -584,7 +584,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'history',
       epoch: 1,
-      messageCount: 0,
+      restoredMessageCount: 0,
       repairedToolCallIds: [],
       completed: false,
     });
@@ -595,18 +595,18 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: -1,
-      messageCount: 0,
+      restoredMessageCount: 0,
       repairedToolCallIds: [],
       completed: false,
     });
     expect(result.success).toBe(false);
   });
 
-  it('rejects a fractional messageCount', () => {
+  it('rejects a fractional restoredMessageCount', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: 1,
-      messageCount: 1.5,
+      restoredMessageCount: 1.5,
       repairedToolCallIds: [],
       completed: false,
     });
@@ -617,7 +617,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: 1,
-      messageCount: 1,
+      restoredMessageCount: 1,
       repairedToolCallIds: [42],
       completed: false,
     });
@@ -628,7 +628,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: 1,
-      messageCount: 0,
+      restoredMessageCount: 0,
       repairedToolCallIds: [],
     });
     expect(result.success).toBe(false);
@@ -638,7 +638,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: 1,
-      messageCount: 0,
+      restoredMessageCount: 0,
       repairedToolCallIds: [],
       completed: 'true',
     });
@@ -649,7 +649,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
     const result = v.safeParse(RestoreInfoMessageSchema, {
       type: 'restore-info',
       epoch: 1,
-      messageCount: 0,
+      restoredMessageCount: 0,
       repairedToolCallIds: [],
       completed: false,
       unexpectedField: 'leaked',
@@ -659,7 +659,7 @@ describe('RestoreInfoMessageSchema (Transcript Restore #1123)', () => {
 });
 
 describe('RestoreInfoMessageSchema — sdkResumed (Transcript Restore R1, #1410)', () => {
-  const base = { type: 'restore-info', epoch: 3, messageCount: 2, repairedToolCallIds: [], completed: true };
+  const base = { type: 'restore-info', epoch: 3, restoredMessageCount: 2, repairedToolCallIds: [], completed: true };
 
   // The field is THREE-valued on the wire, and the schema is where that
   // survives or is lost: valibot's default object strips unknown keys, so a

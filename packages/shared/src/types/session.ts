@@ -221,6 +221,16 @@ export type WorkerServerMessage =
   // docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
   // `epoch` is a cross-incarnation staleness guard: the client feeds it
   // through the same acceptEpoch gate `history`/`output` already use.
+  // `restoredMessageCount` counts restored entries by a criterion, not a
+  // list: an entry counts if and only if its content originates from a line
+  // of the persisted transcript. Replayed messages and a compaction summary
+  // do; the synthetic system prompt and a Tier C repair marker do not, both
+  // being invented by the reconstruction so the provider accepts the array.
+  // It is therefore 0 for a worker that was activated but never spoken to,
+  // which is what lets the client gate its "may not have carried over"
+  // notice on `> 0`. Computed by the embedded-agent restore module, which
+  // owns the identity of every synthetic entry; never recomputed from a
+  // message array on this side.
   // `sdkResumed` (R1): whether the `claude-sdk` engine's SDK session
   // actually resumed. Set ONLY by that engine -- `openai-api` omits it,
   // because it has no such concept. THREE-VALUED: absent means "this engine
@@ -230,7 +240,7 @@ export type WorkerServerMessage =
   | {
       type: 'restore-info';
       epoch: number;
-      messageCount: number;
+      restoredMessageCount: number;
       repairedToolCallIds: string[];
       completed: boolean;
       sdkResumed?: boolean;

@@ -439,6 +439,93 @@ describe('runLoop — restoredConversation threading (Transcript Restore #1123)'
   });
 });
 
+/**
+ * Issue #1419: `init.restoredUsage` reaching the restore-boundary decision.
+ *
+ * The observable is deliberately the DECISION, not the plumbing: asserting
+ * that the field was read would pass against a loop that read it and then
+ * ignored it, which is the whole failure mode. The two cases below differ in
+ * exactly one input -- the seed -- and produce opposite activation
+ * behaviours, with the seed's own value visible in the published reading.
+ *
+ * MEASURED REACH (mutation, run -- not predicted):
+ *
+ *   m11  drop the `...(init.engine === 'openai-api' && ...)` spread in
+ *        `main.ts` so the seed never reaches the AgentLoop
+ *        -> 2 fail: 'compacts at activation on the seed' and 'publishes the
+ *           seeded reading'. The absent-seed case correctly survives, since
+ *           dropping the field is exactly what that case already asserts.
+ */
+describe('runLoop — restoredUsage threading (#1419)', () => {
+  // 2400 chars of restored user text ~= 600 estimated tokens; the assembled
+  // system prompt adds well under 250 more. Either way the estimate stays
+  // below T x W = 850, so the seed is the ONLY thing that can fire a
+  // compaction here.
+  const restoredConversation = [
+    { role: 'system', content: 'RESTORED_SYSTEM_PROMPT' },
+    { role: 'user', content: 'U'.repeat(2400) },
+  ];
+  const compaction = { auto: true, contextWindowTokens: 1000 };
+
+  it('compacts at activation on the seed, where the estimate alone would not', async () => {
+    const { io, events } = makeIo([
+      initCommand({
+        compaction,
+        restoredConversation,
+        restoredUsage: { promptTokens: 900, estimated: false },
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories())).toBe(0);
+
+    const compactedAt = events.findIndex((e) => e.type === 'context-compacted');
+    const readyAt = events.findIndex((e) => e.type === 'ready');
+    expect(compactedAt).toBeGreaterThanOrEqual(0);
+    // Ordering is part of the contract: the compaction is awaited inside
+    // `init`, so it lands before `ready` rather than racing the first turn.
+    expect(compactedAt).toBeLessThan(readyAt);
+  });
+
+  it('publishes the seeded reading as the restored worker’s pre-turn usage', async () => {
+    const { io, events } = makeIo([
+      initCommand({
+        compaction,
+        restoredConversation,
+        restoredUsage: { promptTokens: 900, estimated: false },
+      }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories())).toBe(0);
+
+    // The seed's own value and honesty flag, not merely "a reading appeared":
+    // a loop that fell back to the estimator would publish a smaller number
+    // with `estimated: true`.
+    expect(events.find((e) => e.type === 'context-usage')).toEqual({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 900,
+      estimated: false,
+    });
+  });
+
+  it('falls back to the estimator when the init carries no seed', async () => {
+    const { io, events } = makeIo([
+      initCommand({ compaction, restoredConversation }),
+      JSON.stringify({ v: 1, type: 'shutdown' }),
+    ]);
+
+    expect(await runLoop(io, makeFactories())).toBe(0);
+
+    expect(events.find((e) => e.type === 'context-compacted')).toBeUndefined();
+    const usage = events.find((e) => e.type === 'context-usage');
+    if (usage?.type !== 'context-usage') throw new Error('expected a context-usage event');
+    expect(usage.estimated).toBe(true);
+    expect(usage.promptTokens).toBeLessThan(850);
+  });
+});
+
 describe('runLoop — engine discriminant containment (SDK Engine Phase 1)', () => {
   // `initializeLoop` narrows `init.engine` at runtime
   // (`if (init.engine === 'openai-api') { ... } else { new SdkEngine(...) }`)

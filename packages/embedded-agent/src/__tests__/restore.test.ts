@@ -467,3 +467,295 @@ describe('reconstructConversation — R1 events are Noise (#1410)', () => {
     expect(outcome.conversation.some((m) => JSON.stringify(m).includes('turn-interrupted'))).toBe(false);
   });
 });
+
+/**
+ * `restoredMessageCount` -- the count the client turns into both "Loading N
+ * previous messages..." and the `> 0` gate on its "your conversation may not
+ * have carried over" notice.
+ *
+ * Criterion under test: an entry counts if and only if its content
+ * ORIGINATES FROM A LINE OF THE PERSISTED TRANSCRIPT. Replayed messages and
+ * a compaction summary do; the synthetic system prompt and a Tier C repair
+ * marker do not -- both are invented by the reconstruction so the provider
+ * will accept the array.
+ *
+ * The synthetic entries differ per branch (a seed of one message with no
+ * boundary, two past one; zero or more repair markers), which is exactly why
+ * the count cannot be derived outside the module and why each case is pinned
+ * separately below.
+ */
+describe('reconstructConversation — restoredMessageCount', () => {
+  it('counts the replayed messages and NOT the system prompt (seed of 1)', () => {
+    // Mutation reach: returning `conversation.length` (the pre-fix
+    // behaviour) gives 3; dropping the replay gives 0.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello there' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation.length).toBe(3); // [system, user, assistant]
+    expect(outcome.restoredMessageCount).toBe(2);
+  });
+
+  it('counts the compaction summary as restored content (seed of 2)', () => {
+    // The summary is reconstructed FROM the persisted log -- it is restored
+    // content, unlike the system prompt which is reassembled fresh from the
+    // agent definition on every activation. Mutation reach: subtracting the
+    // whole seed (`- 2` past a boundary) gives 2 here instead of 3.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm0', text: 'pre-boundary, discarded' },
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'summary text' },
+      { v: 1, type: 'user-message', id: 'm1', text: 'after1' },
+      { v: 1, type: 'assistant-message', turnId: 't2', text: 'after2' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    // [system, summary, user, assistant] -- summary + the 2 replayed = 3.
+    expect(outcome.conversation.length).toBe(4);
+    expect(outcome.restoredMessageCount).toBe(3);
+  });
+
+  it('reports 1 -- not 0 -- for a boundary with NOTHING replayed after it', () => {
+    // THE CORRECTED EDGE. An earlier definition said "exclude the seed: 1
+    // normally, 2 past a boundary", which reports 0 here -- a worker killed
+    // immediately after a compaction, before saying anything else.
+    //
+    // What the user would have seen under that definition: no "may not have
+    // carried over" notice at all, because the client gates it on `> 0` --
+    // and yet the transcript holds a whole compacted-away history that a
+    // model which failed to resume knows nothing about. The notice would
+    // disappear at precisely the moment it is most needed.
+    //
+    // Mutation reach: `- 2` in the boundary branch gives 0 and fails; so
+    // does dropping the summary from the seed.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm0', text: 'pre-boundary, discarded' },
+      { v: 1, type: 'assistant-message', turnId: 't0', text: 'also discarded' },
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'a rich history, compacted' },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    expect(outcome.conversation.length).toBe(2); // [system, summary]
+    expect(outcome.restoredMessageCount).toBe(1);
+  });
+
+  /**
+   * 0 must be REACHABLE. This is the whole defect: with the count taken as
+   * `conversation.length`, the seed alone floors it at 1, the client's `> 0`
+   * gate always fires, and a worker that was activated but never spoken to
+   * tells the user their conversation may not have carried over -- when
+   * there was no conversation. A false warning of that kind trains the user
+   * to ignore it, right before it becomes true.
+   *
+   * Each absence assertion here is paired with a PRESENCE CONTROL in the
+   * same block: "the count was 0" cannot distinguish "nothing was restored"
+   * from "the count is broken and always 0" without one.
+   */
+  describe('reachability of 0 (with presence controls)', () => {
+    it('reports 0 for an empty transcript', () => {
+      const outcome = reconstructConversation('', SYSTEM_PROMPT);
+      expect(outcome.conversation).toEqual([{ role: 'system', content: SYSTEM_PROMPT }]);
+      expect(outcome.restoredMessageCount).toBe(0);
+    });
+
+    it('reports 0 for a transcript of nothing but Noise events (activated, never spoken to)', () => {
+      // The production shape of the empty case: an activated worker's log is
+      // never literally empty (the server treats an empty read as an I/O
+      // failure) -- it holds lifecycle rows that carry no conversation.
+      const events: EmbeddedAgentStreamEvent[] = [
+        { v: 1, type: 'ready' },
+        { v: 1, type: 'state', state: 'idle' },
+        { v: 1, type: 'context-usage', promptTokens: 12, estimated: false },
+        { v: 1, type: 'exited', code: 0 },
+      ];
+
+      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+      expect(outcome.restoredMessageCount).toBe(0);
+    });
+
+    it('PRESENCE CONTROL: the same call reports non-zero the moment one real message exists', () => {
+      // Without this, both assertions above are satisfied by a broken
+      // implementation that returns 0 unconditionally.
+      const events: EmbeddedAgentStreamEvent[] = [
+        { v: 1, type: 'ready' },
+        { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
+        { v: 1, type: 'exited', code: 0 },
+      ];
+
+      const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+      expect(outcome.restoredMessageCount).toBe(1);
+    });
+
+    it('PRESENCE CONTROL: a compaction boundary alone is non-zero even with nothing after it', () => {
+      // The other direction of the same control: 0 must not be reachable by
+      // a stream that DOES carry restored content.
+      const outcome = reconstructConversation(
+        linesOf([{ v: 1, type: 'context-compacted', source: 'manual', summary: 'carried forward' }]),
+        SYSTEM_PROMPT,
+      );
+
+      expect(outcome.restoredMessageCount).toBe(1);
+    });
+  });
+
+  it('does NOT count a Tier C synthetic repair marker', () => {
+    // A transcript whose tail stops mid-tool-call: the `tool-call` row has no
+    // matching `tool-result`, so Tier C really fires and inserts a marker.
+    //
+    // The marker originates in no transcript line -- it is invented here so
+    // the provider will accept the array -- so the criterion excludes it.
+    // Counting it would double-count an interaction the user sees once: the
+    // tool call is already counted as the assistant message it arrived in.
+    //
+    // Kept as a dedicated named test so the exclusion set cannot be silently
+    // re-widened. The count is taken BEFORE the repair runs, which is exactly
+    // the kind of ordering a later reader can "simplify" away by reading the
+    // repair's output array instead.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'hi' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'reply' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'run', args: {} },
+    ];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT);
+
+    // LOAD-BEARING. Without it, a fixture that produced no repair at all
+    // would satisfy the count assertion below for the wrong reason -- passing
+    // by a mechanism other than the one under test.
+    expect(outcome.repairedToolCallIds).toEqual(['c1']);
+    // [system, user, assistant(+tool_calls), synthetic tool result]
+    expect(outcome.conversation.length).toBe(4);
+    // user + assistant only. Mutation reach: taking the count after the
+    // repair (the behaviour this replaces) gives 3.
+    expect(outcome.restoredMessageCount).toBe(2);
+  });
+});
+
+/**
+ * Issue #1419 seed extraction. The unit under test is the rule "the newest
+ * authoritative reading, and never one from before the last boundary" -- the
+ * number that replaces the estimator as the restore-boundary compaction
+ * check's input.
+ *
+ * MEASURED REACH (mutation, per the standing requirement -- a pin is not
+ * believed until something that should break it does). Each row is a run, not
+ * a prediction; two of the four counts came out higher than the author's
+ * guess, which is the reason the requirement exists.
+ *
+ *   m1  `findRestoredUsageSeed` returns undefined unconditionally
+ *       -> 6 of 8 fail. The 2 survivors are the two "no reading" cases, which
+ *          assert undefined; they are load-bearing for the FALLBACK, not for
+ *          extraction, and m3 is what measures them.
+ *   m2  drop the `i > boundaryIndex` guard to `i >= 0` (scan the whole
+ *       stream, ignoring the boundary) -- the exact defect the AC names
+ *       -> 3 fail: 'ignores a reading from BEFORE the last boundary',
+ *          'reports a boundary postTokens seed as an estimate', and 'yields
+ *          nothing when the only boundary carries no postTokens'. The 'mixed'
+ *          case does NOT fail under m2 and never could: its newest reading is
+ *          post-boundary and last in the stream either way, so it pins the
+ *          preference order and not the boundary guard.
+ *   m3  return `{ promptTokens: 0, estimated: true }` instead of undefined
+ *       when no reading exists
+ *       -> 2 fail, both "no reading" cases. Without m3 those two assertions
+ *          would be satisfied by any implementation that never finds
+ *          anything, including m1's.
+ *   m4  return `estimated: false` for the postTokens branch
+ *       -> 3 fail. Pins that a compaction's own post-size is the loop's
+ *          chars/4 estimate of the seed it built, and must not arrive at the
+ *          next incarnation claiming to be a provider measurement.
+ */
+describe('findRestoredUsageSeed — the newest authoritative reading (#1419)', () => {
+  const usage = (promptTokens: number, estimated = false): EmbeddedAgentStreamEvent =>
+    ({ v: 1, type: 'context-usage', promptTokens, estimated });
+  const turn = (n: string): EmbeddedAgentStreamEvent[] => [
+    { v: 1, type: 'user-message', id: n, text: `q${n}` },
+    { v: 1, type: 'assistant-message', turnId: n, text: `a${n}` },
+  ];
+
+  function seedOf(events: EmbeddedAgentStreamEvent[]) {
+    return reconstructConversation(linesOf(events), SYSTEM_PROMPT).usageSeed;
+  }
+
+  it('takes the LAST context-usage when the log has only readings', () => {
+    expect(seedOf([...turn('1'), usage(4000), ...turn('2'), usage(6722)])).toEqual({
+      promptTokens: 6722,
+      estimated: false,
+    });
+  });
+
+  it('carries the reading’s own `estimated` flag rather than recomputing it', () => {
+    // A previous incarnation whose provider never sent `usage` fell back to
+    // the estimator. That reading is still the newest one, but it must not
+    // arrive at the next incarnation dressed as a measurement.
+    expect(seedOf([...turn('1'), usage(1102, true)])).toEqual({
+      promptTokens: 1102,
+      estimated: true,
+    });
+  });
+
+  it('ignores a reading from BEFORE the last boundary and uses postTokens instead', () => {
+    // The pre-boundary 90000 measures a conversation the compaction then
+    // discarded; seeding from it would overstate what remains by nearly
+    // everything the compaction removed.
+    expect(
+      seedOf([
+        ...turn('1'),
+        usage(90000),
+        { v: 1, type: 'context-compacted', source: 'auto', summary: 's', preTokens: 90000, postTokens: 2700 },
+      ]),
+    ).toEqual({ promptTokens: 2700, estimated: true });
+  });
+
+  it('reports a boundary postTokens seed as an estimate, never as a measurement', () => {
+    const seed = seedOf([
+      ...turn('1'),
+      usage(90000),
+      { v: 1, type: 'context-compacted', source: 'auto', postTokens: 2700 },
+    ]);
+    // postTokens is estimateTokensFromChars(seed) inside compact() -- the
+    // loop's own chars/4 number, never a provider one.
+    expect(seed?.estimated).toBe(true);
+  });
+
+  it('mixed: prefers a reading that lands AFTER the boundary over that boundary’s postTokens', () => {
+    expect(
+      seedOf([
+        ...turn('1'),
+        usage(90000),
+        { v: 1, type: 'context-compacted', source: 'auto', postTokens: 2700 },
+        ...turn('2'),
+        usage(9100),
+      ]),
+    ).toEqual({ promptTokens: 9100, estimated: false });
+  });
+
+  it('yields nothing when the log holds no reading at all', () => {
+    // A worker killed before completing any turn. Legitimate state, not a
+    // fault: the subprocess falls back to the estimator, bias and all.
+    expect(seedOf([...turn('1')])).toBeUndefined();
+  });
+
+  it('yields nothing when the only boundary carries no postTokens', () => {
+    // The legacy `context-handoff` never had a post-size, and a
+    // `context-compacted` from an engine that cannot supply one is the same
+    // shape. Neither is a reading.
+    expect(
+      seedOf([...turn('1'), usage(90000), { v: 1, type: 'context-handoff', distillation: 'd' }]),
+    ).toBeUndefined();
+  });
+
+  it('takes the boundary postTokens when the boundary is the very last event', () => {
+    expect(
+      seedOf([
+        ...turn('1'),
+        { v: 1, type: 'context-compacted', source: 'auto', postTokens: 512 },
+      ]),
+    ).toEqual({ promptTokens: 512, estimated: true });
+  });
+});
