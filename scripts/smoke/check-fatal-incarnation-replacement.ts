@@ -75,7 +75,7 @@
  *   1  an assertion failed (the smoke ran and the system is wrong)
  *   2  bad usage / the smoke could not run (boot failure, no worker tree, ...)
  */
-import { mkdirSync, rmSync } from 'node:fs';
+import { mkdirSync, rmSync, unlinkSync } from 'node:fs';
 // Type-only, so it is erased at runtime and does not load the server modules
 // before the env vars below are set (the value imports stay dynamic, further
 // down, for exactly that reason).
@@ -396,6 +396,19 @@ async function main(): Promise<void> {
       `events after the plant: ${plantEvents.map((e) => e.type).join(',')}`,
     );
 
+    // The word now exists in TWO places: the conversation, and the file. Only
+    // the first is under test, so the second goes away the moment the planting
+    // turn has used it.
+    //
+    // Left in place, the recall below has a second route to green: the
+    // REPLACEMENT incarnation runs in this same cwd and can read the file
+    // again, answering correctly while the conversation did not survive at
+    // all. The assertion would then prove the filesystem survived -- which was
+    // never in question -- under a label claiming the conversation did. The
+    // file arrived together with the tool-using-turn requirement, so this
+    // route arrived with it.
+    unlinkSync(path.join(workCwd, 'qa-note.txt'));
+
     const shPid = (await currentPid(workerId));
     if (shPid === null) bail('the server holds no pid for the activated worker');
     const tree = await waitForWorkerTree(shPid, 15_000);
@@ -484,7 +497,14 @@ async function main(): Promise<void> {
       const recall = await sm.sendEmbeddedAgentUserMessage(
         sessionId,
         workerId,
-        'What was the secret word I told you? Reply with only the word.',
+        // Asks only about PRESENT possession. The earlier wording ("the secret
+        // word I told you") was accurate while the nonce was planted in the
+        // message text, and became false when the planting turn above was
+        // routed through a tool: the user tells the model nothing now, a file
+        // does. A model that rejects the false premise would fail the recall
+        // assertion below for a reason that has nothing to do with recovery.
+        'Do you have a secret word available to you right now? ' +
+          'Answer with the word itself, or the single word UNKNOWN if you do not have one.',
       );
       check(recall.ok === true, 'a message sent after the recovery is admitted -- the brick is gone', JSON.stringify(recall));
       const recalled = await waitFor(
@@ -498,8 +518,65 @@ async function main(): Promise<void> {
         'the replacement to recall the planted word',
       );
       check(recalled, `the conversation survived the process boundary (recalled ${SECRET_WORD})`);
-      // Settle the recall turn before Case 2 sends into the same worker.
+      // Deleting the file closes the route; this measures that it stayed
+      // closed. A later change that leaves the file behind would reopen the
+      // hole silently, and the assertion above would keep passing for the
+      // wrong reason. Unlike the natural-language premise the control below
+      // guards, THIS property is visible in the event stream, so it is pinned
+      // rather than controlled.
+      const recallEvents = (await readEvents(sessionId, workerId)).slice(before);
+      check(
+        !recallEvents.some((e) => e.type === 'tool-call'),
+        'the recall came from the conversation, not from a tool reading the file back',
+        `events: ${recallEvents.map((e) => e.type).join(',')}`,
+      );
+      // Settle the recall turn before sending the control into the same worker.
       await waitForIdleAfter(sessionId, workerId, before, 'the recall turn to complete');
+
+      // NEGATIVE CONTROL for the recall assertion directly above.
+      //
+      // The oracle here is a model's generated text, so the assertion's reach
+      // cannot be measured by mutating code -- neither the code nor the model
+      // is the thing that decides it. Controlling the WORLD is the only lever
+      // left: ask, in this same run and of this same worker, for a fact that
+      // was never true, and require it to be declined.
+      //
+      // Without this, `recalled` cannot fail for the reason it exists. A
+      // resumed worker that confabulates plausibly would satisfy it, and a
+      // green run would be a fact about one sampling of a non-deterministic
+      // answer rather than about the assertion.
+      //
+      // The threat this controls is specific: CONFABULATION by the resumed
+      // worker. The sibling eviction smoke controls a different one -- it asks
+      // a SECOND worker the SAME question, which establishes that the question
+      // is not answerable by anyone. The two are not interchangeable, and this
+      // script has one worker and a resume, so this is the one it needs.
+      const beforeControl = (await readEvents(sessionId, workerId)).length;
+      const control = await sm.sendEmbeddedAgentUserMessage(
+        sessionId,
+        workerId,
+        'Do you have a secret NUMBER available to you right now? ' +
+          'Answer with the number itself, or the single word UNKNOWN if you do not have one.',
+      );
+      check(control.ok === true, 'the control question is admitted', JSON.stringify(control));
+      let controlReply = '';
+      const declined = await waitFor(
+        async () => {
+          const evs3 = (await readEvents(sessionId, workerId)).slice(beforeControl);
+          const msg = evs3.filter((e) => e.type === 'assistant-message' && String(e.text ?? '').trim() !== '').pop();
+          if (!msg) return false;
+          controlReply = String(msg.text ?? '').trim();
+          return true;
+        },
+        TURN_TIMEOUT_MS,
+        'the control question to be answered',
+      );
+      check(
+        declined && /UNKNOWN/i.test(controlReply) && !/\d/.test(controlReply),
+        'CONTROL: a number was never planted, and the worker declines rather than inventing one',
+        `reply=${JSON.stringify(controlReply.slice(0, 120))}`,
+      );
+      await waitForIdleAfter(sessionId, workerId, beforeControl, 'the control turn to complete');
     }
 
     if (EXPECT_BRICK) {

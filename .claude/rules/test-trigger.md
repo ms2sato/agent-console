@@ -94,6 +94,31 @@ Every shipped `claude-sdk` restore E2E and smoke was text-only. That is the whol
 
 In practice this costs a file and a sentence: write a nonce into the session's working directory and have the planting turn read it with `Read`, instead of putting the nonce in the message text. `scripts/smoke/check-embedded-agent-idle-eviction.ts` and `scripts/smoke/check-fatal-incarnation-replacement.ts` both do this, and are the worked examples.
 
+### The recall assertion needs a negative control in the same run
+
+**An assertion whose oracle is a model's generated text — a recall check, or anything read out of produced prose — must be accompanied, in the same run, by a control that fails when the fact under test is false.**
+
+This is the reach measurement for a non-deterministic oracle, and it stands in the same place as mutation measurement for a deterministic pin. `workflow.md`'s standing rule is that a check's detection power is measured rather than assumed; what changes is the lever, and it changes with what the check reads:
+
+| What the check reads | How its reach is measured |
+|---|---|
+| A deterministic system | **Mutate the code** — ordinary mutation measurement |
+| A fixture's premise | **Assert the shape is present** — the tool-turn rule above |
+| **A non-deterministic oracle** (a model's answer) | **Control the world** — neither code nor model can be mutated, so a negative control is the only lever left |
+
+**Choose the control to match the threat; the two shapes are not interchangeable.**
+
+- **The same question, asked of a second worker that never had the fact.** Controls for the question being answerable by anyone. `check-embedded-agent-idle-eviction.ts` uses this, because it already has a second worker and its risk is a guessable prompt.
+- **A question about a fact that was never true, asked of the same worker.** Controls for that worker answering agreeably to anything — confabulation. `check-fatal-incarnation-replacement.ts` uses this, because it has one worker and a resume, and a resumed worker inventing a plausible answer is its specific risk.
+
+**Be precise about what the control buys, because it is easy to credit it with more.** When the recalled token is unguessable — a random nonce, or a literal that exists only in the script — the recall assertion was never vacuous against blind invention in the first place: a model that never saw the token cannot emit it. The control does not rescue it from that. What it adds is narrower and still worth having: evidence that the worker returns a truthful negative when it genuinely lacks something, so a passing recall is not merely an agreeable answer.
+
+**And check first whether the fact has a second route to the model.** A control cannot see one. If the nonce is also sitting in a file the worker can still read, the recall passes by reading it back, and no control over the model's answers detects that — the answer is genuine, it just came from somewhere the assertion's label does not claim. **Close the route (remove the file once the planting turn has used it), then pin that it stayed closed (assert the recall turn emitted no `tool-call`).** The first makes the assertion true; the second measures that it stays true.
+
+**That pin is also the boundary of this rule.** **Do not read this as "add more assertions over the event stream".** No assertion over emitted events could have caught the instance that produced this rule: the defect lived in a natural-language presupposition inside the question text, and the event stream is precisely where that is invisible. The tool-turn rule above is enforceable by asserting a shape; this one is not, which is why it needs a control rather than another pin. **But do not run the inference backwards.** "The premise is invisible to the event stream" does not license "recall assertions cannot be checked structurally": the second-route property above *is* visible there and must be pinned. Control what is genuinely unobservable; pin everything else.
+
+(Lesson: both smokes had their planting turn routed through a tool in one change, which made "the secret word I told you" false in both. The eviction smoke's control broke loudly and forced an investigation; the fatal smoke's recall **passed, 18 of 18**, and forced nothing. The difference was not the defect, which was identical — it was how the model happened to answer once. **A green run there was a fact about one sampling of a non-deterministic answer, not a fact about the assertion.** It was found by review, after both an implementer and an orchestrator had read the run as clean.)
+
 ## Additional Verification: Restore-Boundary Usage-Seed Real-Provider E2E
 
 PRs touching `findRestoredUsageSeed` / `reconstructConversation`'s `usageSeed` in `packages/embedded-agent/src/restore.ts`, `AgentLoop`'s `resolveRestoreBoundaryUsage` / `compactAtRestoreBoundaryIfNeeded` in `packages/embedded-agent/src/agent-loop.ts`, or the `restoredUsage` field on the `init` command (`packages/shared/src/{types,schemas}/embedded-agent.ts`, and where `packages/server/src/services/embedded-agent-worker-service.ts` composes it) must run `bun run check:restore-boundary-usage-seed` locally before pushing. This runs `scripts/smoke/check-restore-boundary-usage-seed.ts`, the real-provider E2E for the restore-boundary compaction check: it boots a disposable server instance with a real `AppContext` and a real `/mcp` on a real port, creates a real `openai-api` definition with a deliberately conservative declared window, grows a conversation with **real billed turns** until the provider's own reported `prompt_tokens` clears the threshold, then restarts the worker and asserts the activation decided on the persisted **measurement** rather than on `estimateTokensFromChars`.

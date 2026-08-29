@@ -116,6 +116,7 @@ process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS = String(idleMs);
 // Neutralized at script start, same as the sibling smokes.
 process.chdir('/');
 
+import { unlinkSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { AppContext } from '../../packages/server/src/app-context.js';
@@ -337,8 +338,13 @@ async function main(): Promise<void> {
     mcpBaseUrl = `http://localhost:${appServer.port}/mcp`;
 
     // --- Two sessions, one `claude-sdk` worker each. Separate sessions rather
-    // than two workers in one, so the control worker's conversation cannot
+    // than two workers in one, so the control worker's CONVERSATION cannot
     // share anything with the subject's by construction.
+    //
+    // Their FILESYSTEM is shared: both are created on `realCwd`. That is why
+    // the nonce file is deleted once the planting turn has read it -- while it
+    // existed, B could have answered from the file rather than from ignorance,
+    // and A could have answered from the file rather than from the resume.
     const makeWorker = async (label: string): Promise<{ sessionId: string; workerId: string }> => {
       const session = await ctx!.sessionManager.createSession(
         { type: 'quick', locationPath: realCwd!, agentId: 'claude-code-builtin' },
@@ -433,6 +439,18 @@ async function main(): Promise<void> {
       'the planting turn actually called a tool',
       `events after the plant: ${plantEvents.map((e) => e.type).join(',')}`,
     );
+
+    // The nonce now exists in TWO places: A's conversation, and the file. Only
+    // the first is under test, so the second is removed the moment the planting
+    // turn has used it.
+    //
+    // Left in place, the recall below has a second route to green -- the woken
+    // worker reads the file again and answers correctly while the conversation
+    // did NOT survive. That would prove the filesystem survived, which was
+    // never in question, under a label claiming the conversation did. The file
+    // arrived together with the tool-using-turn requirement, so this route
+    // arrived with it too.
+    unlinkSync(path.join(realCwd!, NONCE_FILE));
     console.log(`  A harness pid: ${aHarness}`);
     console.log(`  A plant reply: ${plantReply.trim().slice(0, 120)}`);
     const aClaudeBefore = claudeDescendantPids(aHarness);
@@ -602,6 +620,7 @@ async function main(): Promise<void> {
 
     // --- The wake, through the shipping delivery path.
     console.log('==> waking A with a message (the delivery choke point does the wake)');
+    const recallMarker = (await readEvents(a.sessionId, a.workerId)).length;
     const recallReply = await runTurn(a.sessionId, a.workerId, RECALL_TEXT);
     console.log(`  A recall reply: ${recallReply.trim().slice(0, 200)}`);
     expect(
@@ -612,6 +631,15 @@ async function main(): Promise<void> {
       recallReply.includes(NONCE),
       'A: the woken worker recalled the nonce planted before the eviction',
       `expected ${NONCE} in: ${recallReply.trim().slice(0, 300)}`,
+    );
+    // Deleting the file closes the route; this measures that it stayed closed.
+    // Without it, a later change that leaves the file behind reopens the hole
+    // silently, and the assertion above keeps passing for the wrong reason.
+    const recallEvents = (await readEvents(a.sessionId, a.workerId)).slice(recallMarker);
+    expect(
+      !recallEvents.some((e) => e.type === 'tool-call'),
+      'A: the recall came from the conversation, not from a tool reading the file back',
+      `events: ${recallEvents.map((e) => e.type).join(',')}`,
     );
 
     const restoreInfo = ctx.sessionManager.getEmbeddedAgentRestoreInfo(a.sessionId, a.workerId);
@@ -635,12 +663,19 @@ async function main(): Promise<void> {
     // This is what makes A's recall attributable to resume rather than to the
     // question being guessable.
     console.log('==> recall control: asking B the same question');
+    const controlMarker = (await readEvents(b.sessionId, b.workerId)).length;
     const controlReply = await runTurn(b.sessionId, b.workerId, CONTROL_TEXT);
     console.log(`  B control reply: ${controlReply.trim().slice(0, 200)}`);
     expect(
       !controlReply.includes(NONCE),
       'B (recall control): did NOT produce the nonce',
       `got: ${controlReply.trim().slice(0, 300)}`,
+    );
+    const controlEvents = (await readEvents(b.sessionId, b.workerId)).slice(controlMarker);
+    expect(
+      !controlEvents.some((e) => e.type === 'tool-call'),
+      'B (recall control): answered from ignorance, not from a tool',
+      `events: ${controlEvents.map((e) => e.type).join(',')}`,
     );
   } finally {
     if (ctx) {
