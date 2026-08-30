@@ -2579,6 +2579,262 @@ describe('EmbeddedAgentWorkerView', () => {
       });
     });
   });
+
+  describe('#1449 restore-failure notice', () => {
+    // Regexes distinguishing the two sentences by their distinctive tail.
+    const D2_RE = /could not be restored for display, but the agent may still remember it/i;
+    const LOSS_RE = /could not be restored — a diagnostic copy of the record has been preserved/i;
+    const D1_RE = /earlier conversation could not be carried over/i;
+    const GENERIC_OPENAI_RE = /Conversation is restored automatically after a worker or server restart/i;
+
+    it('claude-sdk + failed:true + sdkResumed:true -> D2 shown, Loss/D1/generic banner NOT shown', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-1449-d2', workerId: 'w-1449-d2', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 1, failed: true, sdkResumed: true }));
+      });
+      await flush();
+
+      expect(screen.getByText(D2_RE)).toBeTruthy();
+      expect(screen.queryByText(LOSS_RE)).toBeNull();
+      expect(screen.queryByText(D1_RE)).toBeNull();
+      expect(screen.queryByText(GENERIC_OPENAI_RE)).toBeNull();
+    });
+
+    // Mutation reach (measured 2026-08-30): weakening `restoreDivergedD2`
+    // from `restoreFailed && isSdkEngine && sdkResumed !== false` to
+    // `restoreFailed` alone (D2 fires on any restoreFailed, regardless of
+    // engine/sdkResumed) makes THIS test fail, along with the "mutual
+    // exclusivity" and "monotonicity" tests further below in this suite --
+    // 3 of 6 tests in this describe block failed under the mutation.
+    // Confirmed by temporarily applying the mutation, running `bun test`,
+    // and restoring it.
+    it('claude-sdk + failed:true + sdkResumed:false -> Loss shown, D2 NOT shown', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-1449-loss-sdk', workerId: 'w-1449-loss-sdk', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 1, failed: true, sdkResumed: false }));
+      });
+      await flush();
+
+      expect(screen.getByText(LOSS_RE)).toBeTruthy();
+      expect(screen.queryByText(D2_RE)).toBeNull();
+    });
+
+    it('claude-sdk + failed:true + sdkResumed absent -> D2 shown (per the derivation, only === false selects Loss)', async () => {
+      // Reachability check against the actual wire contract (Wave 1,
+      // embedded-agent-worker-service.ts): the server's failure-form
+      // construction sets `sdkResumed: resumeId !== null` unconditionally
+      // for `claude-sdk` -- it is ALWAYS a literal boolean on that engine,
+      // never omitted. A truly-absent `sdkResumed` on a claude-sdk failure
+      // form is therefore not producible by the current server; it is
+      // reachable only as "a message from an older/different server that
+      // predates this field" -- the same defensive case the wire type's
+      // `sdkResumed?: boolean` optionality exists for on every other
+      // restore-info field. This test exercises the CLIENT's own derivation
+      // contract for that message shape directly (crafted here, not routed
+      // through server code), which is what the three-valued discipline
+      // requires it to handle correctly regardless of whether today's server
+      // happens to produce it.
+      //
+      // Mutation reach (measured 2026-08-30): narrowing the
+      // `restoreDivergedD2` gate's `sdkResumed !== false` to
+      // `sdkResumed === true` makes THIS test fail (and only this one --
+      // 5 of 6 tests in this describe block still pass) -- absent no longer
+      // satisfies `=== true`, so neither banner renders and the D2 assertion
+      // fails. This is what demonstrates the derivation table's requirement
+      // -- absent renders D2, only `=== false` selects Loss -- is
+      // load-bearing and not accidental. Confirmed by temporarily narrowing
+      // the comparison, running `bun test`, and restoring it.
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-1449-absent', workerId: 'w-1449-absent', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 1, failed: true }));
+      });
+      await flush();
+
+      expect(screen.getByText(D2_RE)).toBeTruthy();
+      expect(screen.queryByText(LOSS_RE)).toBeNull();
+    });
+
+    it('openai-api + failed:true -> Loss shown, using the EXACT SAME string as the claude-sdk Loss case (condition 3)', async () => {
+      // claude-sdk side of the pair.
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      const sdkView = renderView({ sessionId: 's-1449-loss-a', workerId: 'w-1449-loss-a', embeddedAgentId: 'ea-1' });
+      const sdkWs = MockWebSocket.getLastInstance();
+      act(() => {
+        sdkWs?.simulateOpen();
+      });
+      await flush();
+      act(() => {
+        sdkWs?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 1, failed: true, sdkResumed: false }));
+      });
+      await flush();
+
+      // openai-api side of the pair -- fetch stub swapped, no cleanup()
+      // between the two renders (both stay mounted; queries below are scoped
+      // per-container, mirroring the "Working accordion replay vs live"
+      // suite's dual-render pattern above).
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), {
+        preconnect: () => {},
+      });
+      const apiView = renderView({ sessionId: 's-1449-loss-b', workerId: 'w-1449-loss-b', embeddedAgentId: 'ea-1' });
+      const apiWs = MockWebSocket.getLastInstance();
+      act(() => {
+        apiWs?.simulateOpen();
+      });
+      await flush();
+      act(() => {
+        apiWs?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 1, failed: true }));
+      });
+      await flush();
+
+      const sdkScope = within(sdkView.container);
+      const apiScope = within(apiView.container);
+      const sdkLossText = sdkScope.getByText(LOSS_RE).textContent;
+      const apiLossText = apiScope.getByText(LOSS_RE).textContent;
+      // The actual pin: identical wording regardless of which engine
+      // triggered it. A future accidental engine-branch on the Loss string
+      // would break this specific assertion, not just "matches /some
+      // pattern/i" independently in each render.
+      expect(sdkLossText).toBe(apiLossText);
+    });
+
+    it('mutual exclusivity: D1 notice and the #1449 banners never co-render across a real epoch-transition sequence (condition 1)', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-1449-excl', workerId: 'w-1449-excl', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // Step 1: a SUCCESSFUL restore on epoch 1, resume did NOT take -> D1
+      // fires on its own gate (hadPriorTranscriptThisIncarnation &&
+      // sdkResumeFailed), independent of restoreFailed.
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            restoredMessageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+            sdkResumed: false,
+          }),
+        );
+      });
+      await flush();
+      expect(screen.getByText(D1_RE)).toBeTruthy();
+      expect(screen.queryByText(D2_RE)).toBeNull();
+      expect(screen.queryByText(LOSS_RE)).toBeNull();
+
+      // Step 2: the worker restarts and THIS incarnation's restore FAILS --
+      // a real restore failure always mints a fresh epoch (resetWorkerOutput),
+      // which resetChatState clears restoredMessageCount back to null for
+      // BEFORE this failure message is applied. D1's gate
+      // (hadPriorTranscriptThisIncarnation) must therefore already be false
+      // by the time the failure banner renders -- asserted here on the
+      // actual rendered DOM, not assumed from the state shape.
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 2, failed: true, sdkResumed: false }));
+      });
+      await flush();
+      expect(screen.queryByText(D1_RE)).toBeNull();
+      expect(screen.getByText(LOSS_RE)).toBeTruthy();
+      expect(screen.queryByText(D2_RE)).toBeNull();
+    });
+
+    it('monotonicity: an optimistic sdkResumed:true failure push (D2) is later corrected to false (Loss), never reverts (condition 2)', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-1449-mono', workerId: 'w-1449-mono', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // Fast-path push: optimistic sdkResumed:true (resume attempted, not
+      // yet known to have failed) -> D2.
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 1, failed: true, sdkResumed: true }));
+      });
+      await flush();
+      expect(screen.getByText(D2_RE)).toBeTruthy();
+      expect(screen.queryByText(LOSS_RE)).toBeNull();
+
+      // R1 correction push: the SAME epoch, sdkResumed corrected downward to
+      // false once the resume outcome is actually known -> Loss, and the D2
+      // text must be gone.
+      act(() => {
+        ws?.simulateMessage(JSON.stringify({ type: 'restore-info', epoch: 1, failed: true, sdkResumed: false }));
+      });
+      await flush();
+      expect(screen.getByText(LOSS_RE)).toBeTruthy();
+      expect(screen.queryByText(D2_RE)).toBeNull();
+    });
+
+  });
 });
 
 describe('formatTokenCount', () => {
