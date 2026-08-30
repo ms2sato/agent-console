@@ -366,6 +366,7 @@ function resultSuccess(): SDKMessage {
 function resultError(
   subtype: 'error_during_execution' | 'error_max_turns' | 'error_max_budget_usd' | 'error_max_structured_output_retries',
   errors: string[] = [],
+  terminalReason?: string,
 ): SDKMessage {
   return asSdkMessage({
     type: 'result',
@@ -380,6 +381,7 @@ function resultError(
     modelUsage: {},
     permission_denials: [],
     errors,
+    ...(terminalReason !== undefined ? { terminal_reason: terminalReason } : {}),
     uuid: '11111111-1111-1111-1111-111111111120',
     session_id: '22222222-2222-2222-2222-222222222222',
   });
@@ -945,26 +947,110 @@ describe('SdkEngine — event mapping (Appendix A.2)', () => {
       });
     }
 
-    it('maps error_during_execution with the joined errors array', async () => {
-      const events: EmbeddedAgentEvent[] = [];
-      const { queryFn } = makeFakeQuery([systemInit(), resultError('error_during_execution', ['boom', 'also this'])]);
-      const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-      await engine.runTurn('u1', 'hi');
+    // #1495 R2/R3/R5 — `error_during_execution` splits on `terminal_reason`
+    // into a canceled ending and a genuine-error ending, rather than always
+    // surfacing the raw joined `errors` array. Each pin asserts the
+    // CONSEQUENCE the classification drives, not only the copy (the e6
+    // lesson in agent-loop-overflow-escape.test.ts): the canceled case is
+    // proven by the ABSENCE of the genuine-error path's diagnostic-log
+    // side effect, and the genuine-error case is proven by its PRESENCE.
+    // A label-only implementation (return different text but always warn,
+    // or never warn) fails one half of this pair.
+    describe('error_during_execution: canceled vs. genuine error (#1495)', () => {
+      it("terminal_reason 'aborted_streaming' -> canceled ending: friendly copy, no diagnostic preserved", async () => {
+        const warn = spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const events: EmbeddedAgentEvent[] = [];
+          const { queryFn } = makeFakeQuery([
+            systemInit(),
+            resultError('error_during_execution', ['[ede_diagnostic] result_type=user'], 'aborted_streaming'),
+          ]);
+          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          await engine.runTurn('u1', 'hi');
 
-      expect(eventsOfType(events, 'turn-error')).toEqual([
-        { v: 1, type: 'turn-error', turnId: 'u1', message: 'SDK turn failed: boom; also this' },
-      ]);
-    });
+          expect(eventsOfType(events, 'turn-error')).toEqual([
+            { v: 1, type: 'turn-error', turnId: 'u1', message: 'turn canceled' },
+          ]);
+          // The consequence: the genuine-error path's diagnostic-preservation
+          // call never fires for a classified cancel. If classification
+          // regressed to "always warn", this fails while the copy above
+          // still reads correctly.
+          expect(warn).not.toHaveBeenCalled();
+        } finally {
+          warn.mockRestore();
+        }
+      });
 
-    it('falls back to a generic label when error_during_execution carries no errors', async () => {
-      const events: EmbeddedAgentEvent[] = [];
-      const { queryFn } = makeFakeQuery([systemInit(), resultError('error_during_execution', [])]);
-      const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
-      await engine.runTurn('u1', 'hi');
+      it('a genuine error (no terminal_reason) -> friendly copy in the transcript, raw diagnostic preserved on stderr', async () => {
+        const warn = spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const events: EmbeddedAgentEvent[] = [];
+          const { queryFn } = makeFakeQuery([
+            systemInit(),
+            resultError('error_during_execution', ['boom', 'also this']),
+          ]);
+          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          await engine.runTurn('u1', 'hi');
 
-      expect(eventsOfType(events, 'turn-error')).toEqual([
-        { v: 1, type: 'turn-error', turnId: 'u1', message: 'SDK turn failed: execution error' },
-      ]);
+          const turnErrors = eventsOfType(events, 'turn-error');
+          expect(turnErrors).toHaveLength(1);
+          // Friendly copy, never the raw diagnostic string, in the
+          // user-visible transcript.
+          expect(turnErrors[0].message).not.toContain('boom');
+          expect(turnErrors[0].message).toBe('The turn ended in an error. See the server log for details.');
+          // The consequence: the raw diagnostic is not silently swallowed --
+          // it is preserved on a non-user channel (this subprocess's
+          // stderr).
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn.mock.calls[0]?.[0]).toContain('boom; also this');
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it('falls back to a generic label in the preserved diagnostic when error_during_execution carries no errors', async () => {
+        const warn = spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const events: EmbeddedAgentEvent[] = [];
+          const { queryFn } = makeFakeQuery([systemInit(), resultError('error_during_execution', [])]);
+          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          await engine.runTurn('u1', 'hi');
+
+          expect(eventsOfType(events, 'turn-error')).toEqual([
+            { v: 1, type: 'turn-error', turnId: 'u1', message: 'The turn ended in an error. See the server log for details.' },
+          ]);
+          expect(warn.mock.calls[0]?.[0]).toContain('execution error');
+        } finally {
+          warn.mockRestore();
+        }
+      });
+
+      it("R5 fail-open: an unrecognized terminal_reason routes to the genuine-error path, never to canceled", async () => {
+        const warn = spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const events: EmbeddedAgentEvent[] = [];
+          const { queryFn } = makeFakeQuery([
+            systemInit(),
+            // A value the current TerminalReason union does not define --
+            // stands in for a future SDK adding a new reason this engine
+            // does not yet know about. Misclassifying THIS as a cancel would
+            // hide a real failure; the pin proves it does not.
+            resultError('error_during_execution', ['a future SDK reason'], 'some_future_reason'),
+          ]);
+          const engine = new SdkEngine(baseDeps({ emit: (e) => events.push(e), queryFn }));
+          await engine.runTurn('u1', 'hi');
+
+          expect(eventsOfType(events, 'turn-error')).toEqual([
+            { v: 1, type: 'turn-error', turnId: 'u1', message: 'The turn ended in an error. See the server log for details.' },
+          ]);
+          // The consequence, again: genuine-error's diagnostic preservation
+          // fired, which canceled's path never does.
+          expect(warn).toHaveBeenCalledTimes(1);
+          expect(warn.mock.calls[0]?.[0]).toContain('a future SDK reason');
+        } finally {
+          warn.mockRestore();
+        }
+      });
     });
   });
 });

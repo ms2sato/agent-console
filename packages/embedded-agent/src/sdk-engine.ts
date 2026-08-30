@@ -893,11 +893,7 @@ export class SdkEngine implements Engine {
   private buildTurnErrorMessage(message: ResultErrorMessage): string {
     switch (message.subtype) {
       case 'error_during_execution':
-        // Also the subtype `interrupt()` produces (confirmed live:
-        // `terminal_reason: 'aborted_streaming'` on this subtype after a
-        // cancel) -- cancel and genuine execution error are not
-        // special-cased separately.
-        return `SDK turn failed: ${message.errors.join('; ') || 'execution error'}`;
+        return this.buildExecutionErrorMessage(message);
       case 'error_max_turns':
         return 'SDK turn ended: maximum turns reached';
       case 'error_max_budget_usd':
@@ -905,6 +901,47 @@ export class SdkEngine implements Engine {
       case 'error_max_structured_output_retries':
         return 'SDK turn ended: structured-output retries exhausted';
     }
+  }
+
+  /**
+   * `error_during_execution` is also the subtype `interrupt()` produces, and
+   * a refused-resume (`reportRefusedResume`, checked before this is ever
+   * called) is a THIRD cause sharing it. This method resolves the remaining
+   * two -- cancel and a genuine execution failure -- into the two endings
+   * `openai-api`'s `agent-loop.ts` already models as `TurnEnding`, rather
+   * than leaving both to fall through to one raw, un-classified message
+   * (#1495).
+   *
+   * PS8 (docs/design/embedded-agent-sdk-engine.md): `terminal_reason` is a
+   * documented, typed SDK export (`TerminalReason`, `sdk.d.ts`) -- the
+   * FIELD is a contract. The MAPPING this branch relies on -- a
+   * user-initiated cancel produces `aborted_streaming`, and only a cancel
+   * does, for every `error_during_execution` this engine can reach -- is an
+   * OBSERVATION confirmed live against SDK `0.3.238` (2026-08-30), not a
+   * promise in the SDK's own documentation. Re-verify alongside PS6 (which
+   * shares this result subtype) on the next SDK bump.
+   *
+   * R5: an absent or unrecognized `terminal_reason` fails toward
+   * genuine-error, never toward canceled -- misclassifying a real failure
+   * as a cancel hides it behind a throwaway message; the reverse only words
+   * a cancel badly.
+   */
+  private buildExecutionErrorMessage(message: ResultErrorMessage): string {
+    if (message.terminal_reason === 'aborted_streaming') {
+      // R2: classified as canceled at the source, not re-worded -- parity
+      // with the same literal copy `openai-api`'s `agent-loop.ts` emits for
+      // its own `TurnEnding: 'canceled'` (`emitTurnError(turnId, 'turn
+      // canceled')`).
+      return 'turn canceled';
+    }
+    // R3: a genuine execution error gets friendly copy in the transcript;
+    // the raw SDK diagnostic is never silently swallowed -- it is preserved
+    // on a non-user channel (this subprocess's stderr, which the worker
+    // service captures into the server log), the same split
+    // `reportRefusedResume` already uses for its own failure channel.
+    const raw = message.errors.join('; ') || 'execution error';
+    console.warn(`[sdk-engine] turn ended in a genuine execution error: ${raw}`);
+    return 'The turn ended in an error. See the server log for details.';
   }
 
   private requireTurnId(): string {
