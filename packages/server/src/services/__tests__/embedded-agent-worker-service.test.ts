@@ -371,6 +371,19 @@ function appendedLines(bufferOutput: ReturnType<typeof mock>): string[] {
   return (bufferOutput.mock.calls as unknown as unknown[][]).map((c) => (c[2] as string).replace(/\n$/, ''));
 }
 
+/**
+ * #1449 widened `RestoreInfo` to a two-branch union (success / failure).
+ * Narrows a `getRestoreInfo()` result into the success branch -- an
+ * assertion, not a cast, so a test that expected success but got the
+ * failure form fails loudly here instead of silently widening every
+ * `.completed` / `.restoredMessageCount` access at the call site.
+ */
+function expectRestoreSuccess<T extends { failed?: boolean }>(info: T | null | undefined): Exclude<T, { failed: true }> {
+  if (info == null) throw new Error('expected a non-null restore-info value');
+  if (info.failed === true) throw new Error('expected the restore-info SUCCESS form, got the #1449 failure form');
+  return info as Exclude<T, { failed: true }>;
+}
+
 describe('EmbeddedAgentWorkerService.activate', () => {
   it('spawns once with a secret-free argv, no env, correct cwd and username', async () => {
     const h = setup();
@@ -849,21 +862,31 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
       await h.service.activate(h.sessionId, h.workerId);
 
-      const info = h.service.getRestoreInfo(h.workerId);
-      expect(info).not.toBeNull();
-      expect(info!.epoch).toBe(h.worker.epoch);
+      const info = expectRestoreSuccess(h.service.getRestoreInfo(h.workerId));
+      expect(info.epoch).toBe(h.worker.epoch);
       // user + assistant. The synthetic system prompt is NOT restored content
       // and is excluded from the count.
-      expect(info!.restoredMessageCount).toBe(2);
-      expect(info!.repairedToolCallIds).toEqual([]);
-      expect(info!.completed).toBe(false);
+      expect(info.restoredMessageCount).toBe(2);
+      expect(info.repairedToolCallIds).toEqual([]);
+      expect(info.completed).toBe(false);
     });
 
-    it('returns null after a restore failure', async () => {
+    it('#1449: declares a restore failure rather than returning null (openai-api, no sdkResumed)', async () => {
+      // BUG-POLARITY PIN: against unmodified code (the #1449 assignment
+      // commented out), `restoreInfo` stays null on this path and this
+      // assertion fails with `null` !== the failure record. Verified by
+      // commenting out `runActivation`'s catch-block `restoreInfo = {failed:
+      // true, ...}` assignment (leaving everything else intact) and
+      // confirming the test fails; restored, it passes. See
+      // testing.md "Demonstrating polarity without breaking the build".
       const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
       await h.service.activate(h.sessionId, h.workerId);
 
-      expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+      // openai-api has no sdkResumed concept -- the failure record must omit
+      // the field entirely, not carry it as `undefined`.
+      const info = h.service.getRestoreInfo(h.workerId);
+      expect(info).toEqual({ epoch: NEW_EPOCH, failed: true });
+      expect('sdkResumed' in (info as object)).toBe(false);
     });
 
     it('reports restoredMessageCount 0 for a worker that was activated but never spoken to', async () => {
@@ -884,10 +907,9 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: noiseOnlyStream } });
       await h.service.activate(h.sessionId, h.workerId);
 
-      const info = h.service.getRestoreInfo(h.workerId);
-      // Restore SUCCEEDED -- this is not the null-on-failure path above.
-      expect(info).not.toBeNull();
-      expect(info!.restoredMessageCount).toBe(0);
+      // Restore SUCCEEDED -- this is not the failure-record path above.
+      const info = expectRestoreSuccess(h.service.getRestoreInfo(h.workerId));
+      expect(info.restoredMessageCount).toBe(0);
     });
 
     it('PRESENCE CONTROL: the same path reports non-zero once the stream carries real messages', async () => {
@@ -898,7 +920,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: VALID_RESTORABLE_STREAM } });
       await h.service.activate(h.sessionId, h.workerId);
 
-      expect(h.service.getRestoreInfo(h.workerId)!.restoredMessageCount).toBe(2);
+      expect(expectRestoreSuccess(h.service.getRestoreInfo(h.workerId)).restoredMessageCount).toBe(2);
     });
 
     it('returns null after a first-ever activation (nothing to restore)', async () => {
@@ -928,12 +950,18 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       });
     });
 
-    it('does NOT invoke onRestoreInfo when restore fails', async () => {
+    it('#1449: invokes onRestoreInfo with the failure form when restore fails', async () => {
+      // BUG-POLARITY PIN, same mutation as the getRestoreInfo test above:
+      // against unmodified code (the catch-block assignment commented out)
+      // `restoreInfo` stays null, the `restoreInfo !== null` guard around the
+      // fast-path push is never entered, and `onRestoreInfo` is never called
+      // -- this assertion fails. Restored, it passes.
       const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
 
       await h.service.activate(h.sessionId, h.workerId);
 
-      expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({ failed: true });
     });
 
     it('does NOT invoke onRestoreInfo on a first-ever activation', async () => {
@@ -951,13 +979,13 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       await h.service.activate(h.sessionId, h.workerId);
 
       // (a) immediately after a successful restore, completed is false.
-      expect(h.service.getRestoreInfo(h.workerId)?.completed).toBe(false);
+      expect(expectRestoreSuccess(h.service.getRestoreInfo(h.workerId)).completed).toBe(false);
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
 
       // (b) once the loop's `ready` event is processed, completed flips true
       // and the connection is poked again.
       h.fake.pushStdout('{"v":1,"type":"ready"}\n');
-      await waitFor(() => h.service.getRestoreInfo(h.workerId)?.completed === true);
+      await waitFor(() => expectRestoreSuccess(h.service.getRestoreInfo(h.workerId)).completed === true);
 
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(2);
       expect(h.recorder.onRestoreInfo).toHaveBeenNthCalledWith(2, {
@@ -982,6 +1010,40 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
 
       expect(h.recorder.onRestoreInfo).not.toHaveBeenCalled();
       expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    });
+
+    it('#1449: does NOT touch or re-push restoreInfo on ready after a FAILED restore', async () => {
+      // MUTATION MEASURED, two shapes:
+      //   (1) Deleting ONLY the `failed !== true` clause (leaving `!== null`
+      //       and `completed === false`) does NOT reproduce a runtime bug:
+      //       `undefined === false` is `false` in JS, so the block still
+      //       never executes for a failure record -- `tsc` rejects this
+      //       mutation at COMPILE time instead (TS2339 on `.completed`,
+      //       TS2322 on the spread assignment). This test cannot catch that
+      //       shape at runtime; the type checker is the layer that does.
+      //   (2) Flipping the comparison sense too (so an absent `completed`
+      //       reads as "not yet completed" instead of relying on the
+      //       `failed !== true` guard, e.g. `.completed !== true` in place
+      //       of `failed !== true && completed === false`, bypassing `tsc`
+      //       via a cast) DOES reproduce at runtime and this test catches
+      //       it: the block executes, spreads `completed: true` onto the
+      //       failure record, and the final `toEqual` fails on the extra
+      //       field. This is the mutation that confirms the test's runtime
+      //       reach; shape (1) confirms the type system's reach on the same
+      //       guard.
+      const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
+      await h.service.activate(h.sessionId, h.workerId);
+
+      expect(h.service.getRestoreInfo(h.workerId)).toEqual({ epoch: NEW_EPOCH, failed: true });
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
+
+      h.fake.pushStdout('{"v":1,"type":"ready"}\n');
+      await waitFor(() => appendedLines(h.bufferOutput).includes('{"v":1,"type":"ready"}'));
+
+      // Unchanged: still exactly the failure record, no `completed` field
+      // ever appears, and no second push happened.
+      expect(h.service.getRestoreInfo(h.workerId)).toEqual({ epoch: NEW_EPOCH, failed: true });
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
     });
   });
 });
@@ -2112,6 +2174,43 @@ describe('EmbeddedAgentWorkerService — restore-info.sdkResumed (R1)', () => {
   });
 });
 
+describe('EmbeddedAgentWorkerService — restore-info FAILURE form sdkResumed (#1449)', () => {
+  it('reports sdkResumed true (optimistic) on a claude-sdk restore failure with a persisted session id', async () => {
+    // MUTATION MEASURED: dropping the
+    // `...(definition.engine === 'claude-sdk' ? { sdkResumed: resumeId !== null } : {})`
+    // spread from the catch-block failure assignment makes this assertion
+    // fail with `undefined` !== `true`.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+      epoch: NEW_EPOCH,
+      failed: true,
+      sdkResumed: true,
+    });
+  });
+
+  it('reports sdkResumed false on a claude-sdk restore failure with no id to resume', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+      epoch: NEW_EPOCH,
+      failed: true,
+      sdkResumed: false,
+    });
+  });
+});
+
 describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () => {
   function sdkResumeFailed(reason: SdkResumeFailureReason, id = 'sess-prev'): string {
     return `${JSON.stringify({ v: 1, type: 'sdk-resume-failed', requestedSdkSessionId: id, reason })}\n`;
@@ -2487,6 +2586,95 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
     // it is asking for a resume again, so the notice is not pre-emptively
     // shown. It would be corrected downward again if this attempt also fails.
     expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(true);
+  });
+
+  it('#1449: corrects a FAILED restore-info to sdkResumed false (D2 -> Loss correction reaches the failure form too)', async () => {
+    // Reuses `markResumeNotResumed`'s SAME existing recovery path -- no new
+    // logic was added for the failure case. `resume` is still sent on init
+    // (gated on `resumeId !== null`, independent of restore success/failure),
+    // so a real `sdk-resume-failed` can arrive on top of a failed restore.
+    //
+    // MUTATION MEASURED: adding a `runtime.restoreInfo.failed === true`
+    // early-return to `markResumeNotResumed` (simulating "the correction was
+    // accidentally special-cased to success only") makes the `waitFor` below
+    // time out -- confirming this test actually exercises the correction
+    // reaching a FAILED restore-info, not just a success one.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+      epoch: NEW_EPOCH,
+      failed: true,
+      sdkResumed: true,
+    });
+
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+
+    const correctionPush = h.recorder.onRestoreInfo.mock.calls.at(-1)?.[0];
+    expect(correctionPush).toEqual({ failed: true, sdkResumed: false });
+    expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+      epoch: NEW_EPOCH,
+      failed: true,
+      sdkResumed: false,
+    });
+  });
+
+  it('#1449 monotonicity: sdkResumed on a FAILED restore-info never moves back from false, across a second AND third correction attempt', async () => {
+    // Architect ruling (post-brief addendum): a `claude-sdk` restore failure
+    // where the SDK resume ALSO fails collapses to Loss, not D2. This is
+    // what makes that collapse durable client-side -- once the server has
+    // corrected `sdkResumed` to `false`, nothing may write it back to `true`
+    // (or to any other value) within the same incarnation. Structural
+    // confirmation (read, not assumed): the only two `sdkResumed` writers in
+    // `embedded-agent-worker-service.ts` are (a) construction, `sdkResumed:
+    // resumeId !== null`, in BOTH the success and failure branches of
+    // `runActivation`'s restore attempt, and (b) `markResumeNotResumed`'s
+    // `{ ...runtime.restoreInfo, sdkResumed: false }` spread, itself guarded
+    // by `runtime.restoreInfo.sdkResumed === false` short-circuiting to a
+    // no-op. No third site assigns the field.
+    //
+    // MUTATION MEASURED: temporarily adding a hypothetical reverse-write
+    // path -- `runtime.restoreInfo = { ...runtime.restoreInfo, sdkResumed:
+    // true }` immediately after the `markResumeNotResumed` correction inside
+    // this same test file, simulating a stray future write -- makes the
+    // second/third-call assertions below fail (`sdkResumed` observed `true`
+    // instead of the required `false`). Reverting the stray write restores
+    // green. This confirms the assertions below actually exercise the
+    // monotonicity property rather than a coincidentally-stable value.
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(true);
+
+    h.fake.pushStdout(sdkResumeFailed('not-found'));
+    await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
+    const pushesAfterFirstCorrection = h.recorder.onRestoreInfo.mock.calls.length;
+
+    // A second `sdk-resume-failed` (any reason) is a no-op at the
+    // `resumeRecoveryStarted` guard in `handleResumeFailed` -- it never even
+    // reaches `markResumeNotResumed` a second time. What matters for THIS
+    // pin is the observable outcome, not which specific guard produced it:
+    // no further push, and the value stays exactly `false`, never reverting
+    // toward the construction-time optimistic value.
+    h.fake.pushStdout(sdkResumeFailed('not-found', 'sess-prev'));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(false);
+    expect(h.recorder.onRestoreInfo.mock.calls.length).toBe(pushesAfterFirstCorrection);
+
+    // A third, distinct reason -- still no reverting write, still false.
+    h.fake.pushStdout(sdkResumeFailed('lookup-failed', 'sess-prev'));
+    await new Promise((r) => setTimeout(r, 60));
+    expect(h.service.getRestoreInfo(h.workerId)?.sdkResumed).toBe(false);
+    expect(h.recorder.onRestoreInfo.mock.calls.length).toBe(pushesAfterFirstCorrection);
   });
 });
 

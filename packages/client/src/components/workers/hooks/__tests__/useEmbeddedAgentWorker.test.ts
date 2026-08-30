@@ -129,6 +129,34 @@ describe('useEmbeddedAgentWorker', () => {
     expect(result.current.restoredMessageCount).toBe(5);
   });
 
+  // Mutation reach (measured 2026-08-30): hardcoding the hook's
+  // `restoreFailed: snapshot.restoreFailed` passthrough to a literal `false`
+  // makes this test fail (`Expected: true, Received: false`). Confirmed by
+  // temporarily hardcoding the line, running `bun test`, and restoring it.
+  it('exposes restoreFailed from the store, updated by a restore-info FAILURE WS message (#1449)', () => {
+    const { result } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's4e', workerId: 'w4e' }));
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    expect(result.current.restoreFailed).toBe(false);
+
+    act(() => {
+      ws?.simulateMessage(
+        JSON.stringify({
+          type: 'restore-info',
+          epoch: 1,
+          failed: true,
+          sdkResumed: true,
+        }),
+      );
+    });
+
+    expect(result.current.restoreFailed).toBe(true);
+    expect(result.current.sdkResumed).toBe(true);
+  });
+
   it('acquire/release keeps the underlying store instance alive across a remount (ref counting)', () => {
     const { unmount } = renderHook(() => useEmbeddedAgentWorker({ sessionId: 's5', workerId: 'w5' }));
     const instance = getOrCreateEmbeddedAgentWorker('s5', 'w5');

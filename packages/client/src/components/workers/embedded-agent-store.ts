@@ -170,6 +170,20 @@ export interface EmbeddedAgentSnapshot {
    * false warning on every `openai-api` worker -- test `=== false`.
    */
   sdkResumed: boolean | undefined;
+  /**
+   * Transcript Restore (#1449): whether the most recently accepted
+   * `restore-info` for the current epoch is the FAILURE form (`failed:
+   * true`) rather than the success form. False when no `restore-info` has
+   * been accepted this epoch, INCLUDING before any has arrived and after a
+   * genuine epoch bump (`resetChatState` clears it back to false so a new
+   * incarnation's own restore-info -- success or failure -- re-declares it
+   * from scratch; see `resetChatState`'s doc comment). Does not itself say
+   * D2 vs Loss -- that direction is derived in EmbeddedAgentWorkerView.tsx
+   * from this flag plus the engine plus `sdkResumed`, per the design doc's
+   * "Failure form: what it declares, and the D1/D2/Loss derivation rule
+   * (#1449)".
+   */
+  restoreFailed: boolean;
 }
 
 export interface EmbeddedAgentInstance {
@@ -305,6 +319,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       restoring: false,
       restoredMessageCount: null,
       sdkResumed: undefined,
+      restoreFailed: false,
     };
     this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
     this.connect();
@@ -576,12 +591,21 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // never updates this.epoch, so it is still correctly dropped here.
         this.acceptEpoch(message.epoch);
         if (this.epoch === message.epoch) {
-          this.applyRestoreInfo(
-            message.restoredMessageCount,
-            message.repairedToolCallIds,
-            message.completed,
-            message.sdkResumed,
-          );
+          // Discriminated union (#1449): the failure form carries none of
+          // the success form's reconstruction-shaped fields, so branch
+          // BEFORE reading any of them -- checked `=== true`, never
+          // truthiness, matching this file's existing discipline for
+          // `completed`/`sdkResumed`.
+          if (message.failed === true) {
+            this.applyRestoreFailure(message.sdkResumed);
+          } else {
+            this.applyRestoreInfo(
+              message.restoredMessageCount,
+              message.repairedToolCallIds,
+              message.completed,
+              message.sdkResumed,
+            );
+          }
         }
         break;
       }
@@ -653,7 +677,19 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // pending that message. Also allows a redelivered restore-repair note to
     // re-render against the wiped list.
     this.restoreRepairRenderedThisLoad = false;
-    this.patch({ entries: [], restoring: false, restoredMessageCount: null, sdkResumed: undefined });
+    // restoreFailed (#1449) resets alongside the rest of this epoch's
+    // restore state: every restore FAILURE bumps the epoch (resetWorkerOutput
+    // mints a fresh one), so this reset always runs before the new
+    // incarnation's own restore-info (success or failure) arrives and
+    // re-declares it -- there is no window where a stale `true` could be
+    // read as describing the new incarnation.
+    this.patch({
+      entries: [],
+      restoring: false,
+      restoredMessageCount: null,
+      sdkResumed: undefined,
+      restoreFailed: false,
+    });
   }
 
   /**
@@ -753,6 +789,29 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       patch.entries = [...this.snapshot.entries];
     }
     this.patch(patch);
+  }
+
+  /**
+   * Transcript Restore (#1449): apply a `restore-info` FAILURE message (fast
+   * path push or bootstrap re-delivery -- same caller as `applyRestoreInfo`,
+   * already passed through acceptEpoch). Carries none of the success form's
+   * reconstruction-shaped fields, so unlike `applyRestoreInfo` this patches
+   * only `restoreFailed`/`sdkResumed` -- `entries`/`restoredMessageCount`/
+   * `restoring` are left exactly as `resetChatState` set them for this epoch
+   * (there is nothing to report about a restore that did not happen).
+   * Idempotent about re-delivery, same as `applyRestoreInfo`: dual delivery
+   * (fast-path push + bootstrap redelivery) and the R1 correction push all
+   * call this the same way, and repatching the same values is a no-op.
+   */
+  private applyRestoreFailure(sdkResumed: boolean | undefined): void {
+    this.patch({
+      restoreFailed: true,
+      // R1: carried through verbatim, absence included -- same correction-push
+      // semantics `applyRestoreInfo` documents (the server re-pushes this
+      // whole message to correct the flag downward once a resume outcome is
+      // known, so the latest accepted message is always the current answer).
+      sdkResumed,
+    });
   }
 
   /**

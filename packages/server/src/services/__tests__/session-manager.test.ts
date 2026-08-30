@@ -5835,4 +5835,17 @@ describe('SessionManager.getEmbeddedAgentRestoreInfo return type (R1, #1410)', (
     expect(withField.sdkResumed).toBe(false);
     expect(withoutField.sdkResumed).toBeUndefined();
   });
+
+  it('#1449: also covers the FAILURE union member at the type level', () => {
+    type Info = NonNullable<ReturnType<SessionManager['getEmbeddedAgentRestoreInfo']>>;
+    // Fails to compile if the return-type annotation drops the #1449
+    // failure member, or if `sdkResumed` on that member stops being
+    // optional -- same pattern as the sibling success-member pin above.
+    const failedInfo: Info = { epoch: 1, failed: true, sdkResumed: false };
+    const failedInfoNoResume: Info = { epoch: 1, failed: true };
+    expect(failedInfo.failed).toBe(true);
+    expect(failedInfo.sdkResumed).toBe(false);
+    expect(failedInfoNoResume.failed).toBe(true);
+    expect('sdkResumed' in failedInfoNoResume).toBe(false);
+  });
 });

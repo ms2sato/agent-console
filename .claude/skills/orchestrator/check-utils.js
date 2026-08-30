@@ -504,14 +504,14 @@ function readGitFileContent(ref, filePath, cwd) {
 
 /**
  * Filesystem/git wrapper around `isCommentOnlyDiff`: runs
- * `git diff --unified=0 <baseBranch>...HEAD -- <file>` and evaluates the
- * result. Returns false (safe default: require coverage) on any git error
- * or when the file has no diff against baseBranch.
+ * `git diff --unified=0 <baseBranch>...<headRef> -- <file>` and evaluates
+ * the result. Returns false (safe default: require coverage) on any git
+ * error or when the file has no diff against baseBranch.
  *
- * Also reads the file's full content on both sides of the diff — HEAD for
- * the post-image, and the merge-base of `baseBranch` and `HEAD` (the same
- * base the triple-dot diff itself compares against) for the pre-image —
- * and passes them through so `isCommentOnlyDiff` can seed block-comment
+ * Also reads the file's full content on both sides of the diff — `headRef`
+ * for the post-image, and the merge-base of `baseBranch` and `headRef` (the
+ * same base the triple-dot diff itself compares against) for the pre-image
+ * — and passes them through so `isCommentOnlyDiff` can seed block-comment
  * state for hunks whose opener falls outside the `--unified=0` context
  * (Issue #1394). Either read failing (e.g. the file did not exist on that
  * side) degrades to that side's no-content fail-closed default rather than
@@ -520,24 +520,126 @@ function readGitFileContent(ref, filePath, cwd) {
  * `cwd` defaults to the process's own working directory; tests pass an
  * explicit repo path instead of mutating the shared `process.cwd()` (which
  * would leak across concurrently-running test files in the same process).
+ *
+ * `headRef` defaults to `'HEAD'` — the checked-out worktree's current
+ * commit. Callers driving a check against an arbitrary PR by number (rather
+ * than a checkout that is guaranteed to BE that PR's branch) must pass the
+ * PR's actual head SHA here instead — see `resolvePrDiffRef`. Passing
+ * `'HEAD'` when the local checkout is not that PR silently computes an
+ * empty or unrelated diff, which this function cannot distinguish from "the
+ * file genuinely has no comment-only changes" — that conflation, not a gap
+ * in `isCommentOnlyDiff` itself (its own detection logic is correct and
+ * covered by its own tests), is what makes the `headRef` parameter matter.
  */
-export function isCommentOnlyFileDiff(filePath, baseBranch = process.env.BASE_BRANCH || 'origin/main', cwd = process.cwd()) {
-  const result = spawnSync('git', ['diff', '--unified=0', `${baseBranch}...HEAD`, '--', filePath], {
+export function isCommentOnlyFileDiff(
+  filePath,
+  baseBranch = process.env.BASE_BRANCH || 'origin/main',
+  cwd = process.cwd(),
+  headRef = 'HEAD',
+) {
+  const result = spawnSync('git', ['diff', '--unified=0', `${baseBranch}...${headRef}`, '--', filePath], {
     encoding: 'utf-8',
     cwd,
   });
   if (result.error || result.status !== 0) return false;
 
-  const mergeBaseResult = spawnSync('git', ['merge-base', baseBranch, 'HEAD'], { encoding: 'utf-8', cwd });
+  const mergeBaseResult = spawnSync('git', ['merge-base', baseBranch, headRef], { encoding: 'utf-8', cwd });
   const mergeBase = !mergeBaseResult.error && mergeBaseResult.status === 0 ? mergeBaseResult.stdout.trim() : null;
 
   const baseContent = mergeBase ? readGitFileContent(mergeBase, filePath, cwd) : null;
-  const headContent = readGitFileContent('HEAD', filePath, cwd);
+  const headContent = readGitFileContent(headRef, filePath, cwd);
 
   return isCommentOnlyDiff(result.stdout || '', filePath, { baseContent, headContent });
 }
 
-export function findTestFiles(changedFiles) {
+/**
+ * Thrown by `resolvePrDiffRef` when a PR's base/head SHAs cannot be
+ * resolved or fetched. A shared util function does not own process
+ * lifecycle decisions (that is an entry point's job, and this repo's
+ * elevation-helpers convention keeps that boundary strict) — callers at
+ * the script/entry-point layer catch this and decide how to fail loud.
+ */
+export class PrDiffRefResolutionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PrDiffRefResolutionError';
+  }
+}
+
+/**
+ * Resolve a PR's exact base/head commit SHAs via the GitHub API and ensure
+ * both are fetched into the local git object store, returning them as a
+ * `{ baseRef, headRef }` pair suitable for `findTestFiles`'s `diffRef`
+ * option / `isCommentOnlyFileDiff`'s `baseBranch`/`headRef` parameters.
+ *
+ * This exists because `getChangedFiles(prNumber)` already resolves a PR's
+ * file list remotely via `gh pr diff --name-only` (works from ANY local
+ * checkout), but `isCommentOnlyFileDiff` — by design, see its own doc
+ * comment — diffs against whatever `HEAD` the calling process's cwd happens
+ * to have checked out. `acceptance-check.js` is invoked against an
+ * arbitrary PR number from the Orchestrator's own worktree, which is
+ * essentially never checked out to that PR's branch, so without this
+ * resolution the comment-only exemption silently degrades to "not
+ * comment-only" for that script's actual usage pattern.
+ *
+ * Deliberately fails LOUD — throws `PrDiffRefResolutionError` rather than
+ * falling back to `'HEAD'` on any error — a silent fallback would just make
+ * the underlying bug intermittent (correct only when the caller happens to
+ * already be on the right branch) instead of fixing it. It throws rather
+ * than calling `process.exit` itself so the failure path is a value an
+ * entry point's `main` can catch and a test can trigger directly, instead
+ * of a side effect that kills the process (and any test runner) outright.
+ *
+ * `execImpl` is a pay-as-you-go dependency-injection seam (defaults to the
+ * module's own `exec`): callers with no test seam of their own ignore it;
+ * a test that needs to simulate `gh`/`git` failure passes a fake.
+ *
+ * @param {string|number} prNumber
+ * @param {{ execImpl?: typeof exec }} [opts]
+ * @returns {{ baseRef: string, headRef: string }}
+ */
+export function resolvePrDiffRef(prNumber, { execImpl = exec } = {}) {
+  const shasJson = execImpl(`gh api repos/{owner}/{repo}/pulls/${prNumber} --jq "{base: .base.sha, head: .head.sha}"`);
+  if (shasJson === null) {
+    throw new PrDiffRefResolutionError(
+      `Could not resolve base/head SHAs for PR #${prNumber} via gh api. Cannot determine whether changed files are comment-only.`,
+    );
+  }
+  let shas;
+  try {
+    shas = JSON.parse(shasJson);
+  } catch {
+    throw new PrDiffRefResolutionError(`Unexpected response resolving PR #${prNumber} SHAs (not valid JSON): ${shasJson}`);
+  }
+  const { base: baseRef, head: headRef } = shas;
+  if (!baseRef || !headRef) {
+    throw new PrDiffRefResolutionError(`PR #${prNumber}'s gh api response is missing a base/head SHA (base=${baseRef}, head=${headRef}).`);
+  }
+  // Fetch by bare SHA (no refspec) — GitHub allows fetching any reachable
+  // commit this way, which works even after the PR's branch has been
+  // deleted post-merge.
+  const fetchResult = execImpl(`git fetch origin ${baseRef} ${headRef}`);
+  if (fetchResult === null) {
+    throw new PrDiffRefResolutionError(
+      `Could not fetch PR #${prNumber}'s base/head commits (${baseRef}, ${headRef}) from origin. Cannot determine whether changed files are comment-only.`,
+    );
+  }
+  return { baseRef, headRef };
+}
+
+/**
+ * @param {string[]} changedFiles
+ * @param {{ baseRef?: string, headRef?: string, cwd?: string }} [diffRef]
+ *   Passed through to `isCommentOnlyFileDiff` for the comment-only-diff
+ *   check. Omit (or pass individual fields as `undefined`) to keep that
+ *   function's own defaults (`origin/main`, the process cwd's checked-out
+ *   `HEAD`) — the behavior preflight-check.js's no-PR-number / CI-checkout
+ *   modes have always relied on. Pass the object returned by
+ *   `resolvePrDiffRef(prNumber)` when checking an arbitrary PR from a
+ *   worktree that may not be checked out to that PR's branch.
+ */
+export function findTestFiles(changedFiles, diffRef = {}) {
+  const { baseRef, headRef, cwd } = diffRef;
   const testFiles = [];
   const productionFiles = [];
 
@@ -568,7 +670,7 @@ export function findTestFiles(changedFiles) {
     // A file that otherwise needs coverage is exempted when its actual diff
     // hunks are comment-only/blank — no behavior changed, so a sibling test
     // would be tautological (Issue #1189).
-    const isCommentOnly = requiresTestCoverage(prodFile) && isCommentOnlyFileDiff(prodFile);
+    const isCommentOnly = requiresTestCoverage(prodFile) && isCommentOnlyFileDiff(prodFile, baseRef, cwd, headRef);
     const needsCoverage = requiresTestCoverage(prodFile) && !isCommentOnly;
     const expectedTestPath = dir + '/__tests__/' + fileName + '.test' + expectedTestExt(ext);
     const altExt = alternateTestExt(ext);

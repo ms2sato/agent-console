@@ -10,6 +10,8 @@ import {
   findTestFiles,
   isCommentOnlyDiff,
   isCommentOnlyFileDiff,
+  resolvePrDiffRef,
+  PrDiffRefResolutionError,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -924,5 +926,180 @@ describe('isCommentOnlyFileDiff (git integration)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// isCommentOnlyFileDiff's diff source defaults to the checked-out
+// worktree's HEAD, which is correct for preflight-check.js's no-PR-number
+// / CI-checkout modes but wrong when checking an arbitrary PR number from
+// a worktree that is not checked out to that PR's branch. These tests pin
+// the fix: an explicit `headRef` must be honored even when the process's
+// real checkout (git's own HEAD) points somewhere else entirely.
+//
+// Measured reach (revert-the-fix polarity check, per workflow.md "Every
+// pin's reach is measured, not predicted"): forcing `headRef` to always
+// resolve to `'HEAD'` inside isCommentOnlyFileDiff (the pre-fix behavior)
+// flips the FIRST test below from pass to fail — the diff is computed
+// against `main` (still checked out) instead of `feature`, so `git diff
+// main...HEAD` is empty and the comment-only content is invisible. This
+// reproduces the underlying symptom deterministically, without network.
+// The SECOND test below (mixed-diff negative direction) does NOT flip under
+// that same revert — it is an invariant-preservation test (testing.md's
+// third category): it guards against a plausible wrong headRef
+// implementation that reports comment-only regardless of the actual diff
+// content, not against this specific regression.
+describe('isCommentOnlyFileDiff with an explicit headRef', () => {
+  function makeTempGitRepo() {
+    const root = mkdtempSync(join(tmpdir(), 'comment-only-headref-repo-'));
+    execSync('git init -q -b main', { cwd: root });
+    execSync('git config user.email test@example.com', { cwd: root });
+    execSync('git config user.name Test', { cwd: root });
+    return root;
+  }
+
+  function commit(root, message) {
+    execSync('git add -A', { cwd: root });
+    execSync(`git commit -q -m "${message}"`, { cwd: root });
+  }
+
+  it('diffs against the given headRef, not the checked-out HEAD, when they differ', () => {
+    const root = makeTempGitRepo();
+    try {
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // old note\n  return a + b;\n}\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // new note\n  return a + b;\n}\n');
+      commit(root, 'comment tweak on feature');
+
+      // Back on main: the worktree's real HEAD is now main, NOT feature —
+      // this is the exact shape of the Orchestrator checking an arbitrary
+      // PR from their own session.
+      execSync('git checkout -q main', { cwd: root });
+
+      const result = isCommentOnlyFileDiff('foo.ts', 'main', root, 'feature');
+      expect(result).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still detects a real logic change on a non-checked-out headRef (mixed-diff negative direction)', () => {
+    const root = makeTempGitRepo();
+    try {
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  return a + b;\n}\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  return a + b + 1;\n}\n');
+      commit(root, 'logic change on feature');
+
+      execSync('git checkout -q main', { cwd: root });
+
+      const result = isCommentOnlyFileDiff('foo.ts', 'main', root, 'feature');
+      expect(result).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults headRef to HEAD when omitted, preserving prior behavior', () => {
+    const root = makeTempGitRepo();
+    try {
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // old note\n  return a + b;\n}\n');
+      commit(root, 'initial');
+      writeFileSync(join(root, 'foo.ts'), 'export function add(a, b) {\n  // new note\n  return a + b;\n}\n');
+      commit(root, 'comment tweak');
+
+      const result = isCommentOnlyFileDiff('foo.ts', 'HEAD~1', root);
+      expect(result).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// Same revert-the-fix check as above, applied at findTestFiles's own
+// boundary rather than isCommentOnlyFileDiff's: forcing headRef to always
+// resolve to 'HEAD' also flips this test (isCommentOnly/needsCoverage
+// invert), confirming the diffRef option actually reaches the comment-only
+// check rather than being silently dropped somewhere in the threading.
+describe('findTestFiles with an explicit diffRef', () => {
+  function makeTempGitRepo() {
+    const root = mkdtempSync(join(tmpdir(), 'find-test-files-diffref-repo-'));
+    execSync('git init -q -b main', { cwd: root });
+    execSync('git config user.email test@example.com', { cwd: root });
+    execSync('git config user.name Test', { cwd: root });
+    return root;
+  }
+
+  function commit(root, message) {
+    execSync('git add -A', { cwd: root });
+    execSync(`git commit -q -m "${message}"`, { cwd: root });
+  }
+
+  it('threads baseRef/headRef/cwd through to the comment-only check, matching acceptance-check.js\'s actual call shape', () => {
+    const root = makeTempGitRepo();
+    try {
+      const relPath = 'packages/server/src/services/foo.ts';
+      mkdirSync(join(root, 'packages/server/src/services'), { recursive: true });
+      writeFileSync(join(root, relPath), 'export function add(a, b) {\n  // old note\n  return a + b;\n}\n');
+      commit(root, 'initial');
+
+      execSync('git checkout -q -b feature', { cwd: root });
+      writeFileSync(join(root, relPath), 'export function add(a, b) {\n  // new note\n  return a + b;\n}\n');
+      commit(root, 'comment tweak on feature');
+
+      execSync('git checkout -q main', { cwd: root });
+
+      const { testCoverage } = findTestFiles([relPath], { baseRef: 'main', headRef: 'feature', cwd: root });
+      expect(testCoverage).toHaveLength(1);
+      expect(testCoverage[0].isCommentOnly).toBe(true);
+      expect(testCoverage[0].needsCoverage).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// resolvePrDiffRef throws PrDiffRefResolutionError (rather than calling
+// process.exit itself) specifically so its failure path is a value a test
+// can trigger directly, instead of a side effect that would kill the test
+// runner. The `execImpl` DI seam (pay-as-you-go, mirrors the
+// elevation-helpers `runAsUserImpl` convention) is what makes that
+// triggering possible without touching the real `gh`/`git` binaries.
+describe('resolvePrDiffRef failure path', () => {
+  it('throws when gh api fails to resolve the PR (execImpl returns null)', () => {
+    const execImpl = () => null;
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/Could not resolve base\/head SHAs for PR #123/);
+  });
+
+  it('throws when gh api returns unparseable JSON', () => {
+    const execImpl = () => 'not json';
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/not valid JSON/);
+  });
+
+  it('throws when the resolved SHAs are missing a base or head', () => {
+    const execImpl = () => JSON.stringify({ base: 'abc123', head: null });
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/missing a base\/head SHA/);
+  });
+
+  it('throws when the SHA fetch fails after a successful resolution', () => {
+    let call = 0;
+    const execImpl = (cmd) => {
+      call += 1;
+      if (cmd.startsWith('gh api')) return JSON.stringify({ base: 'aaa', head: 'bbb' });
+      return null; // the subsequent `git fetch` call
+    };
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(call).toBeGreaterThan(0);
+  });
+
+  it('returns the resolved refs when both gh api and git fetch succeed', () => {
+    const execImpl = (cmd) => (cmd.startsWith('gh api') ? JSON.stringify({ base: 'aaa', head: 'bbb' }) : '');
+    expect(resolvePrDiffRef('123', { execImpl })).toEqual({ baseRef: 'aaa', headRef: 'bbb' });
   });
 });
