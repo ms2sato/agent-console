@@ -792,6 +792,35 @@ The auto trigger is evaluated **at turn end only**, never mid-turn: splicing the
 
 A compaction that fires automatically emits exactly the same `context-compacted` event a manual one does, differing only in `source: 'auto'` vs `'manual'`.
 
+### Mid-turn overflow escape
+
+The restore-boundary check and the turn-end trigger both **predict** whether the next request will fit. Some populations are structurally invisible to a prediction: a worker killed before completing any turn published no reading, a declared `contextWindowTokens` can be larger than the model's real window, and a seed-only worker's system prompt alone can dominate. For those the first evidence that the conversation is too large is the provider saying so.
+
+**The escape reacts to that observation.** On the `openai-api` arm, a provider error classified as a context overflow triggers one forced partial distillation and exactly one retry of the provider call.
+
+**Placement.** It fires at the **top of an iteration**, immediately after `runProviderWithRetries` returns and **before the turn's ending is decided**. Two properties follow, and both are reasons for this position rather than consequences of it:
+
+- *A turn that ended in error settles no compaction* stays true unchanged — there is no ending yet to contradict. A successful escape surfaces no `turn-error` at all and is invisible to the user.
+- Every `tool_call` the loop issued already has its `tool` message at that instant (`fillPendingToolResponses` covers the early-exit paths), which is what makes the marker it writes a valid restore boundary.
+
+**Partial is the definition, not a fallback.** The `F` ceiling exists to predict that a whole-conversation distillation would itself overflow. This path is triggered by the observation of exactly that overflow, so it takes the partial path at any ratio; attempting whole would reproduce the error it is responding to.
+
+**Input construction: shrink, not select.** `selectPartialDistillationMessages` keeps the largest tail suffix, which is correct at a restore boundary where the tail is recent conversation. Mid-turn the tail is the bloat — a tool message runs to `TOOL_RESULT_MAX_BYTES` and `maxToolIterations` defaults to 25 — so selecting it would keep the tool dumps and discard the user's question. Worse, below roughly `W < 6,000` the selector's first candidate already overruns and it returns nothing, inside the very regime this exists to serve. The escape instead caps tool-result contents largest-first, keeping every message. That preserves `tool_call`/`tool` pairing **by construction**, and the dead zone disappears.
+
+**Bounds.** One escape per turn, held in per-turn state that resets with the turn — the cause of an overflow is conversation size, so a later turn may legitimately escape again. A second overflow after an escape ends the turn. The escape's own failure emits no `turn-error` of its own: the original overflow flows down the ordinary path, so a turn emits exactly one. `contextWindowTokens` unset makes it inert.
+
+**Two mechanisms, not one.** `runProviderWithRetries`' three attempts are for transient failures and return immediately on a non-retryable 400 without burning them. The escape's single retry is an independent second mechanism responding to a structural failure, which is why it needs its own bound.
+
+### The boundary invariant, and why it is recorded twice
+
+> **Every `context-compacted` marker in the persisted stream must be a valid restore boundary** — a window replayed from immediately after it must be well-formed, with no orphaned `tool-result`.
+>
+> **Position rule (today's sufficient condition):** the escape may only fire where every issued `tool_call` has a matching `tool` message.
+
+Both are required. With only the position rule, someone moving the escape cannot re-derive why another position would be safe. With only the invariant, the grounds on which today's code satisfies it are lost. The pressure is real: a large `Read` result is precisely how a conversation crosses the window mid-turn, so moving the escape into the tool loop is a plausible extension — and it would pass every test that does not replay a transcript written that way.
+
+**Non-goal: detecting silent truncation.** A lenient provider returns no error, so an error-path escape cannot see it. The signature is a reported `prompt_tokens` capped exactly at the window. Recorded here as a limit of this mechanism, not an open task for it.
+
 ### Compaction at the restore boundary
 
 **Status:** Issue [#1411](https://github.com/ms2sato/agent-console/issues/1411). Extends the threshold semantics above with a **second firing point** for the same predicate. It introduces no new event, no new `source` value, and no change to [Transcript Restore](#transcript-restore)'s reconstruction or replay.

@@ -11,6 +11,7 @@ import { SseParser } from './sse.js';
 import {
   ProviderError,
   type ProviderAdapter,
+  type ProviderErrorDetail,
   type ProviderEvent,
   type ProviderRunRequest,
   type ToolDefinition,
@@ -113,7 +114,21 @@ async function readBoundedBodyText(res: Response): Promise<string> {
  * any shape that doesn't match the expected JSON error shapes falls back to
  * the raw (truncated) text.
  */
-function extractProviderErrorDetail(bodyText: string): string | undefined {
+/**
+ * Parse the provider's error envelope into STRUCTURE. The display string is
+ * composed separately by `extractProviderErrorDetail` below, from this result.
+ *
+ * Splitting the two is the point: the fields were always extracted here and
+ * then immediately joined into prose, which left every consumer inward of
+ * this line with nothing but a sentence to match on. The join still happens
+ * -- the composed message is byte-identical to before -- but the structure
+ * now survives alongside it.
+ *
+ * Returns `undefined` when the body is not the provider's JSON envelope (an
+ * edge proxy's HTML rejection, an empty body, unparseable text). Callers must
+ * treat that absence as information, not as a parse to retry.
+ */
+function parseProviderErrorDetail(bodyText: string): ProviderErrorDetail | undefined {
   const trimmed = bodyText.trim();
   if (trimmed.length === 0) return undefined;
 
@@ -121,26 +136,44 @@ function extractProviderErrorDetail(bodyText: string): string | undefined {
   try {
     parsed = JSON.parse(trimmed);
   } catch {
-    parsed = undefined;
+    return undefined;
   }
 
-  if (parsed !== undefined && parsed !== null && typeof parsed === 'object') {
-    const obj = parsed as Record<string, unknown>;
-    const errorObj =
-      obj.error !== null && typeof obj.error === 'object'
-        ? (obj.error as Record<string, unknown>)
-        : undefined;
-    const message =
-      (errorObj !== undefined && typeof errorObj.message === 'string'
-        ? errorObj.message
-        : undefined) ?? (typeof obj.message === 'string' ? obj.message : undefined);
+  if (parsed === null || typeof parsed !== 'object') return undefined;
+  const obj = parsed as Record<string, unknown>;
+  const errorObj =
+    obj.error !== null && typeof obj.error === 'object'
+      ? (obj.error as Record<string, unknown>)
+      : undefined;
+  const message =
+    (errorObj !== undefined && typeof errorObj.message === 'string' ? errorObj.message : undefined) ??
+    (typeof obj.message === 'string' ? obj.message : undefined);
+  if (message === undefined) return undefined;
 
-    if (message !== undefined) {
-      const type = errorObj !== undefined && typeof errorObj.type === 'string' ? errorObj.type : undefined;
-      const code = errorObj !== undefined && typeof errorObj.code === 'string' ? errorObj.code : undefined;
-      const context = [type, code].filter((v): v is string => v !== undefined).join('/');
-      return truncateProviderErrorDetail(context.length > 0 ? `${message} (${context})` : message);
-    }
+  const type = errorObj !== undefined && typeof errorObj.type === 'string' ? errorObj.type : undefined;
+  const code = errorObj !== undefined && typeof errorObj.code === 'string' ? errorObj.code : undefined;
+  return {
+    message,
+    ...(type !== undefined ? { type } : {}),
+    ...(code !== undefined ? { code } : {}),
+  };
+}
+
+/**
+ * The display half. Composition is unchanged from when parsing and formatting
+ * were one function, so the `message` every existing consumer sees is
+ * byte-identical.
+ */
+function extractProviderErrorDetail(bodyText: string): string | undefined {
+  const trimmed = bodyText.trim();
+  if (trimmed.length === 0) return undefined;
+
+  const detail = parseProviderErrorDetail(bodyText);
+  if (detail !== undefined) {
+    const context = [detail.type, detail.code].filter((v): v is string => v !== undefined).join('/');
+    return truncateProviderErrorDetail(
+      context.length > 0 ? `${detail.message} (${context})` : detail.message,
+    );
   }
 
   return truncateProviderErrorDetail(trimmed);
@@ -251,16 +284,26 @@ export class OpenAIChatAdapter implements ProviderAdapter {
         const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
         const retryable = res.status === 429 || res.status >= 500;
         let message = `provider responded with HTTP ${res.status}`;
+        let detail: ProviderErrorDetail | undefined;
         try {
-          const detail = extractProviderErrorDetail(await readBoundedBodyText(res));
-          if (detail !== undefined) {
-            message = `${message}: ${detail}`;
+          const bodyText = await readBoundedBodyText(res);
+          detail = parseProviderErrorDetail(bodyText);
+          const display = extractProviderErrorDetail(bodyText);
+          if (display !== undefined) {
+            message = `${message}: ${display}`;
           }
         } catch {
           // Enrichment is best-effort only; an unreadable body must not
-          // prevent throwing the status-only ProviderError below.
+          // prevent throwing the status-only ProviderError below. `detail`
+          // stays undefined, which is the same signal a non-envelope body
+          // gives -- consumers cannot tell the two apart and must not need to.
         }
-        throw new ProviderError(message, { retryable, status: res.status, retryAfterMs });
+        throw new ProviderError(message, {
+          retryable,
+          status: res.status,
+          retryAfterMs,
+          ...(detail !== undefined ? { detail } : {}),
+        });
       }
       if (res.body === null) {
         throw new ProviderError('provider returned an empty response body', {

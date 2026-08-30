@@ -80,19 +80,50 @@ export interface ProviderAdapter {
  * `retry-after` hint (429/503). Caller cancellation is NOT a ProviderError —
  * the adapter rethrows the abort so the loop can classify it as a cancel.
  */
+/** The provider's own error envelope, parsed once at the boundary. */
+export interface ProviderErrorDetail {
+  /** The provider's human-readable message, unjoined. */
+  readonly message: string;
+  /** e.g. `invalid_parameter_error`. */
+  readonly type?: string;
+  /** e.g. `context_length_exceeded`. */
+  readonly code?: string;
+}
+
 export class ProviderError extends Error {
   readonly retryable: boolean;
   readonly status: number | undefined;
   readonly retryAfterMs: number | undefined;
+  /**
+   * The provider's error envelope as STRUCTURE, when the body carried one.
+   *
+   * The body is parsed once, here at the system boundary, and travels inward
+   * as fields. `message` on this class is a composed, display-only string --
+   * no layer above may re-parse it to decide what happened. Parsing an
+   * external wire error at the boundary is validation of untrusted input;
+   * re-parsing our own composed prose further in would be the internal
+   * string-matching that discipline forbids.
+   *
+   * `undefined` when the body was absent, unreadable, or not the provider's
+   * JSON envelope -- an edge proxy's HTML rejection, for instance. That
+   * absence is meaningful to consumers rather than a gap to paper over.
+   */
+  readonly detail: ProviderErrorDetail | undefined;
 
   constructor(
     message: string,
-    opts: { retryable: boolean; status?: number; retryAfterMs?: number },
+    opts: {
+      retryable: boolean;
+      status?: number;
+      retryAfterMs?: number;
+      detail?: ProviderErrorDetail;
+    },
   ) {
     super(message);
     this.name = 'ProviderError';
     this.retryable = opts.retryable;
     this.status = opts.status;
     this.retryAfterMs = opts.retryAfterMs;
+    this.detail = opts.detail;
   }
 }
