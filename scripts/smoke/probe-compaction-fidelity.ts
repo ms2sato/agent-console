@@ -121,8 +121,10 @@
  *      valid and complete result, never a failure
  *   1  at least one requested run did NOT produce a measurement (round cap
  *      or overall budget exceeded before a boundary fired, a turn errored
- *      or timed out) while at least one other run DID -- partial harness
- *      failure; whatever measurements were obtained are still reported
+ *      or timed out, a plant/pressure turn was refused, or a boundary fired
+ *      but its `summary` field was missing / non-string) while at least one
+ *      other run DID -- partial harness failure; whatever measurements were
+ *      obtained are still reported
  *   2  bad usage, or the harness could not run at all (setup failure before
  *      any run could start, or every requested run failed to measure)
  */
@@ -277,6 +279,15 @@ interface RunOutcome {
   runIndex: number;
   ids: PlantedIdentifiers;
   measured: boolean;
+  /**
+   * Set whenever `measured` is false. Reasons pushed at the call sites below:
+   * overall budget exhausted before or during the run, session/worker setup
+   * failure, a plant or pressure turn refused or never completed, the round
+   * cap reached without a boundary firing, or -- Issue #1350's own
+   * measured-vs-unmeasured distinction applied to this instrument -- a
+   * boundary that fired but whose `summary` field was missing or non-string.
+   * See this file's header `Exit codes:` section for the same list.
+   */
   reason?: string;
   roundsToFire?: number;
   preTokens?: number;
@@ -506,7 +517,9 @@ async function main(): Promise<number> {
         {
           const plantEvents = (await readEvents(sessionId, workerId)).slice(plantMarker);
           const usage = plantEvents.filter((e) => e.type === 'context-usage').at(-1);
-          if (usage && usage.estimated === false) cumulativeRealPromptTokens += usage.promptTokens as number;
+          if (usage && usage.estimated === false && typeof usage.promptTokens === 'number') {
+            cumulativeRealPromptTokens += usage.promptTokens;
+          }
         }
         console.log(`  planted: runId=${ids.runId} filename=${ids.filename} reference=${ids.reference}`);
 
@@ -553,7 +566,9 @@ async function main(): Promise<number> {
           }
           const roundEvents = (await readEvents(sessionId, workerId)).slice(marker);
           const usage = roundEvents.filter((e) => e.type === 'context-usage').at(-1);
-          if (usage && usage.estimated === false) cumulativeRealPromptTokens += usage.promptTokens as number;
+          if (usage && usage.estimated === false && typeof usage.promptTokens === 'number') {
+            cumulativeRealPromptTokens += usage.promptTokens;
+          }
           console.log(
             `    round ${round}: ${usage ? `promptTokens=${usage.promptTokens} estimated=${usage.estimated}` : '(no context-usage this round)'}  cumulative real tokens=${cumulativeRealPromptTokens}  cumulative turns=${cumulativeTurns}`,
           );
@@ -566,7 +581,25 @@ async function main(): Promise<number> {
           continue;
         }
 
-        const summary = typeof boundary.summary === 'string' ? boundary.summary : '';
+        if (typeof boundary.summary !== 'string') {
+          // A boundary fired but its summary field was missing or the wrong
+          // type -- distinct from "the summary was a real, measured empty
+          // string" (0/3 retained is a valid measurement; no summary text at
+          // all is not). Conflating the two here would be exactly the
+          // measured-vs-unmeasured mistake this script's own header exists to
+          // avoid, applied to its own instrument instead of to compaction.
+          outcomes.push({
+            runIndex,
+            ids,
+            measured: false,
+            roundsToFire: round,
+            reason: 'boundary fired but its summary field was missing or non-string',
+          });
+          console.log(`  NO MEASUREMENT: boundary fired at round ${round} but its summary field was missing or non-string`);
+          continue;
+        }
+
+        const summary = boundary.summary;
         const retained = {
           runId: summary.includes(ids.runId),
           filename: summary.includes(ids.filename),
