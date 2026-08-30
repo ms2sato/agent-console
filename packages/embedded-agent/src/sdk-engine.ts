@@ -907,10 +907,24 @@ export class SdkEngine implements Engine {
    * `error_during_execution` is also the subtype `interrupt()` produces, and
    * a refused-resume (`reportRefusedResume`, checked before this is ever
    * called) is a THIRD cause sharing it. This method resolves the remaining
-   * two -- cancel and a genuine execution failure -- into the two endings
-   * `openai-api`'s `agent-loop.ts` already models as `TurnEnding`, rather
-   * than leaving both to fall through to one raw, un-classified message
-   * (#1495).
+   * two -- cancel and a genuine execution failure -- rather than leaving
+   * both to fall through to one raw, un-classified message (#1495).
+   *
+   * **This engine has no `TurnEnding` to route through.** `openai-api`'s
+   * `agent-loop.ts` models `'completed' | 'error' | 'canceled'` and branches
+   * downstream consumers (compaction settlement) on it; `SdkEngine` has no
+   * equivalent, and `handleResult` sends every non-success subtype to
+   * `turn-error` uniformly regardless of cause -- this engine's own
+   * compaction bookkeeping already discards a pending reservation
+   * synchronously inside `cancel()`, independent of how the later `result`
+   * classifies. So "route to the same CANCELED semantics `openai-api`
+   * already has" is realized here as parity AT THE OBSERVATION BOUNDARY:
+   * the emitted event and copy match what `openai-api`'s own cancel path
+   * emits (`agent-loop.ts`'s `emitTurnError(turnId, 'turn canceled')`),
+   * not a shared internal ending value. **If this engine later grows an
+   * ending consumer of its own** (e.g. a reservation mechanism that reaches
+   * this arm), move this classification from copy-level to that consumer --
+   * copy-level is correct only because no consumer exists today.
    *
    * PS8 (docs/design/embedded-agent-sdk-engine.md): `terminal_reason` is a
    * documented, typed SDK export (`TerminalReason`, `sdk.d.ts`) -- the
@@ -924,7 +938,8 @@ export class SdkEngine implements Engine {
    * R5: an absent or unrecognized `terminal_reason` fails toward
    * genuine-error, never toward canceled -- misclassifying a real failure
    * as a cancel hides it behind a throwaway message; the reverse only words
-   * a cancel badly.
+   * a cancel badly, as R3's generic-error copy (never the raw diagnostic,
+   * which stays server-log-only either way).
    */
   private buildExecutionErrorMessage(message: ResultErrorMessage): string {
     if (message.terminal_reason === 'aborted_streaming') {
