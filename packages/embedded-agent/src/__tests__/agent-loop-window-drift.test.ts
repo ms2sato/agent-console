@@ -126,6 +126,11 @@ const distillationFailure = (): ProviderError =>
     detail: { message: 'upstream unavailable', type: 'server_error' },
   });
 
+/**
+ * One turn whose provider call fails with `first`, and whose escape then fails
+ * too -- the shape that lets the ORIGINAL error reach `turn-error`, which is
+ * where signal 1 writes.
+ */
 function runWith(
   first: ProviderError,
   contextWindowTokens: number | undefined,
@@ -152,6 +157,7 @@ function runWith(
   return loop.runTurn('t1', 'a question').then(() => events);
 }
 
+/** The turn's single `turn-error` message, asserting there is exactly one. */
 const turnErrorMessage = (events: EmbeddedAgentEvent[]): string => {
   const errors = events.filter((e): e is Extract<EmbeddedAgentEvent, { type: 'turn-error' }> => e.type === 'turn-error');
   expect(errors).toHaveLength(1);
@@ -253,6 +259,7 @@ describe('signal 3: an absorbed overflow carries the stated limit on its boundar
     return events;
   };
 
+  /** The boundary markers emitted during the run, narrowed to their member. */
   const compacted = (events: EmbeddedAgentEvent[]) =>
     events.filter((e): e is Extract<EmbeddedAgentEvent, { type: 'context-compacted' }> => e.type === 'context-compacted');
 
