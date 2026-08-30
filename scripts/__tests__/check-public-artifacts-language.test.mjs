@@ -35,14 +35,6 @@ describe('findViolationsInText — allowed cases', () => {
     expect(findViolationsInText('café façade naïve résumé über löschen tiếng Việt')).toEqual([]);
   });
 
-  it('returns no violations for Greek letters (used in math)', () => {
-    expect(findViolationsInText('α β γ δ Σ Δ π')).toEqual([]);
-  });
-
-  it('returns no violations for Cyrillic letters (used in diff names, examples)', () => {
-    expect(findViolationsInText('Привет мир')).toEqual([]);
-  });
-
   it('returns no violations for ASCII punctuation and symbols', () => {
     expect(findViolationsInText("!@#$%^&*()_+-=[]{}|;':\",./<>?`~")).toEqual([]);
   });
@@ -74,6 +66,35 @@ describe('findViolationsInText — allowed cases', () => {
 });
 
 describe('findViolationsInText — blocked cases', () => {
+  it('flags Greek letters (Issue #1450 — no longer allowed for math notation)', () => {
+    const result = findViolationsInText('α β γ');
+    expect(result).toHaveLength(3);
+    for (const v of result) {
+      expect(v.codepoint).toMatch(/^U\+03/);
+    }
+  });
+
+  it('flags a mixed-script token (Cyrillic substituted inside an otherwise-Latin word)', () => {
+    // 'мутation' — the first three letters are Cyrillic look-alikes of "mut",
+    // the rest ("ation") is Latin. This is the exact repro shape from Issue #1450.
+    const result = findViolationsInText('мутation');
+    expect(result).toHaveLength(3);
+    for (const v of result) {
+      expect(v.codepoint).toMatch(/^U\+04/);
+    }
+  });
+
+  it('flags a wholly-Cyrillic word standing alone in English prose (the case a mixed-token rule would miss)', () => {
+    // The real incident: a whole Cyrillic word substituted for its English
+    // look-alike, not a mixed-script token. A rule that only rejected
+    // mixed-script tokens would structurally miss this case.
+    const result = findViolationsInText('Applying this мутация introduces a regression.');
+    expect(result.length).toBeGreaterThan(0);
+    for (const v of result) {
+      expect(v.codepoint).toMatch(/^U\+04/);
+    }
+  });
+
   it('flags Hiragana', () => {
     const result = findViolationsInText('こんにちは');
     expect(result.length).toBe(5);
@@ -181,6 +202,36 @@ describe('findViolationsInText — line and column reporting', () => {
   });
 });
 
+describe('findViolationsInText — per-line escape marker', () => {
+  it('exempts a line with Cyrillic when the escape marker is present', () => {
+    const result = findViolationsInText('а Cyrillic vs a Latin lang-check:allow');
+    expect(result).toEqual([]);
+  });
+
+  it('exempts a line with Greek when the escape marker is present', () => {
+    const result = findViolationsInText('α β γ lang-check:allow');
+    expect(result).toEqual([]);
+  });
+
+  it('does not exempt other lines in the same multiline text', () => {
+    const text = 'мутация lang-check:allow\nмутация\n';
+    const result = findViolationsInText(text);
+    expect(result.length).toBeGreaterThan(0);
+    for (const v of result) {
+      expect(v.line).toBe(2);
+    }
+  });
+
+  it('still flags a line without the marker even when other lines are exempted', () => {
+    const text = 'α β lang-check:allow\nこんにちは\n';
+    const result = findViolationsInText(text);
+    expect(result.length).toBe(5);
+    for (const v of result) {
+      expect(v.line).toBe(2);
+    }
+  });
+});
+
 describe('formatFileViolations', () => {
   it('produces canonical file:line:col char U+CODEPOINT format', () => {
     const lines = formatFileViolations('docs/foo.md', [
@@ -279,6 +330,34 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
     }
   });
 
+  it('runCheck flags Cyrillic and Greek content (Issue #1450 — no longer allowed)', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(join(root, 'docs/a.md'), 'Applying this мутация introduces a regression.\n');
+      writeFileSync(join(root, 'docs/b.md'), 'Angle theta equals α plus β.\n');
+      const result = await runCheck({ cwd: root });
+      expect(result.filesWithViolations).toBe(2);
+      expect(result.violations.length).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runCheck honors the per-line escape marker for a legitimate homograph example', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(
+        join(root, 'docs/a.md'),
+        'Compare а Cyrillic vs a Latin lang-check:allow\n',
+      );
+      const result = await runCheck({ cwd: root });
+      expect(result.violations).toEqual([]);
+      expect(result.filesWithViolations).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('findViolationsInFile reads a real file from disk', async () => {
     const root = makeFixture();
     try {
@@ -325,6 +404,23 @@ describe('checkStdinText (pure function — stdin-mode core)', () => {
     const result = checkStdinText('日', { label: '<commit-msg>' });
     expect(result.lines).toEqual(['<commit-msg>:1:1 日 U+65E5']);
   });
+
+  it('flags a Cyrillic word substituted into an otherwise-English commit message (Issue #1450)', () => {
+    const result = checkStdinText('fix: apply this мутация to the schema\n');
+    expect(result.violations.length).toBeGreaterThan(0);
+    expect(result.violations[0].file).toBe('<stdin>');
+  });
+
+  it('flags Greek letters in a commit message', () => {
+    const result = checkStdinText('fix: bound the α threshold\n');
+    expect(result.violations.length).toBeGreaterThan(0);
+  });
+
+  it('honors the per-line escape marker in stdin mode', () => {
+    const result = checkStdinText('fix: apply this мутация lang-check:allow\n');
+    expect(result.violations).toEqual([]);
+    expect(result.lines).toEqual([]);
+  });
 });
 
 function runScriptStdin(input) {
@@ -365,6 +461,18 @@ describe('check-public-artifacts-language.mjs --stdin (subprocess)', () => {
       '<stdin>:2:9 修 U+4FEE',
       '<stdin>:2:10 正 U+6B63',
     ]);
+  });
+
+  it('exit 1 for the exact Issue #1450 repro ("mutation and мутation")', () => {
+    const result = runScriptStdin('mutation and мутation\n');
+    expect(result.status).toBe(1);
+    expect(result.stdout.length).toBeGreaterThan(0);
+  });
+
+  it('exit 0 when the escape marker exempts the offending line', () => {
+    const result = runScriptStdin('mutation and мутation lang-check:allow\n');
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
   });
 
   it('regression — file-mode behavior is unchanged when --stdin is absent', () => {

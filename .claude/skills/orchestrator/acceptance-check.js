@@ -204,7 +204,7 @@ function printLanguageCheck(languageCheck) {
     return;
   }
   if (languageCheck.exitCode === 0) {
-    console.log('  ✅ All public artifacts use Latin / Greek / Cyrillic scripts only.');
+    console.log('  ✅ All public artifacts use the Latin script only.');
     console.log();
     return;
   }
@@ -491,7 +491,7 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
     {
       key: 'q11',
       text: languageCheckFailed
-        ? 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check FAILED. Confirm the listed violations are addressed (translated to English or replaced with a Latin/Greek/Cyrillic-script equivalent) before merge, or instruct the agent to fix.'
+        ? 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check FAILED. Confirm the listed violations are addressed — translated to English, or (for a rare, genuinely legitimate non-Latin case) exempted via the per-line `lang-check:allow` marker — before merge, or instruct the agent to fix.'
         : 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check passed. Confirm there are no remaining non-Latin-script Letter characters in public artifacts (docs/, .claude/, CLAUDE.md). If the PR diff adds new public-artifact text, did you spot-check it?',
       focus: [
         'See `.claude/rules/workflow.md` Language Policy.',

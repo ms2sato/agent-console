@@ -6,11 +6,29 @@
  * Per .claude/rules/workflow.md "Language Policy", all public artifacts
  * (docs, rules, skills, agents, top-level project docs) must be written
  * in English. This script enforces that mechanically by detecting any
- * Letter character (\p{L}) that does NOT belong to Latin / Greek / Cyrillic
- * scripts. The detection is language-agnostic: it does not hard-code
- * Japanese or any specific writing system; it allows the Latin family
- * (English, French, German, Vietnamese, ...) and the technical extensions
- * (Greek for math, Cyrillic for diff names) and rejects everything else.
+ * Letter character (\p{L}) that does NOT belong to the Latin script.
+ * The detection is language-agnostic: it does not hard-code Japanese or
+ * any specific writing system; it allows the Latin family (English,
+ * French, German, Vietnamese, ...) and rejects everything else,
+ * including Greek and Cyrillic.
+ *
+ * Greek and Cyrillic used to be blanket-allowed (Greek for math notation,
+ * Cyrillic for quoted diff-name identifiers), but that allowance let a
+ * whole Cyrillic word substituted for its English look-alike inside
+ * otherwise-English prose pass silently (Issue #1450) — a mixed-script
+ * rule would have caught only a mixed-script *token*, not a wholly
+ * non-Latin word standing alone in a sentence. The allowance is gone;
+ * a legitimate non-Latin character on a specific line (e.g. a deliberate
+ * homograph-attack example) is exempted per-line via the escape marker
+ * below instead.
+ *
+ * Per-line escape marker: a line containing the literal substring
+ * `lang-check:allow` is skipped entirely by the scan — no character on
+ * that line is checked, regardless of script. This is a loud,
+ * review-visible per-line override (the marker itself is plainly visible
+ * in the diff and in the rendered doc), not a silent blanket allowance
+ * and not a separate allowlist file. Use it sparingly, only where the
+ * non-Latin content is itself the point (e.g. a homograph example).
  *
  * Output format (one violation per line):
  *   path/to/file.md:LINE:COL CHAR U+CODEPOINT
@@ -31,7 +49,14 @@
 
 import { Glob } from 'bun';
 
-const VIOLATION_RE = /(?=\p{L})(?![\p{Script=Latin}\p{Script=Greek}\p{Script=Cyrillic}])./gu;
+const VIOLATION_RE = /(?=\p{L})(?!\p{Script=Latin})./gu;
+
+/**
+ * A line containing this literal substring is fully exempted from the
+ * scan — see the "Per-line escape marker" section in the header comment
+ * above for the rationale.
+ */
+const ESCAPE_MARKER = 'lang-check:allow';
 
 const DEFAULT_PATTERNS = [
   'CLAUDE.md',
@@ -57,6 +82,7 @@ export function findViolationsInText(text) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (line.includes(ESCAPE_MARKER)) continue;
     const re = new RegExp(VIOLATION_RE.source, VIOLATION_RE.flags);
     let match;
     while ((match = re.exec(line)) !== null) {

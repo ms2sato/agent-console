@@ -42,7 +42,7 @@ function printLanguageCheck(result) {
     return 1;
   }
   if (result.exitCode === 0) {
-    console.log('✅ All public artifacts use Latin / Greek / Cyrillic scripts only.');
+    console.log('✅ All public artifacts use the Latin script only.');
     return 0;
   }
   const violationLines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
