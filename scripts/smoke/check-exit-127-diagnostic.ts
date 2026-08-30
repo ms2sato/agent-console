@@ -133,148 +133,157 @@ async function selfCheck(): Promise<void> {
   }
 }
 
-await selfCheck();
+// Extracted into main() (Issue #1479), order-preserving verbatim move: this
+// entire body was top-level, executing as a side effect of merely importing
+// this file. Guarded below so only running it as the entry point does.
+async function main(): Promise<void> {
+  await selfCheck();
 
-const smokeUsername = os.userInfo().username;
-const smokeHomeDir = os.homedir();
+  const smokeUsername = os.userInfo().username;
+  const smokeHomeDir = os.homedir();
 
-let smokeDir: string | undefined;
-let exitCode = 0;
+  let smokeDir: string | undefined;
+  let exitCode = 0;
 
-try {
-  smokeDir = await mkdtemp(path.join(tmpdir(), 'agent-console-smoke-1294-'));
-  const resolver = new SessionDataPathResolver(smokeDir);
-
-  // Real SQLite, in-memory -- mirrors worker-manager.test.ts's AgentManager
-  // construction exactly, minus the memfs test-file wrapper.
-  await initializeDatabase(':memory:');
-  const db = getDatabase();
-  const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
-
-  const userMode = new SingleUserMode(bunPtyProvider, {
-    id: 'smoke-user-id',
-    username: smokeUsername,
-    homeDir: smokeHomeDir,
-  });
-  const outputFileManager = new WorkerOutputFileManager();
-  const workerManager = new WorkerManager(userMode, agentManager, outputFileManager);
-
-  const sessionId = `smoke-session-${crypto.randomUUID()}`;
-
-  let observedExitCode: number | undefined;
-  let observedExitSessionId: string | undefined;
-  let observedExitWorkerId: string | undefined;
-  const onExit: GlobalWorkerExitCallback = (sid, wid, code) => {
-    observedExitSessionId = sid;
-    observedExitWorkerId = wid;
-    observedExitCode = code;
-  };
-  workerManager.setGlobalWorkerExitCallback(onExit);
-
-  const worker = workerManager.initializeAgentWorker({
-    id: `smoke-worker-${crypto.randomUUID()}`,
-    name: 'Smoke Agent',
-    createdAt: new Date().toISOString(),
-    agentId: CLAUDE_CODE_AGENT_ID,
-  });
-
-  console.log('==> activating agent worker PTY with SHELL pointed at a nonexistent binary');
-  // Deliberately: no attachCallbacks() call anywhere in this scenario --
-  // zero WebSocket clients ever attached, mirroring T2's delegate-path
-  // shape but against a real process.
-  await workerManager.activateAgentWorkerPty(worker, {
-    sessionId,
-    locationPath: '/',
-    // SHELL flows through additionalEnvVars in spawnDirectPty, spread AFTER
-    // baseEnv and BEFORE the AGENT_CONSOLE_* security-pinned vars, so it
-    // overrides the inherited $SHELL cleanly. Verified against
-    // env-filter.ts: filterRepositoryEnvVars (which strips SHELL as a
-    // PROTECTED_ENV_VAR) is only invoked by session-manager.ts when parsing
-    // repository config -- WorkerManager.activateAgentWorkerPty takes
-    // repositoryEnvVars -> additionalEnvVars UNFILTERED, so calling it
-    // directly (as this smoke does) is not subject to that filter.
-    repositoryEnvVars: { SHELL: '/nonexistent-xyz-127-smoke' },
-    username: smokeUsername,
-    resolver,
-    agentId: CLAUDE_CODE_AGENT_ID,
-    startupIntent: 'fresh',
-    revived: false,
-  });
-
-  console.log('==> waiting for the real process to exit 127');
-  const ptyDetached = await waitFor(() => worker.pty === null, EXIT_WAIT_TIMEOUT_MS);
-
-  // ---------- assertions ----------
-  const failures: string[] = [];
-  let passes = 0;
-  const expect = (cond: boolean, label: string, detail?: string) => {
-    if (cond) {
-      console.log(`  OK    ${label}`);
-      passes++;
-    } else {
-      console.error(`  FAIL  ${label}${detail ? ` -- ${detail}` : ''}`);
-      failures.push(label);
-    }
-  };
-
-  console.log('==> exit-observer chain');
-  expect(
-    ptyDetached,
-    'worker.pty became null within timeout (detachPty ran; onExit fired and completed)',
-    `worker.pty=${JSON.stringify(worker.pty)}`,
-  );
-  expect(
-    observedExitCode === 127,
-    'the real spawned process exited with code 127',
-    `observed exitCode=${String(observedExitCode)}`,
-  );
-  expect(observedExitSessionId === sessionId, 'exit callback reported the expected sessionId');
-  expect(observedExitWorkerId === worker.id, 'exit callback reported the expected workerId');
-
-  console.log('==> output file on disk (real fs, zero clients ever attached)');
-  const outputFilePath = resolver.getOutputFilePath(sessionId, worker.id);
-  let onDisk = '';
   try {
-    onDisk = await fs.readFile(outputFilePath, 'utf-8');
-  } catch (err) {
-    console.error(`  could not read output file at ${outputFilePath}: ${String(err)}`);
-  }
-  expect(onDisk.includes('[internal:agent-spawn-failed]'), 'output file contains the diagnostic tag');
-  expect(onDisk.includes('exitCode=127'), 'output file contains exitCode=127');
-  expect(onDisk.includes(`username=${smokeUsername}`), `output file contains username=${smokeUsername}`);
+    smokeDir = await mkdtemp(path.join(tmpdir(), 'agent-console-smoke-1294-'));
+    const resolver = new SessionDataPathResolver(smokeDir);
 
-  console.log('==> readHistoryWithOffset (manager read API)');
-  const history = await outputFileManager.readHistoryWithOffset(sessionId, worker.id, resolver);
-  expect(
-    history.data.includes('[internal:agent-spawn-failed]'),
-    'readHistoryWithOffset also returns the diagnostic message',
-  );
+    // Real SQLite, in-memory -- mirrors worker-manager.test.ts's AgentManager
+    // construction exactly, minus the memfs test-file wrapper.
+    await initializeDatabase(':memory:');
+    const db = getDatabase();
+    const agentManager = await AgentManager.create(new SqliteAgentRepository(db));
 
-  console.log();
-  if (failures.length > 0) {
-    console.error(`FAILED: ${failures.length} assertion(s) failed`);
-    exitCode = 1;
-  } else {
-    console.log(`PASSED: ${passes} assertion(s) passed`);
-    exitCode = 0;
-  }
-} catch (err) {
-  console.error('Unexpected exception while running the exit-127 diagnostic smoke.');
-  console.error(err);
-  exitCode = 2;
-} finally {
-  try {
-    await closeDatabase();
-  } catch {
-    // best-effort; do not let a close failure mask the original outcome
-  }
-  if (smokeDir) {
+    const userMode = new SingleUserMode(bunPtyProvider, {
+      id: 'smoke-user-id',
+      username: smokeUsername,
+      homeDir: smokeHomeDir,
+    });
+    const outputFileManager = new WorkerOutputFileManager();
+    const workerManager = new WorkerManager(userMode, agentManager, outputFileManager);
+
+    const sessionId = `smoke-session-${crypto.randomUUID()}`;
+
+    let observedExitCode: number | undefined;
+    let observedExitSessionId: string | undefined;
+    let observedExitWorkerId: string | undefined;
+    const onExit: GlobalWorkerExitCallback = (sid, wid, code) => {
+      observedExitSessionId = sid;
+      observedExitWorkerId = wid;
+      observedExitCode = code;
+    };
+    workerManager.setGlobalWorkerExitCallback(onExit);
+
+    const worker = workerManager.initializeAgentWorker({
+      id: `smoke-worker-${crypto.randomUUID()}`,
+      name: 'Smoke Agent',
+      createdAt: new Date().toISOString(),
+      agentId: CLAUDE_CODE_AGENT_ID,
+    });
+
+    console.log('==> activating agent worker PTY with SHELL pointed at a nonexistent binary');
+    // Deliberately: no attachCallbacks() call anywhere in this scenario --
+    // zero WebSocket clients ever attached, mirroring T2's delegate-path
+    // shape but against a real process.
+    await workerManager.activateAgentWorkerPty(worker, {
+      sessionId,
+      locationPath: '/',
+      // SHELL flows through additionalEnvVars in spawnDirectPty, spread AFTER
+      // baseEnv and BEFORE the AGENT_CONSOLE_* security-pinned vars, so it
+      // overrides the inherited $SHELL cleanly. Verified against
+      // env-filter.ts: filterRepositoryEnvVars (which strips SHELL as a
+      // PROTECTED_ENV_VAR) is only invoked by session-manager.ts when parsing
+      // repository config -- WorkerManager.activateAgentWorkerPty takes
+      // repositoryEnvVars -> additionalEnvVars UNFILTERED, so calling it
+      // directly (as this smoke does) is not subject to that filter.
+      repositoryEnvVars: { SHELL: '/nonexistent-xyz-127-smoke' },
+      username: smokeUsername,
+      resolver,
+      agentId: CLAUDE_CODE_AGENT_ID,
+      startupIntent: 'fresh',
+      revived: false,
+    });
+
+    console.log('==> waiting for the real process to exit 127');
+    const ptyDetached = await waitFor(() => worker.pty === null, EXIT_WAIT_TIMEOUT_MS);
+
+    // ---------- assertions ----------
+    const failures: string[] = [];
+    let passes = 0;
+    const expect = (cond: boolean, label: string, detail?: string) => {
+      if (cond) {
+        console.log(`  OK    ${label}`);
+        passes++;
+      } else {
+        console.error(`  FAIL  ${label}${detail ? ` -- ${detail}` : ''}`);
+        failures.push(label);
+      }
+    };
+
+    console.log('==> exit-observer chain');
+    expect(
+      ptyDetached,
+      'worker.pty became null within timeout (detachPty ran; onExit fired and completed)',
+      `worker.pty=${JSON.stringify(worker.pty)}`,
+    );
+    expect(
+      observedExitCode === 127,
+      'the real spawned process exited with code 127',
+      `observed exitCode=${String(observedExitCode)}`,
+    );
+    expect(observedExitSessionId === sessionId, 'exit callback reported the expected sessionId');
+    expect(observedExitWorkerId === worker.id, 'exit callback reported the expected workerId');
+
+    console.log('==> output file on disk (real fs, zero clients ever attached)');
+    const outputFilePath = resolver.getOutputFilePath(sessionId, worker.id);
+    let onDisk = '';
     try {
-      await rm(smokeDir, { recursive: true, force: true });
+      onDisk = await fs.readFile(outputFilePath, 'utf-8');
+    } catch (err) {
+      console.error(`  could not read output file at ${outputFilePath}: ${String(err)}`);
+    }
+    expect(onDisk.includes('[internal:agent-spawn-failed]'), 'output file contains the diagnostic tag');
+    expect(onDisk.includes('exitCode=127'), 'output file contains exitCode=127');
+    expect(onDisk.includes(`username=${smokeUsername}`), `output file contains username=${smokeUsername}`);
+
+    console.log('==> readHistoryWithOffset (manager read API)');
+    const history = await outputFileManager.readHistoryWithOffset(sessionId, worker.id, resolver);
+    expect(
+      history.data.includes('[internal:agent-spawn-failed]'),
+      'readHistoryWithOffset also returns the diagnostic message',
+    );
+
+    console.log();
+    if (failures.length > 0) {
+      console.error(`FAILED: ${failures.length} assertion(s) failed`);
+      exitCode = 1;
+    } else {
+      console.log(`PASSED: ${passes} assertion(s) passed`);
+      exitCode = 0;
+    }
+  } catch (err) {
+    console.error('Unexpected exception while running the exit-127 diagnostic smoke.');
+    console.error(err);
+    exitCode = 2;
+  } finally {
+    try {
+      await closeDatabase();
     } catch {
-      // best-effort cleanup; do not let it change the exit code
+      // best-effort; do not let a close failure mask the original outcome
+    }
+    if (smokeDir) {
+      try {
+        await rm(smokeDir, { recursive: true, force: true });
+      } catch {
+        // best-effort cleanup; do not let it change the exit code
+      }
     }
   }
+
+  process.exit(exitCode);
 }
 
-process.exit(exitCode);
+if (import.meta.main) {
+  main();
+}

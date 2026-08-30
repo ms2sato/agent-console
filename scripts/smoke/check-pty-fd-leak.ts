@@ -140,52 +140,61 @@ async function waitUntil<T>(read: () => T, isDone: (value: T) => boolean, timeou
   return value;
 }
 
-const beforeFds = countPtmxFds();
-const beforeKernelCount = readKernelPtyCount();
+// Extracted into main() (Issue #1479), order-preserving verbatim move: this
+// entire body was top-level, executing as a side effect of merely importing
+// this file. Guarded below so only running it as the entry point does.
+async function main(): Promise<void> {
+  const beforeFds = countPtmxFds();
+  const beforeKernelCount = readKernelPtyCount();
 
-await selfCheck(beforeFds);
+  await selfCheck(beforeFds);
 
-// Retained for the assertion's lifetime -- see file header. Without this, an
-// unreachable adapter can be GC-finalized mid-run, masking a regression.
-const retained: PtyInstance[] = [];
-for (let i = 0; i < CYCLE_COUNT; i++) {
-  await runCycle(retained);
-}
-
-const afterFds = await waitUntil(countPtmxFds, (v) => v <= beforeFds);
-const afterKernelCount = await waitUntil(readKernelPtyCount, (v) => v <= beforeKernelCount);
-
-const failures: string[] = [];
-let passes = 0;
-const expect = (cond: boolean, label: string, detail?: string) => {
-  if (cond) {
-    console.log(`  OK    ${label}`);
-    passes++;
-  } else {
-    console.error(`  FAIL  ${label}${detail ? ` -- ${detail}` : ''}`);
-    failures.push(label);
+  // Retained for the assertion's lifetime -- see file header. Without this, an
+  // unreachable adapter can be GC-finalized mid-run, masking a regression.
+  const retained: PtyInstance[] = [];
+  for (let i = 0; i < CYCLE_COUNT; i++) {
+    await runCycle(retained);
   }
-};
 
-console.log(`==> ran ${CYCLE_COUNT} spawn/kill cycles via bunTerminalProvider`);
-console.log('==> ptmx fd count (this process, via /proc/<pid>/fd)');
-expect(
-  afterFds <= beforeFds,
-  `ptmx fd count non-increasing (before=${beforeFds}, after=${afterFds})`,
-  `before=${beforeFds} after=${afterFds}`,
-);
+  const afterFds = await waitUntil(countPtmxFds, (v) => v <= beforeFds);
+  const afterKernelCount = await waitUntil(readKernelPtyCount, (v) => v <= beforeKernelCount);
 
-console.log('==> kernel pty counter (/proc/sys/kernel/pty/nr)');
-expect(
-  afterKernelCount <= beforeKernelCount,
-  `kernel pty counter non-increasing (before=${beforeKernelCount}, after=${afterKernelCount})`,
-  `before=${beforeKernelCount} after=${afterKernelCount} -- if other processes are actively spawning PTYs on this host, this system-wide counter can rise independently of this script's own leak-freedom -- check for concurrent PTY activity before concluding this is a regression`,
-);
+  const failures: string[] = [];
+  let passes = 0;
+  const expect = (cond: boolean, label: string, detail?: string) => {
+    if (cond) {
+      console.log(`  OK    ${label}`);
+      passes++;
+    } else {
+      console.error(`  FAIL  ${label}${detail ? ` -- ${detail}` : ''}`);
+      failures.push(label);
+    }
+  };
 
-console.log();
-if (failures.length > 0) {
-  console.error(`FAILED: ${failures.length} assertion(s) failed`);
-  process.exit(1);
+  console.log(`==> ran ${CYCLE_COUNT} spawn/kill cycles via bunTerminalProvider`);
+  console.log('==> ptmx fd count (this process, via /proc/<pid>/fd)');
+  expect(
+    afterFds <= beforeFds,
+    `ptmx fd count non-increasing (before=${beforeFds}, after=${afterFds})`,
+    `before=${beforeFds} after=${afterFds}`,
+  );
+
+  console.log('==> kernel pty counter (/proc/sys/kernel/pty/nr)');
+  expect(
+    afterKernelCount <= beforeKernelCount,
+    `kernel pty counter non-increasing (before=${beforeKernelCount}, after=${afterKernelCount})`,
+    `before=${beforeKernelCount} after=${afterKernelCount} -- if other processes are actively spawning PTYs on this host, this system-wide counter can rise independently of this script's own leak-freedom -- check for concurrent PTY activity before concluding this is a regression`,
+  );
+
+  console.log();
+  if (failures.length > 0) {
+    console.error(`FAILED: ${failures.length} assertion(s) failed`);
+    process.exit(1);
+  }
+  console.log(`PASSED: ${passes} assertion(s) passed`);
+  process.exit(0);
 }
-console.log(`PASSED: ${passes} assertion(s) passed`);
-process.exit(0);
+
+if (import.meta.main) {
+  main();
+}

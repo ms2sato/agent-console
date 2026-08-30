@@ -699,6 +699,10 @@ async function main(): Promise<void> {
   }
 }
 
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
 main()
   .then(() => {
     console.log(`\n==> ${passes} passed, ${failures.length} failed`);
@@ -714,3 +718,4 @@ main()
     console.error(`\n==> ${passes} passed, ${failures.length} failed before the abort`);
     process.exit(2);
   });
+}

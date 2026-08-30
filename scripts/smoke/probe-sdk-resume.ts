@@ -777,9 +777,14 @@ async function main(): Promise<number> {
   return verdicts.some((v) => v.stop) ? 1 : 0;
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error('probe could not run:', err);
-    process.exit(2);
-  });
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error('probe could not run:', err);
+      process.exit(2);
+    });
+}

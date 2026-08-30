@@ -78,23 +78,6 @@
  * are imported directly from their production modules -- no replication.
  */
 
-// Ad-hoc invocation inherits cwd from the caller (often /root or an
-// interactive user's home, neither readable by an elevation-target service
-// account). Neutralize at script start -- same root cause documented in
-// check-multiuser-pty-env.ts / check-kill-as-user.ts.
-process.chdir('/');
-
-const targetUsername = process.argv[2];
-if (!targetUsername) {
-  console.error('usage: bun scripts/smoke/check-orphan-sweep.ts <target-user>');
-  process.exit(2);
-}
-
-// privilege-elevation.ts reads `process.env.AUTH_MODE` at CALL time inside
-// `runAsUser` / `spawnAsUser` (not via a module-load-time IIFE), so a plain
-// static import + setting this env var beforehand is sufficient.
-process.env.AUTH_MODE = 'multi-user';
-
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import { randomUUID } from 'node:crypto';
@@ -229,6 +212,25 @@ async function spawnTrackedMarked(
 }
 
 async function main(): Promise<void> {
+  // Ad-hoc invocation inherits cwd from the caller (often /root or an
+  // interactive user's home, neither readable by an elevation-target service
+  // account). Neutralize at script start -- same root cause documented in
+  // check-multiuser-pty-env.ts / check-kill-as-user.ts. Moved into main()
+  // (Issue #1479) -- was top-level, which ran on import.
+  process.chdir('/');
+
+  const targetUsername = process.argv[2];
+  if (!targetUsername) {
+    console.error('usage: bun scripts/smoke/check-orphan-sweep.ts <target-user>');
+    process.exit(2);
+  }
+
+  // privilege-elevation.ts reads `process.env.AUTH_MODE` at CALL time inside
+  // `runAsUser` / `spawnAsUser` (not via a module-load-time IIFE), so setting
+  // this env var anywhere before those calls happen (both now inside this
+  // same function) is sufficient.
+  process.env.AUTH_MODE = 'multi-user';
+
   const serverUsername = os.userInfo().username;
   const degenerate = targetUsername === serverUsername;
   if (degenerate) {
@@ -322,11 +324,16 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((err) => {
-  if (err instanceof ProbeTimeoutError) {
-    console.error('PROBE TIMEOUT (uncaught):', err.message);
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main().catch((err) => {
+    if (err instanceof ProbeTimeoutError) {
+      console.error('PROBE TIMEOUT (uncaught):', err.message);
+      process.exit(2);
+    }
+    console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
     process.exit(2);
-  }
-  console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
-  process.exit(2);
-});
+  });
+}
