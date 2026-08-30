@@ -21,6 +21,7 @@ function ControlledArtifactsPanel({
       sessionId={sessionId}
       isExpanded={isExpanded}
       onToggleExpanded={() => setIsExpanded((v) => !v)}
+      compact={false}
     />
   );
 }

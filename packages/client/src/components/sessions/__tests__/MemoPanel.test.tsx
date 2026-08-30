@@ -24,7 +24,10 @@ function jsonResponse(data: unknown, status = 200): Response {
 
 // The panel is now controlled: isExpanded is a required prop, not internal
 // state. This wrapper supplies the isExpanded/onToggleExpanded pair the way
-// the real SessionSidePanels container does.
+// the real SessionSidePanels container does. compact=false: this file tests
+// a single panel in isolation, standing in for "already inside a wide
+// accordion column" -- the compact/rail-chrome rendering is covered by
+// SessionSidePanels.test.tsx instead.
 function ControlledMemoPanel({
   sessionId,
   initialExpanded = true,
@@ -38,6 +41,7 @@ function ControlledMemoPanel({
       sessionId={sessionId}
       isExpanded={isExpanded}
       onToggleExpanded={() => setIsExpanded((v) => !v)}
+      compact={false}
     />
   );
 }

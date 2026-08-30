@@ -177,4 +177,30 @@ describe('SessionSidePanels', () => {
       JSON.stringify({ memo: true, artifacts: true, bookmarks: false })
     );
   });
+
+  it('renders exactly one bordered rail element when all sections are collapsed (R1b/R1d DOM pin)', async () => {
+    const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
+
+    // The defect this pin exists to catch: each panel used to render its
+    // own `border-l` strip when collapsed, producing three separate rails
+    // instead of one. Only the container may own a `border-l`.
+    const railElements = container.querySelectorAll('[class*="border-l"]');
+    expect(railElements.length).toBe(1);
+  });
+
+  it('still renders exactly one bordered rail element once a section is expanded (R1c DOM pin)', async () => {
+    const { container } = await renderWithRouter(<SessionSidePanels sessionId="session-1" />);
+    await waitFor(() => expect(screen.getByLabelText('Expand memo')).toBeTruthy());
+
+    act(() => {
+      screen.getByLabelText('Expand memo').click();
+    });
+    await waitFor(() => expect(screen.getByText('Hello Memo')).toBeTruthy());
+
+    // Sections inside the widened accordion separate with border-b only --
+    // still exactly one border-l on the page, now on the widened column.
+    const railElements = container.querySelectorAll('[class*="border-l"]');
+    expect(railElements.length).toBe(1);
+  });
 });
