@@ -439,6 +439,32 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
         break;
       }
       case 'tool-result':
+        // ===================================================================
+        // INVARIANT, and it has a writer in another module.
+        //
+        // **Every `context-compacted` marker in the persisted stream must be
+        // a valid restore boundary**: a window replayed from immediately
+        // after it must be well-formed, with no orphaned `tool-result`.
+        //
+        // This guard is where that invariant is ENFORCED, but it is not where
+        // it can be satisfied. The producer side is `agent-loop`'s mid-turn
+        // overflow escape, which writes a marker from inside a live turn --
+        // see the comment at its firing point for the position rule that
+        // makes today's implementation satisfy this.
+        //
+        // The two are recorded separately on purpose. With only the position
+        // rule, someone moving the escape cannot re-derive why another
+        // position would be safe. With only this invariant, the GROUNDS on
+        // which the current code satisfies it are lost. A reader arriving at
+        // either one needs the other.
+        //
+        // The pressure is real rather than hypothetical: a large `Read`
+        // result is precisely how a conversation crosses the window mid-turn,
+        // so moving the escape into the tool loop is a plausible extension --
+        // and it would pass every test that does not replay a transcript
+        // written that way.
+        // ===================================================================
+        //
         // A rotated-out restore window can start mid-turn, e.g. a lone
         // tool-result whose owning tool-call was archived out (restore only
         // reads the live output window, never archived segments). Without

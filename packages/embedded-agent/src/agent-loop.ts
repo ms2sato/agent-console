@@ -23,6 +23,7 @@ import {
   type ToolCall,
   type ToolDefinition,
 } from './providers/types.js';
+import { isContextOverflowError } from './context-overflow.js';
 import { truncateToBytes } from './truncate.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
 import {
@@ -276,6 +277,88 @@ function estimateTokensFromChars(messages: ChatMessage[]): number {
  * Returns `null` when not even one message fits, which the caller treats as a
  * compaction failure rather than distilling nothing.
  */
+/**
+ * How much of a tool result survives shrinking. The content is about to be
+ * summarised, so what a reader needs from it is its shape and opening -- a
+ * file's first lines, an error's text, a command's first output -- not its
+ * bulk. 512 characters keeps that and collapses a 16 KiB dump to roughly a
+ * hundred tokens.
+ */
+const SHRUNK_TOOL_RESULT_HEAD_CHARS = 512;
+
+/** Marks a shrunk tool result so the summary cannot mistake it for the whole. */
+function shrinkToolContent(content: string): string {
+  if (content.length <= SHRUNK_TOOL_RESULT_HEAD_CHARS) return content;
+  const head = content.slice(0, SHRUNK_TOOL_RESULT_HEAD_CHARS);
+  return `${head}\n[elided: original ${content.length} bytes]`;
+}
+
+/**
+ * Builds the mid-turn escape's distillation input by SHRINKING content, not by
+ * selecting messages.
+ *
+ * The escape and the restore boundary face oppositely-shaped conversations, so
+ * they cannot share an input strategy. `selectPartialDistillationMessages`
+ * keeps the largest tail suffix -- right at a restore boundary, where the tail
+ * is recent conversation. **Mid-turn the tail is the bloat**: a tool message
+ * runs to `TOOL_RESULT_MAX_BYTES` (16 KiB, roughly 4,096 estimated tokens) and
+ * `maxToolIterations` defaults to 25, so the escape's most likely trigger is
+ * exactly the case where the newest messages are the enormous ones. Selecting
+ * the tail there would keep those and discard the user's original question.
+ *
+ * Worse, the arithmetic fails inside the regime this exists to serve. With a
+ * budget of `0.7 x W`, at `W = 12,000` that is 8,400 -- about two tool results.
+ * Below roughly `W < 6,000` the first candidate already overruns, the walk
+ * breaks immediately, and the selector returns `null`. The escape would be
+ * unable to fire at all in part of the very population it is for.
+ *
+ * Shrinking satisfies both constraints structurally:
+ *
+ * - **No message is dropped**, so every `tool_call` keeps its matching `tool`
+ *   message and the restore-boundary pairing invariant is untouched by
+ *   construction rather than by care.
+ * - The user's question survives, so the summary describes the conversation
+ *   instead of its tail.
+ * - The dead zone disappears: a capped tool message costs tens of tokens.
+ *
+ * Falls back to tail-suffix selection only when shrinking every tool result
+ * still overruns -- a conversation whose bulk is not in tool output. Returns
+ * `null` when even that cannot fit, which the caller must surface as a failure:
+ * appearing to fire and changing nothing is forbidden.
+ */
+export function buildShrunkDistillationInput(
+  conversation: ChatMessage[],
+  promptMessage: ChatMessage,
+  budgetTokens: number,
+): ChatMessage[] | null {
+  const assembled = [...conversation, promptMessage];
+  if (estimateTokensFromChars(assembled) <= budgetTokens) return assembled;
+
+  // Work on a copy; the live conversation is never mutated by input building.
+  const shrunk = conversation.map((m) => ({ ...m }));
+
+  // LARGEST FIRST. Each shrink buys tokens proportional to what it removes, so
+  // the biggest offenders first reaches the budget with the fewest messages
+  // damaged -- the ordering is about how much detail survives, not about
+  // whether it fits.
+  const toolIndices = shrunk
+    .map((m, i) => ({ i, size: typeof m.content === 'string' ? m.content.length : 0, isTool: m.role === 'tool' }))
+    .filter((e) => e.isTool && e.size > SHRUNK_TOOL_RESULT_HEAD_CHARS)
+    .sort((a, b) => b.size - a.size);
+
+  for (const { i } of toolIndices) {
+    const msg = shrunk[i];
+    if (typeof msg.content !== 'string') continue;
+    msg.content = shrinkToolContent(msg.content);
+    const candidate = [...shrunk, promptMessage];
+    if (estimateTokensFromChars(candidate) <= budgetTokens) return candidate;
+  }
+
+  // Shrinking was not enough: the bulk is not in tool output. Fall back to the
+  // shipped selector rather than inventing a second selection rule.
+  return selectPartialDistillationMessages(conversation, promptMessage, budgetTokens);
+}
+
 export function selectPartialDistillationMessages(
   conversation: ChatMessage[],
   promptMessage: ChatMessage,
@@ -342,11 +425,17 @@ export class AgentLoop {
    *
    * Two notes for future edits:
    *
-   * - The in-flight change that has the distillation core RECEIVE a signal
-   *   rather than own one PRESERVES this rule: the wrapper still installs and
-   *   holds the controller across the boundary call, so the field's single
-   *   holder at any instant is unchanged. Nothing here needs re-deciding for
-   *   it.
+   * - The change that gave the distillation core a RECEIVED signal rather
+   *   than one of its own has LANDED, and it preserved this rule: the wrapper
+   *   still installs and holds the controller across the boundary call, and
+   *   the mid-turn escape runs on the turn's existing signal, so the field's
+   *   single holder at any instant is unchanged. Nothing here needed
+   *   re-deciding for it, and nothing does now.
+   *
+   *   Written in the future tense while that change was in flight, which made
+   *   it undatable once the change landed: a later reader could not tell
+   *   whether the code in front of them was the one it meant, and the
+   *   reassurance attached to an unidentifiable referent.
    * - Any change that gives turns and compactions SEPARATE controllers does
    *   NOT preserve it -- it silently answers "which operation does a cancel
    *   stop" differently. That question has to be re-ruled, and this comment
@@ -555,6 +644,8 @@ export class AgentLoop {
       this.conversation.push({ role: 'user', content: text });
 
       let malformedReAsks = 0;
+      // One escape per turn. A local, so it resets when the turn ends.
+      let escapeUsed = false;
       // Last-attempt-wins: overwritten on every successful provider attempt
       // this turn, emitted once at the turn's actual conclusion (see Token
       // accounting -- "turn-scoped, last-attempt wins" in the design doc).
@@ -573,6 +664,39 @@ export class AgentLoop {
           return 'canceled';
         }
         if (outcome.kind === 'error') {
+          // THE ESCAPE. Placed here, at the top of an iteration, and the
+          // position is load-bearing for two separate reasons.
+          //
+          // 1. It is BEFORE the turn's ending is decided, so "a turn that
+          //    ended in error settles no compaction" stays true byte-for-byte
+          //    -- there is no ending yet to contradict. A successful escape is
+          //    invisible: no `turn-error` surfaces at all.
+          //
+          // 2. Every `tool_call` this loop issued already has its matching
+          //    `tool` message by now (`fillPendingToolResponses` covers the
+          //    early-exit paths). That is what makes the `context-compacted`
+          //    marker written below a VALID RESTORE BOUNDARY -- see the
+          //    invariant recorded at `replayWindow` in `restore.ts`. Moving
+          //    this call into the tool loop would break that and the damage
+          //    would surface on a later activation, arbitrarily far from here.
+          //
+          // `runProviderWithRetries` has already returned, so no request is in
+          // flight and there is nothing to race.
+          if (!escapeUsed && isContextOverflowError(outcome.status, outcome.detail)) {
+            // Per turn, and reset with the turn: the cause of an overflow is
+            // conversation size, so if the compaction worked the NEXT turn may
+            // legitimately escape again. A service-level counter would be
+            // wrong for that reason.
+            escapeUsed = true;
+            if (await this.escapeContextOverflow(turnId, abort.signal)) {
+              // Retry exactly once. The provider is called with the live
+              // `this.conversation`, so this re-reads the spliced array.
+              continue;
+            }
+            // The escape failed. It emits no `turn-error` of its own -- the
+            // ORIGINAL overflow flows down the ordinary path below, so a turn
+            // emits exactly one, never two.
+          }
           this.emitContextUsageIfKnown(turnUsage);
           this.emitTurnError(turnId, outcome.message);
           return 'error';
@@ -996,6 +1120,52 @@ export class AgentLoop {
       this.emitContextUsageIfKnown({ promptTokens: postTokens, estimated: true });
 
     return { ok: true };
+  }
+
+  /**
+   * One forced compaction in response to an OBSERVED over-window response,
+   * run inside the live turn and under the turn's own signal.
+   *
+   * Partial is the definition here, not a fallback. The `F` ceiling exists to
+   * PREDICT that a whole-conversation distillation would itself overflow; this
+   * path is triggered by the OBSERVATION of exactly that overflow, and
+   * observation supersedes prediction. Attempting whole would reproduce the
+   * error it is responding to, at any ratio.
+   *
+   * Owning no controller is what keeps a cancel working: it runs on the
+   * signal the turn already installed, so `cancel()` during an escape
+   * interrupts the distillation and the turn ends `canceled`. Opening its own
+   * would null `currentAbort` on the way out and leave the turn uncancellable.
+   *
+   * Returns whether the conversation was actually replaced. `false` means the
+   * caller must let the original error through unchanged -- this emits no
+   * `turn-error`, because the turn already has one to report.
+   */
+  private async escapeContextOverflow(turnId: string, signal: AbortSignal): Promise<boolean> {
+    const windowTokens = this.deps.compaction.contextWindowTokens;
+    // Inert when the window is not declared: with no `W` there is no budget to
+    // shrink toward, and no behaviour change is the correct outcome.
+    if (windowTokens === undefined) return false;
+
+    let compactionPromptText: string;
+    try {
+      compactionPromptText = await this.deps.loadCompactionPrompt();
+    } catch {
+      return false;
+    }
+
+    const promptMessage: ChatMessage = { role: 'user', content: compactionPromptText };
+    const input = buildShrunkDistillationInput(
+      this.conversation,
+      promptMessage,
+      Math.floor(PARTIAL_DISTILL_INPUT_RATIO * windowTokens),
+    );
+    // Nothing usable to distill. Failing honestly beats appearing to fire and
+    // changing nothing.
+    if (input === null) return false;
+
+    const result = await this.runDistillation('auto', input, true, turnId, signal);
+    return result.ok;
   }
 
   async compact(source: 'auto' | 'manual', partial?: { budgetTokens: number }): Promise<void> {

@@ -1093,3 +1093,79 @@ describe('reconstructConversation — rotation fragment at the head', () => {
     expect(() => reconstructConversation(stream, SYSTEM_PROMPT, true)).toThrow(RestoreReconstructionError);
   });
 });
+
+/**
+ * The mid-turn boundary the overflow escape writes.
+ *
+ * The escape fires from inside a live turn, so the `context-compacted` marker
+ * it emits lands where no marker used to. `findLastBoundaryIndex` cuts the
+ * replay window at exactly that marker, which makes the shape of what follows
+ * a correctness question for a mechanism in another module -- see the
+ * invariant recorded at `replayWindow`'s orphan guard in `restore.ts`, and the
+ * position rule at the escape's firing point in `agent-loop.ts`.
+ *
+ * Reach, measured by mutation of `agent-loop.ts`:
+ *
+ *   r1  move the escape's firing point into the tool loop, so the marker is
+ *       written between a `tool-call` and its `tool-result`
+ *       -> the positive pin below fails: the post-boundary window opens on an
+ *          orphaned `tool-result` and reconstruction throws, which routes to
+ *          the destructive v1 reset. Measured, not predicted.
+ *
+ * The negative pin is mandatory rather than symmetric. Without it the positive
+ * one stays green under a `replayWindow` that accepts anything at all, so it
+ * would stop being evidence for the invariant while still passing -- it is the
+ * presence control for an absence assertion.
+ */
+describe('a mid-turn compaction boundary is a valid restore boundary', () => {
+  it('reconstructs a window that opens immediately after a marker the escape wrote', () => {
+    // The escape fires at the TOP of an iteration, so every `tool_call` the
+    // loop issued already has its `tool-result` by then. The conversation is
+    // complete at that instant and the post-boundary window is self-contained.
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'read the file' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'Read', args: { path: 'big.txt' } },
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'a very large file' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'read it' },
+      // The escape's marker: written mid-turn, but only where the pairing is
+      // complete.
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'SUMMARY' },
+      { v: 1, type: 'user-message', id: 'm2', text: 'now explain it' },
+      { v: 1, type: 'assistant-message', turnId: 't2', text: 'here is the explanation' },
+    ] as EmbeddedAgentStreamEvent[];
+
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, false);
+
+    // seed (system + the summary as a user message), then the post-boundary
+    // turn. Measured rather than assumed -- the seed's shape is not obvious
+    // from the marker.
+    expect(outcome.conversation.map((m) => m.role)).toEqual(['system', 'user', 'user', 'assistant']);
+    expect(outcome.conversation.some((m) => String(m.content).includes('SUMMARY'))).toBe(true);
+    // The post-boundary turn survived intact, and no orphan reached the
+    // conversation: there is no `tool` message from before the marker.
+    expect(outcome.conversation.some((m) => String(m.content).includes('now explain it'))).toBe(true);
+    expect(outcome.conversation.some((m) => m.role === 'tool')).toBe(false);
+  });
+
+  it('MANDATORY CONTROL: a marker written between a tool-call and its result throws instead of reconstructing', () => {
+    // This is what firing the escape from inside the tool loop would persist:
+    // the marker splits a `tool_call` from its `tool-result`, so the replay
+    // window opens on an orphan. Throwing is correct -- it routes to the v1
+    // reset rather than wedging the worker with an invalid request.
+    //
+    // Without this case, the positive pin above cannot distinguish "the window
+    // is well-formed" from "replay accepts anything".
+    const events: EmbeddedAgentStreamEvent[] = [
+      { v: 1, type: 'user-message', id: 'm1', text: 'read the file' },
+      { v: 1, type: 'tool-call', turnId: 't1', callId: 'c1', name: 'Read', args: { path: 'big.txt' } },
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'SUMMARY' },
+      // The owning `tool-call` is on the far side of the boundary.
+      { v: 1, type: 'tool-result', turnId: 't1', callId: 'c1', ok: true, result: 'a very large file' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'read it' },
+    ] as EmbeddedAgentStreamEvent[];
+
+    expect(() => reconstructConversation(linesOf(events), SYSTEM_PROMPT, false)).toThrow(
+      RestoreReconstructionError,
+    );
+  });
+});
