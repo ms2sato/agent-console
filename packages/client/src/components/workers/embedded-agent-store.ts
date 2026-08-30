@@ -646,6 +646,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // MessagePanel's draft-preservation) doesn't hang forever.
     this.rejectPendingSend('Worker restarted before the message was confirmed');
     this.resetChatState();
+    // activityState is worker-LIVENESS state (is the process alive, what is
+    // it doing), not display-content state -- it belongs here, in the
+    // epoch-replacement path only, NOT inside resetChatState() (which is
+    // also called from applyBytes's same-epoch fresh-load branch, where the
+    // worker incarnation hasn't changed and may still be genuinely
+    // mid-turn). A discarded incarnation's last-known activityState (e.g.
+    // 'active') must not keep gating the composer for a worker that no
+    // longer exists; see resetChatState's doc comment for the display-state
+    // fields that DO belong to a same-epoch fresh load too.
+    this.patch({ activityState: 'unknown' });
     this.epoch = newEpoch;
     this.lastOffset = 0;
     // Start (or restart, on a second epoch bump before the first resync
@@ -683,6 +693,19 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // incarnation's own restore-info (success or failure) arrives and
     // re-declares it -- there is no window where a stale `true` could be
     // read as describing the new incarnation.
+    // Deliberately does NOT touch activityState. This function is shared by
+    // TWO call sites with different semantics: beginEpochReset (a genuine
+    // incarnation change) and applyBytes's same-epoch `isFresh` branch (the
+    // server pruned/evicted its buffer, or a resync's fresh load -- the SAME
+    // live worker incarnation, possibly mid-turn). Every field reset here is
+    // DISPLAY-CONTENT state (what the chat view currently shows), which is
+    // legitimately rebuilt on a same-epoch fresh load too. activityState is
+    // WORKER-LIVENESS state (is the process alive, what is it doing) --
+    // resetting it here would wrongly clear a genuinely-active worker's
+    // state on a same-epoch fresh load, wrongly releasing the composer's
+    // send-gate mid-turn. It is reset separately, only in beginEpochReset,
+    // where the incarnation has actually changed. When adding a new field to
+    // this function, ask which of the two semantics it belongs to.
     this.patch({
       entries: [],
       restoring: false,
