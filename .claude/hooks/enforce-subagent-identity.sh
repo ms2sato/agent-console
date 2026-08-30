@@ -53,14 +53,28 @@ set -u
 # what lets a unit test invoke this script directly (bypassing
 # settings.json entirely) and still observe the correct decision.
 #
-# Every tool below shares one property: its effect is attributed to the
-# calling SESSION's identity toward a human or toward another session --
-# a message delivered "from" the session, content displayed in the
-# session's own UI, a live push framed as the session's own review
-# judgement, or a new resource whose ownership/attribution is inherited
-# from the session. A subagent invoking any of these with its parent's
-# inherited session id produces output indistinguishable, to the
-# recipient, from the parent having produced it itself.
+# Every tool below shares one property (refined by the Architect's R2
+# ruling from an earlier, too-broad "effect attributed to the session's
+# identity" reading -- under that broader reading, kill_process /
+# update_repository / restart_all_agents would also qualify, which
+# converges to "block all mutations" and contradicts this mechanism's
+# actual purpose): under the calling session's identity, the tool emits
+# AUTHORED CONTENT reaching a human or another session -- a message
+# delivered "from" the session, content displayed in the session's own
+# UI, a live push framed as the session's own review judgement, or a new
+# resource whose ownership/attribution is inherited from the session. A
+# subagent invoking any of these with its parent's inherited session id
+# produces output indistinguishable, to the recipient, from the parent
+# having authored it itself.
+#
+# Design principle (state it explicitly so it isn't re-derived wrong):
+# an authorization hole is something to be closed, not something to be
+# designed around. Whether a tool ALSO has a separate, pre-existing
+# authorization-scope gap (e.g. missing checkCallerOwnsSession) is NOT a
+# reason to either include or exclude it here -- identity-attribution
+# (this hook's concern) and authorization-scope (a server-side gate's
+# concern) are independent axes. Conflating them was exactly the mistake
+# the R2 ruling corrected; do not reintroduce it.
 #
 #   mcp__agent-console__send_session_message
 #     The incident's own vector. Delivers a message to another
@@ -71,11 +85,6 @@ set -u
 #   mcp__agent-console__write_review_annotations
 #     Pushes review annotations to the connected client live via
 #     WebSocket, attributed to sessionId (and optionally sourceSessionId).
-#   mcp__agent-console__clear_review_annotations
-#     The erase-half of the same live-push mechanism as
-#     write_review_annotations. A subagent could silently erase the
-#     parent's genuine review markers, attributed as if the parent
-#     itself decided to clear them.
 #   mcp__agent-console__delegate_to_worktree
 #     Resolves parentSessionId/parentWorkerId from the caller's own
 #     AGENT_CONSOLE_SESSION_ID/AGENT_CONSOLE_WORKER_ID env vars, which a
@@ -108,11 +117,48 @@ set -u
 #     checkCallerOwnsSession), not an identity-attribution/impersonation
 #     one. A general destructive-action audit is explicitly out of scope
 #     for Issue #1476.
+#   mcp__agent-console__clear_review_annotations
+#     Clearing/erasing is not authoring content, so it does not fit the
+#     R2-refined property above -- "a decision to erase" is not the same
+#     hazard as "content injected under someone else's name". Its actual
+#     residual risk decomposes into two axes, tracked separately, NOT by
+#     this hook: (1) cross-session destruction -- any caller can pass an
+#     arbitrary sessionId/workerId and clear another session's
+#     annotations (confirmed in code: this tool's handler calls no
+#     checkCallerOwnsSession, unlike the delete_html_artifact /
+#     delete_bookmark pair above); this is a pre-existing
+#     authorization-scope gap, independent of subagent-vs-parent
+#     identity, now tracked as Issue #1486; (2) same-session drift -- a
+#     subagent could still clear its OWN inherited parent session's
+#     annotations, which an ownership check can't close (the subagent
+#     legitimately "owns" the parent session it inherited from). This is
+#     the same residual shape as the create_conditional_wakeup entry
+#     below -- a subagent affecting its own parent's future state, not a
+#     cross-boundary misattribution to a THIRD PARTY -- and is likewise
+#     recorded as an accepted non-goal, not a gap.
+#   mcp__agent-console__create_conditional_wakeup
+#     Excluded because the wakeup notification fires TOWARD THE SAME
+#     SESSION (a self-directed future reminder), not toward a third
+#     party. Issue #1476's hazard is cross-boundary misattribution (a
+#     third party mistaking a subagent's words for the parent's); a
+#     subagent scheduling its own parent's future wakeup is a different,
+#     lighter class of confusion (same-session drift, no third party
+#     deceived). Explicitly recorded as a non-goal, not an oversight.
+#   mcp__agent-console__run_process
+#     Excluded on a futility argument, not just the property test: a
+#     subagent has Bash access regardless, so blocking run_process closes
+#     one of many open doors to arbitrary side effects and provides no
+#     real containment. This mechanism is NOT "contain a malicious agent"
+#     (Issue #1476 itself states no malice is involved or assumed) -- it
+#     is "prevent non-malicious drift from producing a misattributed
+#     first-class channel to a human or another session". Blocking
+#     arbitrary code execution paths is explicitly out of scope; blocking
+#     the small set of channels that deliver a session's own "words"
+#     under its name is the actual scope.
 BLOCKED_TOOLS=(
   'mcp__agent-console__send_session_message'
   'mcp__agent-console__write_memo'
   'mcp__agent-console__write_review_annotations'
-  'mcp__agent-console__clear_review_annotations'
   'mcp__agent-console__delegate_to_worktree'
   'mcp__agent-console__create_html_artifact'
   'mcp__agent-console__create_bookmark'

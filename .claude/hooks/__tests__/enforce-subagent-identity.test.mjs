@@ -65,7 +65,6 @@ const BLOCKED_TOOLS = [
   'mcp__agent-console__send_session_message',
   'mcp__agent-console__write_memo',
   'mcp__agent-console__write_review_annotations',
-  'mcp__agent-console__clear_review_annotations',
   'mcp__agent-console__delegate_to_worktree',
   'mcp__agent-console__create_html_artifact',
   'mcp__agent-console__create_bookmark',
@@ -75,6 +74,7 @@ const EXCLUDED_TOOLS = [
   'mcp__agent-console__write_process_response',
   'mcp__agent-console__delete_html_artifact',
   'mcp__agent-console__delete_bookmark',
+  'mcp__agent-console__clear_review_annotations',
   'mcp__agent-console__list_sessions',
 ];
 
