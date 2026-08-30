@@ -243,7 +243,11 @@ export interface EmbeddedAgentWorkerServiceDeps {
   mcpTokenRegistry: Pick<McpTokenRegistry, 'mint' | 'revokeByWorker'>;
   workerOutputFileManager: Pick<
     WorkerOutputFileManager,
-    'resetWorkerOutput' | 'bufferOutput' | 'readHistoryWithOffset' | 'hasEverBeenActivated'
+    'resetWorkerOutput'
+    | 'bufferOutput'
+    | 'readHistoryWithOffset'
+    | 'readHistoryForRestore'
+    | 'hasEverBeenActivated'
   >;
   /** MCP Streamable-HTTP base URL delivered to the loop in the init message. */
   getMcpBaseUrl: () => string;
@@ -714,8 +718,20 @@ export class EmbeddedAgentWorkerService {
             data: streamText,
             offset: currentOffset,
             epoch: currentEpoch,
-            startOffset: liveBaseOffset,
           } = await this.deps.workerOutputFileManager.readHistoryWithOffset(sessionId, workerId, resolver);
+          // The live window alone is not the right input: a worker whose
+          // compaction boundary rotated into an archived segment would
+          // reconstruct from a conversation that begins in the middle -- and
+          // since the cut lands on a record boundary, nothing would fail. It
+          // would simply come back shorter, with no signal at any layer.
+          //
+          // So walk back to a safe anchor instead. The fast path (a boundary
+          // already in the live window) reads no archive at all.
+          const assembled = await this.deps.workerOutputFileManager.readHistoryForRestore(
+            sessionId,
+            workerId,
+            resolver,
+          );
           if (streamText.trim() === '') {
             throw new Error('Persisted stream read returned empty despite a non-zero current offset (read failure)');
           }
@@ -725,10 +741,16 @@ export class EmbeddedAgentWorkerService {
             instructions,
             definitionSystemPrompt: definition.systemPrompt,
           });
-          // The reader sees text and cannot tell a rotation fragment from
-          // corruption; the manifest's live base offset is how this side
-          // knows. Non-zero means the head of this file was archived.
-          const outcome = reconstructConversation(streamText, systemPrompt, liveBaseOffset > 0);
+          // `truncated` no longer means "the live window rotated" -- the walk
+          // back makes that ordinary case whole. It now means what the reader
+          // actually needs to know: **the assembled stream does not start at
+          // the true beginning**, which happens only when retention already
+          // deleted the oldest segment or the walk hit its byte ceiling.
+          //
+          // A stream that stops at a boundary is not truncated in that sense:
+          // it starts at a discard the system itself declared.
+          const startsMidHistory = assembled.stoppedAt === 'pruned' || assembled.stoppedAt === 'cap';
+          const outcome = reconstructConversation(assembled.data, systemPrompt, startsMidHistory);
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
           restoredUsage = outcome.usageSeed;
           // `completed: false` -- the new incarnation's `ready` event hasn't

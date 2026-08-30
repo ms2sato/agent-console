@@ -133,6 +133,44 @@ export interface WorkerOutputFileConfig {
  */
 const NEWLINE_BYTE = 0x0a;
 
+/**
+ * Whether a chunk of the persisted NDJSON contains a compaction boundary.
+ *
+ * The substring test is a fast negative: events are serialized with
+ * `JSON.stringify`, so a real boundary always produces the literal below and
+ * absence is conclusive at the cost of one scan.
+ *
+ * The parse that follows is insurance, and its necessity is NOT demonstrated
+ * by any test here -- measured, not assumed. The obvious threat is a message
+ * whose text quotes the literal, which would stop the walk early and hand
+ * restore a cut window with nothing to slice at; that threat does not
+ * materialise through this path, because JSON escaping renders such text as
+ * `\"type\":\"context-compacted\"` and the raw literal never appears.
+ *
+ * What the parse still covers is input this function did not write -- a
+ * hand-edited log, a future writer that serializes differently. It is cheap
+ * and the failure it prevents is silent, so it stays; but it is retained on
+ * judgement rather than on evidence, and a reader should know which.
+ */
+function containsBoundary(text: string): boolean {
+  if (!text.includes('"type":"context-compacted"') && !text.includes('"type":"context-handoff"')) {
+    return false;
+  }
+  for (const line of text.split('\n')) {
+    if (line.length === 0) continue;
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (parsed !== null && typeof parsed === 'object') {
+        const t = (parsed as { type?: unknown }).type;
+        if (t === 'context-compacted' || t === 'context-handoff') return true;
+      }
+    } catch {
+      // A fragment or a damaged line carries no verdict either way.
+    }
+  }
+  return false;
+}
+
 export class WorkerOutputFileManager {
   /** Pending buffers waiting to be flushed: sessionId/workerId -> PendingFlush */
   private pendingFlushes = new Map<string, PendingFlush>();
@@ -930,6 +968,89 @@ export class WorkerOutputFileManager {
    * unavailable range (filesystem-driven availability, §5.1). It throws only on
    * genuinely unexpected I/O so the caller can map that to `HISTORY_LOAD_FAILED`.
    */
+  /**
+   * Assemble the stream restore should reconstruct from, walking BACK through
+   * archived segments until it reaches a safe anchor.
+   *
+   * The question this answers is not "how should a cut window be handled" but
+   * "do not leave the window cut". Reading only the live window means a worker
+   * whose compaction boundary rotated into the archive reconstructs from a
+   * conversation that begins in the middle -- and since the cut now lands on a
+   * record boundary, nothing fails: it comes back silently shorter.
+   *
+   * Four stopping conditions, and the caller needs to know which one:
+   *
+   * - `boundary`   a compaction boundary is in range. Reconstruction starts at
+   *                an ALREADY-DECLARED discard, so nothing is hidden.
+   * - `true-start` the assembled stream begins at offset 0. The real beginning.
+   * - `pruned`     retention already deleted the oldest segment, so neither is
+   *                reachable. A declared discard configured by the operator --
+   *                different in kind from a rotation's unintended byte cut.
+   * - `cap`        the walk hit its byte ceiling. Treated exactly as `pruned`.
+   *
+   * **The fast path reads no archive at all**: a live window that already
+   * contains a boundary returns immediately, byte-identical to what restore
+   * read before this method existed.
+   */
+  async readHistoryForRestore(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    maxBytes: number = serverConfig.WORKER_OUTPUT_RESTORE_MAX_BYTES,
+  ): Promise<{
+    data: string;
+    stoppedAt: 'boundary' | 'true-start' | 'pruned' | 'cap';
+    epoch: number;
+  }> {
+    const live = await this.readHistoryWithOffset(sessionId, workerId, resolver, undefined);
+
+    // Fast path. Unchanged behaviour, and deliberately before any archive work.
+    if (containsBoundary(live.data)) {
+      return { data: live.data, stoppedAt: 'boundary', epoch: live.epoch };
+    }
+    if (live.startOffset === 0) {
+      return { data: live.data, stoppedAt: 'true-start', epoch: live.epoch };
+    }
+
+    const key = this.getKey(sessionId, workerId);
+    return this.runExclusive(key, async () => {
+      const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
+      const outputsDir = resolver.getOutputsDir();
+      const parts: string[] = [live.data];
+      let assembledBytes = Buffer.byteLength(live.data, 'utf-8');
+
+      // Newest-first: the nearest boundary is the one restore wants, and
+      // stopping at it reads the least.
+      for (let i = manifest.segments.length - 1; i >= 0; i--) {
+        const seg = manifest.segments[i];
+        if (assembledBytes + seg.bytes > maxBytes) {
+          return { data: parts.join(''), stoppedAt: 'cap' as const, epoch: manifest.epoch };
+        }
+        const segPath = path.join(outputsDir, sessionId, `${workerId}.seg-${seg.seq}.log.gz`);
+        let text: string;
+        try {
+          const buf = await this.getDecompressedSegment(key, seg, segPath);
+          text = buf.toString('utf-8');
+        } catch {
+          // A segment named by the manifest but unreadable (a prune racing the
+          // manifest rewrite). Everything older is unreachable too, so this is
+          // the pruned edge rather than an error.
+          return { data: parts.join(''), stoppedAt: 'pruned' as const, epoch: manifest.epoch };
+        }
+        parts.unshift(text);
+        assembledBytes += Buffer.byteLength(text, 'utf-8');
+        if (containsBoundary(text)) {
+          return { data: parts.join(''), stoppedAt: 'boundary' as const, epoch: manifest.epoch };
+        }
+      }
+
+      // Every retained segment consumed. Whether that is the real beginning
+      // depends on whether retention has deleted anything.
+      const stoppedAt = firstAvailableOffset(manifest) === 0 ? ('true-start' as const) : ('pruned' as const);
+      return { data: parts.join(''), stoppedAt, epoch: manifest.epoch };
+    });
+  }
+
   async readHistoryRange(
     sessionId: string,
     workerId: string,

@@ -53,6 +53,20 @@ export const serverConfig = {
    * Default: 256KB (256 * 1024 bytes)
    */
   WORKER_OUTPUT_RANGE_MAX_BYTES: parseInt(process.env.WORKER_OUTPUT_RANGE_MAX_BYTES || String(256 * 1024), 10),
+
+  /**
+   * Ceiling on how far restore walks BACK through archived segments looking
+   * for a compaction boundary. Generous by default: the walk stops at a
+   * boundary or the true start in the ordinary case, and this only bounds the
+   * pathological history that has neither. Exceeding it is treated exactly as
+   * a pruned history -- partial restore from the first `user-message` within
+   * what was read -- because uncapped, a very long history would be assembled
+   * into memory and then into the `init` payload.
+   */
+  WORKER_OUTPUT_RESTORE_MAX_BYTES: parseInt(
+    process.env.WORKER_OUTPUT_RESTORE_MAX_BYTES || String(16 * 1024 * 1024),
+    10,
+  ),
   /**
    * Interval for flushing buffered output to file (in milliseconds).
    * Default: 100ms

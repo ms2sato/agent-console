@@ -217,6 +217,7 @@ interface Harness {
   bufferOutput: ReturnType<typeof mock>;
   hasEverBeenActivated: ReturnType<typeof mock>;
   readHistoryWithOffset: ReturnType<typeof mock>;
+  readHistoryForRestore: ReturnType<typeof mock>;
   loadProviderKeyFn: ReturnType<typeof mock>;
   persistSession: ReturnType<typeof mock>;
   globalActivity: ReturnType<typeof mock>;
@@ -283,6 +284,19 @@ function setup(opts?: {
   const resetWorkerOutput = mock(async () => NEW_EPOCH);
   const bufferOutput = mock(() => {});
   const hasEverBeenActivated = mock(async () => opts?.everActivated ?? false);
+  // Mirrors `readHistoryWithOffset`'s fixture so restore's input is the same
+  // text either way: these tests are about what restore DOES with a stream,
+  // not about where the walk-back found it.
+  const readHistoryForRestore = mock(async () => {
+    if (opts?.readHistoryWithOffsetThrows) {
+      throw new Error('persisted stream read boom');
+    }
+    return {
+      data: opts?.readHistoryWithOffsetResult?.data ?? '',
+      stoppedAt: 'true-start' as const,
+      epoch: opts?.readHistoryWithOffsetResult?.epoch ?? 0,
+    };
+  });
   const readHistoryWithOffset = mock(async () => {
     if (opts?.readHistoryWithOffsetThrows) {
       throw new Error('persisted stream read boom');
@@ -325,6 +339,7 @@ function setup(opts?: {
       bufferOutput: bufferOutput as never,
       hasEverBeenActivated: hasEverBeenActivated as never,
       readHistoryWithOffset: readHistoryWithOffset as never,
+      readHistoryForRestore: readHistoryForRestore as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: loadProviderKeyFn as never,
@@ -339,6 +354,7 @@ function setup(opts?: {
 
   return {
     service,
+    readHistoryForRestore,
     sessionId: session.id,
     workerId: worker.id,
     worker,
