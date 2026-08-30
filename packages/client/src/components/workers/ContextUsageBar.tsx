@@ -78,12 +78,14 @@ export function ContextUsageBar({
           contextUsage.estimated ? '; estimated' : ''
         })`
       : undefined;
+  // The clause deliberately repeats neither number: the base title above
+  // already shows both operands, and restating them here produced a tooltip
+  // that said "196608" twice in two different formats.
   const title =
     contextUsage !== null && contextUsage.appearsClamped === true
-      ? `${baseTitle} -- this reading looks capped at ${contextUsage.promptTokens} tokens, ` +
-        `below the ${contextWindowTokens} configured here, so the provider may be silently ` +
-        `dropping input and this percentage is measured against a window larger than the ` +
-        `model accepts. Check the agent's context window setting.`
+      ? `${baseTitle} — this reading looks capped at the provider's own input limit, ` +
+        `so the provider may be silently dropping input and this percentage is measured ` +
+        `against a window larger than the model accepts. Check the agent's context window setting.`
       : baseTitle;
 
   return (

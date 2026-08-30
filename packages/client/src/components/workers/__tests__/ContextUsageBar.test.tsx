@@ -282,7 +282,7 @@ describe('ContextUsageBar', () => {
      * that produces the flag cannot fire without a declaration, and a case
      * lacking one would be asserting about a state the system cannot reach.
      */
-    it('the tooltip names both numbers and says the gauge is measured against a window the model does not accept', () => {
+    it('the tooltip says the gauge is measured against a window the model does not accept, and names the action', () => {
       render(
         <ContextUsageBar
           contextWindowTokens={1_000_000}
@@ -292,13 +292,18 @@ describe('ContextUsageBar', () => {
       );
 
       const title = screen.getByRole('progressbar').getAttribute('title') ?? '';
-      // Both operands, so the reader can see the disagreement itself rather
-      // than being told there is one.
-      expect(title).toContain('196608');
-      expect(title).toContain('1000000');
-      expect(title).toContain('capped');
-      // And what to do about it -- a warning naming no action is noise.
-      expect(title).toContain("context window setting");
+      // Deliberately NOT asserting the two numbers here. The base tooltip
+      // already contains both, so `toContain('196608')` passes whether or not
+      // the clamp clause exists -- it would be an assertion satisfied by a
+      // condition other than the one this case is named for. Measured: with
+      // the numbers asserted, mutating the clause away still left them
+      // present and only the phrase assertions failed.
+      expect(title).toContain('capped at the provider');
+      // And what to do about it: a warning naming no action is noise.
+      expect(title).toContain('context window setting');
+      // The base reading survives ahead of the clause rather than being
+      // replaced by it.
+      expect(title).toContain('196608 / 1000000');
     });
 
     it('marks the gauge invalid for assistive tech', () => {

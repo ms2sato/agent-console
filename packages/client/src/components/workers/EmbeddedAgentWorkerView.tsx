@@ -831,8 +831,8 @@ function ChatEntryRow({ entry }: ChatEntryRowProps) {
           {statedLimit !== undefined ? (
             <div className="mb-1 text-xs text-amber-400">
               The provider states its input limit is {statedLimit.toLocaleString('en-US')} tokens.
-              If this agent declares a larger context window, compaction fires later than intended
-              -- check its context window setting.
+              If this agent declares a larger context window, compaction fires later than
+              intended{' — '}check its context window setting.
             </div>
           ) : null}
           {entry.summary !== undefined ? (
