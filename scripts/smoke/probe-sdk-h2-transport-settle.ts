@@ -75,24 +75,12 @@ import {
 } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import { spawnClaudeCodeProcess, UserMessageQueue } from '../../packages/embedded-agent/src/sdk-engine.js';
 
-const args = process.argv.slice(2);
-const knownFlags = new Set(['--with-tool']);
-const positional = args.filter((a) => !a.startsWith('--'));
-const flags = args.filter((a) => a.startsWith('--'));
-
-const unknownFlags = flags.filter((f) => !knownFlags.has(f));
-const invalidUsage =
-  unknownFlags.length > 0 ||
-  positional.length > 1 ||
-  (positional.length === 1 && !/^[1-9]\d*$/.test(positional[0]));
-
-if (invalidUsage) {
-  console.error(`Usage: bun scripts/smoke/probe-sdk-h2-transport-settle.ts [trials] [--with-tool]\n  trials must be a positive integer (>= 1). Unrecognized argument(s): ${[...unknownFlags, ...(positional.length > 1 ? positional.slice(1) : [])].join(', ') || '(invalid trial count)'}`);
-  process.exit(2);
-}
-
-const withTool = flags.includes('--with-tool');
-const trials = positional.length === 1 ? Number(positional[0]) : 5;
+// `let`, default values -- assigned by the argv parser inside main() below.
+// Stay at module scope (not moved alongside the parser) because
+// `buildOptions`/`runOneTrial` (module-scope functions, defined before
+// main()) close over these by reference, not by parameter.
+let withTool = false;
+let trials = 5;
 
 function buildOptions(): Options {
   return {
@@ -155,6 +143,29 @@ async function runOneTrial(trial: number): Promise<TrialResult> {
 }
 
 async function main(): Promise<number> {
+  // Moved into main() (Issue #1479 follow-up: CodeRabbit + a self-sweep
+  // both found this class of gap in the "pure wrap" files) -- this parser
+  // could `process.exit(2)` on an unrecognized/malformed argument
+  // unconditionally on import.
+  const args = process.argv.slice(2);
+  const knownFlags = new Set(['--with-tool']);
+  const positional = args.filter((a) => !a.startsWith('--'));
+  const flags = args.filter((a) => a.startsWith('--'));
+
+  const unknownFlags = flags.filter((f) => !knownFlags.has(f));
+  const invalidUsage =
+    unknownFlags.length > 0 ||
+    positional.length > 1 ||
+    (positional.length === 1 && !/^[1-9]\d*$/.test(positional[0]));
+
+  if (invalidUsage) {
+    console.error(`Usage: bun scripts/smoke/probe-sdk-h2-transport-settle.ts [trials] [--with-tool]\n  trials must be a positive integer (>= 1). Unrecognized argument(s): ${[...unknownFlags, ...(positional.length > 1 ? positional.slice(1) : [])].join(', ') || '(invalid trial count)'}`);
+    process.exit(2);
+  }
+
+  withTool = flags.includes('--with-tool');
+  trials = positional.length === 1 ? Number(positional[0]) : 5;
+
   console.log(`Running ${trials} trial(s), ${withTool ? 'Bash-tool-call-bearing' : 'plain-text'} turns, production-faithful methodology (no early break)...\n`);
 
   const results: TrialResult[] = [];
@@ -169,9 +180,14 @@ async function main(): Promise<number> {
   return failures.length === 0 ? 0 : 1;
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error('probe could not run:', err);
-    process.exit(2);
-  });
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error('probe could not run:', err);
+      process.exit(2);
+    });
+}

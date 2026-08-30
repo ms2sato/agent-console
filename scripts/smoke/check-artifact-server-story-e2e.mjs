@@ -444,11 +444,16 @@ function cleanupAndExit(disposableHome, code) {
   process.exit(code);
 }
 
-main().catch((err) => {
-  console.error(`E2E FAILED: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
-  if (disposableHomeForCleanup) {
-    cleanupAndExit(disposableHomeForCleanup, 2);
-  } else {
-    process.exit(2);
-  }
-});
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error(`E2E FAILED: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    if (disposableHomeForCleanup) {
+      cleanupAndExit(disposableHomeForCleanup, 2);
+    } else {
+      process.exit(2);
+    }
+  });
+}

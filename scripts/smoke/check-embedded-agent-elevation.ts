@@ -107,72 +107,6 @@
  * `EmbeddedAgentWorkerService` uses for its own default. No replication.
  */
 
-// --- Probe-cannot-run guard (Issue #1221): EMBEDDED_AGENT_BUN_PATH pre-check.
-// Runs FIRST, before any other side effect in this file (process.chdir below,
-// the deferred-import env-var-ordering prelude further down) -- an absolute
-// EMBEDDED_AGENT_BUN_PATH that isn't actually present on this machine would
-// otherwise just reproduce the exit-127 bug this smoke exists to catch, with
-// a much less informative failure (a generic activation timeout instead of a
-// direct "the configured path doesn't exist" message). When
-// EMBEDDED_AGENT_BUN_PATH is unset, this guard is a no-op (normal PATH
-// resolution default, no absolute-path expectation, always runnable).
-const configuredBunPath = process.env.EMBEDDED_AGENT_BUN_PATH;
-if (configuredBunPath && configuredBunPath.startsWith('/') && !(await Bun.file(configuredBunPath).exists())) {
-  console.error(
-    `EMBEDDED_AGENT_BUN_PATH=${configuredBunPath} is configured but does not exist on disk -- this ` +
-      'smoke cannot run meaningfully without the multi-user setup script\'s bun-copy step having been ' +
-      'applied. Run scripts/setup-multiuser-for-ubuntu.sh or manually copy bun to that path, or unset ' +
-      'EMBEDDED_AGENT_BUN_PATH to test the single-user default.',
-  );
-  process.exit(2);
-}
-
-// Ad-hoc invocation inherits cwd from the caller (often /root or an
-// interactive user's home, neither readable by an elevation-target service
-// account). Bun's spawn machinery evaluates the calling process's cwd, and an
-// inherited unreadable cwd produces EACCES on posix_spawn (same root cause
-// documented in check-multiuser-pty-env.ts). Neutralize at script start.
-process.chdir('/');
-
-const targetUsername = process.argv[2];
-if (!targetUsername) {
-  console.error('usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>');
-  process.exit(2);
-}
-
-// --- CRITICAL ordering: env vars must be set before ANY module that reads
-// `serverConfig.AUTH_MODE` is evaluated. `packages/server/src/lib/
-// server-config.ts` computes `AUTH_MODE` via a top-level IIFE at MODULE-LOAD
-// time (`AUTH_MODE: (() => { ... })()`), not at call time. ES module static
-// imports are evaluated in dependency order BEFORE this script's own
-// top-level statements run, regardless of where an `import` declaration sits
-// textually in the file -- so a `process.env.AUTH_MODE = ...` statement
-// placed even at the literal top of this file would still run AFTER a static
-// `import { createTestContext } from '../../packages/server/src/app-context.js'`
-// elsewhere in the file, because that import's module graph (which pulls in
-// server-config.ts transitively) is resolved and evaluated first.
-//
-// The only way to guarantee ordering in a single script is to defer every
-// import that transitively touches server-config.ts to a DYNAMIC `import()`
-// call, made from inside `main()`, AFTER the env vars below are set. Modules
-// that do not transitively import server-config.ts (node:os, node:path,
-// node:crypto, hono, @agent-console/shared) are safe as static imports.
-//
-// Verified empirically during smoke development: a temporary
-// `console.log(serverConfig.AUTH_MODE)` placed as the first line inside
-// `main()` printed 'multi-user' (not 'none'), confirming this ordering holds.
-//
-// `AGENT_CONSOLE_MCP_AUTH` is NOT set here (and deliberately not set at all
-// -- see the "Note on AGENT_CONSOLE_MCP_AUTH" header comment above). Unlike
-// `AUTH_MODE`, it carries no analogous module-load-time ordering hazard:
-// `resolveMcpAuthMode`'s `rawValue` parameter defaults to
-// `process.env.AGENT_CONSOLE_MCP_AUTH` evaluated at CALL time (a JS default
-// parameter, not a module-load-time IIFE), and it is only called later, from
-// inside `main()`, once `createMcpApp` builds the `/mcp` route. Leaving it
-// unset here means that call sees `AUTH_MODE=multi-user` and no explicit
-// override, which is exactly the real Phase 4 default-flip path.
-process.env.AUTH_MODE = 'multi-user';
-
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { realpathSync } from 'node:fs';
@@ -225,6 +159,72 @@ const expect = (cond: boolean, label: string, detail?: string): void => {
 };
 
 async function main(): Promise<void> {
+  // --- Probe-cannot-run guard (Issue #1221): EMBEDDED_AGENT_BUN_PATH pre-check.
+  // Moved into main() (Issue #1479) -- was top-level, which ran on import.
+  // Runs FIRST, before any other side effect in this function (process.chdir
+  // below, the deferred-import env-var-ordering prelude further down) -- an
+  // absolute EMBEDDED_AGENT_BUN_PATH that isn't actually present on this
+  // machine would otherwise just reproduce the exit-127 bug this smoke exists
+  // to catch, with a much less informative failure (a generic activation
+  // timeout instead of a direct "the configured path doesn't exist" message).
+  // When EMBEDDED_AGENT_BUN_PATH is unset, this guard is a no-op (normal PATH
+  // resolution default, no absolute-path expectation, always runnable).
+  const configuredBunPath = process.env.EMBEDDED_AGENT_BUN_PATH;
+  if (configuredBunPath && configuredBunPath.startsWith('/') && !(await Bun.file(configuredBunPath).exists())) {
+    console.error(
+      `EMBEDDED_AGENT_BUN_PATH=${configuredBunPath} is configured but does not exist on disk -- this ` +
+        'smoke cannot run meaningfully without the multi-user setup script\'s bun-copy step having been ' +
+        'applied. Run scripts/setup-multiuser-for-ubuntu.sh or manually copy bun to that path, or unset ' +
+        'EMBEDDED_AGENT_BUN_PATH to test the single-user default.',
+    );
+    process.exit(2);
+  }
+
+  // Ad-hoc invocation inherits cwd from the caller (often /root or an
+  // interactive user's home, neither readable by an elevation-target service
+  // account). Bun's spawn machinery evaluates the calling process's cwd, and an
+  // inherited unreadable cwd produces EACCES on posix_spawn (same root cause
+  // documented in check-multiuser-pty-env.ts). Neutralize at script start.
+  process.chdir('/');
+
+  const targetUsername = process.argv[2];
+  if (!targetUsername) {
+    console.error('usage: bun scripts/smoke/check-embedded-agent-elevation.ts <target-user>');
+    process.exit(2);
+  }
+
+  // --- CRITICAL ordering: env vars must be set before ANY module that reads
+  // `serverConfig.AUTH_MODE` is evaluated. `packages/server/src/lib/
+  // server-config.ts` computes `AUTH_MODE` via a top-level IIFE at MODULE-LOAD
+  // time (`AUTH_MODE: (() => { ... })()`), not at call time. This assignment
+  // only needs to run before the dynamic imports below, in this same
+  // function, which it does as one of this function's first statements
+  // (Issue #1479 moved it here from top-level; the ordering requirement is
+  // unchanged, only the requirement's proof changed: it no longer depends on
+  // where an `import` declaration sits relative to it in the whole file, only
+  // on this function's own statement order).
+  //
+  // The only way to guarantee ordering in a single script is to defer every
+  // import that transitively touches server-config.ts to a DYNAMIC `import()`
+  // call, made from inside `main()`, AFTER the env vars below are set. Modules
+  // that do not transitively import server-config.ts (node:os, node:path,
+  // node:crypto, hono, @agent-console/shared) are safe as static imports.
+  //
+  // Verified empirically during smoke development: a temporary
+  // `console.log(serverConfig.AUTH_MODE)` placed as the first line inside
+  // `main()` printed 'multi-user' (not 'none'), confirming this ordering holds.
+  //
+  // `AGENT_CONSOLE_MCP_AUTH` is NOT set here (and deliberately not set at all
+  // -- see the "Note on AGENT_CONSOLE_MCP_AUTH" header comment above). Unlike
+  // `AUTH_MODE`, it carries no analogous module-load-time ordering hazard:
+  // `resolveMcpAuthMode`'s `rawValue` parameter defaults to
+  // `process.env.AGENT_CONSOLE_MCP_AUTH` evaluated at CALL time (a JS default
+  // parameter, not a module-load-time IIFE), and it is only called later, from
+  // inside `main()`, once `createMcpApp` builds the `/mcp` route. Leaving it
+  // unset here means that call sees `AUTH_MODE=multi-user` and no explicit
+  // override, which is exactly the real Phase 4 default-flip path.
+  process.env.AUTH_MODE = 'multi-user';
+
   // --- Deferred imports: everything below transitively imports server-config.ts,
   // so it must be dynamically imported AFTER the env vars above are set.
   const { lookupOsUser } = await import('../../packages/server/src/services/os-user-lookup.js');
@@ -731,7 +731,12 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
-  process.exit(2);
-});
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
+    process.exit(2);
+  });
+}

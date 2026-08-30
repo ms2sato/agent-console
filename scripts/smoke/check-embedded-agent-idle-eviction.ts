@@ -108,14 +108,6 @@ function parseIdleMs(): number {
   return parsed;
 }
 
-const idleMs = parseIdleMs();
-process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS = String(idleMs);
-
-// Ad-hoc invocation inherits the caller's cwd, which the spawn machinery
-// evaluates; an unreadable inherited cwd produces EACCES on posix_spawn.
-// Neutralized at script start, same as the sibling smokes.
-process.chdir('/');
-
 import { unlinkSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -243,6 +235,19 @@ function claudeDescendantPids(harnessPid: number): number[] {
 }
 
 async function main(): Promise<void> {
+  // Moved into main() (Issue #1479 follow-up: CodeRabbit + a self-sweep
+  // both found this class of gap in the "pure wrap" files) -- these three
+  // statements ran unconditionally on import: `parseIdleMs()` can
+  // `process.exit(2)` on a bad `--idle-ms`, the env write and `chdir`
+  // mutated the importer's process state even on success.
+  const idleMs = parseIdleMs();
+  process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS = String(idleMs);
+
+  // Ad-hoc invocation inherits the caller's cwd, which the spawn machinery
+  // evaluates; an unreadable inherited cwd produces EACCES on posix_spawn.
+  // Neutralized at script start, same as the sibling smokes.
+  process.chdir('/');
+
   // --- Deferred imports: everything below transitively reaches server-config.ts.
   const { createTestContext, shutdownAppContext } = await import(
     '../../packages/server/src/app-context.js'
@@ -699,6 +704,10 @@ async function main(): Promise<void> {
   }
 }
 
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
 main()
   .then(() => {
     console.log(`\n==> ${passes} passed, ${failures.length} failed`);
@@ -714,3 +723,4 @@ main()
     console.error(`\n==> ${passes} passed, ${failures.length} failed before the abort`);
     process.exit(2);
   });
+}

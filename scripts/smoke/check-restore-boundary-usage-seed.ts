@@ -521,11 +521,16 @@ async function main(): Promise<void> {
   console.log(EXPECT_UNDERFIRE ? '==> the defect reproduces, as expected.' : '==> the seed decides the boundary.');
 }
 
-main().catch((err) => {
-  if (err instanceof BailError) {
-    console.error(`==> could not run: ${err.message}`);
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main().catch((err) => {
+    if (err instanceof BailError) {
+      console.error(`==> could not run: ${err.message}`);
+      process.exit(2);
+    }
+    console.error(err);
     process.exit(2);
-  }
-  console.error(err);
-  process.exit(2);
-});
+  });
+}

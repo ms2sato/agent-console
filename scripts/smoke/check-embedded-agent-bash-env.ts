@@ -65,27 +65,6 @@
  * cleaning or process-spawn logic is duplicated here.
  */
 
-// Ad-hoc invocation inherits cwd from the caller (often /root or an
-// interactive user's home, neither readable by an elevation-target service
-// account). Bun's spawn machinery evaluates the calling process's cwd, and an
-// inherited unreadable cwd produces EACCES on posix_spawn (same root cause
-// documented in check-multiuser-pty-env.ts). Neutralize at script start.
-process.chdir('/');
-
-const targetUsername = process.argv[2];
-if (!targetUsername) {
-  console.error('usage: bun scripts/smoke/check-embedded-agent-bash-env.ts <target-user>');
-  process.exit(2);
-}
-
-// --- CRITICAL ordering: env vars must be set before ANY module that reads
-// `serverConfig.AUTH_MODE` is evaluated. See the identical header comment in
-// `check-embedded-agent-elevation.ts` for the full explanation of why every
-// import that transitively touches `packages/server/src/lib/server-config.ts`
-// must be a DYNAMIC `import()` from inside `main()`, made AFTER this
-// assignment runs.
-process.env.AUTH_MODE = 'multi-user';
-
 import * as os from 'node:os';
 import * as path from 'node:path';
 // Type-only imports are erased at compile time -- safe above the env-var
@@ -175,6 +154,30 @@ function finalAnswerSse(): string {
 }
 
 async function main(): Promise<void> {
+  // Ad-hoc invocation inherits cwd from the caller (often /root or an
+  // interactive user's home, neither readable by an elevation-target service
+  // account). Bun's spawn machinery evaluates the calling process's cwd, and an
+  // inherited unreadable cwd produces EACCES on posix_spawn (same root cause
+  // documented in check-multiuser-pty-env.ts). Neutralize at script start.
+  // Moved into main() (Issue #1479) -- was top-level, which ran on import.
+  process.chdir('/');
+
+  const targetUsername = process.argv[2];
+  if (!targetUsername) {
+    console.error('usage: bun scripts/smoke/check-embedded-agent-bash-env.ts <target-user>');
+    process.exit(2);
+  }
+
+  // --- CRITICAL ordering: env vars must be set before ANY module that reads
+  // `serverConfig.AUTH_MODE` is evaluated. See the identical header comment in
+  // `check-embedded-agent-elevation.ts` for the full explanation of why every
+  // import that transitively touches `packages/server/src/lib/server-config.ts`
+  // must be a DYNAMIC `import()` from inside `main()`, made AFTER this
+  // assignment runs. This still holds with the assignment moved here (Issue
+  // #1479): it only needs to run before the dynamic imports below, which it
+  // does as the first statements of this same function.
+  process.env.AUTH_MODE = 'multi-user';
+
   // --- Deferred imports: everything below transitively imports server-config.ts,
   // so it must be dynamically imported AFTER the env vars above are set.
   const { lookupOsUser } = await import('../../packages/server/src/services/os-user-lookup.js');
@@ -563,7 +566,12 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((err) => {
-  console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
-  process.exit(2);
-});
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
+    process.exit(2);
+  });
+}

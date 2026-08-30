@@ -62,15 +62,6 @@ import {
 } from '../../packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk';
 import { spawnClaudeCodeProcess, UserMessageQueue } from '../../packages/embedded-agent/src/sdk-engine.js';
 
-const args = process.argv.slice(2);
-const invalidUsage = args.length > 1 || (args.length === 1 && !/^[1-9]\d*$/.test(args[0]));
-
-if (invalidUsage) {
-  console.error(`Usage: bun scripts/smoke/probe-sdk-h2-transport-settle-negative-control.ts [trials]\n  trials must be a positive integer (>= 1). Got: ${args.join(' ')}`);
-  process.exit(2);
-}
-
-const trials = args.length === 1 ? Number(args[0]) : 5;
 const RETRY_ATTEMPTS = 6;
 const RETRY_DELAY_MS = 500;
 
@@ -123,6 +114,20 @@ async function runOneTrial(trial: number): Promise<TrialResult> {
 }
 
 async function main(): Promise<number> {
+  // Moved into main() (Issue #1479 follow-up: CodeRabbit + a self-sweep
+  // both found this class of gap in the "pure wrap" files) -- this parser
+  // could `process.exit(2)` on a malformed argument unconditionally on
+  // import.
+  const args = process.argv.slice(2);
+  const invalidUsage = args.length > 1 || (args.length === 1 && !/^[1-9]\d*$/.test(args[0]));
+
+  if (invalidUsage) {
+    console.error(`Usage: bun scripts/smoke/probe-sdk-h2-transport-settle-negative-control.ts [trials]\n  trials must be a positive integer (>= 1). Got: ${args.join(' ')}`);
+    process.exit(2);
+  }
+
+  const trials = args.length === 1 ? Number(args[0]) : 5;
+
   console.log(`Running ${trials} trial(s) with the DELIBERATELY WRONG early-break methodology (expect every trial to reproduce "ProcessTransport is not ready for writing")...\n`);
 
   const results: TrialResult[] = [];
@@ -139,9 +144,14 @@ async function main(): Promise<number> {
   return notReproduced.length === 0 ? 0 : 1;
 }
 
-main()
-  .then((code) => process.exit(code))
-  .catch((err) => {
-    console.error('probe could not run:', err);
-    process.exit(2);
-  });
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main()
+    .then((code) => process.exit(code))
+    .catch((err) => {
+      console.error('probe could not run:', err);
+      process.exit(2);
+    });
+}

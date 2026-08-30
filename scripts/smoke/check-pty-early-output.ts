@@ -135,30 +135,39 @@ async function runCycle(index: number): Promise<{ ok: boolean; detail: string }>
   return { ok, detail };
 }
 
-await selfCheck();
+// Extracted into main() (Issue #1479), order-preserving verbatim move: this
+// entire body was top-level, executing as a side effect of merely importing
+// this file. Guarded below so only running it as the entry point does.
+async function main(): Promise<void> {
+  await selfCheck();
 
-console.log(
-  `==> running ${CYCLE_COUNT} early-output cycles via bunTerminalProvider (Issue #1242), ` +
-    `each with a deliberately-late (${LATE_ATTACH_DELAY_MS}ms) onData attach`,
-);
+  console.log(
+    `==> running ${CYCLE_COUNT} early-output cycles via bunTerminalProvider (Issue #1242), ` +
+      `each with a deliberately-late (${LATE_ATTACH_DELAY_MS}ms) onData attach`,
+  );
 
-const failures: string[] = [];
-let passes = 0;
-for (let i = 0; i < CYCLE_COUNT; i++) {
-  const result = await runCycle(i);
-  if (result.ok) {
-    console.log(`  OK    cycle ${i}: early marker observed complete after late attach`);
-    passes++;
-  } else {
-    console.error(`  FAIL  cycle ${i}: ${result.detail}`);
-    failures.push(`cycle ${i}`);
+  const failures: string[] = [];
+  let passes = 0;
+  for (let i = 0; i < CYCLE_COUNT; i++) {
+    const result = await runCycle(i);
+    if (result.ok) {
+      console.log(`  OK    cycle ${i}: early marker observed complete after late attach`);
+      passes++;
+    } else {
+      console.error(`  FAIL  cycle ${i}: ${result.detail}`);
+      failures.push(`cycle ${i}`);
+    }
   }
+
+  console.log();
+  if (failures.length > 0) {
+    console.error(`FAILED: ${failures.length}/${CYCLE_COUNT} cycle(s) lost the early marker -- ${failures.join(', ')}`);
+    process.exit(1);
+  }
+  console.log(`PASSED: ${passes}/${CYCLE_COUNT} cycles observed the complete early marker after a deliberately-late onData attach`);
+  process.exit(0);
 }
 
-console.log();
-if (failures.length > 0) {
-  console.error(`FAILED: ${failures.length}/${CYCLE_COUNT} cycle(s) lost the early marker -- ${failures.join(', ')}`);
-  process.exit(1);
+if (import.meta.main) {
+  main();
 }
-console.log(`PASSED: ${passes}/${CYCLE_COUNT} cycles observed the complete early marker after a deliberately-late onData attach`);
-process.exit(0);

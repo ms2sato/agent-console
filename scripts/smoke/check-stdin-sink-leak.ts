@@ -228,52 +228,61 @@ async function waitUntil<T>(read: () => T, isDone: (value: T) => boolean, timeou
   return value;
 }
 
-const manager = new InteractiveProcessManager(
-  () => {},
-  () => {},
-  undefined,
-  undefined,
-  recordingSpawnAsUser,
-);
+// Extracted into main() (Issue #1479), order-preserving verbatim move: this
+// entire body was top-level, executing as a side effect of merely importing
+// this file. Guarded below so only running it as the entry point does.
+async function main(): Promise<void> {
+  const manager = new InteractiveProcessManager(
+    () => {},
+    () => {},
+    undefined,
+    undefined,
+    recordingSpawnAsUser,
+  );
 
-const earlyBaseline = countPipeFds();
-await selfCheckAndWarmUp(manager, earlyBaseline);
+  const earlyBaseline = countPipeFds();
+  await selfCheckAndWarmUp(manager, earlyBaseline);
 
-const baselineFds = countPipeFds();
+  const baselineFds = countPipeFds();
 
-for (let i = 0; i < CYCLE_COUNT; i++) {
-  await runCycle(manager);
-}
-
-const expectedMax = baselineFds + CYCLE_COUNT * EXPECTED_SURVIVING_FDS_PER_CYCLE + SLACK_FDS;
-const afterFds = await waitUntil(countPipeFds, (v) => v <= expectedMax);
-
-const failures: string[] = [];
-let passes = 0;
-const expect = (cond: boolean, label: string, detail?: string) => {
-  if (cond) {
-    console.log(`  OK    ${label}`);
-    passes++;
-  } else {
-    console.error(`  FAIL  ${label}${detail ? ` -- ${detail}` : ''}`);
-    failures.push(label);
+  for (let i = 0; i < CYCLE_COUNT; i++) {
+    await runCycle(manager);
   }
-};
 
-console.log(`==> ran ${CYCLE_COUNT} spawn/kill cycles via InteractiveProcessManager.runProcess/killProcess`);
-console.log('==> pipe/socket fd count (this process, via /proc/<pid>/fd)');
-expect(
-  afterFds <= expectedMax,
-  `fd count bounded by surviving-child stdout+stderr only, no stdin leak (baseline=${baselineFds}, after=${afterFds}, expectedMax=${expectedMax})`,
-  `baseline=${baselineFds} after=${afterFds} expectedMax=${expectedMax} (an actual stdin leak would add ~${CYCLE_COUNT} more, one per cycle)`,
-);
+  const expectedMax = baselineFds + CYCLE_COUNT * EXPECTED_SURVIVING_FDS_PER_CYCLE + SLACK_FDS;
+  const afterFds = await waitUntil(countPipeFds, (v) => v <= expectedMax);
 
-console.log();
-manager.disposeAll();
-killAllSpawned();
-if (failures.length > 0) {
-  console.error(`FAILED: ${failures.length} assertion(s) failed`);
-  process.exit(1);
+  const failures: string[] = [];
+  let passes = 0;
+  const expect = (cond: boolean, label: string, detail?: string) => {
+    if (cond) {
+      console.log(`  OK    ${label}`);
+      passes++;
+    } else {
+      console.error(`  FAIL  ${label}${detail ? ` -- ${detail}` : ''}`);
+      failures.push(label);
+    }
+  };
+
+  console.log(`==> ran ${CYCLE_COUNT} spawn/kill cycles via InteractiveProcessManager.runProcess/killProcess`);
+  console.log('==> pipe/socket fd count (this process, via /proc/<pid>/fd)');
+  expect(
+    afterFds <= expectedMax,
+    `fd count bounded by surviving-child stdout+stderr only, no stdin leak (baseline=${baselineFds}, after=${afterFds}, expectedMax=${expectedMax})`,
+    `baseline=${baselineFds} after=${afterFds} expectedMax=${expectedMax} (an actual stdin leak would add ~${CYCLE_COUNT} more, one per cycle)`,
+  );
+
+  console.log();
+  manager.disposeAll();
+  killAllSpawned();
+  if (failures.length > 0) {
+    console.error(`FAILED: ${failures.length} assertion(s) failed`);
+    process.exit(1);
+  }
+  console.log(`PASSED: ${passes} assertion(s) passed`);
+  process.exit(0);
 }
-console.log(`PASSED: ${passes} assertion(s) passed`);
-process.exit(0);
+
+if (import.meta.main) {
+  main();
+}

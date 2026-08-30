@@ -75,27 +75,6 @@
  * helpers production code uses. No replication.
  */
 
-// Ad-hoc invocation inherits cwd from the caller (often /root or an
-// interactive user's home, neither readable by an elevation-target service
-// account). Bun's spawn machinery evaluates the calling process's cwd, and
-// an inherited unreadable cwd produces EACCES on posix_spawn (same root
-// cause documented in check-multiuser-pty-env.ts). Neutralize at script
-// start.
-process.chdir('/');
-
-const targetUsername = process.argv[2];
-if (!targetUsername) {
-  console.error('usage: bun scripts/smoke/check-kill-as-user.ts <target-user>');
-  process.exit(2);
-}
-
-// Unlike embedded-agent-worker-service.js / app-context.js, privilege-elevation.ts
-// reads `process.env.AUTH_MODE` at CALL time inside `runAsUser` / `spawnAsUser`
-// (not via a module-load-time IIFE), so a plain static import + setting this
-// env var beforehand is sufficient -- no deferred dynamic-import ordering
-// dance is required here.
-process.env.AUTH_MODE = 'multi-user';
-
 import { existsSync } from 'node:fs';
 import * as os from 'node:os';
 import { spawnAsUser, killAsUser } from '../../packages/server/src/services/privilege-elevation.js';
@@ -224,6 +203,28 @@ async function spawnTrackedSleep(username: string, seconds: number): Promise<num
 }
 
 async function main(): Promise<void> {
+  // Ad-hoc invocation inherits cwd from the caller (often /root or an
+  // interactive user's home, neither readable by an elevation-target service
+  // account). Bun's spawn machinery evaluates the calling process's cwd, and
+  // an inherited unreadable cwd produces EACCES on posix_spawn (same root
+  // cause documented in check-multiuser-pty-env.ts). Neutralize at script
+  // start. Moved into main() (Issue #1479) -- was top-level, which ran on
+  // import.
+  process.chdir('/');
+
+  const targetUsername = process.argv[2];
+  if (!targetUsername) {
+    console.error('usage: bun scripts/smoke/check-kill-as-user.ts <target-user>');
+    process.exit(2);
+  }
+
+  // Unlike embedded-agent-worker-service.js / app-context.js, privilege-elevation.ts
+  // reads `process.env.AUTH_MODE` at CALL time inside `runAsUser` / `spawnAsUser`
+  // (not via a module-load-time IIFE), so setting this env var anywhere before
+  // those calls happen (both now inside this same function) is sufficient --
+  // no deferred dynamic-import ordering dance is required here.
+  process.env.AUTH_MODE = 'multi-user';
+
   const serverUsername = os.userInfo().username;
   const degenerate = targetUsername === serverUsername;
   if (degenerate) {
@@ -315,11 +316,16 @@ async function main(): Promise<void> {
   process.exit(0);
 }
 
-main().catch((err) => {
-  if (err instanceof ProbeTimeoutError) {
-    console.error('PROBE TIMEOUT (uncaught):', err.message);
+// Guarded (Issue #1479): importing this module must not fire a billed run
+// as a side effect. `import.meta.main` is false for an importer, true only
+// when this file is the entry point.
+if (import.meta.main) {
+  main().catch((err) => {
+    if (err instanceof ProbeTimeoutError) {
+      console.error('PROBE TIMEOUT (uncaught):', err.message);
+      process.exit(2);
+    }
+    console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
     process.exit(2);
-  }
-  console.error('PROBE FAILED (uncaught):', err instanceof Error ? (err.stack ?? err.message) : String(err));
-  process.exit(2);
-});
+  });
+}
