@@ -30,6 +30,20 @@ function restoreInfoWire(extra: Record<string, unknown> = {}): unknown {
   return { type: 'restore-info', epoch: 7, restoredMessageCount: 3, repairedToolCallIds: [], completed: true, ...extra };
 }
 
+/**
+ * #1449 widened `RestoreInfoMessageSchema` to a two-branch union (success /
+ * failure). Every fixture in this file builds the SUCCESS shape, so this
+ * narrows `v.parse`'s union output back to it -- an assertion, not a cast,
+ * so a fixture that accidentally produced the failure shape still fails
+ * loudly here rather than silently widening every downstream `.restoredMessageCount` access.
+ */
+function assertSuccessForm(
+  parsed: v.InferOutput<typeof RestoreInfoMessageSchema>
+): Extract<v.InferOutput<typeof RestoreInfoMessageSchema>, { restoredMessageCount: number }> {
+  if (parsed.failed === true) throw new Error('expected the restore-info SUCCESS form, got the #1449 failure form');
+  return parsed;
+}
+
 describe('restore-info.sdkResumed survives the wire schema (R1, Q10)', () => {
   it('keeps `sdkResumed: true` through the parse', () => {
     const parsed = v.parse(RestoreInfoMessageSchema, restoreInfoWire({ sdkResumed: true }));
@@ -69,7 +83,7 @@ describe('restore-info.restoredMessageCount survives the wire schema, including 
     // to restores nothing, and the client gates its "may not have carried
     // over" notice on `> 0`. A schema that dropped the field would leave the
     // client reading `undefined`.
-    const parsed = v.parse(RestoreInfoMessageSchema, restoreInfoWire({ restoredMessageCount: 0 }));
+    const parsed = assertSuccessForm(v.parse(RestoreInfoMessageSchema, restoreInfoWire({ restoredMessageCount: 0 })));
     expect(parsed.restoredMessageCount).toBe(0);
     expect('restoredMessageCount' in parsed).toBe(true);
   });
@@ -77,7 +91,7 @@ describe('restore-info.restoredMessageCount survives the wire schema, including 
   it('PRESENCE CONTROL: a non-zero count also survives the parse', () => {
     // Pairs with the 0 case: on its own, "the parse produced 0" cannot tell a
     // preserved 0 apart from a field that is always 0 on the far side.
-    const parsed = v.parse(RestoreInfoMessageSchema, restoreInfoWire({ restoredMessageCount: 4 }));
+    const parsed = assertSuccessForm(v.parse(RestoreInfoMessageSchema, restoreInfoWire({ restoredMessageCount: 4 })));
     expect(parsed.restoredMessageCount).toBe(4);
   });
 

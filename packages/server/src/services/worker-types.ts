@@ -9,6 +9,15 @@ import type { Subprocess, FileSink } from 'bun';
 import type { AgentActivityState, ExitReason } from '@agent-console/shared';
 import type { PtyInstance } from '../lib/pty-provider.js';
 import type { ActivityDetector } from './activity-detector.js';
+// Type-only import back into embedded-agent-worker-service.ts, which itself
+// type-only imports `InternalEmbeddedAgentWorker` FROM this file -- not a
+// real circular dependency (type-only imports are erased at build time).
+// Referenced rather than re-declared: a hand-written copy of `RestoreInfo`'s
+// shape does not fail to compile when it gains a member, so the two would
+// silently drift -- the same "referenced rather than re-declared" pattern
+// `session-manager.ts`'s `getEmbeddedAgentRestoreInfo` already uses for this
+// exact type.
+import type { RestoreInfo } from './embedded-agent-worker-service.js';
 
 /**
  * Callbacks for worker lifecycle events (data, exit, activity changes).
@@ -25,16 +34,12 @@ export interface WorkerCallbacks {
   onData: (data: string, offset: number, epoch: number) => void;
   onExit: (exitCode: number, signal: string | null, reason?: ExitReason) => void;
   onActivityChange?: (state: AgentActivityState) => void;
-  /** Transcript Restore (#1123 / #1205) fast-path push -- see EmbeddedAgentWorkerService. Embedded-agent workers only. */
+  /** Transcript Restore (#1123 success / #1205 completion / #1449 failure) push -- see EmbeddedAgentWorkerService. Embedded-agent workers only. */
   // `sdkResumed` (R1) is optional and THREE-VALUED: absent means the engine
   // has no such concept, `false` means a resume did not take. Consumers must
-  // test `=== false`, never `!sdkResumed`.
-  onRestoreInfo?: (info: {
-    restoredMessageCount: number;
-    repairedToolCallIds: string[];
-    completed: boolean;
-    sdkResumed?: boolean;
-  }) => void;
+  // test `=== false`, never `!sdkResumed`. Applies identically to both
+  // members of `RestoreInfo` below (success and #1449 failure).
+  onRestoreInfo?: (info: RestoreInfo) => void;
 }
 
 /**

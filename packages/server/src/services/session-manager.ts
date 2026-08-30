@@ -688,10 +688,11 @@ export class SessionManager {
   }
 
   /**
-   * Transcript Restore (#1123) bootstrap re-delivery lookup: the current
-   * incarnation's restore result (epoch + message count + repaired tool-call
-   * ids), or null when restore did not fire (first-ever activation or
-   * restore failure). See EmbeddedAgentWorkerService.getRestoreInfo.
+   * Transcript Restore (#1123 success / #1449 failure) bootstrap re-delivery
+   * lookup: the current incarnation's restore result (success -- epoch +
+   * message count + repaired tool-call ids -- or failure -- epoch +
+   * `failed: true`), or null when there is nothing to say (first-ever
+   * activation, or no activation yet). See EmbeddedAgentWorkerService.getRestoreInfo.
    */
   getEmbeddedAgentRestoreInfo(
     _sessionId: string,

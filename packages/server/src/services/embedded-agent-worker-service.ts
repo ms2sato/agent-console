@@ -372,7 +372,7 @@ interface Runtime {
   streamsDone: Promise<void>;
   /** Resolves after the exit observer finished all cleanup (append/revoke/persist/fire). */
   exitSettled: Promise<void>;
-  /** Transcript Restore (#1123): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null when restore did not fire (first-ever activation or restore failure). `completed` starts false (restore succeeded but the new incarnation hasn't reported `ready` yet) and flips true once the loop's `ready` event fires (#1205) -- this is what lets the client distinguish "still restoring" from "restore delivered, incarnation ready" across an epoch-stable restore. `sdkResumed` (R1) is set only for `claude-sdk` workers -- see {@link RestoreInfo}. */
+  /** Transcript Restore (#1123 success / #1449 failure): this incarnation's restore result, retained for bootstrap re-delivery to every new connection for the incarnation's lifetime. null means ONLY "there is nothing to say" (first-ever activation, or no activation yet) -- a restore FAILURE is a non-null `{failed: true, ...}` record, not null (#1449). `completed` starts false on the success member (restore succeeded but the new incarnation hasn't reported `ready` yet) and flips true once the loop's `ready` event fires (#1205) -- this is what lets the client distinguish "still restoring" from "restore delivered, incarnation ready" across an epoch-stable restore; the failure member has no `completed` field. `sdkResumed` (R1) is set only for `claude-sdk` workers -- see {@link RestoreInfo}. */
   restoreInfo: RestoreInfo | null;
   /**
    * Transcript Restore, R1: the `sdkSessionId` this incarnation was asked to
@@ -428,30 +428,54 @@ interface Runtime {
 
 /**
  * Transcript Restore: what the client is told about this incarnation's
- * restore. `sdkResumed` is R1's addition and is THREE-VALUED -- `undefined`
- * means "this engine has no such concept" (`openai-api` never sets it),
- * `false` means "this incarnation's SDK session did not resume" -- defined
- * by the OUTCOME, never by an attempt or an intent: one of its four routes
- * is a worker with no persisted session id, where neither exists. The route
- * list lives with the wire type in `@agent-console/shared`'s
- * `types/session.ts`. Collapsing `undefined` with `false` via a negation
- * would show a divergence notice on every `openai-api` worker, which is why
- * consumers test `=== false`.
+ * restore -- success or failure (#1449). Mirrors the `restore-info`
+ * `WorkerServerMessage` wire shape in `@agent-console/shared`'s
+ * `types/session.ts` exactly (minus `type`/`epoch`, which are added by
+ * {@link EmbeddedAgentWorkerService.getRestoreInfo} / routes.ts).
+ *
+ * `sdkResumed` is R1's addition and is THREE-VALUED -- `undefined` means
+ * "this engine has no such concept" (`openai-api` never sets it), `false`
+ * means "this incarnation's SDK session did not resume" -- defined by the
+ * OUTCOME, never by an attempt or an intent: one of its four routes is a
+ * worker with no persisted session id, where neither exists. The route list
+ * lives with the wire type in `types/session.ts`. Collapsing `undefined`
+ * with `false` via a negation would show a divergence notice on every
+ * `openai-api` worker, which is why consumers test `=== false`. This applies
+ * IDENTICALLY to both members of the union below.
+ *
+ * Per #1447's C2 refinement: a divergence between what the model remembers
+ * and what the display shows has a direction. D1 (display ahead of memory)
+ * is what the success member's `sdkResumed: false` means. D2 (memory ahead
+ * of display -- `claude-sdk` restore failure, `sdkSessionId` survives) and
+ * Loss (both gone -- `openai-api` restore failure) are both carried by the
+ * `failed: true` member below; the client derives D2 vs Loss from engine +
+ * `sdkResumed`. See #1447 and #1449 for the full framework, not restated
+ * here.
+ *
+ * This failure member is designed to survive into #1447 stage 4 as its
+ * declaration channel, unchanged: stage 4 changes what gets PRESERVED
+ * (sidecar -> in-band display), not HOW a failure is declared.
  */
-export interface RestoreInfo {
-  /**
-   * Passed through verbatim from `reconstructConversation`'s outcome, which
-   * is the single writer of this count -- see its JSDoc for the definition
-   * (transcript-derived entries, compaction summary included, synthetic
-   * system prompt excluded). This layer must not derive it from the
-   * conversation array: doing so requires knowing the seed's shape, which is
-   * the restore module's private business.
-   */
-  restoredMessageCount: number;
-  repairedToolCallIds: string[];
-  completed: boolean;
-  sdkResumed?: boolean;
-}
+export type RestoreInfo =
+  | {
+      failed?: false;
+      /**
+       * Passed through verbatim from `reconstructConversation`'s outcome,
+       * which is the single writer of this count -- see its JSDoc for the
+       * definition (transcript-derived entries, compaction summary
+       * included, synthetic system prompt excluded). This layer must not
+       * derive it from the conversation array: doing so requires knowing
+       * the seed's shape, which is the restore module's private business.
+       */
+      restoredMessageCount: number;
+      repairedToolCallIds: string[];
+      completed: boolean;
+      sdkResumed?: boolean;
+    }
+  | {
+      failed: true;
+      sdkResumed?: boolean;
+    };
 
 type PipedSubprocess = Subprocess<'pipe', 'pipe', 'pipe'>;
 
@@ -782,6 +806,16 @@ export class EmbeddedAgentWorkerService {
           });
           worker.epoch = newEpoch;
           worker.outputOffset = 0;
+          // Declare the failure rather than leaving `restoreInfo`
+          // null -- see the `RestoreInfo` doc comment for D1/D2/Loss.
+          // `resumeId` is already resolved above (same expression the
+          // success branch uses); `resumeId === null` is a fresh session
+          // with genuinely no continuity, which is `false` here exactly as
+          // it is on the success path.
+          restoreInfo = {
+            failed: true,
+            ...(definition.engine === 'claude-sdk' ? { sdkResumed: resumeId !== null } : {}),
+          };
         }
       }
 
@@ -1342,13 +1376,15 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
-   * Transcript Restore (#1123 / #1205): poke every currently-attached
-   * connection's `onRestoreInfo` callback. Shared by the fast-path push
-   * (right after a successful restore, before the subprocess spawns) and the
-   * completion push (once the new incarnation's `ready` event fires) --
-   * `cb.onRestoreInfo` re-derives its payload from `getRestoreInfo()` at send
-   * time (see routes.ts), so the argument passed here only needs to satisfy
-   * the callback's declared parameter type.
+   * Transcript Restore (#1123 success / #1205 completion / #1449 failure):
+   * poke every currently-attached connection's `onRestoreInfo` callback.
+   * Shared by the fast-path push (right after a restore attempt -- success
+   * OR failure -- before the subprocess spawns), the completion push (once a
+   * SUCCESSFUL incarnation's `ready` event fires), and the resume-correction
+   * push (either member, `sdkResumed` corrected downward) -- `cb.onRestoreInfo`
+   * re-derives its payload from `getRestoreInfo()` at send time (see
+   * routes.ts), so the argument passed here only needs to satisfy the
+   * callback's declared parameter type.
    */
   private pushRestoreInfoToConnections(worker: InternalEmbeddedAgentWorker, info: RestoreInfo): void {
     const snapshot = Array.from(worker.connectionCallbacks.values());
@@ -1486,7 +1522,10 @@ export class EmbeddedAgentWorkerService {
       // `completed` and re-push once this incarnation is actually ready.
       // Guarded on `completed === false` so a duplicate `ready` (should never
       // happen, but the guard makes it a safe no-op) doesn't double-push.
-      if (runtime.restoreInfo !== null && runtime.restoreInfo.completed === false) {
+      // `failed !== true` (#1449): the failure member has no `completed`
+      // field -- a later `ready` on a failed-restore incarnation must not
+      // touch or re-push `restoreInfo` at all.
+      if (runtime.restoreInfo !== null && runtime.restoreInfo.failed !== true && runtime.restoreInfo.completed === false) {
         runtime.restoreInfo = { ...runtime.restoreInfo, completed: true };
         this.pushRestoreInfoToConnections(ctx.worker, runtime.restoreInfo);
       }
@@ -1685,9 +1724,15 @@ export class EmbeddedAgentWorkerService {
    * incarnation's restore off a message it has already seen, and a second
    * message with different bookkeeping would look like a second restore.
    *
-   * A null `restoreInfo` means nothing was restored (first-ever activation,
-   * or a restore failure that already fell back to a reset), and there is
-   * consequently no continuity claim to walk back.
+   * A null `restoreInfo` means only "first-ever activation, or no activation
+   * yet" (#1449) -- a restore failure is a non-null `{failed: true, ...}`
+   * record, and there is consequently no continuity claim to walk back on a
+   * genuinely null one. `sdkResumed` exists (optionally) on BOTH the success
+   * and failure members, so the `=== false` guard and the spread below work
+   * identically whether `runtime.restoreInfo` is a success or a failure
+   * record -- this is precisely how a failed restore's optimistic
+   * `sdkResumed: true`-equivalent gets corrected downward via this SAME
+   * existing recovery path, with no new logic needed for the failure case.
    */
   private markResumeNotResumed(runtime: Runtime): void {
     if (runtime.restoreInfo === null || runtime.restoreInfo.sdkResumed === false) return;
