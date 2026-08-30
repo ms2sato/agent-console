@@ -7,6 +7,11 @@ paths:
 
 **Delegate to `backend-specialist` subagent** for implementation in this package. Primary agent should not write server code directly.
 
+**Two sibling rules load with this one and are worth naming here, because neither is reachable from anywhere else.** Both were previously always-on and are now scoped to this package (plus `scripts/**`), so a reader who never opens them will not stumble across them the way an always-loaded rule is stumbled across:
+
+- [`elevation-helpers.md`](./elevation-helpers.md) — the contract for `privilege-elevation.ts`'s `runAsUser` / `spawnAsUser` / `rmRecursiveAsUser` family, and the reciprocal obligations a consumer inherits (closing stdin, `sh -s` for multi-line commands).
+- [`os-environment-coupling.md`](./os-environment-coupling.md) — when a change touches privilege elevation, file ownership, systemd, PAM, or login-shell init, unit tests cannot establish correctness and a real-machine smoke is mandatory.
+
 ## Directory Structure
 
 ```

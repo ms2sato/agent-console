@@ -1,3 +1,9 @@
+---
+paths:
+  - "packages/server/**"
+  - "scripts/**"
+---
+
 # Elevation Helpers
 
 `packages/server/src/services/privilege-elevation.ts` is the single source for OS-level privilege-elevation primitives in this codebase: `runAsUser`, `spawnAsUser`, and `rmRecursiveAsUser`. This rule defines what a helper in this family must (and must not) do, and when a new helper should be extracted instead of inlining the same elevated-shell construction across multiple consumers.

@@ -209,6 +209,27 @@ Claims of the form "**still waiting on** X" are the highest-risk shape, because 
 
 (Lesson: Sprint 2026-08-29 — a phase was scoped as "the main body of #1123, a rewrite" from that Issue being open. The implementation had shipped in PR #1201 and its follow-ups; #1123 was open only because a dogfood E2E that failed on 2026-07-18 was never re-run after the fix landed. The phase collapsed to finishing one verification.)
 
+### Sub-pattern 9: an empty result read as an empty world
+
+**Inference trap.** A query exits 0 and returns nothing, and the nothing is read as a fact about the system rather than a fact about the query. Sub-pattern 5 covers a signal that never arrives; this covers a tool that answers, successfully, about the wrong thing — and the two are indistinguishable at the point of reading, because a correct empty result and a broken query are byte-identical.
+
+It is the most dangerous shape a wrong answer can take, for three reasons: exit 0 reads as "the check ran", zero rows read as "the condition is clean", and **the conclusion it supports is almost always a negative** — nobody replied, nothing is running, no such error exists, no one else touched it. Negatives are what end an investigation.
+
+The failure is rarely in your logic. It is in a boundary you did not know you were crossing:
+
+- **A different tool than the one the syntax belongs to.** `find` here is `bfs`, not GNU findutils: `-newermt "2026-08-30 12:00:00 UTC"` is rejected as an invalid timestamp, the complaint goes to stderr, and the exit code is **0 with zero matches**.
+- **A filter built from a value you assumed rather than read.** A truncated or mistyped SHA, an id copied from an older line, a path with the wrong prefix — the query is well-formed and matches nothing.
+- **A view narrower than the system.** A listing that does not cover every namespace, mount, or process the question is actually about.
+- **A stale checkout.** The grep is correct, the tree is old. Everything the query says is true of a repository nobody is running.
+
+**Verify procedure — one rule, and it is not "read more carefully".**
+
+**Put a positive control in the same run.** Ask the same query for something you already know exists, and require it to come back. A control that costs one extra line converts "I found nothing" into "this instrument can see, and it sees nothing" — and only the second sentence supports a negative conclusion.
+
+Do this *before* reporting the absence, not after being challenged. State the control alongside the finding, so a reader can tell which of the two sentences you are entitled to.
+
+(Lessons, all Sprint 2026-08-30, all mine, all within a few hours. `find -newermt` with a UTC-suffixed timestamp returned nothing and I was one step from reporting "the Architect has gone silent" — the Architect was fine, `bfs` had rejected my date format. `ss -lnt` did not list the running server's port and I was one step from reporting "all instances are stopped" — `ps` showed `bun src/index.ts` alive the whole time. A `gh run list` filtered on a SHA I had typed from memory returned zero rows for a `main` that was fully green. And a dangling-reference sweep over `.claude/**` flagged three smoke scripts as missing; they existed, and my worktree was thirteen commits stale. Four instances, four different tools, one shape. The third and fourth happened *while writing this sub-pattern*.)
+
 ## Cheap refutation: universal claims
 
 A sister criterion to Inference vs Verification, and a different axis. That rule asks *which signal you are treating as ground truth*. This one asks *what shape the claim has*, regardless of who made it.

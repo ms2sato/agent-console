@@ -102,6 +102,22 @@ When a retrospective surfaces a learning worth codifying, the usual flow is: cre
 
 On the memory side, record the landing Issue in the `description` front-matter field so the cleanup is visible at `MEMORY.md`-scan time.
 
+### Pruning is per-content-lifetime, not per-section
+
+`project_pending_triage_list.md` carries a stated retention rule — "resolved entries: keep the last two sprints". That rule is scoped to the **Resolved** section, and the file has two other sections it says nothing about: **Pending**, and the sprint's accumulating **retro-candidate** block. Both grow without a stated end, and the presence of a retention rule makes the file read as managed.
+
+Measured at the start of the Sprint 2026-08-30 retro: 1,085 lines, of which Pending and Resolved together were 188 and the previous sprint's retro-candidate block was **865 — 79% of the file, already consumed by a retrospective that had shipped.**
+
+**Give every block an end condition when you create it, and write the condition into the block's own heading:**
+
+| Block | Ends when |
+|---|---|
+| Resolved | it falls outside the last two sprints |
+| Retro candidates for sprint N | **sprint N's retro PR merges** — Step 7 deletes the block, because by then the retro PR is its durable home |
+| Pending | the item becomes an Issue, or a retro rules it out of scope. An item nobody will act on is not pending; it is noise with a bullet |
+
+The retro-candidate block is deliberately **not** pruned at Step 1 — Step 3 still needs it as raw material — and it is deliberately **not** moved to a scratchpad while waiting. This repo has already lost a completed 154-line investigation that lived only in a dead session's `/tmp`, pointed at from a README that said "see the Issue thread" when the Issue held nothing. Keep the material where the pointer points, and delete it only once the retro PR has it.
+
 ## Retrospective Collection and Process Improvement
 
 Coding agents send a retrospective report together with the merge notification after their PR is merged (defined in agent definitions).
