@@ -154,6 +154,33 @@ describe('#1202 Q12 — restore against a boundary that rotated into the archive
   });
 });
 
+/**
+ * Measured reach, recorded by WHICH test failed (standing rule). Mutations
+ * applied to `worker-output-file.ts` and this file re-run:
+ *
+ *   w1  drop the fast path, so the archive is read even when the live window
+ *       already holds a boundary
+ *       -> 1 fail, alone: 'FAST PATH'. That pin asserts the returned BYTES are
+ *          the live window verbatim, not merely that the verdict reads
+ *          'boundary' -- an archive read would lengthen the data while leaving
+ *          the verdict identical.
+ *
+ *   w2  no walk-back at all: return the live window, which is what shipped
+ *       before this change
+ *       -> 3 fail: 'THE FIX', 'NO BOUNDARY ANYWHERE', and 'CAP'.
+ *
+ *       **This is the silent-truncation polarity, and it is worth naming
+ *       separately from the count.** Under w2 the SHAPE A fixture above is
+ *       what 'THE FIX' becomes: reconstruction still succeeds, and returns a
+ *       conversation missing the summary and the first turn. The failure is
+ *       not an exception -- it is a shorter conversation. So the pin has to
+ *       assert CONTENT (the summary and the first turn are present), because
+ *       asserting "did not throw" passes in both worlds.
+ *
+ *       The two cases share a fixture on purpose: SHAPE A is this pin's
+ *       polarity, in the same file, so a reader can see the defect and its
+ *       fix expressed against identical input.
+ */
 describe('#1202 — the walk-back assembles a stream that starts at a safe anchor', () => {
   let manager: WorkerOutputFileManager;
 
@@ -298,5 +325,68 @@ describe('#1202 — the walk-back assembles a stream that starts at a safe ancho
     const assembled = await manager.readHistoryForRestore(S, W, resolver, 10);
     expect(assembled.stoppedAt).toBe('cap');
     expect(assembled.data).not.toContain('the very first thing');
+  });
+});
+
+describe('#1202 Q9 — the two engines are exposed to this defect differently', () => {
+  let manager: WorkerOutputFileManager;
+
+  beforeEach(() => {
+    setupMemfs({});
+    process.env.AGENT_CONSOLE_HOME = CONFIG_DIR;
+    manager = makeManager(400);
+  });
+
+  afterEach(() => {
+    cleanupMemfs();
+  });
+
+  /**
+   * Read from the code rather than assumed, because the answer decides what is
+   * worth pinning:
+   *
+   * - `restoredConversation` is consumed by the **openai-api arm only**;
+   *   `main.ts` gates that whole branch on the engine, and a `claude-sdk`
+   *   worker's conversation comes back through `resume` instead. So a
+   *   truncated reconstruction was harmless to its MEMORY.
+   * - `restoreInfo.restoredMessageCount` is **not** engine-gated. It is
+   *   computed from the same reconstruction and reported to the client for
+   *   both engines.
+   *
+   * So the exposure differs: openai-api lost conversation, while claude-sdk
+   * reported a count derived from a conversation that was missing its head.
+   * The walk-back fixes both, for one reason -- the reconstruction's input is
+   * now whole -- and this pins the half that is easy to overlook, because
+   * "the SDK resumes anyway" makes the engine look unaffected.
+   */
+  it('the assembled stream is the same for either engine: the count is derived from a whole conversation', async () => {
+    const early = [
+      line({ v: 1, type: 'user-message', id: 'm1', text: 'first question' }),
+      line({ v: 1, type: 'assistant-message', turnId: 't1', text: 'first answer' }),
+      line({ v: 1, type: 'context-compacted', source: 'auto', summary: 'THE SUMMARY' }),
+    ].join('');
+    const later = [
+      line({ v: 1, type: 'user-message', id: 'm2', text: 'second question' }),
+      line({ v: 1, type: 'assistant-message', turnId: 't2', text: 'second answer' }),
+      line({ v: 1, type: 'user-message', id: 'm3', text: 'third question' }),
+      line({ v: 1, type: 'assistant-message', turnId: 't3', text: 'third answer' }),
+    ].join('');
+
+    manager.bufferOutput(S, W, early, resolver);
+    await manager.flushAll();
+    manager.bufferOutput(S, W, later, resolver);
+    await manager.flushAll();
+
+    const live = await manager.readHistoryWithOffset(S, W, resolver, undefined);
+    const assembled = await manager.readHistoryForRestore(S, W, resolver);
+
+    const fromLiveOnly = reconstructConversation(live.data, SYSTEM_PROMPT, 'true-start');
+    const fromWalkBack = reconstructConversation(assembled.data, SYSTEM_PROMPT, assembled.stoppedAt);
+
+    // The count a `claude-sdk` worker reports is the one on the right. Before
+    // the walk-back it was computed from a conversation missing its head --
+    // an understatement no layer could detect.
+    expect(fromWalkBack.restoredMessageCount).toBeGreaterThan(fromLiveOnly.restoredMessageCount);
+    expect(fromWalkBack.conversation.some((m) => String(m.content).includes('THE SUMMARY'))).toBe(true);
   });
 });
