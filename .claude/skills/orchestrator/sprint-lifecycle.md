@@ -170,6 +170,9 @@ Answer `Y` (default) at the `Continue to retro questions?` prompt to proceed to 
 - All improvements go into a single PR: branch `docs/sprint-retro-YYYY-MM-DD`, title `docs: sprint retrospective improvements (YYYY-MM-DD)`
 - Use `EnterWorktree` when the first improvement is agreed upon; commit all subsequent improvements to the same worktree
 - Merge before the retrospective completes — the next Orchestrator needs the updated skills
+- **That title contains the bare literal `docs:`, so `.coderabbit.yaml`'s `ignore_title_keywords` skips auto-review on every retro PR, by configuration.** For a genuinely docs-only retro that is the intended quota saving. But retro PRs routinely change the orchestrator's own scripts — `sprint-retro.js`, `acceptance-check.js`, `check-utils.js` — and the skip does not know that. **When the retro PR touches any executable file, request a pass explicitly with an `@coderabbitai review` comment**; the manual path is unaffected by the title skip. Confirm the outcome at the commit status's `description`, never at `reviewDecision`, which reads identically for "skipped" and "not yet run" (see [`coderabbit-ops`](../coderabbit-ops/SKILL.md)).
+
+  (Lesson: Sprint 2026-08-30. The previous retro PR, [#1388](https://github.com/ms2sato/agent-console/pull/1388), changed **exactly one file — `sprint-retro.js`** — with no documentation in the diff at all, and merged with `Review skipped: ignored keyword in the PR title`. It was never reviewed. The carve-out exists to stop docs PRs from consuming the review quota, and the one PR class this convention guarantees will trip it is the class that reliably is not docs-only.)
 
 **Sprint closure spans the retro PR merge** (Steps 7 & 8 of `sprint-retro.js`):
 - Steps 1–6 finish before the retrospective PR exists, so the retro PR's own merge state cannot be captured during script execution.
