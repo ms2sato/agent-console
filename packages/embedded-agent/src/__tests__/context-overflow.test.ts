@@ -1,5 +1,24 @@
 import { describe, it, expect } from 'bun:test';
-import { isContextOverflowError } from '../context-overflow';
+import { isContextOverflowError, extractProviderStatedLimit } from '../context-overflow';
+/*
+ * Reach of the extraction pins, measured the same way as the `c*` mutations
+ * below (mutation applied to `context-overflow.ts`, this file re-run):
+ *
+ *   x1  remove `limitCapture` from the measured qwen entry
+ *       -> 'reads the provider-stated cap out of the measured body' here, plus
+ *          the over-declaration case in `agent-loop-window-drift.test.ts`.
+ *   x2  fall back to a loose `/(\d{4,})/` when a signature has no capture
+ *       pattern -- the dangerous direction, since it manufactures a number
+ *       from prose nobody measured
+ *       -> 'reads NOTHING from a matched signature that carries no capture
+ *          pattern', plus its end-to-end twin in the drift test.
+ *   x3  drop the `Number.isSafeInteger && > 0` validation
+ *       -> 'refuses a captured number that cannot be a limit', alone.
+ *   x4  match on status alone, so extraction no longer rides the verdict
+ *       -> 'reads nothing from an error the VERDICT did not recognise', alone.
+ *          This is what makes the shared `matchSignature` load-bearing rather
+ *          than merely tidy.
+ */
 import type { ProviderErrorDetail } from '../providers/types';
 
 /**
@@ -123,5 +142,77 @@ describe('isContextOverflowError', () => {
         isContextOverflowError(400, detail({ message: 'Range of input length should be [1, 983616]', type: 'some_unmeasured_error' })),
       ).toBe(false);
     });
+  });
+});
+
+describe('extractProviderStatedLimit', () => {
+  // The measured body, verbatim: opencode zen go/v1, `qwen3.8-flash`, 2026-08-29.
+  const QWEN = detail({
+    message: 'Range of input length should be [1, 983616]',
+    type: 'invalid_parameter_error',
+  });
+
+  it('reads the provider-stated cap out of the measured body', () => {
+    expect(extractProviderStatedLimit(400, QWEN)).toBe(983_616);
+  });
+
+  it('reads NOTHING from a matched signature that carries no capture pattern', () => {
+    // The fail-toward-nothing polarity the design turns on, stated as a case
+    // rather than as a comment. `context_length_exceeded` matches the verdict
+    // at family level and has no measured body here, so a number sitting in
+    // its prose is deliberately not taken -- writing a pattern from the shape
+    // one EXPECTS is the unmeasured guess the table forbids.
+    const openai = detail({
+      message: "This model's maximum context length is 8192 tokens.",
+      code: 'context_length_exceeded',
+    });
+    expect(isContextOverflowError(400, openai)).toBe(true);
+    expect(extractProviderStatedLimit(400, openai)).toBeUndefined();
+  });
+
+  it('reads nothing from an error the VERDICT did not recognise, however clearly it names a number', () => {
+    // Extraction is gated on the same match as the verdict, so a number can
+    // never be read out of an unrelated fault. Same body, unmeasured family.
+    const unmeasured = detail({
+      message: 'Range of input length should be [1, 983616]',
+      type: 'some_unmeasured_error',
+    });
+    expect(isContextOverflowError(400, unmeasured)).toBe(false);
+    expect(extractProviderStatedLimit(400, unmeasured)).toBeUndefined();
+  });
+
+  it('reads nothing when the provider keeps the family but changes the wording', () => {
+    // A provider rewording its message stops producing drift claims rather
+    // than producing wrong ones -- and the verdict is unaffected, because the
+    // two answers are independent by construction. This is the case that
+    // shows the degradation is graceful in the direction that matters.
+    const reworded = detail({
+      message: 'maximum context length is 983616 tokens, your input was longer',
+      type: 'invalid_parameter_error',
+    });
+    expect(isContextOverflowError(400, reworded)).toBe(true);
+    expect(extractProviderStatedLimit(400, reworded)).toBeUndefined();
+  });
+
+  it('reads nothing at the wrong status, or with no status and no detail', () => {
+    expect(extractProviderStatedLimit(500, QWEN)).toBeUndefined();
+    expect(extractProviderStatedLimit(undefined, QWEN)).toBeUndefined();
+    expect(extractProviderStatedLimit(400, undefined)).toBeUndefined();
+  });
+
+  it('refuses a captured number that cannot be a limit', () => {
+    // Zero parses fine and would compare as "the provider allows nothing",
+    // turning a malformed body into an alarming operator-facing claim.
+    expect(
+      extractProviderStatedLimit(400, detail({ message: 'Range of input length should be [1, 0]', type: 'invalid_parameter_error' })),
+    ).toBeUndefined();
+    // Past the safe-integer range the parse silently rounds, so the number
+    // reported would not be the number the provider wrote.
+    expect(
+      extractProviderStatedLimit(
+        400,
+        detail({ message: 'Range of input length should be [1, 99999999999999999999]', type: 'invalid_parameter_error' }),
+      ),
+    ).toBeUndefined();
   });
 });

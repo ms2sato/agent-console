@@ -23,7 +23,7 @@ import {
   type ToolCall,
   type ToolDefinition,
 } from './providers/types.js';
-import { isContextOverflowError } from './context-overflow.js';
+import { isContextOverflowError, extractProviderStatedLimit } from './context-overflow.js';
 import { truncateToBytes } from './truncate.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
 import {
@@ -708,7 +708,10 @@ export class AgentLoop {
             // emits exactly one, never two.
           }
           this.emitContextUsageIfKnown(turnUsage);
-          this.emitTurnError(turnId, outcome.message);
+          this.emitTurnError(
+            turnId,
+            this.annotateWindowDrift(outcome.message, outcome.status, outcome.detail),
+          );
           return 'error';
         }
         turnUsage = outcome.usage;
@@ -1248,6 +1251,42 @@ export class AgentLoop {
     }
   }
 
+
+  /**
+   * Appends the declared-versus-stated contradiction to an overflow's message,
+   * when the provider named its real limit and it disagrees with the operator's
+   * declaration.
+   *
+   * Only over-declaration is reported. Under-declaration compacts early -- it
+   * costs fidelity and wedges nothing -- so naming it would spend an operator's
+   * attention on the harmless direction and dilute the message that matters.
+   *
+   * The message is display-only prose that no layer parses back, which is what
+   * makes weaving a sentence into it legitimate here.
+   */
+  private annotateWindowDrift(
+    message: string,
+    status: number | undefined,
+    detail: ProviderErrorDetail | undefined,
+  ): string {
+    const declared = this.deps.compaction.contextWindowTokens;
+    if (declared === undefined) return message;
+
+    const stated = extractProviderStatedLimit(status, detail);
+    // No number extracted is the ordinary outcome for every signature without a
+    // measured capture pattern; it must read as "nothing to say", never as a
+    // reason to guess one from the prose.
+    if (stated === undefined || declared <= stated) return message;
+
+    return (
+      `${message}\n\nThis agent declares a context window of ` +
+      `${declared.toLocaleString('en-US')} tokens, but the provider states its ` +
+      `real input limit is ${stated.toLocaleString('en-US')}. An over-declared ` +
+      `window makes every usage ratio optimistic, so automatic compaction fires ` +
+      `later than intended, or not at all. Consider correcting the agent ` +
+      `definition's context window.`
+    );
+  }
 
   private emitTurnError(turnId: string, message: string): void {
     this.deps.emit({ v: 1, type: 'turn-error', turnId, message });
