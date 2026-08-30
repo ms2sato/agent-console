@@ -485,6 +485,38 @@ describe('embedded-agent-store', () => {
       expect(entries.filter((e) => e.kind === 'exited')).toHaveLength(2);
       expect(instance.getSnapshot().currentExit).toBeNull();
     });
+
+    it('toggles back and forth across a full exited -> ready -> exited cycle, never leaving a stale value from the first exit', async () => {
+      // PR review gap: every other test in this block ends the sequence in
+      // ONE state (currently exited, or currently null-after-one-clear).
+      // This is the one that actually exercises BOTH handlers toggling in
+      // sequence -- a stale-value bug in either direction (the 'ready'
+      // handler failing to clear, or the second 'exited' handler failing to
+      // re-set) is only observable across a full cycle, not a single
+      // set-then-clear.
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-cycle', 'w5c-cycle');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      let offset = 0;
+      const firstExited = ndjson({ v: 1, type: 'exited', code: 1 });
+      ws!.simulateMessage(outputMessage(firstExited, (offset += firstExited.length)));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 1 });
+
+      const readyData = ndjson({ v: 1, type: 'ready' });
+      ws!.simulateMessage(outputMessage(readyData, (offset += readyData.length)));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toBeNull();
+
+      // Different code from the first exit so a stale `{ code: 1 }` left
+      // over from the first 'exited' handler is distinguishable from a
+      // correct re-set.
+      const secondExited = ndjson({ v: 1, type: 'exited', code: 2 });
+      ws!.simulateMessage(outputMessage(secondExited, (offset += secondExited.length)));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 2 });
+    });
   });
 
   it('folds a user-message server-authored event from replayed history', async () => {
