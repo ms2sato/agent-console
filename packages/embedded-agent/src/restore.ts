@@ -21,7 +21,7 @@ import {
   type EmbeddedAgentStreamEvent,
 } from '@agent-console/shared';
 import type { ChatMessage, ToolCall } from './providers/types.js';
-import { buildCompactionSeedMessages } from './conversation-seed.js';
+import { buildCompactionSeedMessages, buildRestoreFailureSeedMessages } from './conversation-seed.js';
 import { pushSyntheticToolError } from './tool-call-repair.js';
 
 /** Row 4 of the parts cross-reference table: the restore-specific repair reason string. */
@@ -128,12 +128,30 @@ export function reconstructConversation(
    */
   stoppedAt: RestoreStreamAnchor,
 ): RestoreOutcome {
+  // R2 (#1447 stage 4): a `restore-failure-boundary` marker declares
+  // everything before it discardable -- and, unlike a compaction boundary,
+  // POSSIBLY CORRUPT, since a parse/schema failure in that region is
+  // precisely why the marker was appended in the first place. Trim the
+  // input text to begin at the marker's OWN line before any parsing
+  // occurs, so that region is never handed to the strict parser at all --
+  // "never re-parsed for memory" (R2's own wording) means never REACHING
+  // `parseStreamEvents`, not merely being sliced out of its result. Only
+  // the LAST such marker matters (repeated failures can leave more than
+  // one); everything before it, well-formed or not, is chaff.
+  const { text: streamTextFromMarker, trimmed: trimmedAtRestoreFailureBoundary } =
+    trimToLastRestoreFailureBoundary(streamText);
+
   // FACT 1 -- may the FIRST LINE be a partial record? Only `true-start` rules
   // it out, because that anchor is offset 0 by construction. Every other
   // anchor begins at a previous cut point, and the writer's documented
   // no-usable-newline fallback can leave such a point mid-line.
-  const mayStartMidRecord = stoppedAt !== 'true-start';
-  const { events } = parseStreamEvents(streamText, mayStartMidRecord);
+  //
+  // A trim above changes the answer: the new effective start is the
+  // marker's own line, always a complete record (the writer only ever
+  // appends whole lines) -- an honest start regardless of what `stoppedAt`
+  // said about the ORIGINAL text's beginning.
+  const mayStartMidRecord = !trimmedAtRestoreFailureBoundary && stoppedAt !== 'true-start';
+  const { events } = parseStreamEvents(streamTextFromMarker, mayStartMidRecord);
 
   const boundaryIndex = findLastBoundaryIndex(events);
 
@@ -199,7 +217,17 @@ export function reconstructConversation(
       windowEvents = events;
     }
   } else {
-    conversation = buildCompactionSeedMessages(systemPrompt, boundarySummary(events[boundaryIndex]));
+    // R2 addendum: a restore-failure boundary has no summary to carry
+    // forward -- memory starts from nothing, unlike a compaction boundary.
+    // Branching here, BEFORE `boundarySummary` is ever called, is what
+    // keeps that function from needing a case for this member: the marker
+    // event carries no `summary` field at the type level, so calling
+    // `buildCompactionSeedMessages` on it would be a compile error, not a
+    // review convention.
+    conversation =
+      events[boundaryIndex].type === 'restore-failure-boundary'
+        ? buildRestoreFailureSeedMessages(systemPrompt)
+        : buildCompactionSeedMessages(systemPrompt, boundarySummary(events[boundaryIndex]));
     windowEvents = events.slice(boundaryIndex + 1);
   }
 
@@ -290,6 +318,44 @@ export function findRestoredUsageSeed(
   return undefined;
 }
 
+/**
+ * R2 (#1447 stage 4): find the LAST line whose parsed JSON is a
+ * `restore-failure-boundary` marker, and slice the text to begin exactly at
+ * that line, discarding everything before it. Tolerant of malformed lines
+ * in the SEARCH itself (that is the whole point -- the region this trims
+ * away may be exactly what caused the previous restore to fail), so this
+ * runs a plain best-effort JSON.parse per line rather than the strict
+ * schema validation `parseStreamEvents` performs.
+ *
+ * Returns the original text unchanged (`trimmed: false`) when no such
+ * marker is present -- the overwhelmingly common case, and a correctness
+ * requirement: every stream without a restore-failure ever having occurred
+ * must reconstruct exactly as it did before this function existed.
+ */
+function trimToLastRestoreFailureBoundary(streamText: string): { text: string; trimmed: boolean } {
+  const lines = streamText.split('\n');
+  let lastMarkerLineIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line === '') continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (
+      parsed !== null &&
+      typeof parsed === 'object' &&
+      (parsed as { type?: unknown }).type === 'restore-failure-boundary'
+    ) {
+      lastMarkerLineIndex = i;
+    }
+  }
+  if (lastMarkerLineIndex === -1) return { text: streamText, trimmed: false };
+  return { text: lines.slice(lastMarkerLineIndex).join('\n'), trimmed: true };
+}
+
 function parseStreamEvents(
   streamText: string,
   allowLeadingFragment: boolean,
@@ -365,10 +431,29 @@ function parseStreamEvents(
  * would otherwise replay its entire pre-handoff history on every restore --
  * resurrecting exactly the context the handoff deliberately discarded, and
  * (once auto compaction exists) undoing the compaction on every activation.
+ *
+ * `restore-failure-boundary` (R2, #1447 stage 4) is a THIRD boundary kind,
+ * classified here for the same conceptual reason as the other two: it is a
+ * declared discard, and a window replayed from immediately after it must be
+ * well-formed. Unlike the other two, it carries no summary -- see
+ * `boundarySummary` and the caller's branch in `reconstructConversation`.
+ *
+ * MEASURED, not assumed: membership here is NOT what keeps the
+ * corrupt/unparseable region before this marker out of reconstruction --
+ * that is `trimToLastRestoreFailureBoundary`'s job, which runs before
+ * `parseStreamEvents` and is independent of this set (removing this entry
+ * left every test in this file green, confirmed by deliberately removing it
+ * and re-running the suite). What membership here still buys: correct
+ * seed-selection bookkeeping (`boundaryIndex` pointing at the marker, so a
+ * LATER genuine boundary after it is preferred if one exists) and the
+ * general contract every {@link EmbeddedAgentStreamEvent} boundary member is
+ * expected to satisfy, consistent with the other two. Kept for that
+ * conceptual correctness, not because a reachable defect depends on it today.
  */
 const BOUNDARY_EVENT_TYPES = new Set<EmbeddedAgentStreamEvent['type']>([
   'context-compacted',
   'context-handoff',
+  'restore-failure-boundary',
 ]);
 
 function findLastBoundaryIndex(events: EmbeddedAgentStreamEvent[]): number {
@@ -395,11 +480,13 @@ function boundarySummary(event: EmbeddedAgentStreamEvent): string {
 /**
  * 4c: total classification over every EmbeddedAgentStreamEvent union member
  * (mutates `conversation` in place). Mapped (4): user-message,
- * assistant-message, tool-call, tool-result. Noise (9, skipped):
+ * assistant-message, tool-call, tool-result. Noise (12, skipped):
  * assistant-delta, assistant-thinking-delta, state, context-usage, ready,
- * exited, turn-error, fatal, sdk-session-id. Boundary (2, never reached here
- * -- already sliced out by 4b): context-compacted and the legacy
- * context-handoff.
+ * exited, turn-error, fatal, sdk-session-id, sdk-resume-failed,
+ * turn-interrupted, and restore-failure-declaration (R6, #1447 stage 4 --
+ * restore-transparent by design, see its type doc comment). Boundary (3,
+ * never reached here -- already sliced out by 4b): context-compacted, the
+ * legacy context-handoff, and restore-failure-boundary (R2, #1447 stage 4).
  */
 function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEvent[]): void {
   let current: Extract<ChatMessage, { role: 'assistant' }> | null = null;
@@ -547,6 +634,7 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
       case 'sdk-session-id':
       case 'sdk-resume-failed':
       case 'turn-interrupted':
+      case 'restore-failure-declaration':
         // Noise: replay-only, contributes nothing to the conversation array.
         // sdk-session-id (SDK Engine Phase 1) carries no conversational
         // content -- it is a bookkeeping marker for the worker's current SDK
@@ -558,10 +646,16 @@ function replayWindow(conversation: ChatMessage[], events: EmbeddedAgentStreamEv
         // that no participant ever made -- and turn-interrupted in
         // particular must not become a second, contradictory writer of the
         // repair that Mid-turn Repair already performs on this same array.
+        // restore-failure-declaration (R6, #1447 stage 4) is
+        // restore-TRANSPARENT by design (the opposite of the boundary
+        // member below): it declares an asymmetry reconstruction must
+        // IGNORE, not a discard it must respect, so it belongs here as
+        // ordinary noise rather than in the Boundary group.
         break;
       case 'context-compacted':
       case 'context-handoff':
-        // Boundary: unreachable here -- 4b already excluded both from
+      case 'restore-failure-boundary':
+        // Boundary: unreachable here -- 4b already excluded all three from
         // `events` by slicing strictly after the most recent one.
         break;
       default: {

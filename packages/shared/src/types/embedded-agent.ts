@@ -479,7 +479,61 @@ export type EmbeddedAgentServerEvent =
    * - This is the single identifier for "this exit was an idle eviction".
    *   There is deliberately no parallel boolean to drift against it.
    */
-  | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason };
+  | { v: 1; type: 'exited'; code: number | null; reason?: ExitReason }
+  /**
+   * Transcript Restore, R2 (#1447 stage 4): a restore attempt failed to
+   * reconstruct the persisted transcript (`RestoreReconstructionError` or
+   * any other reconstruction failure). Appended to the SAME live stream in
+   * place of R1's fallback reset -- every byte before it is retained for
+   * DISPLAY, but the walk-back assembler and `reconstructConversation` must
+   * never read past it: the NEXT restore's memory begins here, empty. This
+   * is what turns a single corrupt region into a one-time loss instead of a
+   * permanent restore-failure loop.
+   *
+   * A reconstruction BOUNDARY, the same class as `context-compacted` --
+   * see `restore.ts`'s `BOUNDARY_EVENT_TYPES`. Deliberately NOT a
+   * notification-field `user-message` row (#1351's class): that form is
+   * restore-TRANSPARENT by design, and this marker must be the opposite of
+   * transparent -- reconstruction must STOP here, never read through it.
+   * Contrast with {@link EmbeddedAgentServerEvent}'s
+   * `'restore-failure-declaration'` member below, which is transparent by
+   * the same design decision, for the opposite reason: it declares an
+   * asymmetry reconstruction must IGNORE, not a discard it must respect.
+   *
+   * Deliberately carries NO `summary` field, unlike `context-compacted`:
+   * there is no summary to carry forward here -- memory starts from
+   * nothing, not from a compaction's distillation of what came before. Its
+   * absence is what makes the reconstruction caller's choice of seed
+   * builder a compile-time distinction rather than a review convention --
+   * see `conversation-seed.ts`'s `buildRestoreFailureSeedMessages`, and
+   * `restore.ts`'s `boundarySummary` (never called for this member; the
+   * caller branches before reaching it).
+   */
+  | { v: 1; type: 'restore-failure-boundary' }
+  /**
+   * Transcript Restore, R6 (#1447 stage 4): written into the
+   * FRESH (post-reset) live file when R1's fallback reset runs for a
+   * `claude-sdk` worker whose `sdkSessionId` survives the reset -- the SDK's
+   * own session store still remembers the discarded conversation even
+   * though the display no longer can. Declares that asymmetry so it
+   * outlives the incarnation that discovered it: the incarnation-scoped
+   * `restore-info` failure form (`sdkResumed`) is gone the moment that
+   * incarnation's connections detach, but the SDK's memory persists, so the
+   * declaration must too.
+   *
+   * `openai-api` fallback resets write no such row -- reconstruction IS
+   * that engine's memory, so a Loss there is already symmetric and already
+   * declared by the failure form. Only `claude-sdk` has a second store that
+   * can outlive the display.
+   *
+   * Restore-TRANSPARENT (#1351's class), the OPPOSITE of
+   * `'restore-failure-boundary'` above and deliberately so: that member
+   * declares a discard reconstruction must RESPECT (stop there); this one
+   * declares an asymmetry reconstruction must IGNORE (keep replaying
+   * through it as ordinary noise -- see `restore.ts`'s `replayWindow`
+   * Noise case group). It must never alter window semantics.
+   */
+  | { v: 1; type: 'restore-failure-declaration' };
 
 /**
  * What actually lives in the worker output file and is replayed to clients.

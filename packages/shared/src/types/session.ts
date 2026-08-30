@@ -284,11 +284,31 @@ export type WorkerServerMessage =
   // restore that did not happen. See the block comment above this union
   // member for the full rationale (D1/D2/Loss, #1447/#1449, forward-compat
   // with stage 4).
+  //
+  // `preservation` (R4, #1447 stage 4): what actually happened to the
+  // pre-failure transcript, so the client's banner never claims more than
+  // is true.
+  //
+  // - `'in-band'`: R1's PRIMARY path -- a `restore-failure-boundary` marker
+  //   was appended to the SAME live stream with no reset. The old
+  //   transcript is still the visible display; only the banner's wording
+  //   changes (no "diagnostic copy" claim -- the copy IS the transcript).
+  // - `'sidecar'`: R1's FALLBACK path, and the best-effort rename to the
+  //   manifest-invisible `<workerId>.restore-failed.log` sidecar actually
+  //   succeeded. The banner may claim sidecar preservation.
+  // - `'lost'`: the fallback path ran AND the sidecar rename itself failed
+  //   (e.g. an I/O error on the same volume that caused the restore
+  //   failure in the first place). Nothing was preserved anywhere; the
+  //   banner must not claim it was.
+  // - **Absent**: a pre-stage-4 server. Renders today's unconditional
+  //   copy unchanged -- this is a wire-compat requirement, not merely a
+  //   default, so the field is optional rather than defaulted.
   | {
       type: 'restore-info';
       epoch: number;
       failed: true;
       sdkResumed?: boolean;
+      preservation?: 'in-band' | 'sidecar' | 'lost';
     };
 
 export interface WorkerActivityInfo {

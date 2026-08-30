@@ -92,6 +92,14 @@ export type RestoreInfo =
   | {
       failed: true;
       sdkResumed?: boolean;
+      /**
+       * R4 (#1447 stage 4): what happened to the pre-failure transcript.
+       * See the wire type's doc comment
+       * (`types/session.ts`'s `restore-info` failure member) for the full
+       * rationale of each value -- this mirrors it exactly, since
+       * `getRestoreInfo`'s result is spread verbatim into the wire message.
+       */
+      preservation?: 'in-band' | 'sidecar' | 'lost';
     };
 
 /**

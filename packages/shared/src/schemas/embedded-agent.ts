@@ -415,6 +415,19 @@ export const EmbeddedAgentServerEventSchema = v.union([
     // `reason === 'evicted'` instead of truthiness.
     reason: v.optional(ExitReasonSchema),
   }),
+  // Transcript Restore, R2 (#1447 stage 4). A reconstruction boundary, the
+  // same class as `context-compacted` -- deliberately no `summary` field.
+  // See the type's doc comment.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('restore-failure-boundary'),
+  }),
+  // Transcript Restore, R6 (#1447 stage 4). Restore-TRANSPARENT, the
+  // opposite of the boundary member above. See the type's doc comment.
+  v.strictObject({
+    v: v.literal(1),
+    type: v.literal('restore-failure-declaration'),
+  }),
 ]);
 
 export const EmbeddedAgentStreamEventSchema = v.union([

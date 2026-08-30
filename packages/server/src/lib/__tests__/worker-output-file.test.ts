@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as path from 'path';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { vol, fs as memfs } from 'memfs';
@@ -518,6 +518,133 @@ describe('WorkerOutputFileManager', () => {
       expect(vol.existsSync(sidecar)).toBe(false);
       expect(vol.existsSync(filePath)).toBe(true);
       expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+
+    // R4 (#1447 stage 4): onSidecarResult reports the rename's real outcome
+    // so the caller's banner can distinguish "sidecar" from "lost" without
+    // this method's return type changing.
+    it('invokes onSidecarResult(true) exactly once when the sidecar rename succeeds', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-cb-ok', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-cb-ok`, { recursive: true });
+      vol.writeFileSync(filePath, 'bytes');
+
+      const onSidecarResult = mock(() => {});
+      await manager.resetWorkerOutput('session-sidecar-cb-ok', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+        onSidecarResult,
+      });
+
+      expect(onSidecarResult).toHaveBeenCalledTimes(1);
+      expect(onSidecarResult).toHaveBeenCalledWith(true);
+    });
+
+    it('invokes onSidecarResult(false) when the sidecar rename fails', async () => {
+      // `spyOn(memfs.promises, 'rename')` does NOT intercept the call this
+      // production module makes through its own `import * as fs from
+      // 'fs/promises'` binding (measured: the spy recorded zero calls while
+      // the rename genuinely succeeded against the live memfs volume) --
+      // so the failure is produced by genuine memfs state instead: the
+      // rename's SOURCE simply does not exist (no live file was ever
+      // written for this worker), which is itself a real, reachable
+      // production shape (preserveToSidecar requested on a worker with
+      // nothing yet flushed to its live file).
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-cb-fail`, { recursive: true });
+
+      const onSidecarResult = mock(() => {});
+      await manager.resetWorkerOutput('session-sidecar-cb-fail', 'worker-1', quickResolver, {
+        preserveToSidecar: true,
+        onSidecarResult,
+      });
+
+      expect(onSidecarResult).toHaveBeenCalledTimes(1);
+      expect(onSidecarResult).toHaveBeenCalledWith(false);
+    });
+
+    it('never invokes onSidecarResult when preserveToSidecar is not requested', async () => {
+      const filePath = manager.getOutputFilePath('session-sidecar-cb-unused', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-sidecar-cb-unused`, { recursive: true });
+      vol.writeFileSync(filePath, 'bytes');
+
+      const onSidecarResult = mock(() => {});
+      await manager.resetWorkerOutput('session-sidecar-cb-unused', 'worker-1', quickResolver, {
+        onSidecarResult,
+      });
+
+      expect(onSidecarResult).not.toHaveBeenCalled();
+    });
+
+    // R6 (#1447 stage 4, Issue #1492): the fresh live file carries the
+    // persistent declaration line in place of being left empty.
+    it('writes persistentMarkerLine as the sole content of the fresh live file when provided', async () => {
+      const filePath = manager.getOutputFilePath('session-persist-marker', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-persist-marker`, { recursive: true });
+      vol.writeFileSync(filePath, 'discarded pre-reset bytes');
+
+      const markerLine = JSON.stringify({ v: 1, type: 'restore-failure-declaration' });
+      await manager.resetWorkerOutput('session-persist-marker', 'worker-1', quickResolver, {
+        persistentMarkerLine: markerLine,
+      });
+
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe(`${markerLine}\n`);
+    });
+
+    it('leaves the fresh live file empty when persistentMarkerLine is absent (byte-identical to today)', async () => {
+      const filePath = manager.getOutputFilePath('session-no-persist-marker', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-no-persist-marker`, { recursive: true });
+      vol.writeFileSync(filePath, 'discarded pre-reset bytes');
+
+      await manager.resetWorkerOutput('session-no-persist-marker', 'worker-1', quickResolver);
+
+      expect(vol.readFileSync(filePath, 'utf-8')).toBe('');
+    });
+  });
+
+  describe('appendRestoreFailureMarker (Transcript Restore, R1/R2, #1447 stage 4)', () => {
+    it('appends the marker line to the live file WITHOUT resetting: prior bytes survive, epoch is unchanged', async () => {
+      const filePath = manager.getOutputFilePath('session-marker-append', 'worker-1', quickResolver);
+      vol.mkdirSync(`${TEST_CONFIG_DIR}/_quick/outputs/session-marker-append`, { recursive: true });
+      vol.writeFileSync(filePath, 'prior conversation bytes\n');
+
+      const epochBefore = await manager.getEpoch('session-marker-append', 'worker-1', quickResolver);
+      const markerLine = JSON.stringify({ v: 1, type: 'restore-failure-boundary' });
+      const result = await manager.appendRestoreFailureMarker(
+        'session-marker-append',
+        'worker-1',
+        quickResolver,
+        markerLine,
+      );
+
+      expect(result.epoch).toBe(epochBefore);
+      const content = vol.readFileSync(filePath, 'utf-8') as string;
+      expect(content).toBe(`prior conversation bytes\n${markerLine}\n`);
+      expect(result.offset).toBe(Buffer.byteLength(content, 'utf-8'));
+    });
+
+    it('flushes an already-pending buffer first, so the marker lands strictly AFTER it', async () => {
+      manager.bufferOutput('session-marker-flush', 'worker-1', 'buffered-before-marker\n', quickResolver);
+
+      const markerLine = JSON.stringify({ v: 1, type: 'restore-failure-boundary' });
+      await manager.appendRestoreFailureMarker('session-marker-flush', 'worker-1', quickResolver, markerLine);
+
+      const filePath = manager.getOutputFilePath('session-marker-flush', 'worker-1', quickResolver);
+      const content = vol.readFileSync(filePath, 'utf-8') as string;
+      expect(content).toBe(`buffered-before-marker\n${markerLine}\n`);
+    });
+
+    it('PROPAGATES an fs.appendFile failure to the caller (unlike flushLocked, which swallows)', async () => {
+      // `spyOn(memfs.promises, 'appendFile')` does NOT intercept the call
+      // this production module makes through its own `import * as fs from
+      // 'fs/promises'` binding (measured the same way as the sidecar-rename
+      // test above), so the failure is produced by genuine memfs state
+      // instead: make the live file's OWN PATH a directory, so
+      // `fs.appendFile` fails with a real EISDIR.
+      const filePath = manager.getOutputFilePath('session-marker-io-fail', 'worker-1', quickResolver);
+      vol.mkdirSync(filePath, { recursive: true });
+
+      const markerLine = JSON.stringify({ v: 1, type: 'restore-failure-boundary' });
+      await expect(
+        manager.appendRestoreFailureMarker('session-marker-io-fail', 'worker-1', quickResolver, markerLine),
+      ).rejects.toThrow(/EISDIR/);
     });
   });
 
