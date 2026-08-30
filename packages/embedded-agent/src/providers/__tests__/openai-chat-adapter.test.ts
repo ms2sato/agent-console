@@ -889,3 +889,83 @@ describe('OpenAIChatAdapter — deadlines and cancellation', () => {
     expect(caught).not.toBeInstanceOf(ProviderError);
   });
 });
+
+describe('OpenAIChatAdapter — the error envelope travels as structure', () => {
+  /**
+   * The boundary parse. These fields were always extracted here and then
+   * joined into prose one line later, leaving every consumer inward with only
+   * a sentence to match on. The composed `message` is unchanged; what is new
+   * is that the structure survives beside it.
+   *
+   * Reach, measured by mutation of `openai-chat-adapter.ts`:
+   *   a1  stop passing `detail` to the ProviderError constructor
+   *       -> 2 fail: the envelope case and the composed-message case stays
+   *          green, so only the two structure assertions catch it.
+   *   a2  return a detail object for a non-envelope body
+   *       -> 1 fail, alone: the edge-proxy case. That absence is what makes a
+   *          structure-keyed classifier refuse an edge proxy's rejection with
+   *          no exclusion rule for it.
+   */
+  it("carries the provider's error type, code and message as fields, not only in the composed prose", async () => {
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({
+          status: 400,
+          body: streamFromChunks([
+            JSON.stringify({
+              error: {
+                message: 'Range of input length should be [1, 983616]',
+                type: 'invalid_parameter_error',
+              },
+            }),
+          ]),
+        }),
+    });
+
+    let caught: unknown;
+    try {
+      await collect(adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }));
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ProviderError);
+    const err = caught as ProviderError;
+    expect(err.status).toBe(400);
+    expect(err.detail).toEqual({
+      message: 'Range of input length should be [1, 983616]',
+      type: 'invalid_parameter_error',
+    });
+    // The display string is unchanged by the split: same composition as before.
+    expect(err.message).toContain('provider responded with HTTP 400');
+    expect(err.message).toContain('Range of input length should be [1, 983616]');
+  });
+
+  it('leaves detail undefined when the body is not the provider envelope, e.g. an edge proxy rejection', async () => {
+    // Measured 2026-08-29: a ~2MB body from a non-browser UA gets Cloudflare's
+    // HTML `error code: 1010`, not the provider's JSON. A classifier keyed on
+    // structure then has nothing to match -- which is how the most dangerous
+    // false-positive row is refused without a rule naming it.
+    const adapter = new OpenAIChatAdapter({
+      baseUrl: 'http://x/v1',
+      fetchFn: async () =>
+        mockResponse({
+          status: 403,
+          body: streamFromChunks(['<html><body>error code: 1010</body></html>']),
+        }),
+    });
+
+    let caught: unknown;
+    try {
+      await collect(adapter.run({ model: 'm', messages, tools: [], signal: new AbortController().signal }));
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(ProviderError);
+    expect((caught as ProviderError).detail).toBeUndefined();
+    // The prose still carries the body for a human, as before.
+    expect((caught as ProviderError).message).toContain('1010');
+  });
+});

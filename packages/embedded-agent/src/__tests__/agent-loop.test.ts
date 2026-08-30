@@ -841,3 +841,61 @@ describe('AgentLoop — an abort is classified at the source, not only in the ca
     expect(events.filter((e) => e.type === 'assistant-message')).toHaveLength(0);
   });
 });
+
+describe('AgentLoop — the provider error outcome carries structure inward', () => {
+  /**
+   * The other half of the boundary fix. `ProviderError` now carries the
+   * parsed envelope; this pins that `runProviderWithRetries` COPIES it onto
+   * the outcome rather than letting the classifier re-derive it from prose.
+   *
+   * Asserted through the observable the loop actually produces -- a
+   * classified overflow triggers the escape, an unclassified one does not --
+   * because the outcome type is internal. The two errors differ ONLY in the
+   * envelope's message, so a build that dropped `detail` would treat them
+   * identically and this pair would collapse.
+   */
+  it('distinguishes two 400s that differ only inside the error envelope', async () => {
+    const overflow = new ProviderError('provider responded with HTTP 400: Range of input length should be [1, 983616]', {
+      retryable: false,
+      status: 400,
+      detail: { message: 'Range of input length should be [1, 983616]', type: 'invalid_parameter_error' },
+    });
+    const unrelated = new ProviderError('provider responded with HTTP 400: Value of temperature must be between 0 and 2', {
+      retryable: false,
+      status: 400,
+      detail: { message: 'Value of temperature must be between 0 and 2', type: 'invalid_parameter_error' },
+    });
+
+    const run = async (err: ProviderError): Promise<string[]> => {
+      const events: EmbeddedAgentEvent[] = [];
+      let call = 0;
+      const adapter: ProviderAdapter = {
+        async *run(): AsyncIterable<ProviderEvent> {
+          call++;
+          if (call === 1) throw err;
+          yield { type: 'text-delta', text: 'ok' };
+          yield { type: 'done', finishReason: 'stop' };
+        },
+      };
+      const loop = new AgentLoop({
+        model: 'm',
+        tools: [],
+        executor: { async listTools() { return []; }, async callTool() { return { ok: true, result: '' }; } },
+        emit: (e) => events.push(e),
+        systemPrompt: 'S',
+        maxToolIterations: 25,
+        sleep: async () => {},
+        reassembleSystemPrompt: async () => 'S',
+        loadCompactionPrompt: async () => 'P',
+        compaction: { auto: false, contextWindowTokens: 12_000 },
+        adapter,
+      } as unknown as ConstructorParameters<typeof AgentLoop>[0]);
+      await loop.runTurn('t', 'q');
+      return events.map((e) => e.type);
+    };
+
+    // Same status, same type, same class -- only the envelope's message differs.
+    expect(await run(overflow)).toContain('context-compacted');
+    expect(await run(unrelated)).not.toContain('context-compacted');
+  });
+});
