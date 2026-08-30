@@ -69,6 +69,23 @@ export const serverConfig = {
     16 * 1024 * 1024,
   ),
   /**
+   * Ceiling on how far the DISPLAY read (`readHistoryForDisplay`) walks BACK
+   * through archived segments filling `WORKER_OUTPUT_INITIAL_HISTORY_LINES`
+   * (R2, #1506). Same shape as `WORKER_OUTPUT_RESTORE_MAX_BYTES` but a
+   * distinct knob -- the two answer different questions (how much
+   * reconstruction context is safe to hand a fresh conversation vs. how much
+   * archive I/O one client's initial-load request may cost) and are not
+   * guaranteed to want the same value going forward. Exceeding it (or
+   * exhausting every segment, or hitting a pruned/absent segment) simply
+   * stops the walk early: the caller renders whatever was assembled, trimmed
+   * to the line budget -- unlike restore, there is no distinct discriminated
+   * verdict reported to a display consumer for why the walk stopped.
+   */
+  WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES: parsePositiveIntWithDefault(
+    process.env.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES,
+    16 * 1024 * 1024,
+  ),
+  /**
    * Interval for flushing buffered output to file (in milliseconds).
    * Default: 100ms
    */

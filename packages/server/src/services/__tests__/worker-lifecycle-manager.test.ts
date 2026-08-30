@@ -2137,6 +2137,106 @@ describe('WorkerLifecycleManager', () => {
     });
   });
 
+  describe('getWorkerOutputHistory (embedded-agent archive-aware routing, #1506)', () => {
+    const line = (event: unknown): string => `${JSON.stringify(event)}\n`;
+
+    /** Write rotated content: an early "marker" burst, then enough later
+     * traffic to push it out of the live window (fileMaxSize small). */
+    async function seedRotatedContent(fileManager: WorkerOutputFileManager, sessionId: string, workerId: string): Promise<void> {
+      const resolver = new SessionDataPathResolver(`${TEST_CONFIG_DIR}/_quick`);
+      const early = [
+        line({ v: 1, type: 'user-message', id: 'm1', text: 'PRE-ROTATION-MARKER' }),
+        line({ v: 1, type: 'assistant-message', turnId: 't1', text: 'ack' }),
+      ].join('');
+      const later = [
+        line({ v: 1, type: 'user-message', id: 'm2', text: 'second question' }),
+        line({ v: 1, type: 'assistant-message', turnId: 't2', text: 'x'.repeat(600) }),
+        line({ v: 1, type: 'user-message', id: 'm3', text: 'third question' }),
+        line({ v: 1, type: 'assistant-message', turnId: 't3', text: 'y'.repeat(600) }),
+      ].join('');
+      fileManager.bufferOutput(sessionId, workerId, early, resolver);
+      await fileManager.flushAll();
+      fileManager.bufferOutput(sessionId, workerId, later, resolver);
+      await fileManager.flushAll();
+    }
+
+    it('walks the archive for an embedded-agent worker\'s initial load', async () => {
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const embeddedWorker: InternalEmbeddedAgentWorker = {
+        id: 'embedded-history',
+        type: 'embedded-agent',
+        name: 'Embedded Agent',
+        createdAt: new Date().toISOString(),
+        embeddedAgentId: EMBEDDED_AGENT_DEF.id,
+        subprocess: null,
+        stdin: null,
+        activityState: 'idle',
+        outputOffset: 0,
+        epoch: 1,
+        connectionCallbacks: new Map(),
+        deliverInitialPromptOnActivation: false,
+        sdkSessionId: null,
+        autoCompaction: true,
+      };
+      session.workers.set(embeddedWorker.id, embeddedWorker);
+
+      const fileManager = new WorkerOutputFileManager({
+        flushThreshold: 100_000_000,
+        flushInterval: 100_000,
+        fileMaxSize: 400,
+        maxSegments: 0,
+      });
+      await seedRotatedContent(fileManager, session.id, embeddedWorker.id);
+
+      const manager = new WorkerLifecycleManager(createDeps({ workerOutputFileManager: fileManager }));
+      const result = await manager.getWorkerOutputHistory(session.id, embeddedWorker.id, undefined, 8);
+
+      expect(result).not.toBeNull();
+      expect(result!.data).toContain('PRE-ROTATION-MARKER');
+    });
+
+    it('does NOT archive-walk a PTY/terminal worker with the same rotated content -- routing stays type-scoped', async () => {
+      // Same fixture, same maxLines, only the worker TYPE differs. Confirms
+      // R2's routing is scoped to embedded-agent (which has no client-side
+      // paging fallback) and PTY/terminal workers keep their existing
+      // live-only initial window (they page backward themselves via
+      // terminal-store.ts's requestOlderHistory -> readHistoryRange).
+      const session = createTestSession();
+      sessions.set(session.id, session);
+
+      const terminalWorker: InternalTerminalWorker = {
+        id: 'terminal-history',
+        type: 'terminal',
+        name: 'Terminal',
+        createdAt: new Date().toISOString(),
+        pty: null,
+        outputBuffer: '',
+        outputOffset: 0,
+        epoch: 1,
+        connectionCallbacks: new Map(),
+      };
+      session.workers.set(terminalWorker.id, terminalWorker);
+
+      const fileManager = new WorkerOutputFileManager({
+        flushThreshold: 100_000_000,
+        flushInterval: 100_000,
+        fileMaxSize: 400,
+        maxSegments: 0,
+      });
+      await seedRotatedContent(fileManager, session.id, terminalWorker.id);
+
+      const manager = new WorkerLifecycleManager(createDeps({ workerOutputFileManager: fileManager }));
+      const result = await manager.getWorkerOutputHistory(session.id, terminalWorker.id, undefined, 8);
+
+      expect(result).not.toBeNull();
+      // Rotation genuinely happened (premise control).
+      expect(result!.startOffset).toBeGreaterThan(0);
+      expect(result!.data).not.toContain('PRE-ROTATION-MARKER');
+    });
+  });
+
   describe('getWorkerActivityState', () => {
     it('should return activity state for agent worker', async () => {
       const session = createTestSession();

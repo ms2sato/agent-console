@@ -822,6 +822,19 @@ export class WorkerLifecycleManager {
       return null;
     }
 
+    // embedded-agent has no client-side history-range paging in v1
+    // (embedded-agent-store.ts:639-641) -- the initial window IS the whole
+    // story for that client, so it must be archive-aware. PTY/terminal
+    // workers page backward themselves via requestOlderHistory() ->
+    // readHistoryRange, so their live-only initial window is sufficient (see
+    // terminal-store.ts's sendRangeRequest / request-history-range). This
+    // branch should be revisited (become capability-based rather than
+    // type-based) if/when R4's paging-parity follow-up lands for
+    // embedded-agent (#1506).
+    if (worker.type === 'embedded-agent' && maxLines !== undefined) {
+      return this.deps.workerOutputFileManager.readHistoryForDisplay(sessionId, workerId, resolver, maxLines, fromOffset);
+    }
+
     // Use line-limited read for initial connection (fromOffset is 0 or undefined)
     if (maxLines !== undefined && (fromOffset === undefined || fromOffset === 0)) {
       return this.deps.workerOutputFileManager.readLastNLines(sessionId, workerId, maxLines, resolver);
