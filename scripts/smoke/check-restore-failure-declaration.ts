@@ -442,10 +442,25 @@ async function main(): Promise<void> {
     chmodSync(liveOutputPath1, 0o644);
     const freshContent1 = readFileSync(liveOutputPath1, 'utf-8').trim();
     const declarationLine = JSON.stringify({ v: 1, type: 'restore-failure-declaration' });
+    const lines1 = freshContent1.split('\n').filter((l) => l.length > 0);
     if (EXPECT_NO_DECLARATION) {
-      check(freshContent1 === '', 'POLARITY: the fresh file is EMPTY -- the defect (no R6 declaration) reproduces', JSON.stringify(freshContent1));
+      check(
+        !lines1.some((l) => l === declarationLine),
+        'POLARITY: the fresh file has no restore-failure-declaration marker -- the defect (no R6 declaration) reproduces',
+        JSON.stringify(freshContent1),
+      );
     } else {
-      check(freshContent1 === declarationLine, 'the fresh (post-reset) live file\'s sole content is the restore-failure-declaration marker', JSON.stringify(freshContent1));
+      // Exact full-file equality is not safe here: `deactivateAfterFallback`
+      // (just above) appends an `exited` event to this SAME fresh file, and
+      // that append's buffer flush can land before or after this synchronous
+      // read. Assert the declaration is the FIRST line instead -- proving it
+      // came from the reset write itself, not from some other route --
+      // while tolerating additional rows appended or flushed after it.
+      check(
+        lines1[0] === declarationLine,
+        'the fresh (post-reset) live file\'s first entry is the restore-failure-declaration marker',
+        JSON.stringify(freshContent1),
+      );
 
       // A THIRD activation: a real LATER incarnation restoring against this
       // fresh file. Must SUCCEED (no corruption here), and the marker must
@@ -482,7 +497,12 @@ async function main(): Promise<void> {
       await deactivateAfterFallback(sessionCase2.id, workerCase2.id);
       chmodSync(liveOutputPath2, 0o644);
       const freshContent2 = readFileSync(liveOutputPath2, 'utf-8').trim();
-      check(freshContent2 === '', 'openai-api fallback leaves the fresh live file EMPTY (Loss is already symmetric and already declared by the failure form)', JSON.stringify(freshContent2));
+      const lines2 = freshContent2.split('\n').filter((l) => l.length > 0);
+      check(
+        !lines2.some((l) => l === declarationLine),
+        'openai-api fallback leaves the fresh live file with no restore-failure-declaration marker (Loss is already symmetric and already declared by the failure form)',
+        JSON.stringify(freshContent2),
+      );
 
       // ==================================================================
       // CASE 3 -- NEGATIVE CONTROL: claude-sdk with a NULL sdkSessionId.
@@ -501,7 +521,12 @@ async function main(): Promise<void> {
       await deactivateAfterFallback(sessionCase3.id, workerCase3.id);
       chmodSync(liveOutputPath3, 0o644);
       const freshContent3 = readFileSync(liveOutputPath3, 'utf-8').trim();
-      check(freshContent3 === '', 'claude-sdk fallback with no surviving sdkSessionId leaves the fresh live file EMPTY (nothing survives the reset to declare)', JSON.stringify(freshContent3));
+      const lines3 = freshContent3.split('\n').filter((l) => l.length > 0);
+      check(
+        !lines3.some((l) => l === declarationLine),
+        'claude-sdk fallback with no surviving sdkSessionId leaves the fresh live file with no restore-failure-declaration marker (nothing survives the reset to declare)',
+        JSON.stringify(freshContent3),
+      );
     } else {
       console.log('\n==> polarity mode: cases 2 and 3 are skipped (they assert the fixed behaviour\'s negative space, not the defect)');
     }
