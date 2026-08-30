@@ -151,9 +151,18 @@ const NEWLINE_BYTE = 0x0a;
  * hand-edited log, a future writer that serializes differently. It is cheap
  * and the failure it prevents is silent, so it stays; but it is retained on
  * judgement rather than on evidence, and a reader should know which.
+ *
+ * `restore-failure-boundary` (R2, #1447 stage 4) is a THIRD boundary kind
+ * this walk must stop at, for the same reason as the other two: reading
+ * past it into the corrupt/unparseable region a prior failed restore left
+ * behind would defeat the whole point of the marker.
  */
 function containsBoundary(text: string): boolean {
-  if (!text.includes('"type":"context-compacted"') && !text.includes('"type":"context-handoff"')) {
+  if (
+    !text.includes('"type":"context-compacted"') &&
+    !text.includes('"type":"context-handoff"') &&
+    !text.includes('"type":"restore-failure-boundary"')
+  ) {
     return false;
   }
   for (const line of text.split('\n')) {
@@ -162,7 +171,7 @@ function containsBoundary(text: string): boolean {
       const parsed: unknown = JSON.parse(line);
       if (parsed !== null && typeof parsed === 'object') {
         const t = (parsed as { type?: unknown }).type;
-        if (t === 'context-compacted' || t === 'context-handoff') return true;
+        if (t === 'context-compacted' || t === 'context-handoff' || t === 'restore-failure-boundary') return true;
       }
     } catch {
       // A fragment or a damaged line carries no verdict either way.
@@ -558,6 +567,62 @@ export class WorkerOutputFileManager {
    */
   async forceFlush(sessionId: string, workerId: string): Promise<void> {
     await this.flushBuffer(sessionId, workerId);
+  }
+
+  /**
+   * Transcript Restore, R1/R2 (#1447 stage 4): append a
+   * `restore-failure-boundary` marker line to the LIVE stream IN PLACE --
+   * no reset, no new epoch, every existing byte kept. This is the PRIMARY
+   * path's write: R1 makes preserve-and-declare primary and reset the
+   * fallback, and the caller can only honour that ordering if a write
+   * failure here is OBSERVABLE.
+   *
+   * Unlike `bufferOutput` (fire-and-forget, buffered, and whose eventual
+   * `flushLocked` SWALLOWS an I/O failure by design -- see that method's own
+   * `catch`), this method durably appends via a direct `fs.appendFile` and
+   * PROPAGATES any failure to the caller: an error here is the caller's
+   * signal to fall back to `resetWorkerOutput` instead.
+   *
+   * Flushes any already-buffered output first, so the marker lands strictly
+   * after every byte a previous incarnation wrote rather than interleaved
+   * with it. That flush is best-effort only (its own failure is swallowed by
+   * `flushLocked` and does not abort the marker append below) -- the verdict
+   * this method's caller needs is about the marker, not about unrelated
+   * pending bytes.
+   *
+   * `markerLine` is pre-serialized by the caller (no trailing `\n`) -- this
+   * module has no dependency on `EmbeddedAgentServerEvent`'s shape, exactly
+   * like `bufferOutput`'s plain `data: string`.
+   *
+   * Returns the manifest's UNCHANGED epoch and the post-append absolute
+   * offset, for the caller to sync `worker.epoch` / `worker.outputOffset` --
+   * mirroring the restore-success path's `currentEpoch` / `currentOffset`
+   * sync in `EmbeddedAgentWorkerService.runActivation`.
+   */
+  async appendRestoreFailureMarker(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    markerLine: string,
+  ): Promise<{ epoch: number; offset: number }> {
+    const key = this.getKey(sessionId, workerId);
+    return this.runExclusive(key, async () => {
+      await this.flushLocked(sessionId, workerId);
+
+      const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
+      const filePath = this.getOutputFilePath(sessionId, workerId, resolver);
+      const dir = this.getWorkerDir(sessionId, resolver);
+
+      await fs.mkdir(dir, { recursive: true });
+      // NOT wrapped in try/catch: an I/O failure here must reach the
+      // caller so it can fall back to the reset path (R1).
+      await fs.appendFile(filePath, `${markerLine}\n`, 'utf-8');
+
+      this.invalidateSegmentCache(key);
+
+      const liveBuffer = await this.readLiveBuffer(sessionId, workerId, resolver);
+      return { epoch: manifest.epoch, offset: manifest.liveBaseOffset + liveBuffer.length };
+    });
   }
 
   /**
@@ -1071,8 +1136,9 @@ export class WorkerOutputFileManager {
           // partial and declared.
           //
           // Anything else -- a truncated or malformed gzip, an I/O error -- is
-          // DAMAGE, and must reach the activation fallback that resets and
-          // preserves the log to a sidecar. Swallowing it here would turn
+          // DAMAGE, and must reach the activation's restore-failure catch
+          // block (#1447 stage 4: preserve-and-declare in place, primary;
+          // reset-and-sidecar, fallback). Swallowing it here would turn
           // corruption into a quiet partial restore, which is precisely the
           // failure mode this whole change exists to remove. The narrow intent
           // was in the comment before; the implementation was broader.
@@ -1302,7 +1368,31 @@ export class WorkerOutputFileManager {
     sessionId: string,
     workerId: string,
     resolver: SessionDataPathResolver,
-    opts?: { preserveToSidecar?: boolean },
+    opts?: {
+      preserveToSidecar?: boolean;
+      /**
+       * R4 (#1447 stage 4): reports whether the sidecar rename actually
+       * succeeded, fired at most once and synchronously within this call,
+       * before it resolves. Exists so the caller's restore-failure banner
+       * can distinguish "preserved to sidecar" from "lost entirely" without
+       * widening this method's return type -- every existing caller keeps
+       * reading a plain `number`. Only fires when `preserveToSidecar` is
+       * true; never fires otherwise.
+       */
+      onSidecarResult?: (succeeded: boolean) => void;
+      /**
+       * R6 (#1447 stage 4): a pre-serialized NDJSON line (no
+       * trailing `\n`) written as the SOLE content of the fresh (post-reset)
+       * live file, in place of leaving it empty. Used when a `claude-sdk`
+       * worker's `sdkSessionId` survives this reset -- the SDK's own memory
+       * still holds the discarded conversation, and this line is the
+       * persistent, restore-transparent declaration of that asymmetry. Plain
+       * `string` rather than a typed event: this module has no dependency on
+       * `EmbeddedAgentServerEvent`'s shape, exactly like `bufferOutput`'s
+       * `data: string`.
+       */
+      persistentMarkerLine?: string;
+    },
   ): Promise<number> {
     const key = this.getKey(sessionId, workerId);
     return this.runExclusive(key, async () => {
@@ -1336,6 +1426,7 @@ export class WorkerOutputFileManager {
           const sidecarPath = path.join(dir, `${workerId}.restore-failed.log`);
           try {
             await fs.rename(filePath, sidecarPath);
+            opts.onSidecarResult?.(true);
           } catch (err) {
             // Best-effort, never blocking -- proceed with the reset regardless
             // (Transcript Restore's "Failure invariant (restore)": "preserve
@@ -1345,6 +1436,7 @@ export class WorkerOutputFileManager {
               { sessionId, workerId, err },
               'Failed to preserve restore-failed sidecar (best-effort, proceeding with reset)',
             );
+            opts.onSidecarResult?.(false);
           }
         }
 
@@ -1356,8 +1448,14 @@ export class WorkerOutputFileManager {
         await writeManifestDurable(manifestPath, manifest);
         this.recovered.add(key);
 
-        // Create an empty live file.
-        await fs.writeFile(filePath, '', 'utf-8');
+        // Create the fresh live file: empty, unless R6's persistent
+        // declaration line is provided, in which case it becomes the file's
+        // sole content instead of leaving it empty.
+        await fs.writeFile(
+          filePath,
+          opts?.persistentMarkerLine !== undefined ? `${opts.persistentMarkerLine}\n` : '',
+          'utf-8',
+        );
 
         logger.debug({ sessionId, workerId, epoch: newEpoch }, 'Reset worker output (new epoch)');
         return newEpoch;

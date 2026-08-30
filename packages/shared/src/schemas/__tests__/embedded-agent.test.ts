@@ -1416,6 +1416,85 @@ describe('Transcript Restore R1 wire additions (#1410)', () => {
       );
     });
   });
+
+  describe('restore-failure-boundary and restore-failure-declaration (R2/R6, #1447 stage 4)', () => {
+    it('parses restore-failure-boundary as a SERVER event', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'restore-failure-boundary' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output).toEqual({ v: 1, type: 'restore-failure-boundary' });
+      }
+    });
+
+    it('parses restore-failure-declaration as a SERVER event', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, { v: 1, type: 'restore-failure-declaration' });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.output).toEqual({ v: 1, type: 'restore-failure-declaration' });
+      }
+    });
+
+    it('are NOT loop events -- the subprocess never emits either', () => {
+      // Server-authored by design, same as turn-interrupted above: the loop
+      // has no business declaring a restore boundary or a persisted-memory
+      // divergence over its own stdout.
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'restore-failure-boundary' }).success,
+      ).toBe(false);
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, { v: 1, type: 'restore-failure-declaration' }).success,
+      ).toBe(false);
+    });
+
+    it('rejects a restore-failure-boundary event carrying a summary field (strictObject)', () => {
+      // The whole point of R2's addendum: this marker has NO summary
+      // concept -- memory starts from nothing, unlike context-compacted.
+      // A `summary` field here must be rejected at the wire boundary, not
+      // merely omitted by convention -- this is the runtime-schema half of
+      // the type-level enforcement `conversation-seed.ts`'s
+      // `buildRestoreFailureSeedMessages` relies on.
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'restore-failure-boundary',
+        summary: 'should not exist on this marker',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a restore-failure-declaration event carrying an unknown field (strictObject)', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'restore-failure-declaration',
+        unexpectedField: 'leaked',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects a restore-failure-boundary event with an unrelated unknown field (strictObject)', () => {
+      const result = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'restore-failure-boundary',
+        unexpectedField: 'leaked',
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('the two are distinct literals -- neither parses as the other under a strict union', () => {
+      // Each member is its own `v.strictObject`, so a request that mixes
+      // the "wrong" type literal with the "right" shape for the other
+      // still only matches (at most) one union arm's discriminant.
+      const boundaryEvents = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'restore-failure-boundary',
+      });
+      const declarationEvent = v.safeParse(EmbeddedAgentServerEventSchema, {
+        v: 1,
+        type: 'restore-failure-declaration',
+      });
+      expect(boundaryEvents.success && boundaryEvents.output.type).toBe('restore-failure-boundary');
+      expect(declarationEvent.success && declarationEvent.output.type).toBe('restore-failure-declaration');
+    });
+  });
 });
 
 /**

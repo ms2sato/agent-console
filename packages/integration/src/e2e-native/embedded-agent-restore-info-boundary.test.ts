@@ -31,6 +31,16 @@
  * signal the client's `restoring` derivation now depends on entirely, over
  * a real subprocess rather than a simulated WS frame.
  *
+ * #1447 stage 4 (R1/R2/R4): the genuine-failure test below now exercises the
+ * PRIMARY preserve-and-declare path over a real subprocess and real storage
+ * -- the corrupted file is no longer reset, a `restore-failure-boundary`
+ * marker is appended in place, and the pre-corruption rows remain readable
+ * through the ordinary history read. A third test drives a SECOND restart
+ * after that failure, with a tool-using turn in the post-marker
+ * conversation (test-trigger.md's "the conversation must use a tool" rule),
+ * and asserts reconstruction SUCCEEDS this time -- R2's guarantee that a
+ * restore failure is a one-time loss, not a permanent loop.
+ *
  * Spec: docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
@@ -562,15 +572,39 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
         'utf-8',
       );
 
-      // --- Second activation: restore fires for real, and now fails for real. ---
+      // #1447 stage 4 (R1/R3): the epoch BEFORE the failed restore, so the
+      // primary preserve-and-declare path's "no epoch bump" guarantee is
+      // checked against a captured value rather than `expect.any(Number)`.
+      const histBeforeSecondActivation = await ctx.sessionManager.getWorkerOutputHistory(sessionId, workerId);
+      expect(histBeforeSecondActivation).not.toBeNull();
+      const epochBeforeSecondActivation = histBeforeSecondActivation!.epoch;
+
+      // --- Second activation: restore fires for real, and now fails for
+      // real -- but #1447 stage 4 makes preserve-and-declare the PRIMARY
+      // path, not a reset. The real `appendRestoreFailureMarker` write is
+      // unmocked here, so this exercises the shipping path end to end. ---
       await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
 
       const info = ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
       expect(info).not.toBeNull();
-      expect(info).toEqual({ epoch: expect.any(Number), failed: true });
+      // R3: no epoch bump on the primary path -- unchanged from before.
+      // R4: preservation is 'in-band' (the marker append succeeded).
+      expect(info).toEqual({ epoch: epochBeforeSecondActivation, failed: true, preservation: 'in-band' });
       // openai-api engine (this harness's stub provider): the failure form
       // must OMIT sdkResumed entirely, not carry it as false/undefined.
       expect('sdkResumed' in (info as object)).toBe(false);
+
+      // C1/R1: the pre-corruption rows are STILL SERVED by the ordinary
+      // history read -- nothing was reset or deleted. And R2's marker is
+      // present in the SAME live stream, not hidden in an invisible sidecar.
+      const eventsAfterFailure = await readEvents();
+      expect(eventsAfterFailure.some((e) => e.type === 'user-message' && e.text === USER_TEXT)).toBe(true);
+      expect(eventsAfterFailure.some((e) => e.type === 'assistant-message' && e.text === REPLY_TEXT)).toBe(true);
+      expect(eventsAfterFailure.some((e) => e.type === 'restore-failure-boundary')).toBe(true);
+      // And no `<workerId>.restore-failed.log` sidecar was created -- the
+      // fallback path never ran.
+      const sidecarPath = `${liveOutputPath.replace(/\.log$/, '')}.restore-failed.log`;
+      expect(await fs.stat(sidecarPath).then(() => true, () => false)).toBe(false);
 
       // The exact wire payload shape routes.ts builds: `{ type: 'restore-info', ...info }`.
       const wirePayload = JSON.parse(JSON.stringify({ type: 'restore-info', ...info }));
@@ -579,7 +613,12 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       if (!parsedResult.success) {
         throw new Error(`safeParse failed unexpectedly: ${JSON.stringify(parsedResult.issues.map((i) => i.message))}`);
       }
-      expect(parsedResult.output).toEqual({ type: 'restore-info', epoch: wirePayload.epoch, failed: true });
+      expect(parsedResult.output).toEqual({
+        type: 'restore-info',
+        epoch: wirePayload.epoch,
+        failed: true,
+        preservation: 'in-band',
+      });
       expect('sdkResumed' in parsedResult.output).toBe(false);
 
       // --- Bootstrap re-delivery equivalent (as a second WS connection's
@@ -587,13 +626,280 @@ describe('Client-Server Boundary: restore-info WorkerServerMessage (Transcript R
       // schema-valid -- the failure form must survive bootstrap re-delivery
       // exactly like the success form does. ---
       const infoAgain = ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
-      expect(infoAgain).toEqual({ epoch: wirePayload.epoch, failed: true });
+      expect(infoAgain).toEqual({ epoch: wirePayload.epoch, failed: true, preservation: 'in-band' });
       const wirePayloadAgain = JSON.parse(JSON.stringify({ type: 'restore-info', ...infoAgain }));
       const parsedAgainResult = v.safeParse(RestoreInfoMessageSchema, wirePayloadAgain);
       expect(parsedAgainResult.success).toBe(true);
       if (parsedAgainResult.success) {
-        expect(parsedAgainResult.output).toEqual({ type: 'restore-info', epoch: wirePayload.epoch, failed: true });
+        expect(parsedAgainResult.output).toEqual({
+          type: 'restore-info',
+          epoch: wirePayload.epoch,
+          failed: true,
+          preservation: 'in-band',
+        });
       }
+
+      await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+    },
+    60_000,
+  );
+
+  it(
+    '#1447 stage 4 (R2): the SECOND restart after a failed restore reconstructs SUCCESSFULLY from the marker boundary, over a real subprocess and a real tool-using turn',
+    async () => {
+      // Reuses the exact corruption technique from the GENUINE-failure test
+      // above to reach the primary-path marker, then drives a THIRD
+      // activation whose conversation includes a real builtin `Read` tool
+      // call (test-trigger.md's "the conversation must use a tool" rule),
+      // then a FOURTH activation to confirm THAT restores successfully --
+      // this is R2's guarantee under test: the marker turns a corrupt
+      // region into a one-time loss, not a permanent restore-failure loop.
+      //
+      // No recall assertion is used here (the stub's answers are scripted,
+      // not a model recalling a planted fact), so testing.md's
+      // negative-control requirement for a recall assertion does not apply
+      // -- same "not applicable" shape as
+      // embedded-agent-restore-rotation-boundary.test.ts's C7 clause 2.
+      const NOTE_TEXT = 'hello from the stage-4 restart e2e';
+      const READ_TRIGGER_TEXT = 'please read the notes file';
+      const READ_ACK_TEXT = 'Checking the notes file.';
+      const FINAL_ANSWER_TEXT = 'The notes file says hello.';
+
+      function sse(obj: unknown): string {
+        return `data: ${JSON.stringify(obj)}\n\n`;
+      }
+      function readToolCallSse(): string {
+        return (
+          sse({ choices: [{ delta: { content: READ_ACK_TEXT }, finish_reason: null }] }) +
+          sse({
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      index: 0,
+                      id: 'call-restart-read',
+                      function: { name: 'Read', arguments: JSON.stringify({ path: 'notes.txt' }) },
+                    },
+                  ],
+                },
+                finish_reason: null,
+              },
+            ],
+          }) +
+          sse({ choices: [{ delta: {}, finish_reason: 'tool_calls' }] }) +
+          'data: [DONE]\n\n'
+        );
+      }
+      function finalAfterToolSse(): string {
+        return (
+          sse({ choices: [{ delta: { content: FINAL_ANSWER_TEXT }, finish_reason: null }] }) +
+          sse({ choices: [{ delta: {}, finish_reason: 'stop' }] }) +
+          'data: [DONE]\n\n'
+        );
+      }
+
+      interface ChatBody {
+        messages?: Array<{ role?: string; content?: string }>;
+      }
+
+      stubServer = Bun.serve({
+        port: 0,
+        async fetch(req) {
+          const url = new URL(req.url);
+          if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
+            const body = (await req.json()) as ChatBody;
+            const hasToolMsg = Array.isArray(body.messages) && body.messages.some((m) => m.role === 'tool');
+            if (hasToolMsg) {
+              return new Response(finalAfterToolSse(), { headers: { 'Content-Type': 'text/event-stream' } });
+            }
+            const lastUser = [...(body.messages ?? [])].reverse().find((m) => m.role === 'user');
+            if (lastUser?.content === USER_TEXT) {
+              return new Response(plainTextSse(), { headers: { 'Content-Type': 'text/event-stream' } });
+            }
+            return new Response(readToolCallSse(), { headers: { 'Content-Type': 'text/event-stream' } });
+          }
+          return new Response('not found', { status: 404 });
+        },
+      });
+      const stubBaseUrl = `http://localhost:${stubServer.port}`;
+
+      let mcpBaseUrl = '';
+      ctx = await createTestContext({ getMcpBaseUrl: () => mcpBaseUrl });
+      const owner = await ctx.userRepository.upsertByOsUid(54326, 'owner6', '/home/owner6');
+
+      const app = new Hono<AppBindings>();
+      app.use('*', async (c, next) => {
+        c.set('appContext', ctx!);
+        await next();
+      });
+      app.route('/api', api);
+      const mcpApp = createMcpApp({
+        sessionManager: ctx.sessionManager,
+        repositoryManager: ctx.repositoryManager,
+        agentManager: ctx.agentManager,
+        agentDirectory: ctx.agentDirectory,
+        timerManager: ctx.timerManager,
+        conditionalWakeupManager: ctx.conditionalWakeupManager,
+        interactiveProcessManager: ctx.interactiveProcessManager,
+        worktreeService: ctx.worktreeService,
+        annotationService: ctx.annotationService,
+        interSessionMessageService: ctx.interSessionMessageService,
+        suggestSessionMetadata: ctx.suggestSessionMetadata,
+        createWorktreeWithSession,
+        deleteWorktree,
+        userRepository: ctx.userRepository,
+        artifactRepository: ctx.artifactRepository,
+        bookmarkRepository: ctx.bookmarkRepository,
+        broadcastToApp: ctx.broadcastToApp,
+        fetchPullRequestUrl: ctx.fetchPullRequestUrl,
+        findOpenPullRequest: ctx.findOpenPullRequest,
+        mcpTokenRegistry: ctx.mcpTokenRegistry,
+      });
+      app.route('', mcpApp);
+
+      appServer = Bun.serve({ fetch: app.fetch, port: 0 });
+      mcpBaseUrl = `http://localhost:${appServer.port}/mcp`;
+
+      realCwd = path.join(os.tmpdir(), `ac-embedded-restore-second-restart-${crypto.randomUUID()}`);
+      Bun.spawnSync(['mkdir', '-p', realCwd]);
+      // Real file for the builtin Read tool call, same technique as
+      // embedded-agent-e2e.test.ts: `Bun.write` is native and bypasses this
+      // test process's memfs mock, landing on the REAL filesystem the loop
+      // subprocess reads from.
+      await Bun.write(path.join(realCwd, 'notes.txt'), NOTE_TEXT);
+
+      const createRes = await app.fetch(
+        new Request('http://localhost/api/embedded-agents', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Stub local LLM (restore SECOND RESTART boundary)',
+            provider: { baseUrl: `${stubBaseUrl}/v1`, model: 'stub-model' },
+          }),
+        }),
+      );
+      expect(createRes.status).toBe(201);
+      const createBody = (await createRes.json()) as { embeddedAgent: { id: string } };
+      const embeddedAgentId = createBody.embeddedAgent.id;
+
+      const session = await ctx.sessionManager.createSession(
+        { type: 'quick', locationPath: realCwd, agentId: 'claude-code-builtin' },
+        { createdBy: owner.id },
+      );
+      const sessionId = session.id;
+      const worker = await ctx.sessionManager.createWorker(sessionId, {
+        type: 'embedded-agent',
+        embeddedAgentId,
+      });
+      expect(worker).not.toBeNull();
+      const workerId = worker!.id;
+
+      const readEvents = async (): Promise<EmbeddedAgentStreamEvent[]> => {
+        const hist = await ctx!.sessionManager.getWorkerOutputHistory(sessionId, workerId);
+        const events: EmbeddedAgentStreamEvent[] = [];
+        if (hist) {
+          for (const line of hist.data.split('\n')) {
+            if (line.trim() === '') continue;
+            let json: unknown;
+            try {
+              json = JSON.parse(line);
+            } catch {
+              continue;
+            }
+            const parsed = v.safeParse(EmbeddedAgentStreamEventSchema, json);
+            if (parsed.success) events.push(parsed.output);
+          }
+        }
+        return events;
+      };
+
+      // Scoped to events AT OR AFTER `sinceIndex` -- an unscoped scan across
+      // the whole cumulative history would be satisfied by an EARLIER
+      // activation's already-completed turn (test-trigger.md's absence/
+      // presence-scoping rule), which is exactly the trap here: activation 1
+      // already has an assistant-message followed by state:idle, so an
+      // unscoped check would return immediately without ever observing
+      // activation 2's own (later) turn complete.
+      const waitForIdleAfterAssistant = async (deadlineMs: number, sinceIndex: number): Promise<void> => {
+        const deadline = Date.now() + deadlineMs;
+        while (Date.now() < deadline) {
+          const events = (await readEvents()).slice(sinceIndex);
+          const fatal = events.find((e) => e.type === 'fatal');
+          if (fatal && fatal.type === 'fatal') throw new Error(`loop emitted fatal: ${fatal.message}`);
+          const turnErr = events.find((e) => e.type === 'turn-error');
+          if (turnErr && turnErr.type === 'turn-error') throw new Error(`loop emitted turn-error: ${turnErr.message}`);
+          if (hasIdleAfterAssistant(events)) return;
+          await delay(200);
+        }
+        throw new Error('Timed out waiting for idle-after-assistant');
+      };
+
+      // --- Activation 1: establish an initial transcript, then deactivate. ---
+      await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+      const sendRes1 = await ctx.sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, USER_TEXT);
+      expect(sendRes1.ok).toBe(true);
+      await waitForIdleAfterAssistant(30_000, 0);
+      await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+
+      // --- Corrupt the live output file, same technique as the GENUINE
+      // failure test above. ---
+      const resolver = ctx.sessionManager.getPathResolverForSessionId(sessionId);
+      expect(resolver).not.toBeNull();
+      const liveOutputPath = resolver!.getOutputFilePath(sessionId, workerId);
+      const beforeCorruption = await fs.readFile(liveOutputPath, 'utf-8');
+      await fs.writeFile(
+        liveOutputPath,
+        `${beforeCorruption}${JSON.stringify({ v: 1, type: 'user-message', id: 'corrupt' })}\n{not valid json`,
+        'utf-8',
+      );
+
+      // --- Activation 2: restore fails, primary path appends the marker
+      // in place (verified by the GENUINE-failure test above; only the
+      // failure form is checked here, as the setup step for what follows). ---
+      await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+      const infoAfterFailure = ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
+      expect(infoAfterFailure).toEqual({
+        epoch: expect.any(Number),
+        failed: true,
+        preservation: 'in-band',
+      });
+
+      // --- Activation 2's OWN conversation is the post-marker window: a
+      // real tool-using turn (builtin Read), so the window this second
+      // restart must reconstruct from is not merely a bare marker. ---
+      const eventCountBeforeReadTurn = (await readEvents()).length;
+      const sendRes2 = await ctx.sessionManager.sendEmbeddedAgentUserMessage(sessionId, workerId, READ_TRIGGER_TEXT);
+      expect(sendRes2.ok).toBe(true);
+      await waitForIdleAfterAssistant(30_000, eventCountBeforeReadTurn);
+
+      const eventsAfterReadTurn = await readEvents();
+      const readToolCall = eventsAfterReadTurn.find((e) => e.type === 'tool-call' && e.name === 'Read');
+      expect(readToolCall).toBeDefined();
+      const readToolResult = eventsAfterReadTurn.find(
+        (e) => e.type === 'tool-result' && readToolCall?.type === 'tool-call' && e.callId === readToolCall.callId,
+      );
+      expect(readToolResult).toBeDefined();
+      if (readToolResult?.type === 'tool-result') {
+        expect(readToolResult.result).toContain(NOTE_TEXT);
+      }
+
+      await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId);
+
+      // --- Activation 3: THE SECOND RESTART after the failed restore.
+      // Reconstruction must SUCCEED this time -- R2's guarantee. ---
+      await ctx.sessionManager.activateEmbeddedAgentWorker(sessionId, workerId);
+      const infoAfterSecondRestart = ctx.sessionManager.getEmbeddedAgentRestoreInfo(sessionId, workerId);
+      expect(infoAfterSecondRestart).not.toBeNull();
+      expect(infoAfterSecondRestart?.failed).not.toBe(true);
+      if (infoAfterSecondRestart && infoAfterSecondRestart.failed !== true) {
+        // The window opens at the marker (no summary, no pre-corruption
+        // content) and replays the tool-using turn: user + assistant(call) +
+        // tool + assistant(final) = 4 transcript-originating entries.
+        expect(infoAfterSecondRestart.restoredMessageCount).toBe(4);
+      }
+
+      await ctx.sessionManager.deactivateEmbeddedAgentWorker(sessionId, workerId);
     },
     60_000,
   );

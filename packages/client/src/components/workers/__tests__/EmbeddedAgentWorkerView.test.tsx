@@ -9,6 +9,7 @@ import {
 } from '../EmbeddedAgentWorkerView';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers } from '../embedded-agent-store';
+import type { RestorePreservation } from '@agent-console/shared';
 
 function ndjson(...events: Record<string, unknown>[]): string {
   return events.map((e) => JSON.stringify(e)).join('\n') + '\n';
@@ -1939,6 +1940,46 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(document.querySelector('details')).toBeNull();
     });
 
+    it('R2 (#1447 stage 4): renders a plain boundary line on a restore-failure-boundary event, same visual family as context-compacted', async () => {
+      renderView({ sessionId: 's-ctx-7', workerId: 'w-ctx-7' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'restore-failure-boundary' });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(
+        screen.getByText('— Earlier conversation could not be restored; this turn continues from here —'),
+      ).toBeTruthy();
+      // No summary to disclose -- this marker never carries one (R2 addendum).
+      expect(document.querySelector('details')).toBeNull();
+    });
+
+    it('R6 (#1447 stage 4): renders a quiet notification row on a restore-failure-declaration event', async () => {
+      renderView({ sessionId: 's-ctx-8', workerId: 'w-ctx-8' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'restore-failure-declaration' });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(
+        screen.getByText("— This worker's earlier conversation is not shown here, but the agent may still remember it —"),
+      ).toBeTruthy();
+    });
+
     it('REGRESSION (#1401): still renders a LEGACY context-handoff row from a historical stream', async () => {
       // Persisted transcripts written before the compaction swap contain
       // `context-handoff` rows and replay them on every history load. The
@@ -2813,7 +2854,123 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(sdkLossText).toBe(apiLossText);
     });
 
-    it('mutual exclusivity: D1 notice and the #1449 banners never co-render across a real epoch-transition sequence (condition 1)', async () => {
+    describe('R4 (#1447 stage 4): banner copy conditioned on preservation', () => {
+      // Each variant renders EXACTLY the string the design doc specifies for
+      // its (direction, preservation) pair, and none of the other five --
+      // "renders only under its true preservation state" per the AC's
+      // "Banner honesty" verification item.
+      const D2_IN_BAND =
+        "This worker's earlier conversation is still shown above. The agent does not carry it forward from here, but it may still remember it independently.";
+      const D2_SIDECAR =
+        "This worker's earlier conversation could not be restored for display, but the agent may still remember it, and a diagnostic copy of the record has been preserved.";
+      const D2_LOST =
+        "This worker's earlier conversation could not be restored for display, but the agent may still remember it.";
+      const LOSS_IN_BAND = "This worker's earlier conversation is still shown above. This turn starts fresh.";
+      const LOSS_SIDECAR =
+        "This worker's earlier conversation could not be restored — a diagnostic copy of the record has been preserved. This turn starts fresh.";
+      const LOSS_LOST = "This worker's earlier conversation could not be restored. This turn starts fresh.";
+
+      async function renderFailure(preservation?: RestorePreservation, sdkResumed?: boolean) {
+        globalThis.fetch = Object.assign(
+          mock(
+            makeEmbeddedViewFetch([
+              embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+            ]),
+          ),
+          { preconnect: () => {} },
+        );
+        const view = renderView({
+          sessionId: `s-r4-${preservation ?? 'absent'}-${sdkResumed}`,
+          workerId: `w-r4-${preservation ?? 'absent'}-${sdkResumed}`,
+          embeddedAgentId: 'ea-1',
+        });
+        const ws = MockWebSocket.getLastInstance();
+        act(() => {
+          ws?.simulateOpen();
+        });
+        await flush();
+        act(() => {
+          ws?.simulateMessage(
+            JSON.stringify({
+              type: 'restore-info',
+              epoch: 1,
+              failed: true,
+              ...(sdkResumed !== undefined ? { sdkResumed } : {}),
+              ...(preservation !== undefined ? { preservation } : {}),
+            }),
+          );
+        });
+        await flush();
+        return view;
+      }
+
+      it("D2, preservation 'in-band': the transcript IS the display, no separate copy claim", async () => {
+        const view = await renderFailure('in-band', true);
+        expect(within(view.container).getByText(D2_IN_BAND)).toBeTruthy();
+        expect(within(view.container).queryByText(D2_SIDECAR)).toBeNull();
+        expect(within(view.container).queryByText(D2_LOST)).toBeNull();
+      });
+
+      it("D2, preservation 'sidecar': claims a diagnostic copy was preserved", async () => {
+        const view = await renderFailure('sidecar', true);
+        expect(within(view.container).getByText(D2_SIDECAR)).toBeTruthy();
+        expect(within(view.container).queryByText(D2_IN_BAND)).toBeNull();
+        expect(within(view.container).queryByText(D2_LOST)).toBeNull();
+      });
+
+      it("D2, preservation 'lost': drops the diagnostic-copy claim -- nothing was preserved anywhere", async () => {
+        const view = await renderFailure('lost', true);
+        expect(within(view.container).getByText(D2_LOST)).toBeTruthy();
+        expect(within(view.container).queryByText(D2_IN_BAND)).toBeNull();
+        expect(within(view.container).queryByText(D2_SIDECAR)).toBeNull();
+      });
+
+      it("Loss, preservation 'in-band': the transcript IS the display, no separate copy claim", async () => {
+        const view = await renderFailure('in-band', false);
+        expect(within(view.container).getByText(LOSS_IN_BAND)).toBeTruthy();
+        expect(within(view.container).queryByText(LOSS_SIDECAR)).toBeNull();
+        expect(within(view.container).queryByText(LOSS_LOST)).toBeNull();
+      });
+
+      it("Loss, preservation 'sidecar': claims a diagnostic copy was preserved", async () => {
+        const view = await renderFailure('sidecar', false);
+        expect(within(view.container).getByText(LOSS_SIDECAR)).toBeTruthy();
+        expect(within(view.container).queryByText(LOSS_IN_BAND)).toBeNull();
+        expect(within(view.container).queryByText(LOSS_LOST)).toBeNull();
+      });
+
+      it("Loss, preservation 'lost': drops the diagnostic-copy claim -- nothing was preserved anywhere", async () => {
+        const view = await renderFailure('lost', false);
+        expect(within(view.container).getByText(LOSS_LOST)).toBeTruthy();
+        expect(within(view.container).queryByText(LOSS_IN_BAND)).toBeNull();
+        expect(within(view.container).queryByText(LOSS_SIDECAR)).toBeNull();
+      });
+
+      it("preservation absent (pre-stage-4 server, D2): renders today's unconditional copy unchanged", async () => {
+        const view = await renderFailure(undefined, true);
+        expect(within(view.container).getByText(D2_RE)).toBeTruthy();
+        expect(within(view.container).queryByText(D2_IN_BAND)).toBeNull();
+      });
+
+      it("preservation absent (pre-stage-4 server, Loss): renders today's unconditional copy unchanged", async () => {
+        const view = await renderFailure(undefined, false);
+        expect(within(view.container).getByText(LOSS_RE)).toBeTruthy();
+        expect(within(view.container).queryByText(LOSS_IN_BAND)).toBeNull();
+      });
+    });
+
+    // Re-derived for R3 (#1447 stage 4), which changed WHAT clears
+    // restoredMessageCount: it is no longer only resetChatState's epoch-bump
+    // reset -- applyRestoreFailure now clears it unconditionally on every
+    // accepted failure form. #1473's original single test exercised only
+    // the FALLBACK (epoch-bump) route; it is kept below (renamed and its
+    // stale "a real restore failure always mints a fresh epoch" premise
+    // corrected), and a sibling test for the PRIMARY (in-band, no-epoch-bump)
+    // route is added immediately after it -- together these are what
+    // "record what replaced it" means here: the original assertion survives
+    // unweakened on the route it was written for, and a second assertion now
+    // covers the route R1 introduced.
+    it('mutual exclusivity, FALLBACK route: D1 notice and the #1449 banners never co-render across a real epoch-transition sequence (condition 1)', async () => {
       globalThis.fetch = Object.assign(
         mock(
           makeEmbeddedViewFetch([
@@ -2849,10 +3006,12 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.queryByText(D2_RE)).toBeNull();
       expect(screen.queryByText(LOSS_RE)).toBeNull();
 
-      // Step 2: the worker restarts and THIS incarnation's restore FAILS --
-      // a real restore failure always mints a fresh epoch (resetWorkerOutput),
-      // which resetChatState clears restoredMessageCount back to null for
-      // BEFORE this failure message is applied. D1's gate
+      // Step 2: the worker restarts and THIS incarnation's restore FAILS on
+      // the FALLBACK route -- a NEWER epoch (resetWorkerOutput minted a
+      // fresh one), which resetChatState clears restoredMessageCount back to
+      // null for BEFORE this failure message is applied (and
+      // applyRestoreFailure's own R3 clear repeats that, redundantly but
+      // harmlessly, on this route). D1's gate
       // (hadPriorTranscriptThisIncarnation) must therefore already be false
       // by the time the failure banner renders -- asserted here on the
       // actual rendered DOM, not assumed from the state shape.
@@ -2862,6 +3021,58 @@ describe('EmbeddedAgentWorkerView', () => {
       await flush();
       expect(screen.queryByText(D1_RE)).toBeNull();
       expect(screen.getByText(LOSS_RE)).toBeTruthy();
+      expect(screen.queryByText(D2_RE)).toBeNull();
+    });
+
+    it('mutual exclusivity, PRIMARY (in-band) route: D1 notice and the #1449 banners never co-render on the SAME epoch (R3)', async () => {
+      globalThis.fetch = Object.assign(
+        mock(
+          makeEmbeddedViewFetch([
+            embeddedAgentFixture({ engine: 'claude-sdk', provider: { model: 'claude-opus-4' } }),
+          ]),
+        ),
+        { preconnect: () => {} },
+      );
+      renderView({ sessionId: 's-1449-excl-inband', workerId: 'w-1449-excl-inband', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      // Step 1: a SUCCESSFUL restore on epoch 1, resume did NOT take -> D1.
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({
+            type: 'restore-info',
+            epoch: 1,
+            restoredMessageCount: 5,
+            repairedToolCallIds: [],
+            completed: true,
+            sdkResumed: false,
+          }),
+        );
+      });
+      await flush();
+      expect(screen.getByText(D1_RE)).toBeTruthy();
+      expect(screen.queryByText(D2_RE)).toBeNull();
+      expect(screen.queryByText(LOSS_RE)).toBeNull();
+
+      // Step 2: a LATER restore attempt on this SAME incarnation fails on
+      // the PRIMARY (in-band) route -- SAME epoch, no epoch bump, so
+      // resetChatState never runs. R3 is what makes this exclusive: without
+      // applyRestoreFailure's own unconditional restoredMessageCount clear,
+      // `hadPriorTranscriptThisIncarnation` (and therefore the D1 notice)
+      // would still read true from epoch 1's success form, and D1 would
+      // wrongly co-render alongside the failure banner below.
+      act(() => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'restore-info', epoch: 1, failed: true, sdkResumed: false, preservation: 'in-band' }),
+        );
+      });
+      await flush();
+      expect(screen.queryByText(D1_RE)).toBeNull();
+      expect(screen.getByText("This worker's earlier conversation is still shown above. This turn starts fresh.")).toBeTruthy();
       expect(screen.queryByText(D2_RE)).toBeNull();
     });
 

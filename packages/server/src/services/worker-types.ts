@@ -6,7 +6,7 @@
  */
 
 import type { Subprocess, FileSink } from 'bun';
-import type { AgentActivityState, ExitReason } from '@agent-console/shared';
+import type { AgentActivityState, ExitReason, RestorePreservation } from '@agent-console/shared';
 import type { PtyInstance } from '../lib/pty-provider.js';
 import type { ActivityDetector } from './activity-detector.js';
 
@@ -92,6 +92,14 @@ export type RestoreInfo =
   | {
       failed: true;
       sdkResumed?: boolean;
+      /**
+       * R4 (#1447 stage 4): what happened to the pre-failure transcript.
+       * See the wire type's doc comment
+       * (`types/session.ts`'s `restore-info` failure member) for the full
+       * rationale of each value -- this mirrors it exactly, since
+       * `getRestoreInfo`'s result is spread verbatim into the wire message.
+       */
+      preservation?: RestorePreservation;
     };
 
 /**

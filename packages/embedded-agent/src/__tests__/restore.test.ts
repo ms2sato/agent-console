@@ -1248,3 +1248,98 @@ describe('a mid-turn compaction boundary is a valid restore boundary', () => {
     );
   });
 });
+
+describe('reconstructConversation — restore-failure-boundary marker (R2, #1447 stage 4)', () => {
+  it('trims and discards a MALFORMED pre-marker region, succeeding where an untrimmed parse would throw', () => {
+    // The exact shape #1447 stage 4's primary path produces: a corrupt
+    // trailing region (what caused the ORIGINAL restore to fail) followed
+    // by a restore-failure-boundary marker appended in place, followed by a
+    // fresh, well-formed post-marker conversation. Reconstruction must
+    // succeed by never handing the corrupt region to the parser at all --
+    // "never re-parsed for memory" is R2's own wording.
+    const streamText = [
+      JSON.stringify({ v: 1, type: 'user-message', id: 'm0', text: 'opens the window' }),
+      '{not valid json',
+      JSON.stringify({ v: 1, type: 'restore-failure-boundary' }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'fresh turn after the marker' }),
+      JSON.stringify({ v: 1, type: 'assistant-message', turnId: 't1', text: 'fresh reply' }),
+    ].join('\n');
+
+    // MUTATION MEASURED (polarity): calling `parseStreamEvents` directly on
+    // the UNTRIMMED `streamText` above (i.e. without the trim step this fix
+    // adds) throws `RestoreReconstructionError` on the malformed line --
+    // confirmed by temporarily replacing `streamTextFromMarker` with the raw
+    // `streamText` parameter in `reconstructConversation`'s body and
+    // observing this same call throw. Restoring the trim step returns this
+    // test to green.
+    const outcome = reconstructConversation(streamText, SYSTEM_PROMPT, 'true-start');
+
+    expect(outcome.conversation.map((m) => m.role)).toEqual(['system', 'user', 'assistant']);
+    expect(outcome.conversation.some((m) => String(m.content).includes('opens the window'))).toBe(false);
+    expect(outcome.conversation.some((m) => String(m.content).includes('fresh turn after the marker'))).toBe(true);
+    // Only the post-marker turn originates from the transcript; the
+    // synthetic system prompt does not.
+    expect(outcome.restoredMessageCount).toBe(2);
+  });
+
+  it('is a no-op (byte-identical reconstruction) when no restore-failure-boundary marker is present', () => {
+    // Correctness requirement for the trim step: a stream that never had a
+    // restore failure must reconstruct EXACTLY as it did before this
+    // mechanism existed -- the overwhelmingly common case.
+    const streamText = linesOf([
+      { v: 1, type: 'user-message', id: 'm1', text: 'hi there' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'hello back' },
+    ]);
+
+    const outcome = reconstructConversation(streamText, SYSTEM_PROMPT, 'true-start');
+
+    expect(outcome.conversation.map((m) => m.role)).toEqual(['system', 'user', 'assistant']);
+    expect(outcome.restoredMessageCount).toBe(2);
+  });
+
+  it('R2 addendum: seeds with system prompt ONLY -- no "Summary of the earlier part" text -- WITH a presence control from a compaction boundary in the same test', () => {
+    const restoreFailureStream = linesOf([
+      { v: 1, type: 'restore-failure-boundary' },
+      { v: 1, type: 'user-message', id: 'm1', text: 'post-marker question' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'post-marker answer' },
+    ]);
+    const restoreFailureOutcome = reconstructConversation(restoreFailureStream, SYSTEM_PROMPT, 'true-start');
+    const restoreFailureText = restoreFailureOutcome.conversation.map((m) => m.content).join('\n');
+    expect(restoreFailureText).not.toContain(SEED_PREFIX);
+    expect(restoreFailureOutcome.conversation.map((m) => m.role)).toEqual(['system', 'user', 'assistant']);
+
+    // PRESENCE CONTROL: a compaction-boundary window in the SAME test still
+    // carries the phrase -- without this, changing (or removing) the phrase
+    // wording later would make both assertions pass vacuously.
+    //
+    // MUTATION MEASURED: swapping `reconstructConversation`'s boundary-branch
+    // seed-builder call from the conditional (`buildRestoreFailureSeedMessages`
+    // for this marker) to an unconditional `buildCompactionSeedMessages(...)`
+    // call makes the FIRST assertion above fail (`restoreFailureText` then
+    // contains `SEED_PREFIX`). This test is what fails; reach recorded here.
+    const compactionStream = linesOf([
+      { v: 1, type: 'context-compacted', source: 'auto', summary: 'the earlier summary' },
+      { v: 1, type: 'user-message', id: 'm2', text: 'post-compaction question' },
+    ]);
+    const compactionOutcome = reconstructConversation(compactionStream, SYSTEM_PROMPT, 'true-start');
+    const compactionText = compactionOutcome.conversation.map((m) => m.content).join('\n');
+    expect(compactionText).toContain(SEED_PREFIX);
+  });
+
+  it('trims to the LAST restore-failure-boundary marker when a stream carries more than one (repeated failures)', () => {
+    const streamText = [
+      JSON.stringify({ v: 1, type: 'user-message', id: 'm0', text: 'first era' }),
+      JSON.stringify({ v: 1, type: 'restore-failure-boundary' }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'second era' }),
+      '{also not valid json',
+      JSON.stringify({ v: 1, type: 'restore-failure-boundary' }),
+      JSON.stringify({ v: 1, type: 'user-message', id: 'm2', text: 'third era' }),
+    ].join('\n');
+
+    const outcome = reconstructConversation(streamText, SYSTEM_PROMPT, 'true-start');
+
+    expect(outcome.conversation.some((m) => String(m.content).includes('first era'))).toBe(false);
+    expect(outcome.conversation.some((m) => String(m.content).includes('second era'))).toBe(false);
+    expect(outcome.conversation.some((m) => String(m.content).includes('third era'))).toBe(true);
+  });
+});

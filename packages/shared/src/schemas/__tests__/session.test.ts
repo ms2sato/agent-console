@@ -800,3 +800,68 @@ describe('RestoreInfoMessageSchema — FAILURE form (#1449)', () => {
     expect(result.success).toBe(false);
   });
 });
+
+describe('RestoreInfoMessageSchema — FAILURE form preservation (R4, #1447 stage 4)', () => {
+  it('parses each of the three valid preservation values', () => {
+    for (const preservation of ['in-band', 'sidecar', 'lost'] as const) {
+      const result = v.safeParse(RestoreInfoMessageSchema, {
+        type: 'restore-info',
+        epoch: 5,
+        failed: true,
+        preservation,
+      });
+      expect(result.success).toBe(true);
+      if (!result.success) continue;
+      // Asserted explicitly (not just narrowed on) so a schema regression
+      // that silently routed this input to the SUCCESS branch fails loudly
+      // here instead of vacuously skipping the `preservation` check below.
+      expect(result.output.failed).toBe(true);
+      if (result.output.failed === true) {
+        expect(result.output.preservation).toBe(preservation);
+      }
+    }
+  });
+
+  it('rejects a preservation value outside the three-member union', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      preservation: 'diagnostic-copy',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('parses WITHOUT preservation at all -- the wire-compat requirement for a pre-stage-4 server', () => {
+    // Absence must remain a genuinely valid failure-form message: an older
+    // server that has never heard of `preservation` still produces a
+    // failure form the client must render (with today's unconditional
+    // copy), not reject at the schema boundary.
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect('preservation' in result.output).toBe(false);
+    }
+  });
+
+  it('combines with sdkResumed on the same failure form (both fields apply identically)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      sdkResumed: true,
+      preservation: 'sidecar',
+    });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.output.failed).toBe(true);
+    if (result.output.failed === true) {
+      expect(result.output.sdkResumed).toBe(true);
+      expect(result.output.preservation).toBe('sidecar');
+    }
+  });
+});

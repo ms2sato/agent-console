@@ -31,6 +31,14 @@ const TOKEN = 'mcp-token-abcdef';
 const API_KEY = 'sk-provider-secret';
 const NEW_EPOCH = 4242;
 const USERNAME = 'alice';
+/**
+ * R1 (#1447 stage 4): the epoch/offset `appendRestoreFailureMarker` reports
+ * back on the PRIMARY preserve-and-declare path -- distinct sentinel values
+ * from `NEW_EPOCH` (the FALLBACK reset path's epoch) so a test asserting
+ * `worker.epoch` pins WHICH path ran, not just that some epoch was set.
+ */
+const MARKER_EPOCH = 7777;
+const MARKER_OFFSET = 5555;
 
 function buildDefinition(
   overrides?: Partial<Extract<EmbeddedAgentDefinition, { engine: 'openai-api' }>>
@@ -218,6 +226,7 @@ interface Harness {
   hasEverBeenActivated: ReturnType<typeof mock>;
   readHistoryWithOffset: ReturnType<typeof mock>;
   readHistoryForRestore: ReturnType<typeof mock>;
+  appendRestoreFailureMarker: ReturnType<typeof mock>;
   loadProviderKeyFn: ReturnType<typeof mock>;
   persistSession: ReturnType<typeof mock>;
   globalActivity: ReturnType<typeof mock>;
@@ -260,6 +269,20 @@ function setup(opts?: {
   spawnEndThrows?: boolean;
   /** Transcript Restore, R1: a `sdkSessionId` already persisted on the worker, as a re-activation would find. */
   sdkSessionId?: string;
+  /**
+   * R1 (#1447 stage 4): make `appendRestoreFailureMarker` reject, forcing
+   * the FALLBACK reset+sidecar path instead of the PRIMARY preserve-and-
+   * declare path. Defaults to false -- every restore-failure test that does
+   * not opt in exercises the new PRIMARY path.
+   */
+  appendRestoreFailureMarkerThrows?: boolean;
+  /**
+   * R4 (#1447 stage 4): whether the FALLBACK path's sidecar rename succeeds,
+   * surfaced via `resetWorkerOutput`'s `onSidecarResult` callback. Defaults
+   * to true (the common case). Only observable when the fallback path runs
+   * (`appendRestoreFailureMarkerThrows: true`).
+   */
+  sidecarRenameSucceeds?: boolean;
 }): Harness {
   const definition = 'definition' in (opts ?? {}) ? opts!.definition : buildDefinition();
   const createdBy = opts && 'createdBy' in opts ? opts.createdBy : 'user-1';
@@ -281,7 +304,26 @@ function setup(opts?: {
 
   const mint = mock(() => TOKEN);
   const revokeByWorker = mock(() => {});
-  const resetWorkerOutput = mock(async () => NEW_EPOCH);
+  const resetWorkerOutput = mock(
+    async (
+      _sessionId: string,
+      _workerId: string,
+      _resolver: unknown,
+      resetOpts?: { onSidecarResult?: (succeeded: boolean) => void; persistentMarkerLine?: string },
+    ) => {
+      resetOpts?.onSidecarResult?.(opts?.sidecarRenameSucceeds ?? true);
+      return NEW_EPOCH;
+    },
+  );
+  // R1 (#1447 stage 4): the PRIMARY preserve-and-declare path's write.
+  // Succeeds by default -- every restore-failure test that does not opt
+  // into `appendRestoreFailureMarkerThrows` exercises the new primary path.
+  const appendRestoreFailureMarker = mock(async () => {
+    if (opts?.appendRestoreFailureMarkerThrows) {
+      throw new Error('restore-failure marker append boom');
+    }
+    return { epoch: MARKER_EPOCH, offset: MARKER_OFFSET };
+  });
   const bufferOutput = mock(() => {});
   const hasEverBeenActivated = mock(async () => opts?.everActivated ?? false);
   // Mirrors `readHistoryWithOffset`'s fixture so restore's input is the same
@@ -340,6 +382,7 @@ function setup(opts?: {
       hasEverBeenActivated: hasEverBeenActivated as never,
       readHistoryWithOffset: readHistoryWithOffset as never,
       readHistoryForRestore: readHistoryForRestore as never,
+      appendRestoreFailureMarker: appendRestoreFailureMarker as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: loadProviderKeyFn as never,
@@ -366,6 +409,7 @@ function setup(opts?: {
     bufferOutput,
     hasEverBeenActivated,
     readHistoryWithOffset,
+    appendRestoreFailureMarker,
     loadProviderKeyFn,
     persistSession,
     globalActivity,
@@ -817,17 +861,53 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     expect(h.worker.outputOffset).toBe(12345);
   });
 
-  it('resets the output stream with preserveToSidecar and omits restoredConversation when restore fails', async () => {
+  it('R1 PRIMARY path: preserves the output stream in place (no reset), appends the restore-failure boundary marker, and omits restoredConversation when restore fails', async () => {
     const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
 
     await h.service.activate(h.sessionId, h.workerId);
 
-    expect(h.resetWorkerOutput).toHaveBeenCalledWith(
+    // R1 inversion: preserve-and-declare is PRIMARY -- reset must NOT run.
+    expect(h.resetWorkerOutput).not.toHaveBeenCalled();
+    expect(h.appendRestoreFailureMarker).toHaveBeenCalledWith(
       h.sessionId,
       h.workerId,
       expect.anything(),
-      { preserveToSidecar: true },
+      JSON.stringify({ v: 1, type: 'restore-failure-boundary' }),
     );
+    // R3: no epoch bump on the preserved path -- worker.epoch/outputOffset
+    // sync to the marker append's own manifest read, mirroring the success
+    // path's currentEpoch/currentOffset sync.
+    expect(h.worker.epoch).toBe(MARKER_EPOCH);
+    expect(h.worker.outputOffset).toBe(MARKER_OFFSET);
+
+    const first = JSON.parse(h.fake.stdinWrites[0]);
+    expect('restoredConversation' in first).toBe(false);
+  });
+
+  it('R1 FALLBACK path: falls back to resetWorkerOutput with preserveToSidecar when the marker append itself fails', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+      appendRestoreFailureMarkerThrows: true,
+    });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.appendRestoreFailureMarker).toHaveBeenCalled();
+    expect(h.resetWorkerOutput).toHaveBeenCalledTimes(1);
+    const [callSessionId, callWorkerId, , resetOpts] = h.resetWorkerOutput.mock.calls[0] as [
+      string,
+      string,
+      unknown,
+      { preserveToSidecar?: boolean; onSidecarResult?: unknown; persistentMarkerLine?: string },
+    ];
+    expect(callSessionId).toBe(h.sessionId);
+    expect(callWorkerId).toBe(h.workerId);
+    expect(resetOpts.preserveToSidecar).toBe(true);
+    expect(typeof resetOpts.onSidecarResult).toBe('function');
+    // openai-api has no sdkSessionId concept, so R6's persistent divergence
+    // declaration must never be requested on this engine.
+    expect(resetOpts.persistentMarkerLine).toBeUndefined();
     expect(h.worker.epoch).toBe(NEW_EPOCH);
     expect(h.worker.outputOffset).toBe(0);
 
@@ -850,16 +930,32 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
     expect('restoredConversation' in first).toBe(false);
   });
 
-  it('routes a persistent I/O error on an EXISTING worker through the failure-with-sidecar path, NOT the destructive first-activation shortcut (CodeRabbit CRITICAL)', async () => {
+  it('routes a persistent I/O error on an EXISTING worker through the R1 catch block, NOT the destructive first-activation shortcut (CodeRabbit CRITICAL)', async () => {
     // hasEverBeenActivated's real implementation is conservative on a
     // non-ENOENT stat failure: it reports `true` (assume activated) rather
     // than throwing, so this DI mock returns `true` too -- exercising the
     // caller-side contract that the injected hasEverBeenActivated never
     // throws. The restore attempt then hits the SAME underlying persistent
     // I/O failure via readHistoryWithOffset and correctly falls into the
-    // sidecar-preserving reset branch instead of the destructive
-    // "nothing to restore" shortcut.
+    // R1 catch block instead of the destructive "nothing to restore"
+    // shortcut -- by default (marker append succeeds) that means the
+    // PRIMARY preserve-and-declare path, not the reset.
     const h = setup({ everActivated: true, readHistoryWithOffsetThrows: true });
+
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.appendRestoreFailureMarker).toHaveBeenCalled();
+    expect(h.resetWorkerOutput).not.toHaveBeenCalled();
+    expect(h.worker.epoch).toBe(MARKER_EPOCH);
+    expect(h.worker.outputOffset).toBe(MARKER_OFFSET);
+  });
+
+  it('routes a persistent I/O error through to the FALLBACK sidecar reset when the marker append also fails, still NOT the destructive first-activation shortcut', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetThrows: true,
+      appendRestoreFailureMarkerThrows: true,
+    });
 
     await h.service.activate(h.sessionId, h.workerId);
 
@@ -867,7 +963,7 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       h.sessionId,
       h.workerId,
       expect.anything(),
-      { preserveToSidecar: true },
+      expect.objectContaining({ preserveToSidecar: true }),
     );
     expect(h.worker.epoch).toBe(NEW_EPOCH);
     expect(h.worker.outputOffset).toBe(0);
@@ -899,9 +995,12 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       await h.service.activate(h.sessionId, h.workerId);
 
       // openai-api has no sdkResumed concept -- the failure record must omit
-      // the field entirely, not carry it as `undefined`.
+      // the field entirely, not carry it as `undefined`. R4: the default
+      // (marker append succeeds) is the PRIMARY preserve-and-declare path,
+      // so `preservation` reads `'in-band'` and `epoch` is the marker
+      // append's own (unchanged) epoch, not a fresh one.
       const info = h.service.getRestoreInfo(h.workerId);
-      expect(info).toEqual({ epoch: NEW_EPOCH, failed: true });
+      expect(info).toEqual({ epoch: MARKER_EPOCH, failed: true, preservation: 'in-band' });
       expect('sdkResumed' in (info as object)).toBe(false);
     });
 
@@ -977,7 +1076,8 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       await h.service.activate(h.sessionId, h.workerId);
 
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
-      expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({ failed: true });
+      // R4: default (marker append succeeds) is the PRIMARY path.
+      expect(h.recorder.onRestoreInfo).toHaveBeenCalledWith({ failed: true, preservation: 'in-band' });
     });
 
     it('does NOT invoke onRestoreInfo on a first-ever activation', async () => {
@@ -1050,7 +1150,12 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
       const h = setup({ everActivated: true, readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM } });
       await h.service.activate(h.sessionId, h.workerId);
 
-      expect(h.service.getRestoreInfo(h.workerId)).toEqual({ epoch: NEW_EPOCH, failed: true });
+      // R4: default (marker append succeeds) is the PRIMARY path.
+      expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+        epoch: MARKER_EPOCH,
+        failed: true,
+        preservation: 'in-band',
+      });
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
 
       h.fake.pushStdout('{"v":1,"type":"ready"}\n');
@@ -1058,7 +1163,11 @@ describe('EmbeddedAgentWorkerService — Transcript Restore (#1123)', () => {
 
       // Unchanged: still exactly the failure record, no `completed` field
       // ever appears, and no second push happened.
-      expect(h.service.getRestoreInfo(h.workerId)).toEqual({ epoch: NEW_EPOCH, failed: true });
+      expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+        epoch: MARKER_EPOCH,
+        failed: true,
+        preservation: 'in-band',
+      });
       expect(h.recorder.onRestoreInfo).toHaveBeenCalledTimes(1);
     });
   });
@@ -2204,10 +2313,15 @@ describe('EmbeddedAgentWorkerService — restore-info FAILURE form sdkResumed (#
     });
     await h.service.activate(h.sessionId, h.workerId);
 
+    // R4: default (marker append succeeds) is the PRIMARY path -- R6's
+    // persistent declaration is a FALLBACK-only write (see the dedicated
+    // R6 describe block below), so it does not fire here even though
+    // sdkSessionId survives.
     expect(h.service.getRestoreInfo(h.workerId)).toEqual({
-      epoch: NEW_EPOCH,
+      epoch: MARKER_EPOCH,
       failed: true,
       sdkResumed: true,
+      preservation: 'in-band',
     });
   });
 
@@ -2220,10 +2334,111 @@ describe('EmbeddedAgentWorkerService — restore-info FAILURE form sdkResumed (#
     await h.service.activate(h.sessionId, h.workerId);
 
     expect(h.service.getRestoreInfo(h.workerId)).toEqual({
-      epoch: NEW_EPOCH,
+      epoch: MARKER_EPOCH,
       failed: true,
       sdkResumed: false,
+      preservation: 'in-band',
     });
+  });
+});
+
+describe('EmbeddedAgentWorkerService — R4/R6 preservation state and persistent divergence declaration (#1447 stage 4)', () => {
+  it('R4: reports preservation "sidecar" on the FALLBACK path when the sidecar rename succeeds', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+      appendRestoreFailureMarkerThrows: true,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+      epoch: NEW_EPOCH,
+      failed: true,
+      preservation: 'sidecar',
+    });
+  });
+
+  it('R4: reports preservation "lost" on the FALLBACK path when the sidecar rename ALSO fails', async () => {
+    const h = setup({
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+      appendRestoreFailureMarkerThrows: true,
+      sidecarRenameSucceeds: false,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    expect(h.service.getRestoreInfo(h.workerId)).toEqual({
+      epoch: NEW_EPOCH,
+      failed: true,
+      preservation: 'lost',
+    });
+  });
+
+  it('R6: writes the persistent restore-failure-declaration line for a claude-sdk worker whose sdkSessionId survives the fallback reset', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      sdkSessionId: 'sess-prev',
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+      appendRestoreFailureMarkerThrows: true,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const declarationLine = JSON.stringify({ v: 1, type: 'restore-failure-declaration' });
+    const [, , , resetOpts] = h.resetWorkerOutput.mock.calls[0] as [
+      string,
+      string,
+      unknown,
+      { persistentMarkerLine?: string },
+    ];
+    expect(resetOpts.persistentMarkerLine).toBe(declarationLine);
+    // The fresh live file's sole content is the declaration line, so the
+    // worker's post-reset offset must reflect its byte length, not 0 --
+    // otherwise the next `output`/`history` message would misreport the
+    // stream's true length.
+    expect(h.worker.outputOffset).toBe(Buffer.byteLength(`${declarationLine}\n`, 'utf-8'));
+  });
+
+  it('R6: writes NO persistent declaration when the claude-sdk worker has no persisted sdkSessionId (nothing survives to declare)', async () => {
+    const h = setup({
+      definition: SDK_DEFINITION,
+      everActivated: true,
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+      appendRestoreFailureMarkerThrows: true,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const [, , , resetOpts] = h.resetWorkerOutput.mock.calls[0] as [
+      string,
+      string,
+      unknown,
+      { persistentMarkerLine?: string },
+    ];
+    expect(resetOpts.persistentMarkerLine).toBeUndefined();
+    expect(h.worker.outputOffset).toBe(0);
+  });
+
+  it('R6: writes NO persistent declaration for an openai-api worker even with a leftover sdkSessionId field (engine-gated, not field-gated)', async () => {
+    // openai-api never legitimately carries a persisted sdkSessionId, but
+    // the gate is written as an explicit engine check (not merely "field is
+    // non-null") precisely so this can never accidentally fire for the
+    // wrong engine.
+    const h = setup({
+      everActivated: true,
+      sdkSessionId: 'stray-value',
+      readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
+      appendRestoreFailureMarkerThrows: true,
+    });
+    await h.service.activate(h.sessionId, h.workerId);
+
+    const [, , , resetOpts] = h.resetWorkerOutput.mock.calls[0] as [
+      string,
+      string,
+      unknown,
+      { persistentMarkerLine?: string },
+    ];
+    expect(resetOpts.persistentMarkerLine).toBeUndefined();
+    expect(h.worker.outputOffset).toBe(0);
   });
 });
 
@@ -2622,21 +2837,24 @@ describe('EmbeddedAgentWorkerService — sdk-resume-failed handling (R1)', () =>
       readHistoryWithOffsetResult: { data: RESTORE_FAILING_STREAM },
     });
     await h.service.activate(h.sessionId, h.workerId);
+    // R4: default (marker append succeeds) is the PRIMARY path.
     expect(h.service.getRestoreInfo(h.workerId)).toEqual({
-      epoch: NEW_EPOCH,
+      epoch: MARKER_EPOCH,
       failed: true,
       sdkResumed: true,
+      preservation: 'in-band',
     });
 
     h.fake.pushStdout(sdkResumeFailed('not-found'));
     await waitFor(() => h.service.getRestoreInfo(h.workerId)?.sdkResumed === false);
 
     const correctionPush = h.recorder.onRestoreInfo.mock.calls.at(-1)?.[0];
-    expect(correctionPush).toEqual({ failed: true, sdkResumed: false });
+    expect(correctionPush).toEqual({ failed: true, sdkResumed: false, preservation: 'in-band' });
     expect(h.service.getRestoreInfo(h.workerId)).toEqual({
-      epoch: NEW_EPOCH,
+      epoch: MARKER_EPOCH,
       failed: true,
       sdkResumed: false,
+      preservation: 'in-band',
     });
   });
 

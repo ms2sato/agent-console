@@ -258,6 +258,11 @@ function setup(opts?: {
         const data = persisted.join('');
         return { data, stoppedAt: 'true-start' as const, epoch: 4242 };
       }) as never,
+      // Not exercised by this harness's fixtures (they always reconstruct
+      // successfully) -- present only to satisfy the DI seam's type.
+      appendRestoreFailureMarker: (async () => {
+        throw new Error('appendRestoreFailureMarker unexpectedly called in idle-eviction test harness');
+      }) as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: (async () => 'sk-test') as never,

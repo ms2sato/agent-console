@@ -184,6 +184,17 @@ export type WorkerErrorCode =
   | 'UNSUPPORTED_OPERATION' // Client message not valid for this worker type (e.g. input/resize on an embedded-agent worker)
   | 'MESSAGE_TOO_LARGE';    // embedded-user-message.text exceeds the wire byte cap
 
+/**
+ * Transcript Restore, R4 (#1447 stage 4): what actually happened to the
+ * pre-failure transcript on a restore failure. See the `restore-info`
+ * failure member of `WorkerServerMessage` below for the full rationale of
+ * each value -- this is that field's value type, factored out because it is
+ * repeated verbatim (server-internal worker state, wire message, and every
+ * client consumer down to `EmbeddedAgentWorkerView`'s copy-selection
+ * switches) rather than re-spelled at each site.
+ */
+export type RestorePreservation = 'in-band' | 'sidecar' | 'lost';
+
 export type WorkerServerMessage =
   // `offset` is the absolute end position in the worker's cumulative output
   // stream; `epoch` is the incarnation generation identifier (§3.1 / §3.4).
@@ -284,11 +295,31 @@ export type WorkerServerMessage =
   // restore that did not happen. See the block comment above this union
   // member for the full rationale (D1/D2/Loss, #1447/#1449, forward-compat
   // with stage 4).
+  //
+  // `preservation` (R4, #1447 stage 4): what actually happened to the
+  // pre-failure transcript, so the client's banner never claims more than
+  // is true.
+  //
+  // - `'in-band'`: R1's PRIMARY path -- a `restore-failure-boundary` marker
+  //   was appended to the SAME live stream with no reset. The old
+  //   transcript is still the visible display; only the banner's wording
+  //   changes (no "diagnostic copy" claim -- the copy IS the transcript).
+  // - `'sidecar'`: R1's FALLBACK path, and the best-effort rename to the
+  //   manifest-invisible `<workerId>.restore-failed.log` sidecar actually
+  //   succeeded. The banner may claim sidecar preservation.
+  // - `'lost'`: the fallback path ran AND the sidecar rename itself failed
+  //   (e.g. an I/O error on the same volume that caused the restore
+  //   failure in the first place). Nothing was preserved anywhere; the
+  //   banner must not claim it was.
+  // - **Absent**: a pre-stage-4 server. Renders today's unconditional
+  //   copy unchanged -- this is a wire-compat requirement, not merely a
+  //   default, so the field is optional rather than defaulted.
   | {
       type: 'restore-info';
       epoch: number;
       failed: true;
       sdkResumed?: boolean;
+      preservation?: RestorePreservation;
     };
 
 export interface WorkerActivityInfo {

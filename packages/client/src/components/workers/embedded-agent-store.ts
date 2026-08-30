@@ -12,6 +12,7 @@ import {
   type AppServerMessage,
   type EmbeddedAgentServerNotification,
   type ExitReason,
+  type RestorePreservation,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from '../../lib/websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
@@ -98,7 +99,30 @@ export type EmbeddedAgentChatEntry =
    * old transcript render with a silent hole where a real boundary was.
    */
   | { key: string; kind: 'context-handoff'; distillation: string }
-  | { key: string; kind: 'restore-repair'; toolCallIds: string[] }; // Transcript Restore (#1123)
+  | { key: string; kind: 'restore-repair'; toolCallIds: string[] } // Transcript Restore (#1123)
+  /**
+   * Transcript Restore, R2 (#1447 stage 4): the persisted
+   * `restore-failure-boundary` marker -- a reconstruction BOUNDARY of the
+   * same class as `context-compacted`, but with no summary to carry (memory
+   * starts from nothing at this boundary). Renders as a plain boundary line,
+   * same visual family as `context-compacted`/`context-handoff`, without
+   * their `<details>` disclosure since there is no summary to hide.
+   */
+  | { key: string; kind: 'restore-failure-boundary' }
+  /**
+   * Transcript Restore, R6 (#1447 stage 4): the persisted
+   * `restore-failure-declaration` marker -- written into the fresh
+   * (post-reset) live file when the FALLBACK path ran for a `claude-sdk`
+   * worker whose `sdkSessionId` survived the reset. Restore-TRANSPARENT
+   * (#1351's class), the same visual/rendering register as
+   * `turn-interrupted` -- a quiet, non-boundary notification row, not a
+   * reconstruction boundary. Declares that this worker's earlier
+   * conversation is not shown here but the agent may still remember it,
+   * and (unlike the incarnation-scoped #1449 banner) persists across every
+   * subsequent incarnation until the next reset, because the divergence it
+   * reports does too.
+   */
+  | { key: string; kind: 'restore-failure-declaration' };
 
 /**
  * Latest known context-window usage reading (Compaction).
@@ -184,6 +208,26 @@ export interface EmbeddedAgentSnapshot {
    * (#1449)".
    */
   restoreFailed: boolean;
+  /**
+   * Transcript Restore, R4 (#1447 stage 4): the `preservation` field of the
+   * most recently accepted `restore-info` FAILURE form for the current
+   * epoch, verbatim -- INCLUDING its absence, which is carried as
+   * `undefined` rather than normalised. Meaningless while `restoreFailed` is
+   * false; not reset independently of it.
+   *
+   * - `'in-band'`: R1's PRIMARY path -- the transcript is still the visible
+   *   display (`entries`), no reset happened. The banner must not claim a
+   *   separate "diagnostic copy" -- the copy IS the transcript.
+   * - `'sidecar'`: R1's FALLBACK path, and the best-effort sidecar rename
+   *   succeeded. The banner may claim sidecar preservation.
+   * - `'lost'`: the fallback path ran AND the sidecar rename itself failed.
+   *   Nothing was preserved anywhere; the banner must not claim it was.
+   * - `undefined`: a pre-stage-4 server (wire-compat), OR simply "no
+   *   restore-info accepted this epoch yet". EmbeddedAgentWorkerView.tsx
+   *   renders today's unconditional copy for this case, per the design
+   *   doc's "The client's exact copy, both directions".
+   */
+  preservation: RestorePreservation | undefined;
   /**
    * R1 (#1455): the worker's CURRENT exit state, independent of any
    * historical `exited` transcript ROW. Single writer: set from the
@@ -346,6 +390,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       restoredMessageCount: null,
       sdkResumed: undefined,
       restoreFailed: false,
+      preservation: undefined,
       currentExit: null,
     };
     this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
@@ -624,7 +669,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           // truthiness, matching this file's existing discipline for
           // `completed`/`sdkResumed`.
           if (message.failed === true) {
-            this.applyRestoreFailure(message.sdkResumed);
+            this.applyRestoreFailure(message.sdkResumed, message.preservation);
           } else {
             this.applyRestoreInfo(
               message.restoredMessageCount,
@@ -672,24 +717,52 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // never be echoed back in the old epoch. Reject so the caller (and
     // MessagePanel's draft-preservation) doesn't hang forever.
     this.rejectPendingSend('Worker restarted before the message was confirmed');
-    this.resetChatState();
     // activityState is worker-LIVENESS state (is the process alive, what is
-    // it doing), not display-content state -- it belongs here, in the
-    // epoch-replacement path only, NOT inside resetChatState() (which is
-    // also called from applyBytes's same-epoch fresh-load branch, where the
-    // worker incarnation hasn't changed and may still be genuinely
-    // mid-turn). A discarded incarnation's last-known activityState (e.g.
-    // 'active') must not keep gating the composer for a worker that no
-    // longer exists; see resetChatState's doc comment for the display-state
-    // fields that DO belong to a same-epoch fresh load too.
+    // it doing), not display-content state -- it belongs to this
+    // epoch-replacement path only, NOT to applyBytes's same-epoch fresh-load
+    // branch (which also calls resetChatState, where the worker incarnation
+    // hasn't changed and may still be genuinely mid-turn). A discarded
+    // incarnation's last-known activityState (e.g. 'active') must not keep
+    // gating the composer for a worker that no longer exists; see
+    // resetChatState's doc comment for the display-state fields that DO
+    // belong to a same-epoch fresh load too.
     // currentExit (#1455) is ALSO worker-liveness state by definition -- "the
     // worker's CURRENT exit state" -- so it belongs in this same
-    // epoch-replacement path, for the same reason and NOT in resetChatState():
-    // a superseded incarnation's stale exit must not keep driving the Restart
-    // affordance for a worker that no longer exists. Same discipline
-    // activityState already carries here (CodeRabbit review, cross-referencing
-    // the same-day #1480 fix for activityState in this same function).
-    this.patch({ activityState: 'unknown', currentExit: null });
+    // epoch-replacement path, for the same reason and NOT in resetChatState()'s
+    // unconditional fields: a superseded incarnation's stale exit must not
+    // keep driving the Restart affordance for a worker that no longer
+    // exists. Same discipline activityState already carries here (CodeRabbit
+    // review, cross-referencing the same-day #1480 fix for activityState in
+    // this same function).
+    // restoreFailed/preservation (#1447 stage 4 R2/C2 fix, CodeRabbit review)
+    // belong here too, and for the SAME reason activityState does: only a
+    // genuine epoch bump means a new incarnation's own restore-info is
+    // coming to re-declare (or not) the failure before any window where a
+    // stale value could be read. See resetChatState's doc comment for the
+    // full two-caller argument.
+    //
+    // All four fields below are passed to resetChatState() as its
+    // epoch-change-only extension, rather than patched here in a SEPARATE
+    // this.patch() call, so the whole epoch-reset update -- display-content
+    // fields plus these liveness/declaration fields -- reaches listeners in
+    // ONE publish (#1503, CodeRabbit review). resetChatState()'s own patch()
+    // and a second patch() here are each independently synchronous
+    // (patch() -> notify() runs listeners immediately), so splitting them
+    // let a subscriber observe an impossible intermediate snapshot between
+    // the two calls: entries already emptied by the first patch, but
+    // restoreFailed/preservation still carrying the STALE pre-reset
+    // declaration because the second patch hadn't run yet -- e.g.
+    // `preservation: 'in-band'` (which per the banner copy means "the
+    // earlier transcript is still shown above") coexisting with the exact
+    // `entries: []` that reset just produced. A declaration and the
+    // transcript state it describes must become visible together, not one
+    // publish apart.
+    this.resetChatState({
+      activityState: 'unknown',
+      currentExit: null,
+      restoreFailed: false,
+      preservation: undefined,
+    });
     this.epoch = newEpoch;
     this.lastOffset = 0;
     // Start (or restart, on a second epoch bump before the first resync
@@ -709,7 +782,28 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.requestHistory();
   }
 
-  private resetChatState(): void {
+  /**
+   * `epochChangeFields`, when provided, carries the fields that belong ONLY
+   * to the epoch-REPLACEMENT call site (beginEpochReset) -- see this
+   * function's own doc comment below for which fields those are and why.
+   * They are threaded through as a param and merged into this function's own
+   * `patch()` call, rather than left to a SEPARATE `this.patch()` call at the
+   * caller, so the epoch-change caller gets exactly ONE publish for its
+   * whole reset instead of two. `patch()` notifies listeners synchronously;
+   * two separate calls would let a subscriber observe the display-content
+   * fields already cleared (e.g. `entries: []`) while the liveness/
+   * declaration fields (e.g. `restoreFailed`/`preservation`) still carried
+   * their STALE pre-reset values, an impossible combination described in
+   * beginEpochReset's own comment (#1503, CodeRabbit review). The same-epoch
+   * call site (applyBytes) omits this argument, so its own patch stays
+   * limited to the display-content subset below.
+   */
+  private resetChatState(
+    epochChangeFields?: Pick<
+      EmbeddedAgentSnapshot,
+      'activityState' | 'currentExit' | 'restoreFailed' | 'preservation'
+    >,
+  ): void {
     this.splitter = new NdjsonLineSplitter();
     this.openAssistantIndexByTurnId.clear();
     this.openThinkingIndexByTurnId.clear();
@@ -721,31 +815,63 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // pending that message. Also allows a redelivered restore-repair note to
     // re-render against the wiped list.
     this.restoreRepairRenderedThisLoad = false;
-    // restoreFailed (#1449) resets alongside the rest of this epoch's
-    // restore state: every restore FAILURE bumps the epoch (resetWorkerOutput
-    // mints a fresh one), so this reset always runs before the new
-    // incarnation's own restore-info (success or failure) arrives and
-    // re-declares it -- there is no window where a stale `true` could be
-    // read as describing the new incarnation.
-    // Deliberately does NOT touch activityState. This function is shared by
-    // TWO call sites with different semantics: beginEpochReset (a genuine
-    // incarnation change) and applyBytes's same-epoch `isFresh` branch (the
-    // server pruned/evicted its buffer, or a resync's fresh load -- the SAME
-    // live worker incarnation, possibly mid-turn). Every field reset here is
-    // DISPLAY-CONTENT state (what the chat view currently shows), which is
-    // legitimately rebuilt on a same-epoch fresh load too. activityState is
-    // WORKER-LIVENESS state (is the process alive, what is it doing) --
-    // resetting it here would wrongly clear a genuinely-active worker's
-    // state on a same-epoch fresh load, wrongly releasing the composer's
-    // send-gate mid-turn. It is reset separately, only in beginEpochReset,
-    // where the incarnation has actually changed. When adding a new field to
-    // this function, ask which of the two semantics it belongs to.
+    // This function is shared by TWO call sites with different semantics,
+    // and every field reset here must be re-justified against BOTH of them:
+    //
+    //   1. beginEpochReset -- a genuine incarnation change (the worker
+    //      restarted server-side, or the fallback restore-failure route
+    //      minted a fresh epoch). The next incarnation's own restore-info
+    //      (success or failure) is guaranteed to arrive and re-declare
+    //      whatever it needs to, before any window where a stale value
+    //      could be read as describing the NEW incarnation.
+    //   2. applyBytes's same-epoch `isFresh` branch -- the server
+    //      pruned/evicted its buffer, or a resync's fresh load
+    //      (`requestHistory()` fires on EVERY WebSocket reconnect,
+    //      including a plain network blip or tab wake, not just a worker
+    //      restart). The SAME live worker incarnation, possibly mid-turn.
+    //      No new restore-info is coming -- a `history` response never
+    //      carries one -- so nothing will ever re-declare a field cleared
+    //      here.
+    //
+    // Fields legitimately rebuilt by BOTH call sites are DISPLAY-CONTENT
+    // state (what the chat view currently shows, entirely re-derivable from
+    // the fresh payload plus whatever re-declaration follows): entries,
+    // restoring, restoredMessageCount, sdkResumed.
+    //
+    // Fields that describe something call site 2 is powerless to
+    // re-declare must be excluded from the unconditional part of this
+    // patch() and are reset ONLY via `epochChangeFields`, passed in by
+    // beginEpochReset alongside activityState:
+    //   - activityState (worker-LIVENESS state -- is the process alive,
+    //     what is it doing) -- resetting it here would wrongly clear a
+    //     genuinely-active worker's state on a same-epoch fresh load,
+    //     wrongly releasing the composer's send-gate mid-turn.
+    //   - restoreFailed/preservation (#1449, #1447 stage 4 R2/C2 -- a
+    //     declared divergence must not silently disappear) -- these
+    //     describe the CURRENT incarnation's restore outcome. On the
+    //     PRIMARY (in-band) route the failure is declared without ever
+    //     bumping the epoch (see `applyRestoreFailure`), so a same-epoch
+    //     fresh load is exactly the case where a genuinely-still-true
+    //     failure would otherwise be wiped with nothing left to
+    //     re-declare it -- silently dropping the banner on the next
+    //     ordinary reconnect even though the worker never restarted.
+    //   - currentExit (#1455) -- same worker-LIVENESS reasoning as
+    //     activityState above.
+    //
+    // When adding a new field to this function, ask which of the two
+    // semantics above it belongs to, for EACH call site -- not just the one
+    // you happened to be thinking about when you wrote the code. A field
+    // that belongs to call site 1 only must be threaded through
+    // `epochChangeFields` and merged into THIS SAME patch() call, never
+    // written via a separate `this.patch()` at the caller -- see this
+    // function's own doc comment above for why (coherency: one publish per
+    // epoch reset, not two).
     this.patch({
       entries: [],
       restoring: false,
       restoredMessageCount: null,
       sdkResumed: undefined,
-      restoreFailed: false,
+      ...epochChangeFields,
     });
   }
 
@@ -849,18 +975,40 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
   }
 
   /**
-   * Transcript Restore (#1449): apply a `restore-info` FAILURE message (fast
-   * path push or bootstrap re-delivery -- same caller as `applyRestoreInfo`,
-   * already passed through acceptEpoch). Carries none of the success form's
-   * reconstruction-shaped fields, so unlike `applyRestoreInfo` this patches
-   * only `restoreFailed`/`sdkResumed` -- `entries`/`restoredMessageCount`/
-   * `restoring` are left exactly as `resetChatState` set them for this epoch
-   * (there is nothing to report about a restore that did not happen).
+   * Transcript Restore (#1449, extended #1447 stage 4 R3): apply a
+   * `restore-info` FAILURE message (fast path push or bootstrap re-delivery
+   * -- same caller as `applyRestoreInfo`, already passed through
+   * acceptEpoch). Carries none of the success form's reconstruction-shaped
+   * fields, so unlike `applyRestoreInfo` there is nothing to append to
+   * `entries` here.
+   *
+   * R3 supersedes #1473's original "leaves entries/restoredMessageCount/
+   * restoring untouched" pin, which was correct only for the reset
+   * mechanism that pin was written against. R1 no longer bumps the epoch on
+   * the PRIMARY (in-band) failure route, so this function -- not
+   * `resetChatState` -- is now the sole clearer of this epoch's
+   * incarnation-scoped restore state on that route: `restoredMessageCount`
+   * to null, `restoring` to false. `entries` is deliberately NEVER touched
+   * here, on EITHER route:
+   *
+   * - PRIMARY (in-band) route: no epoch bump happened, so `entries` still
+   *   holds the pre-failure transcript exactly as C1 requires -- clearing it
+   *   here would destroy the very thing this route exists to preserve.
+   * - FALLBACK (sidecar/lost) route: the epoch DID bump, so `resetChatState`
+   *   already wiped `entries` to `[]` (and already reset
+   *   `restoredMessageCount`/`restoring`) before this message is applied --
+   *   this function's clearing is redundant-but-harmless on this route, and
+   *   not touching `entries` here is correct because there is nothing left
+   *   to preserve or clobber.
+   *
    * Idempotent about re-delivery, same as `applyRestoreInfo`: dual delivery
    * (fast-path push + bootstrap redelivery) and the R1 correction push all
    * call this the same way, and repatching the same values is a no-op.
    */
-  private applyRestoreFailure(sdkResumed: boolean | undefined): void {
+  private applyRestoreFailure(
+    sdkResumed: boolean | undefined,
+    preservation: RestorePreservation | undefined,
+  ): void {
     this.patch({
       restoreFailed: true,
       // R1: carried through verbatim, absence included -- same correction-push
@@ -868,6 +1016,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       // whole message to correct the flag downward once a resume outcome is
       // known, so the latest accepted message is always the current answer).
       sdkResumed,
+      // R4 (#1447 stage 4): carried through verbatim, absence included --
+      // see the snapshot field's doc comment.
+      preservation,
+      // R3: unconditional on every failure-form acceptance -- see this
+      // function's doc comment for why this is the ONLY clearing on the
+      // primary route and a harmless no-op on the fallback route.
+      restoredMessageCount: null,
+      restoring: false,
     });
   }
 
@@ -1059,6 +1215,26 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // engine's own `turn-error` plus the divergence notice driven by
         // `restore-info.sdkResumed`, not this event. Not chat rows.
         return false;
+      case 'restore-failure-boundary':
+        // Transcript Restore, R2 (#1447 stage 4): a reconstruction boundary,
+        // rendered as a plain marker line -- see the entry kind's doc
+        // comment above.
+        this.pushEntry({
+          key: `restore-failure-boundary-${this.entryKeyCounter++}`,
+          kind: 'restore-failure-boundary',
+        });
+        return true;
+      case 'restore-failure-declaration':
+        // Transcript Restore, R6 (#1447 stage 4): restore-TRANSPARENT --
+        // rendered as a quiet notification row, the same register as
+        // `turn-interrupted`, deliberately WITHOUT `closeAllOpenThinking()`:
+        // that call exists for events marking an in-flight turn as orphaned
+        // by a process boundary, which is not what this row declares.
+        this.pushEntry({
+          key: `restore-failure-declaration-${this.entryKeyCounter++}`,
+          kind: 'restore-failure-declaration',
+        });
+        return true;
       default: {
         const _exhaustive: never = event;
         return _exhaustive;

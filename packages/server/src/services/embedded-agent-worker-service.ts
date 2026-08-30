@@ -248,6 +248,7 @@ export interface EmbeddedAgentWorkerServiceDeps {
     | 'readHistoryWithOffset'
     | 'readHistoryForRestore'
     | 'hasEverBeenActivated'
+    | 'appendRestoreFailureMarker'
   >;
   /** MCP Streamable-HTTP base URL delivered to the loop in the init message. */
   getMcpBaseUrl: () => string;
@@ -783,23 +784,89 @@ export class EmbeddedAgentWorkerService {
           const isKnownRestoreFailure = err instanceof RestoreReconstructionError;
           logger.warn(
             { sessionId, workerId, err, knownRestoreFailure: isKnownRestoreFailure },
-            'Transcript restore failed; falling back to v1 reset (preserving pre-reset log to sidecar)',
+            'Transcript restore failed; attempting preserve-and-declare in place (R1)',
           );
-          const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(sessionId, workerId, resolver, {
-            preserveToSidecar: true,
-          });
-          worker.epoch = newEpoch;
-          worker.outputOffset = 0;
-          // Declare the failure rather than leaving `restoreInfo`
-          // null -- see the `RestoreInfo` doc comment for D1/D2/Loss.
+
+          // R1: preserve-and-declare is PRIMARY, reset is the FALLBACK.
+          // Append a `restore-failure-boundary` marker (R2) to the SAME
+          // live stream -- no reset, no new epoch, every existing byte
+          // kept. Only when this append itself fails do we fall back to
+          // v1's sidecar+reset behaviour, unchanged.
+          const boundaryMarkerLine = JSON.stringify({
+            v: 1,
+            type: 'restore-failure-boundary',
+          } satisfies EmbeddedAgentServerEvent);
+          let preserved: { epoch: number; offset: number } | null = null;
+          try {
+            preserved = await this.deps.workerOutputFileManager.appendRestoreFailureMarker(
+              sessionId,
+              workerId,
+              resolver,
+              boundaryMarkerLine,
+            );
+          } catch (markerErr) {
+            logger.warn(
+              { sessionId, workerId, err: markerErr },
+              'Restore-failure marker append itself failed; falling back to v1 reset (preserving pre-reset log to sidecar)',
+            );
+          }
+
           // `resumeId` is already resolved above (same expression the
           // success branch uses); `resumeId === null` is a fresh session
           // with genuinely no continuity, which is `false` here exactly as
-          // it is on the success path.
-          restoreInfo = {
-            failed: true,
-            ...(definition.engine === 'claude-sdk' ? { sdkResumed: resumeId !== null } : {}),
-          };
+          // it is on the success path. Applies identically on both routes
+          // below.
+          const sdkResumedField =
+            definition.engine === 'claude-sdk' ? { sdkResumed: resumeId !== null } : {};
+
+          if (preserved !== null) {
+            // Primary path: nothing reset, so the epoch stays whatever it
+            // currently is on disk -- sync from the marker append's own
+            // manifest read, the same pattern the success branch's
+            // `currentEpoch`/`currentOffset` sync uses.
+            worker.epoch = preserved.epoch;
+            worker.outputOffset = preserved.offset;
+            restoreInfo = {
+              failed: true,
+              preservation: 'in-band',
+              ...sdkResumedField,
+            };
+          } else {
+            // Fallback path: byte-identical to today's reset+sidecar,
+            // plus R6's persistent declaration line for a `claude-sdk`
+            // worker whose SDK-side memory survives this reset --
+            // `openai-api` writes none, since reconstruction IS
+            // that engine's memory and a Loss there is already symmetric
+            // and already declared by the failure form above.
+            let sidecarSucceeded = false;
+            const writesDivergenceDeclaration =
+              definition.engine === 'claude-sdk' && worker.sdkSessionId !== null;
+            const declarationLine = writesDivergenceDeclaration
+              ? JSON.stringify({ v: 1, type: 'restore-failure-declaration' } satisfies EmbeddedAgentServerEvent)
+              : undefined;
+            const newEpoch = await this.deps.workerOutputFileManager.resetWorkerOutput(
+              sessionId,
+              workerId,
+              resolver,
+              {
+                preserveToSidecar: true,
+                onSidecarResult: (succeeded) => {
+                  sidecarSucceeded = succeeded;
+                },
+                ...(declarationLine !== undefined ? { persistentMarkerLine: declarationLine } : {}),
+              },
+            );
+            worker.epoch = newEpoch;
+            worker.outputOffset =
+              declarationLine !== undefined ? Buffer.byteLength(`${declarationLine}\n`, 'utf-8') : 0;
+            // Declare the failure rather than leaving `restoreInfo`
+            // null -- see the `RestoreInfo` doc comment for D1/D2/Loss.
+            restoreInfo = {
+              failed: true,
+              preservation: sidecarSucceeded ? 'sidecar' : 'lost',
+              ...sdkResumedField,
+            };
+          }
         }
       }
 

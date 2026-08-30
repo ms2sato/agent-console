@@ -204,6 +204,14 @@ const RestoreInfoFailureSchema = v.strictObject({
   epoch: v.pipe(v.number(), v.integer(), v.minValue(0)),
   failed: v.literal(true),
   sdkResumed: sdkResumedSchema,
+  /**
+   * R4 (#1447 stage 4): what happened to the pre-failure transcript. See
+   * `types/session.ts`'s `restore-info` failure member for the full
+   * rationale of each value; this comment does not restate it. Absent means
+   * a pre-stage-4 server -- optional rather than defaulted, a wire-compat
+   * requirement.
+   */
+  preservation: v.optional(v.picklist(['in-band', 'sidecar', 'lost'])),
 });
 
 export const RestoreInfoMessageSchema = v.union([
