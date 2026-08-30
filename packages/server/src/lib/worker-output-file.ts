@@ -1019,7 +1019,6 @@ export class WorkerOutputFileManager {
     }
 
     const parts: string[] = [liveContent];
-    let lineTotal = liveLineCount;
     try {
       await this.walkArchiveSegmentsBackward(
         sessionId,
@@ -1029,10 +1028,34 @@ export class WorkerOutputFileManager {
         parts,
         Buffer.byteLength(liveContent, 'utf-8'),
         maxBytes,
-        (segmentText) => {
-          lineTotal += this.countLines(segmentText);
-          return lineTotal >= maxLines;
-        },
+        // Count lines from the ASSEMBLED data (`parts.join('')`), not by
+        // summing each segment's own line count independently. The cut's
+        // documented no-usable-newline fallback (see `cutSegment`'s comment)
+        // can leave one NDJSON record split across the archive/live
+        // boundary -- its tail already counted inside
+        // `liveContent`, its head arriving now as this segment's own
+        // trailing fragment. Summing per-segment counts treats that as two
+        // lines instead of one, so the walk could stop one segment early and
+        // hand `getLastNLines` an assembled string with fewer true records
+        // than `maxLines`. Re-deriving the count from the joined string is
+        // what `getLastNLines` itself does for the final trim, so the
+        // stop-condition and the trim now agree on the same definition of
+        // "how many lines are here".
+        //
+        // Re-joining and re-counting the whole assembled string on every
+        // segment is O(n^2) in segment count, and was measured rather than
+        // assumed acceptable: the actual #1506 QA reproduction (29 small
+        // segments, WORKER_OUTPUT_FILE_MAX_SIZE=6000) costs ~4ms; a
+        // deliberately pathological 200-segment walk costs ~20ms; and the
+        // byte-cap-bounded worst case (WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES's
+        // default 16MB / a 2MB default segment size, i.e. the most segments
+        // any single walk can ever visit regardless of maxLines) costs ~80ms
+        // for 8 iterations of joining a string that grows to 16MB. All three
+        // are a one-time cost inside a single history response, nowhere near
+        // the 5s HISTORY_REQUEST_TIMEOUT_MS in routes.ts -- kept as the
+        // simple, obviously-correct form rather than an incrementally-
+        // corrected counter (2026-08-30 measurement).
+        () => this.countLines(parts.join('')) >= maxLines,
       );
     } catch (error) {
       // A damaged archive segment (non-ENOENT decompression failure) must not
