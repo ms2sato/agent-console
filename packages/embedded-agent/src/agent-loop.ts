@@ -24,6 +24,7 @@ import {
   type ToolDefinition,
 } from './providers/types.js';
 import { isContextOverflowError, extractProviderStatedLimit } from './context-overflow.js';
+import { detectClampedReading } from './window-drift.js';
 import { truncateToBytes } from './truncate.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
 import {
@@ -147,6 +148,14 @@ interface ProviderToolCall {
 interface TurnUsage {
   promptTokens: number;
   estimated: boolean;
+  /**
+   * Window drift, signal 2: this reading bears every mark of having been
+   * clamped by the provider to its own input limit. Decided where the reading
+   * is produced, because that is the only place the REQUEST is still in hand
+   * -- the predicate compares the provider's number against our estimate of
+   * what we sent, and nothing downstream of here still has the messages.
+   */
+  appearsClamped?: true;
 }
 
 /**
@@ -975,7 +984,17 @@ export class AgentLoop {
 
     const usage: TurnUsage =
       providerUsage !== undefined
-        ? { promptTokens: providerUsage.promptTokens, estimated: false }
+        ? {
+            promptTokens: providerUsage.promptTokens,
+            estimated: false,
+            ...(detectClampedReading(
+              { promptTokens: providerUsage.promptTokens, estimated: false },
+              this.deps.compaction.contextWindowTokens,
+              estimateTokensFromChars(messages),
+            ) !== undefined
+              ? { appearsClamped: true as const }
+              : {}),
+          }
         : { promptTokens: estimateTokensFromChars(messages), estimated: true };
 
     return { kind: 'ok', text, toolCalls, usage };
@@ -1336,6 +1355,7 @@ export class AgentLoop {
       type: 'context-usage',
       promptTokens: usage.promptTokens,
       estimated: usage.estimated,
+      ...(usage.appearsClamped === true ? { appearsClamped: true as const } : {}),
     });
   }
 }

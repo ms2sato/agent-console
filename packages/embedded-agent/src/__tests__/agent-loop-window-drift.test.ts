@@ -306,3 +306,98 @@ describe('signal 3: an absorbed overflow carries the stated limit on its boundar
     expect(markers[0].providerStatedWindowTokens).toBeUndefined();
   });
 });
+
+describe('signal 2: a clamped reading reaches the emitted context-usage event', () => {
+  /*
+   * THE CASE THIS PR SHIPPED WITHOUT, and the reason it is written at the loop
+   * rather than at the predicate: `window-drift.test.ts` measured that the
+   * predicate answers correctly, and could not notice that nothing called it.
+   * Detection existed, the field existed, the client rendered it, its reach
+   * was measured by mutation, and the browser showed it -- because the QA stub
+   * injected the flag, standing in for exactly the missing wiring. Every
+   * instrument pointed at the predicate; none pointed at the call.
+   *
+   * So these assert the EMITTED EVENT. A unit test proves a condition is
+   * right; only this shape proves the condition is used.
+   *
+   *   m-s2-1  never evaluate the detector at the usage site
+   *           -> 1 fail, alone: 'the emitted event carries the flag'. This is
+   *              the mutation that reproduces the shipped defect exactly.
+   *   m-s2-2  set the flag unconditionally on every measured reading
+   *           -> 1 fail, alone: 'an ordinary reading emits no flag'.
+   */
+  const usageEvents = (events: EmbeddedAgentEvent[]) =>
+    events.filter((e): e is Extract<EmbeddedAgentEvent, { type: 'context-usage' }> => e.type === 'context-usage');
+
+  /**
+   * One turn, one provider reply, whose reported prompt tokens the caller
+   * chooses. `question` sizes the request: the predicate needs our own
+   * estimate of what was sent to exceed the provider's number.
+   */
+  const runTurnReporting = async (
+    promptTokens: number,
+    question: string,
+    contextWindowTokens: number | undefined,
+  ): Promise<EmbeddedAgentEvent[]> => {
+    const events: EmbeddedAgentEvent[] = [];
+    const adapter = new ScriptedAdapter([
+      {
+        kind: 'events',
+        events: [
+          { type: 'text-delta', text: 'ok' },
+          {
+            type: 'done',
+            finishReason: 'stop',
+            usage: { promptTokens, completionTokens: 1, totalTokens: promptTokens + 1 },
+          },
+        ],
+      },
+    ]);
+    const deps: AgentLoopDeps = {
+      model: 'm',
+      tools: [],
+      executor: new StubExecutor(),
+      emit: (event) => events.push(event),
+      systemPrompt: 'SYS',
+      maxToolIterations: 25,
+      sleep: async () => {},
+      reassembleSystemPrompt: async () => 'SYS',
+      loadCompactionPrompt: async () => 'DISTILL_PROMPT',
+      adapter,
+      compaction: { auto: false, contextWindowTokens },
+    };
+    await new AgentLoop(deps).runTurn('t1', question);
+    return events;
+  };
+
+  // Four chars per estimated token, so this is worth ~50,000 to the estimator
+  // -- comfortably above the 4,096-aligned reading below it, which is what the
+  // predicate's fourth condition requires.
+  const LARGE_QUESTION = 'x'.repeat(200_000);
+
+  it('the emitted event carries the flag when the reading bears the marks of a clamp', async () => {
+    const events = await runTurnReporting(8_192, LARGE_QUESTION, 1_000_000);
+
+    const usage = usageEvents(events);
+    expect(usage.length).toBeGreaterThan(0);
+    expect(usage[usage.length - 1].appearsClamped).toBe(true);
+  });
+
+  it('an ordinary reading emits no flag', async () => {
+    // Same shape, a reading that is not 4,096-aligned. The negative half: with
+    // the flag set unconditionally, the case above passes in both worlds.
+    const events = await runTurnReporting(8_190, LARGE_QUESTION, 1_000_000);
+
+    const usage = usageEvents(events);
+    expect(usage.length).toBeGreaterThan(0);
+    expect(usage[usage.length - 1].appearsClamped).toBeUndefined();
+  });
+
+  it('no declared window means no flag, even on a reading that otherwise fits', async () => {
+    const events = await runTurnReporting(8_192, LARGE_QUESTION, undefined);
+
+    const usage = usageEvents(events);
+    expect(usage.length).toBeGreaterThan(0);
+    expect(usage[usage.length - 1].appearsClamped).toBeUndefined();
+  });
+});
