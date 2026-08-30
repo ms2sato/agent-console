@@ -1280,7 +1280,11 @@ Per [#1447](https://github.com/ms2sato/agent-console/issues/1447)'s "C2 refineme
 | `claude-sdk` | `false` (resume failed too, corrected downward by the SAME `sdk-resume-failed` / session-id-mismatch machinery the success form already uses) | Loss |
 | `openai-api` | absent (this engine has no such concept) | Loss |
 
-Rendering discipline mirrors the success form's existing rule: branch on explicit `=== true` / `=== false` / absence, **never on truthiness** -- an absent field (a message from an older server that predates this Issue) must render as it did before #1449 introduced the failure form, not as either D2 or Loss.
+Rendering discipline mirrors the success form's explicit `=== true` / `=== false` / absence branching, **never truthiness** -- but unlike the success form, an absent `sdkResumed` on the FAILURE form is not itself the "show nothing" case; what absence means depends on which engine the message is confirmed to be from:
+
+- **Confirmed `claude-sdk`, absent.** Only `=== false` ever selects Loss (the resume outcome is settled and negative); everything else -- `true`, or the still-unsettled `undefined` before the resume's outcome is known -- renders D2. Absence therefore renders D2 here, exactly like `true` does, honestly reflecting "not yet known to have failed."
+- **Confirmed `openai-api`.** `sdkResumed` is never sent at all (this engine has no such concept), so it is unconditionally absent on every failure form this engine produces -- and Loss renders regardless, per the derivation table above, which does not consult `sdkResumed` on this branch.
+- **Engine not yet confirmed** (registry still loading, or a dangling/unmatched `embeddedAgentId`) -- neither banner renders, for the same reason the two pre-existing notices above gate on the CONFIRMED `isSdkEngine`/`isOpenaiApiEngine` checks rather than `!isSdkEngine`: showing a direction before the engine is known could show the wrong one.
 
 **The client's exact copy, both directions**, as persistent, non-dismissable banners (`EmbeddedAgentWorkerView.tsx`, same visual family as the existing notices):
 
