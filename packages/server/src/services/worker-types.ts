@@ -9,15 +9,86 @@ import type { Subprocess, FileSink } from 'bun';
 import type { AgentActivityState, ExitReason } from '@agent-console/shared';
 import type { PtyInstance } from '../lib/pty-provider.js';
 import type { ActivityDetector } from './activity-detector.js';
-// Type-only import back into embedded-agent-worker-service.ts, which itself
-// type-only imports `InternalEmbeddedAgentWorker` FROM this file -- not a
-// real circular dependency (type-only imports are erased at build time).
-// Referenced rather than re-declared: a hand-written copy of `RestoreInfo`'s
-// shape does not fail to compile when it gains a member, so the two would
-// silently drift -- the same "referenced rather than re-declared" pattern
-// `session-manager.ts`'s `getEmbeddedAgentRestoreInfo` already uses for this
-// exact type.
-import type { RestoreInfo } from './embedded-agent-worker-service.js';
+
+/**
+ * Transcript Restore: what the client is told about this incarnation's
+ * restore -- success or failure (#1449). Mirrors the `restore-info`
+ * `WorkerServerMessage` wire shape in `@agent-console/shared`'s
+ * `types/session.ts` exactly (minus `type`/`epoch`, which are added by
+ * `EmbeddedAgentWorkerService.getRestoreInfo` / routes.ts).
+ *
+ * Lives here rather than in `embedded-agent-worker-service.ts` (where it was
+ * first defined) because its scope is "what a worker callback is told about
+ * a restore" -- a `worker-types.ts`-level concept, this file's `WorkerCallbacks.
+ * onRestoreInfo` below being the direct consumer -- not an embedded-agent-
+ * service-level one; it only started there because that was the first module
+ * that needed it (`design-principles.md`: a type's home is the scope of the
+ * concept it models, not which module first needed it). `embedded-agent-
+ * worker-service.ts` imports and re-exports this type rather than defining it,
+ * so its own consumers (session-manager.ts, tests) see no path change.
+ *
+ * A prior version of this file instead imported `RestoreInfo` type-only FROM
+ * `embedded-agent-worker-service.ts`. That closed a real circular
+ * dependency -- `embedded-agent-worker-service.ts` -> `internal-types.ts` ->
+ * `worker-types.ts` -> (back to) `embedded-agent-worker-service.ts` -- caught
+ * by CI's `madge --circular` (Structural Metrics), NOT by `tsc --noEmit`:
+ * `tsc` erases type-only imports before its own cycle-shaped diagnostics
+ * would apply, but `madge`'s static import-graph analysis parses import
+ * statements syntactically and does not distinguish `import type` from a
+ * value import -- a type-only edge is exactly as cyclic to it as any other.
+ * `session-manager.ts`'s pre-existing `import { type RestoreInfo } from
+ * './embedded-agent-worker-service.js'` never hit this because that file
+ * sits outside the `internal-types.ts` -> `worker-types.ts` chain
+ * `embedded-agent-worker-service.ts` is itself already part of (via its own
+ * `import type { InternalSession } from './internal-types.js'`) -- so
+ * "referenced, not re-declared" is safe FROM a file outside that chain, and
+ * unsafe INTO a file inside it. A future application of that pattern should
+ * check which side of this chain the referencing file is on before assuming
+ * `tsc --noEmit` clean means cycle-free.
+ *
+ * `sdkResumed` is R1's addition and is THREE-VALUED -- `undefined` means
+ * "this engine has no such concept" (`openai-api` never sets it), `false`
+ * means "this incarnation's SDK session did not resume" -- defined by the
+ * OUTCOME, never by an attempt or an intent: one of its four routes is a
+ * worker with no persisted session id, where neither exists. The route list
+ * lives with the wire type in `types/session.ts`. Collapsing `undefined`
+ * with `false` via a negation would show a divergence notice on every
+ * `openai-api` worker, which is why consumers test `=== false`. This applies
+ * IDENTICALLY to both members of the union below.
+ *
+ * Per #1447's C2 refinement: a divergence between what the model remembers
+ * and what the display shows has a direction. D1 (display ahead of memory)
+ * is what the success member's `sdkResumed: false` means. D2 (memory ahead
+ * of display -- `claude-sdk` restore failure, `sdkSessionId` survives) and
+ * Loss (both gone -- `openai-api` restore failure) are both carried by the
+ * `failed: true` member below; the client derives D2 vs Loss from engine +
+ * `sdkResumed`. See #1447 and #1449 for the full framework, not restated
+ * here.
+ *
+ * This failure member is designed to survive into #1447 stage 4 as its
+ * declaration channel, unchanged: stage 4 changes what gets PRESERVED
+ * (sidecar -> in-band display), not HOW a failure is declared.
+ */
+export type RestoreInfo =
+  | {
+      failed?: false;
+      /**
+       * Passed through verbatim from `reconstructConversation`'s outcome,
+       * which is the single writer of this count -- see its JSDoc for the
+       * definition (transcript-derived entries, compaction summary
+       * included, synthetic system prompt excluded). This layer must not
+       * derive it from the conversation array: doing so requires knowing
+       * the seed's shape, which is the restore module's private business.
+       */
+      restoredMessageCount: number;
+      repairedToolCallIds: string[];
+      completed: boolean;
+      sdkResumed?: boolean;
+    }
+  | {
+      failed: true;
+      sdkResumed?: boolean;
+    };
 
 /**
  * Callbacks for worker lifecycle events (data, exit, activity changes).

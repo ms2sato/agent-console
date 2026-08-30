@@ -17,6 +17,7 @@ import type {
   InternalWorker,
   InternalPtyWorker,
   WorkerCallbacks,
+  RestoreInfo,
 } from './worker-types.js';
 import type { InternalSession, SessionCreationContext } from './internal-types.js';
 import { WorkerManager } from './worker-manager.js';
@@ -24,7 +25,6 @@ import { WorkerLifecycleManager, type RestoreWorkerResult } from './worker-lifec
 import {
   EmbeddedAgentWorkerService,
   EmbeddedMessageDeliveryError,
-  type RestoreInfo,
   type SendUserMessageResult,
 } from './embedded-agent-worker-service.js';
 import type { SpawnAsUserFn, runAsUser } from './privilege-elevation.js';
