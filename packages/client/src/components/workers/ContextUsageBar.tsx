@@ -66,23 +66,56 @@ export function ContextUsageBar({
       : ratio >= threshold - AMBER_BAND_MARGIN
         ? 'bg-amber-500'
         : 'bg-gray-500';
-  const title =
+  // A clamped reading makes the gauge itself untrustworthy, because the
+  // denominator is a window the provider does not honour. The warning is
+  // placed here, on the widget that performs that division, rather than in
+  // the transcript: a reader who wonders what the bar is telling them meets
+  // the reason it may be telling them the wrong thing.
+  const clamped = contextUsage?.appearsClamped === true;
+  const baseTitle =
     contextUsage !== null
       ? `${contextUsage.estimated ? '~' : ''}${Math.round(pct)}% (${contextUsage.promptTokens} / ${contextWindowTokens} tokens${
           contextUsage.estimated ? '; estimated' : ''
         })`
       : undefined;
+  const title =
+    contextUsage !== null && contextUsage.appearsClamped === true
+      ? `${baseTitle} -- this reading looks capped at ${contextUsage.promptTokens} tokens, ` +
+        `below the ${contextWindowTokens} configured here, so the provider may be silently ` +
+        `dropping input and this percentage is measured against a window larger than the ` +
+        `model accepts. Check the agent's context window setting.`
+      : baseTitle;
 
   return (
     <div
-      className="h-0.5 shrink-0 overflow-hidden bg-slate-800"
+      className={`h-0.5 shrink-0 overflow-hidden bg-slate-800${clamped ? ' ring-1 ring-amber-400/70' : ''}`}
       role="progressbar"
       aria-valuenow={Math.round(pct)}
       aria-valuemin={0}
       aria-valuemax={100}
+      aria-invalid={clamped || undefined}
       title={title}
     >
-      <div className={`h-full ${color}`} style={{ width: `${pct}%` }} />
+      <div
+        className={`h-full ${color}`}
+        style={{
+          width: `${pct}%`,
+          // Hatching the fill says "do not read this length literally" without
+          // a second colour scale or any motion, keeping the bar's register.
+          //
+          // Hex rather than `rgba()` for the stripe: happy-dom drops a
+          // gradient containing `rgba(...)` from the inline style entirely,
+          // so the value never reaches a test assertion. Valid CSS either
+          // way and a real browser renders both; the opaque stripe simply
+          // masks the fill colour instead of darkening it.
+          ...(clamped
+            ? {
+                backgroundImage:
+                  'repeating-linear-gradient(45deg, #0f172a 0, #0f172a 3px, transparent 3px, transparent 6px)',
+              }
+            : {}),
+        }}
+      />
     </div>
   );
 }

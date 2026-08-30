@@ -90,6 +90,13 @@ export type EmbeddedAgentChatEntry =
       /** See the wire event's doc comment: how much context this compaction consumed and produced. */
       preTokens?: number;
       postTokens?: number;
+      /**
+       * The input limit the PROVIDER named, when this compaction was forced by
+       * an over-window rejection that stated one. Their number, not ours --
+       * contrast `appearsClamped` on a usage reading, which is our own
+       * judgement and therefore carries none.
+       */
+      providerStatedWindowTokens?: number;
     }
   /**
    * LEGACY, retained deliberately (#1401): no engine emits `context-handoff`
@@ -134,6 +141,19 @@ export type EmbeddedAgentChatEntry =
 export interface EmbeddedAgentContextUsage {
   promptTokens: number;
   estimated: boolean;
+  /**
+   * Present only when this reading bears every mark of having been clamped by
+   * the provider to its own input limit, rather than measuring the
+   * conversation. OUR inference from a signature, never something the
+   * provider said -- which is why it carries no number: the inferred cap IS
+   * `promptTokens`, and re-sending it would put the same value on the same
+   * reading twice.
+   *
+   * Three-valued by absence: missing means "not inferred, or a reading from
+   * before this existed". There is no `false` -- no consumer needs to assert
+   * that a reading was checked and found honest.
+   */
+  appearsClamped?: true;
 }
 
 export interface EmbeddedAgentSnapshot {

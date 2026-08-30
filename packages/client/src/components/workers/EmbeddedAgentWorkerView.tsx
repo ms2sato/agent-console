@@ -819,8 +819,22 @@ function ChatEntryRow({ entry }: ChatEntryRowProps) {
       // transcript." A summary, when the engine produced one, hangs off it
       // as a disclosure rather than expanding the line.
       const label = formatCompactionBoundaryLabel(entry.preTokens, entry.postTokens);
+      // When the compaction was forced by a rejection that named the
+      // provider's real input limit, that number is the one thing here the
+      // operator can act on -- their configured window disagrees with it.
+      // Rendered as its own line rather than folded into the label, because
+      // the label describes this compaction while this describes the
+      // configuration that keeps causing them.
+      const statedLimit = entry.providerStatedWindowTokens;
       return (
         <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          {statedLimit !== undefined ? (
+            <div className="mb-1 text-xs text-amber-400">
+              The provider states its input limit is {statedLimit.toLocaleString('en-US')} tokens.
+              If this agent declares a larger context window, compaction fires later than intended
+              -- check its context window setting.
+            </div>
+          ) : null}
           {entry.summary !== undefined ? (
             <details>
               <summary className="cursor-pointer text-xs text-gray-400">{label}</summary>
