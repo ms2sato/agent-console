@@ -568,6 +568,57 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().activityState).toBe('unknown');
   });
 
+  it('preserves an active activityState across a same-epoch fresh load (server prune / resync), unlike a genuine epoch bump', async () => {
+    // Regression pin for a CodeRabbit-caught defect: resetChatState() is
+    // shared by beginEpochReset (a genuine incarnation change -- see the
+    // epoch-bump test above) AND applyBytes's same-epoch `isFresh` branch
+    // (the server pruned/evicted its buffer, or a resync's fresh load --
+    // the SAME live worker incarnation, possibly still mid-turn). An
+    // earlier fix wrongly reset activityState inside resetChatState()
+    // itself, which meant a worker that was genuinely 'active' got its
+    // activityState wiped to 'unknown' by a SAME-epoch fresh load with no
+    // accompanying `activity` message to re-declare it -- releasing
+    // MessagePanel's stale-active send-gate while the turn was still in
+    // progress. activityState must only be reset in beginEpochReset, where
+    // the incarnation has actually changed.
+    const instance = getOrCreateEmbeddedAgentWorker('s10c', 'w10c');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+
+    // Establish epoch 1 and drive activityState to 'active' (worker mid-turn).
+    const initialData = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'first' });
+    ws1!.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+    await flush();
+    ws1!.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
+    await flush();
+    expect(instance.getSnapshot().activityState).toBe('active');
+
+    // Plain reconnect (no epoch bump): lastOffset carries over, so the
+    // client requests fromOffset: initialData.length.
+    instance.restart();
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2!.simulateOpen();
+    expect(lastSentMessages(ws2!)).toContainEqual({
+      type: 'request-history',
+      fromOffset: initialData.length,
+    });
+
+    // The server responds with the SAME epoch (no restart) but pruned its
+    // buffer, so it cannot resume from the requested offset and instead
+    // sends a fresh payload starting at 0. This hits applyBytes's `isFresh`
+    // branch (startOffset !== requestedFromOffset) WITHOUT bumping the
+    // epoch -- acceptEpoch short-circuits to true for `epoch === this.epoch`
+    // and never calls beginEpochReset here.
+    const prunedData = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second (post-prune)' });
+    ws2!.simulateMessage(historyMessage(prunedData, prunedData.length, 0, 1));
+    await flush();
+
+    // The worker incarnation never changed -- it may still be genuinely
+    // mid-turn -- so activityState must survive this reset unchanged.
+    expect(instance.getSnapshot().activityState).toBe('active');
+  });
+
   it('records a non-fatal ACTIVATION_FAILED error without clearing accumulated entries', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s11', 'w11');
     const ws = MockWebSocket.getLastInstance();
