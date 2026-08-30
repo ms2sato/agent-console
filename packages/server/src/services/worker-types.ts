@@ -24,8 +24,12 @@ import type { ActivityDetector } from './activity-detector.js';
  * service-level one; it only started there because that was the first module
  * that needed it (`design-principles.md`: a type's home is the scope of the
  * concept it models, not which module first needed it). `embedded-agent-
- * worker-service.ts` imports and re-exports this type rather than defining it,
- * so its own consumers (session-manager.ts, tests) see no path change.
+ * worker-service.ts` now imports this type FROM here (type-only) rather than
+ * defining it, and does NOT re-export it: `worker-types.js` is the single
+ * canonical import path, so `session-manager.ts`'s pre-existing import was
+ * redirected here in the same change rather than left pointing at a
+ * re-export -- one entry point to this fact, not two with no reason to
+ * prefer either.
  *
  * A prior version of this file instead imported `RestoreInfo` type-only FROM
  * `embedded-agent-worker-service.ts`. That closed a real circular
