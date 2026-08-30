@@ -1278,8 +1278,13 @@ export class AgentLoop {
     // reason to guess one from the prose.
     if (stated === undefined || declared <= stated) return message;
 
+    // Joined with a dash rather than a blank line: the transcript renders this
+    // message as plain text with no `whitespace-pre-wrap`, so a newline would
+    // collapse to a space and the paragraph break would exist only in the
+    // source. Changing that surface's rendering to suit one string is not this
+    // change's business.
     return (
-      `${message}\n\nThis agent declares a context window of ` +
+      `${message} — This agent declares a context window of ` +
       `${declared.toLocaleString('en-US')} tokens, but the provider states its ` +
       `real input limit is ${stated.toLocaleString('en-US')}. An over-declared ` +
       `window makes every usage ratio optimistic, so automatic compaction fires ` +

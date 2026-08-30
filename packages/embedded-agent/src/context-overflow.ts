@@ -163,8 +163,9 @@ export function extractProviderStatedLimit(
   status: number | undefined,
   detail: ProviderErrorDetail | undefined,
 ): number | undefined {
+  if (detail === undefined) return undefined;
   const sig = matchSignature(status, detail);
-  if (sig?.limitCapture === undefined || detail === undefined) return undefined;
+  if (sig?.limitCapture === undefined) return undefined;
 
   const captured = sig.limitCapture.exec(detail.message)?.[1];
   if (captured === undefined) return undefined;
