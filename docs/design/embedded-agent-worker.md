@@ -821,7 +821,7 @@ Both are required. With only the position rule, someone moving the escape cannot
 
 **Non-goal: detecting silent truncation.** A lenient provider returns no error, so an error-path escape cannot see it. The signature is a reported `prompt_tokens` capped exactly at the window. Recorded here as a limit of this mechanism, not an open task for it.
 
-## Compaction at the restore boundary
+### Compaction at the restore boundary
 
 **Status:** Issue [#1411](https://github.com/ms2sato/agent-console/issues/1411). Extends the threshold semantics above with a **second firing point** for the same predicate. It introduces no new event, no new `source` value, and no change to [Transcript Restore](#transcript-restore)'s reconstruction or replay.
 
