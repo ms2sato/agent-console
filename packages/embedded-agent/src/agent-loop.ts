@@ -17,6 +17,7 @@ import {
 import type { ToolExecutor } from './mcp.js';
 import {
   ProviderError,
+  type ProviderErrorDetail,
   type ChatMessage,
   type ProviderAdapter,
   type ToolCall,
@@ -157,7 +158,24 @@ type TurnEnding = 'completed' | 'error' | 'canceled';
 
 type ProviderOutcome =
   | { kind: 'ok'; text: string; toolCalls: ProviderToolCall[]; usage?: TurnUsage }
-  | { kind: 'error'; message: string }
+  | {
+      kind: 'error';
+      /** Display only. No layer may re-parse this to decide what happened. */
+      message: string;
+      /**
+       * The provider's wire error as STRUCTURE, copied from `ProviderError`
+       * rather than re-derived. `status` and `detail` are what any classifier
+       * consumes; `message` is for humans.
+       *
+       * Both are absent when the failure did not come from a `ProviderError`
+       * at all (a retry loop exhausting itself, an internal fault) or when the
+       * body was not the provider's JSON envelope -- an edge proxy's HTML
+       * rejection being the case that matters, since a classifier keyed on
+       * structure then has nothing to match and cannot fire.
+       */
+      status?: number;
+      detail?: ProviderErrorDetail;
+    }
   | {
       kind: 'canceled';
       /**
@@ -170,6 +188,19 @@ type ProviderOutcome =
        */
       partialText?: string;
     };
+
+/**
+ * Copy a `ProviderError`'s structure into the outcome. The composed message
+ * stays display-only; `status` and `detail` are what travel for decisions.
+ */
+function providerErrorOutcome(err: ProviderError): { kind: 'error'; message: string; status?: number; detail?: ProviderErrorDetail } {
+  return {
+    kind: 'error',
+    message: errorMessage(err),
+    ...(err.status !== undefined ? { status: err.status } : {}),
+    ...(err.detail !== undefined ? { detail: err.detail } : {}),
+  };
+}
 
 type ParsedToolArgs =
   | { ok: true; value: Record<string, unknown> }
@@ -725,10 +756,12 @@ export class AgentLoop {
         // Non-retryable provider errors (4xx like 400/401/404) fail fast without
         // burning retries/backoff -- they will never succeed on retry.
         if (err instanceof ProviderError && !err.retryable) {
-          return { kind: 'error', message: errorMessage(err) };
+          return providerErrorOutcome(err);
         }
         if (attempt === MAX_PROVIDER_ATTEMPTS) {
-          return { kind: 'error', message: errorMessage(err) };
+          return err instanceof ProviderError
+            ? providerErrorOutcome(err)
+            : { kind: 'error', message: errorMessage(err) };
         }
         await this.sleep(this.retryDelayFor(attempt, err));
         if (signal.aborted) {
@@ -817,47 +850,37 @@ export class AgentLoop {
    * `settleCompactionAtTurnBoundary`). Splicing the conversation array while
    * a provider request is in flight would destroy the in-flight turn.
    */
-  async compact(source: 'auto' | 'manual', partial?: { budgetTokens: number }): Promise<void> {
-    const abort = new AbortController();
-    this.currentAbort = abort;
-
-    try {
-      this.deps.emit({ v: 1, type: 'state', state: 'active' });
-      const turnId = crypto.randomUUID();
-
-      let compactionPromptText: string;
-      try {
-        compactionPromptText = await this.deps.loadCompactionPrompt();
-      } catch (err) {
-        this.emitTurnError(turnId, `failed to load compaction prompt: ${errorMessage(err)}`);
-        return;
-      }
-
-      // Transient request array -- NEVER pushed onto this.conversation.
-      const promptMessage: ChatMessage = { role: 'user', content: compactionPromptText };
-      let messages: ChatMessage[];
-      if (partial === undefined) {
-        messages = [...this.conversation, promptMessage];
-      } else {
-        // Partial distillation: the whole-conversation request is the very
-        // thing that would overflow, so the INPUT -- and only the input -- is
-        // narrowed. Everything downstream is this method unchanged.
-        const narrowed = selectPartialDistillationMessages(
-          this.conversation,
-          promptMessage,
-          partial.budgetTokens,
-        );
-        if (narrowed === null) {
-          this.emitTurnError(turnId, `Context compaction failed: ${PARTIAL_DISTILL_NO_INPUT_REASON}`);
-          return;
-        }
-        messages = narrowed;
-      }
-
-      const outcome = await this.runProviderWithRetries(messages, turnId, abort.signal, {
+  /**
+   * The distillation itself: run the request, validate the reply, emit the
+   * marker and replace the conversation. **It owns no `AbortController` and
+   * emits no turn-level side effects** -- no `state`, no `idle`, no
+   * `turn-error`. Whose signal it runs under is the caller's concern, and so
+   * is what a failure means.
+   *
+   * That split is what lets a second caller exist. `compact()` is a turn
+   * boundary and reports failure as `turn-error`; the mid-turn escape is
+   * inside a turn that already has a controller and an error of its own, and
+   * a `turn-error` from here would be the turn's second. A turn emits exactly
+   * one.
+   *
+   * Private on purpose: it is a mechanism with two in-file callers, not an
+   * API. `input` is already selected -- building it is policy and belongs to
+   * the caller, because the two callers face oppositely-shaped conversations.
+   *
+   * The commit-point rule (#1403) survives this split and binds both halves:
+   * below the marker emit there is no `await` before the splice completes.
+   */
+  private async runDistillation(
+    source: 'auto' | 'manual',
+    input: ChatMessage[],
+    isPartial: boolean,
+    turnId: string,
+    signal: AbortSignal,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+      const outcome = await this.runProviderWithRetries(input, turnId, signal, {
         emitDeltas: false,
       });
-      // `|| abort.signal.aborted` WAS load-bearing: before
+      // `|| signal.aborted` WAS load-bearing: before
       // `runProviderWithRetries` classified aborts at the source, a `canceled`
       // outcome only ever came from an adapter that THROWS on abort, so an
       // adapter that ends its stream cleanly returned an ordinary `ok`
@@ -870,13 +893,11 @@ export class AgentLoop {
       // This check is CLASSIFICATION plus early-exit economy -- it is NOT the
       // commit boundary. The boundary is the one immediately before the
       // marker emit below; see the comment there.
-      if (outcome.kind === 'canceled' || abort.signal.aborted) {
-        this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
-        return;
+      if (outcome.kind === 'canceled' || signal.aborted) {
+        return { ok: false, reason: 'turn canceled' };
       }
       if (outcome.kind === 'error') {
-        this.emitTurnError(turnId, `Context compaction failed: ${outcome.message}`);
-        return;
+        return { ok: false, reason: outcome.message };
       }
       // No tool calls are expected or handled for the distillation request;
       // if the provider returns any anyway, they are ignored entirely -- but a
@@ -885,11 +906,7 @@ export class AgentLoop {
       // a failure rather than silently replacing the conversation with an
       // empty or partial summary (preserve-on-failure).
       if (outcome.toolCalls.length > 0 || outcome.text.trim().length === 0) {
-        this.emitTurnError(
-          turnId,
-          'Context compaction failed: provider returned no usable summary',
-        );
-        return;
+        return { ok: false, reason: 'provider returned no usable summary' };
       }
 
       // The distillation call's own usage -- reflects the (large,
@@ -901,7 +918,7 @@ export class AgentLoop {
       // head of the persisted `summary` string, where a later restore's
       // ordinary seed wording cannot drop it.
       const summaryText =
-        partial === undefined ? outcome.text : `${PARTIAL_DISTILL_CAVEAT_LINE} ${outcome.text}`;
+        !isPartial ? outcome.text : `${PARTIAL_DISTILL_CAVEAT_LINE} ${outcome.text}`;
       const summary = truncateToBytes(summaryText, WIRE_EVENT_MAX_BYTES).text;
 
       let newSystemPrompt: string;
@@ -961,9 +978,8 @@ export class AgentLoop {
       // await below reopens exactly the window this check closed, and does so
       // invisibly -- `deps.emit` is typed to return void precisely so it
       // cannot yield.
-      if (abort.signal.aborted) {
-        this.emitTurnError(turnId, 'Context compaction failed: turn canceled');
-        return;
+      if (signal.aborted) {
+        return { ok: false, reason: 'turn canceled' };
       }
 
       this.deps.emit({
@@ -978,11 +994,65 @@ export class AgentLoop {
       this.conversation.splice(0, this.conversation.length, ...seed);
 
       this.emitContextUsageIfKnown({ promptTokens: postTokens, estimated: true });
+
+    return { ok: true };
+  }
+
+  async compact(source: 'auto' | 'manual', partial?: { budgetTokens: number }): Promise<void> {
+    const abort = new AbortController();
+    this.currentAbort = abort;
+
+    try {
+      this.deps.emit({ v: 1, type: 'state', state: 'active' });
+      const turnId = crypto.randomUUID();
+
+      let compactionPromptText: string;
+      try {
+        compactionPromptText = await this.deps.loadCompactionPrompt();
+      } catch (err) {
+        this.emitTurnError(turnId, `failed to load compaction prompt: ${errorMessage(err)}`);
+        return;
+      }
+
+      // Transient request array -- NEVER pushed onto this.conversation.
+      const promptMessage: ChatMessage = { role: 'user', content: compactionPromptText };
+      let messages: ChatMessage[];
+      if (partial === undefined) {
+        messages = [...this.conversation, promptMessage];
+      } else {
+        // Partial distillation: the whole-conversation request is the very
+        // thing that would overflow, so the INPUT -- and only the input -- is
+        // narrowed. Everything downstream is the distillation core unchanged.
+        const narrowed = selectPartialDistillationMessages(
+          this.conversation,
+          promptMessage,
+          partial.budgetTokens,
+        );
+        if (narrowed === null) {
+          this.emitTurnError(turnId, `Context compaction failed: ${PARTIAL_DISTILL_NO_INPUT_REASON}`);
+          return;
+        }
+        messages = narrowed;
+      }
+
+      const result = await this.runDistillation(
+        source,
+        messages,
+        partial !== undefined,
+        turnId,
+        abort.signal,
+      );
+      if (!result.ok) {
+        this.emitTurnError(turnId, `Context compaction failed: ${result.reason}`);
+        return;
+      }
+
       this.emitIdle();
     } finally {
       this.currentAbort = null;
     }
   }
+
 
   private emitTurnError(turnId: string, message: string): void {
     this.deps.emit({ v: 1, type: 'turn-error', turnId, message });
