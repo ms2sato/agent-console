@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import * as v from 'valibot';
-import { AppServerMessageSchema } from '../app-server-message';
+import { AppServerMessageSchema, type AppServerMessage } from '../app-server-message';
 
 // Helper to assert valid parse
 function expectValid(data: unknown) {
@@ -711,3 +711,60 @@ describe('AppServerMessageSchema', () => {
     });
   });
 });
+
+// -----------------------------------------------------------------------
+// Type-level compile pin: `AppServerMessage` (moved here from
+// `types/session.ts` to remove a types -> schemas import edge) is still
+// genuinely inferred from `AppServerMessageSchema`, not accidentally widened
+// to `any`/`unknown` by the relocation. Per `.claude/rules/workflow.md`'s
+// "pins include type-level assertions" section, a pin built on `never` as
+// the constraint is inert (`declare const x: never` type-checks even when
+// the asserted condition is false, since `declare` introduces no assignment
+// for `never` to reject). This uses `Assert<T extends true>` instead, which
+// genuinely fails `tsc` when the condition is false -- same idiom as
+// `packages/shared/src/types/__tests__/session.test.ts`'s `RestoreInfo` pin
+// and `packages/shared/src/schemas/embedded-agent.ts`.
+//
+// MANUAL VERIFICATION (not committed): a first draft of
+// `_SessionDeletedHasSessionId` checked `{ type: 'session-deleted';
+// sessionId: string } extends AppServerMessage` (source-extends-union) --
+// that direction turned out to be inert too: TypeScript's structural
+// assignability allows EXTRA properties on the source (no excess-property
+// check outside a fresh object literal), so appending a bogus
+// `nonExistentField: string` to the source object did NOT fail `tsc`.
+// Switching to the `keyof`-based direction below (matching this file's own
+// `RestoreInfo` sibling pin) and requiring a field that does not exist on
+// the narrowed member (`'nonExistentField' extends keyof
+// SessionDeletedMessage`) DID fail `bun run typecheck` with `error TS2344:
+// Type 'false' does not satisfy the constraint 'true'` -- confirming this
+// direction actually rejects a wrong/widened inference. Reverting restored
+// a clean `tsc --noEmit`.
+// -----------------------------------------------------------------------
+type Assert<T extends true> = T;
+
+type SessionDeletedMessage = Extract<AppServerMessage, { type: 'session-deleted' }>;
+
+// The narrowed discriminated-union member carries the field the schema
+// declares, and no field the schema does not.
+type _SessionDeletedHasSessionId = Assert<'sessionId' extends keyof SessionDeletedMessage ? true : false>;
+type _SessionDeletedHasNoUnknownField = Assert<
+  'nonExistentField' extends keyof SessionDeletedMessage ? false : true
+>;
+
+// `AppServerMessage` must not have widened to `any` or `unknown` -- both
+// would make `Extract` above stop narrowing and every check vacuously pass
+// regardless of what `AppServerMessageSchema` actually describes.
+type _IsNotAny = Assert<0 extends 1 & AppServerMessage ? false : true>;
+type _IsNotUnknown = Assert<unknown extends AppServerMessage ? false : true>;
+
+// `export type` (rather than a `declare const` runtime reference) is what
+// satisfies `noUnusedLocals` here -- `Assert<T extends true>` already fails
+// `tsc` at the alias's OWN declaration site when T is false, so no runtime
+// binding is needed to make the check fire.
+export type {
+  SessionDeletedMessage,
+  _SessionDeletedHasSessionId,
+  _SessionDeletedHasNoUnknownField,
+  _IsNotAny,
+  _IsNotUnknown,
+};
