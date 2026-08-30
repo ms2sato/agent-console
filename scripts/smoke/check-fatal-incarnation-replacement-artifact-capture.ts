@@ -122,27 +122,23 @@ function main(): void {
   // wrapped separately from removal, and a thrown capture error must never
   // propagate past that wrapper or prevent the removal that follows it.
   //
-  // Blocking technique: `captureWorkerNdjson` derives its destination as
-  // `path.join(os.tmpdir(), 'agent-console-1414-captures', <basename>)` and
-  // `mkdirSync`s it. Placing a FILE (not a directory) at that exact
-  // `agent-console-1414-captures` path makes `mkdirSync(..., {recursive:
-  // true})` fail with ENOTDIR unconditionally -- a type conflict, not a
+  // Blocking technique: pass a deliberately-blocked `captureRoot` via the
+  // function's DI seam, pointing well away from the real
+  // `$HOME/.agent-console-smoke-captures/` root (this must never write near
+  // that real location) -- a FILE, not a directory, sits at the exact spot
+  // `captureWorkerNdjson` will `mkdirSync`, so `mkdirSync(..., {recursive:
+  // true})` fails with ENOTDIR unconditionally. A type conflict, not a
   // permission check, so it forces the failure even when this script runs
   // as root (where chmod-based permission blocking would silently not
-  // reproduce the failure at all).
+  // reproduce the failure at all). `os.homedir()` itself is not
+  // redirectable at call time in Bun (unlike `os.tmpdir()`, which honors
+  // `$TMPDIR`), which is exactly why `captureRoot` exists as a seam rather
+  // than an env-var trick.
   {
     const { disposableHome } = makeSyntheticDisposableHome();
-    const fakeTmpdir = mkdtempSync(path.join(os.tmpdir(), 'agent-console-1468-blocked-root-'));
-    const blockedPath = path.join(fakeTmpdir, 'agent-console-1414-captures');
-    writeFileSync(blockedPath, 'this is a file, not a directory -- forces mkdirSync to fail');
-
-    // `os.tmpdir()` reads `TMPDIR` at call time (verified: Bun/Node's
-    // implementation is not a load-time constant), so redirecting it here
-    // reaches the SAME call `captureWorkerNdjson` makes -- `node:os`'s
-    // exported object itself is read-only in Bun, so this is the portable
-    // lever, not a monkeypatch of the module.
-    const originalTmpdirEnv = process.env.TMPDIR;
-    process.env.TMPDIR = fakeTmpdir;
+    const blockedParent = mkdtempSync(path.join(os.tmpdir(), 'agent-console-1468-blocked-root-'));
+    const blockedCaptureRoot = path.join(blockedParent, 'blocked-capture-root');
+    writeFileSync(blockedCaptureRoot, 'this is a file, not a directory -- forces mkdirSync to fail');
 
     let smokeExitCode: number | null = null;
     let capturedErrorWasCaught = false;
@@ -154,7 +150,7 @@ function main(): void {
       // caught-and-counted).
       let localFailures = 0;
       try {
-        captureWorkerNdjson(disposableHome);
+        captureWorkerNdjson(disposableHome, { captureRoot: blockedCaptureRoot });
       } catch {
         capturedErrorWasCaught = true;
       }
@@ -165,12 +161,7 @@ function main(): void {
       }
       smokeExitCode = localFailures === 0 ? 0 : 1;
     } finally {
-      if (originalTmpdirEnv === undefined) {
-        delete process.env.TMPDIR;
-      } else {
-        process.env.TMPDIR = originalTmpdirEnv;
-      }
-      rmSync(fakeTmpdir, { recursive: true, force: true });
+      rmSync(blockedParent, { recursive: true, force: true });
     }
 
     check(capturedErrorWasCaught, 'captureWorkerNdjson threw when its destination path was blocked by a same-named file (the failure mode this test forces)');

@@ -88,6 +88,14 @@ const EXPECT_BRICK = process.argv.includes('--expect-brick');
 const SECRET_WORD = 'WOMBAT-3312';
 
 /**
+ * This script's own name, used as a namespace segment under the capture
+ * root so multiple smoke scripts adopting this same pattern do not collide.
+ * A literal, not `path.basename(import.meta.path)` — the constant reads the
+ * same whether this module is run directly or imported.
+ */
+const SCRIPT_NAME = 'check-fatal-incarnation-replacement';
+
+/**
  * Copies every worker-output file (`outputs/<sessionId>/<workerId>.log` and
  * any rotated segment/compressed sibling) out of a disposable
  * AGENT_CONSOLE_HOME into a stable, run-scoped capture directory, BEFORE
@@ -97,16 +105,39 @@ const SECRET_WORD = 'WOMBAT-3312';
  * only 1 of 6 real runs, so losing it again is not "re-run to retrieve
  * it", it is a lost occurrence with no second chance.
  *
+ * The capture root is under the invoking user's own home, NOT `os.tmpdir()`
+ * — `/tmp` is reboot-cleared on Ubuntu and may be swept by `systemd-tmpfiles`
+ * on an age basis, and this smoke's billed runs happen inside a delegate's
+ * worktree, which is itself deleted post-merge. Both are exactly the loss
+ * this Issue exists to stop: the raw NDJSON this note is about (PR #1462's
+ * `/tmp/fatal3.log`) was already gone by the time anyone asked for it,
+ * through precisely this route. `$HOME` survives both a reboot and a
+ * worktree's removal, and a per-invoking-user home write is within scope
+ * of `os-environment-coupling.md` Discipline 2 (the project writes only
+ * inside its own or the invoking user's own home, never a shared/system
+ * path).
+ *
+ * Not auto-pruned: see this script's `test-trigger.md` section for the
+ * stated lifetime and why.
+ *
  * Exported so `check:fatal-incarnation-replacement-artifact-capture` can
  * exercise this exact function directly against a synthetic disposable
  * home, without a billed run — see that script's own header for why a
  * billed smoke run is not the right instrument to verify this with.
  *
  * @param disposableHome the AGENT_CONSOLE_HOME being torn down
+ * @param opts.captureRoot pay-as-you-go DI seam: the default computes from
+ *   `os.homedir()` at call time (unlike `os.tmpdir()`, Bun's `os.homedir()`
+ *   does not honor a `$HOME` override at call time, so an env-var redirect
+ *   cannot be used to test failure injection the way it can for the
+ *   destination's parent). The verification script uses this seam to point
+ *   at a deliberately blocked location WITHOUT writing anywhere near the
+ *   real capture root — production call sites never pass it.
  * @returns the capture directory if anything was captured, otherwise `null`
  */
-export function captureWorkerNdjson(disposableHome: string): string | null {
-  const captureDir = path.join(os.tmpdir(), 'agent-console-1414-captures', path.basename(disposableHome));
+export function captureWorkerNdjson(disposableHome: string, opts: { captureRoot?: string } = {}): string | null {
+  const captureRoot = opts.captureRoot ?? path.join(os.homedir(), '.agent-console-smoke-captures', SCRIPT_NAME);
+  const captureDir = path.join(captureRoot, path.basename(disposableHome));
   const glob = new Glob('**/outputs/**/*');
   let capturedAny = false;
   for (const rel of glob.scanSync({ cwd: disposableHome, onlyFiles: true })) {
