@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useSessionBookmarks } from './hooks/useSessionBookmarks';
 
 interface SessionBookmarksPanelProps {
@@ -23,9 +23,10 @@ function bookmarkHost(url: string): string {
  * `MemoPanel` and `SessionArtifactsPanel`. Structurally
  * mirrors `SessionArtifactsPanel`'s collapse/expand sidebar shell. Bookmarks
  * can be registered by a human (through the form below) or by an agent
- * (through the `create_bookmark` MCP tool) -- this panel always renders the
- * form even when the list is empty, so there is always a way to add the
- * first bookmark by hand.
+ * (through the `create_bookmark` MCP tool) -- the add form is reachable from
+ * the panel even when the list is empty, so there is always a way to add the
+ * first bookmark by hand. It is revealed on a button rather than standing
+ * open, and the panel itself starts collapsed; neither state is persisted.
  *
  * Navigation safety and the click-time threat model (agent vs. human
  * registration, the host-display invariant, why REST and MCP use different
@@ -33,10 +34,12 @@ function bookmarkHost(url: string): string {
  * this component implements that spec; do not restate the reasoning here.
  */
 export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps) {
-  const [isExpanded, setIsExpanded] = useState(true);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isFormVisible, setIsFormVisible] = useState(false);
   const [url, setUrl] = useState('');
   const [title, setTitle] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const urlInputRef = useRef<HTMLInputElement>(null);
 
   const { bookmarks, isPending, isAddingBookmark, addBookmark, deleteBookmark } = useSessionBookmarks(sessionId);
 
@@ -57,6 +60,10 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
       onSuccess: () => {
         setUrl('');
         setTitle('');
+        // The form deliberately stays open for a second addition. Without
+        // returning focus the next keystroke goes nowhere, which makes
+        // staying open worse than closing.
+        urlInputRef.current?.focus();
       },
       onError: (err) => setError(err.message || 'Failed to add bookmark'),
     });
@@ -85,7 +92,10 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-700">
         <span className="text-sm font-medium text-gray-300">Bookmarks</span>
         <button
-          onClick={() => setIsExpanded(false)}
+          onClick={() => {
+            setIsExpanded(false);
+            setIsFormVisible(false);
+          }}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
           title="Collapse bookmarks"
           aria-label="Collapse bookmarks"
@@ -94,33 +104,47 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
         </button>
       </div>
 
-      {/* Add form */}
-      <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 py-2 border-b border-slate-700">
-        <input
-          type="text"
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://example.com"
-          aria-label="Bookmark URL"
-          className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-        />
-        <input
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="Title (optional)"
-          aria-label="Bookmark title"
-          className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-        />
+      {/* Add form, revealed on a deliberate action */}
+      <div className="flex flex-col border-b border-slate-700">
         <button
-          type="submit"
-          disabled={url.trim().length === 0 || isAddingBookmark}
-          className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
+          type="button"
+          onClick={() => setIsFormVisible((visible) => !visible)}
+          aria-expanded={isFormVisible}
+          aria-label={isFormVisible ? 'Hide add bookmark form' : 'Show add bookmark form'}
+          className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none px-3 py-1.5 text-left"
         >
-          Add bookmark
+          {isFormVisible ? '- New bookmark' : '+ New bookmark'}
         </button>
-        {error && <span className="text-xs text-red-400">{error}</span>}
-      </form>
+        {isFormVisible && (
+        <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 pb-2">
+          <input
+            ref={urlInputRef}
+            type="text"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            placeholder="https://example.com"
+            aria-label="Bookmark URL"
+            className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+          />
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Title (optional)"
+            aria-label="Bookmark title"
+            className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+          />
+          <button
+            type="submit"
+            disabled={url.trim().length === 0 || isAddingBookmark}
+            className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
+          >
+            Add bookmark
+          </button>
+          {error && <span className="text-xs text-red-400">{error}</span>}
+          </form>
+        )}
+      </div>
 
       {/* Content */}
       <div className="min-w-0 flex-1 overflow-y-auto">
