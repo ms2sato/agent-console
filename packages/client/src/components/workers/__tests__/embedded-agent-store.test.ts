@@ -58,13 +58,24 @@ function restoreInfoMessage(
   });
 }
 
-/** Failure form (#1449): carries none of the success form's reconstruction-shaped fields. */
-function restoreFailureMessage(epoch: number, sdkResumed?: boolean) {
+/**
+ * Failure form (#1449, extended #1447 stage 4 R4): carries none of the
+ * success form's reconstruction-shaped fields. `preservation` is OMITTED by
+ * default, not defaulted to a value -- absence is a real wire state
+ * (a pre-stage-4 server), and a helper that quietly supplied one would make
+ * it untestable, mirroring `restoreInfoMessage`'s `sdkResumed` discipline.
+ */
+function restoreFailureMessage(
+  epoch: number,
+  sdkResumed?: boolean,
+  preservation?: 'in-band' | 'sidecar' | 'lost',
+) {
   return JSON.stringify({
     type: 'restore-info',
     epoch,
     failed: true,
     ...(sdkResumed !== undefined ? { sdkResumed } : {}),
+    ...(preservation !== undefined ? { preservation } : {}),
   });
 }
 
@@ -1899,44 +1910,91 @@ describe('embedded-agent-store — Transcript Restore failure form (#1449)', () 
     }
   });
 
+  // R3 (#1447 stage 4) supersedes the ORIGINAL version of this test, which
+  // asserted `entries`/`restoredMessageCount`/`restoring` were left
+  // UNTOUCHED by applyRestoreFailure -- as this file's own git history shows
+  // (#1473), that was correct ONLY for the reset-only mechanism it was
+  // written against, where a real restore failure always bumped the epoch
+  // and `resetChatState` had already cleared those fields before this
+  // handler ever ran. R1 inverts that on the PRIMARY route: a restore
+  // failure no longer bumps the epoch, so `applyRestoreFailure` is now the
+  // SOLE clearer of `restoredMessageCount`/`restoring` there, while
+  // `entries` -- the field the original pin also called "untouched" -- must
+  // now be explicitly PRESERVED (C1), not merely left alone by accident of
+  // never having run. Split into two tests below, one per route, per the
+  // AC's "the fallback path still bumps the epoch, so BOTH exclusivity
+  // routes need pins."
+  //
   // Mutation reach (measured 2026-08-30): commenting out the
   // `message.failed === true` branch in embedded-agent-store.ts's
   // `case 'restore-info':` handler (collapsing to an unconditional
-  // `applyRestoreInfo(message.restoredMessageCount, ...)` call) makes THIS
-  // test and the next one ("resets restoreFailed back to false...") both
-  // fail with `TypeError: undefined is not an object (evaluating
+  // `applyRestoreInfo(message.restoredMessageCount, ...)` call) makes both
+  // tests below, and the "resets ... on a genuine epoch bump" tests further
+  // down, fail with `TypeError: undefined is not an object (evaluating
   // 'repairedToolCallIds.length')` -- a real failure-shaped message has none
-  // of those fields, so applyRestoreInfo throws when fed one. Confirmed
-  // 75 pass / 2 fail under the mutation, restored after. The third test
-  // below ("never sets restoreFailed on a success-form message") does NOT
-  // flip under this mutation -- correctly so: it never sends a failure-form
-  // message, so it isn't exercising the branch this mutation removes; it is
-  // an invariant-preservation pin for the unrelated success path, not a
-  // guard against this particular defect.
-  it('patches restoreFailed:true and the given sdkResumed on a failure-form message, leaving entries/restoredMessageCount/restoring untouched from their pre-message values', () => {
+  // of those fields, so applyRestoreInfo throws when fed one. Confirmed by
+  // temporarily applying the mutation, running `bun test`, and restoring.
+  it('R3 PRIMARY (in-band) route: same epoch, clears restoredMessageCount/restoring, PRESERVES entries', () => {
     const instance = getOrCreateEmbeddedAgentWorker('f1', 'w1');
     const ws = MockWebSocket.getLastInstance()!;
     ws.simulateOpen();
 
-    // Establish pre-existing state via a SUCCESS form, same epoch.
+    // Establish pre-existing state via a SUCCESS form plus a real folded
+    // chat entry, same epoch -- entries must be non-empty for "preserved"
+    // to be a meaningful assertion (an empty array is preserved trivially).
     ws.simulateMessage(restoreInfoMessage(1, 5, [], false));
+    ws.simulateMessage(
+      outputMessage(ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }), 100, 1),
+    );
     const before = instance.getSnapshot();
     expect(before.restoredMessageCount).toBe(5);
     expect(before.restoring).toBe(true);
     expect(before.restoreFailed).toBe(false);
+    expect(before.entries).toHaveLength(1);
 
-    // A failure form arriving on the SAME epoch isolates applyRestoreFailure's
-    // own contract from the epoch-reset machinery (pinned separately below) --
-    // production restore failures always mint a fresh epoch, but the handler
-    // itself must not touch fields the failure form carries nothing about.
-    ws.simulateMessage(restoreFailureMessage(1, true));
+    // A failure form arriving on the SAME epoch, with preservation:
+    // 'in-band', is the PRIMARY route: no epoch bump, so resetChatState
+    // never runs and this handler is the sole clearer of the
+    // incarnation-scoped fields -- entries must survive untouched.
+    ws.simulateMessage(restoreFailureMessage(1, true, 'in-band'));
 
     const after = instance.getSnapshot();
     expect(after.restoreFailed).toBe(true);
     expect(after.sdkResumed).toBe(true);
-    expect(after.restoredMessageCount).toBe(before.restoredMessageCount);
-    expect(after.restoring).toBe(before.restoring);
+    expect(after.preservation).toBe('in-band');
+    expect(after.restoredMessageCount).toBeNull();
+    expect(after.restoring).toBe(false);
     expect(after.entries).toEqual(before.entries);
+    expect(after.entries).toHaveLength(1);
+  });
+
+  it('R3 FALLBACK (sidecar/lost) route: epoch bump has already emptied entries via resetChatState; applyRestoreFailure is a no-op on it', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('f1b', 'w1b');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    ws.simulateMessage(restoreInfoMessage(1, 5, [], false));
+    ws.simulateMessage(
+      outputMessage(ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello' }), 100, 1),
+    );
+    expect(instance.getSnapshot().entries).toHaveLength(1);
+
+    // A failure form on a NEWER epoch is the FALLBACK route: acceptEpoch
+    // synchronously runs beginEpochReset -> resetChatState BEFORE this
+    // message is applied (see the `restore-info` case's own comment on
+    // "Applying against whatever epoch we ended up on"), wiping entries to
+    // [] and restoredMessageCount/restoring back to their epoch-reset
+    // defaults. applyRestoreFailure's own clearing is redundant-but-harmless
+    // here, and not touching entries is correct -- there is nothing left to
+    // preserve or clobber.
+    ws.simulateMessage(restoreFailureMessage(2, true, 'sidecar'));
+
+    const after = instance.getSnapshot();
+    expect(after.restoreFailed).toBe(true);
+    expect(after.preservation).toBe('sidecar');
+    expect(after.restoredMessageCount).toBeNull();
+    expect(after.restoring).toBe(false);
+    expect(after.entries).toEqual([]);
   });
 
   it('resets restoreFailed back to false on a genuine epoch bump (resetChatState)', () => {
@@ -1944,7 +2002,7 @@ describe('embedded-agent-store — Transcript Restore failure form (#1449)', () 
     const ws = MockWebSocket.getLastInstance()!;
     ws.simulateOpen();
 
-    ws.simulateMessage(restoreFailureMessage(1, true));
+    ws.simulateMessage(restoreFailureMessage(1, true, 'in-band'));
     expect(instance.getSnapshot().restoreFailed).toBe(true);
 
     // A genuine epoch bump (a NEW incarnation's own restore attempt) must
@@ -1956,11 +2014,131 @@ describe('embedded-agent-store — Transcript Restore failure form (#1449)', () 
     expect(instance.getSnapshot().restoreFailed).toBe(false);
   });
 
+  it('resets preservation back to undefined on a genuine epoch bump (resetChatState)', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('f2b', 'w2b');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    ws.simulateMessage(restoreFailureMessage(1, true, 'sidecar'));
+    expect(instance.getSnapshot().preservation).toBe('sidecar');
+
+    // Same reasoning as restoreFailed above: a genuine epoch bump must clear
+    // preservation BEFORE the new incarnation's own restore-info re-declares
+    // it, since a stale preservation value from a superseded incarnation
+    // would otherwise condition the banner on the WRONG restore attempt.
+    ws.simulateMessage(restoreInfoMessage(2, 3, [], false));
+    expect(instance.getSnapshot().preservation).toBeUndefined();
+  });
+
   it('never sets restoreFailed on a success-form restore-info message', () => {
     const instance = getOrCreateEmbeddedAgentWorker('f3', 'w3');
     const ws = MockWebSocket.getLastInstance()!;
     ws.simulateOpen();
     ws.simulateMessage(restoreInfoMessage(1, 5, [], true, false));
     expect(instance.getSnapshot().restoreFailed).toBe(false);
+  });
+
+  it('never sets preservation on a success-form restore-info message', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('f3b', 'w3b');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+    ws.simulateMessage(restoreInfoMessage(1, 5, [], true, false));
+    expect(instance.getSnapshot().preservation).toBeUndefined();
+  });
+
+  it('carries an absent preservation through verbatim (pre-stage-4 server) rather than normalising it', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('f4', 'w4');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+    // No third argument: the wire message omits `preservation` entirely,
+    // exactly like a pre-stage-4 server would.
+    ws.simulateMessage(restoreFailureMessage(1, true));
+    const snapshot = instance.getSnapshot();
+    expect(snapshot.restoreFailed).toBe(true);
+    expect(snapshot.preservation).toBeUndefined();
+  });
+});
+
+describe('embedded-agent-store — Transcript Restore stage 4 markers (#1447)', () => {
+  // Same fixture wiring as the sibling suites above, repeated rather than
+  // shared because this is a sibling top-level describe.
+  let restoreWebSocket4: () => void;
+  let originalLocation4: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    _resetEmbeddedAgentWorkers();
+    restoreWebSocket4 = installMockWebSocket();
+    originalLocation4 = Object.getOwnPropertyDescriptor(window, 'location');
+    Object.defineProperty(window, 'location', {
+      value: { protocol: 'http:', host: 'localhost:3000' },
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  afterEach(() => {
+    _resetEmbeddedAgentWorkers();
+    restoreWebSocket4();
+    if (originalLocation4) {
+      Object.defineProperty(window, 'location', originalLocation4);
+    }
+  });
+
+  it('R2: folds a restore-failure-boundary event into a restore-failure-boundary marker row', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('m1', 'w1');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    ws.simulateMessage(
+      outputMessage(ndjson({ v: 1, type: 'restore-failure-boundary' }), 100, 1),
+    );
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'restore-failure-boundary' });
+  });
+
+  it('R6: folds a restore-failure-declaration event into a restore-failure-declaration marker row', () => {
+    const instance = getOrCreateEmbeddedAgentWorker('m2', 'w2');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    ws.simulateMessage(
+      outputMessage(ndjson({ v: 1, type: 'restore-failure-declaration' }), 100, 1),
+    );
+
+    const entries = instance.getSnapshot().entries;
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: 'restore-failure-declaration' });
+  });
+
+  it('R6: unlike turn-interrupted, does NOT close an open thinking entry (restore-transparent, not an orphaned-turn signal)', () => {
+    // A restore-failure-declaration row is a quiet notification about a
+    // divergence between the SDK's own memory and the display -- it must not
+    // be treated as "the incarnation that owned this turn is gone" the way
+    // turn-interrupted/exited/fatal are. Folding one while a thinking entry
+    // is still streaming must leave that entry's `streaming` flag alone.
+    const instance = getOrCreateEmbeddedAgentWorker('m3', 'w3');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    ws.simulateMessage(
+      outputMessage(
+        ndjson({ v: 1, type: 'assistant-thinking-delta', turnId: 't1', text: 'thinking...' }),
+        100,
+        1,
+      ),
+    );
+    ws.simulateMessage(
+      outputMessage(ndjson({ v: 1, type: 'restore-failure-declaration' }), 200, 1),
+    );
+
+    const thinkingEntry = instance
+      .getSnapshot()
+      .entries.find((e): e is Extract<EmbeddedAgentChatEntry, { kind: 'assistant-thinking' }> => {
+        return e.kind === 'assistant-thinking';
+      });
+    expect(thinkingEntry).toBeDefined();
+    expect(thinkingEntry!.streaming).toBe(true);
   });
 });

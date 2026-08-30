@@ -48,22 +48,59 @@ function isGroupable(entry: EmbeddedAgentChatEntry): entry is GroupableEntry {
  * notice and the compaction marker both carry. See the design doc's
  * "Failure form: what it declares, and the D1/D2/Loss derivation rule
  * (#1449)" for the full account.
+ *
+ * `preservation` (R4, #1447 stage 4) conditions the copy so the banner never
+ * claims what did not happen -- see the design doc's "The client's exact
+ * copy, both directions". `undefined` is the wire-compat fallback: a
+ * pre-stage-4 server never sends `preservation`, so today's unconditional
+ * copy renders unchanged.
  */
-const RESTORE_DIVERGED_D2_MESSAGE =
-  "This worker's earlier conversation could not be restored for display, but the agent may still remember it. A diagnostic copy of the record has been preserved.";
+function getRestoreDivergedD2Message(
+  preservation: 'in-band' | 'sidecar' | 'lost' | undefined,
+): string {
+  switch (preservation) {
+    case 'in-band':
+      // R1's PRIMARY path: the transcript IS the display, still shown
+      // above -- there is no separate "copy" to reference.
+      return "This worker's earlier conversation is still shown above. The agent does not carry it forward from here, but it may still remember it independently.";
+    case 'sidecar':
+      // R1's FALLBACK path, and the best-effort rename succeeded.
+      return "This worker's earlier conversation could not be restored for display, but the agent may still remember it, and a diagnostic copy of the record has been preserved.";
+    case 'lost':
+      // The fallback path ran AND the rename itself failed -- nothing was
+      // preserved anywhere, so no diagnostic-copy claim.
+      return "This worker's earlier conversation could not be restored for display, but the agent may still remember it.";
+    case undefined:
+      return "This worker's earlier conversation could not be restored for display, but the agent may still remember it. A diagnostic copy of the record has been preserved.";
+  }
+}
 
 /**
  * Transcript Restore, restore FAILURE form (#1449) -- the Loss sentence
  * ("both gone"): reachable for an `openai-api` engine restore failure
  * (reconstruction from the log IS that engine's memory, so a failure there
  * is symmetric loss) and for a `claude-sdk` restore failure whose SDK resume
- * ALSO failed. Deliberately the SAME string on both routes -- the D2-vs-Loss
- * branch DECISION is engine-dependent (see `restoreLoss`/`restoreDivergedD2`
- * below), the Loss WORDING itself must never be, so both routes render this
- * one constant rather than two near-duplicate strings that could drift.
+ * ALSO failed. The D2-vs-Loss branch DECISION is engine-dependent (see
+ * `restoreLoss`/`restoreDivergedD2` below); the wording itself never
+ * branches on engine, only on `preservation` (R4, #1447 stage 4) -- see the
+ * design doc's "The client's exact copy, both directions".
  */
-const RESTORE_LOSS_MESSAGE =
-  "This worker's earlier conversation could not be restored — a diagnostic copy of the record has been preserved. This turn starts fresh.";
+function getRestoreLossMessage(preservation: 'in-band' | 'sidecar' | 'lost' | undefined): string {
+  switch (preservation) {
+    case 'in-band':
+      // R1's PRIMARY path: the transcript IS the display, still shown above.
+      return "This worker's earlier conversation is still shown above. This turn starts fresh.";
+    case 'sidecar':
+      // R1's FALLBACK path, and the best-effort rename succeeded.
+      return "This worker's earlier conversation could not be restored — a diagnostic copy of the record has been preserved. This turn starts fresh.";
+    case 'lost':
+      // The fallback path ran AND the rename itself failed -- the
+      // diagnostic-copy clause is dropped, nothing was preserved anywhere.
+      return "This worker's earlier conversation could not be restored. This turn starts fresh.";
+    case undefined:
+      return "This worker's earlier conversation could not be restored — a diagnostic copy of the record has been preserved. This turn starts fresh.";
+  }
+}
 
 /**
  * A finalized assistant-message with no text is an iteration that only
@@ -152,6 +189,7 @@ export function EmbeddedAgentWorkerView({
     restoredMessageCount,
     sdkResumed,
     restoreFailed,
+    preservation,
     currentExit,
     sendUserMessage,
     cancel,
@@ -299,31 +337,38 @@ export function EmbeddedAgentWorkerView({
         </div>
       )}
 
-      {/* Transcript Restore, restore FAILURE forms (#1449). Persistent,
-          non-dismissable, same visual family as the two notices above --
-          this declares a restore ATTEMPT that threw, the opposite direction
-          from the D1 notice immediately above (display-ahead-of-memory): D2
-          is memory-ahead-of-display, Loss is both gone. See the
-          `restoreDivergedD2`/`restoreLoss` derivation comment above and the
-          design doc's "Failure form: what it declares, and the D1/D2/Loss
-          derivation rule (#1449)" for the full account. Structurally
-          mutually exclusive with the D1 notice above: `restoreFailed` only
-          ever becomes true immediately after `resetChatState` has cleared
-          `restoredMessageCount` back to null for the new epoch (a restore
-          failure always mints a fresh epoch), so `hadPriorTranscriptThisIncarnation`
-          -- and therefore the D1 notice's gate -- cannot be true in the same
-          render as either banner below. Pinned by
+      {/* Transcript Restore, restore FAILURE forms (#1449, extended #1447
+          stage 4 R3/R4). Persistent, non-dismissable, same visual family as
+          the two notices above -- this declares a restore ATTEMPT that
+          threw, the opposite direction from the D1 notice immediately above
+          (display-ahead-of-memory): D2 is memory-ahead-of-display, Loss is
+          both gone. See the `restoreDivergedD2`/`restoreLoss` derivation
+          comment above and the design doc's "Failure form: what it
+          declares, and the D1/D2/Loss derivation rule (#1449)" for the full
+          account.
+
+          Structurally mutually exclusive with the D1 notice above, on BOTH
+          of R1's routes -- re-derived for R3, which changed what survives
+          on the primary route: `applyRestoreFailure` (embedded-agent-store.ts)
+          unconditionally clears `restoredMessageCount` back to null on
+          EVERY accepted failure form, whether or not this epoch bumped.
+          `hadPriorTranscriptThisIncarnation` -- and therefore the D1
+          notice's gate -- is therefore false by the time either banner
+          below can render, on the fallback (epoch-bump) route exactly as
+          before AND on the primary (no-epoch-bump) route the fallback-only
+          reasoning above did not cover. Pinned by
           EmbeddedAgentWorkerView.test.tsx's "#1449 restore-failure notice"
           suite rather than left as an assumption -- see that suite's
-          "mutual exclusivity" test. */}
+          "mutual exclusivity" tests (rewritten for R3 to cover both
+          routes). */}
       {restoreDivergedD2 && (
         <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
-          {RESTORE_DIVERGED_D2_MESSAGE}
+          {getRestoreDivergedD2Message(preservation)}
         </div>
       )}
       {restoreLoss && (
         <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
-          {RESTORE_LOSS_MESSAGE}
+          {getRestoreLossMessage(preservation)}
         </div>
       )}
 
@@ -803,6 +848,18 @@ function ChatEntryRow({ entry }: ChatEntryRowProps) {
           </details>
         </div>
       );
+    case 'restore-failure-boundary':
+      // Transcript Restore, R2 (#1447 stage 4): a reconstruction boundary,
+      // same visual family as `context-compacted` above -- but with no
+      // `<details>` disclosure, since the marker carries no summary (memory
+      // starts from nothing at this boundary, unlike a compaction). Every
+      // byte before this line is retained and still visible above it; only
+      // the model's memory restarts here.
+      return (
+        <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2 text-xs">
+          — Earlier conversation could not be restored; this turn continues from here —
+        </div>
+      );
     case 'turn-interrupted':
       // R1: the process went away before this turn was answered. A distinct
       // row from `turn-error` on purpose -- nothing reported an error, so
@@ -811,6 +868,20 @@ function ChatEntryRow({ entry }: ChatEntryRowProps) {
       return (
         <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2 text-xs">
           — This turn was interrupted before it finished, and was not answered —
+        </div>
+      );
+    case 'restore-failure-declaration':
+      // Transcript Restore, R6 (#1447 stage 4): restore-TRANSPARENT, quiet
+      // notification row -- same rendering register as `turn-interrupted`
+      // above, not a reconstruction boundary. Declares an asymmetry that
+      // survives every subsequent incarnation until the next reset: the
+      // display no longer shows the earlier conversation, but the
+      // `claude-sdk` engine's own SDK session store may still remember it.
+      // The incarnation-scoped #1449 banner above is a separate, live
+      // notice; this row is the durable transcript record beneath it.
+      return (
+        <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2 text-xs">
+          — This worker's earlier conversation is not shown here, but the agent may still remember it —
         </div>
       );
     case 'restore-repair':
