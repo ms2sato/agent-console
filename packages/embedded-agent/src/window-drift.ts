@@ -105,6 +105,24 @@
  * The predicate fired on a healthy path, in the dangerous direction. It is
  * recorded here because the reasoning behind it is appealing enough to be
  * proposed again.
+ *
+ * # For whoever improves the token estimator
+ *
+ * The record above stops a change that looks like a simplification. This one
+ * stops a change that looks like an unambiguous improvement, and it belongs
+ * beside it because the same reader meets both in the same moment.
+ *
+ * **A systematic error with a known sign is a defensive asset, and improving
+ * accuracy destroys it.** Condition 4 does not need `estimateTokensFromChars`
+ * to be right; it needs it to be reliably WRONG IN ONE DIRECTION. That is what
+ * puts an honest reading dependably on one side of the comparison and lets the
+ * far side mean something. Make the estimator accurate and the comparison
+ * stops separating the two populations -- not because it broke, but because
+ * the bias it was reading is gone.
+ *
+ * This is not an argument against improving the estimator. It is the reason
+ * that improvement is not free here, and the thing to do is re-derive this
+ * condition against the new error distribution rather than assume it survived.
  */
 
 /** The granularity every measured cap has landed on. See condition 3 above. */
