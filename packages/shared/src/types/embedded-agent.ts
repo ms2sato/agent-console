@@ -304,7 +304,30 @@ export type EmbeddedAgentEvent =
   | { v: 1; type: 'tool-result'; turnId: string; callId: string; ok: boolean; result: string }
   | { v: 1; type: 'turn-error'; turnId: string; message: string }
   | { v: 1; type: 'fatal'; message: string }
-  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean }  // Compaction; emitted after every turn/compaction attempt that produced a usable value
+  /**
+   * Compaction; emitted after every turn/compaction attempt that produced a
+   * usable value.
+   *
+   * `appearsClamped` is window-declaration drift, signal 2: OUR inference,
+   * from a measured signature, that this reading is the provider's own input
+   * cap rather than the conversation's size. It carries no number on purpose
+   * -- the inferred cap IS `promptTokens`, and a second copy of one value on
+   * one reading is two things that can disagree. Contrast
+   * `context-compacted`'s `providerStatedWindowTokens`, which is THEIR
+   * number; two independent facts must not share one name.
+   *
+   * Three-valued by absence, and there is deliberately no `false`: missing
+   * means "not inferred, OR a row written before this field existed", and no
+   * consumer needs to assert that a reading was checked and found honest.
+   * Test presence explicitly; never the event's truthiness.
+   *
+   * Old-client behaviour: these schemas are strict, so a bundle that predates
+   * this field rejects the whole row rather than dropping the field -- which
+   * is handled, not a gap. See `packages/shared/src/schemas/index.ts`'s header
+   * for the standing ruling (reload heals the ordinary path; the degraded path
+   * drops under the schema-version banner's declaration).
+   */
+  | { v: 1; type: 'context-usage'; promptTokens: number; estimated: boolean; appearsClamped?: true }
   /**
    * Compaction's persisted boundary marker -- "one line marking the
    * compaction boundary appears in the transcript". Emitted immediately
@@ -333,6 +356,24 @@ export type EmbeddedAgentEvent =
       summary?: string;
       preTokens?: number;
       postTokens?: number;
+      /**
+       * Window-declaration drift, signal 3: the input limit the PROVIDER
+       * named, when this compaction was forced by an over-window rejection
+       * that stated one. Their number, extracted from a measured signature --
+       * contrast `context-usage`'s `appearsClamped`, which is our own
+       * judgement and therefore carries no number at all.
+       *
+       * Absent whenever no number was extracted, which is the ordinary case:
+       * every rule upstream fails toward saying nothing rather than toward a
+       * guess, because the consumer of this number tells an operator their
+       * configuration is wrong.
+       *
+       * Old-client behaviour: strict schemas reject the whole row rather than
+       * dropping an unknown field. See `packages/shared/src/schemas/index.ts`'s
+       * header -- the ordinary path heals via the schema-version reload, and
+       * the degraded path drops under the banner's declaration.
+       */
+      providerStatedWindowTokens?: number;
     }
   /**
    * RETIRED (Context Handoff, #1122): no engine emits this any more --

@@ -1920,6 +1920,59 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('THE SUMMARY')).toBeTruthy();
     });
 
+    it('renders the provider-stated limit on the boundary line when the rejection named one', async () => {
+      // The shipping path for signal 3, end to end: NDJSON row -> store
+      // mapper -> boundary render. The field travels the same wire the
+      // marker does, which is why this case drives the socket rather than
+      // constructing an entry.
+      renderView({ sessionId: 's-ctx-drift', workerId: 'w-ctx-drift' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({
+          v: 1,
+          type: 'context-compacted',
+          source: 'auto',
+          preTokens: 102150,
+          postTokens: 2710,
+          providerStatedWindowTokens: 983616,
+        });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Grouped, not localeString-free: the number an operator compares
+      // against their configured window has to be readable at a glance.
+      expect(screen.getByText(/The provider states its input limit is 983,616 tokens/)).toBeTruthy();
+      // The boundary itself is unchanged by the addition.
+      expect(screen.getByText('— Context compacted (102k → 2.7k) —')).toBeTruthy();
+    });
+
+    it('renders no provider-limit line when the compaction carries no stated limit', async () => {
+      // The negative half. Without it, an unconditional line satisfies the
+      // positive case, and every ordinary compaction would carry a warning
+      // about a limit nobody reported.
+      renderView({ sessionId: 's-ctx-nodrift', workerId: 'w-ctx-nodrift' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-compacted', source: 'auto', preTokens: 102150, postTokens: 2710 });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getByText('— Context compacted (102k → 2.7k) —')).toBeTruthy();
+      expect(screen.queryByText(/The provider states its input limit/)).toBeNull();
+    });
+
     it('renders the boundary marker as a plain line when the event carries no summary', async () => {
       renderView({ sessionId: 's-ctx-5', workerId: 'w-ctx-5' });
       const ws = MockWebSocket.getLastInstance();

@@ -299,6 +299,10 @@ export const EmbeddedAgentEventSchema = v.union([
     type: v.literal('context-usage'),
     promptTokens: v.pipe(v.number(), v.integer(), v.minValue(0)),
     estimated: v.boolean(),
+    // Window drift: OUR inference that this reading is the provider's cap
+    // rather than the conversation's size. A literal `true` and not a
+    // boolean -- see the type's doc comment for why there is no `false`.
+    appearsClamped: v.optional(v.literal(true)),
   }),
   v.strictObject({
     v: v.literal(1),
@@ -307,6 +311,9 @@ export const EmbeddedAgentEventSchema = v.union([
     summary: v.optional(v.string()),
     preTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
     postTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+    // Window drift: THEIR number, stated in the rejection this compaction
+    // was forced by. Contrast `appearsClamped` above.
+    providerStatedWindowTokens: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1))),
   }),
   /**
    * RETIRED emission, RETAINED parse (#1401). Persisted transcripts written

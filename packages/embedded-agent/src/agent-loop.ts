@@ -688,7 +688,15 @@ export class AgentLoop {
             // legitimately escape again. A service-level counter would be
             // wrong for that reason.
             escapeUsed = true;
-            const escape = await this.escapeContextOverflow(turnId, abort.signal);
+            // Signal 3. The number is in hand HERE and nowhere later: a
+            // successful escape emits no `turn-error`, so this is the only
+            // moment the rejection's own stated limit can be attached to
+            // anything the user will see.
+            const escape = await this.escapeContextOverflow(
+              turnId,
+              abort.signal,
+              extractProviderStatedLimit(outcome.status, outcome.detail),
+            );
             if (escape === 'compacted') {
               // Retry exactly once. The provider is called with the live
               // `this.conversation`, so this re-reads the spliced array.
@@ -1013,6 +1021,12 @@ export class AgentLoop {
     isPartial: boolean,
     turnId: string,
     signal: AbortSignal,
+    /**
+     * Signal 3: the provider's own stated input limit, when this distillation
+     * is the mid-turn escape from a rejection that named one. Absent for the
+     * turn-boundary caller, which has no rejection behind it.
+     */
+    providerStatedWindowTokens?: number,
   ): Promise<{ ok: true } | { ok: false; canceled: boolean; reason: string }> {
       const outcome = await this.runProviderWithRetries(input, turnId, signal, {
         emitDeltas: false,
@@ -1126,6 +1140,7 @@ export class AgentLoop {
         summary,
         ...(outcome.usage !== undefined ? { preTokens: outcome.usage.promptTokens } : {}),
         postTokens,
+        ...(providerStatedWindowTokens !== undefined ? { providerStatedWindowTokens } : {}),
       });
 
       this.conversation.splice(0, this.conversation.length, ...seed);
@@ -1168,6 +1183,7 @@ export class AgentLoop {
   private async escapeContextOverflow(
     turnId: string,
     signal: AbortSignal,
+    providerStatedWindowTokens?: number,
   ): Promise<'compacted' | 'canceled' | 'failed'> {
     const windowTokens = this.deps.compaction.contextWindowTokens;
     // Inert when the window is not declared: with no `W` there is no budget to
@@ -1191,7 +1207,14 @@ export class AgentLoop {
     // changing nothing.
     if (input === null) return 'failed';
 
-    const result = await this.runDistillation('auto', input, true, turnId, signal);
+    const result = await this.runDistillation(
+      'auto',
+      input,
+      true,
+      turnId,
+      signal,
+      providerStatedWindowTokens,
+    );
     if (result.ok) return 'compacted';
     return result.canceled ? 'canceled' : 'failed';
   }

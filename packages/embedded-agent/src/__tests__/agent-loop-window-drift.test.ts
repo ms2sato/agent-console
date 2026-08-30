@@ -205,3 +205,104 @@ describe('signal 1: the turn-error states the declared-vs-stated contradiction',
     expect(message).toBe('provider responded with HTTP 400: Value of max_tokens must be between 1 and 983616');
   });
 });
+
+describe('signal 3: an absorbed overflow carries the stated limit on its boundary marker', () => {
+  /*
+   * The path signal 1 structurally cannot reach. A SUCCESSFUL escape emits no
+   * `turn-error` at all, so without this the drift a working escape absorbs
+   * would go unreported every time -- and the better the escape works, the
+   * more reliably it would be absorbed. That is the whole reason this carrier
+   * exists.
+   *
+   * Measured reach, recorded by WHICH test failed (standing rule):
+   *
+   *   m-s3-1  drop `providerStatedWindowTokens` from the `context-compacted`
+   *           emit
+   *           -> 1 fail, alone: 'the boundary marker carries the number the
+   *              provider stated'.
+   *   m-s3-2  pass the limit unconditionally from the turn-boundary caller
+   *           too (`compact()`'s distillation)
+   *           -> 1 fail, alone: 'an ordinary turn-boundary compaction carries
+   *              no stated limit'. That case is the only thing separating
+   *              "the escape observed a rejection" from "a compaction
+   *              happened".
+   */
+  const runEscape = async (first: ProviderError): Promise<EmbeddedAgentEvent[]> => {
+    const events: EmbeddedAgentEvent[] = [];
+    // Overflow, then a successful distillation, then a successful retry --
+    // the shape where no turn-error is emitted at all.
+    const adapter = new ScriptedAdapter([
+      { kind: 'throw', error: first },
+      { kind: 'events', events: [{ type: 'text-delta', text: 'SUMMARY' }, { type: 'done', finishReason: 'stop' }] },
+      { kind: 'events', events: [{ type: 'text-delta', text: 'the answer' }, { type: 'done', finishReason: 'stop' }] },
+    ]);
+    const deps: AgentLoopDeps = {
+      model: 'm',
+      tools: [],
+      executor: new StubExecutor(),
+      emit: (event) => events.push(event),
+      systemPrompt: 'SYS',
+      maxToolIterations: 25,
+      sleep: async () => {},
+      reassembleSystemPrompt: async () => 'SYS',
+      loadCompactionPrompt: async () => 'DISTILL_PROMPT',
+      adapter,
+      compaction: { auto: false, contextWindowTokens: 1_000_000 },
+    };
+    await new AgentLoop(deps).runTurn('t1', 'a question');
+    return events;
+  };
+
+  const compacted = (events: EmbeddedAgentEvent[]) =>
+    events.filter((e): e is Extract<EmbeddedAgentEvent, { type: 'context-compacted' }> => e.type === 'context-compacted');
+
+  it('the boundary marker carries the number the provider stated, and the turn reports no error', async () => {
+    const events = await runEscape(overflowNamingItsLimit());
+
+    // The precondition that makes this carrier necessary: nothing else in
+    // this turn says anything to the user about the drift.
+    expect(events.filter((e) => e.type === 'turn-error')).toHaveLength(0);
+
+    const markers = compacted(events);
+    expect(markers).toHaveLength(1);
+    expect(markers[0].providerStatedWindowTokens).toBe(PROVIDER_STATED_LIMIT);
+  });
+
+  it('an overflow whose signature yields no number leaves the marker unannotated', async () => {
+    // Fail-toward-nothing on this carrier too: the escape still fires, the
+    // compaction still happens, and the marker simply says nothing extra.
+    const events = await runEscape(overflowNamingNothing());
+
+    const markers = compacted(events);
+    expect(markers).toHaveLength(1);
+    expect(markers[0].providerStatedWindowTokens).toBeUndefined();
+  });
+
+  it('an ordinary turn-boundary compaction carries no stated limit', async () => {
+    // No rejection behind it, so there is nothing a provider stated. This is
+    // what keeps the field meaning "a provider said this" rather than
+    // "a compaction occurred".
+    const events: EmbeddedAgentEvent[] = [];
+    const adapter = new ScriptedAdapter([
+      { kind: 'events', events: [{ type: 'text-delta', text: 'SUMMARY' }, { type: 'done', finishReason: 'stop' }] },
+    ]);
+    const deps: AgentLoopDeps = {
+      model: 'm',
+      tools: [],
+      executor: new StubExecutor(),
+      emit: (event) => events.push(event),
+      systemPrompt: 'SYS',
+      maxToolIterations: 25,
+      sleep: async () => {},
+      reassembleSystemPrompt: async () => 'SYS',
+      loadCompactionPrompt: async () => 'DISTILL_PROMPT',
+      adapter,
+      compaction: { auto: false, contextWindowTokens: 1_000_000 },
+    };
+    await new AgentLoop(deps).compact('manual');
+
+    const markers = compacted(events);
+    expect(markers).toHaveLength(1);
+    expect(markers[0].providerStatedWindowTokens).toBeUndefined();
+  });
+});

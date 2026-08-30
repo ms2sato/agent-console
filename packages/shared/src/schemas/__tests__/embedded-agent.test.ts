@@ -901,6 +901,73 @@ describe('EmbeddedAgentEventSchema', () => {
     }
   });
 
+  describe('window-declaration drift fields', () => {
+    /*
+     * The two fields are deliberately different SHAPES, because they carry
+     * different kinds of fact: `appearsClamped` is our inference from a
+     * signature (so no number -- the inferred cap is `promptTokens`, already
+     * on the event), and `providerStatedWindowTokens` is the provider's own
+     * number. These cases pin that difference at the wire, where flattening
+     * them into one field would otherwise be invisible until a consumer read
+     * the wrong thing.
+     */
+    it('accepts a context-usage carrying the clamp inference, and one without it', () => {
+      const base = { v: 1, type: 'context-usage', promptTokens: 196_608, estimated: false };
+      expect(v.safeParse(EmbeddedAgentEventSchema, { ...base, appearsClamped: true }).success).toBe(true);
+      // Absence is the ordinary case and must stay parseable: a row written
+      // before this field existed replays through the same union.
+      expect(v.safeParse(EmbeddedAgentEventSchema, base).success).toBe(true);
+    });
+
+    it('rejects an explicit `false` on the clamp inference', () => {
+      // Three-valued by absence. Admitting `false` would add a fourth state
+      // ("checked and found honest") that no consumer needs and that would
+      // make absence ambiguous between "not inferred" and "not yet a field".
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'context-usage',
+        promptTokens: 196_608,
+        estimated: false,
+        appearsClamped: false,
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('accepts a context-compacted carrying the provider-stated limit', () => {
+      const result = v.safeParse(EmbeddedAgentEventSchema, {
+        v: 1,
+        type: 'context-compacted',
+        source: 'auto',
+        preTokens: 102_150,
+        postTokens: 2_710,
+        providerStatedWindowTokens: 983_616,
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('does not accept either field on the other event', () => {
+      // The shapes are not interchangeable, and the union is strict enough to
+      // say so. A future reader tempted to unify them meets this first.
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'context-usage',
+          promptTokens: 196_608,
+          estimated: false,
+          providerStatedWindowTokens: 983_616,
+        }).success,
+      ).toBe(false);
+      expect(
+        v.safeParse(EmbeddedAgentEventSchema, {
+          v: 1,
+          type: 'context-compacted',
+          source: 'auto',
+          appearsClamped: true,
+        }).success,
+      ).toBe(false);
+    });
+  });
+
   it('accepts a standalone context-usage event', () => {
     const result = v.safeParse(EmbeddedAgentEventSchema, {
       v: 1,

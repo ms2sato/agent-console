@@ -1194,7 +1194,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         this.closeAllOpenThinking();
         return true;
       case 'context-usage':
-        this.patch({ contextUsage: { promptTokens: event.promptTokens, estimated: event.estimated } });
+        this.patch({
+          contextUsage: {
+            promptTokens: event.promptTokens,
+            estimated: event.estimated,
+            // Presence, never truthiness: absent means "not inferred, or a
+            // row from before the field existed", and the snapshot type has
+            // no `false` to collapse those two into.
+            ...(event.appearsClamped === true ? { appearsClamped: true as const } : {}),
+          },
+        });
         return false; // not a chat row
       case 'context-compacted':
         this.pushEntry({
@@ -1204,6 +1213,9 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           ...(event.summary !== undefined ? { summary: event.summary } : {}),
           ...(event.preTokens !== undefined ? { preTokens: event.preTokens } : {}),
           ...(event.postTokens !== undefined ? { postTokens: event.postTokens } : {}),
+          ...(event.providerStatedWindowTokens !== undefined
+            ? { providerStatedWindowTokens: event.providerStatedWindowTokens }
+            : {}),
         });
         return true;
       case 'context-handoff':
