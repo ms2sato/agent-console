@@ -306,7 +306,7 @@ describe('mid-turn context-overflow escape', () => {
       // iteration, where every issued tool_call already had its result, so
       // the post-boundary window is self-contained. An escape fired from
       // inside the tool loop would split a pair and throw here.
-      const outcome = reconstructConversation(stream, 'SYS', false);
+      const outcome = reconstructConversation(stream, 'SYS', 'true-start');
       expect(outcome.conversation.some((m) => String(m.content).includes('DISTILLED SUMMARY'))).toBe(true);
     });
   });

@@ -741,16 +741,12 @@ export class EmbeddedAgentWorkerService {
             instructions,
             definitionSystemPrompt: definition.systemPrompt,
           });
-          // `truncated` no longer means "the live window rotated" -- the walk
-          // back makes that ordinary case whole. It now means what the reader
-          // actually needs to know: **the assembled stream does not start at
-          // the true beginning**, which happens only when retention already
-          // deleted the oldest segment or the walk hit its byte ceiling.
-          //
-          // A stream that stops at a boundary is not truncated in that sense:
-          // it starts at a discard the system itself declared.
-          const startsMidHistory = assembled.stoppedAt === 'pruned' || assembled.stoppedAt === 'cap';
-          const outcome = reconstructConversation(assembled.data, systemPrompt, startsMidHistory);
+          // The anchor travels whole rather than as a boolean. Two independent
+          // facts are derived from it inside `reconstructConversation` -- may
+          // the first line be a fragment, and does the stream begin somewhere
+          // the system can stand behind -- and a boolean would admit a
+          // combination that cannot occur.
+          const outcome = reconstructConversation(assembled.data, systemPrompt, assembled.stoppedAt);
           restoredConversation = outcome.conversation as EmbeddedAgentRestoredMessage[];
           restoredUsage = outcome.usageSeed;
           // `completed: false` -- the new incarnation's `ready` event hasn't

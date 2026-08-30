@@ -83,8 +83,9 @@ describe('#1202 Q12 — restore against a boundary that rotated into the archive
     // the entry condition never fires: the worker silently comes back with a
     // conversation missing everything before the cut, and nothing anywhere
     // says so. This is the quieter of the two shapes and the worse one.
-    const truncated = read.startOffset > 0;
-    const outcome = reconstructConversation(read.data, SYSTEM_PROMPT, truncated);
+    // Pre-walk-back behaviour, reproduced deliberately: reading only the live
+    // window and telling restore the stream starts at a real beginning.
+    const outcome = reconstructConversation(read.data, SYSTEM_PROMPT, 'true-start');
     expect(outcome.conversation.some((m) => String(m.content).includes('THE SUMMARY'))).toBe(false);
     expect(outcome.conversation.some((m) => String(m.content).includes('first question'))).toBe(false);
     // What it DID keep is the tail — a conversation that begins in the middle.
@@ -147,7 +148,7 @@ describe('#1202 Q12 — restore against a boundary that rotated into the archive
       expect(read.startOffset).toBe(0);
       expect(read.data).toContain('THE SUMMARY');
 
-      const outcome = reconstructConversation(read.data, SYSTEM_PROMPT, read.startOffset > 0);
+      const outcome = reconstructConversation(read.data, SYSTEM_PROMPT, 'true-start');
       expect(outcome.conversation.some((m) => String(m.content).includes('THE SUMMARY'))).toBe(true);
     }
   });
@@ -196,7 +197,7 @@ describe('#1202 — the walk-back assembles a stream that starts at a safe ancho
     expect(assembled.stoppedAt).toBe('boundary');
     expect(assembled.data).toContain('THE SUMMARY');
 
-    const outcome = reconstructConversation(assembled.data, SYSTEM_PROMPT, false);
+    const outcome = reconstructConversation(assembled.data, SYSTEM_PROMPT, assembled.stoppedAt);
     expect(outcome.conversation.some((m) => String(m.content).includes('THE SUMMARY'))).toBe(true);
     expect(outcome.conversation.some((m) => String(m.content).includes('third question'))).toBe(true);
   });
