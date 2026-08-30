@@ -1020,19 +1020,41 @@ export class WorkerOutputFileManager {
 
     const parts: string[] = [liveContent];
     let lineTotal = liveLineCount;
-    await this.walkArchiveSegmentsBackward(
-      sessionId,
-      workerId,
-      resolver,
-      manifest,
-      parts,
-      Buffer.byteLength(liveContent, 'utf-8'),
-      maxBytes,
-      (segmentText) => {
-        lineTotal += this.countLines(segmentText);
-        return lineTotal >= maxLines;
-      },
-    );
+    try {
+      await this.walkArchiveSegmentsBackward(
+        sessionId,
+        workerId,
+        resolver,
+        manifest,
+        parts,
+        Buffer.byteLength(liveContent, 'utf-8'),
+        maxBytes,
+        (segmentText) => {
+          lineTotal += this.countLines(segmentText);
+          return lineTotal >= maxLines;
+        },
+      );
+    } catch (error) {
+      // A damaged archive segment (non-ENOENT decompression failure) must not
+      // blank an already-successfully-read live window. Restore propagates
+      // this same error because `runActivation` has a verdict to act on it
+      // (the destructive reset + sidecar preservation) -- a silently-degraded
+      // partial conversation handed to the model is dangerous, and restore
+      // MUST know if that happened. Display has no such consumer: a partial
+      // transcript is display's normal, expected shape (it already shows a
+      // line-budget-truncated view by design), so the sound response is the
+      // live window alone -- exactly what this method returned before #1506
+      // ever touched the archive. Going silent about the corruption at the
+      // UI layer is not a new failure mode (this degrade path matches
+      // today's pre-#1506 baseline exactly); the segment identity is already
+      // logged at the point of failure inside `walkArchiveSegmentsBackward`,
+      // so the corruption stays discoverable server-side even though the
+      // client sees nothing different from an ordinary truncated transcript.
+      // ENOENT/pruned/cap/exhausted are unaffected: they resolve normally
+      // through `walkArchiveSegmentsBackward` and never reach here.
+      logger.warn({ sessionId, workerId, err: error }, 'Archive fill failed for display; serving live window only');
+      return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch);
+    }
 
     const assembled = parts.join('');
     const data = this.getLastNLines(assembled, maxLines);
@@ -1097,6 +1119,14 @@ export class WorkerOutputFileManager {
         if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
           return { parts, assembledBytes, reason: 'pruned' };
         }
+        // Logged HERE, once, with the segment identity -- generic to both
+        // callers (this primitive does not know which one is walking; see
+        // this method's own doc comment). What each caller DOES with the
+        // rethrown error is caller-owned: restore's consumer routes it to the
+        // destructive-reset-with-sidecar fallback; display degrades to the
+        // live window (#1506) and logs only that it degraded, since the
+        // segment identity is already on record right here.
+        logger.warn({ sessionId, workerId, seq: seg.seq, segPath, err }, 'Failed to decompress archived segment (not pruned -- damage)');
         throw err;
       }
       parts.unshift(text);

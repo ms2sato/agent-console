@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 
@@ -129,10 +130,10 @@ describe('#1506 — readHistoryForDisplay walks the archive to fill the line bud
     const live = await manager.readLastNLines(S, W, 100, resolver);
     expect(live.startOffset).toBeGreaterThan(0);
 
-    const spy = spyOn(
-      manager as unknown as { walkArchiveSegmentsBackward: (...args: unknown[]) => Promise<unknown> },
-      'walkArchiveSegmentsBackward',
-    );
+    type WithArchiveWalk = WorkerOutputFileManager & {
+      walkArchiveSegmentsBackward: (...args: never[]) => Promise<unknown>;
+    };
+    const spy = spyOn(manager as WithArchiveWalk, 'walkArchiveSegmentsBackward');
 
     // A budget small enough that the live window (2 lines + trailing) already
     // satisfies it.
@@ -142,6 +143,47 @@ describe('#1506 — readHistoryForDisplay walks the archive to fill the line bud
     expect(spy.mock.calls.length).toBe(0);
     expect(display.data).toContain('recent two');
     expect(display.data).not.toContain('ancient history');
+  });
+
+  it('CORRUPT archived segment: degrades to the live window instead of blanking the transcript (CodeRabbit, PR #1510)', async () => {
+    // The `readHistoryForRestore` sibling test right next door
+    // ("a CORRUPT archived segment is damage, not a pruned edge") asserts the
+    // OPPOSITE polarity, on purpose: restore's consumer (runActivation) has a
+    // verdict to act on a propagated error -- the destructive reset + sidecar
+    // preservation -- so restore must NOT swallow it. Display has no such
+    // consumer; the only sound response to a damaged segment mid-walk is the
+    // live window this method already had in hand before the walk started,
+    // which is exactly the pre-#1506 shape (readLastNLines never touched the
+    // archive at all).
+    const early = [
+      line({ v: 1, type: 'user-message', id: 'm1', text: 'the very first thing' }),
+    ].join('');
+    const later = [
+      line({ v: 1, type: 'assistant-message', turnId: 't1', text: 'y'.repeat(500) }),
+      line({ v: 1, type: 'user-message', id: 'm2', text: 'the latest thing' }),
+    ].join('');
+    manager.bufferOutput(S, W, early, resolver);
+    await manager.flushAll();
+    manager.bufferOutput(S, W, later, resolver);
+    await manager.flushAll();
+
+    // Premise control: rotation genuinely happened, a segment exists to
+    // corrupt, and the live window alone does not already satisfy the
+    // (generous) budget below -- so the walk genuinely has to reach it.
+    const live = await manager.readLastNLines(S, W, 20, resolver);
+    expect(live.startOffset).toBeGreaterThan(0);
+    expect(live.data).not.toContain('the very first thing');
+
+    const segDir = `${CONFIG_DIR}/_quick/outputs/${S}`;
+    const segFile = (memfs.readdirSync(segDir) as unknown[]).map(String).find((f) => f.includes('.seg-'));
+    expect(segFile).toBeTruthy();
+    memfs.writeFileSync(`${segDir}/${String(segFile)}`, 'this is not gzip data');
+
+    // THE FIX: no rejection -- the display read degrades to the live window.
+    const display = await manager.readHistoryForDisplay(S, W, resolver, 20);
+    expect(display.data).toBe(live.data);
+    expect(display.startOffset).toBe(live.startOffset);
+    expect(display.epoch).toBe(live.epoch);
   });
 
   it('CAP: a ceiling below the archive size stops the walk early rather than assembling everything', async () => {
@@ -237,4 +279,16 @@ describe('#1506 — readHistoryForDisplay walks the archive to fill the line bud
  * has) makes this test fail on `expect(display.data).toContain('PRE-ROTATION-MARKER')`
  * -- the exact silent-absence shape the PREMISE test pins for the OLD path.
  * Restoring the call makes it pass again. Measured 2026-08-30.
+ *
+ * Polarity of "CORRUPT archived segment" (CodeRabbit finding, PR #1510):
+ * removing the `try { ... } catch (error) { ...; return
+ * this.buildRecentWindow(...); }` wrapper around the `walkArchiveSegmentsBackward`
+ * call in `buildDisplayWindow` (letting the rejection propagate, matching the
+ * pre-fix shape) makes this test fail with the corrupted segment's raw gunzip
+ * error (`Z_DATA_ERROR: incorrect header check`) instead of resolving to the
+ * live window -- exactly the "one damaged segment blanks the whole
+ * transcript" regression the fix removes. All 7 other tests in this file are
+ * unaffected by that same mutation (the try/catch is local to the one method
+ * they don't exercise a corrupt segment through). Restoring the wrapper
+ * passes again. Measured 2026-08-30.
  */
