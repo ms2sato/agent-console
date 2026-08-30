@@ -4,6 +4,11 @@
  * why the standing ruling below lives at this file rather than beside any one
  * schema: it governs all of them.
  *
+ * **That is also this header's scope limit: only properties true of EVERY
+ * schema here belong in it.** A rule about one schema, read from the place
+ * that speaks for all of them, is not ignored -- it is obeyed too widely. Put
+ * anything narrower beside the schema it governs.
+ *
  * # Adding a field to a schema in this directory
  *
  * **These schemas are strict. An unknown field makes the parse FAIL; it is not
