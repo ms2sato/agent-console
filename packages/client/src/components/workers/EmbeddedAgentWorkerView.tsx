@@ -426,7 +426,11 @@ export function EmbeddedAgentWorkerView({
           item.kind === 'working-group' ? (
             <WorkingAccordion key={item.group.entries[0].key} group={item.group} />
           ) : (
-            <ChatEntryRow key={item.entry.key} entry={item.entry} />
+            <ChatEntryRow
+              key={item.entry.key}
+              entry={item.entry}
+              contextWindowTokens={contextWindowTokens}
+            />
           ),
         )}
       </div>
@@ -733,9 +737,16 @@ function NotificationRow({ entry }: { entry: NotificationEntry }) {
 
 interface ChatEntryRowProps {
   entry: OutsideEntry;
+  /**
+   * The declared window, for the rows that exist to contradict it. Passed in
+   * rather than read from the entry because it is a property of the agent
+   * definition, not of the moment the row records -- and shipping it on the
+   * event would put one number on two routes that can then disagree.
+   */
+  contextWindowTokens?: number;
 }
 
-function ChatEntryRow({ entry }: ChatEntryRowProps) {
+function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
   switch (entry.kind) {
     case 'user-message':
       if (entry.notification) {
@@ -812,6 +823,20 @@ function ChatEntryRow({ entry }: ChatEntryRowProps) {
       return (
         <div className="text-sm text-gray-400 bg-slate-800/60 rounded px-3 py-2">
           Agent process exited{entry.code !== null ? ` (code: ${entry.code})` : ''}.
+        </div>
+      );
+    case 'window-clamp':
+      // Signal 2 has no compaction behind it, so no boundary line carries
+      // this: without its own row the only surface is 2px of hatching whose
+      // meaning is in a tooltip.
+      return (
+        <div className="text-xs text-amber-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          This turn reported {entry.promptTokens.toLocaleString('en-US')} tokens of input
+          {contextWindowTokens !== undefined
+            ? `, against the ${contextWindowTokens.toLocaleString('en-US')} configured for this agent`
+            : ''}
+          . The reading looks capped at the provider's own limit, so it may be silently dropping
+          input that does not fit{' — '}check this agent's context window setting.
         </div>
       );
     case 'context-compacted': {

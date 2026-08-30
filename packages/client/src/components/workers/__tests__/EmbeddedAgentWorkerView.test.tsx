@@ -1920,6 +1920,99 @@ describe('EmbeddedAgentWorkerView', () => {
       expect(screen.getByText('THE SUMMARY')).toBeTruthy();
     });
 
+    /*
+     * Measured reach, recorded by WHICH test failed (standing rule):
+     *
+     *   v1  never push the clamp entry
+     *       -> 2 fail: the render case and the no-repeat case.
+     *   v2  push on every flagged reading instead of on the edge
+     *       -> 1 fail, alone: 'does not repeat the clamp row'.
+     *   v3  omit the declared-window clause from the row
+     *       -> 1 fail, alone: the render case.
+     *
+     *       That case originally asserted only the reading, and its title
+     *       claimed both numbers. Adding the declared-number assertion made
+     *       it FAIL -- the harness had not supplied the definition, so the
+     *       comparison the row exists to draw was silently absent while the
+     *       test passed. The fetch mock is now supplied as the sibling
+     *       context-usage cases do it, and the asserted 1,000 comes from the
+     *       fixture rather than from a constant written here.
+     */
+    it('renders a transcript row when a reading looks clamped, naming both numbers', async () => {
+      // Signal 2's own surface. It exists because this signal fires with NO
+      // compaction behind it -- there is no boundary line to hang the warning
+      // on, and the usage bar is 2px whose meaning lives in a tooltip.
+      globalThis.fetch = Object.assign(mock(makeEmbeddedViewFetch([embeddedAgentFixture()])), { preconnect: () => {} });
+      renderView({ sessionId: 's-clamp', workerId: 'w-clamp', embeddedAgentId: 'ea-1' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({
+          v: 1,
+          type: 'context-usage',
+          promptTokens: 196_608,
+          estimated: false,
+          appearsClamped: true,
+        });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      // Both operands. The harness's definition declares 1,000, so the second
+      // number is the definition's and not a constant written here -- without
+      // asserting it, the title's "both numbers" would be true of a render
+      // that silently omitted the comparison it exists to draw.
+      expect(screen.getByText(/196,608 tokens of input/)).toBeTruthy();
+      expect(screen.getByText(/against the 1,000 configured for this agent/)).toBeTruthy();
+      expect(screen.getByText(/context window setting/)).toBeTruthy();
+    });
+
+    it('does not repeat the clamp row while the condition persists', async () => {
+      // Edge-triggered. A provider that keeps clamping emits a flagged
+      // reading every turn, and a row per turn would bury the transcript this
+      // is meant to annotate.
+      renderView({ sessionId: 's-clamp-2', workerId: 'w-clamp-2' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const rows = [
+          { v: 1, type: 'context-usage', promptTokens: 196_608, estimated: false, appearsClamped: true },
+          { v: 1, type: 'context-usage', promptTokens: 196_608, estimated: false, appearsClamped: true },
+          { v: 1, type: 'context-usage', promptTokens: 196_608, estimated: false, appearsClamped: true },
+        ];
+        const data = rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.getAllByText(/tokens of input/)).toHaveLength(1);
+    });
+
+    it('renders no clamp row for an ordinary reading', async () => {
+      renderView({ sessionId: 's-clamp-3', workerId: 'w-clamp-3' });
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+      await flush();
+
+      act(() => {
+        const data = ndjson({ v: 1, type: 'context-usage', promptTokens: 196_608, estimated: false });
+        ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+      });
+      await flush();
+
+      expect(screen.queryByText(/tokens of input/)).toBeNull();
+    });
+
     it('renders the provider-stated limit on the boundary line when the rejection named one', async () => {
       // The shipping path for signal 3, end to end: NDJSON row -> store
       // mapper -> boundary render. The field travels the same wire the

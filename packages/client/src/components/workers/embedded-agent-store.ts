@@ -82,6 +82,21 @@ export type EmbeddedAgentChatEntry =
    * reported. Nothing errored here; a process went away.
    */
   | { key: string; kind: 'turn-interrupted'; turnId: string }
+  /**
+   * Window drift, signal 2: a reading the provider appears to have clamped to
+   * its own input limit.
+   *
+   * Derived from the `context-usage` event's `appearsClamped`, NOT a new
+   * persisted event kind -- the transcript row is a client-side rendering
+   * decision, and the wire carries only the annotation on the reading.
+   *
+   * It exists because the usage bar alone is not a surface for this. When
+   * this signal fires there is no compaction and therefore no boundary line;
+   * the bar is 2px of hatching whose meaning lives in a tooltip, so without
+   * this row the quietest failure mode -- a provider silently dropping input
+   * -- would have the quietest presentation.
+   */
+  | { key: string; kind: 'window-clamp'; promptTokens: number }
   | {
       key: string;
       kind: 'context-compacted';
@@ -1193,7 +1208,19 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // will ever arrive at this point, so close all open thinking entries.
         this.closeAllOpenThinking();
         return true;
-      case 'context-usage':
+      case 'context-usage': {
+        // Edge-triggered: a provider that keeps clamping emits a flagged
+        // reading every turn, and one row per turn would bury the transcript
+        // it is trying to annotate. Replay derives the same rows in the same
+        // places, because it walks the same sequence.
+        const wasClamped = this.snapshot.contextUsage?.appearsClamped === true;
+        if (event.appearsClamped === true && !wasClamped) {
+          this.pushEntry({
+            key: `window-clamp-${this.entryKeyCounter++}`,
+            kind: 'window-clamp',
+            promptTokens: event.promptTokens,
+          });
+        }
         this.patch({
           contextUsage: {
             promptTokens: event.promptTokens,
@@ -1204,6 +1231,8 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
             ...(event.appearsClamped === true ? { appearsClamped: true as const } : {}),
           },
         });
+        return true;
+      }
         return false; // not a chat row
       case 'context-compacted':
         this.pushEntry({
