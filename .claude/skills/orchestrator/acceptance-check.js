@@ -17,6 +17,8 @@ import {
   getChangedFiles,
   categorizeFiles,
   findTestFiles,
+  resolvePrDiffRef,
+  PrDiffRefResolutionError,
   isTestFile,
   analyzePackageBoundaries,
   getLinkedIssueNumber,
@@ -75,7 +77,11 @@ function createStdinReader(stdin = process.stdin) {
 function runAutoDetection(prNumber) {
   const changedFiles = getChangedFiles(prNumber);
   const categories = categorizeFiles(changedFiles);
-  const { testFiles, productionFiles, testCoverage } = findTestFiles(changedFiles);
+  // Resolve the PR's actual base/head SHAs rather than relying on the
+  // Orchestrator's own worktree being checked out to this PR's branch — see
+  // resolvePrDiffRef's doc comment.
+  const diffRef = resolvePrDiffRef(prNumber);
+  const { testFiles, productionFiles, testCoverage } = findTestFiles(changedFiles, diffRef);
   const boundaries = analyzePackageBoundaries(categories);
   const ciStatus = getCiStatus(prNumber);
 
@@ -284,11 +290,13 @@ function printAutoDetection(autoDetection) {
   if (testCoverage.length === 0) {
     console.log('  (no production code files)');
   } else {
-    for (const { file, hasTest, expectedTestPath, needsCoverage } of testCoverage) {
+    for (const { file, hasTest, expectedTestPath, needsCoverage, isCommentOnly } of testCoverage) {
       if (hasTest) {
         console.log(`  ✅ ${file} -> covered`);
       } else if (needsCoverage) {
         console.log(`  ❌ ${file} -> NO TEST (expected: ${expectedTestPath})`);
+      } else if (isCommentOnly) {
+        console.log(`  ➖ ${file} -> exempted (comment-only diff)`);
       } else {
         console.log(`  ⬜ ${file} -> skipped (not in coverage patterns)`);
       }
@@ -598,6 +606,7 @@ export {
   printPostAcceptanceWorkflow,
   printProposedBehaviorCoverage,
   printLanguageCheck,
+  printAutoDetection,
 };
 
 // --- Main ---
@@ -610,6 +619,12 @@ if (isMainModule) {
     usage();
   }
 
-  await runWizard(prNumber);
+  try {
+    await runWizard(prNumber);
+  } catch (err) {
+    if (!(err instanceof PrDiffRefResolutionError)) throw err;
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
   process.exit(0);
 }

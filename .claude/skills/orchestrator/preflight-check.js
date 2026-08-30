@@ -23,6 +23,8 @@ import {
   getLocalChangedFiles,
   categorizeFiles,
   findTestFiles,
+  resolvePrDiffRef,
+  PrDiffRefResolutionError,
   isTestFile,
   detectIntegrationTestNeeds,
   runCommentBlameShiftCheck,
@@ -126,8 +128,8 @@ export function formatCoverageVerdict({ hasUnitGaps, gapsCount, hasIntegrationGa
 
 // --- Main ---
 
-function run(changedFiles) {
-  const { testCoverage } = findTestFiles(changedFiles);
+function run(changedFiles, diffRef = {}) {
+  const { testCoverage } = findTestFiles(changedFiles, diffRef);
   const categories = categorizeFiles(changedFiles);
   const integrationTestNeeds = detectIntegrationTestNeeds(changedFiles, categories);
 
@@ -213,5 +215,19 @@ if (isMainModule) {
   const changedFiles = prNumber
     ? getChangedFiles(prNumber)
     : getLocalChangedFiles();
-  run(changedFiles);
+  // Only resolve/fetch PR SHAs when a PR number was given. The no-PR-number
+  // (local / CI-checkout) mode keeps relying on the checked-out `HEAD`, as
+  // it always has — that mode's checkout IS the branch being checked, so
+  // there is nothing to resolve.
+  let diffRef = {};
+  if (prNumber) {
+    try {
+      diffRef = resolvePrDiffRef(prNumber);
+    } catch (err) {
+      if (!(err instanceof PrDiffRefResolutionError)) throw err;
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+  run(changedFiles, diffRef);
 }
