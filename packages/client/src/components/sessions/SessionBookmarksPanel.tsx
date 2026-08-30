@@ -125,32 +125,32 @@ export function SessionBookmarksPanel({ sessionId, isExpanded, onToggleExpanded,
               {isFormVisible ? '- New bookmark' : '+ New bookmark'}
             </button>
             {isFormVisible && (
-            <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 pb-2">
-              <input
-                ref={urlInputRef}
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com"
-                aria-label="Bookmark URL"
-                className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-              />
-              <input
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Title (optional)"
-                aria-label="Bookmark title"
-                className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-              />
-              <button
-                type="submit"
-                disabled={url.trim().length === 0 || isAddingBookmark}
-                className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
-              >
-                Add bookmark
-              </button>
-              {error && <span className="text-xs text-red-400">{error}</span>}
+              <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 pb-2">
+                <input
+                  ref={urlInputRef}
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://example.com"
+                  aria-label="Bookmark URL"
+                  className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+                />
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Title (optional)"
+                  aria-label="Bookmark title"
+                  className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+                />
+                <button
+                  type="submit"
+                  disabled={url.trim().length === 0 || isAddingBookmark}
+                  className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
+                >
+                  Add bookmark
+                </button>
+                {error && <span className="text-xs text-red-400">{error}</span>}
               </form>
             )}
           </div>
