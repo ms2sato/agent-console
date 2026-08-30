@@ -512,8 +512,12 @@ describe('EmbeddedAgentWorkerView', () => {
     expect(screen.queryByText('Dismiss')).toBeNull();
   });
 
-  it('renders an exited row with a Restart action that reconnects', async () => {
-    renderView({ sessionId: 's7', workerId: 'w7' });
+  it('renders an exited row as a plain historical fact with NO per-row affordance, and a single Restart action OUTSIDE the transcript driven by current state', async () => {
+    // R1 (#1455): the row itself must carry zero interactive affordances --
+    // not "only the last row keeps a button", the row NEVER does. The
+    // Restart action lives as a sibling of the scrollable transcript list,
+    // outside its `.overflow-y-auto` container.
+    const { container } = renderView({ sessionId: 's7', workerId: 'w7' });
     const ws = MockWebSocket.getLastInstance();
     act(() => {
       ws?.simulateOpen();
@@ -525,21 +529,71 @@ describe('EmbeddedAgentWorkerView', () => {
     });
     await flush();
 
-    expect(screen.getByText(/Agent process exited \(code: 1\)/)).toBeTruthy();
-    const restartButton = screen.getByText('Restart');
+    // The text renders twice: once as the historical row, once as the
+    // current-state sibling element's own label.
+    expect(screen.getAllByText(/Agent process exited \(code: 1\)/)).toHaveLength(2);
+
+    // Exactly one Restart action exists, and it is not inside the
+    // transcript's scrollable list.
+    const restartButtons = screen.getAllByRole('button', { name: /Restart/ });
+    expect(restartButtons).toHaveLength(1);
+    const transcriptList = container.querySelector('.overflow-y-auto');
+    expect(transcriptList).not.toBeNull();
+    expect(transcriptList!.contains(restartButtons[0])).toBe(false);
 
     const user = userEvent.setup();
-    await user.click(restartButton);
+    await user.click(restartButtons[0]);
 
     // Restart forces a fresh WS connection.
     const secondWs = MockWebSocket.getLastInstance();
     expect(secondWs).not.toBe(ws);
   });
 
+  it('#1455 POLARITY: multiple non-evicted exited rows + worker currently running (currentExit cleared) render ZERO Restart affordances anywhere', async () => {
+    // This is the bug reproduction from Issue #1455: two historical `exited`
+    // rows (from an earlier crash+restart, both persisted and replayed) are
+    // followed in the same replay by a fresh 'ready' -- i.e. the worker is
+    // ACTUALLY running right now. Before this fix, every non-evicted
+    // `exited` row rendered its OWN unconditional Restart button with no
+    // regard for current state, so this scenario rendered TWO live-looking
+    // buttons while the worker was idle/connected the whole time -- exactly
+    // the screenshot from the Issue.
+    //
+    // Verified polarity (workflow.md "Every pin's reach is measured, not
+    // predicted"): commenting out the `currentExit !== null && ...` sibling
+    // block (R2) and reverting `case 'exited':` to render its own
+    // unconditional button (R1) reproduces 2 Restart buttons here against
+    // this exact fixture -- confirmed by stashing the production diff and
+    // re-running this test, which failed with
+    // `Expected length: 0, Received length: 2` before the fix and passes
+    // with it.
+    renderView({ sessionId: 's7-multi', workerId: 'w7-multi' });
+    const ws = MockWebSocket.getLastInstance();
+    act(() => {
+      ws?.simulateOpen();
+    });
+
+    const data = ndjson(
+      { v: 1, type: 'exited', code: 1 },
+      { v: 1, type: 'exited', code: 2 },
+      { v: 1, type: 'ready' },
+    );
+    act(() => {
+      ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
+    });
+    await flush();
+
+    // Both historical exit rows are still present as plain facts...
+    expect(screen.getByText(/Agent process exited \(code: 1\)/)).toBeTruthy();
+    expect(screen.getByText(/Agent process exited \(code: 2\)/)).toBeTruthy();
+    // ...but with the worker currently running, there is no affordance at all.
+    expect(screen.queryAllByRole('button', { name: /Restart/ })).toHaveLength(0);
+  });
+
   describe('exited row -- idle eviction (reason === evicted)', () => {
     /** Renders a view whose replayed history is a single `exited` row, optionally carrying `reason`. */
     async function renderExitedRow(idSuffix: string, reason?: string) {
-      renderView({ sessionId: `s7-${idSuffix}`, workerId: `w7-${idSuffix}` });
+      const rendered = renderView({ sessionId: `s7-${idSuffix}`, workerId: `w7-${idSuffix}` });
       const ws = MockWebSocket.getLastInstance();
       act(() => {
         ws?.simulateOpen();
@@ -550,26 +604,34 @@ describe('EmbeddedAgentWorkerView', () => {
         ws?.simulateMessage(JSON.stringify({ type: 'history', data, offset: data.length, startOffset: 0, epoch: 1 }));
       });
       await flush();
+      return rendered;
     }
 
-    it('renders a quiet paused line and NO Restart button for reason: evicted', async () => {
+    it('renders a quiet paused line and NO Restart button for reason: evicted (current state also evicted -- regression pin)', async () => {
       await renderExitedRow('evicted', 'evicted');
 
       expect(screen.getByText(/paused to free memory/)).toBeTruthy();
       // Asserted by role, not just by the new text: the point of the branch
-      // is the absence of an action the user does not need to take.
+      // is the absence of an action the user does not need to take. This
+      // covers both the row (which never had one) and the current-state
+      // sibling element (which is gated on `reason !== 'evicted'`).
       expect(screen.queryByRole('button', { name: /Restart/ })).toBeNull();
       expect(screen.queryByText(/Agent process exited/)).toBeNull();
     });
 
-    it("renders today's output (exit line + Restart) when `reason` is ABSENT", async () => {
+    it("renders today's output (row as a fact + exactly one Restart action, outside the row) when `reason` is ABSENT", async () => {
       // Regression guard for rows persisted by a server older than idle
       // eviction. A `!reason` check would fold these in with a live eviction
-      // and silently take the Restart button away from them.
-      await renderExitedRow('noreason');
+      // and silently take the Restart affordance away entirely.
+      const { container } = await renderExitedRow('noreason');
 
-      expect(screen.getByText(/Agent process exited/)).toBeTruthy();
-      expect(screen.getByRole('button', { name: /Restart/ })).toBeTruthy();
+      // Renders twice: the historical row, and the current-state sibling
+      // element's own label.
+      expect(screen.getAllByText(/Agent process exited/)).toHaveLength(2);
+      const restartButtons = screen.getAllByRole('button', { name: /Restart/ });
+      expect(restartButtons).toHaveLength(1);
+      const transcriptList = container.querySelector('.overflow-y-auto');
+      expect(transcriptList!.contains(restartButtons[0])).toBe(false);
       expect(screen.queryByText(/paused to free memory/)).toBeNull();
     });
 
@@ -578,11 +640,16 @@ describe('EmbeddedAgentWorkerView', () => {
     // both values are present and truthy, and both must render exactly as an
     // unreasoned exit does.
     for (const reason of ['managed', 'unexpected'] as const) {
-      it(`renders today's output (exit line + Restart) for reason: ${reason}`, async () => {
-        await renderExitedRow(reason, reason);
+      it(`renders today's output (row as a fact + Restart outside it) for reason: ${reason}`, async () => {
+        const { container } = await renderExitedRow(reason, reason);
 
-        expect(screen.getByText(/Agent process exited/)).toBeTruthy();
-        expect(screen.getByRole('button', { name: /Restart/ })).toBeTruthy();
+        // Renders twice: the historical row, and the current-state sibling
+        // element's own label.
+        expect(screen.getAllByText(/Agent process exited/)).toHaveLength(2);
+        const restartButtons = screen.getAllByRole('button', { name: /Restart/ });
+        expect(restartButtons).toHaveLength(1);
+        const transcriptList = container.querySelector('.overflow-y-auto');
+        expect(transcriptList!.contains(restartButtons[0])).toBe(false);
         expect(screen.queryByText(/paused to free memory/)).toBeNull();
       });
     }

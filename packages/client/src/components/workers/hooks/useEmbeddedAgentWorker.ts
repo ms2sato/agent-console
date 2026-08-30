@@ -1,5 +1,5 @@
 import { useEffect, useCallback, useSyncExternalStore } from 'react';
-import type { AgentActivityState } from '@agent-console/shared';
+import type { AgentActivityState, ExitReason } from '@agent-console/shared';
 import {
   getOrCreateEmbeddedAgentWorker,
   type EmbeddedAgentChatEntry,
@@ -29,6 +29,8 @@ interface UseEmbeddedAgentWorkerReturn {
   sdkResumed: boolean | undefined;
   /** Transcript Restore (#1449). See `EmbeddedAgentSnapshot.restoreFailed` doc comment. */
   restoreFailed: boolean;
+  /** R1 (#1455). See `EmbeddedAgentSnapshot.currentExit` doc comment. */
+  currentExit: { code: number | null; reason?: ExitReason } | null;
   sendUserMessage: (text: string) => Promise<void>;
   cancel: () => void;
   restart: () => void;
@@ -93,6 +95,7 @@ export function useEmbeddedAgentWorker(
     restoredMessageCount: snapshot.restoredMessageCount,
     sdkResumed: snapshot.sdkResumed,
     restoreFailed: snapshot.restoreFailed,
+    currentExit: snapshot.currentExit,
     sendUserMessage,
     cancel,
     restart,

@@ -413,6 +413,143 @@ describe('embedded-agent-store', () => {
     expect(entry.reason).toBeUndefined();
   });
 
+  describe('currentExit (#1455) -- single-writer current-state field', () => {
+    it('initializes to null (no affordance) before any exited/ready event has been observed', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-init', 'w5c-init');
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+
+    it('sets currentExit from the exited event, verbatim including an absent reason', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-set', 'w5c-set');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'exited', code: 3 });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const currentExit = instance.getSnapshot().currentExit;
+      expect(currentExit).not.toBeNull();
+      expect(currentExit?.code).toBe(3);
+      expect(Object.prototype.hasOwnProperty.call(currentExit, 'reason')).toBe(false);
+    });
+
+    it('sets currentExit with reason carried through verbatim (e.g. evicted)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-evicted', 'w5c-evicted');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'exited', code: 0, reason: 'evicted' });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 0, reason: 'evicted' });
+    });
+
+    it('clears currentExit back to null on the next `ready` event (fresh incarnation)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-clear', 'w5c-clear');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const exitedData = ndjson({ v: 1, type: 'exited', code: 1 });
+      ws!.simulateMessage(historyMessage(exitedData, exitedData.length));
+      await flush();
+      expect(instance.getSnapshot().currentExit).not.toBeNull();
+
+      const readyData = ndjson({ v: 1, type: 'ready' });
+      ws!.simulateMessage(outputMessage(readyData, exitedData.length + readyData.length));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+
+    it('reflects only the LATEST exited event when several exited rows are replayed, not any accumulation of the historical rows', async () => {
+      // #1455 regression pin at the store layer: currentExit must be a
+      // current-state overwrite, never a derivation from `entries`. Two
+      // historical exits followed by a fresh 'ready' must leave
+      // currentExit === null, exactly as if only one exit had ever
+      // happened -- the count of historical `exited` rows is irrelevant.
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-multi', 'w5c-multi');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson(
+        { v: 1, type: 'exited', code: 1 },
+        { v: 1, type: 'exited', code: 2 },
+        { v: 1, type: 'ready' },
+      );
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const entries = instance.getSnapshot().entries;
+      expect(entries.filter((e) => e.kind === 'exited')).toHaveLength(2);
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+
+    it('toggles back and forth across a full exited -> ready -> exited cycle, never leaving a stale value from the first exit', async () => {
+      // PR review gap: every other test in this block ends the sequence in
+      // ONE state (currently exited, or currently null-after-one-clear).
+      // This is the one that actually exercises BOTH handlers toggling in
+      // sequence -- a stale-value bug in either direction (the 'ready'
+      // handler failing to clear, or the second 'exited' handler failing to
+      // re-set) is only observable across a full cycle, not a single
+      // set-then-clear.
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-cycle', 'w5c-cycle');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      let offset = 0;
+      const firstExited = ndjson({ v: 1, type: 'exited', code: 1 });
+      ws!.simulateMessage(outputMessage(firstExited, (offset += firstExited.length)));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 1 });
+
+      const readyData = ndjson({ v: 1, type: 'ready' });
+      ws!.simulateMessage(outputMessage(readyData, (offset += readyData.length)));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toBeNull();
+
+      // Different code from the first exit so a stale `{ code: 1 }` left
+      // over from the first 'exited' handler is distinguishable from a
+      // correct re-set.
+      const secondExited = ndjson({ v: 1, type: 'exited', code: 2 });
+      ws!.simulateMessage(outputMessage(secondExited, (offset += secondExited.length)));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 2 });
+    });
+
+    it('clears currentExit on an epoch bump (worker restarted server-side), before any new ready/exited arrives for the new incarnation', async () => {
+      // CodeRabbit review finding on this PR: `currentExit` is
+      // worker-LIVENESS state by its own definition (the worker's CURRENT
+      // exit state), same as `activityState` -- so it must be cleared in
+      // `beginEpochReset` (the epoch-REPLACEMENT path), not left to survive
+      // until the new incarnation's own 'ready'/'exited' event folds in.
+      // Without this, a superseded incarnation's exit state drives a stale
+      // Restart affordance for a worker that no longer exists -- the same
+      // defect class #1480 fixed the same day for `activityState` in this
+      // same function.
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-epoch', 'w5c-epoch');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      // Establish epoch 1 and a live exit within it.
+      const exitedData = ndjson({ v: 1, type: 'exited', code: 1 });
+      ws!.simulateMessage(historyMessage(exitedData, exitedData.length, 0, 1));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 1 });
+
+      // A larger epoch means the worker restarted server-side -- this
+      // message itself carries no 'ready'/'exited' event, so any clearing
+      // observed here can only come from beginEpochReset itself, not from
+      // folding a new incarnation's own liveness event.
+      const bumpData = ndjson({ v: 1, type: 'user-message', id: 'u-bump', text: 'after restart' });
+      ws!.simulateMessage(outputMessage(bumpData, bumpData.length, 2));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+  });
+
   it('folds a user-message server-authored event from replayed history', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s5b', 'w5b');
     const ws = MockWebSocket.getLastInstance();
