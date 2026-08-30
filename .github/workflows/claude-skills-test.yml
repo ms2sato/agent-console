@@ -34,7 +34,7 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  claude-skills-test:
     runs-on: ubuntu-latest
 
     steps:
