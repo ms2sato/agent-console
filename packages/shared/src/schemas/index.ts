@@ -119,6 +119,7 @@ export {
 export {
   AppServerMessageSchema,
   SchemaVersionMessageSchema,
+  type AppServerMessage,
 } from './app-server-message.js';
 
 // System schemas

@@ -426,3 +426,11 @@ export const AppServerMessageSchema = v.variant('type', [
   ReviewQueueUpdatedSchema,
   SchemaVersionMessageSchema,
 ]);
+
+// Inferred type from schema. Lives here (not in types/session.ts) so that
+// deriving it never requires a types -> schemas import: that edge is one
+// hop from `schemas/app-server-message.ts -> schemas/embedded-agent.ts ->
+// types/embedded-agent.ts` closing into a real cycle. See
+// `worker-types.ts`'s `RestoreInfo` doc comment for the sibling case: a
+// type-only import is exactly as cyclic to `madge` as a value import.
+export type AppServerMessage = v.InferOutput<typeof AppServerMessageSchema>;

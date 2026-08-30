@@ -1,5 +1,3 @@
-import type * as v from 'valibot';
-import type { AppServerMessageSchema } from '../schemas/app-server-message.js';
 import type { Worker, AgentActivityState, ExitReason } from './worker.js';
 
 // Re-export schema-derived types
@@ -346,8 +344,6 @@ export const APP_SERVER_MESSAGE_TYPES = {
 export const APP_MESSAGE_TYPES = APP_SERVER_MESSAGE_TYPES;
 
 export type AppServerMessageType = keyof typeof APP_SERVER_MESSAGE_TYPES;
-
-export type AppServerMessage = v.InferOutput<typeof AppServerMessageSchema>;
 
 /**
  * Valid message types for AppClientMessage.
