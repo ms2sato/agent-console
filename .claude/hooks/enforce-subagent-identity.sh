@@ -205,7 +205,7 @@ AGENT_TYPE=$(printf '%s' "$INPUT" | jq -r '.agent_type // empty' 2>/dev/null) ||
 # main path outright, since every ordinary primary-agent tool call has
 # no agent_type at all. If you are reading this because you are
 # "fixing" the fail-open branch below back to fail-closed, read PR
-# #<FILL-IN-PR-NUMBER> / Issue #1476 first: the failure mode when the
+# #1489 / Issue #1476 first: the failure mode when the
 # premise below breaks is "reverts to the pre-fix world" (subagents can
 # call these tools again) -- bounded degradation, not a new hazard, and
 # that bound is exactly why fail-open was accepted here.
