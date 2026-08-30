@@ -16,8 +16,7 @@ import {
 
 describe('isReExportOnlyContent', () => {
   it('returns true for a single `export * from` statement', () => {
-    // TEMPORARY POLARITY-CHECK BREAK (Issue #1471) — will be reverted.
-    expect(isReExportOnlyContent(`export * from './foo';`)).toBe(false);
+    expect(isReExportOnlyContent(`export * from './foo';`)).toBe(true);
   });
 
   it('returns true for multiple `export * from` statements with whitespace and trailing newlines', () => {
