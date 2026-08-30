@@ -92,6 +92,23 @@ const HOSTILE_ARG = '--pin-import-safety-hostile-arg-8f3a2b1c';
  */
 const KNOWN_BENIGN_ENV_KEYS = new Set(['NoDefaultCurrentDirectoryInExePath']);
 
+type EnvDiffReport = { envAdded: string[]; envRemoved: string[]; envChanged: string[] };
+
+/**
+ * Applies the KNOWN_BENIGN_ENV_KEYS exclusion to a raw env-diff report.
+ * Scoped to `envAdded` only, matching exactly what was measured (the SDK
+ * bundle ADDS this key, never removes or rewrites it) -- see
+ * KNOWN_BENIGN_ENV_KEYS's own comment. `envRemoved`/`envChanged` are
+ * returned untouched, on purpose: this key disappearing or being rewritten
+ * during import would be a different, unverified, and more concerning
+ * defect (something deleting/overwriting the SDK's own env write), and
+ * must still fail the zero-drift assertion rather than being silently
+ * allowlisted alongside its one verified, benign transition.
+ */
+function filterKnownBenignEnvAdditions<T extends EnvDiffReport>(report: T): T {
+  return { ...report, envAdded: report.envAdded.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k)) };
+}
+
 function discoverSmokeFiles(): string[] {
   const smokeDir = path.join(import.meta.dir, '..');
   const glob = new Glob('*.{ts,mjs}');
@@ -161,13 +178,11 @@ async function importInSubprocess(absPath: string, extraArgv: string[] = []): Pr
     report = JSON.parse(reportLine);
     if (report) {
       // Strip known-benign third-party side effects (see
-      // KNOWN_BENIGN_ENV_KEYS above) before this report is asserted on --
-      // the whole point of route (b) is attributing a mutation to THIS
-      // file's own code, and a key every SDK-importing file sets
-      // identically is not that.
-      report.envAdded = report.envAdded.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k));
-      report.envRemoved = report.envRemoved.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k));
-      report.envChanged = report.envChanged.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k));
+      // filterKnownBenignEnvAdditions and KNOWN_BENIGN_ENV_KEYS above)
+      // before this report is asserted on -- the whole point of route (b)
+      // is attributing a mutation to THIS file's own code, and a key every
+      // SDK-importing file sets identically is not that.
+      report = filterKnownBenignEnvAdditions(report);
     }
   } catch {
     report = null;
@@ -177,6 +192,25 @@ async function importInSubprocess(absPath: string, extraArgv: string[] = []): Pr
 }
 
 const smokeFiles = discoverSmokeFiles();
+
+describe('filterKnownBenignEnvAdditions (CodeRabbit follow-up: allowlist scope)', () => {
+  const KEY = 'NoDefaultCurrentDirectoryInExePath';
+
+  it('drops the known key from envAdded (the one verified, measured transition)', () => {
+    const result = filterKnownBenignEnvAdditions({ envAdded: [KEY, 'OTHER'], envRemoved: [], envChanged: [] });
+    expect(result.envAdded).toEqual(['OTHER']);
+  });
+
+  it('does NOT drop the known key from envRemoved -- an unverified transition must still fail', () => {
+    const result = filterKnownBenignEnvAdditions({ envAdded: [], envRemoved: [KEY], envChanged: [] });
+    expect(result.envRemoved).toEqual([KEY]);
+  });
+
+  it('does NOT drop the known key from envChanged -- an unverified transition must still fail', () => {
+    const result = filterKnownBenignEnvAdditions({ envAdded: [], envRemoved: [], envChanged: [KEY] });
+    expect(result.envChanged).toEqual([KEY]);
+  });
+});
 
 describe('scripts/smoke/* import safety (Issue #1479)', () => {
   it('discovers a non-trivial number of smoke scripts (the discovery glob itself is not silently empty)', () => {
