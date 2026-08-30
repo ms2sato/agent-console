@@ -106,7 +106,10 @@ describe('requiresTestCoverage with re-export exclusion', () => {
   });
 
   it('returns false for non-coverage paths regardless of content', () => {
-    expect(requiresTestCoverage('packages/server/src/lib/logger.ts')).toBe(false);
+    // packages/server/src/lib/** was NOT a coverage path here — it became
+    // one in Issue #1459 (see the dedicated describe block below), so this
+    // fixture uses packages/server/src/middleware/, which still isn't.
+    expect(requiresTestCoverage('packages/server/src/middleware/auth.ts')).toBe(false);
     expect(requiresTestCoverage('packages/server/src/index.ts')).toBe(false);
   });
 
@@ -127,6 +130,18 @@ describe('requiresTestCoverage with re-export exclusion', () => {
     // covered. Demonstrates that the exclusion is content-aware, not
     // path-based.
     expect(requiresTestCoverage('packages/shared/src/index.ts')).toBe(true);
+  });
+});
+
+describe('requiresTestCoverage for packages/server/src/lib/** (Issue #1459)', () => {
+  it('requires coverage for a lib file (previously absent from COVERAGE_PATTERNS)', () => {
+    expect(requiresTestCoverage('packages/server/src/lib/logger.ts')).toBe(true);
+  });
+
+  it('requires coverage for the two-line auth-constants.ts constant file', () => {
+    // No exclusion pattern applies here — it is a normal runtime file, just
+    // a small one. See packages/server/src/lib/__tests__/auth-constants.test.ts.
+    expect(requiresTestCoverage('packages/server/src/lib/auth-constants.ts')).toBe(true);
   });
 });
 
