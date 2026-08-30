@@ -1348,4 +1348,29 @@ describe('WorkerOutputFileManager', () => {
       expect(assembled.data).toBe(live.data);
     });
   });
+
+  describe('readHistoryForDisplay — the fast path is the one that must not regress (#1506)', () => {
+    it('returns the same window as readLastNLines, and reads no archive, when the live window already fills the budget', async () => {
+      // Mirrors readHistoryForRestore's fast-path pin immediately above: an
+      // ordinary worker whose live window alone already satisfies the line
+      // budget must not pay for an archive read. Pinned on the returned bytes,
+      // not merely a call count -- see
+      // `worker-output-file-display-fill.test.ts` for the dedicated spy-based
+      // "reads no archive at all" pin and for the rotated (archive-walking)
+      // cases, alongside the reproduction of the defect this method fixes.
+      const stream =
+        `${JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hello' })}\n` +
+        `${JSON.stringify({ v: 1, type: 'assistant-message', turnId: 't1', text: 'world' })}\n`;
+
+      manager.bufferOutput('session-1', 'worker-1', stream, quickResolver);
+      await manager.flushAll();
+
+      const lastN = await manager.readLastNLines('session-1', 'worker-1', 10, quickResolver);
+      // Premise: nothing rotated, so this is genuinely the fast path.
+      expect(lastN.startOffset).toBe(0);
+
+      const display = await manager.readHistoryForDisplay('session-1', 'worker-1', quickResolver, 10);
+      expect(display).toEqual(lastN);
+    });
+  });
 });
