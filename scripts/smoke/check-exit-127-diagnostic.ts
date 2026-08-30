@@ -87,8 +87,6 @@ import { AgentManager, CLAUDE_CODE_AGENT_ID } from '../../packages/server/src/se
 import { SqliteAgentRepository } from '../../packages/server/src/repositories/sqlite-agent-repository.js';
 import { initializeDatabase, closeDatabase, getDatabase } from '../../packages/server/src/database/connection.js';
 
-process.chdir('/');
-
 const EXIT_WAIT_TIMEOUT_MS = 5000;
 const POLL_MS = 50;
 
@@ -137,6 +135,8 @@ async function selfCheck(): Promise<void> {
 // entire body was top-level, executing as a side effect of merely importing
 // this file. Guarded below so only running it as the entry point does.
 async function main(): Promise<void> {
+  process.chdir('/');
+
   await selfCheck();
 
   const smokeUsername = os.userInfo().username;

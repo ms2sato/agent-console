@@ -28,10 +28,45 @@ import * as path from 'node:path';
  * `.claude/skills/**`-scoped workflow PR #1474 added (this file itself
  * isn't under `.claude/`, but `test:scripts` globs `scripts/` too, so all
  * three paths run it).
+ *
+ * TWO ROUTES THIS PIN INITIALLY MISSED (found by CodeRabbit + a self-sweep
+ * on PR #1481, after the first version of this pin -- and every script it
+ * covered -- had already been marked "fixed"):
+ *
+ *   1. A "successful" import can still silently mutate the importer's
+ *      environment or cwd (`process.env.EMBEDDED_AGENT_IDLE_EVICTION_MS`,
+ *      `process.chdir('/')`, `process.env.CLAUDE_CONFIG_DIR` plus a real
+ *      directory created on disk). `IMPORT_OK` + exit 0 answers "did it
+ *      crash the importer", not "did it leave the importer's process state
+ *      alone" -- those are different questions, and the first version of
+ *      this pin only asked the first one. Closed by ROUTE (b) below: every
+ *      import is checked for env/cwd drift, not just for surviving.
+ *   2. An argv parser guarded by nothing but its own position at module
+ *      scope only executes -- and only `process.exit(2)`s -- when the
+ *      IMPORTER's own `process.argv` happens to contain something it
+ *      doesn't recognize. A bare `bun -e '<code>'` subprocess has no extra
+ *      argv, so this path was structurally unreachable by the first version
+ *      of this pin: it could not have caught any of these regardless of how
+ *      many assertions were added to the no-argv case. Closed by ROUTE (a)
+ *      below: every script is ALSO imported with a hostile trailing
+ *      argument appended to the subprocess's own argv.
+ *
+ * Neither closes the other -- a script can pass one route and fail the
+ * other independently (this was measured, not assumed: see the polarity
+ * section of PR #1481's body for which of the 5 regressed files failed
+ * which route, and where each fell through the original pin's coverage
+ * gap on the hostile-argv route specifically because that route did not
+ * exist yet).
  */
 
 const IMPORT_OK_MARKER = 'IMPORT_OK';
 const SUBPROCESS_TIMEOUT_MS = 15_000;
+/**
+ * Deliberately not a real flag any current smoke recognizes -- the point is
+ * to look, to an argv-based parser, like an unrecognized/invalid argument,
+ * which is exactly the shape that trips a module-scope `process.exit(2)`.
+ */
+const HOSTILE_ARG = '--pin-import-safety-hostile-arg-8f3a2b1c';
 
 function discoverSmokeFiles(): string[] {
   const smokeDir = path.join(import.meta.dir, '..');
@@ -39,9 +74,43 @@ function discoverSmokeFiles(): string[] {
   return [...glob.scanSync({ cwd: smokeDir, onlyFiles: true })].sort();
 }
 
-async function importInSubprocess(absPath: string): Promise<{ exitCode: number | null; stdout: string; stderr: string; timedOut: boolean }> {
-  const code = `await import(${JSON.stringify(absPath)}); console.log(${JSON.stringify(IMPORT_OK_MARKER)});`;
-  const proc = Bun.spawn([process.execPath, '-e', code], {
+interface ImportResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+  /** Parsed from the subprocess's own JSON report line, when present. */
+  report: { ok: boolean; envAdded: string[]; envRemoved: string[]; envChanged: string[]; cwdChanged: boolean } | null;
+}
+
+/**
+ * ROUTE (a) applies when `extraArgv` is non-empty: `bun -e <code> <...>`
+ * appends everything after the code string to `process.argv` starting at
+ * index 1 (there is no "script path" slot the way there is for a direct
+ * `bun script.ts arg1` invocation) -- so `argvPad` below inserts one filler
+ * element first, making the subprocess's `process.argv.slice(2)` see
+ * `extraArgv` at the same offset a directly-run smoke script would.
+ *
+ * ROUTE (b) is always active: the subprocess snapshots its own
+ * `process.env` and `process.cwd()` before and after the import and reports
+ * the diff as JSON, so a "successful" import that silently mutated either
+ * is distinguishable from one that truly left the importer alone.
+ */
+async function importInSubprocess(absPath: string, extraArgv: string[] = []): Promise<ImportResult> {
+  const code = `
+    const envBefore = { ...process.env };
+    const cwdBefore = process.cwd();
+    await import(${JSON.stringify(absPath)});
+    const envAfter = process.env;
+    const cwdAfter = process.cwd();
+    const envAdded = Object.keys(envAfter).filter((k) => !(k in envBefore));
+    const envRemoved = Object.keys(envBefore).filter((k) => !(k in envAfter));
+    const envChanged = Object.keys(envBefore).filter((k) => k in envAfter && envAfter[k] !== envBefore[k]);
+    console.log(JSON.stringify({ ok: true, envAdded, envRemoved, envChanged, cwdChanged: cwdBefore !== cwdAfter }));
+    console.log(${JSON.stringify(IMPORT_OK_MARKER)});
+  `;
+  const argvPad = extraArgv.length > 0 ? ['pin-argv-placeholder', ...extraArgv] : [];
+  const proc = Bun.spawn([process.execPath, '-e', code, ...argvPad], {
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -59,7 +128,18 @@ async function importInSubprocess(absPath: string): Promise<{ exitCode: number |
   ]);
   clearTimeout(timeout);
 
-  return { exitCode: timedOut ? null : exitCode, stdout: stdout.trim(), stderr, timedOut };
+  const trimmed = stdout.trim();
+  const lines = trimmed.split('\n');
+  const lastLine = lines[lines.length - 1] ?? '';
+  const reportLine = lines[lines.length - 2] ?? '';
+  let report: ImportResult['report'] = null;
+  try {
+    report = JSON.parse(reportLine);
+  } catch {
+    report = null;
+  }
+
+  return { exitCode: timedOut ? null : exitCode, stdout: lastLine, stderr, timedOut, report };
 }
 
 const smokeFiles = discoverSmokeFiles();
@@ -79,13 +159,34 @@ describe('scripts/smoke/* import safety (Issue #1479)', () => {
     // gets to run -- measured directly: with the default 5000ms bun:test
     // timeout, a regressed script's failure showed up as a killed test
     // (exit 143) rather than this file's own `timedOut` assertion path.
-    it(`${file}: importing it in a subprocess does not execute it`, async () => {
+    const testTimeout = SUBPROCESS_TIMEOUT_MS + 5_000;
+
+    it(`${file}: importing it does not execute it, and leaves env/cwd unchanged (route b)`, async () => {
       const absPath = path.join(import.meta.dir, '..', file);
       const result = await importInSubprocess(absPath);
 
       expect(result.timedOut).toBe(false);
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe(IMPORT_OK_MARKER);
-    }, SUBPROCESS_TIMEOUT_MS + 5_000);
+      expect(result.report).not.toBeNull();
+      expect(result.report?.envAdded ?? ['<no report>']).toEqual([]);
+      expect(result.report?.envRemoved ?? ['<no report>']).toEqual([]);
+      expect(result.report?.envChanged ?? ['<no report>']).toEqual([]);
+      expect(result.report?.cwdChanged).toBe(false);
+    }, testTimeout);
+
+    it(`${file}: importing it with a hostile trailing argv entry still does not execute it (route a)`, async () => {
+      const absPath = path.join(import.meta.dir, '..', file);
+      const result = await importInSubprocess(absPath, [HOSTILE_ARG]);
+
+      expect(result.timedOut).toBe(false);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(IMPORT_OK_MARKER);
+      expect(result.report).not.toBeNull();
+      expect(result.report?.envAdded ?? ['<no report>']).toEqual([]);
+      expect(result.report?.envRemoved ?? ['<no report>']).toEqual([]);
+      expect(result.report?.envChanged ?? ['<no report>']).toEqual([]);
+      expect(result.report?.cwdChanged).toBe(false);
+    }, testTimeout);
   }
 });

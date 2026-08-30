@@ -110,30 +110,20 @@ const ITEM_FLAGS = ['--basic', '--invalid', '--post-compact', '--pressure'] as c
 /** Single writer of this script's invocation line -- see the file header. */
 const USAGE_TEXT = `Usage: bun scripts/smoke/probe-sdk-resume.ts [--basic] [--invalid] [--post-compact [--pressure]]
   Default (no item flag) = --basic. --pressure is a modifier for --post-compact.`;
-const argv = process.argv.slice(2);
-const selected = new Set<string>();
-for (const a of argv) {
-  if ((ITEM_FLAGS as readonly string[]).includes(a)) {
-    selected.add(a);
-    continue;
-  }
-  console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
-  process.exit(2);
-}
-if (selected.size === 0) selected.add('--basic');
-if (selected.has('--pressure') && !selected.has('--post-compact')) {
-  console.error(`${USAGE_TEXT}\n  --pressure is a modifier for --post-compact and does nothing on its own.`);
-  process.exit(2);
-}
+
+// `let`, defaults -- assigned by the argv parser and `isolateClaudeConfigDir`
+// inside main() below. Stay at module scope (not moved alongside the
+// parser) because `itemPostCompact` (a module-scope function, defined
+// before main()) closes over both by reference, not by parameter.
 /** See `itemPostCompact`'s "why this modifier exists" note. Billable. */
-const PRESSURE = selected.has('--pressure');
+let PRESSURE = false;
+let CONFIG_DIR = '';
 
 // ---------------------------------------------------------------------------
 // Shared setup
 // ---------------------------------------------------------------------------
 
 const MODEL = 'claude-sonnet-5';
-const CONFIG_DIR = isolateClaudeConfigDir('resume');
 const startedAt = Date.now();
 const perSession = new Map<string, { tokens: number; cost: number }>();
 
@@ -743,6 +733,30 @@ async function itemInvalidResume(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<number> {
+  // Moved into main() (Issue #1479 follow-up: CodeRabbit + a self-sweep
+  // both found this class of gap in the "pure wrap" files). The argv
+  // parser can `process.exit(2)` on an unrecognized argument or an
+  // unpaired `--pressure`, and `isolateClaudeConfigDir` creates a real
+  // directory and mutates `process.env.CLAUDE_CONFIG_DIR` -- both ran
+  // unconditionally on import.
+  const argv = process.argv.slice(2);
+  const selected = new Set<string>();
+  for (const a of argv) {
+    if ((ITEM_FLAGS as readonly string[]).includes(a)) {
+      selected.add(a);
+      continue;
+    }
+    console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
+    process.exit(2);
+  }
+  if (selected.size === 0) selected.add('--basic');
+  if (selected.has('--pressure') && !selected.has('--post-compact')) {
+    console.error(`${USAGE_TEXT}\n  --pressure is a modifier for --post-compact and does nothing on its own.`);
+    process.exit(2);
+  }
+  PRESSURE = selected.has('--pressure');
+  CONFIG_DIR = isolateClaudeConfigDir('resume');
+
   console.log(`probe-sdk-resume  started ${stamp()}`);
   console.log(`items: ${[...selected].join(' ')}`);
   console.log(`isolated CLAUDE_CONFIG_DIR: ${CONFIG_DIR}`);

@@ -111,15 +111,11 @@ import {
   type TurnOutcome,
 } from './probe-sdk-session-harness.js';
 
-// ---------------------------------------------------------------------------
-// Argument parsing -- BEFORE anything billable runs.
-// ---------------------------------------------------------------------------
-
 const ITEM_FLAGS = ['--p1a', '--p3i', '--p2', '--p3-on', '--p3-neg', '--p4-hooks'] as const;
 const VALUE_FLAGS = ['--budget-usd', '--budget-minutes'] as const;
+const USAGE_TEXT = `Usage: bun scripts/smoke/probe-sdk-compaction.ts [--p1a] [--p3i] [--p2] [--p3-on] [--p3-neg] [--p4-hooks] [--budget-usd N] [--budget-minutes N]
+  Default (no item flag) = --p1a --p3i --p2 (the cheap set).`;
 
-const argv = process.argv.slice(2);
-const selected = new Set<string>();
 /**
  * The pressure items' spend ceiling, in DOLLARS, not tokens. #1400 first
  * expressed it as "~200k cumulative prompt tokens" and this probe's own
@@ -129,37 +125,14 @@ const selected = new Set<string>();
  * figure stops the probe at its cheapest item and never at an expensive one.
  * Cumulative tokens are still recorded -- they are just not the gate.
  * (Owner decision, 2026-08-28, on this probe's own mid-run report.)
+ *
+ * `let`, assigned by the argv parser inside main() -- stays at module scope
+ * (not moved alongside the parser below) because `checkBudget` (a
+ * module-scope function, well before main()) closes over these by
+ * reference, not by parameter.
  */
 let budgetUsd = 2;
 let budgetMinutes = 30;
-const USAGE_TEXT = `Usage: bun scripts/smoke/probe-sdk-compaction.ts [--p1a] [--p3i] [--p2] [--p3-on] [--p3-neg] [--p4-hooks] [--budget-usd N] [--budget-minutes N]
-  Default (no item flag) = --p1a --p3i --p2 (the cheap set).`;
-
-for (let i = 0; i < argv.length; i++) {
-  const a = argv[i];
-  if ((ITEM_FLAGS as readonly string[]).includes(a)) {
-    selected.add(a);
-    continue;
-  }
-  if ((VALUE_FLAGS as readonly string[]).includes(a)) {
-    const raw = argv[++i];
-    if (raw === undefined || !/^[1-9]\d*$/.test(raw)) {
-      console.error(`${USAGE_TEXT}\n  ${a} requires a positive integer. Got: ${raw ?? '(nothing)'}`);
-      process.exit(2);
-    }
-    if (a === '--budget-usd') budgetUsd = Number(raw);
-    else budgetMinutes = Number(raw);
-    continue;
-  }
-  console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
-  process.exit(2);
-}
-
-if (selected.size === 0) {
-  selected.add('--p1a');
-  selected.add('--p3i');
-  selected.add('--p2');
-}
 
 // ---------------------------------------------------------------------------
 // Shared setup
@@ -191,7 +164,6 @@ const BELOW_FLOOR_WINDOW = 30_000;
  */
 type ProbeSettings = Settings & { autoCompactThreshold?: number };
 
-const CONFIG_DIR = isolateClaudeConfigDir('compaction');
 const startedAt = Date.now();
 
 /**
@@ -1021,6 +993,40 @@ async function itemP4Hooks(lever: Lever): Promise<void> {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<number> {
+  // Moved into main() (Issue #1479 follow-up: CodeRabbit + a self-sweep
+  // both found this class of gap in the "pure wrap" files). The argv
+  // parser can `process.exit(2)` on an unrecognized/malformed argument, and
+  // `isolateClaudeConfigDir` creates a real directory and mutates
+  // `process.env.CLAUDE_CONFIG_DIR` -- both ran unconditionally on import.
+  const argv = process.argv.slice(2);
+  const selected = new Set<string>();
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if ((ITEM_FLAGS as readonly string[]).includes(a)) {
+      selected.add(a);
+      continue;
+    }
+    if ((VALUE_FLAGS as readonly string[]).includes(a)) {
+      const raw = argv[++i];
+      if (raw === undefined || !/^[1-9]\d*$/.test(raw)) {
+        console.error(`${USAGE_TEXT}\n  ${a} requires a positive integer. Got: ${raw ?? '(nothing)'}`);
+        process.exit(2);
+      }
+      if (a === '--budget-usd') budgetUsd = Number(raw);
+      else budgetMinutes = Number(raw);
+      continue;
+    }
+    console.error(`${USAGE_TEXT}\n  Unrecognized argument: ${a}`);
+    process.exit(2);
+  }
+  if (selected.size === 0) {
+    selected.add('--p1a');
+    selected.add('--p3i');
+    selected.add('--p2');
+  }
+
+  const CONFIG_DIR = isolateClaudeConfigDir('compaction');
+
   console.log(`probe-sdk-compaction  started ${stamp()}`);
   console.log(`items: ${[...selected].join(' ')}`);
   console.log(`isolated CLAUDE_CONFIG_DIR: ${CONFIG_DIR}`);
