@@ -417,6 +417,11 @@ async function main(): Promise<void> {
 
     const tokenBefore = mintedTokens[mintedTokens.length - 1];
     const eventsBeforeKill = (await readEvents(sessionId, workerId)).length;
+    // Captured so the replacement's `ready` is awaited RELATIVE to what history
+    // already holds. A hard-coded `>= 2` would encode an assumption about how
+    // many `ready` events precede this point, and would pass instantly the
+    // moment that assumption is off by one -- observing nothing.
+    const readyBeforeKill = (await readEvents(sessionId, workerId)).filter((e) => e.type === 'ready').length;
 
     // The kill this Issue is about: the grandchild ONLY.
     Bun.spawnSync(['kill', '-9', String(tree.claude)]);
@@ -483,7 +488,7 @@ async function main(): Promise<void> {
       );
 
       const readyAgain = await waitFor(
-        async () => (await readEvents(sessionId, workerId)).filter((e) => e.type === 'ready').length >= 2,
+        async () => (await readEvents(sessionId, workerId)).filter((e) => e.type === 'ready').length > readyBeforeKill,
         RECOVERY_TIMEOUT_MS,
         'the replacement incarnation to report ready',
       );
