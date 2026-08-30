@@ -545,6 +545,29 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().activityState).toBe('active');
   });
 
+  it('resets activityState to unknown on an epoch bump, releasing a stale active gate', async () => {
+    const instance = getOrCreateEmbeddedAgentWorker('s10b', 'w10b');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    // Establish epoch 1 and drive activityState to 'active' (worker mid-turn).
+    const data1 = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'before restart' });
+    ws!.simulateMessage(historyMessage(data1, data1.length, 0, 1));
+    await flush();
+    ws!.simulateMessage(JSON.stringify({ type: 'activity', state: 'active' }));
+    await flush();
+    expect(instance.getSnapshot().activityState).toBe('active');
+
+    // A larger epoch means the worker restarted server-side; the discarded
+    // incarnation's last-known activityState must not survive the reset and
+    // keep gating the composer for a worker that no longer exists.
+    const data2 = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'after restart' });
+    ws!.simulateMessage(outputMessage(data2, data2.length, 2));
+    await flush();
+
+    expect(instance.getSnapshot().activityState).toBe('unknown');
+  });
+
   it('records a non-fatal ACTIVATION_FAILED error without clearing accumulated entries', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s11', 'w11');
     const ws = MockWebSocket.getLastInstance();

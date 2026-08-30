@@ -683,12 +683,17 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // incarnation's own restore-info (success or failure) arrives and
     // re-declares it -- there is no window where a stale `true` could be
     // read as describing the new incarnation.
+    // activityState resets to its construction-time value alongside the rest
+    // of this epoch's state, so a discarded incarnation's last-known state
+    // (e.g. 'active') doesn't keep gating the composer for a worker that no
+    // longer exists.
     this.patch({
       entries: [],
       restoring: false,
       restoredMessageCount: null,
       sdkResumed: undefined,
       restoreFailed: false,
+      activityState: 'unknown',
     });
   }
 
