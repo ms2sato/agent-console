@@ -9,6 +9,7 @@ import {
 } from '../EmbeddedAgentWorkerView';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import { _resetEmbeddedAgentWorkers } from '../embedded-agent-store';
+import type { RestorePreservation } from '@agent-console/shared';
 
 function ndjson(...events: Record<string, unknown>[]): string {
   return events.map((e) => JSON.stringify(e)).join('\n') + '\n';
@@ -2869,7 +2870,7 @@ describe('EmbeddedAgentWorkerView', () => {
         "This worker's earlier conversation could not be restored — a diagnostic copy of the record has been preserved. This turn starts fresh.";
       const LOSS_LOST = "This worker's earlier conversation could not be restored. This turn starts fresh.";
 
-      async function renderFailure(preservation?: 'in-band' | 'sidecar' | 'lost', sdkResumed?: boolean) {
+      async function renderFailure(preservation?: RestorePreservation, sdkResumed?: boolean) {
         globalThis.fetch = Object.assign(
           mock(
             makeEmbeddedViewFetch([

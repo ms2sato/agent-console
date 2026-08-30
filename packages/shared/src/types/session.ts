@@ -184,6 +184,17 @@ export type WorkerErrorCode =
   | 'UNSUPPORTED_OPERATION' // Client message not valid for this worker type (e.g. input/resize on an embedded-agent worker)
   | 'MESSAGE_TOO_LARGE';    // embedded-user-message.text exceeds the wire byte cap
 
+/**
+ * Transcript Restore, R4 (#1447 stage 4): what actually happened to the
+ * pre-failure transcript on a restore failure. See the `restore-info`
+ * failure member of `WorkerServerMessage` below for the full rationale of
+ * each value -- this is that field's value type, factored out because it is
+ * repeated verbatim (server-internal worker state, wire message, and every
+ * client consumer down to `EmbeddedAgentWorkerView`'s copy-selection
+ * switches) rather than re-spelled at each site.
+ */
+export type RestorePreservation = 'in-band' | 'sidecar' | 'lost';
+
 export type WorkerServerMessage =
   // `offset` is the absolute end position in the worker's cumulative output
   // stream; `epoch` is the incarnation generation identifier (§3.1 / §3.4).
@@ -308,7 +319,7 @@ export type WorkerServerMessage =
       epoch: number;
       failed: true;
       sdkResumed?: boolean;
-      preservation?: 'in-band' | 'sidecar' | 'lost';
+      preservation?: RestorePreservation;
     };
 
 export interface WorkerActivityInfo {

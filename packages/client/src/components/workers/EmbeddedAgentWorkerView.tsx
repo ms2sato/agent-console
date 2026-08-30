@@ -6,7 +6,11 @@ import type { Element as HastElement, Text as HastText } from 'hast';
 import type { JSX } from 'react';
 import type { ExtraProps } from 'react-markdown';
 import { DEFAULT_COMPACTION_THRESHOLD } from '@agent-console/shared';
-import type { PtyNotificationKind, EmbeddedAgentServerNotification } from '@agent-console/shared';
+import type {
+  PtyNotificationKind,
+  EmbeddedAgentServerNotification,
+  RestorePreservation,
+} from '@agent-console/shared';
 import { useEmbeddedAgentWorker } from './hooks/useEmbeddedAgentWorker';
 import type { EmbeddedAgentChatEntry } from './embedded-agent-store';
 import { RefreshIcon, AlertCircleIcon, CopyIcon, CheckIcon } from '../Icons';
@@ -56,7 +60,7 @@ function isGroupable(entry: EmbeddedAgentChatEntry): entry is GroupableEntry {
  * copy renders unchanged.
  */
 function getRestoreDivergedD2Message(
-  preservation: 'in-band' | 'sidecar' | 'lost' | undefined,
+  preservation: RestorePreservation | undefined,
 ): string {
   switch (preservation) {
     case 'in-band':
@@ -85,7 +89,7 @@ function getRestoreDivergedD2Message(
  * branches on engine, only on `preservation` (R4, #1447 stage 4) -- see the
  * design doc's "The client's exact copy, both directions".
  */
-function getRestoreLossMessage(preservation: 'in-band' | 'sidecar' | 'lost' | undefined): string {
+function getRestoreLossMessage(preservation: RestorePreservation | undefined): string {
   switch (preservation) {
     case 'in-band':
       // R1's PRIMARY path: the transcript IS the display, still shown above.

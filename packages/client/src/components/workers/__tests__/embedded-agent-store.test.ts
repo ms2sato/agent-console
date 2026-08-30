@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { WS_CLOSE_CODE, type AppServerMessage } from '@agent-console/shared';
+import { WS_CLOSE_CODE, type AppServerMessage, type RestorePreservation } from '@agent-console/shared';
 import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 import {
   getOrCreateEmbeddedAgentWorker,
@@ -68,7 +68,7 @@ function restoreInfoMessage(
 function restoreFailureMessage(
   epoch: number,
   sdkResumed?: boolean,
-  preservation?: 'in-band' | 'sidecar' | 'lost',
+  preservation?: RestorePreservation,
 ) {
   return JSON.stringify({
     type: 'restore-info',

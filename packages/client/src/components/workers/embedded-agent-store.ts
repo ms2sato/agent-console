@@ -12,6 +12,7 @@ import {
   type AppServerMessage,
   type EmbeddedAgentServerNotification,
   type ExitReason,
+  type RestorePreservation,
 } from '@agent-console/shared';
 import { getWorkerWsUrl } from '../../lib/websocket-url.js';
 import { getReconnectDelay, shouldReconnect } from '../../lib/websocket-reconnect.js';
@@ -226,7 +227,7 @@ export interface EmbeddedAgentSnapshot {
    *   renders today's unconditional copy for this case, per the design
    *   doc's "The client's exact copy, both directions".
    */
-  preservation: 'in-band' | 'sidecar' | 'lost' | undefined;
+  preservation: RestorePreservation | undefined;
   /**
    * R1 (#1455): the worker's CURRENT exit state, independent of any
    * historical `exited` transcript ROW. Single writer: set from the
@@ -930,7 +931,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
    */
   private applyRestoreFailure(
     sdkResumed: boolean | undefined,
-    preservation: 'in-band' | 'sidecar' | 'lost' | undefined,
+    preservation: RestorePreservation | undefined,
   ): void {
     this.patch({
       restoreFailed: true,
