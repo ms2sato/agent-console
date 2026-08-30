@@ -1194,4 +1194,31 @@ describe('WorkerOutputFileManager', () => {
       expect(filePath).toBe(`${TEST_CONFIG_DIR}/_quick/outputs/session-1/worker-1.log`);
     });
   });
+
+  describe('readHistoryForRestore — the fast path is the one that must not regress', () => {
+    it('returns the live window verbatim, and reports why it stopped, when a boundary is already in view', async () => {
+      // The walk-back's whole cost model rests on this: an ordinary worker, whose
+      // boundary has not rotated away, must not pay for an archive read. Pinned
+      // on the returned bytes rather than only on the verdict -- an archive read
+      // would lengthen the data while leaving `stoppedAt` looking identical.
+      //
+      // The rotated cases live in
+      // `worker-output-file-restore-archive-blindness.test.ts`, alongside the
+      // reproduction of the defect they fix.
+          const stream =
+        `${JSON.stringify({ v: 1, type: 'user-message', id: 'm1', text: 'hello' })}\n` +
+        `${JSON.stringify({ v: 1, type: 'context-compacted', source: 'auto', summary: 'S' })}\n`;
+
+      manager.bufferOutput('session-1', 'worker-1', stream, quickResolver);
+      await manager.flushAll();
+
+      const live = await manager.readHistoryWithOffset('session-1', 'worker-1', quickResolver, undefined);
+      // Premise: nothing rotated, so this is genuinely the fast path.
+      expect(live.startOffset).toBe(0);
+
+      const assembled = await manager.readHistoryForRestore('session-1', 'worker-1', quickResolver);
+      expect(assembled.stoppedAt).toBe('boundary');
+      expect(assembled.data).toBe(live.data);
+    });
+  });
 });
