@@ -26,9 +26,12 @@
  * `lang-check:allow` is skipped entirely by the scan — no character on
  * that line is checked, regardless of script. This is a loud,
  * review-visible per-line override (the marker itself is plainly visible
- * in the diff and in the rendered doc), not a silent blanket allowance
- * and not a separate allowlist file. Use it sparingly, only where the
- * non-Latin content is itself the point (e.g. a homograph example).
+ * in the source and the diff — the common usage pattern is an HTML
+ * comment, e.g. `<!-- lang-check:allow -->`, which stays visible there
+ * even though HTML comments are not rendered in Markdown output), not a
+ * silent blanket allowance and not a separate allowlist file. Use it
+ * sparingly, only where the non-Latin content is itself the point (e.g.
+ * a homograph example).
  *
  * Output format (one violation per line):
  *   path/to/file.md:LINE:COL CHAR U+CODEPOINT

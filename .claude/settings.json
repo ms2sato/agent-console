@@ -27,6 +27,15 @@
             "command": "./.claude/hooks/enforce-permissions.sh"
           }
         ]
+      },
+      {
+        "matcher": "mcp__agent-console__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./.claude/hooks/enforce-subagent-identity.sh"
+          }
+        ]
       }
     ]
   }
