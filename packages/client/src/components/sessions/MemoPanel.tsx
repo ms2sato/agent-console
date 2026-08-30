@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -8,10 +8,12 @@ import { sessionKeys } from '../../lib/query-keys';
 
 interface MemoPanelProps {
   sessionId: string;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
+  compact: boolean;
 }
 
-export function MemoPanel({ sessionId }: MemoPanelProps) {
-  const [isExpanded, setIsExpanded] = useState(true);
+export function MemoPanel({ sessionId, isExpanded, onToggleExpanded, compact }: MemoPanelProps) {
   const queryClient = useQueryClient();
 
   const { data: content, isPending } = useQuery({
@@ -28,46 +30,48 @@ export function MemoPanel({ sessionId }: MemoPanelProps) {
     }, [sessionId, queryClient]),
   });
 
-  // Don't render anything if no memo exists or still loading
+  // Don't render anything if no memo exists or still loading.
   if (isPending || content == null) {
     return null;
   }
 
-  // Collapsed state - show thin strip with toggle button
-  if (!isExpanded) {
+  // R1b: with every section collapsed, this panel contributes only its
+  // label button to the container's single narrow rail -- no border, no
+  // strip of its own.
+  if (compact) {
     return (
-      <div className="hidden md:flex flex-col items-center border-l border-slate-700 bg-slate-800 py-2 px-1">
-        <button
-          onClick={() => setIsExpanded(true)}
-          className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
-          title="Expand memo"
-          aria-label="Expand memo"
-        >
-          <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>Memo</span>
-        </button>
-      </div>
+      <button
+        onClick={onToggleExpanded}
+        className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
+        title="Expand memo"
+        aria-label="Expand memo"
+      >
+        <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>Memo</span>
+      </button>
     );
   }
 
-  // Expanded sidebar
+  // R1c: an accordion header row inside the container's single column,
+  // separated from sibling sections horizontally (border-b), never by its
+  // own border-l. The body stacks directly underneath the header when open.
   return (
-    <div className="hidden md:flex flex-col w-80 border-l border-slate-700 bg-slate-800 shrink-0">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-700">
+    <div className="flex flex-col border-b border-slate-700">
+      <div className="flex items-center justify-between px-3 py-1.5">
         <span className="text-sm font-medium text-gray-300">Memo</span>
         <button
-          onClick={() => setIsExpanded(false)}
+          onClick={onToggleExpanded}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
-          title="Collapse memo"
-          aria-label="Collapse memo"
+          title={isExpanded ? 'Collapse memo' : 'Expand memo'}
+          aria-label={isExpanded ? 'Collapse memo' : 'Expand memo'}
         >
-          ✕
+          {isExpanded ? '✕' : '▸'}
         </button>
       </div>
-      {/* Content */}
-      <div className="memo-content min-w-0 flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-300">
-        <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
-      </div>
+      {isExpanded && (
+        <div className="memo-content min-w-0 max-h-96 overflow-y-auto px-4 py-3 text-sm text-gray-300">
+          <Markdown remarkPlugins={[remarkGfm]}>{content}</Markdown>
+        </div>
+      )}
     </div>
   );
 }

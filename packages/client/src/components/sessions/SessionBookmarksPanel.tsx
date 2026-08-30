@@ -3,6 +3,9 @@ import { useSessionBookmarks } from './hooks/useSessionBookmarks';
 
 interface SessionBookmarksPanelProps {
   sessionId: string;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
+  compact: boolean;
 }
 
 // Host is always re-derived from the URL at render time -- never stored or
@@ -33,8 +36,7 @@ function bookmarkHost(url: string): string {
  * identity anchors) are specified in `docs/design/session-bookmarks.md` --
  * this component implements that spec; do not restate the reasoning here.
  */
-export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
+export function SessionBookmarksPanel({ sessionId, isExpanded, onToggleExpanded, compact }: SessionBookmarksPanelProps) {
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [url, setUrl] = useState('');
   const [title, setTitle] = useState('');
@@ -69,123 +71,132 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
     });
   }
 
-  // Collapsed state - show thin strip with toggle button
-  if (!isExpanded) {
+  // R1b: with every section collapsed, this panel contributes only its
+  // label button to the container's single narrow rail -- no border, no
+  // strip of its own.
+  if (compact) {
     return (
-      <div className="hidden md:flex flex-col items-center border-l border-slate-700 bg-slate-800 py-2 px-1">
-        <button
-          onClick={() => setIsExpanded(true)}
-          className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
-          title="Expand bookmarks"
-          aria-label="Expand bookmarks"
-        >
-          <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>Bookmarks</span>
-        </button>
-      </div>
+      <button
+        onClick={onToggleExpanded}
+        className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
+        title="Expand bookmarks"
+        aria-label="Expand bookmarks"
+      >
+        <span className="text-xs" style={{ writingMode: 'vertical-rl' }}>Bookmarks</span>
+      </button>
     );
   }
 
-  // Expanded sidebar
+  // R1c: an accordion header row inside the container's single column,
+  // separated from sibling sections horizontally (border-b), never by its
+  // own border-l. The body stacks directly underneath the header when open.
+  //
+  // The toggle handler unconditionally resets isFormVisible on every click
+  // (open or close), not just on collapse -- harmless on open since the
+  // form always starts hidden anyway, and it preserves the "collapse resets
+  // the form" pin exactly on close.
   return (
-    <div className="hidden md:flex flex-col w-80 border-l border-slate-700 bg-slate-800 shrink-0">
-      {/* Header */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-700">
+    <div className="flex flex-col border-b border-slate-700">
+      <div className="flex items-center justify-between px-3 py-1.5">
         <span className="text-sm font-medium text-gray-300">Bookmarks</span>
         <button
           onClick={() => {
-            setIsExpanded(false);
+            onToggleExpanded();
             setIsFormVisible(false);
           }}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
-          title="Collapse bookmarks"
-          aria-label="Collapse bookmarks"
+          title={isExpanded ? 'Collapse bookmarks' : 'Expand bookmarks'}
+          aria-label={isExpanded ? 'Collapse bookmarks' : 'Expand bookmarks'}
         >
-          ✕
+          {isExpanded ? '✕' : '▸'}
         </button>
       </div>
-
-      {/* Add form, revealed on a deliberate action */}
-      <div className="flex flex-col border-b border-slate-700">
-        <button
-          type="button"
-          onClick={() => setIsFormVisible((visible) => !visible)}
-          aria-expanded={isFormVisible}
-          aria-label={isFormVisible ? 'Hide add bookmark form' : 'Show add bookmark form'}
-          className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none px-3 py-1.5 text-left"
-        >
-          {isFormVisible ? '- New bookmark' : '+ New bookmark'}
-        </button>
-        {isFormVisible && (
-        <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 pb-2">
-          <input
-            ref={urlInputRef}
-            type="text"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://example.com"
-            aria-label="Bookmark URL"
-            className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-          />
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="Title (optional)"
-            aria-label="Bookmark title"
-            className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
-          />
-          <button
-            type="submit"
-            disabled={url.trim().length === 0 || isAddingBookmark}
-            className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
-          >
-            Add bookmark
-          </button>
-          {error && <span className="text-xs text-red-400">{error}</span>}
-          </form>
-        )}
-      </div>
-
-      {/* Content */}
-      <div className="min-w-0 flex-1 overflow-y-auto">
-        {bookmarks.map((bookmark) => (
-          <div
-            key={bookmark.id}
-            className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-700/50"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-1.5">
-                <a
-                  href={bookmark.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="min-w-0 text-sm text-blue-400 hover:text-blue-300 truncate no-underline"
-                  style={{ unicodeBidi: 'isolate' }}
-                >
-                  {bookmark.title ?? bookmark.url}
-                </a>
-                {bookmark.origin === 'agent' && (
-                  <span
-                    className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none"
-                    aria-label="Registered by an agent"
-                  >
-                    Agent
-                  </span>
-                )}
-              </div>
-              <span className="block break-all text-xs text-gray-500">{bookmarkHost(bookmark.url)}</span>
-            </div>
+      {isExpanded && (
+        <>
+          {/* Add form, revealed on a deliberate action */}
+          <div className="flex flex-col border-b border-slate-700">
             <button
-              onClick={() => deleteBookmark(bookmark.id)}
-              className="text-gray-400 hover:text-red-400 cursor-pointer bg-transparent border-none p-1 text-xs shrink-0"
-              title="Delete bookmark"
-              aria-label={`Delete bookmark ${bookmark.title ?? bookmark.url}`}
+              type="button"
+              onClick={() => setIsFormVisible((visible) => !visible)}
+              aria-expanded={isFormVisible}
+              aria-label={isFormVisible ? 'Hide add bookmark form' : 'Show add bookmark form'}
+              className="text-xs text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none px-3 py-1.5 text-left"
             >
-              ✕
+              {isFormVisible ? '- New bookmark' : '+ New bookmark'}
             </button>
+            {isFormVisible && (
+              <form onSubmit={handleSubmit} className="flex flex-col gap-1.5 px-3 pb-2">
+                <input
+                  ref={urlInputRef}
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://example.com"
+                  aria-label="Bookmark URL"
+                  className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+                />
+                <input
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Title (optional)"
+                  aria-label="Bookmark title"
+                  className="bg-slate-900 border border-slate-600 rounded px-2 py-1 text-sm text-gray-200 placeholder:text-slate-500"
+                />
+                <button
+                  type="submit"
+                  disabled={url.trim().length === 0 || isAddingBookmark}
+                  className="btn text-xs bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed self-start"
+                >
+                  Add bookmark
+                </button>
+                {error && <span className="text-xs text-red-400">{error}</span>}
+              </form>
+            )}
           </div>
-        ))}
-      </div>
+
+          {/* Content */}
+          <div className="min-w-0 max-h-96 overflow-y-auto">
+            {bookmarks.map((bookmark) => (
+              <div
+                key={bookmark.id}
+                className="flex items-center justify-between gap-2 px-3 py-2 border-b border-slate-700/50"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <a
+                      href={bookmark.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-w-0 text-sm text-blue-400 hover:text-blue-300 truncate no-underline"
+                      style={{ unicodeBidi: 'isolate' }}
+                    >
+                      {bookmark.title ?? bookmark.url}
+                    </a>
+                    {bookmark.origin === 'agent' && (
+                      <span
+                        className="shrink-0 px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 text-xs font-medium leading-none"
+                        aria-label="Registered by an agent"
+                      >
+                        Agent
+                      </span>
+                    )}
+                  </div>
+                  <span className="block break-all text-xs text-gray-500">{bookmarkHost(bookmark.url)}</span>
+                </div>
+                <button
+                  onClick={() => deleteBookmark(bookmark.id)}
+                  className="text-gray-400 hover:text-red-400 cursor-pointer bg-transparent border-none p-1 text-xs shrink-0"
+                  title="Delete bookmark"
+                  aria-label={`Delete bookmark ${bookmark.title ?? bookmark.url}`}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

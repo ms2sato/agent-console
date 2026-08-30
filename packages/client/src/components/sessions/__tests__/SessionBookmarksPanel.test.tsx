@@ -1,7 +1,23 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { useState } from 'react';
 import { screen, cleanup, waitFor, fireEvent } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionBookmarksPanel } from '../SessionBookmarksPanel';
+
+// The panel is now controlled: isExpanded is a required prop, not internal
+// state. This wrapper starts closed, matching the panel's own former
+// internal default and every assertion below that depends on it.
+function ControlledBookmarksPanel({ sessionId }: { sessionId: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  return (
+    <SessionBookmarksPanel
+      sessionId={sessionId}
+      isExpanded={isExpanded}
+      onToggleExpanded={() => setIsExpanded((v) => !v)}
+      compact={false}
+    />
+  );
+}
 
 // Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary).
 const originalFetch = globalThis.fetch;
@@ -31,6 +47,16 @@ function jsonResponse(data: unknown, status = 200): Response {
  *       -> 18 of 19 fail. Not a narrow pin: with the panel open by default,
  *          every test that expands first finds no "Expand bookmarks" button.
  *          This is the polarity check for the change's headline behaviour.
+ *
+ *          Historical note (unified side-rail refactor): this specific
+ *          mutation vector no longer exists. `isExpanded` moved from
+ *          internal `useState` to a required prop owned by
+ *          `useSessionSidePanelsState` -- there is no longer a default to
+ *          mutate inside this component. State ownership is now pinned in
+ *          `hooks/__tests__/useSessionSidePanelsState.test.ts`, specifically
+ *          "toggles one section without affecting the others". This record
+ *          is kept rather than deleted so the reach measurement it
+ *          documents (18/19) is not lost.
  *   m2  `isFormVisible` initial `true` -- the form resident again
  *       -> 3 fail: the submit test, the continuous-adding pin, and the
  *          collapse-resets-the-form pin.
@@ -76,7 +102,7 @@ describe('SessionBookmarksPanel', () => {
     // Never resolves during this test -- still pending.
     mockFetch.mockReturnValue(new Promise(() => {}));
 
-    const { container } = await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    const { container } = await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
 
     expect(container.querySelector('[aria-label="Collapse bookmarks"]')).toBeNull();
     expect(container.textContent).toBe('');
@@ -85,7 +111,7 @@ describe('SessionBookmarksPanel', () => {
   it('renders the add form even when the session has no bookmarks yet', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
 
     // Reachable, not resident: the form exists behind two deliberate actions
     // even with an empty list, which is what keeps the first bookmark
@@ -112,7 +138,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
@@ -141,7 +167,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('https://example.com/no-title')).toBeTruthy());
@@ -162,7 +188,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('https://example.com/no-title')).toBeTruthy());
@@ -187,7 +213,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    const { container } = await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    const { container } = await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(container.textContent).toContain(maliciousTitle));
@@ -199,7 +225,7 @@ describe('SessionBookmarksPanel', () => {
   it('submitting the add form calls the create mutation with the entered url/title and refreshes the list', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
     await revealAddForm();
 
@@ -239,7 +265,7 @@ describe('SessionBookmarksPanel', () => {
   it('after a successful submit the form stays open, the inputs are cleared, and focus is back in the URL input', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
     await revealAddForm();
 
@@ -284,7 +310,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
 
@@ -326,7 +352,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
 
     // The default, asserted before anything is clicked. This is the case that
     // fails against the old `useState(true)`.
@@ -342,7 +368,7 @@ describe('SessionBookmarksPanel', () => {
   it('the add form is hidden until its button is pressed, and the button toggles it back', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     // Expanded is not enough -- the form needs its own action.
@@ -360,7 +386,7 @@ describe('SessionBookmarksPanel', () => {
   it('collapsing the panel resets the form to hidden, so re-expanding does not restore it', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ bookmarks: [] }));
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
     await revealAddForm();
 
@@ -388,7 +414,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
 
@@ -416,7 +442,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('Example Site')).toBeTruthy());
@@ -452,7 +478,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('Long Host Bookmark')).toBeTruthy());
@@ -477,7 +503,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('Login - github.com')).toBeTruthy());
@@ -510,7 +536,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('Agent Bookmark')).toBeTruthy());
@@ -536,7 +562,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText(longTitle)).toBeTruthy());
@@ -558,7 +584,7 @@ describe('SessionBookmarksPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionBookmarksPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledBookmarksPanel sessionId="session-1" />);
     await expandPanel();
 
     await waitFor(() => expect(screen.getByText('IDN Example')).toBeTruthy());

@@ -23,9 +23,7 @@ import { extractRestartableSession, executeWorkerRestart } from './workerRestart
 import { sendPtyWorkerMessage, escapePtyWorker } from './messagePanelHandlers';
 import type { AgentDefinition, Session, Worker } from '@agent-console/shared';
 import { MessagePanel, type MessagePanelHandle } from './MessagePanel';
-import { MemoPanel } from './MemoPanel';
-import { SessionArtifactsPanel } from './SessionArtifactsPanel';
-import { SessionBookmarksPanel } from './SessionBookmarksPanel';
+import { SessionSidePanels } from './SessionSidePanels';
 import { useAgents } from '../../hooks/useAgents';
 import { useSessionStopTasksContext } from '../../routes/__root';
 import type { SessionStopTask } from '../../hooks/useSessionStopTasks';
@@ -663,12 +661,8 @@ export function SessionPage({ sessionId, workerId: urlWorkerId }: SessionPagePro
         <div className="flex-1 min-w-0 relative">
           {activeTabContent}
         </div>
-        {/* Memo sidebar */}
-        <MemoPanel sessionId={sessionId} />
-        {/* Artifacts sidebar */}
-        <SessionArtifactsPanel sessionId={sessionId} />
-        {/* Bookmarks sidebar */}
-        <SessionBookmarksPanel sessionId={sessionId} />
+        {/* Session side panels: memo / artifacts / bookmarks */}
+        <SessionSidePanels sessionId={sessionId} />
       </div>
 
       {/* Message panel - only shown for agent workers */}
