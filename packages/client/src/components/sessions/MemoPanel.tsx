@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -8,10 +8,11 @@ import { sessionKeys } from '../../lib/query-keys';
 
 interface MemoPanelProps {
   sessionId: string;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
 }
 
-export function MemoPanel({ sessionId }: MemoPanelProps) {
-  const [isExpanded, setIsExpanded] = useState(true);
+export function MemoPanel({ sessionId, isExpanded, onToggleExpanded }: MemoPanelProps) {
   const queryClient = useQueryClient();
 
   const { data: content, isPending } = useQuery({
@@ -38,7 +39,7 @@ export function MemoPanel({ sessionId }: MemoPanelProps) {
     return (
       <div className="hidden md:flex flex-col items-center border-l border-slate-700 bg-slate-800 py-2 px-1">
         <button
-          onClick={() => setIsExpanded(true)}
+          onClick={onToggleExpanded}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
           title="Expand memo"
           aria-label="Expand memo"
@@ -56,7 +57,7 @@ export function MemoPanel({ sessionId }: MemoPanelProps) {
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-700">
         <span className="text-sm font-medium text-gray-300">Memo</span>
         <button
-          onClick={() => setIsExpanded(false)}
+          onClick={onToggleExpanded}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
           title="Collapse memo"
           aria-label="Collapse memo"

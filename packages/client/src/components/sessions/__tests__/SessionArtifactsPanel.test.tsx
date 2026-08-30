@@ -1,7 +1,29 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
+import { useState } from 'react';
 import { screen, cleanup, waitFor } from '@testing-library/react';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { SessionArtifactsPanel } from '../SessionArtifactsPanel';
+
+// The panel is now controlled: isExpanded is a required prop, not internal
+// state. This wrapper supplies the isExpanded/onToggleExpanded pair the way
+// the real SessionSidePanels container does, so the existing collapse/expand
+// assertions below keep exercising real toggle behavior.
+function ControlledArtifactsPanel({
+  sessionId,
+  initialExpanded = true,
+}: {
+  sessionId: string;
+  initialExpanded?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(initialExpanded);
+  return (
+    <SessionArtifactsPanel
+      sessionId={sessionId}
+      isExpanded={isExpanded}
+      onToggleExpanded={() => setIsExpanded((v) => !v)}
+    />
+  );
+}
 
 // Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary).
 const originalFetch = globalThis.fetch;
@@ -32,7 +54,7 @@ describe('SessionArtifactsPanel', () => {
     // Never resolves during this test -- still pending.
     mockFetch.mockReturnValue(new Promise(() => {}));
 
-    const { container } = await renderWithRouter(<SessionArtifactsPanel sessionId="session-1" />);
+    const { container } = await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
 
     expect(container.querySelector('[aria-label="Collapse artifacts"]')).toBeNull();
     expect(container.textContent).toBe('');
@@ -41,7 +63,7 @@ describe('SessionArtifactsPanel', () => {
   it('renders nothing when the session has no artifacts (same as Memo with no content)', async () => {
     mockFetch.mockResolvedValue(jsonResponse({ artifacts: [] }));
 
-    const { container } = await renderWithRouter(<SessionArtifactsPanel sessionId="session-1" />);
+    const { container } = await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
 
     await waitFor(() => expect(mockFetch).toHaveBeenCalled());
     // Give the pending -> resolved transition a tick to settle.
@@ -57,7 +79,7 @@ describe('SessionArtifactsPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionArtifactsPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
 
     await waitFor(() => expect(screen.getByText('My Dashboard')).toBeTruthy());
 
@@ -77,7 +99,7 @@ describe('SessionArtifactsPanel', () => {
       })
     );
 
-    await renderWithRouter(<SessionArtifactsPanel sessionId="session-1" />);
+    await renderWithRouter(<ControlledArtifactsPanel sessionId="session-1" />);
     await waitFor(() => expect(screen.getByText('My Dashboard')).toBeTruthy());
 
     screen.getByLabelText('Collapse artifacts').click();

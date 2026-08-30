@@ -3,6 +3,8 @@ import { useSessionBookmarks } from './hooks/useSessionBookmarks';
 
 interface SessionBookmarksPanelProps {
   sessionId: string;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
 }
 
 // Host is always re-derived from the URL at render time -- never stored or
@@ -33,8 +35,7 @@ function bookmarkHost(url: string): string {
  * identity anchors) are specified in `docs/design/session-bookmarks.md` --
  * this component implements that spec; do not restate the reasoning here.
  */
-export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
+export function SessionBookmarksPanel({ sessionId, isExpanded, onToggleExpanded }: SessionBookmarksPanelProps) {
   const [isFormVisible, setIsFormVisible] = useState(false);
   const [url, setUrl] = useState('');
   const [title, setTitle] = useState('');
@@ -74,7 +75,7 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
     return (
       <div className="hidden md:flex flex-col items-center border-l border-slate-700 bg-slate-800 py-2 px-1">
         <button
-          onClick={() => setIsExpanded(true)}
+          onClick={onToggleExpanded}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
           title="Expand bookmarks"
           aria-label="Expand bookmarks"
@@ -93,7 +94,7 @@ export function SessionBookmarksPanel({ sessionId }: SessionBookmarksPanelProps)
         <span className="text-sm font-medium text-gray-300">Bookmarks</span>
         <button
           onClick={() => {
-            setIsExpanded(false);
+            onToggleExpanded();
             setIsFormVisible(false);
           }}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"

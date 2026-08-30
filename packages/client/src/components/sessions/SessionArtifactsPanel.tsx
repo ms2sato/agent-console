@@ -1,9 +1,10 @@
-import { useState } from 'react';
 import { useSessionArtifacts } from './hooks/useSessionArtifacts';
 import { formatTimestamp } from '../../lib/format';
 
 interface SessionArtifactsPanelProps {
   sessionId: string;
+  isExpanded: boolean;
+  onToggleExpanded: () => void;
 }
 
 /**
@@ -18,9 +19,7 @@ interface SessionArtifactsPanelProps {
  * rule), same as `NotificationItemRow`'s `artifact-created` link and
  * `routes/artifacts/index.tsx`'s `ArtifactRow`.
  */
-export function SessionArtifactsPanel({ sessionId }: SessionArtifactsPanelProps) {
-  const [isExpanded, setIsExpanded] = useState(true);
-
+export function SessionArtifactsPanel({ sessionId, isExpanded, onToggleExpanded }: SessionArtifactsPanelProps) {
   const { data: artifacts, isPending } = useSessionArtifacts(sessionId);
 
   // Don't render anything while loading, or when the session has no artifacts.
@@ -33,7 +32,7 @@ export function SessionArtifactsPanel({ sessionId }: SessionArtifactsPanelProps)
     return (
       <div className="hidden md:flex flex-col items-center border-l border-slate-700 bg-slate-800 py-2 px-1">
         <button
-          onClick={() => setIsExpanded(true)}
+          onClick={onToggleExpanded}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1"
           title="Expand artifacts"
           aria-label="Expand artifacts"
@@ -51,7 +50,7 @@ export function SessionArtifactsPanel({ sessionId }: SessionArtifactsPanelProps)
       <div className="flex items-center justify-between px-3 py-1.5 border-b border-slate-700">
         <span className="text-sm font-medium text-gray-300">Artifacts</span>
         <button
-          onClick={() => setIsExpanded(false)}
+          onClick={onToggleExpanded}
           className="text-gray-400 hover:text-gray-200 cursor-pointer bg-transparent border-none p-1 text-sm"
           title="Collapse artifacts"
           aria-label="Collapse artifacts"

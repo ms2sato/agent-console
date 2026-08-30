@@ -18,8 +18,7 @@ import type { SessionStopTask } from '../../../hooks/useSessionStopTasks';
 import { getTabDotColor, isCloseableTabType, getWorkerTypeLabel, showsActivityBadge } from '../tabAppearance';
 import type { UseTabManagementResult, AddAgentWorkerParams, Tab } from '../hooks/useTabManagement';
 import { AddAgentWorkerMenu } from '../AddAgentWorkerMenu';
-import { SessionArtifactsPanel } from '../SessionArtifactsPanel';
-import { SessionBookmarksPanel } from '../SessionBookmarksPanel';
+import { SessionSidePanels } from '../SessionSidePanels';
 
 // Test helpers
 
@@ -617,9 +616,9 @@ describe('unified shell/agent picker wiring', () => {
   });
 });
 
-describe('SessionArtifactsPanel wiring', () => {
-  it('SessionArtifactsPanel accepts the sessionId prop SessionPage.tsx passes it', () => {
-    // Type-level contract check: if SessionArtifactsPanel's prop type ever
+describe('SessionSidePanels wiring', () => {
+  it('SessionSidePanels accepts the sessionId prop SessionPage.tsx passes it', () => {
+    // Type-level contract check: if SessionSidePanels's prop type ever
     // diverged incompatibly from `{ sessionId: string }` (renamed, widened to
     // optional, etc.), this file would fail to typecheck -- SessionPage.tsx's
     // JSX passes `sessionId={sessionId}` where `sessionId` is a `string`.
@@ -632,25 +631,14 @@ describe('SessionArtifactsPanel wiring', () => {
     // render/behavior coverage (renders with data, hides when empty, jail-rule
     // deep link) lives in SessionArtifactsPanel.test.tsx and
     // useSessionArtifacts.test.ts.
-    const props: Parameters<typeof SessionArtifactsPanel>[0] = {
-      sessionId: 'session-1',
-    };
-    expect(typeof props.sessionId).toBe('string');
-  });
-});
-
-describe('SessionBookmarksPanel wiring', () => {
-  it('SessionBookmarksPanel accepts the sessionId prop SessionPage.tsx passes it', () => {
-    // Type-level contract check: if SessionBookmarksPanel's prop type ever
-    // diverged incompatibly from `{ sessionId: string }` (renamed, widened to
-    // optional, etc.), this file would fail to typecheck -- SessionPage.tsx's
-    // JSX passes `sessionId={sessionId}` where `sessionId` is a `string`.
     //
-    // SessionPage's panel-composition mount is verified via Browser QA + this
-    // type-level pin, not an automated render test -- see
-    // .claude/skills/frontend-standards/frontend-standards.md for the durable
-    // decision record (Issue #1380).
-    const props: Parameters<typeof SessionBookmarksPanel>[0] = {
+    // SessionPage.tsx no longer renders SessionArtifactsPanel /
+    // SessionBookmarksPanel / MemoPanel directly -- it renders the single
+    // SessionSidePanels container, which owns the isExpanded/onToggleExpanded
+    // wiring for all three (see useSessionSidePanelsState.test.ts for that
+    // state-ownership pin). This test pins the outward-facing contract
+    // SessionPage.tsx still relies on.
+    const props: Parameters<typeof SessionSidePanels>[0] = {
       sessionId: 'session-1',
     };
     expect(typeof props.sessionId).toBe('string');
