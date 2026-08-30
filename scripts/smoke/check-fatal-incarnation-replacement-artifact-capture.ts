@@ -182,4 +182,10 @@ function main(): void {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main();
+// Guarded for the same reason check-fatal-incarnation-replacement.ts's own
+// main() is: nothing imports this script today, but it should not become
+// the next instance of "importing it silently runs it" if something ever
+// does (Issue #1468's own finding, applied to itself).
+if (import.meta.main) {
+  main();
+}
