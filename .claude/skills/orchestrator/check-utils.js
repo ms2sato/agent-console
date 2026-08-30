@@ -553,6 +553,20 @@ export function isCommentOnlyFileDiff(
 }
 
 /**
+ * Thrown by `resolvePrDiffRef` when a PR's base/head SHAs cannot be
+ * resolved or fetched. A shared util function does not own process
+ * lifecycle decisions (that is an entry point's job, and this repo's
+ * elevation-helpers convention keeps that boundary strict) — callers at
+ * the script/entry-point layer catch this and decide how to fail loud.
+ */
+export class PrDiffRefResolutionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'PrDiffRefResolutionError';
+  }
+}
+
+/**
  * Resolve a PR's exact base/head commit SHAs via the GitHub API and ensure
  * both are fetched into the local git object store, returning them as a
  * `{ baseRef, headRef }` pair suitable for `findTestFiles`'s `diffRef`
@@ -568,39 +582,47 @@ export function isCommentOnlyFileDiff(
  * resolution the comment-only exemption silently degrades to "not
  * comment-only" for that script's actual usage pattern.
  *
- * Deliberately fails LOUD (prints a cause and exits) rather than falling
- * back to `'HEAD'` on any error — a silent fallback would just make the
- * underlying bug intermittent (correct only when the caller happens to
- * already be on the right branch) instead of fixing it.
+ * Deliberately fails LOUD — throws `PrDiffRefResolutionError` rather than
+ * falling back to `'HEAD'` on any error — a silent fallback would just make
+ * the underlying bug intermittent (correct only when the caller happens to
+ * already be on the right branch) instead of fixing it. It throws rather
+ * than calling `process.exit` itself so the failure path is a value an
+ * entry point's `main` can catch and a test can trigger directly, instead
+ * of a side effect that kills the process (and any test runner) outright.
+ *
+ * `execImpl` is a pay-as-you-go dependency-injection seam (defaults to the
+ * module's own `exec`): callers with no test seam of their own ignore it;
+ * a test that needs to simulate `gh`/`git` failure passes a fake.
  *
  * @param {string|number} prNumber
+ * @param {{ execImpl?: typeof exec }} [opts]
  * @returns {{ baseRef: string, headRef: string }}
  */
-export function resolvePrDiffRef(prNumber) {
-  const shasJson = exec(`gh api repos/{owner}/{repo}/pulls/${prNumber} --jq "{base: .base.sha, head: .head.sha}"`);
+export function resolvePrDiffRef(prNumber, { execImpl = exec } = {}) {
+  const shasJson = execImpl(`gh api repos/{owner}/{repo}/pulls/${prNumber} --jq "{base: .base.sha, head: .head.sha}"`);
   if (shasJson === null) {
-    console.error(`Error: Could not resolve base/head SHAs for PR #${prNumber} via gh api. Cannot determine whether changed files are comment-only.`);
-    process.exit(1);
+    throw new PrDiffRefResolutionError(
+      `Could not resolve base/head SHAs for PR #${prNumber} via gh api. Cannot determine whether changed files are comment-only.`,
+    );
   }
   let shas;
   try {
     shas = JSON.parse(shasJson);
   } catch {
-    console.error(`Error: Unexpected response resolving PR #${prNumber} SHAs (not valid JSON): ${shasJson}`);
-    process.exit(1);
+    throw new PrDiffRefResolutionError(`Unexpected response resolving PR #${prNumber} SHAs (not valid JSON): ${shasJson}`);
   }
   const { base: baseRef, head: headRef } = shas;
   if (!baseRef || !headRef) {
-    console.error(`Error: PR #${prNumber}'s gh api response is missing a base/head SHA (base=${baseRef}, head=${headRef}).`);
-    process.exit(1);
+    throw new PrDiffRefResolutionError(`PR #${prNumber}'s gh api response is missing a base/head SHA (base=${baseRef}, head=${headRef}).`);
   }
   // Fetch by bare SHA (no refspec) — GitHub allows fetching any reachable
   // commit this way, which works even after the PR's branch has been
   // deleted post-merge.
-  const fetchResult = exec(`git fetch origin ${baseRef} ${headRef}`);
+  const fetchResult = execImpl(`git fetch origin ${baseRef} ${headRef}`);
   if (fetchResult === null) {
-    console.error(`Error: Could not fetch PR #${prNumber}'s base/head commits (${baseRef}, ${headRef}) from origin. Cannot determine whether changed files are comment-only.`);
-    process.exit(1);
+    throw new PrDiffRefResolutionError(
+      `Could not fetch PR #${prNumber}'s base/head commits (${baseRef}, ${headRef}) from origin. Cannot determine whether changed files are comment-only.`,
+    );
   }
   return { baseRef, headRef };
 }

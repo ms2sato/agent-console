@@ -10,6 +10,8 @@ import {
   findTestFiles,
   isCommentOnlyDiff,
   isCommentOnlyFileDiff,
+  resolvePrDiffRef,
+  PrDiffRefResolutionError,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -1057,5 +1059,47 @@ describe('findTestFiles with an explicit diffRef', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+// resolvePrDiffRef throws PrDiffRefResolutionError (rather than calling
+// process.exit itself) specifically so its failure path is a value a test
+// can trigger directly, instead of a side effect that would kill the test
+// runner. The `execImpl` DI seam (pay-as-you-go, mirrors the
+// elevation-helpers `runAsUserImpl` convention) is what makes that
+// triggering possible without touching the real `gh`/`git` binaries.
+describe('resolvePrDiffRef failure path', () => {
+  it('throws when gh api fails to resolve the PR (execImpl returns null)', () => {
+    const execImpl = () => null;
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/Could not resolve base\/head SHAs for PR #123/);
+  });
+
+  it('throws when gh api returns unparseable JSON', () => {
+    const execImpl = () => 'not json';
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/not valid JSON/);
+  });
+
+  it('throws when the resolved SHAs are missing a base or head', () => {
+    const execImpl = () => JSON.stringify({ base: 'abc123', head: null });
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(/missing a base\/head SHA/);
+  });
+
+  it('throws when the SHA fetch fails after a successful resolution', () => {
+    let call = 0;
+    const execImpl = (cmd) => {
+      call += 1;
+      if (cmd.startsWith('gh api')) return JSON.stringify({ base: 'aaa', head: 'bbb' });
+      return null; // the subsequent `git fetch` call
+    };
+    expect(() => resolvePrDiffRef('123', { execImpl })).toThrow(PrDiffRefResolutionError);
+    expect(call).toBeGreaterThan(0);
+  });
+
+  it('returns the resolved refs when both gh api and git fetch succeed', () => {
+    const execImpl = (cmd) => (cmd.startsWith('gh api') ? JSON.stringify({ base: 'aaa', head: 'bbb' }) : '');
+    expect(resolvePrDiffRef('123', { execImpl })).toEqual({ baseRef: 'aaa', headRef: 'bbb' });
   });
 });

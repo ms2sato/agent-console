@@ -18,6 +18,7 @@ import {
   categorizeFiles,
   findTestFiles,
   resolvePrDiffRef,
+  PrDiffRefResolutionError,
   isTestFile,
   analyzePackageBoundaries,
   getLinkedIssueNumber,
@@ -618,6 +619,12 @@ if (isMainModule) {
     usage();
   }
 
-  await runWizard(prNumber);
+  try {
+    await runWizard(prNumber);
+  } catch (err) {
+    if (!(err instanceof PrDiffRefResolutionError)) throw err;
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
   process.exit(0);
 }

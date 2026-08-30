@@ -24,6 +24,7 @@ import {
   categorizeFiles,
   findTestFiles,
   resolvePrDiffRef,
+  PrDiffRefResolutionError,
   isTestFile,
   detectIntegrationTestNeeds,
   runCommentBlameShiftCheck,
@@ -218,6 +219,15 @@ if (isMainModule) {
   // (local / CI-checkout) mode keeps relying on the checked-out `HEAD`, as
   // it always has — that mode's checkout IS the branch being checked, so
   // there is nothing to resolve.
-  const diffRef = prNumber ? resolvePrDiffRef(prNumber) : {};
+  let diffRef = {};
+  if (prNumber) {
+    try {
+      diffRef = resolvePrDiffRef(prNumber);
+    } catch (err) {
+      if (!(err instanceof PrDiffRefResolutionError)) throw err;
+      console.error(`Error: ${err.message}`);
+      process.exit(1);
+    }
+  }
   run(changedFiles, diffRef);
 }
