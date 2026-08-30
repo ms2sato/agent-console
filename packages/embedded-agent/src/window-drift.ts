@@ -64,8 +64,10 @@
  *   the false-positive protection, and it is bought by the understatement.
  * - On a truncation, the condition needs the real request to exceed the cap
  *   by MORE than the estimator understates. With the measured factor of
- *   roughly two, a mild truncation is therefore MISSED. The understatement
- *   costs detection.
+ *   roughly two, a mild truncation is therefore MISSED: the measured `hy3`
+ *   case cleared it only because it was truncated about 2.5-fold, and a
+ *   request 1.1x over a cap is invisible here. The understatement costs
+ *   detection, and that is the price paid for the protection above.
  *
  * So an estimator that became accurate would catch milder truncations and, at
  * the same time, lose the margin that keeps an aligned honest reading from
@@ -77,6 +79,20 @@
  * **Therefore: a change to `estimateTokensFromChars` is a change to this
  * predicate's false-positive rate, and condition 4 must be re-derived rather
  * than assumed to still hold.** It will not simply go quiet.
+ *
+ * # Adding a condition here changes how every existing test must be built
+ *
+ * The verdict is a conjunction, so a case written to exercise ONE condition
+ * only reaches it when the fixture satisfies every OTHER one. Otherwise an
+ * earlier gate refuses the reading and the assertion passes without the named
+ * condition ever being evaluated -- green, true, accurately named, and
+ * measuring nothing. This is `testing.md`'s "an assertion with more than one
+ * way to come true", in the shape a conjunction gives it, and it has already
+ * happened here once: the declaration-boundary case used a declaration that
+ * was not 4,096-aligned, so alignment refused it first.
+ *
+ * Adding a sixth condition therefore means revisiting the fixtures of all
+ * five existing cases, not only writing a case for the new one.
  *
  * # A predicate this file does NOT use, and why
  *

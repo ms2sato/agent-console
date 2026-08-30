@@ -13,6 +13,18 @@ const measured = (promptTokens: number) => ({ promptTokens, estimated: false });
 const estimated = (promptTokens: number) => ({ promptTokens, estimated: true });
 
 /*
+ * Conjunction-isolation audit, done structurally rather than by mutation
+ * (cheaper, and it reaches cases a mutation set may not cover). The verdict
+ * ANDs six conditions -- provider-reported, declaration present, reading
+ * positive, reading below the declaration, 4,096-aligned, estimate exceeding
+ * the reading -- so a case exercising one of them only reaches it when the
+ * fixture satisfies the other five.
+ *
+ * Checked per case: every negative below fails exactly ONE condition, with
+ * the rest satisfied. The single exception is the second assertion of the
+ * escape-path case (`estimated(43)`), which fails two and is not trying to
+ * isolate either -- it asserts what that path publishes, not why.
+ *
  * Measured reach, recorded by WHICH test failed (standing rule). Mutations
  * applied to `window-drift.ts` and this file re-run:
  *
