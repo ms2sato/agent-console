@@ -39,6 +39,45 @@
  * provider's number, and the estimate exceeding it is already anomalous. On a
  * truncated reading the gap is enormous and in the same direction.
  *
+ * # How each condition ages, and which way it fails when it does
+ *
+ * Conditions 3 and 4 are OBSERVED signatures, not documented contracts. Both
+ * were measured on one day against one provider each, and neither vendor
+ * promises them. Re-verify when: a new provider is added and truncates rather
+ * than rejecting; a provider changes its reported `prompt_tokens`; or
+ * `estimateTokensFromChars` changes.
+ *
+ * **Condition 3 (alignment) is provider-dependent.** 4,096 is the alignment
+ * the single measured cap happened to have. A provider clamping to a
+ * non-power-of-two limit produces no match, and this stays silent about a
+ * truncation that really occurred. That is a false negative, which is the
+ * direction chosen everywhere in this file.
+ *
+ * **Condition 4 does NOT degrade toward silence if the estimator improves --
+ * it degrades the other way, and this is worth stating precisely because the
+ * intuitive reading is backwards.** The condition asks whether our estimate
+ * exceeds the provider's number, and its usefulness comes from the
+ * estimator's error having a KNOWN SIGN, not from the error being small:
+ *
+ * - On an honest reading, an understating estimator lands reliably BELOW the
+ *   provider's number, so the condition fails and nothing is claimed. That is
+ *   the false-positive protection, and it is bought by the understatement.
+ * - On a truncation, the condition needs the real request to exceed the cap
+ *   by MORE than the estimator understates. With the measured factor of
+ *   roughly two, a mild truncation is therefore MISSED. The understatement
+ *   costs detection.
+ *
+ * So an estimator that became accurate would catch milder truncations and, at
+ * the same time, lose the margin that keeps an aligned honest reading from
+ * firing -- trading a false negative for a false positive. An estimator that
+ * OVERSTATED would remove the protection entirely, leaving only the
+ * 1-in-4,096 alignment coincidence between an honest reading and an
+ * operator-facing claim that their correct configuration is wrong.
+ *
+ * **Therefore: a change to `estimateTokensFromChars` is a change to this
+ * predicate's false-positive rate, and condition 4 must be re-derived rather
+ * than assumed to still hold.** It will not simply go quiet.
+ *
  * # A predicate this file does NOT use, and why
  *
  * An earlier draft flagged a measured reading identical to the previous
