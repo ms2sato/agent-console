@@ -78,7 +78,7 @@ function runAutoDetection(prNumber) {
   const categories = categorizeFiles(changedFiles);
   // Resolve the PR's actual base/head SHAs rather than relying on the
   // Orchestrator's own worktree being checked out to this PR's branch — see
-  // resolvePrDiffRef's doc comment (Issue #1463).
+  // resolvePrDiffRef's doc comment.
   const diffRef = resolvePrDiffRef(prNumber);
   const { testFiles, productionFiles, testCoverage } = findTestFiles(changedFiles, diffRef);
   const boundaries = analyzePackageBoundaries(categories);

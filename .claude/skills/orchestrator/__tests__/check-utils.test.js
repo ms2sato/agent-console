@@ -927,28 +927,26 @@ describe('isCommentOnlyFileDiff (git integration)', () => {
   });
 });
 
-// Issue #1463: isCommentOnlyFileDiff's diff source defaults to the checked-
-// out worktree's HEAD, which is correct for preflight-check.js's no-PR-
-// number / CI-checkout modes but wrong for acceptance-check.js's actual
-// usage — checking an arbitrary PR number from the Orchestrator's own
-// worktree, which is essentially never checked out to that PR's branch.
-// These tests pin the fix: an explicit `headRef` must be honored even when
-// the process's real checkout (git's own HEAD) points somewhere else
-// entirely.
+// isCommentOnlyFileDiff's diff source defaults to the checked-out
+// worktree's HEAD, which is correct for preflight-check.js's no-PR-number
+// / CI-checkout modes but wrong when checking an arbitrary PR number from
+// a worktree that is not checked out to that PR's branch. These tests pin
+// the fix: an explicit `headRef` must be honored even when the process's
+// real checkout (git's own HEAD) points somewhere else entirely.
 //
 // Measured reach (revert-the-fix polarity check, per workflow.md "Every
 // pin's reach is measured, not predicted"): forcing `headRef` to always
 // resolve to `'HEAD'` inside isCommentOnlyFileDiff (the pre-fix behavior)
 // flips the FIRST test below from pass to fail — the diff is computed
 // against `main` (still checked out) instead of `feature`, so `git diff
-// main...HEAD` is empty and the comment-only content is invisible. This is
-// the exact #1463 symptom reproduced deterministically, without network.
+// main...HEAD` is empty and the comment-only content is invisible. This
+// reproduces the underlying symptom deterministically, without network.
 // The SECOND test below (mixed-diff negative direction) does NOT flip under
 // that same revert — it is an invariant-preservation test (testing.md's
 // third category): it guards against a plausible wrong headRef
 // implementation that reports comment-only regardless of the actual diff
-// content, not against the specific #1463 regression.
-describe('isCommentOnlyFileDiff with an explicit headRef (Issue #1463)', () => {
+// content, not against this specific regression.
+describe('isCommentOnlyFileDiff with an explicit headRef', () => {
   function makeTempGitRepo() {
     const root = mkdtempSync(join(tmpdir(), 'comment-only-headref-repo-'));
     execSync('git init -q -b main', { cwd: root });
@@ -1024,7 +1022,7 @@ describe('isCommentOnlyFileDiff with an explicit headRef (Issue #1463)', () => {
 // resolve to 'HEAD' also flips this test (isCommentOnly/needsCoverage
 // invert), confirming the diffRef option actually reaches the comment-only
 // check rather than being silently dropped somewhere in the threading.
-describe('findTestFiles with an explicit diffRef (Issue #1463)', () => {
+describe('findTestFiles with an explicit diffRef', () => {
   function makeTempGitRepo() {
     const root = mkdtempSync(join(tmpdir(), 'find-test-files-diffref-repo-'));
     execSync('git init -q -b main', { cwd: root });

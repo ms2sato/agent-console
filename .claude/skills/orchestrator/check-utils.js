@@ -524,12 +524,12 @@ function readGitFileContent(ref, filePath, cwd) {
  * `headRef` defaults to `'HEAD'` — the checked-out worktree's current
  * commit. Callers driving a check against an arbitrary PR by number (rather
  * than a checkout that is guaranteed to BE that PR's branch) must pass the
- * PR's actual head SHA here instead — see `resolvePrDiffRef` (Issue #1463).
- * Passing `'HEAD'` when the local checkout is not that PR silently computes
- * an empty or unrelated diff, which this function cannot distinguish from
- * "the file genuinely has no comment-only changes" — that conflation was
- * the root cause of #1463, not a gap in `isCommentOnlyDiff` itself (its own
- * detection logic was already correct and covered by its own tests).
+ * PR's actual head SHA here instead — see `resolvePrDiffRef`. Passing
+ * `'HEAD'` when the local checkout is not that PR silently computes an
+ * empty or unrelated diff, which this function cannot distinguish from "the
+ * file genuinely has no comment-only changes" — that conflation, not a gap
+ * in `isCommentOnlyDiff` itself (its own detection logic is correct and
+ * covered by its own tests), is what makes the `headRef` parameter matter.
  */
 export function isCommentOnlyFileDiff(
   filePath,
@@ -566,12 +566,12 @@ export function isCommentOnlyFileDiff(
  * arbitrary PR number from the Orchestrator's own worktree, which is
  * essentially never checked out to that PR's branch, so without this
  * resolution the comment-only exemption silently degrades to "not
- * comment-only" for that script's actual usage pattern (Issue #1463).
+ * comment-only" for that script's actual usage pattern.
  *
  * Deliberately fails LOUD (prints a cause and exits) rather than falling
  * back to `'HEAD'` on any error — a silent fallback would just make the
- * #1463 bug intermittent (correct only when the caller happens to already
- * be on the right branch) instead of fixing it.
+ * underlying bug intermittent (correct only when the caller happens to
+ * already be on the right branch) instead of fixing it.
  *
  * @param {string|number} prNumber
  * @returns {{ baseRef: string, headRef: string }}
@@ -614,7 +614,7 @@ export function resolvePrDiffRef(prNumber) {
  *   `HEAD`) — the behavior preflight-check.js's no-PR-number / CI-checkout
  *   modes have always relied on. Pass the object returned by
  *   `resolvePrDiffRef(prNumber)` when checking an arbitrary PR from a
- *   worktree that may not be checked out to that PR's branch (Issue #1463).
+ *   worktree that may not be checked out to that PR's branch.
  */
 export function findTestFiles(changedFiles, diffRef = {}) {
   const { baseRef, headRef, cwd } = diffRef;

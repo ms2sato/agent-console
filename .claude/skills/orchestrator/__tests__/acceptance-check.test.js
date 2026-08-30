@@ -603,7 +603,7 @@ describe('checkProposedBehaviorCoverage', () => {
   });
 });
 
-// --- printAutoDetection: comment-only exemption display (Issue #1463) ---
+// --- printAutoDetection: comment-only exemption display ---
 //
 // Before this fix, a comment-only-exempted file (needsCoverage: false,
 // isCommentOnly: true) fell into the same `else` branch as a file that
