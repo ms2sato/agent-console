@@ -59,7 +59,14 @@ export interface HistoryReadResult {
   data: string;
   /** Absolute end offset of the returned window (== total stream length seen). */
   offset: number;
-  /** Absolute start offset of the first byte of `data`. */
+  /**
+   * Absolute start offset of the first byte of `data`. For most readers this
+   * is `>= liveBaseOffset` (the live window's own base) or exactly the
+   * requested `fromOffset`. `readHistoryForDisplay`'s archive-walk branches
+   * (R2, #1506) are the one exception: `startOffset` there can legitimately
+   * be `< liveBaseOffset` -- an offset inside an archived segment -- when the
+   * live window alone did not satisfy the line budget.
+   */
   startOffset: number;
   /** Generation identifier of the incarnation that produced this data. */
   epoch: number;
@@ -916,6 +923,245 @@ export class WorkerOutputFileManager {
   }
 
   /**
+   * Read output history for a CLIENT DISPLAY consumer (initial load, or a
+   * reconnect whose `fromOffset` has fallen out of the live window). Unlike
+   * `readHistoryForRestore` (which walks back to a compaction boundary or the
+   * true start), this walks back only far enough to fill `maxLines` -- R2,
+   * #1506. See the shared `walkArchiveSegmentsBackward` primitive's doc
+   * comment for why the two callers share the walk but not a mode flag.
+   *
+   * Branch structure mirrors `readHistoryWithOffsetLocked`: the
+   * true-incremental branch (`base <= fromOffset < total`) is byte-for-byte
+   * identical to that method's own branch -- a client still tracking a live
+   * continuation needs no archive fill, and reads none.
+   */
+  async readHistoryForDisplay(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    maxLines: number,
+    fromOffset?: number,
+    maxBytes: number = serverConfig.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES,
+  ): Promise<HistoryReadResult> {
+    const key = this.getKey(sessionId, workerId);
+    return this.runExclusive(key, async () => {
+      try {
+        const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
+        const base = manifest.liveBaseOffset;
+        const epoch = manifest.epoch;
+
+        const pending = this.pendingFlushes.get(key);
+        const pendingBuffer = pending?.buffer || '';
+        const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
+
+        const liveBuffer = await this.readLiveBuffer(sessionId, workerId, resolver);
+        const fileSize = liveBuffer.length;
+        const total = base + fileSize + pendingByteLength;
+
+        if (fromOffset === undefined || fromOffset <= 0 || fromOffset < base || fromOffset > total) {
+          // Initial load, or archived-out/stale: the live window alone may
+          // not hold enough to render a non-misleading transcript.
+          return this.buildDisplayWindow(sessionId, workerId, resolver, manifest, liveBuffer, pendingBuffer, total, maxLines, maxBytes, epoch);
+        }
+
+        if (fromOffset === total) {
+          return { data: '', offset: total, startOffset: total, epoch };
+        }
+
+        // base <= fromOffset < total — incremental continuation. Identical to
+        // readHistoryWithOffsetLocked's own branch: no archive fill needed.
+        const relOffset = fromOffset - base;
+        if (relOffset >= fileSize) {
+          const pendingSkip = relOffset - fileSize;
+          const remainingPending = Buffer.from(pendingBuffer, 'utf-8').subarray(pendingSkip);
+          return { data: remainingPending.toString('utf-8'), offset: total, startOffset: fromOffset, epoch };
+        }
+        const data = liveBuffer.subarray(relOffset).toString('utf-8') + pendingBuffer;
+        return { data, offset: total, startOffset: fromOffset, epoch };
+      } catch (error) {
+        logger.error({ sessionId, workerId, err: error }, 'Failed to read output file for display');
+        return { data: '', offset: 0, startOffset: 0, epoch: 0 };
+      }
+    });
+  }
+
+  /**
+   * Fill `maxLines` for a display consumer: start from the full live window
+   * (not merely its last N lines), and if that alone does not have enough
+   * lines, walk archived segments newest-first until it does (or the walk
+   * stops for one of `walkArchiveSegmentsBackward`'s other reasons). The
+   * final trim to exactly `maxLines` happens once, on the fully assembled
+   * string, via the same `getLastNLines` the live-only fast path already uses
+   * -- so a caller reading the RETURNED bytes cannot tell whether the window
+   * came entirely from the live file or partly from archive.
+   *
+   * Fast path (#1493's "w1" discipline, applied here too): a live window that
+   * already satisfies the budget -- or a worker with no archived segments at
+   * all -- returns via `buildRecentWindow` unchanged, reading no segment.
+   */
+  private async buildDisplayWindow(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    manifest: WorkerOutputManifest,
+    liveBuffer: Buffer,
+    pendingBuffer: string,
+    total: number,
+    maxLines: number,
+    maxBytes: number,
+    epoch: number,
+  ): Promise<HistoryReadResult> {
+    const liveContent = liveBuffer.toString('utf-8') + pendingBuffer;
+    const liveLineCount = this.countLines(liveContent);
+
+    if (liveLineCount >= maxLines || manifest.segments.length === 0) {
+      return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch);
+    }
+
+    const parts: string[] = [liveContent];
+    try {
+      await this.walkArchiveSegmentsBackward(
+        sessionId,
+        workerId,
+        resolver,
+        manifest,
+        parts,
+        Buffer.byteLength(liveContent, 'utf-8'),
+        maxBytes,
+        // Count lines from the ASSEMBLED data (`parts.join('')`), not by
+        // summing each segment's own line count independently. The cut's
+        // documented no-usable-newline fallback (see `cutSegment`'s comment)
+        // can leave one NDJSON record split across the archive/live
+        // boundary -- its tail already counted inside
+        // `liveContent`, its head arriving now as this segment's own
+        // trailing fragment. Summing per-segment counts treats that as two
+        // lines instead of one, so the walk could stop one segment early and
+        // hand `getLastNLines` an assembled string with fewer true records
+        // than `maxLines`. Re-deriving the count from the joined string is
+        // what `getLastNLines` itself does for the final trim, so the
+        // stop-condition and the trim now agree on the same definition of
+        // "how many lines are here".
+        //
+        // Re-joining and re-counting the whole assembled string on every
+        // segment is O(n^2) in segment count, and was measured rather than
+        // assumed acceptable: the actual #1506 QA reproduction (29 small
+        // segments, WORKER_OUTPUT_FILE_MAX_SIZE=6000) costs ~4ms; a
+        // deliberately pathological 200-segment walk costs ~20ms; and the
+        // byte-cap-bounded worst case (WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES's
+        // default 16MB / a 2MB default segment size, i.e. the most segments
+        // any single walk can ever visit regardless of maxLines) costs ~80ms
+        // for 8 iterations of joining a string that grows to 16MB. All three
+        // are a one-time cost inside a single history response, nowhere near
+        // the 5s HISTORY_REQUEST_TIMEOUT_MS in routes.ts -- kept as the
+        // simple, obviously-correct form rather than an incrementally-
+        // corrected counter (2026-08-30 measurement).
+        () => this.countLines(parts.join('')) >= maxLines,
+      );
+    } catch (error) {
+      // A damaged archive segment (non-ENOENT decompression failure) must not
+      // blank an already-successfully-read live window. Restore propagates
+      // this same error because `runActivation` has a verdict to act on it
+      // (the destructive reset + sidecar preservation) -- a silently-degraded
+      // partial conversation handed to the model is dangerous, and restore
+      // MUST know if that happened. Display has no such consumer: a partial
+      // transcript is display's normal, expected shape (it already shows a
+      // line-budget-truncated view by design), so the sound response is the
+      // live window alone -- exactly what this method returned before #1506
+      // ever touched the archive. Going silent about the corruption at the
+      // UI layer is not a new failure mode (this degrade path matches
+      // today's pre-#1506 baseline exactly); the segment identity is already
+      // logged at the point of failure inside `walkArchiveSegmentsBackward`,
+      // so the corruption stays discoverable server-side even though the
+      // client sees nothing different from an ordinary truncated transcript.
+      // ENOENT/pruned/cap/exhausted are unaffected: they resolve normally
+      // through `walkArchiveSegmentsBackward` and never reach here.
+      logger.warn({ sessionId, workerId, err: error }, 'Archive fill failed for display; serving live window only');
+      return this.buildRecentWindow(liveBuffer, pendingBuffer, total, maxLines, epoch);
+    }
+
+    const assembled = parts.join('');
+    const data = this.getLastNLines(assembled, maxLines);
+    const startOffset = total - Buffer.byteLength(data, 'utf-8');
+    return { data, offset: total, startOffset, epoch };
+  }
+
+  /**
+   * Walk archived segments newest-first, decompressing and prepending each to
+   * `parts`, until `shouldStop` returns true for the newly-decompressed
+   * segment's own text, the byte cap (`assembledBytes + seg.bytes > maxBytes`)
+   * would be exceeded, an absent segment file is found (the pruned edge), or
+   * every segment is exhausted.
+   *
+   * Shared by `readHistoryForRestore` and `readHistoryForDisplay` (R2,
+   * #1506): the walk/decompress/ENOENT/cap machinery is identical between the
+   * two callers -- only the reason to stop differs (a compaction boundary vs.
+   * a line budget), and restore's four-way `stoppedAt` verdict and display's
+   * "did I fill the budget" question are independent fact-sets belonging to
+   * different callers. A `mode: 'restore' | 'display'` flag on one method
+   * would be the two-facts-one-name shape already rejected twice elsewhere in
+   * this codebase (#1202's amendment 4, the #1434 field split) -- so the
+   * stop condition is caller-owned via `shouldStop`, and this method knows
+   * nothing about "boundary" or "line budget" at all.
+   *
+   * MUST be called inside the worker's serialization domain -- it takes no
+   * lock itself, exactly like `readHistoryWithOffsetLocked`.
+   *
+   * Mutates `parts` in place (segments are unshifted onto it as found) and
+   * also returns it, for the caller's convenience at each early-return site.
+   */
+  private async walkArchiveSegmentsBackward(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    manifest: WorkerOutputManifest,
+    parts: string[],
+    startAssembledBytes: number,
+    maxBytes: number,
+    shouldStop: (segmentText: string) => boolean,
+  ): Promise<{ parts: string[]; assembledBytes: number; reason: 'stopped' | 'cap' | 'pruned' | 'exhausted' }> {
+    const outputsDir = resolver.getOutputsDir();
+    const key = this.getKey(sessionId, workerId);
+    let assembledBytes = startAssembledBytes;
+
+    for (let i = manifest.segments.length - 1; i >= 0; i--) {
+      const seg = manifest.segments[i];
+      if (assembledBytes + seg.bytes > maxBytes) {
+        return { parts, assembledBytes, reason: 'cap' };
+      }
+      const segPath = path.join(outputsDir, sessionId, `${workerId}.seg-${seg.seq}.log.gz`);
+      let text: string;
+      try {
+        const buf = await this.getDecompressedSegment(key, seg, segPath);
+        text = buf.toString('utf-8');
+      } catch (err) {
+        // ONLY an absent segment is the pruned edge. Anything else propagates
+        // -- this primitive does not decide what that means; each caller does
+        // (`readHistoryForRestore`'s call site propagates further, on
+        // purpose; `readHistoryForDisplay`'s `buildDisplayWindow` catches it
+        // and degrades). See those two call sites for why they differ.
+        if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+          return { parts, assembledBytes, reason: 'pruned' };
+        }
+        // Logged HERE, once, with the segment identity -- generic to both
+        // callers (this primitive does not know which one is walking; see
+        // this method's own doc comment). What each caller DOES with the
+        // rethrown error is caller-owned: restore's consumer routes it to the
+        // destructive-reset-with-sidecar fallback; display degrades to the
+        // live window (#1506) and logs only that it degraded, since the
+        // segment identity is already on record right here.
+        logger.warn({ sessionId, workerId, seq: seg.seq, segPath, err }, 'Failed to decompress archived segment (not pruned -- damage)');
+        throw err;
+      }
+      parts.unshift(text);
+      assembledBytes += Buffer.byteLength(text, 'utf-8');
+      if (shouldStop(text)) {
+        return { parts, assembledBytes, reason: 'stopped' };
+      }
+    }
+    return { parts, assembledBytes, reason: 'exhausted' };
+  }
+
+  /**
    * Read the last N lines of the live window (initial-load shape). Offsets absolute.
    */
   async readLastNLines(
@@ -1002,6 +1248,27 @@ export class WorkerOutputFileManager {
     }
 
     return content.slice(startIndex);
+  }
+
+  /**
+   * Count the lines a chunk of text WOULD contribute under `getLastNLines`'s
+   * own counting rule -- `text.split(/\r?\n/).length` is arithmetically the
+   * same count `getLastNLines` derives via its capturing-group split (a
+   * non-capturing split's length is always `separators + 1`, identical to
+   * counting the capturing split's content elements). Used by
+   * `buildDisplayWindow` as a cheap RUNNING estimate to decide whether one
+   * more archived segment is needed -- the final, authoritative trim is still
+   * `getLastNLines` on the fully assembled string, so an off-by-a-little
+   * estimate here only ever costs one extra segment fetch, never a wrong
+   * final result.
+   *
+   * Deliberately 0 for empty text (diverging from `getLastNLines`, which
+   * would count a lone empty chunk as 1 "line"): an empty live window or
+   * empty pending buffer should not, on its own, look like it already has a
+   * line's worth of budget filled.
+   */
+  private countLines(text: string): number {
+    return text.length === 0 ? 0 : text.split(/\r?\n/).length;
   }
 
   /**
@@ -1113,51 +1380,56 @@ export class WorkerOutputFileManager {
       }
 
       const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
-      const outputsDir = resolver.getOutputsDir();
       const parts: string[] = [live.data];
-      let assembledBytes = Buffer.byteLength(live.data, 'utf-8');
+      const startAssembledBytes = Buffer.byteLength(live.data, 'utf-8');
 
       // Newest-first: the nearest boundary is the one restore wants, and
-      // stopping at it reads the least.
-      for (let i = manifest.segments.length - 1; i >= 0; i--) {
-        const seg = manifest.segments[i];
-        if (assembledBytes + seg.bytes > maxBytes) {
-          return { data: parts.join(''), stoppedAt: 'cap' as const, epoch: manifest.epoch };
-        }
-        const segPath = path.join(outputsDir, sessionId, `${workerId}.seg-${seg.seq}.log.gz`);
-        let text: string;
-        try {
-          const buf = await this.getDecompressedSegment(key, seg, segPath);
-          text = buf.toString('utf-8');
-        } catch (err) {
-          // ONLY an absent segment is the pruned edge: a prune that deleted
-          // the file after the manifest named it. Everything older is
-          // unreachable too, so the walk stops there and the restore is
-          // partial and declared.
-          //
-          // Anything else -- a truncated or malformed gzip, an I/O error -- is
-          // DAMAGE, and must reach the activation's restore-failure catch
-          // block (#1447 stage 4: preserve-and-declare in place, primary;
-          // reset-and-sidecar, fallback). Swallowing it here would turn
-          // corruption into a quiet partial restore, which is precisely the
-          // failure mode this whole change exists to remove. The narrow intent
-          // was in the comment before; the implementation was broader.
-          if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
-            return { data: parts.join(''), stoppedAt: 'pruned' as const, epoch: manifest.epoch };
-          }
-          throw err;
-        }
-        parts.unshift(text);
-        assembledBytes += Buffer.byteLength(text, 'utf-8');
-        if (containsBoundary(text)) {
-          return { data: parts.join(''), stoppedAt: 'boundary' as const, epoch: manifest.epoch };
-        }
+      // stopping at it reads the least. `containsBoundary` is checked only
+      // against the newly-read segment's own text, matching this method's
+      // pre-extraction behaviour exactly (a boundary anywhere in an OLDER
+      // segment would still be found on that segment's own turn).
+      //
+      // This caller does NOT catch `walkArchiveSegmentsBackward`'s propagated
+      // damage (a non-ENOENT decompression failure): that propagation is
+      // deliberate here. A damaged segment must reach the activation's
+      // restore-failure catch block (#1447 stage 4: preserve-and-declare in
+      // place, primary; reset-and-sidecar, fallback) -- swallowing it into a
+      // quiet partial restore is precisely the failure mode this walk-back
+      // exists to remove. `readHistoryForDisplay`'s `buildDisplayWindow`
+      // catches the SAME propagated error locally instead and degrades to the
+      // live window (#1506) -- see that method's own comment for why the two
+      // callers need opposite policies on this axis despite sharing the walk.
+      const walk = await this.walkArchiveSegmentsBackward(
+        sessionId,
+        workerId,
+        resolver,
+        manifest,
+        parts,
+        startAssembledBytes,
+        maxBytes,
+        (segmentText) => containsBoundary(segmentText),
+      );
+
+      if (walk.reason === 'cap') {
+        return { data: walk.parts.join(''), stoppedAt: 'cap' as const, epoch: manifest.epoch };
+      }
+      if (walk.reason === 'pruned') {
+        // ONLY an absent segment is the pruned edge: a prune that deleted the
+        // file after the manifest named it. Everything older is unreachable
+        // too, so the walk stops there and the restore is partial and
+        // declared. Anything else (a truncated/malformed gzip, an I/O error)
+        // is DAMAGE and propagates instead -- see this call's comment above.
+        return { data: walk.parts.join(''), stoppedAt: 'pruned' as const, epoch: manifest.epoch };
+      }
+      if (walk.reason === 'stopped') {
+        return { data: walk.parts.join(''), stoppedAt: 'boundary' as const, epoch: manifest.epoch };
       }
 
-      // Every retained segment consumed. Whether that is the real beginning
-      // depends on whether retention has deleted anything.
+      // Every retained segment consumed (`reason === 'exhausted'`). Whether
+      // that is the real beginning depends on whether retention has deleted
+      // anything.
       const stoppedAt = firstAvailableOffset(manifest) === 0 ? ('true-start' as const) : ('pruned' as const);
-      return { data: parts.join(''), stoppedAt, epoch: manifest.epoch };
+      return { data: walk.parts.join(''), stoppedAt, epoch: manifest.epoch };
     });
   }
 

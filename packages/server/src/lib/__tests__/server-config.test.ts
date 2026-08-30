@@ -416,4 +416,31 @@ describe('WORKER_OUTPUT_RESTORE_MAX_BYTES', () => {
     );
   });
 });
+
+describe('WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES', () => {
+  it('is generous by default, matching WORKER_OUTPUT_RESTORE_MAX_BYTES\'s shape', async () => {
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES).toBe(16 * 1024 * 1024);
+  });
+
+  it('falls back to the default on a malformed value, rather than becoming NaN', async () => {
+    process.env.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES = 'not-a-number';
+    const { serverConfig } = await importServerConfig();
+    expect(Number.isFinite(serverConfig.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES)).toBe(true);
+    expect(serverConfig.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES).toBe(16 * 1024 * 1024);
+  });
+
+  it('falls back on a non-positive value, which would disable the walk entirely', async () => {
+    process.env.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES = '0';
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES).toBe(16 * 1024 * 1024);
+  });
+
+  it('is larger than the live-window size, so the walk can always reach past one rotation', async () => {
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.WORKER_OUTPUT_DISPLAY_FILL_MAX_BYTES).toBeGreaterThan(
+      serverConfig.WORKER_OUTPUT_FILE_MAX_SIZE,
+    );
+  });
+});
 });
