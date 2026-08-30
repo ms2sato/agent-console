@@ -19,6 +19,7 @@ import {
   printPostAcceptanceWorkflow,
   printProposedBehaviorCoverage,
   printLanguageCheck,
+  printAutoDetection,
 } from '../acceptance-check.js';
 
 // --- Helper: create a readable stream that emits null-byte terminated data ---
@@ -599,6 +600,65 @@ describe('checkProposedBehaviorCoverage', () => {
   it('returns empty array for empty items', () => {
     const result = checkProposedBehaviorCoverage([], 'some diff');
     expect(result).toEqual([]);
+  });
+});
+
+// --- printAutoDetection: comment-only exemption display (Issue #1463) ---
+//
+// Before this fix, a comment-only-exempted file (needsCoverage: false,
+// isCommentOnly: true) fell into the same `else` branch as a file that
+// simply doesn't match any coverage pattern, printed as "skipped (not in
+// coverage patterns)". That wording is misleading for a file that DID match
+// a pattern and was exempted for a specific, auditable reason — this test
+// pins the distinct "exempted (comment-only diff)" wording.
+
+function minimalAutoDetection(testCoverage) {
+  return {
+    categories: { client: [], server: [], shared: [], integration: [], test: [], other: [] },
+    testFiles: [],
+    productionFiles: [],
+    testCoverage,
+    boundaries: [],
+    linkedIssue: null,
+    acceptanceCriteria: [],
+    proposedBehaviorCoverage: [],
+    ciStatus: null,
+    integrationTestNeeds: null,
+    languageCheck: null,
+  };
+}
+
+describe('printAutoDetection — Production File Test Coverage wording', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('reports a comment-only-exempted file distinctly from a not-in-pattern file', () => {
+    printAutoDetection(minimalAutoDetection([
+      { file: 'packages/server/src/services/foo.ts', hasTest: false, expectedTestPath: '', needsCoverage: false, isCommentOnly: true },
+      { file: 'packages/server/src/lib/bar.ts', hasTest: false, expectedTestPath: '', needsCoverage: false, isCommentOnly: false },
+    ]));
+    const output = logs.join('\n');
+    expect(output).toContain('➖ packages/server/src/services/foo.ts -> exempted (comment-only diff)');
+    expect(output).toContain('⬜ packages/server/src/lib/bar.ts -> skipped (not in coverage patterns)');
+  });
+
+  it('still reports a genuine gap as NO TEST even when other files are exempted', () => {
+    printAutoDetection(minimalAutoDetection([
+      { file: 'packages/server/src/services/foo.ts', hasTest: false, expectedTestPath: 'packages/server/src/services/__tests__/foo.test.ts', needsCoverage: true, isCommentOnly: false },
+    ]));
+    const output = logs.join('\n');
+    expect(output).toContain('❌ packages/server/src/services/foo.ts -> NO TEST');
   });
 });
 
