@@ -101,5 +101,67 @@
         ]
       }
     ]
+  },
+  {
+    "type": "cycle",
+    "from": "packages/server/src/services/session-manager.ts",
+    "to": "packages/server/src/services/session-pause-resume-service.ts",
+    "rule": {
+      "severity": "error",
+      "name": "no-circular"
+    },
+    "cycle": [
+      {
+        "name": "packages/server/src/services/session-pause-resume-service.ts",
+        "dependencyTypes": [
+          "local",
+          "import"
+        ]
+      },
+      {
+        "name": "packages/server/src/services/session-manager.ts",
+        "dependencyTypes": [
+          "local",
+          "type-only",
+          "import"
+        ]
+      }
+    ]
+  },
+  {
+    "type": "dependency",
+    "from": "packages/shared/src/types/agent.ts",
+    "to": "packages/shared/src/schemas/agent.ts",
+    "rule": {
+      "severity": "error",
+      "name": "shared-no-types-import-schemas"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "packages/shared/src/types/session.ts",
+    "to": "packages/shared/src/schemas/session.ts",
+    "rule": {
+      "severity": "error",
+      "name": "shared-no-types-import-schemas"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "packages/shared/src/types/session.ts",
+    "to": "packages/shared/src/schemas/worker.ts",
+    "rule": {
+      "severity": "error",
+      "name": "shared-no-types-import-schemas"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "packages/shared/src/types/worktree-creation.ts",
+    "to": "packages/shared/src/schemas/repository.ts",
+    "rule": {
+      "severity": "error",
+      "name": "shared-no-types-import-schemas"
+    }
   }
 ]
