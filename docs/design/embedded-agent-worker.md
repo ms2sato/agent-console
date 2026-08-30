@@ -814,7 +814,7 @@ The restore-boundary check and the turn-end trigger both **predict** whether the
 ### The boundary invariant, and why it is recorded twice
 
 > **Every `context-compacted` marker in the persisted stream must be a valid restore boundary** — a window replayed from immediately after it must be well-formed, with no orphaned `tool-result`.
-
+>
 > **Position rule (today's sufficient condition):** the escape may only fire where every issued `tool_call` has a matching `tool` message.
 
 Both are required. With only the position rule, someone moving the escape cannot re-derive why another position would be safe. With only the invariant, the grounds on which today's code satisfies it are lost. The pressure is real: a large `Read` result is precisely how a conversation crosses the window mid-turn, so moving the escape into the tool loop is a plausible extension — and it would pass every test that does not replay a transcript written that way.

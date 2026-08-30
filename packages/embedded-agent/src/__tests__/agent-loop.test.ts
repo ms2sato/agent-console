@@ -889,7 +889,7 @@ describe('AgentLoop — the provider error outcome carries structure inward', ()
         loadCompactionPrompt: async () => 'P',
         compaction: { auto: false, contextWindowTokens: 12_000 },
         adapter,
-      } as unknown as ConstructorParameters<typeof AgentLoop>[0]);
+      } satisfies AgentLoopDeps);
       await loop.runTurn('t', 'q');
       return events.map((e) => e.type);
     };

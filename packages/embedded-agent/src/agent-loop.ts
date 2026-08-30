@@ -688,10 +688,20 @@ export class AgentLoop {
             // legitimately escape again. A service-level counter would be
             // wrong for that reason.
             escapeUsed = true;
-            if (await this.escapeContextOverflow(turnId, abort.signal)) {
+            const escape = await this.escapeContextOverflow(turnId, abort.signal);
+            if (escape === 'compacted') {
               // Retry exactly once. The provider is called with the live
               // `this.conversation`, so this re-reads the spliced array.
               continue;
+            }
+            if (escape === 'canceled') {
+              // Ends like any other cancel. Reporting `'error'` here would
+              // leave a `Compact` reservation booked, and the turn boundary
+              // would then issue a manual compaction -- a provider request
+              // made after the user cancelled.
+              this.emitContextUsageIfKnown(turnUsage);
+              this.emitTurnError(turnId, 'turn canceled');
+              return 'canceled';
             }
             // The escape failed. It emits no `turn-error` of its own -- the
             // ORIGINAL overflow flows down the ordinary path below, so a turn
@@ -1000,7 +1010,7 @@ export class AgentLoop {
     isPartial: boolean,
     turnId: string,
     signal: AbortSignal,
-  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+  ): Promise<{ ok: true } | { ok: false; canceled: boolean; reason: string }> {
       const outcome = await this.runProviderWithRetries(input, turnId, signal, {
         emitDeltas: false,
       });
@@ -1018,10 +1028,10 @@ export class AgentLoop {
       // commit boundary. The boundary is the one immediately before the
       // marker emit below; see the comment there.
       if (outcome.kind === 'canceled' || signal.aborted) {
-        return { ok: false, reason: 'turn canceled' };
+        return { ok: false, canceled: true, reason: 'turn canceled' };
       }
       if (outcome.kind === 'error') {
-        return { ok: false, reason: outcome.message };
+        return { ok: false, canceled: false, reason: outcome.message };
       }
       // No tool calls are expected or handled for the distillation request;
       // if the provider returns any anyway, they are ignored entirely -- but a
@@ -1030,7 +1040,7 @@ export class AgentLoop {
       // a failure rather than silently replacing the conversation with an
       // empty or partial summary (preserve-on-failure).
       if (outcome.toolCalls.length > 0 || outcome.text.trim().length === 0) {
-        return { ok: false, reason: 'provider returned no usable summary' };
+        return { ok: false, canceled: false, reason: 'provider returned no usable summary' };
       }
 
       // The distillation call's own usage -- reflects the (large,
@@ -1103,7 +1113,7 @@ export class AgentLoop {
       // invisibly -- `deps.emit` is typed to return void precisely so it
       // cannot yield.
       if (signal.aborted) {
-        return { ok: false, reason: 'turn canceled' };
+        return { ok: false, canceled: true, reason: 'turn canceled' };
       }
 
       this.deps.emit({
@@ -1137,21 +1147,35 @@ export class AgentLoop {
    * interrupts the distillation and the turn ends `canceled`. Opening its own
    * would null `currentAbort` on the way out and leave the turn uncancellable.
    *
-   * Returns whether the conversation was actually replaced. `false` means the
-   * caller must let the original error through unchanged -- this emits no
-   * `turn-error`, because the turn already has one to report.
+   * Reports which of three things happened, because the caller acts
+   * differently on each. It is deliberately no finer than that: the inert
+   * case, a failed prompt load and an unusable input are all `'failed'`,
+   * since all three have the same observable consequence -- the original
+   * overflow flows down the ordinary path. A fourth value would be a
+   * distinction no caller reads.
+   *
+   * `'canceled'` exists because it is NOT the same as failing. A turn that
+   * ends `'error'` keeps a `Compact` reservation booked earlier in the turn,
+   * and the boundary then runs a manual compaction -- a new provider request
+   * issued after the user cancelled. The classification is made at the source
+   * (`runDistillation` sets it) and read here; this method does not consult
+   * the abort signal itself, which would re-scatter a convention that has
+   * exactly one writer.
    */
-  private async escapeContextOverflow(turnId: string, signal: AbortSignal): Promise<boolean> {
+  private async escapeContextOverflow(
+    turnId: string,
+    signal: AbortSignal,
+  ): Promise<'compacted' | 'canceled' | 'failed'> {
     const windowTokens = this.deps.compaction.contextWindowTokens;
     // Inert when the window is not declared: with no `W` there is no budget to
     // shrink toward, and no behaviour change is the correct outcome.
-    if (windowTokens === undefined) return false;
+    if (windowTokens === undefined) return 'failed';
 
     let compactionPromptText: string;
     try {
       compactionPromptText = await this.deps.loadCompactionPrompt();
     } catch {
-      return false;
+      return 'failed';
     }
 
     const promptMessage: ChatMessage = { role: 'user', content: compactionPromptText };
@@ -1162,10 +1186,11 @@ export class AgentLoop {
     );
     // Nothing usable to distill. Failing honestly beats appearing to fire and
     // changing nothing.
-    if (input === null) return false;
+    if (input === null) return 'failed';
 
     const result = await this.runDistillation('auto', input, true, turnId, signal);
-    return result.ok;
+    if (result.ok) return 'compacted';
+    return result.canceled ? 'canceled' : 'failed';
   }
 
   async compact(source: 'auto' | 'manual', partial?: { budgetTokens: number }): Promise<void> {

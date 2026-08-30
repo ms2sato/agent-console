@@ -57,6 +57,21 @@
  *       actually persists. A mutation has to reproduce the defect, not merely
  *       perturb the code near it.
  *
+ *   e6  fold `'canceled'` back into `'failed'` at the call site, so a cancel
+ *       during the escape is reported as an error ending (the shape this PR
+ *       shipped before review)
+ *       -> 1 fail, alone: 'a cancel during the escape issues NO provider
+ *          request after it'. It fails as **4 provider calls instead of 3** --
+ *          the fourth being `compact('manual')`, fired because
+ *          `settleCompactionAtTurnBoundary` discards a booked reservation
+ *          only on 'canceled'. That is the billed request, observed rather
+ *          than argued.
+ *
+ *          The pin is deliberately on the CONSEQUENCE, not the ending label.
+ *          The label is a proxy: assert it alone and the test stays green if
+ *          the boundary's ordering ever changes while the same request still
+ *          goes out.
+ *
  * Measurement note: match the failure marker anywhere in the line, not at
  * line start; confirm the mutation applied to the SITE UNDER TEST (a string
  * may not be unique -- see e5); and confirm it reproduces the defect's shape
@@ -67,6 +82,7 @@ import { describe, it, expect } from 'bun:test';
 import type { EmbeddedAgentEvent } from '@agent-console/shared';
 import { AgentLoop, type AgentLoopDeps } from '../agent-loop.js';
 import { reconstructConversation } from '../restore.js';
+import { COMPACT_TOOL_NAME } from '../compact-tool.js';
 import type { ToolCallOutcome, ToolExecutor } from '../mcp.js';
 import {
   ProviderError,
@@ -293,6 +309,60 @@ describe('mid-turn context-overflow escape', () => {
       const outcome = reconstructConversation(stream, 'SYS', false);
       expect(outcome.conversation.some((m) => String(m.content).includes('DISTILLED SUMMARY'))).toBe(true);
     });
+  });
+
+  it('a cancel during the escape issues NO provider request after it -- not merely the right ending label', async () => {
+    // The consequence, pinned directly. The ending label is a PROXY for it:
+    // `settleCompactionAtTurnBoundary` discards a `Compact` reservation only
+    // on 'canceled', so an 'error' ending leaves it booked and the boundary
+    // runs `compact('manual')` -- a provider request issued after the user
+    // cancelled, and billed.
+    //
+    // Asserting the label alone would stay green if that ordering ever
+    // changed while the same request still went out. Counting requests after
+    // the cancel cannot.
+    let loop: AgentLoop | undefined;
+    let cancelledAtCall = -1;
+
+    const script: ScriptedResponse[] = [
+      // 1: the turn books a Compact reservation via the builtin tool.
+      {
+        kind: 'events',
+        events: [
+          { type: 'tool-call', callId: 'c1', name: COMPACT_TOOL_NAME, argsJson: '{}' },
+          { type: 'done', finishReason: 'tool_calls' },
+        ] as ProviderEvent[],
+      },
+      // 2: the next provider call overflows, so the escape fires.
+      { kind: 'throw', error: overflowError() },
+      // 3: the distillation -- cancelled while in flight.
+      textResponse('NEVER LANDS'),
+      // 4+: anything after this point is a request made AFTER the cancel.
+      textResponse('THIS MUST NOT BE REQUESTED'),
+    ];
+
+    const inner = new ScriptedAdapter(script);
+    const adapter: ProviderAdapter = {
+      async *run(req: ProviderRunRequest) {
+        // Cancel lands while the distillation (call #3) is in flight.
+        if (inner.calls === 2) {
+          cancelledAtCall = inner.calls;
+          loop?.cancel();
+        }
+        yield* inner.run(req);
+      },
+    };
+
+    const { deps, events } = makeDeps({ adapter });
+    loop = new AgentLoop(deps);
+
+    await loop.runTurn('t1', 'a question');
+
+    expect(cancelledAtCall).toBe(2);
+    // THE ASSERTION. Three calls: the tool turn, the overflow, the cancelled
+    // distillation. A fourth would be the post-cancel manual compaction.
+    expect(inner.calls).toBe(3);
+    expect(countOf(events, 'context-compacted')).toBe(0);
   });
 
   it('is inert when no context window is declared', async () => {
