@@ -882,6 +882,47 @@ describe('replayWindow — either engine write order (#1457 fixtures)', () => {
   });
 });
 
+describe('the usage seed is read from the RESTORED window, not the whole stream', () => {
+  /**
+   * #1419's own pins stay GREEN while this defect is present, and that is the
+   * point of adding a case rather than trusting them: every one of them uses
+   * a stream whose window is the whole array, so none can distinguish "the
+   * newest reading" from "the newest reading INSIDE what was restored". The
+   * partial-restore path is what separates those, and it did not exist when
+   * they were written.
+   *
+   * Measured reach: pass the full `events` array to `findRestoredUsageSeed`
+   * again (the shape this PR shipped before review) -> this case fails alone.
+   */
+  it('ignores a context-usage that sits in the discarded prefix of a partial restore', () => {
+    const events = [
+      // --- everything here is discarded: the restore starts at the first
+      // user-message, and this reading describes a conversation that will not
+      // exist afterwards.
+      { v: 1, type: 'assistant-message', turnId: 't0', text: 'orphaned tail of an older turn' },
+      { v: 1, type: 'context-usage', promptTokens: 999_999, estimated: false },
+      // --- the restored window begins here
+      { v: 1, type: 'user-message', id: 'm1', text: 'the first thing we can still see' },
+      { v: 1, type: 'assistant-message', turnId: 't1', text: 'an answer' },
+      // NOTE: deliberately NO `context-usage` in the restored window.
+      //
+      // An earlier version of this fixture put one here, and the pin was
+      // vacuous: `findRestoredUsageSeed` takes the NEWEST reading, so an
+      // in-window reading wins whether or not the prefix is excluded, and the
+      // mutation killed nothing. The defect only bites when the window has no
+      // reading of its own and selection falls back to the prefix.
+    ] as EmbeddedAgentStreamEvent[];
+
+    // `pruned` is what makes this a partial restore.
+    const outcome = reconstructConversation(linesOf(events), SYSTEM_PROMPT, 'pruned');
+
+    // The reading from the discarded prefix must not be the seed. Taking it
+    // would size a restore-boundary compaction against messages the model was
+    // never given -- the #1419 defect, re-entered through the window move.
+    expect(outcome.usageSeed).toBeUndefined();
+  });
+});
+
 describe('findRestoredUsageSeed — the newest authoritative reading (#1419)', () => {
   const usage = (promptTokens: number, estimated = false): EmbeddedAgentStreamEvent =>
     ({ v: 1, type: 'context-usage', promptTokens, estimated });

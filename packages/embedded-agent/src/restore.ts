@@ -167,6 +167,10 @@ export function reconstructConversation(
   // presented, and a mid-turn `tool-result` cannot lead.
   let conversation: ChatMessage[];
   let windowEvents: EmbeddedAgentStreamEvent[];
+  // Default: the seed sees everything, which is right whenever no prefix was
+  // discarded -- a boundary anchor keeps its own `postTokens` fallback this way.
+  let seedEvents: EmbeddedAgentStreamEvent[] = events;
+  let seedBoundaryIndex = boundaryIndex;
   if (boundaryIndex === -1) {
     conversation = [{ role: 'system', content: systemPrompt }];
     // FACT 2 -- does the stream begin somewhere the system can stand behind?
@@ -185,6 +189,12 @@ export function reconstructConversation(
         );
       }
       windowEvents = events.slice(firstUser);
+      // The seed reads the same region, so a reading from the discarded
+      // prefix cannot be selected. The boundary index is re-based because
+      // `findRestoredUsageSeed` interprets it as an index into what it is
+      // handed.
+      seedEvents = windowEvents;
+      seedBoundaryIndex = -1;
     } else {
       windowEvents = events;
     }
@@ -210,7 +220,13 @@ export function reconstructConversation(
   // conversation was built from, rather than re-walking the stream: the rule
   // "never a reading from before the last boundary" is not a second policy to
   // keep in step with 4b, it IS 4b's window.
-  const usageSeed = findRestoredUsageSeed(events, boundaryIndex);
+  // The seed must be read from the SAME window the conversation was built
+  // from. A partial restore drops a prefix, and a `context-usage` inside that
+  // prefix describes a conversation that no longer exists -- seeding the
+  // restore-boundary check with it would size a compaction against messages
+  // the model was never given. That is the defect #1419 removed, and moving
+  // the window is how it comes back.
+  const usageSeed = findRestoredUsageSeed(seedEvents, seedBoundaryIndex);
 
   return {
     conversation: repairResult.conversation,

@@ -11,8 +11,9 @@
  * reconstruction throws and the worker falls to the destructive reset — losing
  * a conversation that is entirely intact on disk.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
+import { fs as memfs } from 'memfs';
 import { WorkerOutputFileManager } from '../worker-output-file.js';
 import { SessionDataPathResolver } from '../session-data-path-resolver.js';
 import { reconstructConversation } from '@agent-console/embedded-agent/src/restore.js';
@@ -311,6 +312,77 @@ describe('#1202 — the walk-back assembles a stream that starts at a safe ancho
     // No real boundary exists anywhere, so the walk must reach the true start.
     expect(assembled.stoppedAt).toBe('true-start');
     expect(assembled.data).toContain('why does restore look for');
+  });
+
+  it('assembles the snapshot inside exactly ONE lock acquisition', async () => {
+    // The race this replaces was invisible to any output assertion: the live
+    // window, the manifest and the segments were read under two separate lock
+    // acquisitions, and a flush cutting the file between them left the live
+    // data overlapping a newly archived segment -- restore replaying events
+    // twice.
+    //
+    // A test that interleaves a flush between two acquisitions would be
+    // testing my ability to schedule, not the code. The structure IS the
+    // evidence here, so the structure is what gets measured: the snapshot
+    // must be built inside one critical section.
+    //
+    // Counted RELATIVE TO A BASELINE taken immediately before the call -- an
+    // absolute total would silently absorb any lock the setup happens to take.
+    const a = line({ v: 1, type: 'user-message', id: 'm1', text: 'the very first thing' });
+    const b = line({ v: 1, type: 'assistant-message', turnId: 't1', text: 'y'.repeat(500) });
+    manager.bufferOutput(S, W, a, resolver);
+    await manager.flushAll();
+    manager.bufferOutput(S, W, b, resolver);
+    await manager.flushAll();
+
+    const spy = spyOn(
+      manager as unknown as { runExclusive: (key: string, fn: () => Promise<unknown>) => Promise<unknown> },
+      'runExclusive',
+    );
+    const before = spy.mock.calls.length;
+    const assembled = await manager.readHistoryForRestore(S, W, resolver);
+    const acquisitions = spy.mock.calls.length - before;
+    spy.mockRestore();
+
+    // Premise control: this fixture genuinely walks the archive. Without it a
+    // fast-path return would also acquire once, and the pin would pass while
+    // measuring nothing.
+    expect(assembled.stoppedAt).toBe('true-start');
+    expect(assembled.data).toContain('the very first thing');
+
+    expect(acquisitions).toBe(1);
+    // Polarity, measured: restoring the pre-fix shape -- a live read taking
+    // its own lock before the snapshot's -- gives `Received: 2` and fails
+    // here. Note the mutation has to reproduce that SEQUENCE; nesting the
+    // locking wrapper inside the lock instead self-deadlocks and hangs,
+    // which measures nothing.
+  });
+
+  it('a CORRUPT archived segment is damage, not a pruned edge: it propagates rather than partially restoring', async () => {
+    // The catch that classifies a failed segment read used to make every
+    // failure `pruned`. Its comment named only one cause -- a prune racing the
+    // manifest rewrite -- so the intent was narrow and the implementation was
+    // broad. A corrupt gzip therefore produced a quiet partial restore instead
+    // of reaching the activation fallback that resets and preserves the log.
+    //
+    // Turning corruption into silent truncation is the exact failure mode this
+    // change exists to remove, so the test asserts it does NOT happen.
+    const a = line({ v: 1, type: 'user-message', id: 'm1', text: 'the very first thing' });
+    const b = line({ v: 1, type: 'assistant-message', turnId: 't1', text: 'y'.repeat(500) });
+    manager.bufferOutput(S, W, a, resolver);
+    await manager.flushAll();
+    manager.bufferOutput(S, W, b, resolver);
+    await manager.flushAll();
+
+    // Premise control: a segment exists to corrupt, and the walk needs it.
+    const segDir = `${CONFIG_DIR}/_quick/outputs/${S}`;
+    const segFile = (memfs.readdirSync(segDir) as unknown[]).map(String).find((f) => f.includes('.seg-'));
+    expect(segFile).toBeTruthy();
+
+    // Replace the gzip's bytes with something that is not a gzip at all.
+    memfs.writeFileSync(`${segDir}/${String(segFile)}`, 'this is not gzip data');
+
+    await expect(manager.readHistoryForRestore(S, W, resolver)).rejects.toThrow();
   });
 
   it('CAP: a ceiling below the archive size stops the walk and reports it, rather than assembling everything', async () => {

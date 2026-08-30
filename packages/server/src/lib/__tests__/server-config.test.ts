@@ -386,6 +386,26 @@ describe('WORKER_OUTPUT_RESTORE_MAX_BYTES', () => {
     expect(serverConfig.WORKER_OUTPUT_RESTORE_MAX_BYTES).toBe(16 * 1024 * 1024);
   });
 
+  it('falls back to the default on a malformed value, rather than becoming NaN', async () => {
+    // The failure this prevents is silent: `parseInt` on garbage yields NaN,
+    // and EVERY comparison with NaN is false -- so a ceiling used as
+    // `total + next > cap` stops firing entirely. The bound does not fail
+    // loudly, it stops existing.
+    process.env.WORKER_OUTPUT_RESTORE_MAX_BYTES = 'not-a-number';
+    const { serverConfig } = await importServerConfig();
+    expect(Number.isFinite(serverConfig.WORKER_OUTPUT_RESTORE_MAX_BYTES)).toBe(true);
+    expect(serverConfig.WORKER_OUTPUT_RESTORE_MAX_BYTES).toBe(16 * 1024 * 1024);
+  });
+
+  it('falls back on a non-positive value, which would disable the walk entirely', async () => {
+    // Zero or negative is not NaN, so it survives a finiteness check and then
+    // makes the very first segment exceed the cap -- every rotated worker
+    // partially restores. Different input, same class of silent degradation.
+    process.env.WORKER_OUTPUT_RESTORE_MAX_BYTES = '0';
+    const { serverConfig } = await importServerConfig();
+    expect(serverConfig.WORKER_OUTPUT_RESTORE_MAX_BYTES).toBe(16 * 1024 * 1024);
+  });
+
   it('is larger than the live-window size, so the walk can always reach past one rotation', async () => {
     const { serverConfig } = await importServerConfig();
     // A ceiling at or below `WORKER_OUTPUT_FILE_MAX_SIZE` would make the cap

@@ -11,6 +11,25 @@ import { parseOptionalBoolean, parseIntWithDefault } from './env-parser.js';
  * (e.g., PATH, HOME, API keys for child tools) should NOT be added here.
  * Only add variables that are specific to the server's operation.
  */
+/**
+ * A byte ceiling that must never be `NaN`.
+ *
+ * `parseInt` on a malformed value yields `NaN`, and **every comparison with
+ * `NaN` is false** -- so a ceiling used as `total + next > cap` stops firing
+ * entirely. The guard does not fail loudly; it silently stops existing, which
+ * is the worst behaviour available for a bound.
+ *
+ * Falling back to the default rather than throwing keeps a typo in an env var
+ * from preventing startup, and the value it falls back to is the one the
+ * operator would have got by not setting it at all.
+ */
+function positiveIntFromEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.floor(parsed);
+}
+
 export const serverConfig = {
   /** Server's environment mode (development/production) */
   NODE_ENV: process.env.NODE_ENV,
@@ -63,9 +82,9 @@ export const serverConfig = {
    * what was read -- because uncapped, a very long history would be assembled
    * into memory and then into the `init` payload.
    */
-  WORKER_OUTPUT_RESTORE_MAX_BYTES: parseInt(
-    process.env.WORKER_OUTPUT_RESTORE_MAX_BYTES || String(16 * 1024 * 1024),
-    10,
+  WORKER_OUTPUT_RESTORE_MAX_BYTES: positiveIntFromEnv(
+    process.env.WORKER_OUTPUT_RESTORE_MAX_BYTES,
+    16 * 1024 * 1024,
   ),
   /**
    * Interval for flushing buffered output to file (in milliseconds).

@@ -768,6 +768,17 @@ export class WorkerOutputFileManager {
    *
    * @param recentWindowLines line cap for the recent-window fallback branches.
    */
+  /**
+   * Public read. Takes the worker lock, then delegates to the core below.
+   *
+   * The split exists because restore needs the live window, the manifest and
+   * archived segments to come from **one** consistent snapshot. Before it, a
+   * caller wanting all three took the lock here, released it, and took it
+   * again -- and a flush cutting the live file in that gap left the live data
+   * overlapping a segment the newer manifest listed, so restore replayed
+   * duplicates. Splitting rather than duplicating keeps the read logic with a
+   * single writer.
+   */
   async readHistoryWithOffset(
     sessionId: string,
     workerId: string,
@@ -776,51 +787,67 @@ export class WorkerOutputFileManager {
     recentWindowLines?: number,
   ): Promise<HistoryReadResult> {
     const key = this.getKey(sessionId, workerId);
-    return this.runExclusive(key, async () => {
-      try {
-        const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
-        const base = manifest.liveBaseOffset;
-        const epoch = manifest.epoch;
+    return this.runExclusive(key, async () =>
+      this.readHistoryWithOffsetLocked(sessionId, workerId, resolver, fromOffset, recentWindowLines),
+    );
+  }
 
-        const pending = this.pendingFlushes.get(key);
-        const pendingBuffer = pending?.buffer || '';
-        const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
+  /**
+   * The read itself. **Assumes the caller already holds the worker lock** --
+   * it takes none, so calling it unlocked is a race rather than a slow path.
+   * Private for that reason.
+   */
+  private async readHistoryWithOffsetLocked(
+    sessionId: string,
+    workerId: string,
+    resolver: SessionDataPathResolver,
+    fromOffset?: number,
+    recentWindowLines?: number,
+  ): Promise<HistoryReadResult> {
+    const key = this.getKey(sessionId, workerId);
+    try {
+      const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
+      const base = manifest.liveBaseOffset;
+      const epoch = manifest.epoch;
 
-        const liveBuffer = await this.readLiveBuffer(sessionId, workerId, resolver);
-        const fileSize = liveBuffer.length;
-        const total = base + fileSize + pendingByteLength;
+      const pending = this.pendingFlushes.get(key);
+      const pendingBuffer = pending?.buffer || '';
+      const pendingByteLength = Buffer.byteLength(pendingBuffer, 'utf-8');
 
-        // Initial load (fromOffset absent or 0): full live window + pending.
-        if (fromOffset === undefined || fromOffset <= 0) {
-          const data = liveBuffer.toString('utf-8') + pendingBuffer;
-          return { data, offset: total, startOffset: base, epoch };
-        }
+      const liveBuffer = await this.readLiveBuffer(sessionId, workerId, resolver);
+      const fileSize = liveBuffer.length;
+      const total = base + fileSize + pendingByteLength;
 
-        if (fromOffset < base || fromOffset > total) {
-          // Archived-out or stale/diverged — return the recent window.
-          return this.buildRecentWindow(liveBuffer, pendingBuffer, total, recentWindowLines, epoch);
-        }
-
-        if (fromOffset === total) {
-          return { data: '', offset: total, startOffset: total, epoch };
-        }
-
-        // base <= fromOffset < total — incremental continuation.
-        const relOffset = fromOffset - base;
-        if (relOffset >= fileSize) {
-          // Within the pending buffer.
-          const pendingSkip = relOffset - fileSize;
-          const remainingPending = Buffer.from(pendingBuffer, 'utf-8').subarray(pendingSkip);
-          return { data: remainingPending.toString('utf-8'), offset: total, startOffset: fromOffset, epoch };
-        }
-
-        const data = liveBuffer.subarray(relOffset).toString('utf-8') + pendingBuffer;
-        return { data, offset: total, startOffset: fromOffset, epoch };
-      } catch (error) {
-        logger.error({ sessionId, workerId, err: error }, 'Failed to read output file');
-        return { data: '', offset: 0, startOffset: 0, epoch: 0 };
+      // Initial load (fromOffset absent or 0): full live window + pending.
+      if (fromOffset === undefined || fromOffset <= 0) {
+        const data = liveBuffer.toString('utf-8') + pendingBuffer;
+        return { data, offset: total, startOffset: base, epoch };
       }
-    });
+
+      if (fromOffset < base || fromOffset > total) {
+        // Archived-out or stale/diverged — return the recent window.
+        return this.buildRecentWindow(liveBuffer, pendingBuffer, total, recentWindowLines, epoch);
+      }
+
+      if (fromOffset === total) {
+        return { data: '', offset: total, startOffset: total, epoch };
+      }
+
+      // base <= fromOffset < total — incremental continuation.
+      const relOffset = fromOffset - base;
+      if (relOffset >= fileSize) {
+        // Within the pending buffer.
+        const pendingSkip = relOffset - fileSize;
+        const remainingPending = Buffer.from(pendingBuffer, 'utf-8').subarray(pendingSkip);
+        return { data: remainingPending.toString('utf-8'), offset: total, startOffset: fromOffset, epoch };
+      }
+
+      const data = liveBuffer.subarray(relOffset).toString('utf-8') + pendingBuffer;
+      return { data, offset: total, startOffset: fromOffset, epoch };
+    } catch (error) {
+      logger.error({ sessionId, workerId, err: error }, 'Failed to read output file');
+      return { data: '', offset: 0, startOffset: 0, epoch: 0 };
+    }
   }
 
   /**
@@ -1002,18 +1029,24 @@ export class WorkerOutputFileManager {
     stoppedAt: 'boundary' | 'true-start' | 'pruned' | 'cap';
     epoch: number;
   }> {
-    const live = await this.readHistoryWithOffset(sessionId, workerId, resolver, undefined);
-
-    // Fast path. Unchanged behaviour, and deliberately before any archive work.
-    if (containsBoundary(live.data)) {
-      return { data: live.data, stoppedAt: 'boundary', epoch: live.epoch };
-    }
-    if (live.startOffset === 0) {
-      return { data: live.data, stoppedAt: 'true-start', epoch: live.epoch };
-    }
-
     const key = this.getKey(sessionId, workerId);
+    // ONE critical section for all three reads. The live window, the manifest
+    // and the archived segments must describe the same instant: a flush
+    // cutting the live file between two lock acquisitions would leave the live
+    // data overlapping a segment the newer manifest lists, and restore would
+    // replay those events twice.
     return this.runExclusive(key, async () => {
+      const live = await this.readHistoryWithOffsetLocked(sessionId, workerId, resolver, undefined);
+
+      // Fast path. Unchanged behaviour, and deliberately before any archive
+      // work -- it still reads no segment.
+      if (containsBoundary(live.data)) {
+        return { data: live.data, stoppedAt: 'boundary' as const, epoch: live.epoch };
+      }
+      if (live.startOffset === 0) {
+        return { data: live.data, stoppedAt: 'true-start' as const, epoch: live.epoch };
+      }
+
       const manifest = await this.loadManifestWithRecovery(sessionId, workerId, resolver);
       const outputsDir = resolver.getOutputsDir();
       const parts: string[] = [live.data];
@@ -1031,11 +1064,22 @@ export class WorkerOutputFileManager {
         try {
           const buf = await this.getDecompressedSegment(key, seg, segPath);
           text = buf.toString('utf-8');
-        } catch {
-          // A segment named by the manifest but unreadable (a prune racing the
-          // manifest rewrite). Everything older is unreachable too, so this is
-          // the pruned edge rather than an error.
-          return { data: parts.join(''), stoppedAt: 'pruned' as const, epoch: manifest.epoch };
+        } catch (err) {
+          // ONLY an absent segment is the pruned edge: a prune that deleted
+          // the file after the manifest named it. Everything older is
+          // unreachable too, so the walk stops there and the restore is
+          // partial and declared.
+          //
+          // Anything else -- a truncated or malformed gzip, an I/O error -- is
+          // DAMAGE, and must reach the activation fallback that resets and
+          // preserves the log to a sidecar. Swallowing it here would turn
+          // corruption into a quiet partial restore, which is precisely the
+          // failure mode this whole change exists to remove. The narrow intent
+          // was in the comment before; the implementation was broader.
+          if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') {
+            return { data: parts.join(''), stoppedAt: 'pruned' as const, epoch: manifest.epoch };
+          }
+          throw err;
         }
         parts.unshift(text);
         assembledBytes += Buffer.byteLength(text, 'utf-8');
