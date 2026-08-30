@@ -29,6 +29,15 @@ export const RESTORE_REPAIR_REASON =
   'tool call not completed: worker restarted before this response was recorded';
 
 /** Thrown on any 4a-4c invariant violation (unparseable stream, schema-invalid line, a tool-call with no owning assistant-message). Caller must catch this and fall back to v1 reset (spec "Failure invariant (restore)"). */
+/**
+ * Where the assembled stream begins. Passed through rather than reduced to a
+ * boolean because two independent facts are derived from it, and a boolean
+ * would admit a combination that cannot occur: `true-start` implies offset 0,
+ * so "reaches the true start" and "may open on a fragment" can never both
+ * hold. Deriving them separately at their use sites keeps that impossible.
+ */
+export type RestoreStreamAnchor = 'true-start' | 'boundary' | 'pruned' | 'cap';
+
 export class RestoreReconstructionError extends Error {
   constructor(message: string) {
     super(message);
@@ -117,9 +126,14 @@ export function reconstructConversation(
    * is one production caller; every other is a test declaring which world it
    * is in.
    */
-  truncated: boolean,
+  stoppedAt: RestoreStreamAnchor,
 ): RestoreOutcome {
-  const { events, skippedFragment } = parseStreamEvents(streamText, truncated);
+  // FACT 1 -- may the FIRST LINE be a partial record? Only `true-start` rules
+  // it out, because that anchor is offset 0 by construction. Every other
+  // anchor begins at a previous cut point, and the writer's documented
+  // no-usable-newline fallback can leave such a point mid-line.
+  const mayStartMidRecord = stoppedAt !== 'true-start';
+  const { events } = parseStreamEvents(streamText, mayStartMidRecord);
 
   const boundaryIndex = findLastBoundaryIndex(events);
 
@@ -136,19 +150,54 @@ export function reconstructConversation(
   // the cut produced, so the window starts at a turn boundary. Restoring from
   // there is honest in the sense the divergence notice means.
   //
-  // Everything else keeps today's behaviour -- reset with the log preserved
-  // to a sidecar -- so the design space stays open instead of being settled
-  // by a side effect of this fix.
-  if (skippedFragment && boundaryIndex === -1) {
-    throw new RestoreReconstructionError(
-      'Rotation fragment skipped but the window holds no compaction boundary; a partial restore here would be undeclared',
-    );
-  }
+  // Everything else restores PARTIALLY, from the first `user-message` in what
+  // is available.
+  //
+  // The caller no longer hands us a window that merely rotated: it walks back
+  // through archived segments to a boundary or to the true start, so
+  // `truncated` now means the assembled stream genuinely cannot reach the
+  // beginning -- retention deleted the oldest segment, or the walk hit its
+  // byte ceiling. Both are DECLARED discards: one configured by the operator,
+  // one by us. Neither is a rotation's unintended byte cut.
+  //
+  // Starting at the first `user-message` is what makes it honest rather than
+  // merely tolerant. Transcript replay begins from the same available head,
+  // so memory and display begin at the same point and agree -- there is no
+  // divergence to declare. Debris before that point is dropped rather than
+  // presented, and a mid-turn `tool-result` cannot lead.
   let conversation: ChatMessage[];
   let windowEvents: EmbeddedAgentStreamEvent[];
+  // Default: the seed sees everything, which is right whenever no prefix was
+  // discarded -- a boundary anchor keeps its own `postTokens` fallback this way.
+  let seedEvents: EmbeddedAgentStreamEvent[] = events;
+  let seedBoundaryIndex = boundaryIndex;
   if (boundaryIndex === -1) {
     conversation = [{ role: 'system', content: systemPrompt }];
-    windowEvents = events;
+    // FACT 2 -- does the stream begin somewhere the system can stand behind?
+    // `true-start` is the real beginning and `boundary` is a discard the
+    // system itself declared; both are honest heads. `pruned` and `cap` are
+    // not: history exists that we cannot reach, so the restore is partial and
+    // must start where a partial restore can be honest.
+    const reachesHonestStart = stoppedAt === 'true-start' || stoppedAt === 'boundary';
+    if (!reachesHonestStart) {
+      const firstUser = events.findIndex((e) => e.type === 'user-message');
+      // No user message anywhere in reach: there is no honest place to start,
+      // so the reset (with its sidecar) remains the answer.
+      if (firstUser === -1) {
+        throw new RestoreReconstructionError(
+          'Assembled stream does not reach the start of history and contains no user-message to restore from',
+        );
+      }
+      windowEvents = events.slice(firstUser);
+      // The seed reads the same region, so a reading from the discarded
+      // prefix cannot be selected. The boundary index is re-based because
+      // `findRestoredUsageSeed` interprets it as an index into what it is
+      // handed.
+      seedEvents = windowEvents;
+      seedBoundaryIndex = -1;
+    } else {
+      windowEvents = events;
+    }
   } else {
     conversation = buildCompactionSeedMessages(systemPrompt, boundarySummary(events[boundaryIndex]));
     windowEvents = events.slice(boundaryIndex + 1);
@@ -171,7 +220,13 @@ export function reconstructConversation(
   // conversation was built from, rather than re-walking the stream: the rule
   // "never a reading from before the last boundary" is not a second policy to
   // keep in step with 4b, it IS 4b's window.
-  const usageSeed = findRestoredUsageSeed(events, boundaryIndex);
+  // The seed must be read from the SAME window the conversation was built
+  // from. A partial restore drops a prefix, and a `context-usage` inside that
+  // prefix describes a conversation that no longer exists -- seeding the
+  // restore-boundary check with it would size a compaction against messages
+  // the model was never given. That is the defect #1419 removed, and moving
+  // the window is how it comes back.
+  const usageSeed = findRestoredUsageSeed(seedEvents, seedBoundaryIndex);
 
   return {
     conversation: repairResult.conversation,

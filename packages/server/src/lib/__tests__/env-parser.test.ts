@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { parseEnvVars, parseOptionalBoolean, parseIntWithDefault } from '../env-parser.js';
+import { parseEnvVars, parseOptionalBoolean, parseIntWithDefault, parsePositiveIntWithDefault } from '../env-parser.js';
 
 describe('parseEnvVars', () => {
   it('should return empty object for null input', () => {
@@ -209,5 +209,30 @@ describe('parseIntWithDefault', () => {
 
   it('accepts a negative value verbatim', () => {
     expect(parseIntWithDefault('-1', 42)).toBe(-1);
+  });
+});
+
+describe('parsePositiveIntWithDefault', () => {
+  it('falls back on a malformed value rather than yielding NaN', () => {
+    // NaN is the dangerous case precisely because it is not loud: every
+    // comparison with it is false, so a ceiling written as `total > cap`
+    // stops firing instead of failing, and nothing reports it.
+    expect(parsePositiveIntWithDefault('not-a-number', 42)).toBe(42);
+  });
+
+  it('falls back on zero and on negatives, which survive a finiteness check', () => {
+    // These fail in the other direction and just as quietly: the first
+    // candidate exceeds the bound and everything degrades to the minimum.
+    expect(parsePositiveIntWithDefault('0', 42)).toBe(42);
+    expect(parsePositiveIntWithDefault('-1', 42)).toBe(42);
+  });
+
+  it('accepts a valid positive value', () => {
+    expect(parsePositiveIntWithDefault('1024', 42)).toBe(1024);
+  });
+
+  it('falls back on absent or empty, like its sibling', () => {
+    expect(parsePositiveIntWithDefault(undefined, 42)).toBe(42);
+    expect(parsePositiveIntWithDefault('   ', 42)).toBe(42);
   });
 });

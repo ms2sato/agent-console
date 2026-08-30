@@ -100,3 +100,22 @@ export function parseIntWithDefault(raw: string | undefined, defaultValue: numbe
   const parsed = Number.parseInt(raw, 10);
   return Number.isNaN(parsed) ? defaultValue : parsed;
 }
+
+/**
+ * Like `parseIntWithDefault`, but also rejects zero and negatives.
+ *
+ * Sits here rather than beside its one caller because `parseIntWithDefault` is
+ * already this file's answer to "read an integer from the environment", and a
+ * second reader elsewhere would be a second writer of the same rule.
+ *
+ * The stricter form exists for values used as CEILINGS. `NaN` is the loud
+ * case only in name: every comparison with it is false, so a bound written as
+ * `total + next > cap` stops firing rather than failing, and nothing reports
+ * it. A non-positive value survives a finiteness check and then makes the
+ * first candidate exceed the bound, which fails in the other direction just as
+ * quietly.
+ */
+export function parsePositiveIntWithDefault(raw: string | undefined, defaultValue: number): number {
+  const parsed = parseIntWithDefault(raw, defaultValue);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}

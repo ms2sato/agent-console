@@ -1,4 +1,4 @@
-import { parseOptionalBoolean, parseIntWithDefault } from './env-parser.js';
+import { parseOptionalBoolean, parseIntWithDefault, parsePositiveIntWithDefault } from './env-parser.js';
 
 /**
  * Centralized server-specific environment configuration.
@@ -11,6 +11,7 @@ import { parseOptionalBoolean, parseIntWithDefault } from './env-parser.js';
  * (e.g., PATH, HOME, API keys for child tools) should NOT be added here.
  * Only add variables that are specific to the server's operation.
  */
+
 export const serverConfig = {
   /** Server's environment mode (development/production) */
   NODE_ENV: process.env.NODE_ENV,
@@ -53,6 +54,20 @@ export const serverConfig = {
    * Default: 256KB (256 * 1024 bytes)
    */
   WORKER_OUTPUT_RANGE_MAX_BYTES: parseInt(process.env.WORKER_OUTPUT_RANGE_MAX_BYTES || String(256 * 1024), 10),
+
+  /**
+   * Ceiling on how far restore walks BACK through archived segments looking
+   * for a compaction boundary. Generous by default: the walk stops at a
+   * boundary or the true start in the ordinary case, and this only bounds the
+   * pathological history that has neither. Exceeding it is treated exactly as
+   * a pruned history -- partial restore from the first `user-message` within
+   * what was read -- because uncapped, a very long history would be assembled
+   * into memory and then into the `init` payload.
+   */
+  WORKER_OUTPUT_RESTORE_MAX_BYTES: parsePositiveIntWithDefault(
+    process.env.WORKER_OUTPUT_RESTORE_MAX_BYTES,
+    16 * 1024 * 1024,
+  ),
   /**
    * Interval for flushing buffered output to file (in milliseconds).
    * Default: 100ms

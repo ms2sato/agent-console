@@ -84,6 +84,7 @@
       "version": "0.2.0",
       "devDependencies": {
         "@agent-console/client": "*",
+        "@agent-console/embedded-agent": "*",
         "@agent-console/server": "*",
         "@agent-console/shared": "*",
         "@happy-dom/global-registrator": "^20.0.11",

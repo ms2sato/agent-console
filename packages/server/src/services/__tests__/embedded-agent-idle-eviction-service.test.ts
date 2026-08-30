@@ -254,6 +254,10 @@ function setup(opts?: {
         const data = persisted.join('');
         return { data, offset: Buffer.byteLength(data, 'utf-8'), startOffset: 0, epoch: 4242 };
       }) as never,
+      readHistoryForRestore: (async () => {
+        const data = persisted.join('');
+        return { data, stoppedAt: 'true-start' as const, epoch: 4242 };
+      }) as never,
     },
     getMcpBaseUrl: () => MCP_BASE_URL,
     loadProviderKeyFn: (async () => 'sk-test') as never,
