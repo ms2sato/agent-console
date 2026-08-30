@@ -55,6 +55,17 @@ interface OverflowSignature {
    * whose code already means exactly that needs none.
    */
   readonly discriminator?: RegExp;
+  /**
+   * Extracts the provider's own stated input limit from `detail.message`, in
+   * capture group 1. Present only where a MEASURED body was observed to carry
+   * the number; an entry without one yields no limit, and therefore no drift
+   * claim on that path.
+   *
+   * This is the same allowlist discipline as `discriminator`, applied to a
+   * number instead of a verdict: the absence of a pattern is silence, never a
+   * fallback to a looser search of the message.
+   */
+  readonly limitCapture?: RegExp;
 }
 
 /**
@@ -74,6 +85,12 @@ const OVERFLOW_SIGNATURES: readonly OverflowSignature[] = [
     // the family alone would sweep in unrelated faults. The message carries
     // the only signal that says WHICH parameter: an input-length range.
     discriminator: /range of input length|input length|maximum context length|too many tokens/i,
+    // The measured body states the range as `[1, 983616]`, so the provider's
+    // real cap is the upper bound. Anchored on the full phrase rather than on
+    // a bare bracketed pair: the looser form would also match a range that
+    // means something else in a message this entry has never been measured
+    // against.
+    limitCapture: /range of input length should be \[\s*\d+\s*,\s*(\d+)\s*\]/i,
   },
   {
     // The OpenAI-compatible code that means exactly this condition and nothing
@@ -82,8 +99,34 @@ const OVERFLOW_SIGNATURES: readonly OverflowSignature[] = [
     provenance: 'OpenAI-compatible `context_length_exceeded`, industry-standard code',
     status: 400,
     family: 'context_length_exceeded',
+    // No `limitCapture`: this entry is family-level and no body of this shape
+    // has been measured here. Providers emitting this code do usually name a
+    // number in prose, but writing a pattern from the shape one EXPECTS is
+    // exactly the unmeasured guess the table forbids -- and here the guess
+    // would point at an operator-facing "your configuration is wrong".
   },
 ];
+
+/**
+ * The single matching rule, shared by the verdict and the extraction below so
+ * a number can never be read out of an error the verdict did not recognise.
+ */
+function matchSignature(
+  status: number | undefined,
+  detail: ProviderErrorDetail | undefined,
+): OverflowSignature | undefined {
+  if (status === undefined || detail === undefined) return undefined;
+
+  return OVERFLOW_SIGNATURES.find((sig) => {
+    if (sig.status !== status) return false;
+    // Either structured field may carry the family; providers disagree about
+    // which one they populate.
+    const familyMatches = detail.type === sig.family || detail.code === sig.family;
+    if (!familyMatches) return false;
+    if (sig.discriminator === undefined) return true;
+    return sig.discriminator.test(detail.message);
+  });
+}
 
 /**
  * True only when the provider's structured error matches a measured overflow
@@ -94,15 +137,41 @@ export function isContextOverflowError(
   status: number | undefined,
   detail: ProviderErrorDetail | undefined,
 ): boolean {
-  if (status === undefined || detail === undefined) return false;
+  return matchSignature(status, detail) !== undefined;
+}
 
-  return OVERFLOW_SIGNATURES.some((sig) => {
-    if (sig.status !== status) return false;
-    // Either structured field may carry the family; providers disagree about
-    // which one they populate.
-    const familyMatches = detail.type === sig.family || detail.code === sig.family;
-    if (!familyMatches) return false;
-    if (sig.discriminator === undefined) return true;
-    return sig.discriminator.test(detail.message);
-  });
+/**
+ * The provider's own stated input limit, when a matched signature carries a
+ * measured pattern that finds it -- otherwise `undefined`.
+ *
+ * # Every gate here fails toward `undefined`
+ *
+ * The consumer of this number tells an operator their configuration disagrees
+ * with reality. A wrong number there is worse than no number: it sends someone
+ * to edit a value that was correct. So extraction is refused unless all of the
+ * following hold, and no step falls back to a looser attempt:
+ *
+ * - the error already matched a measured overflow signature (not merely a 4xx),
+ * - that signature carries a `limitCapture` measured against a real body,
+ * - the pattern matched and group 1 parsed as a positive safe integer.
+ *
+ * A provider that changes its wording therefore stops producing drift claims
+ * rather than producing wrong ones, and the classification the escape depends
+ * on is unaffected -- the two answers are deliberately independent.
+ */
+export function extractProviderStatedLimit(
+  status: number | undefined,
+  detail: ProviderErrorDetail | undefined,
+): number | undefined {
+  if (detail === undefined) return undefined;
+  const sig = matchSignature(status, detail);
+  if (sig?.limitCapture === undefined) return undefined;
+
+  const captured = sig.limitCapture.exec(detail.message)?.[1];
+  if (captured === undefined) return undefined;
+
+  const limit = Number.parseInt(captured, 10);
+  // A limit of zero or a value past the safe-integer range is not a limit we
+  // can compare against a declaration, so it is treated as no reading at all.
+  return Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
 }

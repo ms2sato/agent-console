@@ -23,7 +23,8 @@ import {
   type ToolCall,
   type ToolDefinition,
 } from './providers/types.js';
-import { isContextOverflowError } from './context-overflow.js';
+import { isContextOverflowError, extractProviderStatedLimit } from './context-overflow.js';
+import { detectClampedReading } from './window-drift.js';
 import { truncateToBytes } from './truncate.js';
 import { buildCompactionSeedMessages } from './conversation-seed.js';
 import {
@@ -147,6 +148,14 @@ interface ProviderToolCall {
 interface TurnUsage {
   promptTokens: number;
   estimated: boolean;
+  /**
+   * Window drift, signal 2: this reading bears every mark of having been
+   * clamped by the provider to its own input limit. Decided where the reading
+   * is produced, because that is the only place the REQUEST is still in hand
+   * -- the predicate compares the provider's number against our estimate of
+   * what we sent, and nothing downstream of here still has the messages.
+   */
+  appearsClamped?: true;
 }
 
 /**
@@ -688,7 +697,15 @@ export class AgentLoop {
             // legitimately escape again. A service-level counter would be
             // wrong for that reason.
             escapeUsed = true;
-            const escape = await this.escapeContextOverflow(turnId, abort.signal);
+            // Signal 3. The number is in hand HERE and nowhere later: a
+            // successful escape emits no `turn-error`, so this is the only
+            // moment the rejection's own stated limit can be attached to
+            // anything the user will see.
+            const escape = await this.escapeContextOverflow(
+              turnId,
+              abort.signal,
+              extractProviderStatedLimit(outcome.status, outcome.detail),
+            );
             if (escape === 'compacted') {
               // Retry exactly once. The provider is called with the live
               // `this.conversation`, so this re-reads the spliced array.
@@ -708,7 +725,10 @@ export class AgentLoop {
             // emits exactly one, never two.
           }
           this.emitContextUsageIfKnown(turnUsage);
-          this.emitTurnError(turnId, outcome.message);
+          this.emitTurnError(
+            turnId,
+            this.annotateWindowDrift(outcome.message, outcome.status, outcome.detail),
+          );
           return 'error';
         }
         turnUsage = outcome.usage;
@@ -964,7 +984,17 @@ export class AgentLoop {
 
     const usage: TurnUsage =
       providerUsage !== undefined
-        ? { promptTokens: providerUsage.promptTokens, estimated: false }
+        ? {
+            promptTokens: providerUsage.promptTokens,
+            estimated: false,
+            ...(detectClampedReading(
+              { promptTokens: providerUsage.promptTokens, estimated: false },
+              this.deps.compaction.contextWindowTokens,
+              estimateTokensFromChars(messages),
+            ) !== undefined
+              ? { appearsClamped: true as const }
+              : {}),
+          }
         : { promptTokens: estimateTokensFromChars(messages), estimated: true };
 
     return { kind: 'ok', text, toolCalls, usage };
@@ -1010,6 +1040,12 @@ export class AgentLoop {
     isPartial: boolean,
     turnId: string,
     signal: AbortSignal,
+    /**
+     * Signal 3: the provider's own stated input limit, when this distillation
+     * is the mid-turn escape from a rejection that named one. Absent for the
+     * turn-boundary caller, which has no rejection behind it.
+     */
+    providerStatedWindowTokens?: number,
   ): Promise<{ ok: true } | { ok: false; canceled: boolean; reason: string }> {
       const outcome = await this.runProviderWithRetries(input, turnId, signal, {
         emitDeltas: false,
@@ -1123,6 +1159,7 @@ export class AgentLoop {
         summary,
         ...(outcome.usage !== undefined ? { preTokens: outcome.usage.promptTokens } : {}),
         postTokens,
+        ...(providerStatedWindowTokens !== undefined ? { providerStatedWindowTokens } : {}),
       });
 
       this.conversation.splice(0, this.conversation.length, ...seed);
@@ -1165,6 +1202,7 @@ export class AgentLoop {
   private async escapeContextOverflow(
     turnId: string,
     signal: AbortSignal,
+    providerStatedWindowTokens?: number,
   ): Promise<'compacted' | 'canceled' | 'failed'> {
     const windowTokens = this.deps.compaction.contextWindowTokens;
     // Inert when the window is not declared: with no `W` there is no budget to
@@ -1188,7 +1226,14 @@ export class AgentLoop {
     // changing nothing.
     if (input === null) return 'failed';
 
-    const result = await this.runDistillation('auto', input, true, turnId, signal);
+    const result = await this.runDistillation(
+      'auto',
+      input,
+      true,
+      turnId,
+      signal,
+      providerStatedWindowTokens,
+    );
     if (result.ok) return 'compacted';
     return result.canceled ? 'canceled' : 'failed';
   }
@@ -1249,6 +1294,47 @@ export class AgentLoop {
   }
 
 
+  /**
+   * Appends the declared-versus-stated contradiction to an overflow's message,
+   * when the provider named its real limit and it disagrees with the operator's
+   * declaration.
+   *
+   * Only over-declaration is reported. Under-declaration compacts early -- it
+   * costs fidelity and wedges nothing -- so naming it would spend an operator's
+   * attention on the harmless direction and dilute the message that matters.
+   *
+   * The message is display-only prose that no layer parses back, which is what
+   * makes weaving a sentence into it legitimate here.
+   */
+  private annotateWindowDrift(
+    message: string,
+    status: number | undefined,
+    detail: ProviderErrorDetail | undefined,
+  ): string {
+    const declared = this.deps.compaction.contextWindowTokens;
+    if (declared === undefined) return message;
+
+    const stated = extractProviderStatedLimit(status, detail);
+    // No number extracted is the ordinary outcome for every signature without a
+    // measured capture pattern; it must read as "nothing to say", never as a
+    // reason to guess one from the prose.
+    if (stated === undefined || declared <= stated) return message;
+
+    // Joined with a dash rather than a blank line: the transcript renders this
+    // message as plain text with no `whitespace-pre-wrap`, so a newline would
+    // collapse to a space and the paragraph break would exist only in the
+    // source. Changing that surface's rendering to suit one string is not this
+    // change's business.
+    return (
+      `${message} — This agent declares a context window of ` +
+      `${declared.toLocaleString('en-US')} tokens, but the provider states its ` +
+      `real input limit is ${stated.toLocaleString('en-US')}. An over-declared ` +
+      `window makes every usage ratio optimistic, so automatic compaction fires ` +
+      `later than intended, or not at all. Consider correcting the agent ` +
+      `definition's context window.`
+    );
+  }
+
   private emitTurnError(turnId: string, message: string): void {
     this.deps.emit({ v: 1, type: 'turn-error', turnId, message });
     this.emitIdle();
@@ -1269,6 +1355,7 @@ export class AgentLoop {
       type: 'context-usage',
       promptTokens: usage.promptTokens,
       estimated: usage.estimated,
+      ...(usage.appearsClamped === true ? { appearsClamped: true as const } : {}),
     });
   }
 }

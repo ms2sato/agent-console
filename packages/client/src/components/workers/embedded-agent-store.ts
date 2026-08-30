@@ -82,6 +82,21 @@ export type EmbeddedAgentChatEntry =
    * reported. Nothing errored here; a process went away.
    */
   | { key: string; kind: 'turn-interrupted'; turnId: string }
+  /**
+   * Window drift, signal 2: a reading the provider appears to have clamped to
+   * its own input limit.
+   *
+   * Derived from the `context-usage` event's `appearsClamped`, NOT a new
+   * persisted event kind -- the transcript row is a client-side rendering
+   * decision, and the wire carries only the annotation on the reading.
+   *
+   * It exists because the usage bar alone is not a surface for this. When
+   * this signal fires there is no compaction and therefore no boundary line;
+   * the bar is 2px of hatching whose meaning lives in a tooltip, so without
+   * this row the quietest failure mode -- a provider silently dropping input
+   * -- would have the quietest presentation.
+   */
+  | { key: string; kind: 'window-clamp'; promptTokens: number }
   | {
       key: string;
       kind: 'context-compacted';
@@ -90,6 +105,13 @@ export type EmbeddedAgentChatEntry =
       /** See the wire event's doc comment: how much context this compaction consumed and produced. */
       preTokens?: number;
       postTokens?: number;
+      /**
+       * The input limit the PROVIDER named, when this compaction was forced by
+       * an over-window rejection that stated one. Their number, not ours --
+       * contrast `appearsClamped` on a usage reading, which is our own
+       * judgement and therefore carries none.
+       */
+      providerStatedWindowTokens?: number;
     }
   /**
    * LEGACY, retained deliberately (#1401): no engine emits `context-handoff`
@@ -134,6 +156,19 @@ export type EmbeddedAgentChatEntry =
 export interface EmbeddedAgentContextUsage {
   promptTokens: number;
   estimated: boolean;
+  /**
+   * Present only when this reading bears every mark of having been clamped by
+   * the provider to its own input limit, rather than measuring the
+   * conversation. OUR inference from a signature, never something the
+   * provider said -- which is why it carries no number: the inferred cap IS
+   * `promptTokens`, and re-sending it would put the same value on the same
+   * reading twice.
+   *
+   * Three-valued by absence: missing means "not inferred, or a reading from
+   * before this existed". There is no `false` -- no consumer needs to assert
+   * that a reading was checked and found honest.
+   */
+  appearsClamped?: true;
 }
 
 export interface EmbeddedAgentSnapshot {
@@ -366,6 +401,20 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   // Transcript Restore (#1123 / #1205) bookkeeping.
   private restoreRepairRenderedThisLoad = false;
+  /**
+   * Whether the PREVIOUS reading folded into the currently-displayed
+   * transcript was clamp-flagged, which is what makes the clamp row
+   * edge-triggered.
+   *
+   * DISPLAY-CONTENT state, and deliberately not read off
+   * `snapshot.contextUsage`. That field is WORKER state -- how full the
+   * model's context is, which a pruned display buffer does not shrink -- so
+   * it correctly survives a fresh load, and deriving the edge from it meant
+   * a replayed clamp found the flag already set and rendered no row. The
+   * edge is over the sequence being DISPLAYED, so its memory has to be wiped
+   * whenever that display is (see `resetChatState`).
+   */
+  private lastReadingClamped = false;
 
   // Memory management (parity with terminal-store, minus the LRU cap -- the
   // number of concurrently mounted embedded-agent tabs is expected to be
@@ -866,6 +915,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // written via a separate `this.patch()` at the caller -- see this
     // function's own doc comment above for why (coherency: one publish per
     // epoch reset, not two).
+    // The clamp row's edge state is DISPLAY-CONTENT by both tests
+    // above, so it belongs in the unconditional part of this reset:
+    //   1. beginEpochReset -- the transcript is rebuilt from scratch, so the
+    //      edge must be re-derivable from the replay.
+    //   2. same-epoch fresh load -- nothing re-declares this, and nothing
+    //      needs to: unlike restoreFailed, it is not a declaration awaiting
+    //      re-issue but a fact about the row sequence, and the fresh payload
+    //      carries that sequence. Left set, the first replayed clamp reads as
+    //      a continuation of a condition whose row no longer exists.
+    this.lastReadingClamped = false;
     this.patch({
       entries: [],
       restoring: false,
@@ -1173,9 +1232,39 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // will ever arrive at this point, so close all open thinking entries.
         this.closeAllOpenThinking();
         return true;
-      case 'context-usage':
-        this.patch({ contextUsage: { promptTokens: event.promptTokens, estimated: event.estimated } });
-        return false; // not a chat row
+      case 'context-usage': {
+        // Edge-triggered: a provider that keeps clamping emits a flagged
+        // reading every turn, and one row per turn would bury the transcript
+        // it is trying to annotate. Replay derives the same rows in the same
+        // places, because it walks the same sequence.
+        const isClamped = event.appearsClamped === true;
+        const pushed = isClamped && !this.lastReadingClamped;
+        this.lastReadingClamped = isClamped;
+        if (pushed) {
+          this.pushEntry({
+            key: `window-clamp-${this.entryKeyCounter++}`,
+            kind: 'window-clamp',
+            promptTokens: event.promptTokens,
+          });
+        }
+        this.patch({
+          contextUsage: {
+            promptTokens: event.promptTokens,
+            estimated: event.estimated,
+            // Presence, never truthiness: absent means "not inferred, or a
+            // row from before the field existed", and the snapshot type has
+            // no `false` to collapse those two into.
+            ...(event.appearsClamped === true ? { appearsClamped: true as const } : {}),
+          },
+        });
+        // The contract is "did the ENTRIES array change", which drives the
+        // caller's identity refresh of the transcript list. A reading that
+        // pushed no row changed no entries, and every turn produces one --
+        // reporting a mutation here would re-publish the list each time for
+        // nothing. The snapshot's own update is already published by
+        // `patch()`, so the usage bar refreshes either way.
+        return pushed;
+      }
       case 'context-compacted':
         this.pushEntry({
           key: `context-compacted-${this.entryKeyCounter++}`,
@@ -1184,6 +1273,9 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           ...(event.summary !== undefined ? { summary: event.summary } : {}),
           ...(event.preTokens !== undefined ? { preTokens: event.preTokens } : {}),
           ...(event.postTokens !== undefined ? { postTokens: event.postTokens } : {}),
+          ...(event.providerStatedWindowTokens !== undefined
+            ? { providerStatedWindowTokens: event.providerStatedWindowTokens }
+            : {}),
         });
         return true;
       case 'context-handoff':

@@ -898,4 +898,52 @@ describe('AgentLoop — the provider error outcome carries structure inward', ()
     expect(await run(overflow)).toContain('context-compacted');
     expect(await run(unrelated)).not.toContain('context-compacted');
   });
+
+  /**
+   * The same structure-gating, carried through to the drift annotation the
+   * turn-error now may acquire. An edge proxy rejecting on body size returns
+   * HTML, so no envelope reaches us and `detail` is undefined -- the row the
+   * classifier's "absence is a verdict" paragraph exists to refuse.
+   *
+   * The fixture's message carries a number on purpose. Without one, a build
+   * that searched prose instead of consulting the classifier would find
+   * nothing here and this case would hold for a reason unrelated to the gate
+   * it names. Measured: replacing the extraction with a loose `/(\d{4,})/`
+   * over `detail?.message ?? message` -- the shape a prose-searching build
+   * would take, falling back to the composed line when no envelope arrived --
+   * fails exactly this case and nothing else in this file.
+   */
+  it('leaves a turn-error untouched when the failure carried no envelope at all', async () => {
+    const edgeProxy = new ProviderError(
+      'provider responded with HTTP 400: <html>error code: 1010</html>',
+      { retryable: false, status: 400 },
+    );
+    const events: EmbeddedAgentEvent[] = [];
+    const adapter: ProviderAdapter = {
+      async *run(): AsyncIterable<ProviderEvent> {
+        throw edgeProxy;
+      },
+    };
+    const loop = new AgentLoop({
+      model: 'm',
+      tools: [],
+      executor: { async listTools() { return []; }, async callTool() { return { ok: true, result: '' }; } },
+      emit: (e: EmbeddedAgentEvent) => events.push(e),
+      systemPrompt: 'S',
+      maxToolIterations: 25,
+      sleep: async () => {},
+      reassembleSystemPrompt: async () => 'S',
+      loadCompactionPrompt: async () => 'P',
+      // Large enough that any ungated annotation would read this as an
+      // over-declaration and fire.
+      compaction: { auto: false, contextWindowTokens: 1_000_000 },
+      adapter,
+    } satisfies AgentLoopDeps);
+
+    await loop.runTurn('t', 'q');
+
+    expect(events.find((e) => e.type === 'turn-error')).toMatchObject({
+      message: 'provider responded with HTTP 400: <html>error code: 1010</html>',
+    });
+  });
 });

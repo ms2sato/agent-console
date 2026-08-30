@@ -426,7 +426,11 @@ export function EmbeddedAgentWorkerView({
           item.kind === 'working-group' ? (
             <WorkingAccordion key={item.group.entries[0].key} group={item.group} />
           ) : (
-            <ChatEntryRow key={item.entry.key} entry={item.entry} />
+            <ChatEntryRow
+              key={item.entry.key}
+              entry={item.entry}
+              contextWindowTokens={contextWindowTokens}
+            />
           ),
         )}
       </div>
@@ -733,9 +737,16 @@ function NotificationRow({ entry }: { entry: NotificationEntry }) {
 
 interface ChatEntryRowProps {
   entry: OutsideEntry;
+  /**
+   * The declared window, for the rows that exist to contradict it. Passed in
+   * rather than read from the entry because it is a property of the agent
+   * definition, not of the moment the row records -- and shipping it on the
+   * event would put one number on two routes that can then disagree.
+   */
+  contextWindowTokens?: number;
 }
 
-function ChatEntryRow({ entry }: ChatEntryRowProps) {
+function ChatEntryRow({ entry, contextWindowTokens }: ChatEntryRowProps) {
   switch (entry.kind) {
     case 'user-message':
       if (entry.notification) {
@@ -814,13 +825,41 @@ function ChatEntryRow({ entry }: ChatEntryRowProps) {
           Agent process exited{entry.code !== null ? ` (code: ${entry.code})` : ''}.
         </div>
       );
+    case 'window-clamp':
+      // Signal 2 has no compaction behind it, so no boundary line carries
+      // this: without its own row the only surface is 2px of hatching whose
+      // meaning is in a tooltip.
+      return (
+        <div className="text-xs text-amber-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          This turn reported {entry.promptTokens.toLocaleString('en-US')} tokens of input
+          {contextWindowTokens !== undefined
+            ? `, against the ${contextWindowTokens.toLocaleString('en-US')} configured for this agent`
+            : ''}
+          . The reading looks capped at the provider's own limit, so it may be silently dropping
+          input that does not fit{' — '}check this agent's context window setting.
+        </div>
+      );
     case 'context-compacted': {
       // "One line marking the compaction boundary appears in the
       // transcript." A summary, when the engine produced one, hangs off it
       // as a disclosure rather than expanding the line.
       const label = formatCompactionBoundaryLabel(entry.preTokens, entry.postTokens);
+      // When the compaction was forced by a rejection that named the
+      // provider's real input limit, that number is the one thing here the
+      // operator can act on -- their configured window disagrees with it.
+      // Rendered as its own line rather than folded into the label, because
+      // the label describes this compaction while this describes the
+      // configuration that keeps causing them.
+      const statedLimit = entry.providerStatedWindowTokens;
       return (
         <div className="text-sm text-gray-400 bg-slate-800/60 border border-slate-700 rounded px-3 py-2">
+          {statedLimit !== undefined ? (
+            <div className="mb-1 text-xs text-amber-400">
+              The provider states its input limit is {statedLimit.toLocaleString('en-US')} tokens.
+              If this agent declares a larger context window, compaction fires later than
+              intended{' — '}check its context window setting.
+            </div>
+          ) : null}
           {entry.summary !== undefined ? (
             <details>
               <summary className="cursor-pointer text-xs text-gray-400">{label}</summary>

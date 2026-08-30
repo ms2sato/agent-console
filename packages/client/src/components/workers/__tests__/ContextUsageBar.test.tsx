@@ -262,4 +262,90 @@ describe('ContextUsageBar', () => {
       expect(screen.getByRole('progressbar')).toBeTruthy();
     });
   });
+
+  describe('a reading the provider appears to have clamped', () => {
+    /*
+     * Measured reach, recorded by WHICH test failed (standing rule).
+     * Mutations applied to `ContextUsageBar.tsx` and this file re-run:
+     *
+     *   b1  ignore `appearsClamped` in the title (keep the base title)
+     *       -> 1 fail, alone: 'the tooltip names both numbers and says the
+     *          gauge is measured against a window the model does not accept'.
+     *   b2  drop `aria-invalid`
+     *       -> 1 fail, alone: 'marks the gauge invalid for assistive tech'.
+     *   b3  apply the hatch unconditionally
+     *       -> 1 fail, alone: 'an ordinary reading is NOT hatched'. Without
+     *          that negative the hatch assertion passes in both worlds --
+     *          this pair is the whole distinction.
+     *
+     * Every fixture below sets `contextWindowTokens`, because the predicate
+     * that produces the flag cannot fire without a declaration, and a case
+     * lacking one would be asserting about a state the system cannot reach.
+     */
+    it('the tooltip says the gauge is measured against a window the model does not accept, and names the action', () => {
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1_000_000}
+          contextUsage={{ promptTokens: 196_608, estimated: false, appearsClamped: true }}
+          threshold={0.8}
+        />,
+      );
+
+      const title = screen.getByRole('progressbar').getAttribute('title') ?? '';
+      // Deliberately NOT asserting the two numbers here. The base tooltip
+      // already contains both, so `toContain('196608')` passes whether or not
+      // the clamp clause exists -- it would be an assertion satisfied by a
+      // condition other than the one this case is named for. Measured: with
+      // the numbers asserted, mutating the clause away still left them
+      // present and only the phrase assertions failed.
+      expect(title).toContain('capped at the provider');
+      // And what to do about it: a warning naming no action is noise.
+      expect(title).toContain('context window setting');
+      // The base reading survives ahead of the clause rather than being
+      // replaced by it.
+      expect(title).toContain('196608 / 1000000');
+    });
+
+    it('marks the gauge invalid for assistive tech', () => {
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1_000_000}
+          contextUsage={{ promptTokens: 196_608, estimated: false, appearsClamped: true }}
+          threshold={0.8}
+        />,
+      );
+
+      expect(screen.getByRole('progressbar').getAttribute('aria-invalid')).toBe('true');
+    });
+
+    it('hatches the fill so its length is not read literally', () => {
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1_000_000}
+          contextUsage={{ promptTokens: 196_608, estimated: false, appearsClamped: true }}
+          threshold={0.8}
+        />,
+      );
+
+      const fill = screen.getByRole('progressbar').querySelector('div');
+      expect(fill?.style.backgroundImage).toContain('repeating-linear-gradient');
+    });
+
+    it('an ordinary reading is NOT hatched, is not marked invalid, and says nothing about a cap', () => {
+      // The negative half. Without it the three assertions above hold in both
+      // worlds, since an unconditional hatch satisfies every one of them.
+      render(
+        <ContextUsageBar
+          contextWindowTokens={1_000_000}
+          contextUsage={{ promptTokens: 196_608, estimated: false }}
+          threshold={0.8}
+        />,
+      );
+
+      const bar = screen.getByRole('progressbar');
+      expect(bar.getAttribute('aria-invalid')).toBeNull();
+      expect(bar.getAttribute('title') ?? '').not.toContain('capped');
+      expect(bar.querySelector('div')?.style.backgroundImage ?? '').toBe('');
+    });
+  });
 });
