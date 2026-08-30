@@ -68,6 +68,30 @@ const SUBPROCESS_TIMEOUT_MS = 15_000;
  */
 const HOSTILE_ARG = '--pin-import-safety-hostile-arg-8f3a2b1c';
 
+/**
+ * `@anthropic-ai/claude-agent-sdk`'s own vendored bundle
+ * (`packages/embedded-agent/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs`)
+ * contains a bare, unconditional `process.env.NoDefaultCurrentDirectoryInExePath="1"`
+ * at module scope -- confirmed by grepping the bundle directly. Every file
+ * that imports the SDK or `sdk-engine.js` (which imports the SDK) sets this
+ * key merely by being imported; no restructuring on this repo's side can
+ * prevent it, because the statement lives in third-party code, not ours.
+ *
+ * This does not reproduce locally because most dev shells already carry
+ * this key ambiently (set by whatever earlier `child_process` use touched
+ * it first), so a pre-fix `envBefore` already contains it and it is never
+ * seen as "added". A clean CI runner starts without it, which is why this
+ * surfaced there and not in local runs -- reproduced locally by unsetting
+ * the key before importing: `env -u NoDefaultCurrentDirectoryInExePath bun
+ * -e "await import('./packages/embedded-agent/src/sdk-engine.js')"` adds it
+ * even with zero project code executing.
+ *
+ * Excluded here as a known, verified-benign third-party runtime artifact --
+ * not a smoke-script defect. Keep this set to exactly the keys measured
+ * this way; it is not a general escape hatch for future findings.
+ */
+const KNOWN_BENIGN_ENV_KEYS = new Set(['NoDefaultCurrentDirectoryInExePath']);
+
 function discoverSmokeFiles(): string[] {
   const smokeDir = path.join(import.meta.dir, '..');
   const glob = new Glob('*.{ts,mjs}');
@@ -135,6 +159,16 @@ async function importInSubprocess(absPath: string, extraArgv: string[] = []): Pr
   let report: ImportResult['report'] = null;
   try {
     report = JSON.parse(reportLine);
+    if (report) {
+      // Strip known-benign third-party side effects (see
+      // KNOWN_BENIGN_ENV_KEYS above) before this report is asserted on --
+      // the whole point of route (b) is attributing a mutation to THIS
+      // file's own code, and a key every SDK-importing file sets
+      // identically is not that.
+      report.envAdded = report.envAdded.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k));
+      report.envRemoved = report.envRemoved.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k));
+      report.envChanged = report.envChanged.filter((k) => !KNOWN_BENIGN_ENV_KEYS.has(k));
+    }
   } catch {
     report = null;
   }
