@@ -268,6 +268,35 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().entries).toHaveLength(0);
   });
 
+  it('re-renders the clamp row after a fresh history load wipes the transcript', async () => {
+    // The edge's memory is DISPLAY state and has to be wiped with the
+    // display. Derived from `snapshot.contextUsage` it was not: that field is
+    // worker state and correctly survives a fresh load, so the replayed clamp
+    // read the flag as already set and rendered nothing -- a transcript
+    // rebuilt without the row that explains it.
+    const instance = getOrCreateEmbeddedAgentWorker('s3cl', 'w3cl');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const clamp = ndjson({
+      v: 1,
+      type: 'context-usage',
+      promptTokens: 196_608,
+      estimated: false,
+      appearsClamped: true,
+    });
+    ws!.simulateMessage(historyMessage(clamp, clamp.length));
+    await flush();
+    expect(instance.getSnapshot().entries.filter((e) => e.kind === 'window-clamp')).toHaveLength(1);
+
+    // A fresh load: `startOffset` differs from the requested offset, so the
+    // store wipes the transcript and rebuilds it from what follows.
+    ws!.simulateMessage(historyMessage(clamp, clamp.length, 999));
+    await flush();
+
+    expect(instance.getSnapshot().entries.filter((e) => e.kind === 'window-clamp')).toHaveLength(1);
+  });
+
   it('an ordinary context-usage reading does not refresh the transcript list', async () => {
     // `foldLine`'s boolean means "the entries array changed", and it drives
     // the caller's identity refresh of the list. A reading arrives every turn

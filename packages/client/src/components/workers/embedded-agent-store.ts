@@ -401,6 +401,20 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
 
   // Transcript Restore (#1123 / #1205) bookkeeping.
   private restoreRepairRenderedThisLoad = false;
+  /**
+   * Whether the PREVIOUS reading folded into the currently-displayed
+   * transcript was clamp-flagged, which is what makes the clamp row
+   * edge-triggered.
+   *
+   * DISPLAY-CONTENT state, and deliberately not read off
+   * `snapshot.contextUsage`. That field is WORKER state -- how full the
+   * model's context is, which a pruned display buffer does not shrink -- so
+   * it correctly survives a fresh load, and deriving the edge from it meant
+   * a replayed clamp found the flag already set and rendered no row. The
+   * edge is over the sequence being DISPLAYED, so its memory has to be wiped
+   * whenever that display is (see `resetChatState`).
+   */
+  private lastReadingClamped = false;
 
   // Memory management (parity with terminal-store, minus the LRU cap -- the
   // number of concurrently mounted embedded-agent tabs is expected to be
@@ -901,6 +915,16 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // written via a separate `this.patch()` at the caller -- see this
     // function's own doc comment above for why (coherency: one publish per
     // epoch reset, not two).
+    // The clamp row's edge state is DISPLAY-CONTENT by both tests
+    // above, so it belongs in the unconditional part of this reset:
+    //   1. beginEpochReset -- the transcript is rebuilt from scratch, so the
+    //      edge must be re-derivable from the replay.
+    //   2. same-epoch fresh load -- nothing re-declares this, and nothing
+    //      needs to: unlike restoreFailed, it is not a declaration awaiting
+    //      re-issue but a fact about the row sequence, and the fresh payload
+    //      carries that sequence. Left set, the first replayed clamp reads as
+    //      a continuation of a condition whose row no longer exists.
+    this.lastReadingClamped = false;
     this.patch({
       entries: [],
       restoring: false,
@@ -1213,8 +1237,9 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // reading every turn, and one row per turn would bury the transcript
         // it is trying to annotate. Replay derives the same rows in the same
         // places, because it walks the same sequence.
-        const wasClamped = this.snapshot.contextUsage?.appearsClamped === true;
-        const pushed = event.appearsClamped === true && !wasClamped;
+        const isClamped = event.appearsClamped === true;
+        const pushed = isClamped && !this.lastReadingClamped;
+        this.lastReadingClamped = isClamped;
         if (pushed) {
           this.pushEntry({
             key: `window-clamp-${this.entryKeyCounter++}`,
