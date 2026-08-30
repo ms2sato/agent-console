@@ -2057,6 +2057,64 @@ describe('embedded-agent-store — Transcript Restore failure form (#1449)', () 
     expect(snapshot.restoreFailed).toBe(true);
     expect(snapshot.preservation).toBeUndefined();
   });
+
+  it('preserves a declared restore failure across a same-epoch fresh load (server prune / resync), unlike a genuine epoch bump', async () => {
+    // Regression pin for a CodeRabbit-caught defect (Issue #1447 stage 4,
+    // upgraded to MEDIUM): resetChatState() is shared by beginEpochReset (a
+    // genuine incarnation change) AND applyBytes's same-epoch `isFresh`
+    // branch (requestHistory() fires on EVERY WebSocket reconnect --
+    // including a plain network blip or tab wake -- not just a worker
+    // restart). resetChatState() used to unconditionally clear
+    // restoreFailed/preservation, so a PRIMARY-route (in-band) restore
+    // failure that was correctly displayed silently lost its banner on the
+    // very next ordinary reconnect, even though the worker never restarted
+    // and the divergence was still real -- defeating C2 ("a declared
+    // divergence must not silently disappear"). restoreFailed/preservation
+    // must only be reset in beginEpochReset, where the incarnation has
+    // actually changed, mirroring the activityState separation pinned by
+    // "preserves an active activityState across a same-epoch fresh load"
+    // above.
+    const instance = getOrCreateEmbeddedAgentWorker('f5', 'w5');
+    const ws1 = MockWebSocket.getLastInstance();
+    ws1!.simulateOpen();
+
+    // Establish epoch 1 with a PRIMARY-route (in-band) restore failure.
+    const initialData = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'first' });
+    ws1!.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+    await flush();
+    ws1!.simulateMessage(restoreFailureMessage(1, true, 'in-band'));
+    await flush();
+    expect(instance.getSnapshot().restoreFailed).toBe(true);
+    expect(instance.getSnapshot().preservation).toBe('in-band');
+
+    // Plain reconnect (no epoch bump): lastOffset carries over, so the
+    // client requests fromOffset: initialData.length.
+    instance.restart();
+    const ws2 = MockWebSocket.getLastInstance();
+    expect(ws2).not.toBe(ws1);
+    ws2!.simulateOpen();
+    expect(lastSentMessages(ws2!)).toContainEqual({
+      type: 'request-history',
+      fromOffset: initialData.length,
+    });
+
+    // The server responds with the SAME epoch (no restart) but pruned its
+    // buffer, so it cannot resume from the requested offset and instead
+    // sends a fresh payload starting at 0. This hits applyBytes's `isFresh`
+    // branch (startOffset !== requestedFromOffset) WITHOUT bumping the
+    // epoch -- acceptEpoch short-circuits to true for `epoch === this.epoch`
+    // and never calls beginEpochReset here. A `history` response never
+    // carries a fresh `restore-info`, so nothing is coming to re-declare
+    // the failure.
+    const prunedData = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'second (post-prune)' });
+    ws2!.simulateMessage(historyMessage(prunedData, prunedData.length, 0, 1));
+    await flush();
+
+    // The worker incarnation never changed -- the declared divergence must
+    // survive this reset unchanged.
+    expect(instance.getSnapshot().restoreFailed).toBe(true);
+    expect(instance.getSnapshot().preservation).toBe('in-band');
+  });
 });
 
 describe('embedded-agent-store — Transcript Restore stage 4 markers (#1447)', () => {

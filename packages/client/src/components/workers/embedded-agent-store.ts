@@ -734,7 +734,18 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // affordance for a worker that no longer exists. Same discipline
     // activityState already carries here (CodeRabbit review, cross-referencing
     // the same-day #1480 fix for activityState in this same function).
-    this.patch({ activityState: 'unknown', currentExit: null });
+    // restoreFailed/preservation (#1447 stage 4 R2/C2 fix, CodeRabbit review)
+    // belong here too, and for the SAME reason activityState does: only a
+    // genuine epoch bump means a new incarnation's own restore-info is
+    // coming to re-declare (or not) the failure before any window where a
+    // stale value could be read. See resetChatState's doc comment for the
+    // full two-caller argument.
+    this.patch({
+      activityState: 'unknown',
+      currentExit: null,
+      restoreFailed: false,
+      preservation: undefined,
+    });
     this.epoch = newEpoch;
     this.lastOffset = 0;
     // Start (or restart, on a second epoch bump before the first resync
@@ -766,36 +777,54 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // pending that message. Also allows a redelivered restore-repair note to
     // re-render against the wiped list.
     this.restoreRepairRenderedThisLoad = false;
-    // restoreFailed/preservation (#1449, #1447 stage 4) reset alongside the
-    // rest of this epoch's restore state. Only the FALLBACK restore-failure
-    // route bumps the epoch (resetWorkerOutput mints a fresh one) and
-    // therefore reaches this function at all -- R1's PRIMARY (in-band) route
-    // preserves the epoch, so a primary-route failure form is applied via
-    // `applyRestoreFailure` directly, without `resetChatState` ever running.
-    // On the fallback route, this reset always runs before the new
-    // incarnation's own restore-info (success or failure) arrives and
-    // re-declares it -- there is no window where a stale `true` could be
-    // read as describing the new incarnation.
-    // Deliberately does NOT touch activityState. This function is shared by
-    // TWO call sites with different semantics: beginEpochReset (a genuine
-    // incarnation change) and applyBytes's same-epoch `isFresh` branch (the
-    // server pruned/evicted its buffer, or a resync's fresh load -- the SAME
-    // live worker incarnation, possibly mid-turn). Every field reset here is
-    // DISPLAY-CONTENT state (what the chat view currently shows), which is
-    // legitimately rebuilt on a same-epoch fresh load too. activityState is
-    // WORKER-LIVENESS state (is the process alive, what is it doing) --
-    // resetting it here would wrongly clear a genuinely-active worker's
-    // state on a same-epoch fresh load, wrongly releasing the composer's
-    // send-gate mid-turn. It is reset separately, only in beginEpochReset,
-    // where the incarnation has actually changed. When adding a new field to
-    // this function, ask which of the two semantics it belongs to.
+    // This function is shared by TWO call sites with different semantics,
+    // and every field reset here must be re-justified against BOTH of them:
+    //
+    //   1. beginEpochReset -- a genuine incarnation change (the worker
+    //      restarted server-side, or the fallback restore-failure route
+    //      minted a fresh epoch). The next incarnation's own restore-info
+    //      (success or failure) is guaranteed to arrive and re-declare
+    //      whatever it needs to, before any window where a stale value
+    //      could be read as describing the NEW incarnation.
+    //   2. applyBytes's same-epoch `isFresh` branch -- the server
+    //      pruned/evicted its buffer, or a resync's fresh load
+    //      (`requestHistory()` fires on EVERY WebSocket reconnect,
+    //      including a plain network blip or tab wake, not just a worker
+    //      restart). The SAME live worker incarnation, possibly mid-turn.
+    //      No new restore-info is coming -- a `history` response never
+    //      carries one -- so nothing will ever re-declare a field cleared
+    //      here.
+    //
+    // Fields legitimately rebuilt by BOTH call sites are DISPLAY-CONTENT
+    // state (what the chat view currently shows, entirely re-derivable from
+    // the fresh payload plus whatever re-declaration follows): entries,
+    // restoring, restoredMessageCount, sdkResumed.
+    //
+    // Fields that describe something call site 2 is powerless to
+    // re-declare must be excluded from this patch() and reset ONLY in
+    // beginEpochReset, alongside activityState:
+    //   - activityState (worker-LIVENESS state -- is the process alive,
+    //     what is it doing) -- resetting it here would wrongly clear a
+    //     genuinely-active worker's state on a same-epoch fresh load,
+    //     wrongly releasing the composer's send-gate mid-turn.
+    //   - restoreFailed/preservation (#1449, #1447 stage 4 R2/C2 -- a
+    //     declared divergence must not silently disappear) -- these
+    //     describe the CURRENT incarnation's restore outcome. On the
+    //     PRIMARY (in-band) route the failure is declared without ever
+    //     bumping the epoch (see `applyRestoreFailure`), so a same-epoch
+    //     fresh load is exactly the case where a genuinely-still-true
+    //     failure would otherwise be wiped with nothing left to
+    //     re-declare it -- silently dropping the banner on the next
+    //     ordinary reconnect even though the worker never restarted.
+    //
+    // When adding a new field to this function, ask which of the two
+    // semantics above it belongs to, for EACH call site -- not just the one
+    // you happened to be thinking about when you wrote the code.
     this.patch({
       entries: [],
       restoring: false,
       restoredMessageCount: null,
       sdkResumed: undefined,
-      restoreFailed: false,
-      preservation: undefined,
     });
   }
 
