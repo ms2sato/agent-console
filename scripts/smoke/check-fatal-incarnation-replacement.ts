@@ -75,16 +75,48 @@
  *   1  an assertion failed (the smoke ran and the system is wrong)
  *   2  bad usage / the smoke could not run (boot failure, no worker tree, ...)
  */
-import { mkdirSync, rmSync, unlinkSync } from 'node:fs';
+import { cpSync, mkdirSync, rmSync, unlinkSync } from 'node:fs';
 // Type-only, so it is erased at runtime and does not load the server modules
 // before the env vars below are set (the value imports stay dynamic, further
 // down, for exactly that reason).
 import type { McpDependencies } from '../../packages/server/src/mcp/mcp-server.ts';
+import { Glob } from 'bun';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 const EXPECT_BRICK = process.argv.includes('--expect-brick');
 const SECRET_WORD = 'WOMBAT-3312';
+
+/**
+ * Copies every worker-output file (`outputs/<sessionId>/<workerId>.log` and
+ * any rotated segment/compressed sibling) out of a disposable
+ * AGENT_CONSOLE_HOME into a stable, run-scoped capture directory, BEFORE
+ * the disposable home is removed (Issue #1468). An observed-but-uncaptured
+ * reader shape is destroyed the moment a run ends unless something copies
+ * the raw NDJSON out first — and the shape that prompted this occurred in
+ * only 1 of 6 real runs, so losing it again is not "re-run to retrieve
+ * it", it is a lost occurrence with no second chance.
+ *
+ * Exported so `check:fatal-incarnation-replacement-artifact-capture` can
+ * exercise this exact function directly against a synthetic disposable
+ * home, without a billed run — see that script's own header for why a
+ * billed smoke run is not the right instrument to verify this with.
+ *
+ * @param disposableHome the AGENT_CONSOLE_HOME being torn down
+ * @returns the capture directory if anything was captured, otherwise `null`
+ */
+export function captureWorkerNdjson(disposableHome: string): string | null {
+  const captureDir = path.join(os.tmpdir(), 'agent-console-1414-captures', path.basename(disposableHome));
+  const glob = new Glob('**/outputs/**/*');
+  let capturedAny = false;
+  for (const rel of glob.scanSync({ cwd: disposableHome, onlyFiles: true })) {
+    const dest = path.join(captureDir, rel);
+    mkdirSync(path.dirname(dest), { recursive: true });
+    cpSync(path.join(disposableHome, rel), dest);
+    capturedAny = true;
+  }
+  return capturedAny ? captureDir : null;
+}
 
 /** A turn's worth of patience: real SDK turns are seconds, not milliseconds. */
 const TURN_TIMEOUT_MS = 120_000;
@@ -714,6 +746,17 @@ async function main(): Promise<void> {
     }
     server.stop(true);
     await shutdownAppContext(ctx);
+    // Capture strictly BEFORE removal, and wrapped so a capture failure (an
+    // unwritable destination, disk full) can never break the cleanup
+    // guarantee that follows it or change this smoke's own exit code.
+    try {
+      const captureDir = captureWorkerNdjson(disposableHome);
+      if (captureDir) {
+        console.log(`==> worker NDJSON captured to: ${captureDir}`);
+      }
+    } catch (err) {
+      console.error(`==> worker NDJSON capture failed (non-fatal, does not affect exit code): ${err}`);
+    }
     try {
       rmSync(disposableHome, { recursive: true, force: true });
     } catch {
@@ -725,12 +768,19 @@ async function main(): Promise<void> {
   process.exit(failures === 0 ? 0 : 1);
 }
 
-main().catch((err) => {
-  if (err instanceof BailError) {
-    console.error(`\nCOULD NOT RUN: ${err.message}`);
+// Guarded so importing `captureWorkerNdjson` (the artifact-capture
+// verification script does exactly this, deliberately, to exercise the
+// real function without a billed run) does not also fire this billed
+// `main()` as an import-time side effect -- `import.meta.main` is false
+// for an importer, true only when this file is the entry point.
+if (import.meta.main) {
+  main().catch((err) => {
+    if (err instanceof BailError) {
+      console.error(`\nCOULD NOT RUN: ${err.message}`);
+      process.exit(2);
+    }
+    console.error(err);
+    console.error('\nCOULD NOT RUN: the smoke threw before it could finish');
     process.exit(2);
-  }
-  console.error(err);
-  console.error('\nCOULD NOT RUN: the smoke threw before it could finish');
-  process.exit(2);
-});
+  });
+}

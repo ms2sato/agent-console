@@ -24,6 +24,7 @@
     "check:artifact-server-story-e2e": "bun scripts/smoke/check-artifact-server-story-e2e.mjs",
     "check:pty-fd-leak": "bun scripts/smoke/check-pty-fd-leak.ts",
     "check:fatal-incarnation-replacement": "bun scripts/smoke/check-fatal-incarnation-replacement.ts",
+    "check:fatal-incarnation-replacement-artifact-capture": "bun scripts/smoke/check-fatal-incarnation-replacement-artifact-capture.ts",
     "check:embedded-agent-idle-eviction": "bun scripts/smoke/check-embedded-agent-idle-eviction.ts",
     "check:restore-boundary-usage-seed": "bun scripts/smoke/check-restore-boundary-usage-seed.ts",
     "check:pty-early-output": "bun scripts/smoke/check-pty-early-output.ts",
