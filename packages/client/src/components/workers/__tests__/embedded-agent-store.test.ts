@@ -413,6 +413,80 @@ describe('embedded-agent-store', () => {
     expect(entry.reason).toBeUndefined();
   });
 
+  describe('currentExit (#1455) -- single-writer current-state field', () => {
+    it('initializes to null (no affordance) before any exited/ready event has been observed', () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-init', 'w5c-init');
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+
+    it('sets currentExit from the exited event, verbatim including an absent reason', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-set', 'w5c-set');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'exited', code: 3 });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const currentExit = instance.getSnapshot().currentExit;
+      expect(currentExit).not.toBeNull();
+      expect(currentExit?.code).toBe(3);
+      expect(Object.prototype.hasOwnProperty.call(currentExit, 'reason')).toBe(false);
+    });
+
+    it('sets currentExit with reason carried through verbatim (e.g. evicted)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-evicted', 'w5c-evicted');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson({ v: 1, type: 'exited', code: 0, reason: 'evicted' });
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 0, reason: 'evicted' });
+    });
+
+    it('clears currentExit back to null on the next `ready` event (fresh incarnation)', async () => {
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-clear', 'w5c-clear');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const exitedData = ndjson({ v: 1, type: 'exited', code: 1 });
+      ws!.simulateMessage(historyMessage(exitedData, exitedData.length));
+      await flush();
+      expect(instance.getSnapshot().currentExit).not.toBeNull();
+
+      const readyData = ndjson({ v: 1, type: 'ready' });
+      ws!.simulateMessage(outputMessage(readyData, exitedData.length + readyData.length));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+
+    it('reflects only the LATEST exited event when several exited rows are replayed, not any accumulation of the historical rows', async () => {
+      // #1455 regression pin at the store layer: currentExit must be a
+      // current-state overwrite, never a derivation from `entries`. Two
+      // historical exits followed by a fresh 'ready' must leave
+      // currentExit === null, exactly as if only one exit had ever
+      // happened -- the count of historical `exited` rows is irrelevant.
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-multi', 'w5c-multi');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      const data = ndjson(
+        { v: 1, type: 'exited', code: 1 },
+        { v: 1, type: 'exited', code: 2 },
+        { v: 1, type: 'ready' },
+      );
+      ws!.simulateMessage(historyMessage(data, data.length));
+      await flush();
+
+      const entries = instance.getSnapshot().entries;
+      expect(entries.filter((e) => e.kind === 'exited')).toHaveLength(2);
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
+  });
+
   it('folds a user-message server-authored event from replayed history', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s5b', 'w5b');
     const ws = MockWebSocket.getLastInstance();

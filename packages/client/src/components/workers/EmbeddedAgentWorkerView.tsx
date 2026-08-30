@@ -152,6 +152,7 @@ export function EmbeddedAgentWorkerView({
     restoredMessageCount,
     sdkResumed,
     restoreFailed,
+    currentExit,
     sendUserMessage,
     cancel,
     restart,
@@ -376,10 +377,34 @@ export function EmbeddedAgentWorkerView({
           item.kind === 'working-group' ? (
             <WorkingAccordion key={item.group.entries[0].key} group={item.group} />
           ) : (
-            <ChatEntryRow key={item.entry.key} entry={item.entry} onRestart={restart} />
+            <ChatEntryRow key={item.entry.key} entry={item.entry} />
           ),
         )}
       </div>
+
+      {/* R1 (#1455): the Restart affordance for a currently-exited worker,
+          driven by CURRENT state (`currentExit`), never by scanning the
+          transcript for the last `exited` row -- see the store's
+          `currentExit` doc comment. A sibling of the transcript, not a
+          per-row control: every `exited` row above is a pure historical
+          fact with no affordance of its own, evicted or not, so there is
+          exactly one place this action can ever render, and it renders
+          only while the worker is ACTUALLY in this state right now. An
+          evicted worker gets no element here either -- its row already
+          says sending a message resumes it, so a duplicate manual action
+          would be redundant. */}
+      {currentExit !== null && currentExit.reason !== 'evicted' && (
+        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-slate-800/60 border-t border-slate-700 text-sm text-gray-400 shrink-0">
+          <span>Agent process exited{currentExit.code !== null ? ` (code: ${currentExit.code})` : ''}.</span>
+          <button
+            onClick={restart}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-gray-200"
+          >
+            <RefreshIcon className="w-3.5 h-3.5" />
+            Restart
+          </button>
+        </div>
+      )}
 
       {/* Compaction chrome: the usage bar and the auto-compaction toggle --
           siblings inserted between the transcript and MessagePanel, never
@@ -659,10 +684,9 @@ function NotificationRow({ entry }: { entry: NotificationEntry }) {
 
 interface ChatEntryRowProps {
   entry: OutsideEntry;
-  onRestart: () => void;
 }
 
-function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
+function ChatEntryRow({ entry }: ChatEntryRowProps) {
   switch (entry.kind) {
     case 'user-message':
       if (entry.notification) {
@@ -728,16 +752,17 @@ function ChatEntryRow({ entry, onRestart }: ChatEntryRowProps) {
           </div>
         );
       }
+      // R1 (#1455): a pure historical fact, structurally -- no interactive
+      // affordance of any kind. The Restart action lives OUTSIDE the
+      // transcript, driven by CURRENT state (`currentExit`), never by which
+      // row happens to be last; see the sibling element in this file's main
+      // render body and the store's `currentExit` doc comment. Rendering an
+      // affordance per row is exactly the bug this Issue removes: every
+      // historical exit accumulated its own live-looking Restart button,
+      // even long after a later restart had superseded it.
       return (
-        <div className="flex items-center gap-3 text-sm text-gray-400 bg-slate-800/60 rounded px-3 py-2">
-          <span>Agent process exited{entry.code !== null ? ` (code: ${entry.code})` : ''}.</span>
-          <button
-            onClick={onRestart}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-slate-700 hover:bg-slate-600 text-gray-200"
-          >
-            <RefreshIcon className="w-3.5 h-3.5" />
-            Restart
-          </button>
+        <div className="text-sm text-gray-400 bg-slate-800/60 rounded px-3 py-2">
+          Agent process exited{entry.code !== null ? ` (code: ${entry.code})` : ''}.
         </div>
       );
     case 'context-compacted': {

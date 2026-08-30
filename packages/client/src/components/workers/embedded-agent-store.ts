@@ -184,6 +184,32 @@ export interface EmbeddedAgentSnapshot {
    * (#1449)".
    */
   restoreFailed: boolean;
+  /**
+   * R1 (#1455): the worker's CURRENT exit state, independent of any
+   * historical `exited` transcript ROW. Single writer: set from the
+   * `exited` event's own `code`/`reason` in `foldEvent`'s `'exited'` case,
+   * cleared back to `null` by the `'ready'` case (a fresh incarnation
+   * coming up means "no live current exit"). Mirrors the row's own
+   * `reason !== undefined` handling -- absence stays absent, never
+   * normalised to a default reason.
+   *
+   * THREE-VALUED, and `null` is the point: it means "not exited right
+   * now" (either genuinely running, or nothing observed yet this
+   * connection), never "exited for an unknown reason". This is what lets a
+   * consumer distinguish "affordance" (non-null, non-evicted) from
+   * "no affordance" (null, or evicted) WITHOUT scanning `entries` for the
+   * last exit row -- scanning entries is exactly the row-equals-state
+   * conflation that let every historical exit row keep offering a Restart
+   * action even after a later restart superseded it (the bug this field
+   * exists to remove; see EmbeddedAgentWorkerView.tsx's render body for the
+   * consumer).
+   *
+   * Deliberately NOT `AgentActivityState` (`@agent-console/shared`): that
+   * shared type also drives PTY-backed agent workers and has no
+   * exited-with-reason shape -- see design-principles.md "Define types by
+   * what they represent, not where they're used".
+   */
+  currentExit: { code: number | null; reason?: ExitReason } | null;
 }
 
 export interface EmbeddedAgentInstance {
@@ -320,6 +346,7 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
       restoredMessageCount: null,
       sdkResumed: undefined,
       restoreFailed: false,
+      currentExit: null,
     };
     this.appUnsub = appSubscribeImpl((msg) => this.handleAppMessage(msg));
     this.connect();
@@ -889,6 +916,10 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // fold before or after `restore-info` arrives depending on the
         // race. Recognized-but-not-rendered, not an unknown type: no
         // warning.
+        // R1 (#1455): a fresh incarnation coming up means "no live current
+        // exit" -- the single clear point for `currentExit`, mirroring the
+        // single set point in the 'exited' case below.
+        this.patch({ currentExit: null });
         return false;
       case 'state':
         // Activity is driven by the separate WorkerServerMessage {type:
@@ -964,6 +995,15 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
           // `reason` and must stay absent here so the view renders it
           // exactly as it always did.
           ...(event.reason !== undefined ? { reason: event.reason } : {}),
+        });
+        // R1 (#1455): the single set point for `currentExit` -- mirrors the
+        // row's own reason handling above (verbatim, absence included).
+        // Cleared back to null only by the 'ready' case above.
+        this.patch({
+          currentExit: {
+            code: event.code,
+            ...(event.reason !== undefined ? { reason: event.reason } : {}),
+          },
         });
         // Defensive finalize: the process exited while some turn's thinking
         // entry was still open (e.g. a crash mid-turn); no per-turnId signal
