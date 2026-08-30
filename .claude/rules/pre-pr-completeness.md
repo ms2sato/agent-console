@@ -111,7 +111,16 @@ Before opening a PR that introduces a **new skill, script, rule, file type, or c
 
     So the check is unchanged and more urgent, and the forward-compat framing that used to soften it is gone: a newer server talking to an older client no longer degrades field-by-field. What still holds is the part that made the original bug expensive — the failure is silent at both ends, which is why step 2's integration test, not a unit test, is the layer that catches it.
 
-    **Re-derive this paragraph rather than trusting it.** It describes a property of code that a future migration can change again, exactly as #927 changed it once. `grep -c 'v\.object(' packages/shared/src/schemas/*.ts` and the failure branch of `parseMessage` are the two observables; both are a few seconds to read.
+    **Re-derive this paragraph rather than trusting it.** It describes a property of code that a future migration can change again, exactly as #927 changed it once. Two observables, both a few seconds to read:
+
+    ```bash
+    # Every object constructor in the wire schemas, counted by kind.
+    grep -ohE 'v\.[a-zA-Z]*[Oo]bject\(' packages/shared/src/schemas/*.ts | sort | uniq -c
+    ```
+
+    ...and the failure branch of `parseMessage` in `packages/client/src/lib/app-websocket.ts`.
+
+    **Count the constructors present, not the absence of one.** `grep -c 'v\.object('` returning zero is the tempting version and it is not the same claim: it is satisfied by a file that uses some third constructor with third semantics, and by a file that has no schemas left at all. The paragraph above asserts something positive — *these* are the constructors in use — so the check has to enumerate. (This is `workflow.md`'s "cheap refutation" applied to our own documentation: the enumerating form costs the same keystrokes and cannot be vacuously true.)
 
     (Lesson: Sprint 2026-06-30 PR #926 — backend correctly populated `Session.createdByUsername`, the WebSocket message carried it, but `SessionBaseSchema` in `packages/shared/src/schemas/app-server-message.ts` was not updated. valibot stripped the unknown field; the frontend received `undefined`. All unit tests passed because the frontend tests injected the field directly via a mock factory, bypassing the parse path entirely. The bug surfaced only when the owner ran manual Browser QA and noticed the sidebar label was absent. Three hours of cross-layer debugging followed before the schema gap was identified. The agent and the Orchestrator both had approved skipping integration tests with the rationale "derived field, simple shape, unit tests suffice" — a joint judgment failure that this question is meant to prevent. Issue [#927](https://github.com/ms2sato/agent-console/issues/927) — the `v.strictObject` migration plus the server/client schema version handshake — has since shipped; it did not make this question redundant, it changed what happens when the question is skipped. See the paragraph above.)
 

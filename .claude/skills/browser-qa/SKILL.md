@@ -70,6 +70,14 @@ For each `manual verification` criterion:
 2. Take a screenshot confirming the expected behavior
 3. Check `list_console_messages` for unexpected errors
 
+**If the AC carries a visual acceptance sentence, that clause is the verdict, and it is not discharged by steps 1-3.** An AC written to the current template states, in the requester's own words, what the screen looks like when the requirement is met. For that clause:
+
+4. **Read the sentence, then look at the after-capture, and answer it.** Not "does the screenshot show the feature" — *does the screen match this sentence*. They are different questions, and the second is the one the requester asked.
+5. **Write the verdict in the PR body as `PASS` or `FAIL`, quoting the sentence.** Not in a report, not in a message to the Orchestrator — in the artifact a reviewer reads. A capture with no stated comparison is evidence nobody drew a conclusion from.
+6. **`FAIL` is a normal outcome here and must be reported as one.** This clause exists because every structural gate can be green while the requirement is unmet, so a `FAIL` against green CI is exactly the case it was added for — not a contradiction to reconcile.
+
+A DOM-level assertion of the same property is a complementary layer and never a substitute: it is the same translation into structural language performed a second time, so it fails in the same direction. (Lesson: Sprint 2026-08-30 Issue [#1511](https://github.com/ms2sato/agent-console/issues/1511) — three side rails where the requirement was one; every clause passed, CI and the review bot were green, and the owner found it from a single screenshot. See the AC-authoring side of this in [`architect/SKILL.md`](../architect/SKILL.md).)
+
 ### 5. Cleanup
 
 Stop the dev server when done (kill the background process or Ctrl+C).

@@ -7,10 +7,10 @@ paths:
 
 **Delegate to `backend-specialist` subagent** for implementation in this package. Primary agent should not write server code directly.
 
-**Two sibling rules load with this one and are worth naming here, because neither is reachable from anywhere else.** Both were previously always-on and are now scoped to this package (plus `scripts/**`), so a reader who never opens them will not stumble across them the way an always-loaded rule is stumbled across:
+**Two sibling rules load alongside this one and are worth naming here, because neither is reachable from anywhere else.** Both used to load in every session and are now path-scoped, so a reader who never opens them will not stumble across them the way an always-loaded rule is stumbled across. Their scopes overlap this package but are not identical — check each file's own front matter rather than assuming they load together:
 
-- [`elevation-helpers.md`](./elevation-helpers.md) — the contract for `privilege-elevation.ts`'s `runAsUser` / `spawnAsUser` / `rmRecursiveAsUser` family, and the reciprocal obligations a consumer inherits (closing stdin, `sh -s` for multi-line commands).
-- [`os-environment-coupling.md`](./os-environment-coupling.md) — when a change touches privilege elevation, file ownership, systemd, PAM, or login-shell init, unit tests cannot establish correctness and a real-machine smoke is mandatory.
+- [`elevation-helpers.md`](./elevation-helpers.md) (`packages/server/**`, `scripts/**`) — the contract for `privilege-elevation.ts`'s `runAsUser` / `spawnAsUser` / `rmRecursiveAsUser` family, and the reciprocal obligations a consumer inherits (closing stdin, `sh -s` for multi-line commands).
+- [`os-environment-coupling.md`](./os-environment-coupling.md) (`packages/server/**`, `scripts/**`, `docker/**`, `.github/workflows/**`) — when a change touches privilege elevation, file ownership, systemd, PAM, or login-shell init, unit tests cannot establish correctness and a real-machine smoke is mandatory. The two extra patterns are deliberate: a workflow file or a container definition can break an OS coupling without any server source changing.
 
 ## Directory Structure
 

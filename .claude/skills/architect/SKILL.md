@@ -70,7 +70,7 @@ When drafting Acceptance Criteria for an Issue that will be delegated:
 
   So leave one acceptance clause in the words the requester used, and close the loop by checking the finished artifact against *that*, recording the result where a reviewer reads it — the PR body, not a message. Where the requirement is about appearance, write the sentence as what the screen looks like when it is met, and extend the Browser QA clause from "capture the true-path state" to "**compare the captured after-state against this sentence and state PASS / FAIL explicitly in the PR body**". A DOM-level pin of the same property is a complementary layer, never a substitute — it is the same translation, performed a second time. Where it is possible, put the final comparison in front of the requester's own eyes.
 
-  ```
+  ```markdown
   - [ ] Visual acceptance sentence: "<what the screen looks like when the requirement is
         met, in the requester's vocabulary>". Browser QA MUST compare the AFTER captures
         against this sentence and state PASS/FAIL explicitly in the PR body. A DOM-level
