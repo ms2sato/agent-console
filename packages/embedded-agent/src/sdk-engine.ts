@@ -672,10 +672,24 @@ export class SdkEngine implements Engine {
    *
    * `tool_use` blocks are complete and fully-formed on this message (never a
    * partial/streaming form), so `tool-call` is emitted immediately here
-   * rather than buffered until `message_stop` -- this may now arrive before
-   * (or, for a fast tool, even after) the iteration's own `assistant-message`
-   * event, which is an accepted, harmless ordering nuance for downstream
-   * consumers. Immediate emission is also the guard's flush trigger: any
+   * rather than buffered until `message_stop` -- this may arrive before, or
+   * for a fast tool even after, the iteration's own `assistant-message`
+   * event.
+   *
+   * **That ordering is NOT a harmless nuance, and this comment used to say it
+   * was.** The premise was that downstream consumers only render. Transcript
+   * restore's replay is structural, not rendering: it rebuilds a
+   * provider-shaped conversation and read the order as meaningful, so every
+   * turn opening with a tool call failed reconstruction and fell to the
+   * destructive reset. The reader now accepts any of the three interleavings
+   * this race produces and folds them into one assistant turn. The emission
+   * order here is deliberately unchanged -- it is what the row's own earlier
+   * correction trail chose, and changing it would not repair a log already
+   * written -- but a future consumer must not re-derive the retired premise
+   * from this site. See `embedded-agent-sdk-engine.md` Appendix A's
+   * `tool-call` row.
+   *
+   * Immediate emission is also the guard's flush trigger: any
    * `tool-result` that arrived earlier for this exact callId (queued by
    * `handleUserMessage` below because its `tool-call` had not been emitted
    * yet) is flushed right after.

@@ -1,0 +1,100 @@
+{"v":1,"type":"ready"}
+{"v":1,"type":"user-message","id":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"Read qa-note.txt in this directory with the Read tool and tell me the secret QA word. Also remember this nonce: KESTREL-8802.","clientMessageId":"a25f1442-e21a-42ef-9970-d29e7a4a1c98"}
+{"v":1,"type":"state","state":"active"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"I"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"'m"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" going to read the"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" file."}
+{"v":1,"type":"assistant-message","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":""}
+{"v":1,"type":"tool-call","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","callId":"","name":"Read","args":{"path":"/var/lib/agent-console/qa/workdir-b/qa-note.txt"}}
+{"v":1,"type":"tool-result","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","callId":"","ok":true,"result":"1\tQA scratch file B.\n2\tThe secret QA word for workdir B is: OSPREY-2208.\n3\t"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"The"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" user asks"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" for the secret QA"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" word and to remember"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" nonce"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" KESTREL-"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"8802"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":".\n\nI should"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" note"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":": \"remember this"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" nonce\" — I"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" can only remember within"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" conversation. Maybe"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" I could write a"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" memo. But careful"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" — memos are"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" persisted"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":". It's fine"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":", harmless. Let"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" me just"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" answer.\n\nActually"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":", should"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" I write a memo"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" to persist the nonce"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"? The"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" user said \"remember"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" this nonce"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"\". A short memo"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" could help."}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" But it's not"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" necessary"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"; I'll just"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" acknowledge"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" and hold it in"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" context."}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" Let me keep it"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" simple"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" and concise.\n"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"Read the file."}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" Here's what you"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" asked for:\n\n"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"- **Secret QA"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" word (workdir"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" B):** `OS"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"PREY"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"-220"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"8`\n-"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" **Nonce noted:**"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" `KEST"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"REL-88"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"02`\n\n"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"I've got both"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" in context"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" for the rest of"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" this conversation"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":". Note that if"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" the"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" session gets compacted"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" or restarted"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":", the nonce may"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" not survive — say"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" the word and I"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"'ll write it"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" into the session memo"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" so it"}
+{"v":1,"type":"assistant-delta","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":" persists visibly."}
+{"v":1,"type":"assistant-message","turnId":"100a4f8d-7b2f-4d17-bde0-37255901bf63","text":"Read the file. Here's what you asked for:\n\n- **Secret QA word (workdir B):** `OSPREY-2208`\n- **Nonce noted:** `KESTREL-8802`\n\nI've got both in context for the rest of this conversation. Note that if the session gets compacted or restarted, the nonce may not survive — say the word and I'll write it into the session memo so it persists visibly."}
+{"v":1,"type":"context-usage","promptTokens":6747,"estimated":false}
+{"v":1,"type":"state","state":"idle"}
+{"v":1,"type":"context-usage","promptTokens":6747,"estimated":false}
+{"v":1,"type":"ready"}
+{"v":1,"type":"user-message","id":"502da366-2749-4346-8236-7944d80f7f27","text":"Without using any tool, what nonce did I ask you to remember? Answer with just the nonce, or UNKNOWN if you do not have it.","clientMessageId":"e7f98a24-45f3-40c7-b7cc-9ca6c2219e2b"}
+{"v":1,"type":"state","state":"active"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":"The"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" user is asking for"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" the"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" nonce KESTREL"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":"-8"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":"802 from"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" what's in my"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" context, and"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" I can access that"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" directly without needing any"}
+{"v":1,"type":"assistant-thinking-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":" tools."}
+{"v":1,"type":"assistant-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":"KESTREL"}
+{"v":1,"type":"assistant-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":"-880"}
+{"v":1,"type":"assistant-delta","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":"2"}
+{"v":1,"type":"assistant-message","turnId":"502da366-2749-4346-8236-7944d80f7f27","text":"KESTREL-8802"}
+{"v":1,"type":"context-usage","promptTokens":6886,"estimated":false}
+{"v":1,"type":"state","state":"idle"}

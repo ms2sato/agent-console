@@ -1198,6 +1198,12 @@ Extends [Server-side management](#server-side-management-embeddedagentworkerserv
 
      **The tail stays strict, and the asymmetry is the contract.** A malformed record anywhere after the first is not explained by the cut — the only writer appends whole lines — so it signals real damage, most likely a process killed mid-write, and keeps routing to 4f. The allowance is positional, so a well-formed first record spends it: this is "the first record may be partial", not "one bad line anywhere". Both failure modes are covered, not only the parse throw, since a cut can leave bytes that are valid JSON without being an event.
 
+**The persisted stream does not constrain the relative order of `assistant-message` and `tool-call` within one iteration, and the reader reconstructs an assistant turn from either.** The two engines genuinely differ: `openai-api` emits the iteration's (possibly empty) `assistant-message` and then its calls, while `claude-sdk` emits a `tool-call` as soon as it observes one and flushes the assistant message afterwards -- an iteration that opens with a tool use has no accumulated text to flush yet. Both are the same conversation, and 4c produces the same array from either.
+
+Concretely, a `tool-call` arriving with no assistant message open **opens an implicit empty one** and adopts the writer's own flush into it when that arrives, rather than starting a second message -- so one assistant turn never splits in two, and the two orders converge on one reconstruction. That tolerance is gated on **a turn having begun in the window** (a `user-message` already replayed). Debris from a window that began mid-turn has no such `user-message` -- the cut took it -- and still fails 4f, because synthesising an assistant message there would present a **truncated** conversation as a whole one. The two cases are indistinguishable at the `tool-call` itself, which is why the discriminator is the turn's beginning rather than anything about the call.
+
+**Order-dependence is a property of this reader, not of the stream.** Appendix A of [embedded-agent-sdk-engine.md](embedded-agent-sdk-engine.md) previously recorded that downstream consumers of `tool-call` "only render, so the contract holds"; that premise is retired there, because this reader is structural rather than rendering. Any future consumer that depends on event order has to say so where the writer can see it.
+
 **4c's event classification (total over `EmbeddedAgentStreamEvent`):**
 
 | Bucket | Event kinds | Handling |
