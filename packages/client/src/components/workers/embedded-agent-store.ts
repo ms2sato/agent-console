@@ -717,30 +717,47 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // never be echoed back in the old epoch. Reject so the caller (and
     // MessagePanel's draft-preservation) doesn't hang forever.
     this.rejectPendingSend('Worker restarted before the message was confirmed');
-    this.resetChatState();
     // activityState is worker-LIVENESS state (is the process alive, what is
-    // it doing), not display-content state -- it belongs here, in the
-    // epoch-replacement path only, NOT inside resetChatState() (which is
-    // also called from applyBytes's same-epoch fresh-load branch, where the
-    // worker incarnation hasn't changed and may still be genuinely
-    // mid-turn). A discarded incarnation's last-known activityState (e.g.
-    // 'active') must not keep gating the composer for a worker that no
-    // longer exists; see resetChatState's doc comment for the display-state
-    // fields that DO belong to a same-epoch fresh load too.
+    // it doing), not display-content state -- it belongs to this
+    // epoch-replacement path only, NOT to applyBytes's same-epoch fresh-load
+    // branch (which also calls resetChatState, where the worker incarnation
+    // hasn't changed and may still be genuinely mid-turn). A discarded
+    // incarnation's last-known activityState (e.g. 'active') must not keep
+    // gating the composer for a worker that no longer exists; see
+    // resetChatState's doc comment for the display-state fields that DO
+    // belong to a same-epoch fresh load too.
     // currentExit (#1455) is ALSO worker-liveness state by definition -- "the
     // worker's CURRENT exit state" -- so it belongs in this same
-    // epoch-replacement path, for the same reason and NOT in resetChatState():
-    // a superseded incarnation's stale exit must not keep driving the Restart
-    // affordance for a worker that no longer exists. Same discipline
-    // activityState already carries here (CodeRabbit review, cross-referencing
-    // the same-day #1480 fix for activityState in this same function).
+    // epoch-replacement path, for the same reason and NOT in resetChatState()'s
+    // unconditional fields: a superseded incarnation's stale exit must not
+    // keep driving the Restart affordance for a worker that no longer
+    // exists. Same discipline activityState already carries here (CodeRabbit
+    // review, cross-referencing the same-day #1480 fix for activityState in
+    // this same function).
     // restoreFailed/preservation (#1447 stage 4 R2/C2 fix, CodeRabbit review)
     // belong here too, and for the SAME reason activityState does: only a
     // genuine epoch bump means a new incarnation's own restore-info is
     // coming to re-declare (or not) the failure before any window where a
     // stale value could be read. See resetChatState's doc comment for the
     // full two-caller argument.
-    this.patch({
+    //
+    // All four fields below are passed to resetChatState() as its
+    // epoch-change-only extension, rather than patched here in a SEPARATE
+    // this.patch() call, so the whole epoch-reset update -- display-content
+    // fields plus these liveness/declaration fields -- reaches listeners in
+    // ONE publish (#1503, CodeRabbit review). resetChatState()'s own patch()
+    // and a second patch() here are each independently synchronous
+    // (patch() -> notify() runs listeners immediately), so splitting them
+    // let a subscriber observe an impossible intermediate snapshot between
+    // the two calls: entries already emptied by the first patch, but
+    // restoreFailed/preservation still carrying the STALE pre-reset
+    // declaration because the second patch hadn't run yet -- e.g.
+    // `preservation: 'in-band'` (which per the banner copy means "the
+    // earlier transcript is still shown above") coexisting with the exact
+    // `entries: []` that reset just produced. A declaration and the
+    // transcript state it describes must become visible together, not one
+    // publish apart.
+    this.resetChatState({
       activityState: 'unknown',
       currentExit: null,
       restoreFailed: false,
@@ -765,7 +782,28 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     this.requestHistory();
   }
 
-  private resetChatState(): void {
+  /**
+   * `epochChangeFields`, when provided, carries the fields that belong ONLY
+   * to the epoch-REPLACEMENT call site (beginEpochReset) -- see this
+   * function's own doc comment below for which fields those are and why.
+   * They are threaded through as a param and merged into this function's own
+   * `patch()` call, rather than left to a SEPARATE `this.patch()` call at the
+   * caller, so the epoch-change caller gets exactly ONE publish for its
+   * whole reset instead of two. `patch()` notifies listeners synchronously;
+   * two separate calls would let a subscriber observe the display-content
+   * fields already cleared (e.g. `entries: []`) while the liveness/
+   * declaration fields (e.g. `restoreFailed`/`preservation`) still carried
+   * their STALE pre-reset values, an impossible combination described in
+   * beginEpochReset's own comment (#1503, CodeRabbit review). The same-epoch
+   * call site (applyBytes) omits this argument, so its own patch stays
+   * limited to the display-content subset below.
+   */
+  private resetChatState(
+    epochChangeFields?: Pick<
+      EmbeddedAgentSnapshot,
+      'activityState' | 'currentExit' | 'restoreFailed' | 'preservation'
+    >,
+  ): void {
     this.splitter = new NdjsonLineSplitter();
     this.openAssistantIndexByTurnId.clear();
     this.openThinkingIndexByTurnId.clear();
@@ -801,8 +839,9 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // restoring, restoredMessageCount, sdkResumed.
     //
     // Fields that describe something call site 2 is powerless to
-    // re-declare must be excluded from this patch() and reset ONLY in
-    // beginEpochReset, alongside activityState:
+    // re-declare must be excluded from the unconditional part of this
+    // patch() and are reset ONLY via `epochChangeFields`, passed in by
+    // beginEpochReset alongside activityState:
     //   - activityState (worker-LIVENESS state -- is the process alive,
     //     what is it doing) -- resetting it here would wrongly clear a
     //     genuinely-active worker's state on a same-epoch fresh load,
@@ -816,15 +855,23 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     //     failure would otherwise be wiped with nothing left to
     //     re-declare it -- silently dropping the banner on the next
     //     ordinary reconnect even though the worker never restarted.
+    //   - currentExit (#1455) -- same worker-LIVENESS reasoning as
+    //     activityState above.
     //
     // When adding a new field to this function, ask which of the two
     // semantics above it belongs to, for EACH call site -- not just the one
-    // you happened to be thinking about when you wrote the code.
+    // you happened to be thinking about when you wrote the code. A field
+    // that belongs to call site 1 only must be threaded through
+    // `epochChangeFields` and merged into THIS SAME patch() call, never
+    // written via a separate `this.patch()` at the caller -- see this
+    // function's own doc comment above for why (coherency: one publish per
+    // epoch reset, not two).
     this.patch({
       entries: [],
       restoring: false,
       restoredMessageCount: null,
       sdkResumed: undefined,
+      ...epochChangeFields,
     });
   }
 

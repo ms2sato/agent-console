@@ -2115,6 +2115,69 @@ describe('embedded-agent-store — Transcript Restore failure form (#1449)', () 
     expect(instance.getSnapshot().restoreFailed).toBe(true);
     expect(instance.getSnapshot().preservation).toBe('in-band');
   });
+
+  it('publishes a genuine epoch reset as ONE coherent snapshot: never observes entries already cleared while restoreFailed/preservation still carry the stale pre-reset declaration (#1503)', async () => {
+    // Regression pin for a CodeRabbit-caught defect introduced by the fix
+    // above (Issue #1447 stage 4 / #1503): `beginEpochReset` used to call
+    // `resetChatState()` (its own `patch()` -- entries: [], restoring:
+    // false, ...) and THEN a SEPARATE `this.patch({ restoreFailed: false,
+    // preservation: undefined, ... })`. `patch()` notifies listeners
+    // synchronously, so a subscriber's listener could run BETWEEN the two
+    // calls and observe an impossible combination: entries already emptied
+    // by the first patch, but restoreFailed/preservation still holding the
+    // STALE declaration from before the reset -- self-contradictory,
+    // because `preservation: 'in-band'` means "the earlier transcript is
+    // still shown above" while entries had, at that exact snapshot, just
+    // been emptied by the very reset that intermediate state claims didn't
+    // happen. The fix merges both into a single `patch()` call inside
+    // `resetChatState` so the whole epoch-reset update reaches listeners in
+    // one publish.
+    const instance = getOrCreateEmbeddedAgentWorker('f6', 'w6');
+    const ws = MockWebSocket.getLastInstance()!;
+    ws.simulateOpen();
+
+    // Establish epoch 1 with a real chat entry AND a PRIMARY-route (in-band)
+    // declared restore failure -- both must be true beforehand, since the
+    // impossible intermediate snapshot is only representable when entries
+    // is non-empty and restoreFailed/preservation are already set.
+    const initialData = ndjson({ v: 1, type: 'user-message', id: 'u1', text: 'hello' });
+    ws.simulateMessage(historyMessage(initialData, initialData.length, 0, 1));
+    await flush();
+    ws.simulateMessage(restoreFailureMessage(1, true, 'in-band'));
+    await flush();
+    const before = instance.getSnapshot();
+    expect(before.entries).toHaveLength(1);
+    expect(before.restoreFailed).toBe(true);
+    expect(before.preservation).toBe('in-band');
+
+    // Subscribe AFTER establishing the pre-reset state, so only the
+    // upcoming epoch reset's own publish(es) are captured.
+    const observed: Array<{ entriesLength: number; restoreFailed: boolean }> = [];
+    instance.subscribe(() => {
+      const snap = instance.getSnapshot();
+      observed.push({ entriesLength: snap.entries.length, restoreFailed: snap.restoreFailed });
+    });
+
+    // A genuine epoch bump (a NEW incarnation, mirroring the
+    // `currentExit`/`activityState` epoch-bump tests above) synchronously
+    // runs beginEpochReset inside acceptEpoch.
+    const bumpData = ndjson({ v: 1, type: 'user-message', id: 'u2', text: 'after restart' });
+    ws.simulateMessage(outputMessage(bumpData, bumpData.length, 2));
+    await flush();
+
+    expect(observed.length).toBeGreaterThan(0);
+    for (const snap of observed) {
+      // The impossible combination: entries just cleared by the reset, but
+      // restoreFailed still true from before it -- never observable.
+      expect(snap.entriesLength === 0 && snap.restoreFailed === true).toBe(false);
+    }
+
+    // Sanity: the reset did complete by the end (both cleared together).
+    const after = instance.getSnapshot();
+    expect(after.entries).toEqual([]);
+    expect(after.restoreFailed).toBe(false);
+    expect(after.preservation).toBeUndefined();
+  });
 });
 
 describe('embedded-agent-store — Transcript Restore stage 4 markers (#1447)', () => {
