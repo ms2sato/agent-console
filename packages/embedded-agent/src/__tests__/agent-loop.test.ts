@@ -881,7 +881,7 @@ describe('AgentLoop — the provider error outcome carries structure inward', ()
         model: 'm',
         tools: [],
         executor: { async listTools() { return []; }, async callTool() { return { ok: true, result: '' }; } },
-        emit: (e) => events.push(e),
+        emit: (e: EmbeddedAgentEvent) => events.push(e),
         systemPrompt: 'S',
         maxToolIterations: 25,
         sleep: async () => {},
