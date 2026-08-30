@@ -268,6 +268,35 @@ describe('embedded-agent-store', () => {
     expect(instance.getSnapshot().entries).toHaveLength(0);
   });
 
+  it('an ordinary context-usage reading does not refresh the transcript list', async () => {
+    // `foldLine`'s boolean means "the entries array changed", and it drives
+    // the caller's identity refresh of the list. A reading arrives every turn
+    // and pushes nothing, so reporting a change here would re-publish the
+    // transcript each turn for no reason. Observed as array identity, which
+    // is the thing the refresh actually alters.
+    const instance = getOrCreateEmbeddedAgentWorker('s3fu', 'w3fu');
+    const ws = MockWebSocket.getLastInstance();
+    ws!.simulateOpen();
+
+    const first = ndjson({ v: 1, type: 'context-usage', promptTokens: 4200, estimated: false });
+    ws!.simulateMessage(historyMessage(first, first.length));
+    await flush();
+    const entriesBefore = instance.getSnapshot().entries;
+
+    // Delivered as live output, not history: a history frame whose
+    // `startOffset` differs from the requested one is a FRESH load, which
+    // refreshes the array unconditionally and would mask what this case is
+    // about.
+    const second = ndjson({ v: 1, type: 'context-usage', promptTokens: 4300, estimated: false });
+    ws!.simulateMessage(outputMessage(second, first.length + second.length));
+    await flush();
+
+    // The reading itself still reaches the snapshot -- `patch()` publishes
+    // that independently, which is why returning false here costs nothing.
+    expect(instance.getSnapshot().contextUsage).toEqual({ promptTokens: 4300, estimated: false });
+    expect(instance.getSnapshot().entries).toBe(entriesBefore);
+  });
+
   it('ignores sdk-session-id without creating a chat entry (SDK Engine Phase 1, no client UI surface yet)', async () => {
     const instance = getOrCreateEmbeddedAgentWorker('s3sdk', 'w3sdk');
     const ws = MockWebSocket.getLastInstance();

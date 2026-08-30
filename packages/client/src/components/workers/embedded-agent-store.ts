@@ -1214,7 +1214,8 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
         // it is trying to annotate. Replay derives the same rows in the same
         // places, because it walks the same sequence.
         const wasClamped = this.snapshot.contextUsage?.appearsClamped === true;
-        if (event.appearsClamped === true && !wasClamped) {
+        const pushed = event.appearsClamped === true && !wasClamped;
+        if (pushed) {
           this.pushEntry({
             key: `window-clamp-${this.entryKeyCounter++}`,
             kind: 'window-clamp',
@@ -1231,9 +1232,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
             ...(event.appearsClamped === true ? { appearsClamped: true as const } : {}),
           },
         });
-        return true;
+        // The contract is "did the ENTRIES array change", which drives the
+        // caller's identity refresh of the transcript list. A reading that
+        // pushed no row changed no entries, and every turn produces one --
+        // reporting a mutation here would re-publish the list each time for
+        // nothing. The snapshot's own update is already published by
+        // `patch()`, so the usage bar refreshes either way.
+        return pushed;
       }
-        return false; // not a chat row
       case 'context-compacted':
         this.pushEntry({
           key: `context-compacted-${this.entryKeyCounter++}`,
