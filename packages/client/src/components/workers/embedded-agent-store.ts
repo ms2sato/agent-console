@@ -682,7 +682,14 @@ class EmbeddedAgentController implements EmbeddedAgentInstance {
     // 'active') must not keep gating the composer for a worker that no
     // longer exists; see resetChatState's doc comment for the display-state
     // fields that DO belong to a same-epoch fresh load too.
-    this.patch({ activityState: 'unknown' });
+    // currentExit (#1455) is ALSO worker-liveness state by definition -- "the
+    // worker's CURRENT exit state" -- so it belongs in this same
+    // epoch-replacement path, for the same reason and NOT in resetChatState():
+    // a superseded incarnation's stale exit must not keep driving the Restart
+    // affordance for a worker that no longer exists. Same discipline
+    // activityState already carries here (CodeRabbit review, cross-referencing
+    // the same-day #1480 fix for activityState in this same function).
+    this.patch({ activityState: 'unknown', currentExit: null });
     this.epoch = newEpoch;
     this.lastOffset = 0;
     // Start (or restart, on a second epoch bump before the first resync

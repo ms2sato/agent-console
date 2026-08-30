@@ -517,6 +517,37 @@ describe('embedded-agent-store', () => {
       await flush();
       expect(instance.getSnapshot().currentExit).toEqual({ code: 2 });
     });
+
+    it('clears currentExit on an epoch bump (worker restarted server-side), before any new ready/exited arrives for the new incarnation', async () => {
+      // CodeRabbit review finding on this PR: `currentExit` is
+      // worker-LIVENESS state by its own definition (the worker's CURRENT
+      // exit state), same as `activityState` -- so it must be cleared in
+      // `beginEpochReset` (the epoch-REPLACEMENT path), not left to survive
+      // until the new incarnation's own 'ready'/'exited' event folds in.
+      // Without this, a superseded incarnation's exit state drives a stale
+      // Restart affordance for a worker that no longer exists -- the same
+      // defect class #1480 fixed the same day for `activityState` in this
+      // same function.
+      const instance = getOrCreateEmbeddedAgentWorker('s5c-epoch', 'w5c-epoch');
+      const ws = MockWebSocket.getLastInstance();
+      ws!.simulateOpen();
+
+      // Establish epoch 1 and a live exit within it.
+      const exitedData = ndjson({ v: 1, type: 'exited', code: 1 });
+      ws!.simulateMessage(historyMessage(exitedData, exitedData.length, 0, 1));
+      await flush();
+      expect(instance.getSnapshot().currentExit).toEqual({ code: 1 });
+
+      // A larger epoch means the worker restarted server-side -- this
+      // message itself carries no 'ready'/'exited' event, so any clearing
+      // observed here can only come from beginEpochReset itself, not from
+      // folding a new incarnation's own liveness event.
+      const bumpData = ndjson({ v: 1, type: 'user-message', id: 'u-bump', text: 'after restart' });
+      ws!.simulateMessage(outputMessage(bumpData, bumpData.length, 2));
+      await flush();
+
+      expect(instance.getSnapshot().currentExit).toBeNull();
+    });
   });
 
   it('folds a user-message server-authored event from replayed history', async () => {
