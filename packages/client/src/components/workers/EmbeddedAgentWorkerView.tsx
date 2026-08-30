@@ -39,6 +39,33 @@ function isGroupable(entry: EmbeddedAgentChatEntry): entry is GroupableEntry {
 }
 
 /**
+ * Transcript Restore, restore FAILURE form (#1449) -- the D2 sentence
+ * ("memory ahead of display"): the persisted transcript could not be
+ * reconstructed, but the `claude-sdk` engine's own SDK session may still
+ * remember the conversation via its own store (`sdkSessionId` survives the
+ * restore catch untouched). States what is true and promises no recovery of
+ * the DISPLAY -- the same prohibition the SDK-engine restore-divergence
+ * notice and the compaction marker both carry. See the design doc's
+ * "Failure form: what it declares, and the D1/D2/Loss derivation rule
+ * (#1449)" for the full account.
+ */
+const RESTORE_DIVERGED_D2_MESSAGE =
+  "This worker's earlier conversation could not be restored for display, but the agent may still remember it. A diagnostic copy of the record has been preserved.";
+
+/**
+ * Transcript Restore, restore FAILURE form (#1449) -- the Loss sentence
+ * ("both gone"): reachable for an `openai-api` engine restore failure
+ * (reconstruction from the log IS that engine's memory, so a failure there
+ * is symmetric loss) and for a `claude-sdk` restore failure whose SDK resume
+ * ALSO failed. Deliberately the SAME string on both routes -- the D2-vs-Loss
+ * branch DECISION is engine-dependent (see `restoreLoss`/`restoreDivergedD2`
+ * below), the Loss WORDING itself must never be, so both routes render this
+ * one constant rather than two near-duplicate strings that could drift.
+ */
+const RESTORE_LOSS_MESSAGE =
+  "This worker's earlier conversation could not be restored — a diagnostic copy of the record has been preserved. This turn starts fresh.";
+
+/**
  * A finalized assistant-message with no text is an iteration that only
  * emitted tool calls -- there is nothing to show, so it must not render as
  * an empty chat bubble. A still-streaming empty assistant-message is kept:
@@ -124,6 +151,7 @@ export function EmbeddedAgentWorkerView({
     restoring,
     restoredMessageCount,
     sdkResumed,
+    restoreFailed,
     sendUserMessage,
     cancel,
     restart,
@@ -208,6 +236,27 @@ export function EmbeddedAgentWorkerView({
   // is why both are written positively.
   const sdkResumeFailed = sdkResumed === false;
 
+  // Transcript Restore, restore FAILURE form (#1449). `restoreFailed` states
+  // WHAT HAPPENED; the direction (D2 vs Loss) is derived here from engine +
+  // `sdkResumed`, per the design doc's "Failure form: what it declares, and
+  // the D1/D2/Loss derivation rule (#1449)":
+  //   claude-sdk, sdkResumed !== false (true or still-unsettled `undefined`,
+  //     the optimistic window before the resume outcome is known) -> D2
+  //   claude-sdk, sdkResumed === false (the resume ALSO failed)        -> Loss
+  //   openai-api (no resume concept at all)                            -> Loss
+  //
+  // Deliberately gated on the CONFIRMED `isOpenaiApiEngine`/`isSdkEngine`
+  // checks above, not `!isSdkEngine` -- the same three-valued-engine trap the
+  // generic openai-api banner and the SDK-engine divergence notice above
+  // already avoid. `!isSdkEngine` is true both for a confirmed openai-api
+  // worker AND for the still-unresolved window (registry loading, or a
+  // dangling/unmatched embeddedAgentId), so it would show the Loss sentence
+  // before the engine is even known -- possibly the wrong direction, if the
+  // engine turns out to be claude-sdk with a live resume. Neither banner
+  // renders until the engine resolves, exactly like the two notices above.
+  const restoreDivergedD2 = restoreFailed && isSdkEngine && sdkResumed !== false;
+  const restoreLoss = restoreFailed && (isOpenaiApiEngine || (isSdkEngine && sdkResumed === false));
+
   const displayItems = useMemo(() => buildDisplayItems(entries), [entries]);
 
   return (
@@ -246,6 +295,34 @@ export function EmbeddedAgentWorkerView({
         <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
           This worker's earlier conversation could not be carried over — the messages above are a
           record of what was said, not something the agent currently remembers. This turn starts fresh.
+        </div>
+      )}
+
+      {/* Transcript Restore, restore FAILURE forms (#1449). Persistent,
+          non-dismissable, same visual family as the two notices above --
+          this declares a restore ATTEMPT that threw, the opposite direction
+          from the D1 notice immediately above (display-ahead-of-memory): D2
+          is memory-ahead-of-display, Loss is both gone. See the
+          `restoreDivergedD2`/`restoreLoss` derivation comment above and the
+          design doc's "Failure form: what it declares, and the D1/D2/Loss
+          derivation rule (#1449)" for the full account. Structurally
+          mutually exclusive with the D1 notice above: `restoreFailed` only
+          ever becomes true immediately after `resetChatState` has cleared
+          `restoredMessageCount` back to null for the new epoch (a restore
+          failure always mints a fresh epoch), so `hadPriorTranscriptThisIncarnation`
+          -- and therefore the D1 notice's gate -- cannot be true in the same
+          render as either banner below. Pinned by
+          EmbeddedAgentWorkerView.test.tsx's "#1449 restore-failure notice"
+          suite rather than left as an assumption -- see that suite's
+          "mutual exclusivity" test. */}
+      {restoreDivergedD2 && (
+        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
+          {RESTORE_DIVERGED_D2_MESSAGE}
+        </div>
+      )}
+      {restoreLoss && (
+        <div className="px-4 py-2 bg-amber-900/20 border-b border-amber-700/40 text-amber-200 text-xs shrink-0">
+          {RESTORE_LOSS_MESSAGE}
         </div>
       )}
 

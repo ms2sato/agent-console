@@ -141,16 +141,45 @@ export const UpdateSessionRequestSchema = v.strictObject({
 export const DeleteSessionRequestSchema = v.strictObject({});
 
 /**
- * Standalone schema for the `restore-info` WorkerServerMessage variant
- * (Transcript Restore, #1123). `WorkerServerMessage` as a whole has no
- * existing valibot union to extend (server sends raw typed literals; the
- * client does an unchecked `as WorkerServerMessage` cast) -- building a
- * full 8-variant union schema is out of scope here. This schema exists
- * so an integration test can catch server/client field-shape drift for
- * this specific new field per pre-pr-completeness.md Q10, without
- * retrofitting runtime validation onto the unrelated existing variants.
+ * `sdkResumed`'s shared doc: Transcript Restore, R1: did the `claude-sdk`
+ * engine's SDK session actually resume? Set ONLY by that engine;
+ * `openai-api` omits the field entirely, because it has no such concept.
+ * Applies IDENTICALLY to both branches of `RestoreInfoMessageSchema` below.
+ *
+ * Three-valued, and the third value is not a loading race: `absent` means
+ * "this engine does not have the concept", `false` means "this
+ * incarnation's SDK session did not resume" -- defined by the OUTCOME,
+ * never by an attempt, since three of its four routes never send a
+ * `resume`. The route list lives with the wire type in
+ * `types/session.ts`'s `restore-info` member; this comment does not
+ * restate it.
+ *
+ * Reading absence as `false` collapses those two and would show a
+ * divergence notice on every `openai-api` worker, so the client tests
+ * `=== false` explicitly and never `!sdkResumed`.
  */
-export const RestoreInfoMessageSchema = v.strictObject({
+const sdkResumedSchema = v.optional(v.boolean());
+
+/**
+ * Standalone schema for the `restore-info` WorkerServerMessage variant
+ * (Transcript Restore, #1123 success form / #1449 failure form).
+ * `WorkerServerMessage` as a whole has no existing valibot union to extend
+ * (server sends raw typed literals; the client does an unchecked
+ * `as WorkerServerMessage` cast) -- building a full 8-variant union schema
+ * is out of scope here. This schema exists so an integration test can catch
+ * server/client field-shape drift for this specific field per
+ * pre-pr-completeness.md Q10, without retrofitting runtime validation onto
+ * the unrelated existing variants.
+ *
+ * Two branches, discriminated on `failed`, mirroring the `WorkerServerMessage`
+ * `restore-info` union member in `types/session.ts` exactly -- see that
+ * member's doc comment for the D1/D2/Loss rationale (#1447, #1449), not
+ * restated here. `v.union` tries branches in order; each branch is a
+ * `v.strictObject`, so a required-field mismatch (e.g. `failed: true` plus
+ * `completed`) naturally falls through rather than silently stripping
+ * fields.
+ */
+const RestoreInfoSuccessSchema = v.strictObject({
   type: v.literal('restore-info'),
   epoch: v.pipe(v.number(), v.integer(), v.minValue(0)),
   /**
@@ -166,25 +195,21 @@ export const RestoreInfoMessageSchema = v.strictObject({
   restoredMessageCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
   repairedToolCallIds: v.array(v.string()),
   completed: v.boolean(),
-  /**
-   * Transcript Restore, R1: did the `claude-sdk` engine's SDK session
-   * actually resume? Set ONLY by that engine; `openai-api` omits the field
-   * entirely, because it has no such concept.
-   *
-   * Three-valued, and the third value is not a loading race: `absent` means
-   * "this engine does not have the concept", `false` means "this
-   * incarnation's SDK session did not resume" -- defined by the OUTCOME,
-   * never by an attempt, since three of its four routes never send a
-   * `resume`. The route list lives with the wire type in
-   * `types/session.ts`'s `restore-info` member; this comment does not
-   * restate it.
-   *
-   * Reading absence as `false` collapses those two and would show a
-   * divergence notice on every `openai-api` worker, so the client tests
-   * `=== false` explicitly and never `!sdkResumed`.
-   */
-  sdkResumed: v.optional(v.boolean()),
+  sdkResumed: sdkResumedSchema,
+  failed: v.optional(v.literal(false)),
 });
+
+const RestoreInfoFailureSchema = v.strictObject({
+  type: v.literal('restore-info'),
+  epoch: v.pipe(v.number(), v.integer(), v.minValue(0)),
+  failed: v.literal(true),
+  sdkResumed: sdkResumedSchema,
+});
+
+export const RestoreInfoMessageSchema = v.union([
+  RestoreInfoSuccessSchema,
+  RestoreInfoFailureSchema,
+]);
 
 // Inferred types from schemas
 export type CreateWorktreeSessionRequest = v.InferOutput<typeof CreateWorktreeSessionRequestSchema>;

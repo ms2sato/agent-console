@@ -684,3 +684,119 @@ describe('RestoreInfoMessageSchema — sdkResumed (Transcript Restore R1, #1410)
     expect(v.safeParse(RestoreInfoMessageSchema, { ...base, sdkResumed: 1 }).success).toBe(false);
   });
 });
+
+// MUTATION MEASURED (whole describe block below): removing the success
+// branch's `failed: v.optional(v.literal(false))` field makes
+// 'accepts failed: false explicitly, but still requires the success form's
+// fields' fail -- `{failed: false, ...successFields}` no longer matches the
+// (now-narrower) success branch's strictObject, and `false` does not match
+// the failure branch's `v.literal(true)` either, so the union rejects the
+// whole payload. Restoring the field returns the suite to green.
+describe('RestoreInfoMessageSchema — FAILURE form (#1449)', () => {
+  it('accepts the minimal failure form (no sdkResumed -- openai-api)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output).toEqual({ type: 'restore-info', epoch: 5, failed: true });
+      expect('sdkResumed' in result.output).toBe(false);
+    }
+  });
+
+  it('accepts the failure form with sdkResumed (claude-sdk)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      sdkResumed: true,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.sdkResumed).toBe(true);
+    }
+  });
+
+  it('carries sdkResumed: false through the failure form parse', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      sdkResumed: false,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.sdkResumed).toBe(false);
+    }
+  });
+
+  it('rejects failed: true combined with a success-only field (completed) -- each branch is a strictObject', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      completed: true,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects failed: true combined with restoredMessageCount', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      restoredMessageCount: 2,
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts failed: false explicitly, but still requires the success form\'s fields', () => {
+    const missingFields = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: false,
+    });
+    expect(missingFields.success).toBe(false);
+
+    const complete = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: false,
+      restoredMessageCount: 2,
+      repairedToolCallIds: [],
+      completed: true,
+    });
+    expect(complete.success).toBe(true);
+  });
+
+  it('rejects a non-boolean sdkResumed on the failure form', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      sdkResumed: 'yes',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an unknown field on the failure form (strictObject)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: true,
+      unexpectedField: 'leaked',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects failed: "true" (string, not boolean)', () => {
+    const result = v.safeParse(RestoreInfoMessageSchema, {
+      type: 'restore-info',
+      epoch: 5,
+      failed: 'true',
+    });
+    expect(result.success).toBe(false);
+  });
+});

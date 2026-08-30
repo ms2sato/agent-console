@@ -211,14 +211,32 @@ export type WorkerServerMessage =
       epoch: number;
     }
   | { type: 'server-restarted'; serverPid: number }  // Server was restarted, client should invalidate cache
-  // Transcript Restore (#1123). Sent ONLY when an activation's restore
-  // succeeded (never on restore failure / first-ever activation — silent
-  // v1-parity degradation in both those cases). Dual delivery: (a) a
-  // fast-path push to currently-attached connections right after
-  // reconstitution completes (before the subprocess spawns), and (b)
-  // bootstrap re-delivery to EVERY new connection for the lifetime of the
-  // incarnation (alongside its initial `history` response) -- see
+  // Transcript Restore (#1123). Sent on BOTH an activation's restore success
+  // and its restore FAILURE (#1449) -- never on a first-ever activation
+  // (there is nothing to declare there). The two forms are a discriminated
+  // union on `failed`: the success form below carries `failed?: false`
+  // purely so `failed` is a checkable literal across the whole union; the
+  // failure form (further below) carries `failed: true` and none of the
+  // success form's reconstruction-shaped fields. Dual delivery, the epoch
+  // gate, bootstrap redelivery, and the follow-up correction push are all
+  // shared machinery, unchanged by which form is in flight -- see
   // docs/design/embedded-agent-worker.md "Transcript Restore" § UI.
+  //
+  // Why two forms instead of stating failure via `sdkResumed: false`: a
+  // divergence between what the model remembers and what the display shows
+  // has a direction (D1: display ahead of memory -- what `sdkResumed: false`
+  // on a SUCCESSFUL restore means; D2: memory ahead of display -- a
+  // `claude-sdk` restore failure, since `sdkSessionId` survives the restore
+  // catch; Loss: both gone -- an `openai-api` restore failure, since
+  // reconstruction IS that engine's memory). This channel states WHAT
+  // HAPPENED; the client derives D2 vs Loss from engine + resume state.
+  // See the design doc's D1/D2/Loss framework for the full account -- not
+  // restated here.
+  //
+  // This failure form is designed to survive into #1447 stage 4 as its
+  // declaration channel, unchanged: stage 4 changes what gets PRESERVED
+  // (sidecar -> in-band display), not HOW a failure is declared.
+  //
   // `epoch` is a cross-incarnation staleness guard: the client feeds it
   // through the same acceptEpoch gate `history`/`output` already use.
   // `restoredMessageCount` counts restored entries by a criterion, not a
@@ -235,7 +253,11 @@ export type WorkerServerMessage =
   // actually resumed. Set ONLY by that engine -- `openai-api` omits it,
   // because it has no such concept. THREE-VALUED: absent means "this engine
   // does not have the concept", `false` means "this incarnation's SDK
-  // session did not resume".
+  // session did not resume". This applies IDENTICALLY to both the success
+  // and the failure form below -- the failure form's `sdkResumed` uses the
+  // exact same optimistic-then-corrected semantics (set from
+  // `resumeId !== null` at construction time, corrected downward later by
+  // the same `sdk-resume-failed` / session-id-mismatch machinery).
   //
   // Defined by the OUTCOME, never by an attempt. Four routes reach `false`
   // and only the last of them sends a `resume` at all: no session id was
@@ -255,6 +277,19 @@ export type WorkerServerMessage =
       restoredMessageCount: number;
       repairedToolCallIds: string[];
       completed: boolean;
+      sdkResumed?: boolean;
+      failed?: false;
+    }
+  // Failure form (#1449): a restore attempt threw (RestoreReconstructionError
+  // or any other reconstruction failure). Carries none of the success form's
+  // reconstruction-shaped fields -- there is nothing to report about a
+  // restore that did not happen. See the block comment above this union
+  // member for the full rationale (D1/D2/Loss, #1447/#1449, forward-compat
+  // with stage 4).
+  | {
+      type: 'restore-info';
+      epoch: number;
+      failed: true;
       sdkResumed?: boolean;
     };
 
