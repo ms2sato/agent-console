@@ -52,13 +52,14 @@ describe('SqliteBookmarkRepository', () => {
         title: 'My Bookmark',
         createdAt: bookmark.createdAt,
         origin: 'user',
+        sourceSessionId: 'session-1',
       });
       // `create`/`findById` return the server-internal BookmarkRecord (wire
       // summary + userId, needed by route handlers to enforce owner-only
       // delete -- see repositories/bookmark-repository.ts). `userId` is NOT
       // part of the wire `Bookmark` type and must never be serialized into
       // an HTTP response (see packages/shared/src/types/bookmark.ts).
-      expect(Object.keys(bookmark).sort()).toEqual(['createdAt', 'id', 'origin', 'title', 'url', 'userId'].sort());
+      expect(Object.keys(bookmark).sort()).toEqual(['createdAt', 'id', 'origin', 'sourceSessionId', 'title', 'url', 'userId'].sort());
     });
 
     it('creates a bookmark with a null title', async () => {

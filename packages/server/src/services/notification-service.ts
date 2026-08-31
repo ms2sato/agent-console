@@ -28,6 +28,13 @@ export interface FeedIdentity {
  * only). Deliberately has NO broadcast/WS/event member — this makes N1
  * ("a broadcast is never a source of list content") unrepresentable in the
  * type, not merely forbidden in prose.
+ *
+ * N1 forbids a broadcast from being a SOURCE of list content; it does not
+ * forbid a broadcast used purely as a refetch TRIGGER carrying no content
+ * (see `artifact-created` / `artifact-deleted` / `bookmark-created` /
+ * `bookmark-deleted` in `schemas/app-server-message.ts`) — the client still
+ * re-reads this composed read-model from the REST endpoint,
+ * never the broadcast payload itself.
  */
 export interface NotificationServiceDeps {
   artifactRepository: Pick<ArtifactRepository, 'findByUserId'>;

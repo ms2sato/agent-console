@@ -14,7 +14,7 @@
  * Anti-Pattern #2; see the parallel note in
  * `lib/__tests__/artifact-storage.test.ts`).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import * as path from 'path';
 import * as os from 'os';
@@ -51,6 +51,8 @@ import { AgentDirectory } from '../../services/agent-directory.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
+import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
+import type { AppServerMessage } from '@agent-console/shared';
 
 const TEST_CONFIG_DIR_PREFIX = 'agent-console-create-html-artifact-test-';
 const TEST_REPO_PATH = '/test/repo-1312';
@@ -89,7 +91,11 @@ describe('create_html_artifact', () => {
    * handshake itself needs a bearer token to pass the transport-level gate,
    * unrelated to the per-test tool-call token scenario below.
    */
-  async function mountMcpApp(authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry }): Promise<void> {
+  async function mountMcpApp(authOpts?: {
+    mcpAuthMode?: McpAuthMode;
+    mcpTokenRegistry?: McpTokenRegistry;
+    broadcastToApp?: (msg: AppServerMessage) => void;
+  }): Promise<void> {
     const mcpApp = createMcpApp({
       sessionManager,
       repositoryManager,
@@ -107,7 +113,7 @@ describe('create_html_artifact', () => {
       userRepository,
       artifactRepository,
       bookmarkRepository,
-      broadcastToApp: () => {},
+      broadcastToApp: authOpts?.broadcastToApp ?? (() => {}),
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,
       mcpAuthMode: authOpts?.mcpAuthMode,
@@ -421,6 +427,74 @@ describe('create_html_artifact', () => {
       expect(data.url).toBeUndefined();
       expect(data.note).toBeDefined();
       expect(data.note).toContain('AGENT_CONSOLE_PUBLIC_ORIGIN');
+    });
+  });
+
+  // ---------- Broadcast (realtime refresh trigger, Issue #1520) ----------
+
+  describe('broadcast (realtime refresh trigger, Issue #1520)', () => {
+    it('emits exactly one artifact-created trigger with the ruled payload shape after a successful create', async () => {
+      const mockBroadcastToApp = mock(() => {});
+      // mcpAuthMode pinned explicitly (not left to the ambient default) so
+      // this test's pass/fail doesn't depend on AGENT_CONSOLE_MCP_AUTH.
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: mockBroadcastToApp });
+      const { sessionId } = await createOwnedSession();
+
+      const response = await callTool(app, mcpSessionId, 'create_html_artifact', { content: '<html></html>', sessionId }, nextId++);
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { artifactId: string };
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-created', sessionId, artifactId: data.artifactId });
+    });
+
+    it('emits no trigger when the repository write fails (negative half)', async () => {
+      const mockBroadcastToApp = mock(() => {});
+      // Bound wrappers, not `{ ...artifactRepository, create: ... }`: the
+      // real repository's methods live on the class prototype, so an
+      // object spread would copy only own instance fields and silently
+      // drop every other method (none of which this test needs, but the
+      // bound form is correct regardless of what a future test in this
+      // block calls).
+      const throwingArtifactRepository: ArtifactRepository = {
+        create: async () => {
+          throw new Error('simulated disk failure');
+        },
+        findById: artifactRepository.findById.bind(artifactRepository),
+        findByUserId: artifactRepository.findByUserId.bind(artifactRepository),
+        findByUserIdAndSourceSessionId: artifactRepository.findByUserIdAndSourceSessionId.bind(artifactRepository),
+        delete: artifactRepository.delete.bind(artifactRepository),
+      };
+      const mcpApp = createMcpApp({
+        sessionManager,
+        repositoryManager,
+        agentManager,
+        agentDirectory,
+        timerManager: new TimerManager(() => {}),
+        conditionalWakeupManager: new ConditionalWakeupManager(() => {}),
+        interactiveProcessManager: new InteractiveProcessManager(() => {}, () => {}),
+        worktreeService,
+        annotationService: new AnnotationService(),
+        interSessionMessageService: new InterSessionMessageService(),
+        suggestSessionMetadata: async () => ({ branch: 'unused', title: 'unused' }),
+        createWorktreeWithSession,
+        deleteWorktree,
+        userRepository,
+        artifactRepository: throwingArtifactRepository,
+        bookmarkRepository,
+        broadcastToApp: mockBroadcastToApp,
+        findOpenPullRequest: async () => null,
+        fetchPullRequestUrl: async () => null,
+      });
+      const failApp = new Hono();
+      failApp.route('', mcpApp);
+      const failMcpSessionId = await initializeMcp(failApp);
+
+      const { sessionId } = await createOwnedSession();
+      const response = await callTool(failApp, failMcpSessionId, 'create_html_artifact', { content: '<html></html>', sessionId }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      expect(mockBroadcastToApp).not.toHaveBeenCalled();
     });
   });
 });

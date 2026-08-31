@@ -444,6 +444,43 @@ describe('NotificationBell', () => {
       await waitFor(() => expect(mockFetch.mock.calls.length).toBe(callsBefore + 1));
       expect(document.body.textContent).not.toContain('phantom');
     });
+
+    // Issue #1520: create_html_artifact / delete_html_artifact also compose
+    // into this feed. Same N1 discipline: only routing metadata (sessionId,
+    // artifactId) is passed to the handler, never bound to anything rendered.
+    it('an artifact-created hint triggers exactly one refetch and renders nothing from the payload', async () => {
+      serverItems = [];
+      serverUnreadCount = 0;
+      await renderWithRouter(<NotificationBell />);
+
+      await waitFor(() => expect(mockFetch.mock.calls.length).toBeGreaterThan(0));
+      const callsBefore = mockFetch.mock.calls.length;
+
+      expect(capturedWsOptions?.onArtifactCreated).toBeDefined();
+      await act(async () => {
+        capturedWsOptions?.onArtifactCreated?.('phantom-session-id', 'phantom-artifact-id');
+      });
+
+      await waitFor(() => expect(mockFetch.mock.calls.length).toBe(callsBefore + 1));
+      expect(document.body.textContent).not.toContain('phantom');
+    });
+
+    it('an artifact-deleted hint also triggers exactly one refetch and renders nothing from the payload', async () => {
+      serverItems = [];
+      serverUnreadCount = 0;
+      await renderWithRouter(<NotificationBell />);
+
+      await waitFor(() => expect(mockFetch.mock.calls.length).toBeGreaterThan(0));
+      const callsBefore = mockFetch.mock.calls.length;
+
+      expect(capturedWsOptions?.onArtifactDeleted).toBeDefined();
+      await act(async () => {
+        capturedWsOptions?.onArtifactDeleted?.('phantom-session-id-2', 'phantom-artifact-id-2');
+      });
+
+      await waitFor(() => expect(mockFetch.mock.calls.length).toBe(callsBefore + 1));
+      expect(document.body.textContent).not.toContain('phantom');
+    });
   });
 
   describe('reconnect refetch trigger', () => {

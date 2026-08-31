@@ -13,7 +13,7 @@
  * path, which resolves ownership via `session.createdBy` rather than an
  * `authUser`.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import * as path from 'path';
 import * as os from 'os';
@@ -51,6 +51,8 @@ import { AgentDirectory } from '../../services/agent-directory.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
+import type { ArtifactRepository } from '../../repositories/artifact-repository.js';
+import type { AppServerMessage } from '@agent-console/shared';
 
 const TEST_CONFIG_DIR_PREFIX = 'agent-console-delete-html-artifact-test-';
 const TEST_REPO_PATH = '/test/repo-1371';
@@ -74,7 +76,11 @@ describe('delete_html_artifact', () => {
   /** Real (non-memfs) directory; see create-html-artifact.test.ts's file header for why. */
   let testConfigDir: string | undefined;
 
-  async function mountMcpApp(authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry }): Promise<void> {
+  async function mountMcpApp(authOpts?: {
+    mcpAuthMode?: McpAuthMode;
+    mcpTokenRegistry?: McpTokenRegistry;
+    broadcastToApp?: (msg: AppServerMessage) => void;
+  }): Promise<void> {
     const mcpApp = createMcpApp({
       sessionManager,
       repositoryManager,
@@ -92,7 +98,7 @@ describe('delete_html_artifact', () => {
       userRepository,
       artifactRepository,
       bookmarkRepository,
-      broadcastToApp: () => {},
+      broadcastToApp: authOpts?.broadcastToApp ?? (() => {}),
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,
       mcpAuthMode: authOpts?.mcpAuthMode,
@@ -377,6 +383,104 @@ describe('delete_html_artifact', () => {
       const data = parseToolResult(response) as { deleted: boolean };
       expect(data.deleted).toBe(true);
       expect(await artifactRepository.findById(artifactId)).toBeNull();
+    });
+  });
+
+  // ---------- Broadcast (realtime refresh trigger, Issue #1520) ----------
+
+  describe('broadcast (realtime refresh trigger, Issue #1520)', () => {
+    it('emits exactly one artifact-deleted trigger with the ruled payload shape after a successful delete', async () => {
+      const mockBroadcastToApp = mock(() => {});
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: mockBroadcastToApp });
+      const { sessionId } = await createOwnedSession(7009, 'artifact-owner-broadcast');
+      const artifactId = await createArtifactViaTool(sessionId);
+      mockBroadcastToApp.mockClear();
+
+      const response = await callTool(app, mcpSessionId, 'delete_html_artifact', { artifactId, sessionId }, nextId++);
+
+      expect(response.result?.isError).toBeUndefined();
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-deleted', sessionId, artifactId });
+    });
+
+    it(
+      'cross-session delete: the trigger names the OWNING session (where the artifact was created), ' +
+        'never the deleting call\'s own session -- this repo\'s own orchestrator-cleans-up-delegate-session ' +
+        'pattern, not a rare edge case',
+      async () => {
+        const mockBroadcastToApp = mock(() => {});
+        await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: mockBroadcastToApp });
+
+        // One user, two sessions: sessionY creates the artifact (the owning
+        // session), sessionX deletes it (a different session, same user --
+        // ownership is per-user, not per-session, so this is legitimate).
+        const owner = await userRepository.upsertByOsUid(7011, 'artifact-owner-cross-session', '/home/artifact-owner-cross-session');
+        const sessionY = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH }, { createdBy: owner.id });
+        const sessionX = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH }, { createdBy: owner.id });
+
+        const artifactId = await createArtifactViaTool(sessionY.id);
+        mockBroadcastToApp.mockClear();
+
+        const response = await callTool(app, mcpSessionId, 'delete_html_artifact', { artifactId, sessionId: sessionX.id }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+        // The pin: sessionId is Y (owning/creating), NOT X (deleting).
+        expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-deleted', sessionId: sessionY.id, artifactId });
+      },
+    );
+
+    it('emits no trigger when the repository write fails (negative half)', async () => {
+      // Create the artifact via the normally-mounted app first (ownership
+      // check must pass), THEN mount a second app instance whose `delete`
+      // throws, targeting the real id -- exercising
+      // "ownership-check-passes-then-write-fails" faithfully.
+      const { sessionId } = await createOwnedSession(7010, 'artifact-owner-broadcast-fail');
+      const artifactId = await createArtifactViaTool(sessionId);
+
+      const mockBroadcastToApp = mock(() => {});
+      // Bound wrappers, not `{ ...artifactRepository, delete: ... }`: the
+      // real repository's methods live on the class prototype, so an
+      // object spread would copy only own instance fields and silently
+      // drop every other method this test needs (findById).
+      const throwingArtifactRepository: ArtifactRepository = {
+        create: artifactRepository.create.bind(artifactRepository),
+        findById: artifactRepository.findById.bind(artifactRepository),
+        findByUserId: artifactRepository.findByUserId.bind(artifactRepository),
+        findByUserIdAndSourceSessionId: artifactRepository.findByUserIdAndSourceSessionId.bind(artifactRepository),
+        delete: async () => {
+          throw new Error('simulated disk failure');
+        },
+      };
+      const mcpApp = createMcpApp({
+        sessionManager,
+        repositoryManager,
+        agentManager,
+        agentDirectory,
+        timerManager: new TimerManager(() => {}),
+        conditionalWakeupManager: new ConditionalWakeupManager(() => {}),
+        interactiveProcessManager: new InteractiveProcessManager(() => {}, () => {}),
+        worktreeService,
+        annotationService: new AnnotationService(),
+        interSessionMessageService: new InterSessionMessageService(),
+        suggestSessionMetadata: async () => ({ branch: 'unused', title: 'unused' }),
+        createWorktreeWithSession,
+        deleteWorktree,
+        userRepository,
+        artifactRepository: throwingArtifactRepository,
+        bookmarkRepository,
+        broadcastToApp: mockBroadcastToApp,
+        findOpenPullRequest: async () => null,
+        fetchPullRequestUrl: async () => null,
+      });
+      const failApp = new Hono();
+      failApp.route('', mcpApp);
+      const failMcpSessionId = await initializeMcp(failApp);
+
+      const response = await callTool(failApp, failMcpSessionId, 'delete_html_artifact', { artifactId, sessionId }, nextId++);
+
+      expect(response.result?.isError).toBe(true);
+      expect(mockBroadcastToApp).not.toHaveBeenCalled();
     });
   });
 });

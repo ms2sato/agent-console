@@ -53,6 +53,16 @@ export function NotificationBell() {
     onWorktreeDeletionFailed: () => {
       queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
     },
+    // `create_html_artifact` / `delete_html_artifact` also compose into this
+    // feed (see notification-service.ts's `SOURCES`). No bookmark
+    // counterpart exists server-side, so no onBookmarkCreated/
+    // onBookmarkDeleted here -- that would just be a no-op refetch.
+    onArtifactCreated: () => {
+      queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
+    },
+    onArtifactDeleted: () => {
+      queryClient.invalidateQueries({ queryKey: notificationCenterKeys.root() });
+    },
   });
 
   // v1 refetch trigger: app-WS reconnect (false -> true transition only,

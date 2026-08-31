@@ -673,6 +673,70 @@ describe('useAppWsEvent', () => {
 
       expect(onWorktreePullFailed).toHaveBeenCalledWith(payload);
     });
+
+    // Issue #1520: realtime refresh triggers for HTML artifacts and
+    // bookmarks. These messages carry only routing metadata (sessionId +
+    // id), never renderable content -- see docs/design/notification-center.md's
+    // N1.
+    it('should call onArtifactCreated for artifact-created message', () => {
+      const onArtifactCreated = mock(() => {});
+      renderHook(() => useAppWsEvent({ onArtifactCreated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'artifact-created', sessionId: 'session-1', artifactId: 'artifact-1' })
+        );
+      });
+
+      expect(onArtifactCreated).toHaveBeenCalledWith('session-1', 'artifact-1');
+    });
+
+    it('should call onArtifactDeleted for artifact-deleted message', () => {
+      const onArtifactDeleted = mock(() => {});
+      renderHook(() => useAppWsEvent({ onArtifactDeleted }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'artifact-deleted', sessionId: 'session-1', artifactId: 'artifact-1' })
+        );
+      });
+
+      expect(onArtifactDeleted).toHaveBeenCalledWith('session-1', 'artifact-1');
+    });
+
+    it('should call onBookmarkCreated for bookmark-created message', () => {
+      const onBookmarkCreated = mock(() => {});
+      renderHook(() => useAppWsEvent({ onBookmarkCreated }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'bookmark-created', sessionId: 'session-1', bookmarkId: 'bookmark-1' })
+        );
+      });
+
+      expect(onBookmarkCreated).toHaveBeenCalledWith('session-1', 'bookmark-1');
+    });
+
+    it('should call onBookmarkDeleted for bookmark-deleted message', () => {
+      const onBookmarkDeleted = mock(() => {});
+      renderHook(() => useAppWsEvent({ onBookmarkDeleted }));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'bookmark-deleted', sessionId: 'session-1', bookmarkId: 'bookmark-1' })
+        );
+      });
+
+      expect(onBookmarkDeleted).toHaveBeenCalledWith('session-1', 'bookmark-1');
+    });
   });
 
   // Note: Reconnection logic is now handled by the singleton module (app-websocket.ts)

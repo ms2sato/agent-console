@@ -11,7 +11,7 @@
  * component -- `AGENT_CONSOLE_HOME` points at a pure memfs path, no real
  * `os.tmpdir()` directory is needed.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { Hono } from 'hono';
 import { setupMemfs, cleanupMemfs } from '../../__tests__/utils/mock-fs-helper.js';
 import { createMockPtyFactory } from '../../__tests__/utils/mock-pty.js';
@@ -45,6 +45,8 @@ import { AgentDirectory } from '../../services/agent-directory.js';
 import { createWorktreeWithSession } from '../../services/worktree-creation-service.js';
 import { deleteWorktree } from '../../services/worktree-deletion-service.js';
 import { initializeMcp, callTool, parseToolResult } from './mcp-protocol-test-helpers.js';
+import type { BookmarkRepository } from '../../repositories/bookmark-repository.js';
+import type { AppServerMessage } from '@agent-console/shared';
 
 const TEST_CONFIG_DIR = '/test/config-1390-create';
 const TEST_REPO_PATH = '/test/repo-1390';
@@ -65,7 +67,11 @@ describe('create_bookmark', () => {
   let worktreeService: WorktreeService;
   let agentDirectory: AgentDirectory;
 
-  async function mountMcpApp(authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry }): Promise<void> {
+  async function mountMcpApp(authOpts?: {
+    mcpAuthMode?: McpAuthMode;
+    mcpTokenRegistry?: McpTokenRegistry;
+    broadcastToApp?: (msg: AppServerMessage) => void;
+  }): Promise<void> {
     const mcpApp = createMcpApp({
       sessionManager,
       repositoryManager,
@@ -83,7 +89,7 @@ describe('create_bookmark', () => {
       userRepository,
       artifactRepository,
       bookmarkRepository,
-      broadcastToApp: () => {},
+      broadcastToApp: authOpts?.broadcastToApp ?? (() => {}),
       findOpenPullRequest: async () => null,
       fetchPullRequestUrl: async () => null,
       mcpAuthMode: authOpts?.mcpAuthMode,
@@ -200,12 +206,19 @@ describe('create_bookmark', () => {
       );
 
       expect(response.result?.isError).toBeUndefined();
-      const data = parseToolResult(response) as { id: string; url: string; origin: string };
+      const data = parseToolResult(response) as Record<string, unknown>;
       expect(data.origin).toBe('agent');
+      // Server-internal BookmarkRecord fields (userId, and sourceSessionId --
+      // the owning-session field the realtime-refresh delete trigger resolves)
+      // must never cross this tool's wire result, matching routes/bookmarks.ts's
+      // identical strip.
+      expect(data.userId).toBeUndefined();
+      expect(data.sourceSessionId).toBeUndefined();
 
-      const stored = await bookmarkRepository.findById(data.id);
+      const stored = await bookmarkRepository.findById(data.id as string);
       expect(stored?.userId).toBe(userId);
       expect(stored?.origin).toBe('agent');
+      expect(stored?.sourceSessionId).toBe(sessionId);
     });
 
     it('rejects with a loud error when the session has no createdBy (ownerless/legacy session)', async () => {
@@ -368,6 +381,85 @@ describe('create_bookmark', () => {
       expect(response.result?.isError).toBeUndefined();
       const owned = await bookmarkRepository.findByUserId(userId);
       expect(owned).toHaveLength(1);
+    });
+  });
+
+  // ---------- Broadcast (realtime refresh trigger, Issue #1520) ----------
+
+  describe('broadcast (realtime refresh trigger, Issue #1520)', () => {
+    it('emits exactly one bookmark-created trigger with the ruled payload shape after a successful create', async () => {
+      const mockBroadcastToApp = mock(() => {});
+      // mcpAuthMode pinned explicitly (not left to the ambient default) so
+      // this test's pass/fail doesn't depend on AGENT_CONSOLE_MCP_AUTH.
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: mockBroadcastToApp });
+      const { sessionId } = await createOwnedSession();
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'create_bookmark',
+        { url: 'https://example.com', sessionId },
+        nextId++,
+      );
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { id: string };
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-created', sessionId, bookmarkId: data.id });
+    });
+
+    it('emits no trigger when the repository write fails (negative half)', async () => {
+      const mockBroadcastToApp = mock(() => {});
+      // Bound wrappers, not `{ ...bookmarkRepository, create: ... }`: the
+      // real repository's methods live on the class prototype, so an
+      // object spread would copy only own instance fields and silently
+      // drop every other method (none of which this test needs, but the
+      // bound form is correct regardless of what a future test calls).
+      const throwingBookmarkRepository: BookmarkRepository = {
+        create: async () => {
+          throw new Error('simulated disk failure');
+        },
+        findById: bookmarkRepository.findById.bind(bookmarkRepository),
+        findByUserId: bookmarkRepository.findByUserId.bind(bookmarkRepository),
+        findByUserIdAndSourceSessionId: bookmarkRepository.findByUserIdAndSourceSessionId.bind(bookmarkRepository),
+        delete: bookmarkRepository.delete.bind(bookmarkRepository),
+      };
+      const mcpApp = createMcpApp({
+        sessionManager,
+        repositoryManager,
+        agentManager,
+        agentDirectory,
+        timerManager: new TimerManager(() => {}),
+        conditionalWakeupManager: new ConditionalWakeupManager(() => {}),
+        interactiveProcessManager: new InteractiveProcessManager(() => {}, () => {}),
+        worktreeService,
+        annotationService: new AnnotationService(),
+        interSessionMessageService: new InterSessionMessageService(),
+        suggestSessionMetadata: async () => ({ branch: 'unused', title: 'unused' }),
+        createWorktreeWithSession,
+        deleteWorktree,
+        userRepository,
+        artifactRepository,
+        bookmarkRepository: throwingBookmarkRepository,
+        broadcastToApp: mockBroadcastToApp,
+        findOpenPullRequest: async () => null,
+        fetchPullRequestUrl: async () => null,
+      });
+      const failApp = new Hono();
+      failApp.route('', mcpApp);
+      const failMcpSessionId = await initializeMcp(failApp);
+
+      const { sessionId } = await createOwnedSession();
+      const response = await callTool(
+        failApp,
+        failMcpSessionId,
+        'create_bookmark',
+        { url: 'https://example.com', sessionId },
+        nextId++,
+      );
+
+      expect(response.result?.isError).toBe(true);
+      expect(mockBroadcastToApp).not.toHaveBeenCalled();
     });
   });
 });

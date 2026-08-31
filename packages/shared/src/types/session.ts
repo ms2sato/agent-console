@@ -329,54 +329,6 @@ export interface WorkerActivityInfo {
 }
 
 /**
- * Valid message types for AppServerMessage.
- * Single source of truth for both type definitions and runtime validation.
- * Use object keys for easy `in` operator validation.
- *
- * @see docs/design/websocket-protocol.md for protocol specification and design decisions
- */
-export const APP_SERVER_MESSAGE_TYPES = {
-  'sessions-sync': 1,
-  'session-created': 2,
-  'session-updated': 3,
-  'session-deleted': 4,
-  'worker-activity': 5,
-  'agents-sync': 6,
-  'agent-created': 7,
-  'agent-updated': 8,
-  'agent-deleted': 9,
-  'repositories-sync': 10,
-  'repository-created': 11,
-  'repository-updated': 12,
-  'repository-deleted': 13,
-  'worktree-creation-completed': 14,
-  'worktree-creation-failed': 15,
-  'worker-activated': 16,
-  'worktree-deletion-completed': 17,
-  'worktree-deletion-failed': 18,
-  'worker-message': 19,
-  'session-paused': 20,
-  'session-resumed': 21,
-  'inbound-event': 22,
-  'worker-restarted': 23,
-  'worktree-pull-completed': 24,
-  'worktree-pull-failed': 25,
-  'memo-updated': 26,
-  'review-queue-updated': 27,
-  // Sent as the first frame on /ws/app so the client can detect a
-  // server/client schema mismatch. See docs/design/websocket-protocol.md.
-  'schema-version': 28,
-  'embedded-agent-created': 29,
-  'embedded-agent-updated': 30,
-  'embedded-agent-deleted': 31,
-} as const;
-
-/** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */
-export const APP_MESSAGE_TYPES = APP_SERVER_MESSAGE_TYPES;
-
-export type AppServerMessageType = keyof typeof APP_SERVER_MESSAGE_TYPES;
-
-/**
  * Valid message types for AppClientMessage.
  * Single source of truth for both type definitions and runtime validation.
  *

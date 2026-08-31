@@ -27,9 +27,21 @@ export interface CreateArtifactParams {
  * handlers can resolve the on-disk file location (`lib/artifact-storage.ts`
  * keys files by `userId`) and enforce owner-only deletion
  * (docs/design/html-artifacts.md §5.1).
+ *
+ * `sourceSessionId` is the OWNING session -- the session whose panel query
+ * (`artifactKeys.listBySession`) this artifact appears under -- never the
+ * identity of whichever session happens to be calling a tool right now.
+ * `delete_html_artifact` MUST resolve this field (via `findById`) and use it
+ * for the realtime-refresh trigger's `sessionId`, not the deleting call's own
+ * `sessionId` parameter: the two coincide for `create_html_artifact` (the
+ * creating session IS the owning session) but diverge for delete, whenever a
+ * caller removes an artifact from a DIFFERENT session than the one that
+ * created it -- the exact shape of this repo's own orchestrator-cleans-up-
+ * delegate-session-artifacts operational pattern, not a rare edge case.
  */
 export interface ArtifactRecord extends Artifact {
   userId: string;
+  sourceSessionId: string | null;
 }
 
 /**

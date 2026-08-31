@@ -281,8 +281,5 @@ Summary:
 
 ## Type Definitions
 
-See `packages/shared/src/types/session.ts` for:
-- `APP_SERVER_MESSAGE_TYPES` - Valid server → client message types
-- `APP_CLIENT_MESSAGE_TYPES` - Valid client → server message types
-- `AppServerMessage` - Union type for server messages
-- `AppClientMessage` - Union type for client messages
+- `AppServerMessage` - Discriminated union for server → client messages, derived from `AppServerMessageSchema` in `packages/shared/src/schemas/app-server-message.ts` (the valibot schema is the single source of truth; there is no separate enum of valid type strings)
+- `APP_CLIENT_MESSAGE_TYPES` / `AppClientMessage` - Valid client → server message types, in `packages/shared/src/types/session.ts`

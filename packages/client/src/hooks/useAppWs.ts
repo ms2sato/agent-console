@@ -79,6 +79,14 @@ interface UseAppWsEventOptions {
   onMemoUpdated?: (sessionId: string, content: string) => void;
   /** Called when the review queue is updated (new items, comments, status changes) */
   onReviewQueueUpdated?: () => void;
+  /** Called when an HTML artifact is created (realtime refresh trigger; carries no content, invalidate and re-fetch) */
+  onArtifactCreated?: (sessionId: string, artifactId: string) => void;
+  /** Called when an HTML artifact is deleted (realtime refresh trigger) */
+  onArtifactDeleted?: (sessionId: string, artifactId: string) => void;
+  /** Called when a bookmark is created (realtime refresh trigger; carries no content, invalidate and re-fetch) */
+  onBookmarkCreated?: (sessionId: string, bookmarkId: string) => void;
+  /** Called when a bookmark is deleted (realtime refresh trigger) */
+  onBookmarkDeleted?: (sessionId: string, bookmarkId: string) => void;
 }
 
 /**
@@ -232,6 +240,22 @@ export function useAppWsEvent(options: UseAppWsEventOptions = {}): void {
         case 'review-queue-updated':
           logger.debug('[WebSocket] review-queue-updated');
           optionsRef.current.onReviewQueueUpdated?.();
+          break;
+        case 'artifact-created':
+          logger.debug(`[WebSocket] artifact-created: ${msg.artifactId}`);
+          optionsRef.current.onArtifactCreated?.(msg.sessionId, msg.artifactId);
+          break;
+        case 'artifact-deleted':
+          logger.debug(`[WebSocket] artifact-deleted: ${msg.artifactId}`);
+          optionsRef.current.onArtifactDeleted?.(msg.sessionId, msg.artifactId);
+          break;
+        case 'bookmark-created':
+          logger.debug(`[WebSocket] bookmark-created: ${msg.bookmarkId}`);
+          optionsRef.current.onBookmarkCreated?.(msg.sessionId, msg.bookmarkId);
+          break;
+        case 'bookmark-deleted':
+          logger.debug(`[WebSocket] bookmark-deleted: ${msg.bookmarkId}`);
+          optionsRef.current.onBookmarkDeleted?.(msg.sessionId, msg.bookmarkId);
           break;
         case 'schema-version':
           // First-frame wire-schema version. App state is unaffected by this

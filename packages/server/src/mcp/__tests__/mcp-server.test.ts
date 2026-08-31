@@ -38,7 +38,7 @@ import { createWorktreeWithSession } from '../../services/worktree-creation-serv
 import { deleteWorktree, _getDeletionsInProgress } from '../../services/worktree-deletion-service.js';
 import type { SuggestSessionMetadataFn } from '../../services/session-metadata-suggester.js';
 import { AgentDirectory } from '../../services/agent-directory.js';
-import type { AgentDirectoryEntry, EmbeddedAgentDefinition } from '@agent-console/shared';
+import type { AgentDirectoryEntry, EmbeddedAgentDefinition, AppServerMessage } from '@agent-console/shared';
 import type { runAsUser, SpawnAsUserFn, SpawnAsUserOpts, SpawnAsUserResult } from '../../services/privilege-elevation.js';
 
 // Mock session-metadata-suggester to avoid spawning real agent processes.
@@ -431,10 +431,14 @@ describe('MCP Server Tools', () => {
    * the MCP tools see the updated dependencies.
    */
   async function remountMcpApp(
-    authOpts?: { mcpAuthMode?: McpAuthMode; mcpTokenRegistry?: McpTokenRegistry },
+    authOpts?: {
+      mcpAuthMode?: McpAuthMode;
+      mcpTokenRegistry?: McpTokenRegistry;
+      broadcastToApp?: (msg: AppServerMessage) => void;
+    },
   ): Promise<void> {
     const agentDirectory = new AgentDirectory({ terminal: agentManager, embedded: testEmbeddedAgentManagerStub });
-    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, bookmarkRepository, broadcastToApp: () => {}, findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
+    const mcpApp = createMcpApp({ sessionManager, repositoryManager, agentManager, agentDirectory, timerManager, conditionalWakeupManager, interactiveProcessManager, worktreeService, annotationService, interSessionMessageService: new InterSessionMessageService(), suggestSessionMetadata: mockSuggestSessionMetadata, createWorktreeWithSession, deleteWorktree, userRepository, artifactRepository, bookmarkRepository, broadcastToApp: authOpts?.broadcastToApp ?? (() => {}), findOpenPullRequest: mockFindOpenPullRequest, fetchPullRequestUrl: mockFetchPullRequestUrl, mcpAuthMode: authOpts?.mcpAuthMode, mcpTokenRegistry: authOpts?.mcpTokenRegistry });
     app = new Hono();
     app.route('', mcpApp);
 
@@ -4917,6 +4921,78 @@ describe('MCP Server Tools', () => {
       expect(deleteTool).toBeDefined();
       expect(deleteTool?.inputSchema?.properties?.artifactId).toBeDefined();
       expect(deleteTool?.inputSchema?.properties?.sessionId).toBeDefined();
+    });
+  });
+
+  // ===========================================================================
+  // create_bookmark / delete_bookmark: realtime refresh broadcast wiring
+  // (mcp-server.ts wiring, this createMcpApp instance)
+  //
+  // Full behavior coverage (validation, ownership resolution, authz) lives
+  // in the dedicated __tests__/create-bookmark.test.ts and
+  // delete-bookmark.test.ts, mirroring the artifact tools' own split above.
+  // This block exists so a change to mcp-server.ts's broadcastToApp call
+  // sites is caught by THIS file too (its own sibling-test coverage), not
+  // only by the dedicated per-tool files -- bookmarks are DB-only (no disk
+  // writes), so they exercise cleanly against this file's memfs-based
+  // AGENT_CONSOLE_HOME without needing the real-disk override the artifact
+  // tools require.
+  // ===========================================================================
+
+  describe('create_bookmark / delete_bookmark: broadcast wiring (mcp-server.ts)', () => {
+    it('create_bookmark emits exactly one bookmark-created trigger after a successful create', async () => {
+      const owner = await userRepository.upsertByOsUid(9001, 'bookmark-broadcast-owner', '/home/bookmark-broadcast-owner');
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path' },
+        { createdBy: owner.id },
+      );
+
+      const mockBroadcastToApp = mock(() => {});
+      await remountMcpApp({ broadcastToApp: mockBroadcastToApp });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'create_bookmark',
+        { url: 'https://example.com', sessionId: session.id },
+        nextId++,
+      );
+      expect(response.result?.isError).toBeUndefined();
+      const data = parseToolResult(response) as { id: string };
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-created', sessionId: session.id, bookmarkId: data.id });
+    });
+
+    it('delete_bookmark emits exactly one bookmark-deleted trigger after a successful delete', async () => {
+      const owner = await userRepository.upsertByOsUid(9002, 'bookmark-broadcast-owner-2', '/home/bookmark-broadcast-owner-2');
+      const session = await sessionManager.createSession(
+        { type: 'quick', locationPath: '/test/path' },
+        { createdBy: owner.id },
+      );
+      const created = await bookmarkRepository.create({
+        id: 'bookmark-broadcast-wiring-1',
+        userId: owner.id,
+        url: 'https://example.com',
+        title: null,
+        sourceSessionId: session.id,
+        origin: 'agent',
+      });
+
+      const mockBroadcastToApp = mock(() => {});
+      await remountMcpApp({ broadcastToApp: mockBroadcastToApp });
+
+      const response = await callTool(
+        app,
+        mcpSessionId,
+        'delete_bookmark',
+        { bookmarkId: created.id, sessionId: session.id },
+        nextId++,
+      );
+      expect(response.result?.isError).toBeUndefined();
+
+      expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+      expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-deleted', sessionId: session.id, bookmarkId: created.id });
     });
   });
 

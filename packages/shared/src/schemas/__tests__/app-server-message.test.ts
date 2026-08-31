@@ -587,6 +587,51 @@ describe('AppServerMessageSchema', () => {
     });
   });
 
+  // Realtime refresh triggers. Mutation-reach measured directly (not merely
+  // reported): temporarily changed ArtifactCreatedSchema/BookmarkCreatedSchema
+  // from v.strictObject to v.object and re-ran this file. Result printed by
+  // bun:test: this file went from `78 pass` to `76 pass / 2 fail`; the 2
+  // failures were exactly the two "content field" rejection tests below
+  // (`artifact-created > should reject a payload carrying a content field
+  // (R1 structural pin)` and its bookmark-created sibling), both printing
+  // `Expected: false, Received: true` at the shared `expectInvalid` helper
+  // (app-server-message.test.ts:17). Reverted; back to `78 pass / 0 fail`.
+  describe('artifact-created', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'artifact-created', sessionId: 'session-1', artifactId: 'artifact-1' });
+      expect(output.type).toBe('artifact-created');
+    });
+
+    it('should reject a payload carrying a content field (R1 structural pin)', () => {
+      expectInvalid({ type: 'artifact-created', sessionId: 'session-1', artifactId: 'artifact-1', title: 'leaked content' });
+    });
+  });
+
+  describe('artifact-deleted', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'artifact-deleted', sessionId: 'session-1', artifactId: 'artifact-1' });
+      expect(output.type).toBe('artifact-deleted');
+    });
+  });
+
+  describe('bookmark-created', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'bookmark-created', sessionId: 'session-1', bookmarkId: 'bookmark-1' });
+      expect(output.type).toBe('bookmark-created');
+    });
+
+    it('should reject a payload carrying a content field (R1 structural pin)', () => {
+      expectInvalid({ type: 'bookmark-created', sessionId: 'session-1', bookmarkId: 'bookmark-1', url: 'https://leaked.example' });
+    });
+  });
+
+  describe('bookmark-deleted', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'bookmark-deleted', sessionId: 'session-1', bookmarkId: 'bookmark-1' });
+      expect(output.type).toBe('bookmark-deleted');
+    });
+  });
+
   describe('schema-version', () => {
     it('should accept the schema-version frame', () => {
       const output = expectValid({ type: 'schema-version', version: 'cf7b17ac06edc357' });
