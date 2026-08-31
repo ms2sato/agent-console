@@ -40,11 +40,8 @@ jobs:
       - name: Prebuild (generate routeTree.gen.ts)
         run: bun run --filter @agent-console/client build
 
-      - name: Dependency rules (dependency-cruiser)
+      - name: Dependency rules (dependency-cruiser, incl. circular)
         run: bun run lint:deps
-
-      - name: Circular dependencies (madge)
-        run: bun run lint:cycles
 
       - name: Dead code / unused deps (knip)
         run: bun run lint:unused

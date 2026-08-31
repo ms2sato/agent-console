@@ -36,12 +36,11 @@
     "preinstall": "bun scripts/check-bun-version.mjs",
     "postinstall": "bun scripts/install-hooks.mjs",
     "lint": "bun run lint:structure",
-    "lint:structure": "bun run lint:deps && bun run lint:cycles && bun run lint:unused",
+    "lint:structure": "bun run lint:deps && bun run lint:unused",
     "lint:deps": "depcruise --config .dependency-cruiser.cjs --ignore-known .dependency-cruiser-known-violations.json packages",
     "lint:deps:all": "depcruise --config .dependency-cruiser.cjs packages",
     "lint:deps:baseline": "depcruise --config .dependency-cruiser.cjs --output-type baseline packages > .dependency-cruiser-known-violations.json",
-    "lint:cycles": "madge --circular --extensions ts,tsx packages",
-    "lint:cycles:all": "madge --circular --extensions ts,tsx --exclude '^$' packages",
+    "lint:cycles": "depcruise --config .dependency-cruiser.cjs --ignore-known .dependency-cruiser-known-violations.json packages",
     "lint:unused": "knip",
     "graph:deps": "depcruise --config .dependency-cruiser.cjs --output-type dot packages | dot -T svg -o dependency-graph.svg",
     "release": "bumpp"
@@ -51,7 +50,6 @@
     "concurrently": "^9.2.1",
     "dependency-cruiser": "^17.3.10",
     "knip": "^6.4.1",
-    "madge": "^8.0.0",
     "playwright-core": "^1.61.1",
     "typescript": "^5.7.2"
   },

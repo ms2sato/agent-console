@@ -103,32 +103,6 @@
     ]
   },
   {
-    "type": "cycle",
-    "from": "packages/server/src/services/session-manager.ts",
-    "to": "packages/server/src/services/session-pause-resume-service.ts",
-    "rule": {
-      "severity": "error",
-      "name": "no-circular"
-    },
-    "cycle": [
-      {
-        "name": "packages/server/src/services/session-pause-resume-service.ts",
-        "dependencyTypes": [
-          "local",
-          "import"
-        ]
-      },
-      {
-        "name": "packages/server/src/services/session-manager.ts",
-        "dependencyTypes": [
-          "local",
-          "type-only",
-          "import"
-        ]
-      }
-    ]
-  },
-  {
     "type": "dependency",
     "from": "packages/shared/src/types/agent.ts",
     "to": "packages/shared/src/schemas/agent.ts",
