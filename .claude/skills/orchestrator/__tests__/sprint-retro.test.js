@@ -212,12 +212,13 @@ function runKnownSetCommand(sprintPrNumbersRaw, retroPrNumber = '1514') {
 
 describe('memory_gap_scan Step 8 instructions: known-set command (executed, not duplicated)', () => {
   it('normalizes comma-separated SPRINT_PR_NUMBERS, matching the script\'s own .split(/[\\s,]+/) contract', () => {
-    // Reach: reverting the fix (dropping `| tr \', \' \'\\n\' | sed \'/^$/d\'`)
-    // makes this fail -- the output would be ["1392,1393", "1514"] instead
-    // of ["1392", "1393", "1514"]. Confirmed by hand: reverted to the
-    // pre-fix line, this test failed with exactly that output; restored,
-    // it passes. (No other test in this suite would have caught it --
-    // the prose-content tests only check for substrings, not behavior.)
+    // Reach: reverting the fix (dropping `| tr -s \'[:space:],\' \'\\n\'`, the
+    // whole normalization stage) makes this fail -- the output would be
+    // ["1392,1393", "1514"] instead of ["1392", "1393", "1514"]. Confirmed
+    // by hand: reverted to the pre-fix line, this test failed with exactly
+    // that output; restored, it passes. (No other test in this suite would
+    // have caught it -- the prose-content tests only check for substrings,
+    // not behavior.)
     const known = runKnownSetCommand('1392,1393');
     expect(known).toEqual(['1392', '1393', '1514']);
   });
@@ -230,6 +231,28 @@ describe('memory_gap_scan Step 8 instructions: known-set command (executed, not 
   it('handles a mixed comma-and-space separated value', () => {
     const known = runKnownSetCommand('1392, 1393, 1395');
     expect(known).toEqual(['1392', '1393', '1395', '1514']);
+  });
+
+  it('handles carriage-return and tab separators, not just space and comma', () => {
+    // CodeRabbit (round 2): `tr ', ' '\n'` translates only the literal space
+    // and comma characters -- SPRINT_PR_NUMBERS is documented, and the
+    // script's own parser accepts, ANY whitespace (`.split(/[\s,]+/)`,
+    // where `\s` matches tab, newline, and carriage return too). A value
+    // joined by `\r` (e.g. pasted from a CRLF source) stayed one malformed
+    // token under the space/comma-only translation, and comm -13 would
+    // report both PRs as candidates.
+    //
+    // Reach: reverting the fix from `tr -s '[:space:],' '\n'` back to
+    // `tr ', ' '\n'` makes this fail -- the CR-joined value stays one token
+    // ("1392\r1393") instead of splitting into "1392" and "1393". Confirmed
+    // by hand.
+    const known = runKnownSetCommand('1392\r1393');
+    expect(known).toEqual(['1392', '1393', '1514']);
+  });
+
+  it('handles tab-separated SPRINT_PR_NUMBERS', () => {
+    const known = runKnownSetCommand('1392\t1393');
+    expect(known).toEqual(['1392', '1393', '1514']);
   });
 });
 
