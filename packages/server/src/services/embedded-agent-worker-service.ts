@@ -357,6 +357,17 @@ export function fatalLeavesHarnessAlive(engine: EmbeddedAgentDefinition['engine'
   return engine === 'claude-sdk';
 }
 
+/**
+ * Idle eviction applies to an engine once its restore path has shipped and
+ * is exercised by a registered smoke -- a property, not an enumerated
+ * instance list, so a future third engine is judged by the property it
+ * satisfies rather than added to a list by hand. `claude-sdk` (R1) and
+ * `openai-api` (R2, #1201/#1205) both satisfy it as of #1502.
+ */
+export function isEvictableEngine(engine: EmbeddedAgentDefinition['engine']): boolean {
+  return engine === 'claude-sdk' || engine === 'openai-api';
+}
+
 /** Immutable references shared by the readers, the exit observer, and the command writers. */
 interface StreamContext {
   sessionId: string;
@@ -427,7 +438,7 @@ interface Runtime {
    * commit-point re-check exists to close.
    */
   evicting: boolean;
-  /** Idle eviction applies to the `claude-sdk` engine only. */
+  /** Idle eviction applies to this incarnation's engine -- see {@link isEvictableEngine}. */
   evictable: boolean;
 }
 
@@ -971,7 +982,7 @@ export class EmbeddedAgentWorkerService {
         fatalReplacementStarted: false,
         ready: false,
         evicting: false,
-        evictable: definition.engine === 'claude-sdk',
+        evictable: isEvictableEngine(definition.engine),
       };
       this.runtimes.set(workerId, runtime);
 

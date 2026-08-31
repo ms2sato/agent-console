@@ -515,9 +515,20 @@ async function main(): Promise<void> {
     // countdown starts at ITS last activity, which is later than A's. Under a
     // mutation that makes every engine evictable, B is still inside its own
     // window at the instant A's elapses, and every assertion below still
-    // passes. That property is pinned in the unit layer instead, by the test
-    // asserting an openai-api worker idle past the same threshold is not
-    // evicted -- and removing the engine gate is what fails it there.
+    // passes.
+    //
+    // Before Issue #1502, that property was pinned in the unit layer by a
+    // test asserting an `openai-api` worker idle past the same threshold was
+    // NOT evicted. #1502 made `openai-api` evictable too (via
+    // `isEvictableEngine`), so there is currently no non-evictable engine to
+    // use as a negative example, and this gap is accepted rather than papered
+    // over: a mutation that deleted the engine check entirely (`evictable:
+    // true` unconditionally) would currently pass every test in the suite,
+    // because both existing engines already evaluate to `true` under the
+    // correct predicate. This is worth re-closing only when a third engine
+    // exists whose restore path has NOT shipped -- that engine becomes the
+    // negative example `isEvictableEngine`'s own unit tests should assert
+    // against.
     console.log('==> polarity check (same instant)');
     expect(!aHarnessAlive, 'A: harness process is gone from /proc', `pid ${aHarness}`);
     expect(
