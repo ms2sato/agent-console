@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Readable } from 'node:stream';
 import { execSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,7 +11,9 @@ import {
   printSummary,
   runRetro,
   runMetricsBlock,
+  runGapCandidatesMode,
   isAffirmative,
+  parsePrNumberList,
   MissingSprintPrNumbersError,
 } from '../sprint-retro.js';
 import {
@@ -23,7 +25,6 @@ import {
   computeCiStats,
   computeCodeRabbitCount,
   formatMetricsReport,
-  findMergedPrNumbers,
   computeGapCandidates,
   parseJsonSafe,
   createCache,
@@ -82,40 +83,63 @@ describe('getSteps', () => {
     expect(text).toContain('After the retrospective PR is merged');
   });
 
-  it('memory_gap_scan step describes mechanical gh + comm diff procedure', () => {
+  it('memory_gap_scan step describes the mechanical gh + gap-candidates-mode diff procedure', () => {
     const steps = getSteps();
     const gapScan = steps.find(s => s.key === 'memory_gap_scan');
     const text = gapScan.instructions.join('\n');
     expect(text).toContain('gh pr list --state merged');
-    expect(text).toContain('comm -13');
+    expect(text).toContain('--gap-candidates');
     expect(text).toContain('grep -l');
     expect(text).toContain('project_sprint_status.md');
     expect(text).toContain('project_pending_triage_list.md');
   });
 
-  it('memory_gap_scan step does not tell the reader to combine --search with --json', () => {
+  it('(d) wording pin: no comm, no shell sort for the diff, no --search date qualifier', () => {
+    // The diff used to be `comm -13 <(sort known) <(sort window)`, built
+    // from two shell-side temp files. That entire mechanism -- comm, the
+    // sort that fed it, and the /tmp files themselves -- moved into
+    // computeGapCandidates behind --gap-candidates, so none of it should
+    // appear in the instruction text any more.
     const steps = getSteps();
     const gapScan = steps.find(s => s.key === 'memory_gap_scan');
     const text = gapScan.instructions.join('\n');
-    // `gh pr list` silently drops the search query's date qualifiers when
-    // --json is also passed, so the sprint window is never applied and the
-    // scan reports nearly every merged PR as a gap candidate. Measured
-    // 2026-08-28: a 2026-08-25..2026-08-29 window returned PRs merged as far
-    // back as 2026-08-03. The instruction must steer to a client-side filter.
-    // Anchored on the command form, not the bare flag: the prose above it
-    // names `--search` precisely to warn the reader off it.
+    expect(text).not.toContain('comm');
+    expect(text).not.toContain('sort');
+    expect(text).not.toContain('tr -s');
+    expect(text).not.toContain('/tmp/known.txt');
+    expect(text).not.toContain('/tmp/window.txt');
+    // Anchored on the command form, not the bare flag: the prose warns the
+    // reader off `--search` for date filtering but never issues it that way.
     expect(text).not.toContain('gh pr list --search');
+  });
+
+  it('memory_gap_scan step states the --search date-qualifier defect as the true, unconditional class', () => {
+    // Corrected per the Architect's ruling: the qualifiers are ignored
+    // unconditionally -- present or absent --json, present or absent
+    // --state merged -- not only "when --json is also passed" as an
+    // earlier narrower framing claimed. Provenance (measurement date, gh
+    // version, and the positive control) travels next to the claim.
+    const steps = getSteps();
+    const gapScan = steps.find(s => s.key === 'memory_gap_scan');
+    const text = gapScan.instructions.join('\n');
+    expect(text).toContain('UNCONDITIONALLY');
+    expect(text).not.toContain('when --json is also passed');
+    expect(text).toContain('gh version');
+    expect(text).toContain('gh search prs');
+    expect(text).toContain('#238/#236/#235');
     expect(text).toContain('--jq');
     expect(text).toContain('.mergedAt');
   });
 
-  it('memory_gap_scan step builds the known set from SPRINT_PR_NUMBERS plus the retro PR', () => {
+  it('memory_gap_scan step builds the known set from SPRINT_PR_NUMBERS plus the retro PR, through the script\'s own parser', () => {
     const steps = getSteps();
     const gapScan = steps.find(s => s.key === 'memory_gap_scan');
     const text = gapScan.instructions.join('\n');
     expect(text).toContain('$SPRINT_PR_NUMBERS');
     expect(text).toContain('retro-pr-number');
     expect(text).toContain('KNOWN set');
+    expect(text).toContain('--gap-candidates <retro-pr-number>');
+    expect(text).toContain('sprint-retro.js');
   });
 
   it('memory_gap_scan step frames diff survivors as candidates needing disposition, not confirmed gaps', () => {
@@ -173,86 +197,141 @@ describe('getSteps', () => {
   });
 });
 
-// The known-set-building command below is extracted from the PRODUCTION
-// instruction text and actually executed in bash. This is not a duplicate
-// of the logic -- it IS the logic: the literal string a human copies out of
-// Step 8 and runs. Executing it here is what "test production code" means
-// when the artifact under test is a shell one-liner embedded in prose,
-// rather than a JS function.
+// The pipeline below is extracted from the PRODUCTION Step 8 instruction
+// text and actually executed in bash, ending in a real invocation of THIS
+// repository's sprint-retro.js in --gap-candidates mode. This is not a
+// duplicate of the logic -- it IS the logic: the literal string a human
+// copies out of Step 8 and runs. Executing it here is what "test production
+// code" means when the artifact under test is a shell pipeline embedded in
+// prose that ends in a call to the script under test, rather than a pure
+// JS function.
 //
-// An earlier version of this line used an unquoted
-// `printf '%s\n' $SPRINT_PR_NUMBERS <retro-pr-number>` alone, which never
-// splits on commas -- SPRINT_PR_NUMBERS is documented as whitespace- OR
-// comma-separated, and the script's own parser splits on `/[\s,]+/`. A
-// comma-separated SPRINT_PR_NUMBERS silently reintroduced the defect this
-// step exists to fix: nearly every sprint PR reads as a gap candidate again.
-function extractKnownSetCommand() {
+// The one substitution: `gh` itself is stubbed on PATH, because the real
+// binary would make a network call this suite cannot and must not make.
+// Everything downstream of the pipe -- including the exact
+// `SPRINT_PR_NUMBERS="$SPRINT_PR_NUMBERS" node .../sprint-retro.js
+// --gap-candidates <n>` invocation -- runs unmodified.
+function extractGapCandidatesPipeline() {
   const steps = getSteps();
   const gapScan = steps.find(s => s.key === 'memory_gap_scan');
-  const line = gapScan.instructions.find(l => l.includes('/tmp/known.txt') && l.includes('printf'));
-  if (!line) throw new Error('known-set command line not found in Step 8 instructions');
-  return line.trim();
+  const startIdx = gapScan.instructions.findIndex(l => l.includes('gh pr list --state merged --limit 100'));
+  const endIdx = gapScan.instructions.findIndex(l => l.includes('--gap-candidates <retro-pr-number>'));
+  if (startIdx === -1 || endIdx === -1) {
+    throw new Error('gap-candidates pipeline not found in Step 8 instructions');
+  }
+  return gapScan.instructions
+    .slice(startIdx, endIdx + 1)
+    .map(l => l.trim())
+    .join('\n');
 }
 
-function runKnownSetCommand(sprintPrNumbersRaw, retroPrNumber = '1514') {
-  const rawCmd = extractKnownSetCommand().replace('<retro-pr-number>', String(retroPrNumber));
-  const dir = mkdtempSync(join(tmpdir(), 'sprint-retro-known-set-'));
-  const knownPath = join(dir, 'known.txt');
-  const cmd = rawCmd.replace('/tmp/known.txt', knownPath);
+function runGapCandidatesPipeline({ windowPrNumbers, sprintPrNumbers, retroPrNumber = '1514' }) {
+  const cmd = extractGapCandidatesPipeline().replace(/<retro-pr-number>/g, String(retroPrNumber));
+  const dir = mkdtempSync(join(tmpdir(), 'sprint-retro-gap-candidates-'));
+  const fakeGhPath = join(dir, 'gh');
+  const printfArgs = windowPrNumbers.map(n => `'${n}'`).join(' ');
+  writeFileSync(
+    fakeGhPath,
+    `#!/bin/bash\n${printfArgs ? `printf '%s\\n' ${printfArgs}\n` : ''}`,
+    { mode: 0o755 }
+  );
   try {
-    execSync(cmd, {
+    return execSync(cmd, {
       shell: '/bin/bash',
-      env: { ...process.env, SPRINT_PR_NUMBERS: sprintPrNumbersRaw },
+      encoding: 'utf-8',
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, SPRINT_PR_NUMBERS: sprintPrNumbers },
     });
-    return readFileSync(knownPath, 'utf-8').trim().split('\n').filter(Boolean);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-describe('memory_gap_scan Step 8 instructions: known-set command (executed, not duplicated)', () => {
-  it('normalizes comma-separated SPRINT_PR_NUMBERS, matching the script\'s own .split(/[\\s,]+/) contract', () => {
-    // Reach: reverting the fix (dropping `| tr -s \'[:space:],\' \'\\n\'`, the
-    // whole normalization stage) makes this fail -- the output would be
-    // ["1392,1393", "1514"] instead of ["1392", "1393", "1514"]. Confirmed
-    // by hand: reverted to the pre-fix line, this test failed with exactly
-    // that output; restored, it passes. (No other test in this suite would
-    // have caught it -- the prose-content tests only check for substrings,
-    // not behavior.)
-    const known = runKnownSetCommand('1392,1393');
-    expect(known).toEqual(['1392', '1393', '1514']);
+function candidatesOf(output) {
+  return output.trim().split('\n').filter(Boolean);
+}
+
+describe('memory_gap_scan Step 8 instructions: gap-candidates pipeline (executed, not duplicated)', () => {
+  it('normalizes comma-separated SPRINT_PR_NUMBERS, matching the script\'s own parsePrNumberList contract', () => {
+    // Reach: this is the same reach the pre-fix shell `printf | tr | sort`
+    // stage had for the known-set half -- a comma-only SPRINT_PR_NUMBERS
+    // must not stay one malformed token.
+    const output = runGapCandidatesPipeline({
+      windowPrNumbers: [1392, 1393, 1400],
+      sprintPrNumbers: '1392,1393',
+      retroPrNumber: '1514',
+    });
+    expect(candidatesOf(output)).toEqual(['1400']);
   });
 
   it('still handles whitespace-separated SPRINT_PR_NUMBERS (regression control)', () => {
-    const known = runKnownSetCommand('1392 1393');
-    expect(known).toEqual(['1392', '1393', '1514']);
+    const output = runGapCandidatesPipeline({
+      windowPrNumbers: [1392, 1393, 1400],
+      sprintPrNumbers: '1392 1393',
+      retroPrNumber: '1514',
+    });
+    expect(candidatesOf(output)).toEqual(['1400']);
   });
 
   it('handles a mixed comma-and-space separated value', () => {
-    const known = runKnownSetCommand('1392, 1393, 1395');
-    expect(known).toEqual(['1392', '1393', '1395', '1514']);
+    const output = runGapCandidatesPipeline({
+      windowPrNumbers: [1392, 1393, 1395, 1400],
+      sprintPrNumbers: '1392, 1393, 1395',
+      retroPrNumber: '1514',
+    });
+    expect(candidatesOf(output)).toEqual(['1400']);
   });
 
   it('handles carriage-return and tab separators, not just space and comma', () => {
-    // CodeRabbit (round 2): `tr ', ' '\n'` translates only the literal space
-    // and comma characters -- SPRINT_PR_NUMBERS is documented, and the
-    // script's own parser accepts, ANY whitespace (`.split(/[\s,]+/)`,
-    // where `\s` matches tab, newline, and carriage return too). A value
-    // joined by `\r` (e.g. pasted from a CRLF source) stayed one malformed
-    // token under the space/comma-only translation, and comm -13 would
-    // report both PRs as candidates.
-    //
-    // Reach: reverting the fix from `tr -s '[:space:],' '\n'` back to
-    // `tr ', ' '\n'` makes this fail -- the CR-joined value stays one token
-    // ("1392\r1393") instead of splitting into "1392" and "1393". Confirmed
-    // by hand.
-    const known = runKnownSetCommand('1392\r1393');
-    expect(known).toEqual(['1392', '1393', '1514']);
+    const output = runGapCandidatesPipeline({
+      windowPrNumbers: [1392, 1393, 1400],
+      sprintPrNumbers: '1392\r1393',
+      retroPrNumber: '1514',
+    });
+    expect(candidatesOf(output)).toEqual(['1400']);
   });
 
   it('handles tab-separated SPRINT_PR_NUMBERS', () => {
-    const known = runKnownSetCommand('1392\t1393');
-    expect(known).toEqual(['1392', '1393', '1514']);
+    const output = runGapCandidatesPipeline({
+      windowPrNumbers: [1392, 1393, 1400],
+      sprintPrNumbers: '1392\t1393',
+      retroPrNumber: '1514',
+    });
+    expect(candidatesOf(output)).toEqual(['1400']);
+  });
+
+  it('(b) handles a NO-BREAK SPACE (U+00A0) separator identically to comma and whitespace', () => {
+    // This is the polarity pin for the Unicode-whitespace residual: an
+    // earlier shell re-statement widened its translated character class
+    // from literal space/comma, to the full POSIX [:space:] class, but
+    // [:space:] still does not cover U+00A0 the way this file's own
+    // `.split(/[\s,]+/)` (JS `\s` is Unicode-aware) always did. Piping
+    // through that same parser instead of re-stating it closes the gap by
+    // construction, and this proves it: an NBSP-joined value now produces
+    // the identical result as the comma- and space-joined forms above.
+    const output = runGapCandidatesPipeline({
+      windowPrNumbers: [1392, 1393, 1400],
+      sprintPrNumbers: '1392 1393',
+      retroPrNumber: '1514',
+    });
+    expect(candidatesOf(output)).toEqual(['1400']);
+  });
+
+  it('(a) mixed 3- and 4-digit PR numbers produce numerically correct candidates', () => {
+    // Synthetic, not real repository data: today's sprint windows cannot
+    // straddle a digit-width boundary -- the last 3-digit PR merged long
+    // ago and every PR since is 4-digit. The next such boundary is not
+    // reachable until PR numbers roll over into five digits. This
+    // reconstructs the exact case a lexicographic `comm -13` over `sort -n`
+    // output got wrong: fed known={1000} and window={999,1000}, it reported
+    // the KNOWN PR 1000 as a false gap candidate, because the string
+    // "1000" sorts before "999" even though the number does not. This mode
+    // never sorts as text, so 1000 must NOT appear below.
+    const output = runGapCandidatesPipeline({
+      windowPrNumbers: [999, 1000],
+      sprintPrNumbers: '1000',
+      retroPrNumber: '500',
+    });
+    expect(candidatesOf(output)).toEqual(['999']);
   });
 });
 
@@ -593,9 +672,6 @@ function buildFixtureExec(prNumbers, { callLog, fail } = {}) {
       const num = Number(reviewMatch[1]);
       return JSON.stringify(FIXTURE_REVIEW_COMMENTS[num] ?? []);
     }
-    if (cmd.startsWith('gh pr list')) {
-      return JSON.stringify(prNumbers.map(n => ({ number: n })));
-    }
     throw new Error(`unexpected command: ${cmd}`);
   };
 }
@@ -838,18 +914,6 @@ describe('graceful degradation', () => {
   });
 });
 
-describe('findMergedPrNumbers', () => {
-  it('returns numbers from gh pr list', () => {
-    const exec = buildFixtureExec([100, 101, 102]);
-    const nums = findMergedPrNumbers({ exec, since: '2026-04-01' });
-    expect(nums).toEqual([100, 101, 102]);
-  });
-  it('returns [] on failure', () => {
-    const exec = () => { throw new Error('boom'); };
-    expect(findMergedPrNumbers({ exec })).toEqual([]);
-  });
-});
-
 describe('computeGapCandidates', () => {
   // Real Sprint 2026-08-30 data (verified against `gh pr list` on this repo,
   // 2026-08-31). The window is every PR merged from the previous retro PR
@@ -1051,5 +1115,63 @@ describe('runMetricsBlock', () => {
     expect(progressEvents).toHaveLength(4);
     expect(progressEvents[0]).toEqual({ index: 1, total: 4, prNumber: 633 });
     expect(progressEvents[3]).toEqual({ index: 4, total: 4, prNumber: 639 });
+  });
+});
+
+describe('parsePrNumberList', () => {
+  it('splits on commas', () => {
+    expect(parsePrNumberList('1392,1393')).toEqual([1392, 1393]);
+  });
+
+  it('splits on any whitespace, including a non-breaking space', () => {
+    expect(parsePrNumberList('1392 1393')).toEqual([1392, 1393]);
+    expect(parsePrNumberList('1392\t1393')).toEqual([1392, 1393]);
+    expect(parsePrNumberList('1392\r1393')).toEqual([1392, 1393]);
+    expect(parsePrNumberList('1392 1393')).toEqual([1392, 1393]);
+  });
+
+  it('collapses mixed runs of separators and drops non-numeric tokens', () => {
+    expect(parsePrNumberList('1392, , 1393,,1395')).toEqual([1392, 1393, 1395]);
+  });
+
+  it('returns [] for empty or whitespace-only input', () => {
+    expect(parsePrNumberList('')).toEqual([]);
+    expect(parsePrNumberList('   ,  ')).toEqual([]);
+  });
+});
+
+describe('runGapCandidatesMode', () => {
+  function stdinOf(text) {
+    return Readable.from([Buffer.from(text)]);
+  }
+
+  it('throws MissingSprintPrNumbersError when SPRINT_PR_NUMBERS is unset', async () => {
+    await expect(
+      runGapCandidatesMode({ retroPrNumber: '1514', stdin: stdinOf('1400\n'), env: {} })
+    ).rejects.toBeInstanceOf(MissingSprintPrNumbersError);
+  });
+
+  it('diffs stdin window numbers against SPRINT_PR_NUMBERS plus the retro PR number', async () => {
+    const written = [];
+    const candidates = await runGapCandidatesMode({
+      retroPrNumber: '1514',
+      stdin: stdinOf('1392\n1393\n1400\n'),
+      env: { SPRINT_PR_NUMBERS: '1392,1393' },
+      write: chunk => written.push(chunk),
+    });
+    expect(candidates).toEqual([1400]);
+    expect(written).toEqual(['1400\n']);
+  });
+
+  it('prints nothing when the window is a subset of the known set', async () => {
+    const written = [];
+    const candidates = await runGapCandidatesMode({
+      retroPrNumber: '1514',
+      stdin: stdinOf('1392\n1393\n'),
+      env: { SPRINT_PR_NUMBERS: '1392,1393' },
+      write: chunk => written.push(chunk),
+    });
+    expect(candidates).toEqual([]);
+    expect(written).toEqual([]);
   });
 });

@@ -349,38 +349,17 @@ export function computeFlags(prs, aggregates, { multiplier = DEFAULT_FLAG_MULTIP
   return flags;
 }
 
-// --- PR discovery ---
-
-/**
- * Find merged PRs in a date range. Returns array of PR numbers.
- * Accepts ISO date (YYYY-MM-DD) for both bounds.
- */
-export function findMergedPrNumbers({ exec, since, until, repo = DEFAULT_REPO, limit = 100 }) {
-  assertSafeRepo(repo);
-  const queryParts = ['is:pr', 'is:merged'];
-  if (since) queryParts.push(`merged:>=${since}`);
-  if (until) queryParts.push(`merged:<=${until}`);
-  const search = queryParts.join(' ');
-  try {
-    const data = runGhJson(
-      exec,
-      `pr list -R ${repo} --state merged --search ${shellEscape(search)} --limit ${limit} --json number`
-    );
-    if (!Array.isArray(data)) return [];
-    return data
-      .map(d => d?.number)
-      .filter(n => typeof n === 'number');
-  } catch {
-    return [];
-  }
-}
-
 // --- Gap scan (Step 8) ---
 
 /**
  * Step 8's mechanical criterion: PRs merged in the sprint window that the
  * KNOWN set (SPRINT_PR_NUMBERS plus the retro PR's own number) does not
- * account for. Equivalent to `comm -13 <(sort known) <(sort window)`.
+ * account for. The set-difference math is `comm -13 <(sort known) <(sort window)`,
+ * done here with numeric comparison so mixed digit-widths (e.g. 999 next to
+ * 1000) can never desynchronize the two orders the way `comm`'s lexicographic
+ * merge does. Reached from Step 8 through `runGapCandidatesMode` in
+ * sprint-retro.js — the shell text pipes into that mode rather than
+ * re-implementing the diff.
  *
  * The known set is a hypothesis at Step 8 execution time, not a per-PR
  * ledger — so this returns CANDIDATES requiring a one-line disposition,
