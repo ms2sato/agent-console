@@ -296,8 +296,12 @@ export function formatFileViolations(file, violations) {
  * }>}
  */
 export async function runCheck({ cwd = process.cwd(), files } = {}) {
-  const candidateFiles = (files ?? (await findDefaultFiles({ cwd }))).map(normalizeRelativePath);
-  const targetFiles = candidateFiles.filter((f) => !isExcludedFile(f));
+  const candidateFiles = files ?? (await findDefaultFiles({ cwd }));
+  // normalizeRelativePath is applied only to the exclusion predicate, not
+  // to the paths used for scanning or reporting — a non-excluded caller
+  // path like `./docs/a.md` must still be scanned and reported verbatim
+  // as `./docs/a.md`, not silently rewritten to `docs/a.md`.
+  const targetFiles = candidateFiles.filter((f) => !isExcludedFile(normalizeRelativePath(f)));
   const violations = [];
   const offenders = new Set();
   for (const file of targetFiles) {

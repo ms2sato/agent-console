@@ -563,6 +563,25 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
       }
     });
 
+    it('preserves the caller-provided path string for a non-excluded ./ path (normalization is exclusion-matching-only)', async () => {
+      const root = makeFixture();
+      try {
+        writeFileSync(join(root, 'docs/a.md'), 'Hello\n日本\n');
+        const result = await runCheck({
+          cwd: root,
+          files: ['./docs/a.md'],
+        });
+        // Not excluded, so it is scanned and reported under the exact
+        // caller-provided string — normalization must not rewrite it to
+        // the bare 'docs/a.md' form.
+        expect(result.files).toEqual(['./docs/a.md']);
+        expect(result.violations).toHaveLength(2);
+        expect(result.violations[0].file).toBe('./docs/a.md');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it('path normalization does not change which files the default glob path scans (only the explicit-files path is affected)', async () => {
       const root = makeFixture();
       try {
