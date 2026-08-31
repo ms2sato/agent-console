@@ -120,6 +120,40 @@ Owner directive, dated 2026-07-17, binding for future work on any agent-selectio
 | `routes/settings/index.tsx` (`/settings` page) | **flagged, deferred** | Lists only terminal agents (its own `AgentCard`/`unregisterMutation` duplicate of `TerminalAgentsSection`), predating the `/agents` management page. No embedded-agent section exists here. This is a genuine gap under the uniform-listing principle with no concept-level justification found -- but extending it duplicates a large amount of already-built CRUD wiring (`AddEmbeddedAgentForm`, `EditEmbeddedAgentForm`, `EmbeddedAgentDeleteDialog`) into a second page, or alternatively the page's agent-management section should be deprecated in favor of `/agents`. Either resolution is a product decision beyond a client-only picker-convergence PR's scope; PR-C leaves it unresolved and flags it for owner/architect decision (see PR body). |
 | `SessionPage.tsx` `useAgents()` | not a list surface | Used only to look up `stripScrollbackClear` on the *active* worker's terminal agent (`activeWorker.type === 'agent'` branch); never renders a list. `stripScrollbackClear` has no embedded-agent analog (PTY scrollback semantics don't apply to the embedded LLM-loop worker type), so this is not subject to the uniform-listing principle at all. |
 
+## Model & Reasoning-Effort Parameters (Issue #1521, Phase 0 — design rulings)
+
+Owner requirements (2026-08-31): (1) a place to set model / reasoning effort when creating a worktree agent, gated by whether the agent takes them; (2) an embedded agent must be able to change them mid-run; (3) both a UI route and a tool route. Verified current state (`main` = `42371c9f`): a terminal agent's model exists only as a `commandTemplate` string (`{{model:+--model}}`); `AgentDefinition` has no model field and no capability surface; `templateVars` is MCP-only; no effort concept exists anywhere in `packages/`; the embedded `init` command does not carry a model, so no mid-run change path exists.
+
+### Ruling 1 — Capability is DERIVED from a single writer, never declared beside it
+
+"Does this agent take a model / an effort?" is answered by one function, `getAgentParameterCapabilities(definition)` (shared), and nowhere else. For a terminal agent it derives from the `commandTemplate` — the template consumes `{{model…}}` / `{{effort…}}` or it does not, and the template is already the single writer of that fact. For an embedded agent it derives from a per-engine capability table. Both kinds surface through `agent-surface.ts`'s kind-discriminated union as one accessor.
+
+**A stored boolean (`supportsModel`) next to the template is prohibited**: it would be a second writer to the same fact, and template-vs-flag drift would become a new defect class. The objection that motivated this Issue — "you can only tell by string-matching the template" — is an objection to *ad-hoc string-matching scattered across consumers*, which the single derivation point removes; it is not an objection to derivation itself. A pleasant consequence: adding effort support to a builtin agent is one template edit, and every surface (UI field, tool schema, validation) follows automatically.
+
+### Ruling 2 — One wire field per parameter; semantics are per-engine, declared in a table
+
+Wire names are `model` and `reasoningEffort`, each optional. **No unified effort scale is invented**: OpenAI-style `reasoning_effort` and Claude-style thinking budgets are independent facts, and folding them into one translated scale would put two facts under one name (#1434's rule). Instead, a single-writer table declares, per engine (and for terminal agents, per template-var), what values are accepted and how they map — pass-through, not translation. An engine with no mapping row has no capability, and every surface hides the field. Validation strictness follows the table: where an engine publishes an accepted set, validate against it; where it accepts free strings (terminal templates, openai-api model ids), pass through and let the provider be the authority.
+
+### Ruling 3 — Worker-persisted override beats definition default; the override SURVIVES restarts
+
+Precedence: a worker's override > its definition's default. The override is persisted on the worker row and survives server restart, idle eviction, and revival. The named hazard this kills: `claude-sdk`'s known surprise that a mid-run model selection does not survive a resume — a non-persistent override would re-implement exactly that. Semantics follow the `auto` precedent already in this spec family: the decision belongs to the conversation in front of the user, so it lives on the worker. A later edit to the definition does not retroactively change workers holding an override (override = copy at set time); workers without an override live-read the definition default. A mid-run change (Phase 3) takes effect no later than the next turn and persists from the moment it is accepted.
+
+### Ruling 4 — A model override brings its own window, or declares it unknown
+
+`contextWindowTokens` is a property of *a model*, declared by the operator. A model override that silently keeps the previous model's window makes the compaction ratio's denominator false — the same optimistic-denominator failure #1419/#1434 established. So an override either carries its own window value, or the window becomes explicitly undeclared (compaction goes inert per the existing "no W, no budget" behavior, and the surfaces say so). The #1434 drift detection remains a runtime net, not a substitute for this rule.
+
+### Phase map
+
+- **Phase 1** — terminal agents, at creation: capability accessor + `create_worktree` / `delegate_to_worktree` params + UI field (rendered only when capable).
+- **Phase 2** — embedded agents, at creation: definition default + creation-time override.
+- **Phase 3** — embedded agents, mid-run: protocol extension carrying the update, worker-persisted override, UI control + MCP tool; details land in `embedded-agent-worker.md` with a pointer from here.
+
+**Route symmetry is a per-phase acceptance dimension, not a phase**: every phase ships its UI route and its tool route together, and its AC answers Q11 explicitly — deferring one route is how the #1046-shaped gap happened, and it is not available here.
+
+### Non-goals
+
+A unified cross-engine effort scale; a model catalog or auto-detection of provider windows; retroactive migration of existing workers; any change to compaction behavior itself.
+
 ## Migration order
 
 Issue #1160 is decomposed into four PRs:
@@ -139,3 +173,4 @@ Issue #1160 is decomposed into four PRs:
 - [`pre-pr-completeness.md`](../../.claude/rules/pre-pr-completeness.md) Q11 sub-question 5 — the process-rule residue for exposure-table accuracy that Mechanism 3's types and mechanical tests cannot enforce.
 - PR [#1165](https://github.com/ms2sato/agent-console/pull/1165) — the short-term two-registry facade in `delegate_to_worktree` that this design's `AgentDirectory.resolve` absorbs verbatim.
 - Issue [#1171](https://github.com/ms2sato/agent-console/issues/1171) — server-side cross-type restart (embedded-agent restart support), the prerequisite for `RestartSessionDialog`'s embedded entries to become selectable instead of disabled-with-notice. Blocked on Issue #1123 (conversation transcript restore).
+- Issue [#1521](https://github.com/ms2sato/agent-console/issues/1521) — the model / reasoning-effort parameter surface whose Phase 0 rulings are the section above. Phase 3's protocol and persistence details will land in [`embedded-agent-worker.md`](embedded-agent-worker.md) with a pointer from here, rather than being restated in both documents.
