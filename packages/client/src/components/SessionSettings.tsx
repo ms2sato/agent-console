@@ -1,13 +1,10 @@
 import { useState } from 'react';
-import {
-  SessionSettingsMenu,
-  EditSessionDialog,
-  RestartSessionDialog,
-  DeleteWorktreeDialog,
-  PauseSessionDialog,
-  InitialPromptDialog,
-  type MenuAction,
-} from './sessions';
+import { SessionSettingsMenu, type MenuAction } from './sessions/SessionSettingsMenu';
+import { EditSessionDialog } from './sessions/EditSessionDialog';
+import { RestartSessionDialog } from './sessions/RestartSessionDialog';
+import { DeleteWorktreeDialog } from './sessions/DeleteWorktreeDialog';
+import { PauseSessionDialog } from './sessions/PauseSessionDialog';
+import { InitialPromptDialog } from './sessions/InitialPromptDialog';
 import type { Session, AgentActivityState, AgentWorker } from '@agent-console/shared';
 
 interface SessionSettingsProps {

@@ -83,7 +83,8 @@
       "ignore": [
         "src/routeTree.gen.ts",
         "src/components/workers/index.ts",
-        "src/hooks/index.ts"
+        "src/hooks/index.ts",
+        "src/components/sessions/index.ts"
       ]
     },
     "packages/integration": {

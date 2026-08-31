@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react';
 import { createWorktreeAsync } from '../lib/api';
 import { generateClientId } from '../lib/id';
-import { useWorktreeCreationTasksContext } from '../routes/__root';
+import { useWorktreeCreationTasksContext } from '../contexts/root-contexts';
 import type { CreateWorktreeFormRequest } from '../components/worktrees/CreateWorktreeForm';
 
 interface UseCreateWorktreeParams {
