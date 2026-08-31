@@ -403,6 +403,33 @@ describe('delete_html_artifact', () => {
       expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-deleted', sessionId, artifactId });
     });
 
+    it(
+      'cross-session delete: the trigger names the OWNING session (where the artifact was created), ' +
+        'never the deleting call\'s own session -- this repo\'s own orchestrator-cleans-up-delegate-session ' +
+        'pattern, not a rare edge case',
+      async () => {
+        const mockBroadcastToApp = mock(() => {});
+        await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: mockBroadcastToApp });
+
+        // One user, two sessions: sessionY creates the artifact (the owning
+        // session), sessionX deletes it (a different session, same user --
+        // ownership is per-user, not per-session, so this is legitimate).
+        const owner = await userRepository.upsertByOsUid(7011, 'artifact-owner-cross-session', '/home/artifact-owner-cross-session');
+        const sessionY = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH }, { createdBy: owner.id });
+        const sessionX = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH }, { createdBy: owner.id });
+
+        const artifactId = await createArtifactViaTool(sessionY.id);
+        mockBroadcastToApp.mockClear();
+
+        const response = await callTool(app, mcpSessionId, 'delete_html_artifact', { artifactId, sessionId: sessionX.id }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+        // The pin: sessionId is Y (owning/creating), NOT X (deleting).
+        expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'artifact-deleted', sessionId: sessionY.id, artifactId });
+      },
+    );
+
     it('emits no trigger when the repository write fails (negative half)', async () => {
       // Create the artifact via the normally-mounted app first (ownership
       // check must pass), THEN mount a second app instance whose `delete`

@@ -29,9 +29,19 @@ export interface CreateBookmarkParams {
  * wire response (see `packages/shared/src/types/bookmark.ts`'s wire-shape
  * JSDoc, which deliberately excludes it) -- it exists here only so route
  * handlers can enforce owner-only deletion.
+ *
+ * `sourceSessionId` is the OWNING session -- the session whose panel query
+ * (`bookmarkKeys.listBySession`) this bookmark appears under -- never the
+ * identity of whichever session happens to be calling a tool right now.
+ * `delete_bookmark` MUST resolve this field (via `findById`) and use it for
+ * the realtime-refresh trigger's `sessionId`, not the deleting call's own
+ * `sessionId` parameter: the two coincide for `create_bookmark` but diverge
+ * whenever a caller removes a bookmark from a DIFFERENT session than the one
+ * that created it. See `ArtifactRecord`'s identical rationale.
  */
 export interface BookmarkRecord extends Bookmark {
   userId: string;
+  sourceSessionId: string | null;
 }
 
 /**

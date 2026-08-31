@@ -206,12 +206,19 @@ describe('create_bookmark', () => {
       );
 
       expect(response.result?.isError).toBeUndefined();
-      const data = parseToolResult(response) as { id: string; url: string; origin: string };
+      const data = parseToolResult(response) as Record<string, unknown>;
       expect(data.origin).toBe('agent');
+      // Server-internal BookmarkRecord fields (userId, and sourceSessionId --
+      // the owning-session field the realtime-refresh delete trigger resolves)
+      // must never cross this tool's wire result, matching routes/bookmarks.ts's
+      // identical strip.
+      expect(data.userId).toBeUndefined();
+      expect(data.sourceSessionId).toBeUndefined();
 
-      const stored = await bookmarkRepository.findById(data.id);
+      const stored = await bookmarkRepository.findById(data.id as string);
       expect(stored?.userId).toBe(userId);
       expect(stored?.origin).toBe('agent');
+      expect(stored?.sourceSessionId).toBe(sessionId);
     });
 
     it('rejects with a loud error when the session has no createdBy (ownerless/legacy session)', async () => {

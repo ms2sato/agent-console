@@ -78,6 +78,7 @@ describe('SqliteArtifactRepository', () => {
         title: 'My Dashboard',
         createdAt: artifact.createdAt,
         sizeBytes: Buffer.byteLength('<html><body>hi</body></html>', 'utf-8'),
+        sourceSessionId: 'session-1',
       });
       // `create`/`findById` return the server-internal ArtifactRecord (wire
       // summary + userId, needed by route handlers for file-path resolution
@@ -85,7 +86,7 @@ describe('SqliteArtifactRepository', () => {
       // `content`/`sourceSessionId` still never leak; `userId` is NOT part
       // of the wire `Artifact` type and must never be serialized into an
       // HTTP response (see packages/shared/src/types/artifact.ts).
-      expect(Object.keys(artifact).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'title', 'userId']);
+      expect(Object.keys(artifact).sort()).toEqual(['createdAt', 'id', 'sizeBytes', 'sourceSessionId', 'title', 'userId']);
 
       const written = await readArtifactFile('user-1', 'artifact-1');
       expect(written).toBe('<html><body>hi</body></html>');

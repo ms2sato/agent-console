@@ -218,7 +218,7 @@ describe('Bookmark routes', () => {
   // =========================================================================
 
   describe('POST /api/bookmarks', () => {
-    it('creates a bookmark with a title and returns the wire shape (no userId leak)', async () => {
+    it('creates a bookmark with a title and returns the wire shape (no userId/sourceSessionId leak)', async () => {
       const app = buildApp(repository, OWNER);
       const res = await app.request('/api/bookmarks', {
         method: 'POST',
@@ -231,6 +231,10 @@ describe('Bookmark routes', () => {
       expect(body.bookmark.url).toBe('https://example.com');
       expect(body.bookmark.title).toBe('My bookmark');
       expect(body.bookmark.userId).toBeUndefined();
+      // sourceSessionId is a server-internal BookmarkRecord field (Issue #1520's
+      // owning-session resolution for the realtime-refresh delete trigger) --
+      // it must never cross the wire, same as userId.
+      expect(body.bookmark.sourceSessionId).toBeUndefined();
       expect(body.bookmark.origin).toBe('user');
 
       v.parse(BookmarkSchema, body.bookmark);
@@ -238,6 +242,7 @@ describe('Bookmark routes', () => {
       const stored = await repository.findById(body.bookmark.id as string);
       expect(stored?.userId).toBe(OWNER.id);
       expect(stored?.origin).toBe('user');
+      expect(stored?.sourceSessionId).toBe('session-1');
     });
 
     it('creates a bookmark with title omitted, stored as null title', async () => {

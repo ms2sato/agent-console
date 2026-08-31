@@ -2059,7 +2059,18 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         logger.info({ artifactId, sessionId, userId: session.createdBy }, 'HTML artifact deleted via MCP');
 
-        broadcastToApp({ type: 'artifact-deleted', sessionId, artifactId });
+        // The trigger's sessionId names the OWNING session (whose panel
+        // query this artifact was listed under) -- resolved from the
+        // record, never from the deleting call's own sessionId param. The
+        // two coincide for create but diverge whenever a caller deletes an
+        // artifact from a different session than the one that created it
+        // (e.g. an orchestrator session cleaning up a delegate session's
+        // artifacts) -- using the deleting session there would tell the
+        // WRONG panel to refetch and leave the artifact's actual owning
+        // panel stale. Falls back to the deleting session only in the
+        // (currently unreachable in production, since create_html_artifact
+        // always sets sourceSessionId) case of a null sourceSessionId.
+        broadcastToApp({ type: 'artifact-deleted', sessionId: artifact.sourceSessionId ?? sessionId, artifactId });
 
         return textResult({ deleted: true, artifactId });
       } catch (err) {
@@ -2143,9 +2154,9 @@ export function createMcpApp(deps: McpDependencies): Hono {
         broadcastToApp({ type: 'bookmark-created', sessionId, bookmarkId: created.id });
 
         // `create` returns the server-internal BookmarkRecord (wire summary
-        // + userId); strip userId before it crosses the wire (see
-        // packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
-        const { userId: _userId, ...bookmark } = created;
+        // + userId + sourceSessionId); strip both before crossing the wire
+        // (see packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
+        const { userId: _userId, sourceSessionId: _sourceSessionId, ...bookmark } = created;
         return textResult(bookmark);
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
@@ -2214,7 +2225,11 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
         logger.info({ bookmarkId, sessionId, userId: session.createdBy }, 'Bookmark deleted via MCP');
 
-        broadcastToApp({ type: 'bookmark-deleted', sessionId, bookmarkId });
+        // Same rationale as delete_html_artifact: the trigger's sessionId
+        // names the OWNING session (resolved from the record), not the
+        // deleting call's own sessionId param -- see ArtifactRecord's doc
+        // comment for the full explanation of why these diverge.
+        broadcastToApp({ type: 'bookmark-deleted', sessionId: bookmark.sourceSessionId ?? sessionId, bookmarkId });
 
         return textResult({ deleted: true, bookmarkId });
       } catch (err) {

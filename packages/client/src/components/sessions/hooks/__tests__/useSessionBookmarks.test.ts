@@ -59,6 +59,24 @@ function jsonResponse(data: unknown, status = 200): Response {
   });
 }
 
+/**
+ * `getLastInstance()` returning `undefined` and then optional-chaining past
+ * it (`ws?.simulateMessage(...)`) is safe in a POSITIVE assertion (the
+ * expected refetch simply never happens, and the test correctly fails) but
+ * turns a NEGATIVE assertion ("no refetch for a different session") into a
+ * vacuous truth: no message is delivered, so of course nothing refetched.
+ * This throws instead of silently no-op'ing, so a negative test can't pass
+ * without the stimulus actually having been sent (CodeRabbit finding on
+ * PR #1523). Reach measured directly on the identical helper in
+ * `useSessionArtifacts.test.ts` (same mechanism, same fix) -- see that
+ * file's doc comment for the literal printed bun:test output.
+ */
+function requireLastWs(): MockWebSocket {
+  const ws = MockWebSocket.getLastInstance();
+  if (!ws) throw new Error('Expected a MockWebSocket instance to exist by this point in the test');
+  return ws;
+}
+
 describe('useSessionBookmarks', () => {
   let restoreWebSocket: () => void;
 
@@ -167,19 +185,27 @@ describe('useSessionBookmarks', () => {
   // metadata (sessionId + bookmarkId) -- N1 -- so these tests assert
   // invalidate-and-refetch behavior via a real refetch of the REST
   // endpoint, never via binding the payload to rendered data.
+  //
+  // Each test below is a POSITIVE CONTROL followed by the NEGATIVE
+  // assertion, in the SAME test -- see useSessionArtifacts.test.ts's
+  // identical describe-block comment for the full rationale (an absence
+  // assertion cannot distinguish "correctly ignored" from "never
+  // delivered"; Architect ruling on PR #1523).
   describe('realtime refresh (bookmark-created / bookmark-deleted)', () => {
-    it('refetches when a bookmark-created message arrives for the SAME session (scoping positive)', async () => {
+    it('refetches for a SAME-session bookmark-created message, then does NOT refetch for a DIFFERENT session', async () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
       const { result } = renderHook(() => useSessionBookmarks('session-A'), { wrapper: createWrapper() });
       await waitFor(() => expect(result.current.isPending).toBe(false));
       expect(result.current.bookmarks).toEqual([]);
 
-      const ws = MockWebSocket.getLastInstance();
+      const ws = requireLastWs();
       act(() => {
-        ws?.simulateOpen();
+        ws.simulateOpen();
       });
 
+      // Positive control: a SAME-session message actually triggers a
+      // refetch in this exact render/connection.
       const newBookmark = {
         id: 'bookmark-new',
         url: 'https://example.com/new',
@@ -190,39 +216,28 @@ describe('useSessionBookmarks', () => {
       mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [newBookmark] }));
 
       await act(async () => {
-        ws?.simulateMessage(
+        ws.simulateMessage(
           JSON.stringify({ type: 'bookmark-created', sessionId: 'session-A', bookmarkId: 'bookmark-new' })
         );
       });
 
       await waitFor(() => expect(result.current.bookmarks).toEqual([newBookmark]));
-    });
 
-    it('does NOT refetch when a bookmark-created message arrives for a DIFFERENT session (scoping negative)', async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
-
-      const { result } = renderHook(() => useSessionBookmarks('session-B'), { wrapper: createWrapper() });
-      await waitFor(() => expect(result.current.isPending).toBe(false));
-
-      const ws = MockWebSocket.getLastInstance();
-      act(() => {
-        ws?.simulateOpen();
-      });
-
+      // Negative: a DIFFERENT-session message must not cause another refetch.
       const callsBefore = mockFetch.mock.calls.length;
 
       await act(async () => {
-        ws?.simulateMessage(
+        ws.simulateMessage(
           JSON.stringify({ type: 'bookmark-created', sessionId: 'session-OTHER', bookmarkId: 'bookmark-x' })
         );
         await new Promise((resolve) => setTimeout(resolve, 10));
       });
 
       expect(mockFetch.mock.calls.length).toBe(callsBefore);
-      expect(result.current.bookmarks).toEqual([]);
+      expect(result.current.bookmarks).toEqual([newBookmark]);
     });
 
-    it('refetches when a bookmark-deleted message arrives for the SAME session (scoping positive)', async () => {
+    it('refetches for a SAME-session bookmark-deleted message, then does NOT refetch for a DIFFERENT session', async () => {
       const existing = {
         id: 'bookmark-1',
         url: 'https://example.com',
@@ -236,51 +251,35 @@ describe('useSessionBookmarks', () => {
       await waitFor(() => expect(result.current.isPending).toBe(false));
       expect(result.current.bookmarks).toEqual([existing]);
 
-      const ws = MockWebSocket.getLastInstance();
+      const ws = requireLastWs();
       act(() => {
-        ws?.simulateOpen();
+        ws.simulateOpen();
       });
 
+      // Positive control: a SAME-session message actually triggers a
+      // refetch in this exact render/connection.
       mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
 
       await act(async () => {
-        ws?.simulateMessage(
+        ws.simulateMessage(
           JSON.stringify({ type: 'bookmark-deleted', sessionId: 'session-C', bookmarkId: 'bookmark-1' })
         );
       });
 
       await waitFor(() => expect(result.current.bookmarks).toEqual([]));
-    });
 
-    it('does NOT refetch when a bookmark-deleted message arrives for a DIFFERENT session (scoping negative)', async () => {
-      const existing = {
-        id: 'bookmark-1',
-        url: 'https://example.com',
-        title: 'Existing',
-        createdAt: '2026-08-20T00:00:00.000Z',
-        origin: 'user' as const,
-      };
-      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [existing] }));
-
-      const { result } = renderHook(() => useSessionBookmarks('session-D'), { wrapper: createWrapper() });
-      await waitFor(() => expect(result.current.isPending).toBe(false));
-
-      const ws = MockWebSocket.getLastInstance();
-      act(() => {
-        ws?.simulateOpen();
-      });
-
-      const callsBefore = mockFetch.mock.calls.length;
+      // Negative: a DIFFERENT-session message must not cause another refetch.
+      const emptyCallsBefore = mockFetch.mock.calls.length;
 
       await act(async () => {
-        ws?.simulateMessage(
+        ws.simulateMessage(
           JSON.stringify({ type: 'bookmark-deleted', sessionId: 'session-OTHER', bookmarkId: 'bookmark-1' })
         );
         await new Promise((resolve) => setTimeout(resolve, 10));
       });
 
-      expect(mockFetch.mock.calls.length).toBe(callsBefore);
-      expect(result.current.bookmarks).toEqual([existing]);
+      expect(mockFetch.mock.calls.length).toBe(emptyCallsBefore);
+      expect(result.current.bookmarks).toEqual([]);
     });
   });
 });

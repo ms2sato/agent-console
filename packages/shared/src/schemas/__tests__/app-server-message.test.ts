@@ -587,11 +587,15 @@ describe('AppServerMessageSchema', () => {
     });
   });
 
-  // Realtime refresh triggers (Issue #1520). Mutation-reach check performed
-  // manually: temporarily changing ArtifactCreatedSchema/BookmarkCreatedSchema
-  // from v.strictObject to v.object made the "content field" rejection tests
-  // below FAIL (extra field silently stripped instead of rejected), confirming
-  // the tests actually depend on strict-mode. Reverted after confirming.
+  // Realtime refresh triggers. Mutation-reach measured directly (not merely
+  // reported): temporarily changed ArtifactCreatedSchema/BookmarkCreatedSchema
+  // from v.strictObject to v.object and re-ran this file. Result printed by
+  // bun:test: this file went from `78 pass` to `76 pass / 2 fail`; the 2
+  // failures were exactly the two "content field" rejection tests below
+  // (`artifact-created > should reject a payload carrying a content field
+  // (R1 structural pin)` and its bookmark-created sibling), both printing
+  // `Expected: false, Received: true` at the shared `expectInvalid` helper
+  // (app-server-message.test.ts:17). Reverted; back to `78 pass / 0 fail`.
   describe('artifact-created', () => {
     it('should accept valid payload', () => {
       const output = expectValid({ type: 'artifact-created', sessionId: 'session-1', artifactId: 'artifact-1' });

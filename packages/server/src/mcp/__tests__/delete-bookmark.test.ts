@@ -381,6 +381,28 @@ describe('delete_bookmark', () => {
       expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-deleted', sessionId, bookmarkId });
     });
 
+    it(
+      'cross-session delete: the trigger names the OWNING session (where the bookmark was created), ' +
+        'never the deleting call\'s own session -- see the identical rationale in delete-html-artifact.test.ts',
+      async () => {
+        const mockBroadcastToApp = mock(() => {});
+        await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: mockBroadcastToApp });
+
+        const owner = await userRepository.upsertByOsUid(9011, 'bookmark-owner-cross-session', '/home/bookmark-owner-cross-session');
+        const sessionY = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH }, { createdBy: owner.id });
+        const sessionX = await sessionManager.createSession({ type: 'quick', locationPath: TEST_REPO_PATH }, { createdBy: owner.id });
+
+        const bookmarkId = await createBookmarkViaTool(sessionY.id);
+        mockBroadcastToApp.mockClear();
+
+        const response = await callTool(app, mcpSessionId, 'delete_bookmark', { bookmarkId, sessionId: sessionX.id }, nextId++);
+
+        expect(response.result?.isError).toBeUndefined();
+        expect(mockBroadcastToApp).toHaveBeenCalledTimes(1);
+        expect(mockBroadcastToApp).toHaveBeenCalledWith({ type: 'bookmark-deleted', sessionId: sessionY.id, bookmarkId });
+      },
+    );
+
     it('emits no trigger when the repository write fails (negative half)', async () => {
       // Create the bookmark via the normally-mounted app first (ownership
       // check must pass), THEN mount a second app instance whose `delete`

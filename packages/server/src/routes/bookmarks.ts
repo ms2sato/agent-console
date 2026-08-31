@@ -57,9 +57,9 @@ const bookmarks = new Hono<AppBindings>()
       origin: 'user',
     });
     // `create` returns the server-internal BookmarkRecord (wire summary +
-    // userId); strip userId before it crosses the wire (see
+    // userId + sourceSessionId); strip both before crossing the wire (see
     // packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
-    const { userId: _userId, ...bookmark } = created;
+    const { userId: _userId, sourceSessionId: _sourceSessionId, ...bookmark } = created;
     return c.json({ bookmark }, 201);
   })
   // Delete a bookmark -- owner only. A non-owner gets 403 and the bookmark

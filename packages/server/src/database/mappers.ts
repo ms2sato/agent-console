@@ -717,6 +717,7 @@ export function toArtifactRecord(row: ArtifactRow): ArtifactRecord {
   return {
     ...toArtifact(row),
     userId: row.user_id,
+    sourceSessionId: row.source_session_id,
   };
 }
 
@@ -764,5 +765,6 @@ export function toBookmarkRecord(row: BookmarkRow): BookmarkRecord {
   return {
     ...toBookmark(row),
     userId: row.user_id,
+    sourceSessionId: row.source_session_id,
   };
 }
