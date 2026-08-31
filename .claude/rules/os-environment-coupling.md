@@ -1,3 +1,11 @@
+---
+paths:
+  - "packages/server/**"
+  - "scripts/**"
+  - "docker/**"
+  - ".github/workflows/**"
+---
+
 # OS Environment Coupling
 
 When code depends on OS-level mechanisms — `sudo`, file ownership / mode / setgid, login shell init, PAM, ACL, group membership, systemd unit env, sudoers config — unit tests on the developer's machine cannot establish correctness. Distro / sudoers / shell-init / kernel variations produce real failure modes that look identical to "works on my machine" from the inside.

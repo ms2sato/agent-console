@@ -102,6 +102,22 @@ When a retrospective surfaces a learning worth codifying, the usual flow is: cre
 
 On the memory side, record the landing Issue in the `description` front-matter field so the cleanup is visible at `MEMORY.md`-scan time.
 
+### Pruning is per-content-lifetime, not per-section
+
+`project_pending_triage_list.md` carries a stated retention rule — "resolved entries: keep the last two sprints". That rule is scoped to the **Resolved** section, and the file has two other sections it says nothing about: **Pending**, and the sprint's accumulating **retro-candidate** block. Both grow without a stated end, and the presence of a retention rule makes the file read as managed.
+
+Measured at the start of the Sprint 2026-08-30 retro: 1,085 lines, of which Pending and Resolved together were 188 and the previous sprint's retro-candidate block was **865 — 79% of the file, already consumed by a retrospective that had shipped.**
+
+**Give every block an end condition when you create it, and write the condition into the block's own heading:**
+
+| Block | Ends when |
+|---|---|
+| Resolved | it falls outside the last two sprints |
+| Retro candidates for sprint N | **sprint N's retro PR merges** — Step 7 deletes the block, because by then the retro PR is its durable home |
+| Pending | the item becomes an Issue, or a retro rules it out of scope. An item nobody will act on is not pending; it is noise with a bullet |
+
+The retro-candidate block is deliberately **not** pruned at Step 1 — Step 3 still needs it as raw material — and it is deliberately **not** moved to a scratchpad while waiting. This repo has already lost a completed 154-line investigation that lived only in a dead session's `/tmp`, pointed at from a README that said "see the Issue thread" when the Issue held nothing. Keep the material where the pointer points, and delete it only once the retro PR has it.
+
 ## Retrospective Collection and Process Improvement
 
 Coding agents send a retrospective report together with the merge notification after their PR is merged (defined in agent definitions).
@@ -154,6 +170,13 @@ Answer `Y` (default) at the `Continue to retro questions?` prompt to proceed to 
 - All improvements go into a single PR: branch `docs/sprint-retro-YYYY-MM-DD`, title `docs: sprint retrospective improvements (YYYY-MM-DD)`
 - Use `EnterWorktree` when the first improvement is agreed upon; commit all subsequent improvements to the same worktree
 - Merge before the retrospective completes — the next Orchestrator needs the updated skills
+- **That title contains the bare literal `docs:`, so `.coderabbit.yaml`'s `ignore_title_keywords` skips auto-review on every retro PR, by configuration.** For a genuinely docs-only retro that is the intended quota saving. But retro PRs routinely change the orchestrator's own scripts — `sprint-retro.js`, `acceptance-check.js`, `check-utils.js` — and the skip does not know that. **When the retro PR touches any executable file, request a pass explicitly with an `@coderabbitai review` comment**; the manual path is unaffected by the title skip.
+
+  Then walk the full verdict-surface checklist in [`coderabbit-ops`](../coderabbit-ops/SKILL.md) as for any other PR — the skip changes *which surface answers the first question*, not how many surfaces you read. Read the commit status's `description` **first**, because it is the only surface that separates "skipped by config" from "not yet run" from "rate limited"; `reviewDecision` reads identically for all three and so cannot classify the state. But it is still a required surface once a review has actually run, alongside the inline comments, every formal review body, and freshness against the current HEAD.
+
+  Freshness is the one this flow trips over in practice: a manual request lands on the head that existed when you posted it, and pushing a fixup afterwards re-issues the status as a fresh skip. Re-request against the new head rather than reading the earlier acknowledgement as covering it.
+
+  (Lesson: Sprint 2026-08-30. The previous retro PR, [#1388](https://github.com/ms2sato/agent-console/pull/1388), changed **exactly one file — `sprint-retro.js`** — with no documentation in the diff at all, and merged with `Review skipped: ignored keyword in the PR title`. It was never reviewed. The carve-out exists to stop docs PRs from consuming the review quota, and the one PR class this convention guarantees will trip it is the class that reliably is not docs-only.)
 
 **Sprint closure spans the retro PR merge** (Steps 7 & 8 of `sprint-retro.js`):
 - Steps 1–6 finish before the retrospective PR exists, so the retro PR's own merge state cannot be captured during script execution.

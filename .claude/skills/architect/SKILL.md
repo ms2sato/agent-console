@@ -66,6 +66,18 @@ When drafting Acceptance Criteria for an Issue that will be delegated:
 - **Include implementation guidance where non-obvious.** Boundary between "what to build" and "how to build it" is not a wall for AC — it is a gradient. Push over the gradient when the "how" is the risky part.
 - **Boundary-value spec.** Every predicate / validator / classifier: state behavior at empty input, single element, all-success, all-failure. Vacuous truth is a recurring blind-spot.
 - **Cite architectural-invariants (I-1..I-N).** If the AC touches an invariant, name it explicitly so the reader can walk the catalog.
+- **Keep one clause in the requester's vocabulary.** Everything above pushes the AC toward structural language — files, signatures, invariants, assertions — and that is correct, because structural language is what an implementer can execute. But **the translation into it is one-way: it cannot be validated from inside the language it produced.** Every gate built there can pass while the requirement fails, and nothing in the diff will look wrong.
+
+  So leave one acceptance clause in the words the requester used, and close the loop by checking the finished artifact against *that*, recording the result where a reviewer reads it — the PR body, not a message. Where the requirement is about appearance, write the sentence as what the screen looks like when it is met, and extend the Browser QA clause from "capture the true-path state" to "**compare the captured after-state against this sentence and state PASS / FAIL explicitly in the PR body**". A DOM-level pin of the same property is a complementary layer, never a substitute — it is the same translation, performed a second time. Where it is possible, put the final comparison in front of the requester's own eyes.
+
+  ```markdown
+  - [ ] Visual acceptance sentence: "<what the screen looks like when the requirement is
+        met, in the requester's vocabulary>". Browser QA MUST compare the AFTER captures
+        against this sentence and state PASS/FAIL explicitly in the PR body. A DOM-level
+        pin of the same property is complementary, never a substitute.
+  ```
+
+  (Lesson: Sprint 2026-08-30 Issue [#1511](https://github.com/ms2sato/agent-console/issues/1511) — the requirement was one side rail instead of three. The AC said "chrome", which was read as state ownership; the implementation hoisted the state correctly, every clause passed, CI and CodeRabbit were green, and the screen still showed three rails because each panel returned its own `border-l`. Four parties — implementer, Architect, Orchestrator, and the review bot — were each faithful to the clauses. It was found by the owner, from one screenshot. This clause is the round-trip check on the translation, and it is why the amended AC closed where the original could not.)
 
 An AC that a lower-tier worker can execute correctly without asking the Architect a follow-up question is a well-drafted AC. If the worker needs to consult you mid-implementation (via the direct channel), that is fine — but treat frequent consultation on the same class of question as a signal to strengthen the AC template for next time.
 
