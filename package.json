@@ -26,6 +26,7 @@
     "check:fatal-incarnation-replacement": "bun scripts/smoke/check-fatal-incarnation-replacement.ts",
     "check:fatal-incarnation-replacement-artifact-capture": "bun scripts/smoke/check-fatal-incarnation-replacement-artifact-capture.ts",
     "check:embedded-agent-idle-eviction": "bun scripts/smoke/check-embedded-agent-idle-eviction.ts",
+    "check:embedded-agent-idle-eviction-openai-api": "bun scripts/smoke/check-embedded-agent-idle-eviction-openai-api.ts",
     "check:restore-boundary-usage-seed": "bun scripts/smoke/check-restore-boundary-usage-seed.ts",
     "check:compaction-fidelity": "bun scripts/smoke/probe-compaction-fidelity.ts",
     "check:pty-early-output": "bun scripts/smoke/check-pty-early-output.ts",

@@ -340,14 +340,17 @@ describe('idle eviction — the countdown and its commit point', () => {
     ]);
   });
 
-  it('does NOT evict an openai-api worker idle past the same threshold', async () => {
+  it('evicts an idle openai-api worker and records the exit as `evicted`', async () => {
     const h = setup({ definition: OPENAI_DEFINITION, idleEvictionMs: 15 });
     await activateAndReady(h);
 
-    await sleep(120);
+    await waitFor(() => h.worker.subprocess === null, 2000);
 
-    expect(h.worker.subprocess).not.toBeNull();
-    expect(exitedRows(h.bufferOutput)).toEqual([]);
+    expect(h.worker.subprocess).toBeNull();
+    expect(h.service.getRestoreInfo(h.workerId)).toBeNull();
+    expect(exitedRows(h.bufferOutput)).toEqual([
+      expect.objectContaining({ type: 'exited', reason: 'evicted' }),
+    ]);
   });
 
   it('never evicts mid-turn, and evicts once the turn completes', async () => {

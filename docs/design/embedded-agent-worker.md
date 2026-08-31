@@ -1448,6 +1448,8 @@ Eviction contributes exactly one thing: **the decision to drop a process on purp
 
 Measured on a live `claude-sdk` worker tree (R1's memory appendix, `/proc/<pid>/smaps_rollup`, PSS for fleet reasoning per [#1332](https://github.com/ms2sato/agent-console/issues/1332)): 483 MB RSS / 372 MB PSS for the tree, of which the `claude` child is ~74%. With the child gone the surviving harness holds 126 MB RSS / 90 MB PSS. **Three quarters of an idle worker is the evictable part** — which is what makes keeping many agents alive a different proposition than it is today.
 
+**`openai-api` measured separately (Issue [#1502](https://github.com/ms2sato/agent-console/issues/1502)), and it is a different tree, not a smaller instance of the same one.** The `openai-api` engine has no `claude`-shaped child at all — it calls the provider over HTTP from inside the harness process — so there is nothing to subtract before comparing. An idle `openai-api` worker's whole tree, measured the same way, is 133 MB RSS / 110 MB PSS (`sh` negligible, the `bun` harness the entirety of it). That is the same order of magnitude as `claude-sdk`'s bare-harness figure above (126 MB RSS / 90 MB PSS), and because there is no child to keep alive across an eviction, dropping the process reclaims essentially all of it rather than three quarters. Idle `openai-api` workers had no eviction route at all before this Issue — only a server restart reclaimed them — so this figure multiplies unbounded by however many accumulate, which is the shape (not the number) that transfers from the `claude-sdk` case.
+
 #### The hazard line: eviction kills through the exit observer, or not at all
 
 [#1414](https://github.com/ms2sato/agent-console/issues/1414) documents a worker that is **permanently bricked and looks healthy**: its `claude` grandchild dies, the harness survives, the server observes no exit, `turnActive` is never cleared, and every later message returns `TURN_IN_PROGRESS` forever.
@@ -1458,7 +1460,7 @@ Measured on a live `claude-sdk` worker tree (R1's memory appendix, `/proc/<pid>/
 
 | | |
 |---|---|
-| **Eligibility** | `claude-sdk` embedded workers only. `openai-api` is out of scope — its reconstruction path is R2's, and mixing the two would make the policy depend on which engine's restore had landed. |
+| **Eligibility** | Any engine whose restore path has shipped and is exercised by a registered smoke — not an enumerated instance list, a property a future third engine is judged by. `claude-sdk` (R1) and `openai-api` (R2, [#1201](https://github.com/ms2sato/agent-console/pull/1201) / [#1205](https://github.com/ms2sato/agent-console/issues/1205)) both satisfy it as of [#1502](https://github.com/ms2sato/agent-console/issues/1502); the original exclusion of `openai-api` was conditional on R2 landing, not permanent, and the revisit is what #1502 is. |
 | **Signal** | Idle time alone. Usage volume is deliberately **not** mixed in: a policy that weighed "how much this worker has been used" would evict the workers a user is most invested in and is unanswerable without usage data that does not exist yet. |
 | **Threshold** | `EMBEDDED_AGENT_IDLE_EVICTION_MS`, default 30 minutes. Non-positive disables eviction entirely. Tests set it to milliseconds. |
 | **Wake** | The existing activation path, unchanged — which is also what keeps multi-user correct, since the subprocess-side resume pre-flight travels with it. |
@@ -1509,7 +1511,7 @@ Recorded here because they are policy the owner may reverse without any change t
 
 #### Not in scope
 
-The `openai-api` engine (R2's reconstruction path is a prerequisite, and the policy should not straddle two restore mechanisms mid-track) · usage-weighted or memory-pressure-driven policy · any UI beyond the row above · #1414 itself, which is a distinct exit-detection defect and stays filed on its own.
+Usage-weighted or memory-pressure-driven policy · any UI beyond the row above · #1414 itself, which is a distinct exit-detection defect and stays filed on its own. (`openai-api`'s exclusion was in this list through [#1502](https://github.com/ms2sato/agent-console/issues/1502): it was conditional on R2's reconstruction path landing, which it has, so it is eligible under the Policy table above rather than excluded here.)
 
 ### Testing (design-time polarity signal -- AC 5)
 
