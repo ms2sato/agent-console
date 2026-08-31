@@ -44,20 +44,35 @@ export type NotificationEvent =
  * Bidirectional type assertions to ensure type safety:
  * 1. NotificationEvent types must be valid OutboundTriggerEventType
  * 2. All OutboundTriggerEventType must have corresponding NotificationEvent
+ *
+ * The constraint is what makes the pin fire. An earlier form resolved to
+ * `never` on drift and declared a `const` of that type -- which compiles
+ * cleanly, because `declare` introduces no assignment and so `never` has
+ * nothing to reject. `export type` (rather than a `declare const` runtime
+ * reference) is what makes THIS form fire -- `Assert<T extends true>`
+ * already fails `tsc` at the alias's own declaration site when T is false,
+ * so no runtime binding is needed.
+ *
+ * MEASURED against this repo's own compiler, both directions:
+ * - Dropping `'worker:exited'` from `NotificationEvent` (leaving it in
+ *   `OutboundTriggerEventType`) broke `_AssertComplete`. Old form: exit 0,
+ *   no diagnostics. This form: `error TS2344: Type 'false' does not
+ *   satisfy the constraint 'true'.`, exit 2.
+ * - Adding a `NotificationEvent` member (`'worker:stray'`) with no matching
+ *   `OutboundTriggerEventType` value broke `_AssertValidTypes`. Old form:
+ *   exit 0, no diagnostics. This form: the same `error TS2344: Type
+ *   'false' does not satisfy the constraint 'true'.`, exit 2.
+ * Reverting each drift restored a clean `tsc --noEmit` in both cases.
  */
+type Assert<T extends true> = T;
 
 // 1. NotificationEvent types must be valid OutboundTriggerEventType
-type _AssertValidTypes = NotificationEvent['type'] extends OutboundTriggerEventType
-  ? true
-  : never;
+type _AssertValidTypes = Assert<NotificationEvent['type'] extends OutboundTriggerEventType ? true : false>;
 
 // 2. All OutboundTriggerEventType must have corresponding NotificationEvent
-type _AssertComplete = OutboundTriggerEventType extends NotificationEvent['type']
-  ? true
-  : never;  // Compile error if any OutboundTriggerEventType is missing from NotificationEvent
+type _AssertComplete = Assert<OutboundTriggerEventType extends NotificationEvent['type'] ? true : false>;
 
-// Prevent unused type warnings (these are for compile-time checks only)
-declare const _typeAssertions: _AssertValidTypes & _AssertComplete;
+export type { _AssertValidTypes, _AssertComplete };
 
 // === Service Handler Interface ===
 
