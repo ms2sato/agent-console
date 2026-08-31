@@ -781,7 +781,7 @@ export function getIssueInfo(issueNumber) {
 }
 
 /**
- * Three-valued AC detection (Issue #1460 / #1483 D3).
+ * Three-valued AC detection (D3).
  *
  * The checklist regex (`^- \[ \] `) is unchanged and remains the only form
  * that mechanises Q3's criterion-to-test mapping — see
@@ -988,7 +988,7 @@ export function runCommentBlameShiftCheck({ repoRoot, binary = 'bun' } = {}) {
 
 /**
  * Classify a single `statusCheckRollup` entry into pass/pending/fail.
- * The rollup mixes two shapes (Issue #1483 D2): a `CheckRun` (Actions job,
+ * The rollup mixes two shapes (D2): a `CheckRun` (Actions job,
  * has `status`/`conclusion`) and a `StatusContext` (external commit status
  * such as CodeRabbit, has `state` only). Both are folded into the same
  * three-bucket vocabulary the caller already displays.
@@ -1010,7 +1010,7 @@ function classifyCheckBucket(check) {
 /**
  * `gh pr checks <N> --json name,state,bucket` (the pre-fix implementation)
  * is not a flag the installed `gh` supports — every call failed silently
- * and `getCiStatus` always returned `null` (Issue #1483 D2). This reads the
+ * and `getCiStatus` always returned `null` (D2). This reads the
  * same rollup surface `workflow.md`'s Definition of Done names for CI
  * verification: `gh pr view <N> --json statusCheckRollup`.
  *
@@ -1034,5 +1034,14 @@ export function getCiStatus(prNumber, { execImpl = exec } = {}) {
   const failed = checks.filter((c) => c.bucket === 'fail');
   const pending = checks.filter((c) => c.bucket === 'pending');
   const passed = checks.filter((c) => c.bucket === 'pass');
-  return { checks, failed, pending, passed, allGreen: failed.length === 0 && pending.length === 0 };
+  return {
+    checks,
+    failed,
+    pending,
+    passed,
+    // An empty rollup means "no check has reported for this commit yet"
+    // (right after a push, or before any workflow triggers) — not
+    // "everything passed". It must not read as green.
+    allGreen: checks.length > 0 && failed.length === 0 && pending.length === 0,
+  };
 }

@@ -116,6 +116,37 @@ function runAutoDetection(prNumber) {
   };
 }
 
+/**
+ * Three-valued CI evidence classification (D2, amended after an Architect
+ * contract ruling on a CodeRabbit review finding against this fix).
+ *
+ * `getCiStatus` returning `null` and `getCiStatus` returning a non-null
+ * object whose `checks` array is empty are DIFFERENT things that must not
+ * share a label, even though they must share an OUTCOME:
+ *
+ *   - `'retrieval-failed'`: the `gh` call itself failed (exec / JSON parse
+ *     / shape error). No evidence exists because nothing could be asked.
+ *   - `'no-checks-yet'`: the call succeeded and genuinely answered "zero
+ *     checks have reported for this commit" — right after a push, or
+ *     before any workflow triggers. No evidence exists, but calling this
+ *     "could not retrieve" would be a false statement about what actually
+ *     happened; the two need different operator responses (a push that
+ *     hasn't triggered CI yet vs. a broken `gh` invocation).
+ *   - `'has-evidence'`: at least one check has reported; `allGreen` /
+ *     `failed` / `pending` are meaningful.
+ *
+ * Both no-evidence states fold into the same D1 unanswered/non-zero-exit
+ * outcome — only the displayed reason differs.
+ *
+ * @param {{ checks: Array } | null} ciStatus
+ * @returns {'retrieval-failed' | 'no-checks-yet' | 'has-evidence'}
+ */
+function classifyCiEvidence(ciStatus) {
+  if (ciStatus === null) return 'retrieval-failed';
+  if (ciStatus.checks.length === 0) return 'no-checks-yet';
+  return 'has-evidence';
+}
+
 // --- Display functions ---
 
 function printIntegrationTestCoverage(integrationTestNeeds) {
@@ -236,12 +267,12 @@ function printLanguageCheck(languageCheck) {
 }
 
 /**
- * Three-valued AC display (Issue #1460 / #1483 D3). State (b) — "prose" —
- * must never read the same as state (c) — "absent" — since collapsing them
- * into an identical "no acceptance criteria found" message is exactly the
- * defect #1460 reports: it makes Q3's mapping silently degrade to unaided
- * judgment with no visible signal that a transcription gap, not a missing
- * AC, is the cause.
+ * Three-valued AC display (D3). State (b) — "prose" — must never read the
+ * same as state (c) — "absent" — since collapsing them into an identical
+ * "no acceptance criteria found" message is exactly the defect this
+ * function exists to report: it makes Q3's mapping silently degrade to
+ * unaided judgment with no visible signal that a transcription gap, not a
+ * missing AC, is the cause.
  */
 function printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState) {
   if (!linkedIssue) {
@@ -277,8 +308,11 @@ function printAutoDetection(autoDetection) {
 
   // CI status (must be green before acceptance)
   console.log('[CI Status]');
-  if (!ciStatus) {
+  const ciEvidence = classifyCiEvidence(ciStatus);
+  if (ciEvidence === 'retrieval-failed') {
     console.log('  ⚠ Could not retrieve CI status');
+  } else if (ciEvidence === 'no-checks-yet') {
+    console.log('  ⚠ No checks have reported on this PR (yet) — too soon after push, or no workflow triggered');
   } else if (ciStatus.allGreen) {
     console.log(`  ✅ All checks passed (${ciStatus.passed.length} checks)`);
   } else {
@@ -359,7 +393,7 @@ function printAutoDetection(autoDetection) {
     console.log();
   }
 
-  // Acceptance criteria (three-valued detection — Issue #1460 / #1483 D3)
+  // Acceptance criteria (three-valued detection — D3)
   printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState);
 
   // Proposed behavior coverage
@@ -558,7 +592,7 @@ function printQuestion(question) {
 
 /**
  * An answer counts as given only if it has non-whitespace content. A closed
- * stdin (Issue #1483 D1) produces an empty string for every question, not a
+ * stdin (D1) produces an empty string for every question, not a
  * missing key — `readResponse` always returns a (possibly empty) string, so
  * checking key presence alone (the pre-fix logic) can never distinguish a
  * real answer from a stream that closed before anyone typed anything.
@@ -582,12 +616,20 @@ function printSummary(answers, questions, { ciStatus } = {}) {
     }
   }
   // CI status folds into the same visible unanswered/exit-code machinery
-  // (Issue #1483 D2) — "could not retrieve" can no longer coexist with a
-  // clean summary and exit 0.
-  if (ciStatus === null) {
-    console.log('CI-STATUS: -- Not answered (could not retrieve CI status)');
-  } else if (ciStatus) {
-    console.log(`CI-STATUS: OK (${ciStatus.allGreen ? 'all green' : 'not all green — see [CI Status] section above'})`);
+  // (D2) — neither "could not retrieve" nor "no checks reported yet" can
+  // coexist with a clean summary and exit 0. `ciStatus === undefined`
+  // (the option key omitted entirely, not passed as null) means the
+  // caller opted out of CI-STATUS display — preserved for callers that
+  // only want the Q1-Q12 summary.
+  if (ciStatus !== undefined) {
+    const ciEvidence = classifyCiEvidence(ciStatus);
+    if (ciEvidence === 'retrieval-failed') {
+      console.log('CI-STATUS: -- Not answered (could not retrieve CI status)');
+    } else if (ciEvidence === 'no-checks-yet') {
+      console.log('CI-STATUS: -- Not answered (no checks reported on this PR yet)');
+    } else {
+      console.log(`CI-STATUS: OK (${ciStatus.allGreen ? 'all green' : 'not all green — see [CI Status] section above'})`);
+    }
   }
   console.log();
 }
@@ -610,7 +652,7 @@ function printPostAcceptanceWorkflow() {
  *   `execImpl` pattern) — supplying it skips the real `runAutoDetection`
  *   call (which shells out to `gh`), so D1/D2 exit-code behavior can be
  *   pinned without live network access. Production callers never pass it.
- * @returns {Promise<{ exitCode: number, unanswered: string[], ciRetrievalFailed: boolean }>}
+ * @returns {Promise<{ exitCode: number, unanswered: string[], ciRetrievalFailed: boolean, ciNoChecksYet: boolean }>}
  */
 async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injectedAutoDetection } = {}) {
   console.log(`=== PR #${prNumber} Acceptance Check ===\n`);
@@ -649,24 +691,32 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
   printPostAcceptanceWorkflow();
 
   const unanswered = questions.filter((q) => !isAnsweredValue(answers[q.key])).map((q) => q.key);
-  const ciRetrievalFailed = autoDetection.ciStatus === null;
+  // Two distinct no-evidence states (D2 contract: outcome is unified,
+  // label is not — see classifyCiEvidence's doc comment) both fold into
+  // the same non-zero-exit gate as an unanswered question, but each keeps
+  // its own reason string because the operator's next action differs.
+  const ciEvidence = classifyCiEvidence(autoDetection.ciStatus);
+  const ciRetrievalFailed = ciEvidence === 'retrieval-failed';
+  const ciNoChecksYet = ciEvidence === 'no-checks-yet';
 
-  if (unanswered.length > 0 || ciRetrievalFailed) {
+  if (unanswered.length > 0 || ciRetrievalFailed || ciNoChecksYet) {
     const reasons = [];
     if (unanswered.length > 0) {
       reasons.push(`${unanswered.length} question(s) unanswered (${unanswered.map((k) => k.toUpperCase()).join(', ')})`);
     }
     if (ciRetrievalFailed) {
       reasons.push('CI status could not be retrieved');
+    } else if (ciNoChecksYet) {
+      reasons.push('no CI checks have reported on this PR yet');
     }
     console.log(`❌ Acceptance check FAILED: ${reasons.join('; ')}`);
     console.log();
-    return { exitCode: 1, unanswered, ciRetrievalFailed };
+    return { exitCode: 1, unanswered, ciRetrievalFailed, ciNoChecksYet };
   }
 
   console.log('✅ Acceptance check complete — all questions answered, CI status retrieved.');
   console.log();
-  return { exitCode: 0, unanswered, ciRetrievalFailed };
+  return { exitCode: 0, unanswered, ciRetrievalFailed, ciNoChecksYet };
 }
 
 // --- Exports for testing ---
@@ -682,6 +732,7 @@ export {
   printAutoDetection,
   printAcceptanceCriteriaSection,
   isAnsweredValue,
+  classifyCiEvidence,
 };
 
 // --- Main ---

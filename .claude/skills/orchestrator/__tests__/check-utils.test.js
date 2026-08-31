@@ -1106,14 +1106,14 @@ describe('resolvePrDiffRef failure path', () => {
   });
 });
 
-// getAcceptanceCriteria — three-valued AC detection (Issue #1460 / #1483 D3).
+// getAcceptanceCriteria — three-valued AC detection (D3).
 // The `execImpl` DI seam mirrors resolvePrDiffRef's pattern above, so these
 // fixtures never call the real `gh` binary.
 //
-// The "prose" fixture reproduces the actual shape that motivated #1460: a
-// real Architect-authored AC section (`## Acceptance Criteria (Architect,
-// ...)` heading, a `### Verification` subsection) whose items are plain
-// bullets, not `- [ ]` checkboxes.
+// The "prose" fixture reproduces the actual shape that motivated the D3
+// fix: a real Architect-authored AC section (`## Acceptance Criteria
+// (Architect, ...)` heading, a `### Verification` subsection) whose items
+// are plain bullets, not `- [ ]` checkboxes.
 const PROSE_AC_ISSUE_BODY = `Some narrative text describing the defect.
 
 ## Acceptance Criteria (Architect, 2026-08-29)
@@ -1187,7 +1187,7 @@ describe('getAcceptanceCriteria', () => {
 });
 
 // getCiStatus — replaces the dead `gh pr checks --json` flag with the
-// `gh pr view --json statusCheckRollup` shape (Issue #1483 D2). The rollup
+// `gh pr view --json statusCheckRollup` shape (D2). The rollup
 // mixes CheckRun entries (Actions jobs) and StatusContext entries (e.g. the
 // CodeRabbit commit status), both fixture-shaped from a real
 // `gh pr view --json statusCheckRollup` response captured against a real PR.
@@ -1272,5 +1272,26 @@ describe('getCiStatus', () => {
   it('returns null when the parsed response has no statusCheckRollup array', () => {
     const execImpl = () => JSON.stringify({ somethingElse: true });
     expect(getCiStatus('1481', { execImpl })).toBeNull();
+  });
+
+  // Found by CodeRabbit's GitHub-side review of this fix's PR (Major): an
+  // empty rollup — "no check has reported for this commit yet" (right after a
+  // push, or before any workflow triggers) — is a real, non-null response
+  // shape distinct from both "all green" and "retrieval failed", and the
+  // pre-fix `allGreen: failed.length === 0 && pending.length === 0` read it
+  // as vacuously true. Before D2, every call returned null here (the
+  // broken flag), so this boundary was accidentally covered; the D2 fix
+  // exposed it.
+  //
+  // Mutation reach (measured): reverting to
+  // `allGreen: failed.length === 0 && pending.length === 0` (dropping the
+  // `checks.length > 0` conjunct) makes this test fail.
+  it('reports allGreen false for an empty rollup, not vacuously true', () => {
+    const execImpl = () => JSON.stringify({ statusCheckRollup: [] });
+    const result = getCiStatus('1481', { execImpl });
+    expect(result.checks).toHaveLength(0);
+    expect(result.failed).toHaveLength(0);
+    expect(result.pending).toHaveLength(0);
+    expect(result.allGreen).toBe(false);
   });
 });

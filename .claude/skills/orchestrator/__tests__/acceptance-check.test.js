@@ -23,6 +23,7 @@ import {
   printAutoDetection,
   printAcceptanceCriteriaSection,
   isAnsweredValue,
+  classifyCiEvidence,
 } from '../acceptance-check.js';
 
 // --- Helper: create a readable stream that emits null-byte terminated data ---
@@ -486,7 +487,7 @@ describe('printSummary', () => {
     expect(output).toContain('Q1: -- Not answered');
   });
 
-  // Flipped as part of Issue #1483 D1: an empty (or whitespace-only) answer
+  // Flipped as part of the D1 fix: an empty (or whitespace-only) answer
   // is exactly the shape a closed stdin produces for every question, and
   // pre-fix this was reported identically to a real answer. See
   // `isAnsweredValue` in acceptance-check.js.
@@ -515,10 +516,25 @@ describe('printSummary', () => {
     expect(output).toContain('CI-STATUS: -- Not answered');
   });
 
-  it('prints a CI-STATUS OK line when ciStatus is present', () => {
-    printSummary({}, [], { ciStatus: { allGreen: true } });
+  it('prints a CI-STATUS OK line when ciStatus has evidence', () => {
+    printSummary({}, [], { ciStatus: { allGreen: true, checks: [{ name: 'test', bucket: 'pass' }] } });
     const output = logs.join('\n');
     expect(output).toContain('CI-STATUS: OK');
+  });
+
+  // D2 amendment: an empty rollup is a real, non-null result distinct from
+  // both "retrieval failed" and "has evidence" — must not print OK.
+  //
+  // Mutation reach (measured): forcing the `ciEvidence === 'no-checks-yet'`
+  // branch to `false` (falling through to the OK/allGreen branch) makes
+  // this test fail with "CI-STATUS: OK (not all green ...)" instead of the
+  // expected not-answered line.
+  it('prints a CI-STATUS not-answered line, distinct wording, when ciStatus has an empty checks array (no checks reported yet)', () => {
+    printSummary({}, [], { ciStatus: { allGreen: false, checks: [] } });
+    const output = logs.join('\n');
+    expect(output).toContain('CI-STATUS: -- Not answered');
+    expect(output).toContain('no checks reported on this PR yet');
+    expect(output).not.toContain('could not retrieve');
   });
 
   it('prints no CI-STATUS line when ciStatus is not passed at all (backward compatible)', () => {
@@ -900,8 +916,79 @@ describe('isAnsweredValue', () => {
   });
 });
 
+// --- classifyCiEvidence: D2 amendment — outcome unified across the two
+// no-evidence states, label kept distinct (Architect contract ruling on a
+// CodeRabbit finding against this fix's original allGreen-only patch). ---
+
+describe('classifyCiEvidence', () => {
+  it('classifies null as retrieval-failed', () => {
+    expect(classifyCiEvidence(null)).toBe('retrieval-failed');
+  });
+
+  // The boundary CodeRabbit's finding was about: a genuinely-retrieved,
+  // genuinely-empty rollup must not read as "has evidence".
+  it('classifies a non-null result with an empty checks array as no-checks-yet', () => {
+    expect(classifyCiEvidence({ checks: [] })).toBe('no-checks-yet');
+  });
+
+  it('classifies a non-empty checks array as has-evidence', () => {
+    expect(classifyCiEvidence({ checks: [{ name: 'test', bucket: 'pass' }] })).toBe('has-evidence');
+  });
+});
+
+// --- printAutoDetection: [CI Status] section three-way display ---
+// linkedIssue is left at its default (null) throughout — see
+// printAcceptanceCriteriaSection's describe block below for why a truthy
+// linkedIssue would make these tests depend on live network / `gh` auth.
+
+describe('printAutoDetection — [CI Status] section', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('retrieval failure: prints "Could not retrieve"', () => {
+    printAutoDetection(minimalAutoDetection([], { ciStatus: null }));
+    const output = logs.join('\n');
+    expect(output).toContain('Could not retrieve CI status');
+  });
+
+  // Mutation reach (measured): reverting classifyCiEvidence's
+  // `checks.length === 0` branch to fall through to `has-evidence` makes
+  // this test fail — it asserts the distinct "No checks have reported"
+  // wording and the ABSENCE of "Could not retrieve", which the pre-D2-
+  // amendment code could not have produced for this fixture (it would
+  // have printed the allGreen branch instead, since allGreen was
+  // vacuously true for an empty rollup pre-fix).
+  it('no checks yet (empty rollup): prints a distinct message, never "Could not retrieve"', () => {
+    printAutoDetection(minimalAutoDetection([], {
+      ciStatus: { allGreen: false, checks: [], failed: [], pending: [], passed: [] },
+    }));
+    const output = logs.join('\n');
+    expect(output).toContain('No checks have reported on this PR');
+    expect(output).not.toContain('Could not retrieve CI status');
+  });
+
+  it('has evidence, all green: prints the passed-count message', () => {
+    printAutoDetection(minimalAutoDetection([], {
+      ciStatus: { allGreen: true, checks: [{ name: 'test', bucket: 'pass' }], failed: [], pending: [], passed: [{ name: 'test', bucket: 'pass' }] },
+    }));
+    const output = logs.join('\n');
+    expect(output).toContain('All checks passed (1 checks)');
+  });
+});
+
 // --- printAcceptanceCriteriaSection: Acceptance Criteria three-valued
-// detection (Issue #1460 / #1483 D3) ---
+// detection (D3) ---
 //
 // Tested via the extracted `printAcceptanceCriteriaSection` directly, not
 // through `printAutoDetection`. `printAutoDetection` unconditionally calls
@@ -939,7 +1026,8 @@ describe('printAcceptanceCriteriaSection', () => {
 
   // The distinct, visible state D3 introduces: a heading exists, but no
   // checkbox items were found under it. This must never read the same as
-  // "none found" — that collapse is exactly the defect #1460 reports.
+  // "none found" — that collapse is exactly the defect this state exists
+  // to report.
   it('state "prose": prints a MANUAL-mapping notice distinct from "none found"', () => {
     printAcceptanceCriteriaSection('1418', { state: 'prose', items: [] });
     const output = logs.join('\n');
@@ -970,13 +1058,16 @@ describe('printAcceptanceCriteriaSection', () => {
 // specifically about D2, so a D1-only failure isn't masked by an
 // unrelated D2 failure and vice versa.
 
-const GREEN_CI = { allGreen: true, checks: [], failed: [], pending: [], passed: [] };
+// `checks` intentionally non-empty — an empty `checks` array now classifies
+// as the distinct "no-checks-yet" evidence state (D2 amendment), not
+// "has-evidence" / allGreen. See classifyCiEvidence's doc comment.
+const GREEN_CI = { allGreen: true, checks: [{ name: 'test', bucket: 'pass' }], failed: [], pending: [], passed: [{ name: 'test', bucket: 'pass' }] };
 
 function baseAutoDetectionForWizard(overrides = {}) {
   return minimalAutoDetection([], { ciStatus: GREEN_CI, ...overrides });
 }
 
-describe('runWizard — D1 self-answer + D2 CI status (Issue #1483)', () => {
+describe('runWizard — D1 self-answer + D2 CI status', () => {
   let logSpy;
 
   beforeEach(() => {
@@ -1045,10 +1136,37 @@ describe('runWizard — D1 self-answer + D2 CI status (Issue #1483)', () => {
   it('CI status retrieved but not all green: exitCode still driven by answers, not by allGreen', async () => {
     const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
-    const notGreenCi = { allGreen: false, checks: [], failed: [{ name: 'test' }], pending: [], passed: [] };
+    const notGreenCi = { allGreen: false, checks: [{ name: 'test', bucket: 'fail' }], failed: [{ name: 'test' }], pending: [], passed: [] };
     const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard({ ciStatus: notGreenCi }) });
     expect(result.ciRetrievalFailed).toBe(false);
+    expect(result.ciNoChecksYet).toBe(false);
     expect(result.exitCode).toBe(0);
+  });
+
+  // D2 amendment (Architect contract ruling, after a CodeRabbit finding
+  // against this fix): an empty rollup — genuinely retrieved, genuinely
+  // zero checks reported — must fold into the same non-zero-exit outcome
+  // as a retrieval failure, but keep a DIFFERENT reason string, because
+  // calling it "could not retrieve" would misdescribe what happened.
+  //
+  // Mutation reach (measured): dropping `|| ciNoChecksYet` from the
+  // exit-code gate makes this test fail (exitCode reverts to 0); dropping
+  // the `else if (ciNoChecksYet)` branch (falling through to no reason
+  // pushed) makes the reason-string assertion fail while exitCode stays
+  // correct — the two assertions are not redundant with each other.
+  it('CI status retrieved with an empty checks array (no checks reported yet): exitCode 1, ciNoChecksYet true, ciRetrievalFailed false', async () => {
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const noChecksYetCi = { allGreen: false, checks: [], failed: [], pending: [], passed: [] };
+    const logs = [];
+    logSpy.mockImplementation((...args) => logs.push(args.join(' ')));
+    const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard({ ciStatus: noChecksYetCi }) });
+    expect(result.exitCode).toBe(1);
+    expect(result.ciNoChecksYet).toBe(true);
+    expect(result.ciRetrievalFailed).toBe(false);
+    const output = logs.join('\n');
+    expect(output).toContain('no CI checks have reported on this PR yet');
+    expect(output).not.toContain('CI status could not be retrieved');
   });
 
   // D3 wiring: a "prose" AC state must drive Q3 to the manual
