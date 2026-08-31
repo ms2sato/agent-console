@@ -20,6 +20,7 @@ import {
   computeCodeRabbitCount,
   formatMetricsReport,
   findMergedPrNumbers,
+  computeGapCandidates,
   parseJsonSafe,
   createCache,
   DEFAULT_FLAG_MULTIPLIER,
@@ -77,15 +78,15 @@ describe('getSteps', () => {
     expect(text).toContain('After the retrospective PR is merged');
   });
 
-  it('memory_gap_scan step describes mechanical gh + grep procedure', () => {
+  it('memory_gap_scan step describes mechanical gh + comm diff procedure', () => {
     const steps = getSteps();
     const gapScan = steps.find(s => s.key === 'memory_gap_scan');
     const text = gapScan.instructions.join('\n');
     expect(text).toContain('gh pr list --state merged');
+    expect(text).toContain('comm -13');
     expect(text).toContain('grep -l');
     expect(text).toContain('project_sprint_status.md');
     expect(text).toContain('project_pending_triage_list.md');
-    expect(text).toContain('gap candidate');
   });
 
   it('memory_gap_scan step does not tell the reader to combine --search with --json', () => {
@@ -102,6 +103,50 @@ describe('getSteps', () => {
     expect(text).not.toContain('gh pr list --search');
     expect(text).toContain('--jq');
     expect(text).toContain('.mergedAt');
+  });
+
+  it('memory_gap_scan step builds the known set from SPRINT_PR_NUMBERS plus the retro PR', () => {
+    const steps = getSteps();
+    const gapScan = steps.find(s => s.key === 'memory_gap_scan');
+    const text = gapScan.instructions.join('\n');
+    expect(text).toContain('$SPRINT_PR_NUMBERS');
+    expect(text).toContain('retro-pr-number');
+    expect(text).toContain('KNOWN set');
+  });
+
+  it('memory_gap_scan step frames diff survivors as candidates needing disposition, not confirmed gaps', () => {
+    const steps = getSteps();
+    const gapScan = steps.find(s => s.key === 'memory_gap_scan');
+    const text = gapScan.instructions.join('\n');
+    // Measured 2026-08-30: the old per-PR memory-file criterion flagged 50 of
+    // 52 merged PRs when nothing was missing. The instruction must say the
+    // diff's survivors are candidates, not automatic gaps -- pinned against
+    // the exact verdict wording the old criterion used ("is a gap candidate").
+    expect(text).toContain('CANDIDATE');
+    expect(text).toContain('hypothesis');
+    expect(text).toContain('not an automatic gap verdict');
+    expect(text).not.toContain('is a gap candidate');
+  });
+
+  it('memory_gap_scan step names the previous sprint\'s retro PR as an inclusive-lower-bound artifact', () => {
+    const steps = getSteps();
+    const gapScan = steps.find(s => s.key === 'memory_gap_scan');
+    const text = gapScan.instructions.join('\n');
+    expect(text).toContain('PREVIOUS sprint');
+    expect(text).toContain('retro');
+    expect(text).toContain('inclusive lower bound artifact');
+  });
+
+  it('memory_gap_scan step scopes the memory-file grep to remaining candidates only', () => {
+    const steps = getSteps();
+    const gapScan = steps.find(s => s.key === 'memory_gap_scan');
+    const text = gapScan.instructions.join('\n');
+    expect(text).toContain('REMAINING candidate');
+    expect(text).toContain('narrow');
+    // The old criterion grepped every merged PR against all three memory
+    // files including MEMORY.md; the new one narrows to two files and only
+    // the candidates left after the inclusive-lower-bound disposition.
+    expect(text).not.toContain('memory/MEMORY.md');
   });
 
   it('each step has title and instructions', () => {
@@ -715,6 +760,78 @@ describe('findMergedPrNumbers', () => {
   it('returns [] on failure', () => {
     const exec = () => { throw new Error('boom'); };
     expect(findMergedPrNumbers({ exec })).toEqual([]);
+  });
+});
+
+describe('computeGapCandidates', () => {
+  // Real Sprint 2026-08-30 data (verified against `gh pr list` on this repo,
+  // 2026-08-31). The window is every PR merged from the previous retro PR
+  // (#1388, inclusive lower bound) through this sprint's own retro PR
+  // (#1514). SPRINT_PR_NUMBERS for that sprint covered exactly #1392-#1512
+  // (50 PRs) -- set before #1514 existed, so neither #1388 nor #1514 is in
+  // it. This is the exact shape the Issue measured: 52 in the window, 50
+  // known, 2 explainable candidates, zero false positives.
+  const KNOWN_50 = [
+    1392, 1393, 1395, 1396, 1397, 1398, 1402, 1403, 1405, 1413, 1415, 1417,
+    1422, 1427, 1429, 1431, 1432, 1436, 1437, 1438, 1439, 1441, 1443, 1448,
+    1451, 1453, 1456, 1462, 1466, 1467, 1469, 1472, 1473, 1474, 1477, 1478,
+    1480, 1481, 1482, 1484, 1485, 1489, 1490, 1493, 1500, 1503, 1505, 1507,
+    1510, 1512,
+  ];
+  const WINDOW_52 = [1388, ...KNOWN_50, 1514];
+
+  it('the 2026-08-30 shape: 50 known + 52 in window -> exactly the 2 explainable candidates', () => {
+    const result = computeGapCandidates({ windowPrNumbers: WINDOW_52, knownPrNumbers: KNOWN_50 });
+    expect(result).toEqual([1388, 1514]);
+  });
+
+  it('zero false positives: none of the 50 known PRs are reported as candidates', () => {
+    const result = computeGapCandidates({ windowPrNumbers: WINDOW_52, knownPrNumbers: KNOWN_50 });
+    for (const knownPr of KNOWN_50) {
+      expect(result).not.toContain(knownPr);
+    }
+    expect(result).toHaveLength(2);
+  });
+
+  it('polarity: a PR genuinely absent from the known set IS flagged, alongside the explainable candidates', () => {
+    // Today's per-PR memory-file criterion cannot distinguish "clean sprint"
+    // from "one PR genuinely missing" -- both read as ~50 gap candidates.
+    // The new criterion must: unlike the old one, a real gap changes the
+    // candidate count from 2 to 3, not from 50-ish to 51-ish.
+    const windowWithGenuineGap = [...WINDOW_52, 1499];
+    const result = computeGapCandidates({ windowPrNumbers: windowWithGenuineGap, knownPrNumbers: KNOWN_50 });
+    expect(result).toEqual([1388, 1499, 1514]);
+  });
+
+  it('dedupes repeated PR numbers in the window', () => {
+    // Reach: removing the `new Set(windowPrNumbers)` dedup step (using the
+    // raw array instead) makes this fail -- 1388 would appear twice.
+    const result = computeGapCandidates({
+      windowPrNumbers: [1388, 1388, 1392, 1514],
+      knownPrNumbers: [1392],
+    });
+    expect(result).toEqual([1388, 1514]);
+  });
+
+  it('sorts candidates ascending regardless of input order', () => {
+    // Reach: removing the `.sort((a, b) => a - b)` call makes this fail --
+    // Set iteration order is insertion order, so it would come back
+    // [1514, 1388] here.
+    const result = computeGapCandidates({
+      windowPrNumbers: [1514, 1392, 1388],
+      knownPrNumbers: [1392],
+    });
+    expect(result).toEqual([1388, 1514]);
+  });
+
+  it('returns [] when the window is empty', () => {
+    expect(computeGapCandidates({ windowPrNumbers: [], knownPrNumbers: [1392, 1393] })).toEqual([]);
+  });
+
+  it('returns [] when the window is a subset of the known set', () => {
+    // Reach: flipping the filter predicate (`known.has(n)` instead of
+    // `!known.has(n)`) makes this fail -- it would return the whole window.
+    expect(computeGapCandidates({ windowPrNumbers: [1392, 1393], knownPrNumbers: [1392, 1393, 1400] })).toEqual([]);
   });
 });
 

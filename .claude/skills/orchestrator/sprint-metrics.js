@@ -375,6 +375,25 @@ export function findMergedPrNumbers({ exec, since, until, repo = DEFAULT_REPO, l
   }
 }
 
+// --- Gap scan (Step 8) ---
+
+/**
+ * Step 8's mechanical criterion: PRs merged in the sprint window that the
+ * KNOWN set (SPRINT_PR_NUMBERS plus the retro PR's own number) does not
+ * account for. Equivalent to `comm -13 <(sort known) <(sort window)`.
+ *
+ * The known set is a hypothesis at Step 8 execution time, not a per-PR
+ * ledger — so this returns CANDIDATES requiring a one-line disposition,
+ * never a confirmed gap. Deduplicates the window and returns candidates
+ * sorted ascending.
+ */
+export function computeGapCandidates({ windowPrNumbers, knownPrNumbers }) {
+  const known = new Set(knownPrNumbers);
+  return [...new Set(windowPrNumbers)]
+    .filter(n => !known.has(n))
+    .sort((a, b) => a - b);
+}
+
 // --- Top-level collector ---
 
 export function collectSprintMetrics({ exec = defaultExec, cache = createCache(), prNumbers, repo = DEFAULT_REPO, thresholdMultiplier, onProgress } = {}) {
