@@ -551,14 +551,14 @@ function getQuestions(hasAcceptanceCriteria, { integrationTestMissing = false, l
       key: 'q11',
       text: languageCheckFailed
         ? 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check FAILED. Confirm the listed violations are addressed — translated to English, or (for a rare, genuinely legitimate non-Latin case) exempted via the per-line `lang-check:allow` marker — before merge, or instruct the agent to fix.'
-        : 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check passed. Confirm there are no remaining non-Latin-script Letter characters in public artifacts (docs/, .claude/, CLAUDE.md). If the PR diff adds new public-artifact text, did you spot-check it?',
+        : 'Q11: Public Artifacts Language — The auto-detected Public Artifacts Language Check passed. Confirm there are no remaining non-Latin-script Letter characters in public artifacts (docs/, .claude/, scripts/, CLAUDE.md). If the PR diff adds new public-artifact text, did you spot-check it?',
       focus: [
         'See `.claude/rules/workflow.md` Language Policy.',
         'Mechanical procedure:',
         '  1. Inspect the [Public Artifacts Language Check] section above.',
         '  2. If FAILED, instruct the agent to translate or replace each violation.',
         '  3. If PASSED, you may answer "PASS — auto-detection clean" or spot-check a sample of public-artifact files in the diff.',
-        'If the PR does not modify any file under docs/, .claude/, or CLAUDE.md, it is acceptable to answer "N/A — PR scope does not modify public artifacts" with a one-line justification.',
+        'If the PR does not modify any file under docs/, .claude/, scripts/, or CLAUDE.md, it is acceptable to answer "N/A — PR scope does not modify public artifacts" with a one-line justification.',
       ].join('\n  '),
       insufficient: '"Looks fine" (without inspecting the Public Artifacts Language Check section)',
       sufficient: languageCheckFailed

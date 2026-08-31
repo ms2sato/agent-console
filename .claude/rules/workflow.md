@@ -443,7 +443,14 @@ This rule does not apply to design docs under `docs/design/` where architectural
 
 ### Mechanical enforcement
 
-`scripts/check-public-artifacts-language.mjs` is the canonical check. It scans `CLAUDE.md`, `docs/**/*.md`, `.claude/rules/**/*.md`, `.claude/skills/**/*.md`, and `.claude/agents/**/*.md` for any Letter character (`\p{L}`) that is not in the Latin script. The detection is language-agnostic: it does not hard-code Japanese or any other writing system, so adding a new public artifact in any other script (Han, Hangul, Arabic, Hebrew, Devanagari, Thai, Greek, Cyrillic, ...) fails the same way. A single line can be exempted from the scan by including the literal substring `lang-check:allow` anywhere on it — a loud, review-visible per-line override for the rare legitimate case (e.g. a deliberate homograph-attack example), not a blanket allowlist.
+`scripts/check-public-artifacts-language.mjs` is the canonical check. Its scope is **root-based, not extension-based**: every file under `docs/`, `.claude/`, `scripts/`, plus the top-level `CLAUDE.md`, is scanned for any Letter character (`\p{L}`) that is not in the Latin script, regardless of extension. The detection is language-agnostic: it does not hard-code Japanese or any other writing system, so adding a new public artifact in any other script (Han, Hangul, Arabic, Hebrew, Devanagari, Thai, Greek, Cyrillic, ...) fails the same way. `scripts/` was added to this list alongside the root-basing (Issue #1491): the policy's first line already covers code comments, and scripts are operator-facing tooling with the same English-comment expectation as docs/rules/skills/agents.
+
+Two distinct exclusion mechanisms sit beneath that scope, and they are not interchangeable:
+
+- **Binary / non-UTF-8 content is excluded by CONTENT**, not by extension: the script decodes each file's bytes with a fatal UTF-8 `TextDecoder` and skips a file only on an actual decode failure. A text file that merely contains a stray NUL byte (e.g. a poisoner-test fixture) still decodes as valid UTF-8 and is fully scanned — there is no NUL-byte or other proxy heuristic, because a proxy is narrower than the property it stands in for and can silently under- or over-skip.
+- **A file whose non-Latin content is intentional data** — the checker's own test fixtures, or content that workflow.md's own "User-facing artifacts" carve-out above already permits to be non-English (e.g. an Orchestrator script's interactive review/retro prompts shown only to the owner) — is excluded via the script's `EXCLUDED_FILES` list. Every entry requires a stated reason (enforced by a sibling test); an entry without one fails review. This list is exclusion-of-legitimate-data, kept distinct from a violation baseline, and may be needed even when the violation count is otherwise zero.
+
+A single line can also be exempted from the scan by including the literal substring `lang-check:allow` anywhere on it — a loud, review-visible per-line override for the rare legitimate case (e.g. a deliberate homograph-attack example), not a blanket allowlist.
 
 The check runs at five points:
 
@@ -452,7 +459,7 @@ The check runs at five points:
 3. **Pre-PR preflight:** `node .claude/skills/orchestrator/preflight-check.js` — runs the language check alongside the test-coverage and rule-skill-duplication invariants. Non-zero exit blocks PR readiness.
 
    **Preflight diff-scope caveat — run AFTER commit, BEFORE push, not pre-commit.** The script derives the affected file set from `git diff origin/main...HEAD` (committed changes vs the merge base), so it sees zero files when the working tree changes have not yet been committed. Pre-commit runs therefore return a misleadingly-green "no files affected" report, leaving real coverage gaps to surface only at CI push time. The robust local invocation order is: stage everything → `git commit` → `node .claude/skills/orchestrator/preflight-check.js` → fix any reported gaps with a fixup commit → `git push`. (Lesson: Sprint 2026-06-29 PR #906 — local preflight passed clean before commit because two newly-modified production files had no committed diff yet to be evaluated; CI's post-push preflight then flagged both as missing sibling tests, requiring a follow-up commit round. The script behaves identically locally and in CI; only the timing of the invocation differs.)
-4. **CI:** `.github/workflows/language-lint.yml` — fires on changes under `docs/`, `.claude/`, and any `*.md`. Failure blocks merge.
+4. **CI:** `.github/workflows/language-lint.yml` — fires on changes under `docs/`, `.claude/`, `scripts/`, and any `*.md`. Failure blocks merge.
 5. **Acceptance Q11:** `.claude/skills/orchestrator/acceptance-check.js` — auto-detects the verdict and asks the Orchestrator to confirm before merge.
 
 Output format is consistent across all entry points: `file:LINE:COL CHAR U+CODEPOINT`, one line per violation. The commit-msg hook reports violations under the virtual filename `<stdin>`.

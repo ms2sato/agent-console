@@ -11,6 +11,8 @@ import {
   findViolationsInFile,
   formatFileViolations,
   runCheck,
+  isExcludedFile,
+  EXCLUDED_FILES,
 } from '../check-public-artifacts-language.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -256,10 +258,12 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
     mkdirSync(join(root, '.claude/rules'), { recursive: true });
     mkdirSync(join(root, '.claude/skills/foo'), { recursive: true });
     mkdirSync(join(root, '.claude/agents'), { recursive: true });
+    mkdirSync(join(root, '.claude/hooks'), { recursive: true });
+    mkdirSync(join(root, 'scripts/smoke'), { recursive: true });
     return root;
   }
 
-  it('discovers CLAUDE.md, docs/**/*.md, and .claude/{rules,skills,agents}/**/*.md', async () => {
+  it('discovers CLAUDE.md and every file under docs/, .claude/, scripts/ regardless of extension (R1: root-based, no extension filter)', async () => {
     const root = makeFixture();
     try {
       writeFileSync(join(root, 'CLAUDE.md'), '# top\n');
@@ -267,18 +271,55 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
       writeFileSync(join(root, '.claude/rules/r1.md'), '# r1\n');
       writeFileSync(join(root, '.claude/skills/foo/SKILL.md'), '# s\n');
       writeFileSync(join(root, '.claude/agents/agent.md'), '# a\n');
-      // a non-target file that must NOT be included
+      // Previously-unscanned extensions/roots — the gap Issue #1491 named.
+      writeFileSync(join(root, '.claude/hooks/check.sh'), '#!/bin/sh\necho ok\n');
+      writeFileSync(join(root, 'scripts/build.mjs'), 'console.log("ok");\n');
+      writeFileSync(join(root, 'scripts/smoke/probe.ts'), 'export const ok = true;\n');
+      writeFileSync(join(root, '.claude/skills/foo/helper.js'), 'module.exports = {};\n');
+      // No extension filter means even a non-.md text file under a scanned
+      // root is now discovered (was previously invisible under the old
+      // docs/**/*.md-shaped pattern).
+      writeFileSync(join(root, 'docs/notes.txt'), 'plain text notes\n');
+      // Outside every scanned root entirely — must NOT be included.
       writeFileSync(join(root, 'package.json'), '{}');
-      writeFileSync(join(root, 'docs/notes.txt'), 'こんにちは');
 
       const files = await findDefaultFiles({ cwd: root });
       expect(files).toEqual([
         '.claude/agents/agent.md',
+        '.claude/hooks/check.sh',
         '.claude/rules/r1.md',
         '.claude/skills/foo/SKILL.md',
+        '.claude/skills/foo/helper.js',
         'CLAUDE.md',
         'docs/a.md',
+        'docs/notes.txt',
+        'scripts/build.mjs',
+        'scripts/smoke/probe.ts',
       ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runCheck flags violations in newly-scanned categories: .sh under .claude/hooks, .mjs/.ts under scripts, .js under .claude/skills', async () => {
+    const root = makeFixture();
+    try {
+      writeFileSync(join(root, '.claude/hooks/check.sh'), '#!/bin/sh\n# 日本語のコメント\necho ok\n');
+      writeFileSync(join(root, 'scripts/build.mjs'), '// коммент\nconsole.log("ok");\n');
+      writeFileSync(join(root, 'scripts/smoke/probe.ts'), '// θ threshold\nexport const ok = true;\n');
+      writeFileSync(join(root, '.claude/skills/foo/helper.js'), '// 한글 comment\nmodule.exports = {};\n');
+
+      const result = await runCheck({ cwd: root });
+      const offenders = new Set(result.violations.map((v) => v.file));
+      expect(offenders).toEqual(
+        new Set([
+          '.claude/hooks/check.sh',
+          'scripts/build.mjs',
+          'scripts/smoke/probe.ts',
+          '.claude/skills/foo/helper.js',
+        ]),
+      );
+      expect(result.filesWithViolations).toBe(4);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -367,6 +408,141 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  describe('binary / non-UTF-8 exclusion (R2: by content, not by extension)', () => {
+    it('skips a file with an invalid UTF-8 byte sequence instead of throwing or misreporting', async () => {
+      const root = makeFixture();
+      try {
+        // 0xC3 0x28 is a well-known invalid UTF-8 continuation-byte pair.
+        writeFileSync(
+          join(root, 'docs/binary.md'),
+          Buffer.from([0x68, 0x69, 0xc3, 0x28, 0x65, 0x6e, 0x64]),
+        );
+        const violations = await findViolationsInFile('docs/binary.md', { cwd: root });
+        expect(violations).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('does NOT skip a file that merely contains a NUL byte alongside otherwise-valid UTF-8 (NUL is not a binary proxy)', async () => {
+      // Real-world shape: scripts/check-mock-module-poisoners.mjs contains
+      // one NUL byte as deliberate poisoner test data and decodes as
+      // fully valid UTF-8 — a NUL-byte heuristic would wrongly skip it.
+      // R2 requires the actual decode-failure property, not a proxy.
+      const root = makeFixture();
+      try {
+        writeFileSync(
+          join(root, 'scripts/nul-fixture.mjs'),
+          Buffer.from('const poison = "before\0after"; // 日\n', 'utf8'),
+        );
+        const violations = await findViolationsInFile('scripts/nul-fixture.mjs', { cwd: root });
+        expect(violations).toHaveLength(1);
+        expect(violations[0].char).toBe('日');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('runCheck treats a binary file as contributing zero violations and zero offenders', async () => {
+      const root = makeFixture();
+      try {
+        writeFileSync(join(root, 'docs/binary.md'), Buffer.from([0xff, 0xfe, 0x00, 0xc3, 0x28]));
+        writeFileSync(join(root, 'docs/clean.md'), 'Clean English text.\n');
+        const result = await runCheck({ cwd: root });
+        expect(result.violations).toEqual([]);
+        expect(result.filesWithViolations).toBe(0);
+        expect(result.files).toContain('docs/binary.md');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('EXCLUDED_FILES (R2: reasoned exclusion list for intentional non-Latin content)', () => {
+    it('every entry has a non-empty reason', () => {
+      expect(EXCLUDED_FILES.length).toBeGreaterThan(0);
+      for (const entry of EXCLUDED_FILES) {
+        expect(typeof entry.file).toBe('string');
+        expect(entry.file.length).toBeGreaterThan(0);
+        expect(typeof entry.reason).toBe('string');
+        expect(entry.reason.trim().length).toBeGreaterThan(0);
+      }
+    });
+
+    it('every entry is classified as either a checker fixture or a user-facing carve-out, and both classes are represented', () => {
+      const classes = EXCLUDED_FILES.map((entry) => {
+        if (entry.reason.startsWith('checker fixture:')) return 'checker fixture';
+        if (entry.reason.startsWith('user-facing carve-out:')) return 'user-facing carve-out';
+        return null;
+      });
+      expect(classes).not.toContain(null);
+      expect(classes).toContain('checker fixture');
+      expect(classes).toContain('user-facing carve-out');
+    });
+
+    it('isExcludedFile matches only files literally on the list', () => {
+      expect(isExcludedFile('.claude/skills/orchestrator/sprint-retro.js')).toBe(true);
+      expect(isExcludedFile('.claude/skills/orchestrator/other-file.js')).toBe(false);
+    });
+
+    it('exclusion polarity — checker-fixture class: the listed path with non-Latin content passes; the same content at an unlisted path fails', async () => {
+      const root = makeFixture();
+      try {
+        mkdirSync(join(root, 'scripts/__tests__'), { recursive: true });
+        const nonLatinContent = 'Greek sample: α β γ\n';
+        // Exact path from EXCLUDED_FILES's checker-fixture entry.
+        writeFileSync(join(root, 'scripts/__tests__/check-public-artifacts-language.test.mjs'), nonLatinContent);
+        // Identical content, unlisted path.
+        writeFileSync(join(root, 'scripts/__tests__/unlisted-fixture.mjs'), nonLatinContent);
+
+        const result = await runCheck({ cwd: root });
+        const offenders = new Set(result.violations.map((v) => v.file));
+        expect(offenders.has('scripts/__tests__/check-public-artifacts-language.test.mjs')).toBe(false);
+        expect(offenders.has('scripts/__tests__/unlisted-fixture.mjs')).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('exclusion polarity — user-facing-carve-out class: the listed path with non-Latin content passes; the same content at an unlisted path fails', async () => {
+      const root = makeFixture();
+      try {
+        mkdirSync(join(root, '.claude/skills/orchestrator'), { recursive: true });
+        const nonLatinContent = "console.log('レビュー手順です');\n";
+        // Exact path from EXCLUDED_FILES's user-facing-carve-out entry.
+        writeFileSync(join(root, '.claude/skills/orchestrator/sprint-retro.js'), nonLatinContent);
+        // Identical content, unlisted path.
+        writeFileSync(join(root, '.claude/skills/orchestrator/unlisted-file.js'), nonLatinContent);
+
+        const result = await runCheck({ cwd: root });
+        const offenders = new Set(result.violations.map((v) => v.file));
+        expect(offenders.has('.claude/skills/orchestrator/sprint-retro.js')).toBe(false);
+        expect(offenders.has('.claude/skills/orchestrator/unlisted-file.js')).toBe(true);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('exclusion is applied uniformly for an explicit files list, not only the default glob path', async () => {
+      const root = makeFixture();
+      try {
+        mkdirSync(join(root, '.claude/skills/orchestrator'), { recursive: true });
+        writeFileSync(
+          join(root, '.claude/skills/orchestrator/sprint-retro.js'),
+          "console.log('レビュー手順です');\n",
+        );
+        const result = await runCheck({
+          cwd: root,
+          files: ['.claude/skills/orchestrator/sprint-retro.js'],
+        });
+        expect(result.violations).toEqual([]);
+        expect(result.files).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });
 
