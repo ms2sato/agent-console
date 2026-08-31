@@ -13,6 +13,7 @@ import {
 } from '../check-utils.js';
 import {
   createStdinReader,
+  runWizard,
   getQuestions,
   printQuestion,
   printSummary,
@@ -20,6 +21,8 @@ import {
   printProposedBehaviorCoverage,
   printLanguageCheck,
   printAutoDetection,
+  printAcceptanceCriteriaSection,
+  isAnsweredValue,
 } from '../acceptance-check.js';
 
 // --- Helper: create a readable stream that emits null-byte terminated data ---
@@ -483,13 +486,46 @@ describe('printSummary', () => {
     expect(output).toContain('Q1: -- Not answered');
   });
 
-  it('treats empty string answer as answered (not unanswered)', () => {
+  // Flipped as part of Issue #1483 D1: an empty (or whitespace-only) answer
+  // is exactly the shape a closed stdin produces for every question, and
+  // pre-fix this was reported identically to a real answer. See
+  // `isAnsweredValue` in acceptance-check.js.
+  it('treats an empty string answer as UNANSWERED (D1 fix)', () => {
     const questions = [{ key: 'q1' }];
     const answers = { q1: '' };
     printSummary(answers, questions);
     const output = logs.join('\n');
-    expect(output).toContain('Q1: OK');
-    expect(output).not.toContain('Not answered');
+    expect(output).toContain('Q1: -- Not answered');
+    expect(output).not.toContain('Q1: OK');
+  });
+
+  it('treats a whitespace-only answer as UNANSWERED', () => {
+    const questions = [{ key: 'q1' }];
+    const answers = { q1: '   ' };
+    printSummary(answers, questions);
+    const output = logs.join('\n');
+    expect(output).toContain('Q1: -- Not answered');
+  });
+
+  // D2: CI retrieval failure folds into the same visible-unanswered
+  // machinery, rather than a warning printed once and then ignored.
+  it('prints a CI-STATUS not-answered line when ciStatus is null (retrieval failed)', () => {
+    printSummary({}, [], { ciStatus: null });
+    const output = logs.join('\n');
+    expect(output).toContain('CI-STATUS: -- Not answered');
+  });
+
+  it('prints a CI-STATUS OK line when ciStatus is present', () => {
+    printSummary({}, [], { ciStatus: { allGreen: true } });
+    const output = logs.join('\n');
+    expect(output).toContain('CI-STATUS: OK');
+  });
+
+  it('prints no CI-STATUS line when ciStatus is not passed at all (backward compatible)', () => {
+    const questions = [{ key: 'q1' }];
+    printSummary({ q1: 'answer' }, questions);
+    const output = logs.join('\n');
+    expect(output).not.toContain('CI-STATUS');
   });
 });
 
@@ -612,7 +648,7 @@ describe('checkProposedBehaviorCoverage', () => {
 // a pattern and was exempted for a specific, auditable reason — this test
 // pins the distinct "exempted (comment-only diff)" wording.
 
-function minimalAutoDetection(testCoverage) {
+function minimalAutoDetection(testCoverage, overrides = {}) {
   return {
     categories: { client: [], server: [], shared: [], integration: [], test: [], other: [] },
     testFiles: [],
@@ -620,11 +656,12 @@ function minimalAutoDetection(testCoverage) {
     testCoverage,
     boundaries: [],
     linkedIssue: null,
-    acceptanceCriteria: [],
+    acceptanceCriteriaState: { state: 'absent', items: [] },
     proposedBehaviorCoverage: [],
     ciStatus: null,
     integrationTestNeeds: null,
     languageCheck: null,
+    ...overrides,
   };
 }
 
@@ -835,5 +872,213 @@ describe('printLanguageCheck', () => {
     expect(output).not.toContain('❌ FAIL — 0 violation(s)');
     expect(output).toMatch(/script-side error|no violation output|investigate/i);
     expect(output).toContain('exited with code 2');
+  });
+});
+
+// --- isAnsweredValue: the D1 fix's single source of truth for "was this
+// question actually answered" ---
+
+describe('isAnsweredValue', () => {
+  it('returns false for an empty string', () => {
+    expect(isAnsweredValue('')).toBe(false);
+  });
+
+  it('returns false for a whitespace-only string', () => {
+    expect(isAnsweredValue('   \t  ')).toBe(false);
+  });
+
+  it('returns false for undefined (key never set)', () => {
+    expect(isAnsweredValue(undefined)).toBe(false);
+  });
+
+  it('returns true for a non-empty string with real content', () => {
+    expect(isAnsweredValue('a real answer')).toBe(true);
+  });
+
+  it('returns true for a string that is only whitespace around real content', () => {
+    expect(isAnsweredValue('  answer  ')).toBe(true);
+  });
+});
+
+// --- printAcceptanceCriteriaSection: Acceptance Criteria three-valued
+// detection (Issue #1460 / #1483 D3) ---
+//
+// Tested via the extracted `printAcceptanceCriteriaSection` directly, not
+// through `printAutoDetection`. `printAutoDetection` unconditionally calls
+// `printIntegrationTestAdequacy(linkedIssue)`, which shells out to the real
+// `gh issue view` for any truthy `linkedIssue` — going through the full
+// function for a D3-only assertion would make these tests silently depend
+// on live network / `gh` auth. `printAcceptanceCriteriaSection` was pulled
+// out of `printAutoDetection` (mirroring the existing
+// printIntegrationTestCoverage / printProposedBehaviorCoverage /
+// printLanguageCheck extraction pattern) specifically so this state
+// display is testable in isolation.
+
+describe('printAcceptanceCriteriaSection', () => {
+  let logSpy;
+  let logs;
+
+  beforeEach(() => {
+    logs = [];
+    logSpy = spyOn(console, 'log').mockImplementation((...args) => {
+      logs.push(args.join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  it('state "checklist": prints the criterion -> test mapping prompt', () => {
+    printAcceptanceCriteriaSection('1418', { state: 'checklist', items: ['First criterion', 'Second criterion'] });
+    const output = logs.join('\n');
+    expect(output).toContain('Acceptance Criteria -> Test Coverage Check');
+    expect(output).toContain('Criterion 1: First criterion');
+    expect(output).toContain('Criterion 2: Second criterion');
+  });
+
+  // The distinct, visible state D3 introduces: a heading exists, but no
+  // checkbox items were found under it. This must never read the same as
+  // "none found" — that collapse is exactly the defect #1460 reports.
+  it('state "prose": prints a MANUAL-mapping notice distinct from "none found"', () => {
+    printAcceptanceCriteriaSection('1418', { state: 'prose', items: [] });
+    const output = logs.join('\n');
+    expect(output).toContain('AC section found but not in checklist form');
+    expect(output).toContain('MANUAL');
+    expect(output).not.toContain('No acceptance criteria (checklist) found');
+  });
+
+  it('state "absent": prints "no acceptance criteria found"', () => {
+    printAcceptanceCriteriaSection('1418', { state: 'absent', items: [] });
+    const output = logs.join('\n');
+    expect(output).toContain('No acceptance criteria (checklist) found');
+    expect(output).not.toContain('MANUAL');
+  });
+
+  it('no linked Issue: prints the "no linked Issue" notice regardless of state', () => {
+    printAcceptanceCriteriaSection(null, { state: 'absent', items: [] });
+    const output = logs.join('\n');
+    expect(output).toContain('No linked Issue');
+  });
+});
+
+// --- runWizard: D1 (self-answer) + D2 (CI status) exit-code polarity ---
+//
+// `autoDetection` is injected directly (the DI seam added alongside
+// runWizard's `stdin` option) so these tests never shell out to `gh`. A
+// green CI status is used as the baseline for tests that are not
+// specifically about D2, so a D1-only failure isn't masked by an
+// unrelated D2 failure and vice versa.
+
+const GREEN_CI = { allGreen: true, checks: [], failed: [], pending: [], passed: [] };
+
+function baseAutoDetectionForWizard(overrides = {}) {
+  return minimalAutoDetection([], { ciStatus: GREEN_CI, ...overrides });
+}
+
+describe('runWizard — D1 self-answer + D2 CI status (Issue #1483)', () => {
+  let logSpy;
+
+  beforeEach(() => {
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+  });
+
+  // D1 polarity, pre-fix half: this is exactly the closed-stdin shape
+  // (`< /dev/null`) the Issue reports. Pre-fix, this produced twelve `OK`
+  // lines and exit 0; the assertions below are what the pre-fix code
+  // fails.
+  //
+  // Mutation reach (measured): swapping the exit-code combinator from
+  // `unanswered.length > 0 || ciRetrievalFailed` to `&&` makes this test
+  // (and the partial-answers and CI-retrieval-failed tests below) fail —
+  // all three assert exitCode 1 from only one side of the OR being true.
+  it('closed stdin (no answers at all): all 12 questions unanswered, exitCode 1', async () => {
+    const stdin = createMockStdin([]);
+    const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard() });
+    expect(result.exitCode).toBe(1);
+    expect(result.unanswered).toHaveLength(12);
+    expect(result.ciRetrievalFailed).toBe(false);
+  });
+
+  it('partial answers (3 of 12): the 3 are excluded from unanswered, the other 9 are listed, exitCode 1', async () => {
+    const stdin = createMockStdin(['real answer one', 'real answer two', 'real answer three']);
+    const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard() });
+    expect(result.exitCode).toBe(1);
+    expect(result.unanswered).toHaveLength(9);
+    expect(result.unanswered).not.toContain('q1');
+    expect(result.unanswered).not.toContain('q2');
+    expect(result.unanswered).not.toContain('q3');
+    expect(result.unanswered).toContain('q4');
+  });
+
+  // D1 polarity, post-fix half: full answers must still pass. Without this,
+  // a fix that marked everything unanswered unconditionally would also
+  // pass the closed-stdin test above for the wrong reason.
+  it('all 12 questions answered with real content: exitCode 0, unanswered is empty', async () => {
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard() });
+    expect(result.exitCode).toBe(0);
+    expect(result.unanswered).toHaveLength(0);
+  });
+
+  // D2 polarity: retrieval failure must fail the run even when every
+  // question was answered — "could not retrieve" can never coexist with
+  // exit 0.
+  it('CI status retrieval failed (ciStatus null) with all questions answered: exitCode 1, ciRetrievalFailed true', async () => {
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard({ ciStatus: null }) });
+    expect(result.exitCode).toBe(1);
+    expect(result.ciRetrievalFailed).toBe(true);
+    expect(result.unanswered).toHaveLength(0);
+  });
+
+  // D2 polarity, post-fix half: a successfully retrieved (even non-green)
+  // CI status must not by itself fail the run through the D2 mechanism —
+  // only retrieval failure does. (allGreen: false here to prove the
+  // distinction; D2 does not gate on allGreen, only on retrieval success.)
+  it('CI status retrieved but not all green: exitCode still driven by answers, not by allGreen', async () => {
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const notGreenCi = { allGreen: false, checks: [], failed: [{ name: 'test' }], pending: [], passed: [] };
+    const result = await runWizard('999', { stdin, autoDetection: baseAutoDetectionForWizard({ ciStatus: notGreenCi }) });
+    expect(result.ciRetrievalFailed).toBe(false);
+    expect(result.exitCode).toBe(0);
+  });
+
+  // D3 wiring: a "prose" AC state must drive Q3 to the manual
+  // (Domain Invariants) variant, exactly like "absent" — never like
+  // "checklist". This is the runWizard-level pin; check-utils.test.js pins
+  // the detection itself and the printAcceptanceCriteriaSection describe
+  // block above pins the display message.
+  //
+  // Mutation reach (measured): weakening the wiring from
+  // `acceptanceCriteriaState.state === 'checklist'` to `!== 'absent'`
+  // (i.e. treating "prose" as truthy the same as "checklist") makes this
+  // test fail — it asserts the "Domain Invariants" (manual) Q3 text and
+  // the absence of the "Acceptance Criteria" (checklist) Q3 text.
+  it('acceptanceCriteriaState "prose" drives Q3 to the manual variant, not the checklist variant', async () => {
+    const logs = [];
+    logSpy.mockImplementation((...args) => logs.push(args.join(' ')));
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    // linkedIssue is intentionally left at its default (null) — Q3's
+    // manual-vs-checklist wiring depends only on acceptanceCriteriaState,
+    // never on linkedIssue itself, and a truthy linkedIssue here would make
+    // runWizard's printAutoDetection -> printIntegrationTestAdequacy shell
+    // out to the real `gh issue view` (see printAcceptanceCriteriaSection's
+    // describe block above for the same hazard).
+    const autoDetection = baseAutoDetectionForWizard({
+      acceptanceCriteriaState: { state: 'prose', items: [] },
+    });
+    await runWizard('999', { stdin, autoDetection });
+    const output = logs.join('\n');
+    expect(output).toContain('Q3: Domain Invariants');
+    expect(output).not.toContain('Q3: Acceptance Criteria');
   });
 });

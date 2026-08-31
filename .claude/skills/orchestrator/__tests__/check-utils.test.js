@@ -12,6 +12,8 @@ import {
   isCommentOnlyFileDiff,
   resolvePrDiffRef,
   PrDiffRefResolutionError,
+  getAcceptanceCriteria,
+  getCiStatus,
 } from '../check-utils.js';
 
 describe('isReExportOnlyContent', () => {
@@ -1101,5 +1103,174 @@ describe('resolvePrDiffRef failure path', () => {
   it('returns the resolved refs when both gh api and git fetch succeed', () => {
     const execImpl = (cmd) => (cmd.startsWith('gh api') ? JSON.stringify({ base: 'aaa', head: 'bbb' }) : '');
     expect(resolvePrDiffRef('123', { execImpl })).toEqual({ baseRef: 'aaa', headRef: 'bbb' });
+  });
+});
+
+// getAcceptanceCriteria — three-valued AC detection (Issue #1460 / #1483 D3).
+// The `execImpl` DI seam mirrors resolvePrDiffRef's pattern above, so these
+// fixtures never call the real `gh` binary.
+//
+// The "prose" fixture reproduces the actual shape that motivated #1460: a
+// real Architect-authored AC section (`## Acceptance Criteria (Architect,
+// ...)` heading, a `### Verification` subsection) whose items are plain
+// bullets, not `- [ ]` checkboxes.
+const PROSE_AC_ISSUE_BODY = `Some narrative text describing the defect.
+
+## Acceptance Criteria (Architect, 2026-08-29)
+
+### Item 1, before any implementation: re-confirm (a), (b), (c)
+
+Do exactly what this Issue's own text instructs.
+
+### The fix
+
+Bring the call site into line with the reference implementation.
+
+### Verification
+
+- A cleanly-aborting stub adapter, both polarities.
+- No regression on the shipped throwing adapter.
+- Every pin's reach measured by mutation, not predicted.
+- Standard DoD. File count approximately 4-8.
+
+### Do not
+
+Change the contract.
+`;
+
+describe('getAcceptanceCriteria', () => {
+  // Mutation reach (measured): deleting the `items.length > 0` early return
+  // (so a checklist body falls through to the heading check) makes this
+  // test fail — it would report 'prose' instead of 'checklist' because the
+  // fixture body also contains an "## Acceptance Criteria" heading above
+  // its checklist items.
+  it('returns state "checklist" and the parsed items when `- [ ] ` lines exist', () => {
+    const body = '## Acceptance Criteria\n\n- [ ] First criterion\n- [ ] Second criterion\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({
+      state: 'checklist',
+      items: ['First criterion', 'Second criterion'],
+    });
+  });
+
+  // Mutation reach (measured): replacing the heading regex with a substring
+  // match (`body.includes('acceptance criteria')`, case-sensitive) makes
+  // this test fail — the real fixture's heading text has different
+  // capitalization/spacing than a naive substring check would require, and
+  // this pin is what forces the regex to actually anchor on a markdown
+  // heading line rather than any mention of the phrase.
+  it('returns state "prose" for a real Architect-AC shape with no checkbox items', () => {
+    const execImpl = () => PROSE_AC_ISSUE_BODY;
+    expect(getAcceptanceCriteria('1418', { execImpl })).toEqual({ state: 'prose', items: [] });
+  });
+
+  // Mutation reach (measured): removing the `^#{1,6}\s` anchor from the
+  // heading regex (leaving only `/acceptance criteria/i`) makes this test
+  // fail — a bare textual mention outside a heading would then be
+  // misreported as 'prose' instead of 'absent'.
+  it('does not treat a non-heading mention of "acceptance criteria" as a prose AC section', () => {
+    const body = 'See the acceptance criteria discussed in the design doc for context.\n\nNo checklist here.\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'absent', items: [] });
+  });
+
+  it('returns state "absent" when the body has neither a checklist nor an AC heading', () => {
+    const body = 'Just a plain bug report with no AC section at all.\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'absent', items: [] });
+  });
+
+  it('returns state "absent" when the gh call itself fails (execImpl returns null)', () => {
+    const execImpl = () => null;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'absent', items: [] });
+  });
+});
+
+// getCiStatus — replaces the dead `gh pr checks --json` flag with the
+// `gh pr view --json statusCheckRollup` shape (Issue #1483 D2). The rollup
+// mixes CheckRun entries (Actions jobs) and StatusContext entries (e.g. the
+// CodeRabbit commit status), both fixture-shaped from a real
+// `gh pr view --json statusCheckRollup` response captured against a real PR.
+describe('getCiStatus', () => {
+  const rollupWithMixedShapes = JSON.stringify({
+    statusCheckRollup: [
+      { __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'SUCCESS' },
+      { __typename: 'StatusContext', context: 'CodeRabbit', state: 'SUCCESS' },
+    ],
+  });
+
+  // Mutation reach (measured): swapping `allGreen: failed.length === 0 &&
+  // pending.length === 0` to `checks.length > 0` makes this test's allGreen
+  // assertion pass vacuously but fails the sibling "has a failed check"
+  // test below (an empty rollup would also read allGreen under that
+  // mutation) — the two tests together pin the conjunction, not just one
+  // clause of it.
+  it('parses a mixed CheckRun/StatusContext rollup and marks allGreen true when both pass', () => {
+    const execImpl = () => rollupWithMixedShapes;
+    const result = getCiStatus('1481', { execImpl });
+    expect(result.allGreen).toBe(true);
+    expect(result.passed).toHaveLength(2);
+    expect(result.failed).toHaveLength(0);
+    expect(result.pending).toHaveLength(0);
+    expect(result.checks.map((c) => c.name)).toEqual(['test', 'CodeRabbit']);
+  });
+
+  // Mutation reach (measured): deleting the `check.status !== 'COMPLETED'`
+  // pending check (so an in-progress CheckRun falls through to the
+  // conclusion check) makes this test fail — conclusion is null while a
+  // check is running, so classifyCheckBucket would misclassify it as
+  // 'fail' instead of 'pending', and this test's bucket assertion catches
+  // that.
+  it('classifies an in-progress CheckRun as pending, not fail', () => {
+    const execImpl = () => JSON.stringify({
+      statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'IN_PROGRESS', conclusion: null }],
+    });
+    const result = getCiStatus('1481', { execImpl });
+    expect(result.pending).toHaveLength(1);
+    expect(result.failed).toHaveLength(0);
+    expect(result.allGreen).toBe(false);
+  });
+
+  it('has a failed check and reports allGreen false when a CheckRun concludes FAILURE', () => {
+    const execImpl = () => JSON.stringify({
+      statusCheckRollup: [{ __typename: 'CheckRun', name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' }],
+    });
+    const result = getCiStatus('1481', { execImpl });
+    expect(result.failed).toHaveLength(1);
+    expect(result.allGreen).toBe(false);
+  });
+
+  it('classifies a pending StatusContext as pending', () => {
+    const execImpl = () => JSON.stringify({
+      statusCheckRollup: [{ __typename: 'StatusContext', context: 'CodeRabbit', state: 'PENDING' }],
+    });
+    const result = getCiStatus('1481', { execImpl });
+    expect(result.pending).toHaveLength(1);
+  });
+
+  // Mutation reach (measured): this is the D2 polarity pin — it pins the
+  // CALLER-VISIBLE consequence (retrieval returns null) of the pre-fix `gh
+  // pr checks <N> --json name,state,bucket` command failing on the
+  // installed `gh`, via the execImpl seam, independent of the exact
+  // command string. Note on reach: deleting the `if (!result) return null`
+  // line this test looks like it targets does NOT fail this test —
+  // `JSON.parse(null)` does not throw (coerces to the JSON literal `null`),
+  // so execution falls through to the `!Array.isArray(rollup)` guard a few
+  // lines down, which returns null for the same input. The end-to-end
+  // contract this test asserts is real and correctly pinned; it is just
+  // pinned by that downstream guard, not by the early return.
+  it('returns null when the gh call fails (D2 polarity: today this always happens because the flag does not exist)', () => {
+    const execImpl = () => null;
+    expect(getCiStatus('1481', { execImpl })).toBeNull();
+  });
+
+  it('returns null when gh returns unparseable JSON', () => {
+    const execImpl = () => 'not json';
+    expect(getCiStatus('1481', { execImpl })).toBeNull();
+  });
+
+  it('returns null when the parsed response has no statusCheckRollup array', () => {
+    const execImpl = () => JSON.stringify({ somethingElse: true });
+    expect(getCiStatus('1481', { execImpl })).toBeNull();
   });
 });

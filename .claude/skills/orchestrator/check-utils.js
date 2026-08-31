@@ -780,21 +780,45 @@ export function getIssueInfo(issueNumber) {
   return { title: title || '', body: body || '' };
 }
 
-export function getAcceptanceCriteria(issueNumber) {
-  const result = exec(`gh issue view ${issueNumber} --json body --jq .body`);
-  if (!result) return [];
+/**
+ * Three-valued AC detection (Issue #1460 / #1483 D3).
+ *
+ * The checklist regex (`^- \[ \] `) is unchanged and remains the only form
+ * that mechanises Q3's criterion-to-test mapping — see
+ * `.claude/skills/orchestrator/SKILL.md` "The detector is deliberately not
+ * loosened to accept other forms." This function only makes the
+ * intermediate state (a heading exists, but not as a checklist) visible
+ * instead of collapsing it into the same "none found" report as a genuinely
+ * absent AC.
+ *
+ * @param {string|number} issueNumber
+ * @param {{ execImpl?: typeof exec }} [opts]
+ * @returns {{ state: 'checklist' | 'prose' | 'absent', items: string[] }}
+ */
+export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
+  const result = execImpl(`gh issue view ${issueNumber} --json body --jq .body`);
+  if (!result) return { state: 'absent', items: [] };
 
   const lines = result.split('\n');
-  const criteria = [];
+  const items = [];
 
   for (const line of lines) {
     const match = line.match(/^- \[ \]\s+(.+)/);
     if (match) {
-      criteria.push(match[1].trim());
+      items.push(match[1].trim());
     }
   }
 
-  return criteria;
+  if (items.length > 0) {
+    return { state: 'checklist', items };
+  }
+
+  const hasAcceptanceCriteriaHeading = lines.some((line) => /^#{1,6}\s.*acceptance criteria/i.test(line));
+  if (hasAcceptanceCriteriaHeading) {
+    return { state: 'prose', items: [] };
+  }
+
+  return { state: 'absent', items: [] };
 }
 
 // --- Proposed Behavior ---
@@ -962,16 +986,53 @@ export function runCommentBlameShiftCheck({ repoRoot, binary = 'bun' } = {}) {
 
 // --- CI status check ---
 
-export function getCiStatus(prNumber) {
-  const result = exec(`gh pr checks ${prNumber} --json name,state,bucket 2>/dev/null`);
+/**
+ * Classify a single `statusCheckRollup` entry into pass/pending/fail.
+ * The rollup mixes two shapes (Issue #1483 D2): a `CheckRun` (Actions job,
+ * has `status`/`conclusion`) and a `StatusContext` (external commit status
+ * such as CodeRabbit, has `state` only). Both are folded into the same
+ * three-bucket vocabulary the caller already displays.
+ *
+ * @param {{ __typename?: string, status?: string, conclusion?: string, state?: string }} check
+ * @returns {'pass' | 'pending' | 'fail'}
+ */
+function classifyCheckBucket(check) {
+  if (check.__typename === 'StatusContext') {
+    if (check.state === 'SUCCESS') return 'pass';
+    if (check.state === 'PENDING' || check.state === 'EXPECTED') return 'pending';
+    return 'fail';
+  }
+  if (check.status && check.status !== 'COMPLETED') return 'pending';
+  if (check.conclusion === 'SUCCESS' || check.conclusion === 'NEUTRAL' || check.conclusion === 'SKIPPED') return 'pass';
+  return 'fail';
+}
+
+/**
+ * `gh pr checks <N> --json name,state,bucket` (the pre-fix implementation)
+ * is not a flag the installed `gh` supports — every call failed silently
+ * and `getCiStatus` always returned `null` (Issue #1483 D2). This reads the
+ * same rollup surface `workflow.md`'s Definition of Done names for CI
+ * verification: `gh pr view <N> --json statusCheckRollup`.
+ *
+ * @param {string|number} prNumber
+ * @param {{ execImpl?: typeof exec }} [opts]
+ * @returns {{ checks: Array<{name: string, bucket: string}>, failed: Array, pending: Array, passed: Array, allGreen: boolean } | null}
+ */
+export function getCiStatus(prNumber, { execImpl = exec } = {}) {
+  const result = execImpl(`gh pr view ${prNumber} --json statusCheckRollup`);
   if (!result) return null;
+  let parsed;
   try {
-    const checks = JSON.parse(result);
-    const failed = checks.filter(c => c.bucket === 'fail');
-    const pending = checks.filter(c => c.bucket === 'pending');
-    const passed = checks.filter(c => c.bucket === 'pass');
-    return { checks, failed, pending, passed, allGreen: failed.length === 0 && pending.length === 0 };
+    parsed = JSON.parse(result);
   } catch {
     return null;
   }
+  const rollup = parsed?.statusCheckRollup;
+  if (!Array.isArray(rollup)) return null;
+
+  const checks = rollup.map((c) => ({ name: c.name || c.context || 'unknown', bucket: classifyCheckBucket(c) }));
+  const failed = checks.filter((c) => c.bucket === 'fail');
+  const pending = checks.filter((c) => c.bucket === 'pending');
+  const passed = checks.filter((c) => c.bucket === 'pass');
+  return { checks, failed, pending, passed, allGreen: failed.length === 0 && pending.length === 0 };
 }

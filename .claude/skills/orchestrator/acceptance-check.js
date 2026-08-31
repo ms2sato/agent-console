@@ -86,10 +86,10 @@ function runAutoDetection(prNumber) {
   const ciStatus = getCiStatus(prNumber);
 
   const linkedIssue = getLinkedIssueNumber(prNumber);
-  let acceptanceCriteria = [];
+  let acceptanceCriteriaState = { state: 'absent', items: [] };
   let proposedBehaviorCoverage = [];
   if (linkedIssue) {
-    acceptanceCriteria = getAcceptanceCriteria(linkedIssue);
+    acceptanceCriteriaState = getAcceptanceCriteria(linkedIssue);
     const proposedItems = getProposedBehavior(linkedIssue);
     if (proposedItems.length > 0) {
       const prDiff = getPrDiff(prNumber);
@@ -108,7 +108,7 @@ function runAutoDetection(prNumber) {
     testCoverage,
     boundaries,
     linkedIssue,
-    acceptanceCriteria,
+    acceptanceCriteriaState,
     proposedBehaviorCoverage,
     ciStatus,
     integrationTestNeeds,
@@ -235,8 +235,45 @@ function printLanguageCheck(languageCheck) {
   console.log();
 }
 
+/**
+ * Three-valued AC display (Issue #1460 / #1483 D3). State (b) — "prose" —
+ * must never read the same as state (c) — "absent" — since collapsing them
+ * into an identical "no acceptance criteria found" message is exactly the
+ * defect #1460 reports: it makes Q3's mapping silently degrade to unaided
+ * judgment with no visible signal that a transcription gap, not a missing
+ * AC, is the cause.
+ */
+function printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState) {
+  if (!linkedIssue) {
+    console.log('[No linked Issue] No "closed #NNN" pattern found in PR body.');
+    console.log();
+    return;
+  }
+
+  if (acceptanceCriteriaState.state === 'checklist') {
+    console.log(`[Issue #${linkedIssue} Acceptance Criteria -> Test Coverage Check]`);
+    console.log();
+    console.log('For each criterion below, confirm the corresponding test file and test case name.');
+    console.log('If any are blank, tests may be insufficient.');
+    console.log();
+    for (let i = 0; i < acceptanceCriteriaState.items.length; i++) {
+      console.log(`Criterion ${i + 1}: ${acceptanceCriteriaState.items[i]}`);
+      console.log('  -> Corresponding test: (Orchestrator to verify)');
+      console.log();
+    }
+  } else if (acceptanceCriteriaState.state === 'prose') {
+    console.log(`[Issue #${linkedIssue}] AC section found but not in checklist form — Q3 mapping is MANUAL for this PR.`);
+    console.log('  A heading matching "Acceptance Criteria" exists in the Issue body, but no `- [ ]` items were found under it.');
+    console.log('  This is a transcription gap, not a missing AC — send it back to the AC\'s author for a checklist index.');
+    console.log();
+  } else {
+    console.log(`[Issue #${linkedIssue}] No acceptance criteria (checklist) found.`);
+    console.log();
+  }
+}
+
 function printAutoDetection(autoDetection) {
-  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteria, proposedBehaviorCoverage, ciStatus, integrationTestNeeds, languageCheck } = autoDetection;
+  const { categories, testFiles, testCoverage, boundaries, linkedIssue, acceptanceCriteriaState, proposedBehaviorCoverage, ciStatus, integrationTestNeeds, languageCheck } = autoDetection;
 
   // CI status (must be green before acceptance)
   console.log('[CI Status]');
@@ -322,27 +359,8 @@ function printAutoDetection(autoDetection) {
     console.log();
   }
 
-  // Acceptance criteria
-  if (linkedIssue) {
-    if (acceptanceCriteria.length > 0) {
-      console.log(`[Issue #${linkedIssue} Acceptance Criteria -> Test Coverage Check]`);
-      console.log();
-      console.log('For each criterion below, confirm the corresponding test file and test case name.');
-      console.log('If any are blank, tests may be insufficient.');
-      console.log();
-      for (let i = 0; i < acceptanceCriteria.length; i++) {
-        console.log(`Criterion ${i + 1}: ${acceptanceCriteria[i]}`);
-        console.log('  -> Corresponding test: (Orchestrator to verify)');
-        console.log();
-      }
-    } else {
-      console.log(`[Issue #${linkedIssue}] No acceptance criteria (checklist) found.`);
-      console.log();
-    }
-  } else {
-    console.log('[No linked Issue] No "closed #NNN" pattern found in PR body.');
-    console.log();
-  }
+  // Acceptance criteria (three-valued detection — Issue #1460 / #1483 D3)
+  printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState);
 
   // Proposed behavior coverage
   if (linkedIssue) {
@@ -538,16 +556,38 @@ function printQuestion(question) {
   console.log();
 }
 
-function printSummary(answers, questions) {
+/**
+ * An answer counts as given only if it has non-whitespace content. A closed
+ * stdin (Issue #1483 D1) produces an empty string for every question, not a
+ * missing key — `readResponse` always returns a (possibly empty) string, so
+ * checking key presence alone (the pre-fix logic) can never distinguish a
+ * real answer from a stream that closed before anyone typed anything.
+ *
+ * @param {unknown} answer
+ * @returns {boolean}
+ */
+function isAnsweredValue(answer) {
+  return typeof answer === 'string' && answer.trim().length > 0;
+}
+
+function printSummary(answers, questions, { ciStatus } = {}) {
   console.log('=== Answer Summary ===');
   for (const q of questions) {
-    if (q.key in answers) {
-      const answer = answers[q.key];
+    const answer = answers[q.key];
+    if (isAnsweredValue(answer)) {
       const display = answer.length > 100 ? answer.substring(0, 100) + '...' : answer;
       console.log(`${q.key.toUpperCase()}: OK ${display}`);
     } else {
       console.log(`${q.key.toUpperCase()}: -- Not answered`);
     }
+  }
+  // CI status folds into the same visible unanswered/exit-code machinery
+  // (Issue #1483 D2) — "could not retrieve" can no longer coexist with a
+  // clean summary and exit 0.
+  if (ciStatus === null) {
+    console.log('CI-STATUS: -- Not answered (could not retrieve CI status)');
+  } else if (ciStatus) {
+    console.log(`CI-STATUS: OK (${ciStatus.allGreen ? 'all green' : 'not all green — see [CI Status] section above'})`);
   }
   console.log();
 }
@@ -563,13 +603,22 @@ function printPostAcceptanceWorkflow() {
 
 // --- Interactive wizard mode ---
 
-async function runWizard(prNumber, { stdin = process.stdin } = {}) {
+/**
+ * @param {string|number} prNumber
+ * @param {{ stdin?: NodeJS.ReadableStream, autoDetection?: object }} [opts]
+ *   `autoDetection` is a test-only DI seam (mirrors `resolvePrDiffRef`'s
+ *   `execImpl` pattern) — supplying it skips the real `runAutoDetection`
+ *   call (which shells out to `gh`), so D1/D2 exit-code behavior can be
+ *   pinned without live network access. Production callers never pass it.
+ * @returns {Promise<{ exitCode: number, unanswered: string[], ciRetrievalFailed: boolean }>}
+ */
+async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injectedAutoDetection } = {}) {
   console.log(`=== PR #${prNumber} Acceptance Check ===\n`);
 
-  const autoDetection = runAutoDetection(prNumber);
+  const autoDetection = injectedAutoDetection ?? runAutoDetection(prNumber);
   printAutoDetection(autoDetection);
 
-  const hasAcceptanceCriteria = autoDetection.acceptanceCriteria.length > 0;
+  const hasAcceptanceCriteria = autoDetection.acceptanceCriteriaState.state === 'checklist';
   const integrationTestMissing = autoDetection.integrationTestNeeds
     && (autoDetection.integrationTestNeeds.isCrossPackage || autoDetection.integrationTestNeeds.hasSharedChanges)
     && !autoDetection.integrationTestNeeds.hasIntegrationTestInPr;
@@ -588,12 +637,36 @@ async function runWizard(prNumber, { stdin = process.stdin } = {}) {
     printQuestion(question);
     const answer = await readResponse();
     answers[question.key] = answer;
-    console.log(`OK ${question.key.toUpperCase()} answered`);
+    if (isAnsweredValue(answer)) {
+      console.log(`OK ${question.key.toUpperCase()} answered`);
+    } else {
+      console.log(`-- ${question.key.toUpperCase()} NOT answered (empty response)`);
+    }
     console.log();
   }
 
-  printSummary(answers, questions);
+  printSummary(answers, questions, { ciStatus: autoDetection.ciStatus });
   printPostAcceptanceWorkflow();
+
+  const unanswered = questions.filter((q) => !isAnsweredValue(answers[q.key])).map((q) => q.key);
+  const ciRetrievalFailed = autoDetection.ciStatus === null;
+
+  if (unanswered.length > 0 || ciRetrievalFailed) {
+    const reasons = [];
+    if (unanswered.length > 0) {
+      reasons.push(`${unanswered.length} question(s) unanswered (${unanswered.map((k) => k.toUpperCase()).join(', ')})`);
+    }
+    if (ciRetrievalFailed) {
+      reasons.push('CI status could not be retrieved');
+    }
+    console.log(`❌ Acceptance check FAILED: ${reasons.join('; ')}`);
+    console.log();
+    return { exitCode: 1, unanswered, ciRetrievalFailed };
+  }
+
+  console.log('✅ Acceptance check complete — all questions answered, CI status retrieved.');
+  console.log();
+  return { exitCode: 0, unanswered, ciRetrievalFailed };
 }
 
 // --- Exports for testing ---
@@ -607,6 +680,8 @@ export {
   printProposedBehaviorCoverage,
   printLanguageCheck,
   printAutoDetection,
+  printAcceptanceCriteriaSection,
+  isAnsweredValue,
 };
 
 // --- Main ---
@@ -619,12 +694,13 @@ if (isMainModule) {
     usage();
   }
 
+  let result;
   try {
-    await runWizard(prNumber);
+    result = await runWizard(prNumber);
   } catch (err) {
     if (!(err instanceof PrDiffRefResolutionError)) throw err;
     console.error(`Error: ${err.message}`);
     process.exit(1);
   }
-  process.exit(0);
+  process.exit(result.exitCode);
 }
