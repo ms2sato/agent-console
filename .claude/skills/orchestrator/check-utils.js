@@ -781,19 +781,29 @@ export function getIssueInfo(issueNumber) {
 }
 
 /**
- * Three-valued AC detection (D3).
+ * Four-valued AC detection (D3, amended by Architect ruling after
+ * delegate report: a heading with literally no content under it is its
+ * own state, not "prose").
  *
  * The checklist regex (`^- \[ \] `) is unchanged and remains the only form
  * that mechanises Q3's criterion-to-test mapping — see
  * `.claude/skills/orchestrator/SKILL.md` "The detector is deliberately not
  * loosened to accept other forms." This function only makes the
- * intermediate state (a heading exists, but not as a checklist) visible
- * instead of collapsing it into the same "none found" report as a genuinely
- * absent AC.
+ * intermediate states (a heading exists, but not as a checklist) visible
+ * instead of collapsing them into the same "none found" report as a
+ * genuinely absent AC.
+ *
+ * `'prose'` and `'empty-heading'` share the exact same CONSEQUENCE as
+ * `'absent'` — none of the three is `'checklist'`, so Q3 falls back to the
+ * manual (Domain Invariants) variant for all three. Only the LABEL
+ * differs: reporting a criteria-free heading as "Q3 mapping is MANUAL"
+ * (the `'prose'` message) would be vacuous — there is nothing to manually
+ * map either. The same outcome-unified / label-distinct shape as D2's
+ * `classifyCiEvidence`.
  *
  * @param {string|number} issueNumber
  * @param {{ execImpl?: typeof exec }} [opts]
- * @returns {{ state: 'checklist' | 'prose' | 'absent', items: string[] }}
+ * @returns {{ state: 'checklist' | 'prose' | 'empty-heading' | 'absent', items: string[] }}
  */
 export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
   const result = execImpl(`gh issue view ${issueNumber} --json body --jq .body`);
@@ -813,12 +823,29 @@ export function getAcceptanceCriteria(issueNumber, { execImpl = exec } = {}) {
     return { state: 'checklist', items };
   }
 
-  const hasAcceptanceCriteriaHeading = lines.some((line) => /^#{1,6}\s.*acceptance criteria/i.test(line));
-  if (hasAcceptanceCriteriaHeading) {
-    return { state: 'prose', items: [] };
+  const headingIdx = lines.findIndex((line) => /^#{1,6}\s.*acceptance criteria/i.test(line));
+  if (headingIdx === -1) {
+    return { state: 'absent', items: [] };
   }
 
-  return { state: 'absent', items: [] };
+  // Scan forward from the AC heading for any non-blank line — checkbox,
+  // prose, or a subheading title all count as content. Stop at the next
+  // heading whose level is the same as or higher than (fewer or equal `#`
+  // characters than) the AC heading's own level: that is where the AC
+  // section ends under normal Markdown sectioning.
+  const headingLevel = lines[headingIdx].match(/^(#{1,6})\s/)[1].length;
+  let hasContent = false;
+  for (let i = headingIdx + 1; i < lines.length; i++) {
+    const line = lines[i];
+    const nextHeadingMatch = line.match(/^(#{1,6})\s/);
+    if (nextHeadingMatch && nextHeadingMatch[1].length <= headingLevel) break;
+    if (line.trim().length > 0) {
+      hasContent = true;
+      break;
+    }
+  }
+
+  return hasContent ? { state: 'prose', items: [] } : { state: 'empty-heading', items: [] };
 }
 
 // --- Proposed Behavior ---

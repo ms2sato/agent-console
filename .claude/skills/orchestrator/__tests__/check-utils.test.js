@@ -1164,6 +1164,59 @@ describe('getAcceptanceCriteria', () => {
     expect(getAcceptanceCriteria('1418', { execImpl })).toEqual({ state: 'prose', items: [] });
   });
 
+  // D3 amendment (Architect ruling): a heading with literally no content
+  // under it — not even prose — must never be reported as 'prose'.
+  // "Q3 mapping is MANUAL" over zero criteria is vacuous. Its consequence
+  // is identical to 'absent' (Q3 falls back to manual either way), but the
+  // label must stay distinct so the reader is told this is a transcription
+  // accident, not a genuinely missing AC.
+  //
+  // Mutation reach (measured): forcing `hasContent` to always be `true`
+  // (equivalent to deleting this state entirely) makes this test fail —
+  // it would report 'prose' instead of 'empty-heading'.
+  it('returns state "empty-heading" when the AC heading is immediately followed by the next heading (no content at all)', () => {
+    const body = 'Some narrative text describing the defect.\n\n## Acceptance Criteria (Architect, 2026-08-30)\n\n## Next Section\n\nUnrelated content that comes after the next heading.\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'empty-heading', items: [] });
+  });
+
+  it('returns state "empty-heading" when the AC heading is the last line in the body (no trailing content)', () => {
+    const body = 'Some narrative text describing the defect.\n\n## Acceptance Criteria (Architect, 2026-08-30)\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'empty-heading', items: [] });
+  });
+
+  it('returns state "empty-heading" when only blank lines separate the AC heading from the next heading', () => {
+    const body = '## Acceptance Criteria\n\n\n\n## Next Section\nContent here.\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'empty-heading', items: [] });
+  });
+
+  // A bare subheading title with no body of its own still counts as
+  // content — only a section with NOTHING under it (not even a heading
+  // title) is 'empty-heading'. This is the boundary between this state and
+  // 'prose'.
+  it('returns state "prose", not "empty-heading", when a subheading with a title (but no body) follows the AC heading', () => {
+    const body = '## Acceptance Criteria\n\n### Item 1\n\n## Next Section\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'prose', items: [] });
+  });
+
+  // Mutation reach (measured): the real fixture PROSE_AC_ISSUE_BODY reused
+  // here already exercises this — dropping the `<=` in
+  // `nextHeadingMatch[1].length <= headingLevel` (leaving only `<`) makes
+  // that test's own assertion pass unchanged (its next heading, `###
+  // Item 1`, is strictly deeper, so `<=` vs `<` makes no difference there)
+  // but breaks THIS test: `## Next Section` is the SAME level as `##
+  // Acceptance Criteria`, so `<` alone would fail to treat it as a
+  // section boundary, scan past it, find `Content here.`, and misreport
+  // 'prose' instead of 'empty-heading' for the same-or-higher-level case.
+  it('treats a same-level heading (not just a deeper one) as the section boundary', () => {
+    const body = '## Acceptance Criteria\n\n## Next Section\nContent here.\n';
+    const execImpl = () => body;
+    expect(getAcceptanceCriteria('1', { execImpl })).toEqual({ state: 'empty-heading', items: [] });
+  });
+
   // Mutation reach (measured): removing the `^#{1,6}\s` anchor from the
   // heading regex (leaving only `/acceptance criteria/i`) makes this test
   // fail — a bare textual mention outside a heading would then be

@@ -1043,6 +1043,25 @@ describe('printAcceptanceCriteriaSection', () => {
     expect(output).not.toContain('MANUAL');
   });
 
+  // D3 amendment (Architect ruling): a heading with no content under it
+  // gets its own message, distinct from both "prose" (MANUAL) — since
+  // "Q3 mapping is MANUAL" over zero criteria is vacuous — and from the
+  // plain "absent" wording, even though its consequence (Q3 falls back to
+  // manual) is identical to "absent".
+  //
+  // Mutation reach (measured): merging the 'empty-heading' branch into the
+  // trailing `else` (i.e. deleting the dedicated branch) makes this test
+  // fail — it would print the "No acceptance criteria (checklist) found"
+  // wording instead of the transcription-accident wording.
+  it('state "empty-heading": prints a distinct transcription-accident message, not "prose" MANUAL wording or plain "absent" wording', () => {
+    printAcceptanceCriteriaSection('1418', { state: 'empty-heading', items: [] });
+    const output = logs.join('\n');
+    expect(output).toContain('AC heading present but the section is EMPTY');
+    expect(output).toContain('transcription accident');
+    expect(output).not.toContain('MANUAL');
+    expect(output).not.toContain('No acceptance criteria (checklist) found');
+  });
+
   it('no linked Issue: prints the "no linked Issue" notice regardless of state', () => {
     printAcceptanceCriteriaSection(null, { state: 'absent', items: [] });
     const output = logs.join('\n');
@@ -1193,6 +1212,23 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
     // describe block above for the same hazard).
     const autoDetection = baseAutoDetectionForWizard({
       acceptanceCriteriaState: { state: 'prose', items: [] },
+    });
+    await runWizard('999', { stdin, autoDetection });
+    const output = logs.join('\n');
+    expect(output).toContain('Q3: Domain Invariants');
+    expect(output).not.toContain('Q3: Acceptance Criteria');
+  });
+
+  // D3 amendment: 'empty-heading' shares 'prose'/'absent's consequence
+  // (Q3 falls back to manual) — confirmed here at the wiring level, same
+  // shape as the 'prose' test above.
+  it('acceptanceCriteriaState "empty-heading" also drives Q3 to the manual variant', async () => {
+    const logs = [];
+    logSpy.mockImplementation((...args) => logs.push(args.join(' ')));
+    const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
+    const stdin = createMockStdin(answers);
+    const autoDetection = baseAutoDetectionForWizard({
+      acceptanceCriteriaState: { state: 'empty-heading', items: [] },
     });
     await runWizard('999', { stdin, autoDetection });
     const output = logs.join('\n');

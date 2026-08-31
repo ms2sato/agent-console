@@ -267,12 +267,16 @@ function printLanguageCheck(languageCheck) {
 }
 
 /**
- * Three-valued AC display (D3). State (b) — "prose" — must never read the
- * same as state (c) — "absent" — since collapsing them into an identical
- * "no acceptance criteria found" message is exactly the defect this
- * function exists to report: it makes Q3's mapping silently degrade to
- * unaided judgment with no visible signal that a transcription gap, not a
- * missing AC, is the cause.
+ * Four-valued AC display (D3). State "prose" must never read the same as
+ * state "absent" — collapsing them into an identical "no acceptance
+ * criteria found" message is exactly the defect this function exists to
+ * report: it makes Q3's mapping silently degrade to unaided judgment with
+ * no visible signal that a transcription gap, not a missing AC, is the
+ * cause. State "empty-heading" (a heading with no content under it at
+ * all — Architect ruling, amended after the initial fix) must ALSO never
+ * read as "prose": prompting "Q3 mapping is MANUAL" over zero criteria is
+ * vacuous, so it gets its own distinct message even though its
+ * consequence (Q3 falls back to manual) is identical to "absent".
  */
 function printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState) {
   if (!linkedIssue) {
@@ -296,6 +300,9 @@ function printAcceptanceCriteriaSection(linkedIssue, acceptanceCriteriaState) {
     console.log(`[Issue #${linkedIssue}] AC section found but not in checklist form — Q3 mapping is MANUAL for this PR.`);
     console.log('  A heading matching "Acceptance Criteria" exists in the Issue body, but no `- [ ]` items were found under it.');
     console.log('  This is a transcription gap, not a missing AC — send it back to the AC\'s author for a checklist index.');
+    console.log();
+  } else if (acceptanceCriteriaState.state === 'empty-heading') {
+    console.log(`[Issue #${linkedIssue}] AC heading present but the section is EMPTY — treated as no AC (usually a transcription accident; check the Issue's edit history/comments).`);
     console.log();
   } else {
     console.log(`[Issue #${linkedIssue}] No acceptance criteria (checklist) found.`);
