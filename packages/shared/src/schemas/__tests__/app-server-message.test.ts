@@ -587,6 +587,47 @@ describe('AppServerMessageSchema', () => {
     });
   });
 
+  // Realtime refresh triggers (Issue #1520). Mutation-reach check performed
+  // manually: temporarily changing ArtifactCreatedSchema/BookmarkCreatedSchema
+  // from v.strictObject to v.object made the "content field" rejection tests
+  // below FAIL (extra field silently stripped instead of rejected), confirming
+  // the tests actually depend on strict-mode. Reverted after confirming.
+  describe('artifact-created', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'artifact-created', sessionId: 'session-1', artifactId: 'artifact-1' });
+      expect(output.type).toBe('artifact-created');
+    });
+
+    it('should reject a payload carrying a content field (R1 structural pin)', () => {
+      expectInvalid({ type: 'artifact-created', sessionId: 'session-1', artifactId: 'artifact-1', title: 'leaked content' });
+    });
+  });
+
+  describe('artifact-deleted', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'artifact-deleted', sessionId: 'session-1', artifactId: 'artifact-1' });
+      expect(output.type).toBe('artifact-deleted');
+    });
+  });
+
+  describe('bookmark-created', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'bookmark-created', sessionId: 'session-1', bookmarkId: 'bookmark-1' });
+      expect(output.type).toBe('bookmark-created');
+    });
+
+    it('should reject a payload carrying a content field (R1 structural pin)', () => {
+      expectInvalid({ type: 'bookmark-created', sessionId: 'session-1', bookmarkId: 'bookmark-1', url: 'https://leaked.example' });
+    });
+  });
+
+  describe('bookmark-deleted', () => {
+    it('should accept valid payload', () => {
+      const output = expectValid({ type: 'bookmark-deleted', sessionId: 'session-1', bookmarkId: 'bookmark-1' });
+      expect(output.type).toBe('bookmark-deleted');
+    });
+  });
+
   describe('schema-version', () => {
     it('should accept the schema-version frame', () => {
       const output = expectValid({ type: 'schema-version', version: 'cf7b17ac06edc357' });

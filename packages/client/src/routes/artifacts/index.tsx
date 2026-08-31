@@ -9,6 +9,7 @@ import { PageBreadcrumb } from '../../components/PageBreadcrumb';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { ErrorDialog, useErrorDialog } from '../../components/ui/error-dialog';
 import { Spinner } from '../../components/ui/Spinner';
+import { useAppWsEvent } from '../../hooks/useAppWs';
 
 export const Route = createFileRoute('/artifacts/')({
   component: ArtifactsPage,
@@ -23,6 +24,20 @@ export function ArtifactsPage() {
 
   // Artifact to delete (for confirmation dialog)
   const [artifactToDelete, setArtifactToDelete] = useState<Artifact | null>(null);
+
+  // Realtime refresh: unscoped by sessionId, unlike
+  // useSessionArtifacts -- this route shows the user's whole artifact
+  // history regardless of which session created each one, so ANY
+  // artifact-created/deleted message should refetch it. N1: the message
+  // carries only routing metadata, never bound to anything rendered here.
+  useAppWsEvent({
+    onArtifactCreated: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.list(), exact: true });
+    },
+    onArtifactDeleted: () => {
+      queryClient.invalidateQueries({ queryKey: artifactKeys.list(), exact: true });
+    },
+  });
 
   const {
     data: artifacts,

@@ -376,6 +376,35 @@ const ReviewQueueUpdatedSchema = v.strictObject({
   type: v.literal('review-queue-updated'),
 });
 
+// Realtime refresh triggers. These carry at most an id -- never
+// title/url/content/etc. -- per N1 ("a broadcast is never a source of
+// list content"): the client re-fetches the authoritative REST endpoint on
+// receipt and never renders anything from the broadcast payload itself. See
+// `notification-service.ts`'s `NotificationServiceDeps` doc comment.
+const ArtifactCreatedSchema = v.strictObject({
+  type: v.literal('artifact-created'),
+  sessionId: v.string(),
+  artifactId: v.string(),
+});
+
+const ArtifactDeletedSchema = v.strictObject({
+  type: v.literal('artifact-deleted'),
+  sessionId: v.string(),
+  artifactId: v.string(),
+});
+
+const BookmarkCreatedSchema = v.strictObject({
+  type: v.literal('bookmark-created'),
+  sessionId: v.string(),
+  bookmarkId: v.string(),
+});
+
+const BookmarkDeletedSchema = v.strictObject({
+  type: v.literal('bookmark-deleted'),
+  sessionId: v.string(),
+  bookmarkId: v.string(),
+});
+
 /**
  * Standalone schema for the schema-version frame sent as the first message on
  * `/ws/app`. Exported separately (not only as part of the envelope) so the
@@ -424,6 +453,10 @@ export const AppServerMessageSchema = v.variant('type', [
   WorkerRestartedSchema,
   MemoUpdatedSchema,
   ReviewQueueUpdatedSchema,
+  ArtifactCreatedSchema,
+  ArtifactDeletedSchema,
+  BookmarkCreatedSchema,
+  BookmarkDeletedSchema,
   SchemaVersionMessageSchema,
 ]);
 

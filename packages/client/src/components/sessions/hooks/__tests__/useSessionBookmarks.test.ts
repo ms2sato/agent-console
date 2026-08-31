@@ -1,8 +1,10 @@
-import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, afterAll } from 'bun:test';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useSessionBookmarks } from '../useSessionBookmarks';
+import { _reset as resetWebSocket } from '../../../../lib/app-websocket';
+import { MockWebSocket, installMockWebSocket } from '../../../../test/mock-websocket';
 
 // Fetch-level mock (testing.md Anti-Pattern #2: mock at the fetch boundary,
 // not via mock.module() on api.ts, which is imported for real by many other
@@ -58,8 +60,16 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 describe('useSessionBookmarks', () => {
+  let restoreWebSocket: () => void;
+
   beforeEach(() => {
     mockFetch.mockReset();
+    restoreWebSocket = installMockWebSocket();
+    resetWebSocket();
+  });
+
+  afterEach(() => {
+    restoreWebSocket();
   });
 
   it('calls fetchBookmarks with the given sessionId (session-scoped query)', async () => {
@@ -151,5 +161,126 @@ describe('useSessionBookmarks', () => {
     expect(fetchUrl(deleteUrl)).toContain('/api/bookmarks/bookmark-1');
 
     await waitFor(() => expect(result.current.bookmarks).toEqual([]));
+  });
+
+  // Issue #1520: realtime refresh. The message carries only routing
+  // metadata (sessionId + bookmarkId) -- N1 -- so these tests assert
+  // invalidate-and-refetch behavior via a real refetch of the REST
+  // endpoint, never via binding the payload to rendered data.
+  describe('realtime refresh (bookmark-created / bookmark-deleted)', () => {
+    it('refetches when a bookmark-created message arrives for the SAME session (scoping positive)', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
+
+      const { result } = renderHook(() => useSessionBookmarks('session-A'), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.isPending).toBe(false));
+      expect(result.current.bookmarks).toEqual([]);
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const newBookmark = {
+        id: 'bookmark-new',
+        url: 'https://example.com/new',
+        title: 'New',
+        createdAt: '2026-08-20T00:00:00.000Z',
+        origin: 'user' as const,
+      };
+      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [newBookmark] }));
+
+      await act(async () => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'bookmark-created', sessionId: 'session-A', bookmarkId: 'bookmark-new' })
+        );
+      });
+
+      await waitFor(() => expect(result.current.bookmarks).toEqual([newBookmark]));
+    });
+
+    it('does NOT refetch when a bookmark-created message arrives for a DIFFERENT session (scoping negative)', async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
+
+      const { result } = renderHook(() => useSessionBookmarks('session-B'), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.isPending).toBe(false));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const callsBefore = mockFetch.mock.calls.length;
+
+      await act(async () => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'bookmark-created', sessionId: 'session-OTHER', bookmarkId: 'bookmark-x' })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      expect(mockFetch.mock.calls.length).toBe(callsBefore);
+      expect(result.current.bookmarks).toEqual([]);
+    });
+
+    it('refetches when a bookmark-deleted message arrives for the SAME session (scoping positive)', async () => {
+      const existing = {
+        id: 'bookmark-1',
+        url: 'https://example.com',
+        title: 'Existing',
+        createdAt: '2026-08-20T00:00:00.000Z',
+        origin: 'user' as const,
+      };
+      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [existing] }));
+
+      const { result } = renderHook(() => useSessionBookmarks('session-C'), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.isPending).toBe(false));
+      expect(result.current.bookmarks).toEqual([existing]);
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [] }));
+
+      await act(async () => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'bookmark-deleted', sessionId: 'session-C', bookmarkId: 'bookmark-1' })
+        );
+      });
+
+      await waitFor(() => expect(result.current.bookmarks).toEqual([]));
+    });
+
+    it('does NOT refetch when a bookmark-deleted message arrives for a DIFFERENT session (scoping negative)', async () => {
+      const existing = {
+        id: 'bookmark-1',
+        url: 'https://example.com',
+        title: 'Existing',
+        createdAt: '2026-08-20T00:00:00.000Z',
+        origin: 'user' as const,
+      };
+      mockFetch.mockResolvedValueOnce(jsonResponse({ bookmarks: [existing] }));
+
+      const { result } = renderHook(() => useSessionBookmarks('session-D'), { wrapper: createWrapper() });
+      await waitFor(() => expect(result.current.isPending).toBe(false));
+
+      const ws = MockWebSocket.getLastInstance();
+      act(() => {
+        ws?.simulateOpen();
+      });
+
+      const callsBefore = mockFetch.mock.calls.length;
+
+      await act(async () => {
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'bookmark-deleted', sessionId: 'session-OTHER', bookmarkId: 'bookmark-1' })
+        );
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      });
+
+      expect(mockFetch.mock.calls.length).toBe(callsBefore);
+      expect(result.current.bookmarks).toEqual([existing]);
+    });
   });
 });

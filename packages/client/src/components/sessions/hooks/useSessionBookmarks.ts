@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { fetchBookmarks, createBookmark, deleteBookmark as deleteBookmarkApi } from '../../../lib/api';
 import { bookmarkKeys } from '../../../lib/query-keys';
+import { useAppWsEvent } from '../../../hooks/useAppWs';
 
 /**
  * Resolve the bookmarks registered from a specific session, plus mutations
@@ -15,9 +16,28 @@ import { bookmarkKeys } from '../../../lib/query-keys';
  * mutate-fire-and-forget-with-callbacks convention -- the caller (the
  * registration form) needs to clear its inputs on success and surface the
  * server's error message on failure.
+ *
+ * Realtime refresh: `create_bookmark` / `delete_bookmark` emit a
+ * trigger-only WS message (no content, N1-compliant) on `/ws/app`. This
+ * hook invalidates its own scoped query key when the message's `sessionId`
+ * matches -- a message for a DIFFERENT session must not refetch this
+ * session's panel. See `useSessionArtifacts`'s identical wiring.
  */
 export function useSessionBookmarks(sessionId: string) {
   const queryClient = useQueryClient();
+
+  useAppWsEvent({
+    onBookmarkCreated: (msgSessionId) => {
+      if (msgSessionId === sessionId) {
+        queryClient.invalidateQueries({ queryKey: bookmarkKeys.listBySession(sessionId), exact: true });
+      }
+    },
+    onBookmarkDeleted: (msgSessionId) => {
+      if (msgSessionId === sessionId) {
+        queryClient.invalidateQueries({ queryKey: bookmarkKeys.listBySession(sessionId), exact: true });
+      }
+    },
+  });
 
   const { data: bookmarks, isPending } = useQuery({
     queryKey: bookmarkKeys.listBySession(sessionId),

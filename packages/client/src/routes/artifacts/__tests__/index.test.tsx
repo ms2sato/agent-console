@@ -1,8 +1,10 @@
 import { describe, it, expect, mock, afterEach, beforeEach } from 'bun:test';
-import { screen, cleanup, waitFor, within } from '@testing-library/react';
+import { screen, cleanup, waitFor, within, act } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
 import { ArtifactsPage } from '../index';
+import { _reset as resetWebSocket } from '../../../lib/app-websocket';
+import { MockWebSocket, installMockWebSocket } from '../../../test/mock-websocket';
 
 // --- Fetch-level mocking ---
 
@@ -40,18 +42,23 @@ const mockFetch = mock(async (input: RequestInfo | URL, init?: RequestInit): Pro
   return jsonResponse({});
 });
 
+let restoreWebSocket: () => void;
+
 beforeEach(() => {
   globalThis.fetch = Object.assign(mockFetch, { preconnect: () => {} }) as typeof fetch;
   listResponse = { artifacts: [] };
   listStatus = 200;
   deleteCalledWithId = null;
   deleteStatus = 200;
+  restoreWebSocket = installMockWebSocket();
+  resetWebSocket();
 });
 
 afterEach(() => {
   cleanup();
   globalThis.fetch = originalFetch;
   mockFetch.mockClear();
+  restoreWebSocket();
 });
 
 describe('ArtifactsPage', () => {
@@ -166,5 +173,65 @@ describe('ArtifactsPage', () => {
 
     // No live <script> element entered the DOM from the artifact title.
     expect(document.querySelector('script')).toBeNull();
+  });
+
+  // Issue #1520: realtime refresh. Unscoped by sessionId (unlike
+  // useSessionArtifacts) -- this route shows the user's whole artifact
+  // history, so ANY artifact-created/deleted message refetches it. N1: the
+  // message carries only routing metadata, never rendered.
+  describe('realtime refresh (artifact-created / artifact-deleted)', () => {
+    it('refetches the list when an artifact-created message arrives', async () => {
+      listResponse = { artifacts: [] };
+      await renderWithRouter(<ArtifactsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('No artifacts found')).toBeTruthy();
+      });
+
+      listResponse = {
+        artifacts: [
+          { id: 'artifact-new', title: 'Freshly Created', createdAt: '2026-08-20T00:00:00.000Z', sizeBytes: 42 },
+        ],
+      };
+
+      const ws = MockWebSocket.getLastInstance();
+      await act(async () => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'artifact-created', sessionId: 'some-session', artifactId: 'artifact-new' })
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('Freshly Created')).toBeTruthy();
+      });
+    });
+
+    it('refetches the list when an artifact-deleted message arrives', async () => {
+      listResponse = {
+        artifacts: [
+          { id: 'artifact-1', title: 'My Dashboard', createdAt: '2026-08-16T00:00:00.000Z', sizeBytes: 1234 },
+        ],
+      };
+      await renderWithRouter(<ArtifactsPage />);
+
+      await waitFor(() => {
+        expect(screen.getByText('My Dashboard')).toBeTruthy();
+      });
+
+      listResponse = { artifacts: [] };
+
+      const ws = MockWebSocket.getLastInstance();
+      await act(async () => {
+        ws?.simulateOpen();
+        ws?.simulateMessage(
+          JSON.stringify({ type: 'artifact-deleted', sessionId: 'some-session', artifactId: 'artifact-1' })
+        );
+      });
+
+      await waitFor(() => {
+        expect(screen.getByText('No artifacts found')).toBeTruthy();
+      });
+    });
   });
 });

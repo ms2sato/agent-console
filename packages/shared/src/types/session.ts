@@ -369,6 +369,10 @@ export const APP_SERVER_MESSAGE_TYPES = {
   'embedded-agent-created': 29,
   'embedded-agent-updated': 30,
   'embedded-agent-deleted': 31,
+  'artifact-created': 32,
+  'artifact-deleted': 33,
+  'bookmark-created': 34,
+  'bookmark-deleted': 35,
 } as const;
 
 /** @deprecated Use APP_SERVER_MESSAGE_TYPES instead */

@@ -1981,6 +1981,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'HTML artifact created',
         );
 
+        broadcastToApp({ type: 'artifact-created', sessionId, artifactId: artifact.id });
+
         // AGENT_CONSOLE_PUBLIC_ORIGIN is the ONLY source for an absolute
         // URL here. MCP tool calls arrive over the localhost dial-back
         // connection, so the /mcp request's Host header (if any) names the
@@ -2056,6 +2058,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         logger.info({ artifactId, sessionId, userId: session.createdBy }, 'HTML artifact deleted via MCP');
+
+        broadcastToApp({ type: 'artifact-deleted', sessionId, artifactId });
 
         return textResult({ deleted: true, artifactId });
       } catch (err) {
@@ -2136,6 +2140,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
           'Bookmark created via MCP',
         );
 
+        broadcastToApp({ type: 'bookmark-created', sessionId, bookmarkId: created.id });
+
         // `create` returns the server-internal BookmarkRecord (wire summary
         // + userId); strip userId before it crosses the wire (see
         // packages/shared/src/types/bookmark.ts's wire-shape JSDoc).
@@ -2207,6 +2213,8 @@ export function createMcpApp(deps: McpDependencies): Hono {
         }
 
         logger.info({ bookmarkId, sessionId, userId: session.createdBy }, 'Bookmark deleted via MCP');
+
+        broadcastToApp({ type: 'bookmark-deleted', sessionId, bookmarkId });
 
         return textResult({ deleted: true, bookmarkId });
       } catch (err) {
