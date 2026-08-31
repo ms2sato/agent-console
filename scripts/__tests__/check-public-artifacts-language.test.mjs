@@ -543,6 +543,43 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
         rmSync(root, { recursive: true, force: true });
       }
     });
+
+    it('exclusion matches an explicit path with a leading ./ the same as the bare form', async () => {
+      const root = makeFixture();
+      try {
+        mkdirSync(join(root, '.claude/skills/orchestrator'), { recursive: true });
+        writeFileSync(
+          join(root, '.claude/skills/orchestrator/sprint-retro.js'),
+          "console.log('レビュー手順です');\n",
+        );
+        const result = await runCheck({
+          cwd: root,
+          files: ['./.claude/skills/orchestrator/sprint-retro.js'],
+        });
+        expect(result.violations).toEqual([]);
+        expect(result.files).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it('path normalization does not change which files the default glob path scans (only the explicit-files path is affected)', async () => {
+      const root = makeFixture();
+      try {
+        writeFileSync(join(root, 'CLAUDE.md'), '# top\n');
+        writeFileSync(join(root, 'docs/a.md'), '# a\n');
+        writeFileSync(join(root, '.claude/hooks/check.sh'), '#!/bin/sh\necho ok\n');
+        const defaultFiles = await findDefaultFiles({ cwd: root });
+        const result = await runCheck({ cwd: root });
+        // Bun.Glob never emits a leading `./`, so normalizeRelativePath is a
+        // no-op on this path — the default scan's target set is identical
+        // to findDefaultFiles's raw output (module normalization only ever
+        // changes behavior for the explicit `files` argument).
+        expect(result.files).toEqual(defaultFiles);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });
 

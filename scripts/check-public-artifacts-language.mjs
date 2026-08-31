@@ -168,6 +168,21 @@ export function isExcludedFile(file) {
 }
 
 /**
+ * Strip a leading `./` (or repeated `./`) so an explicit CLI-supplied path
+ * like `./.claude/skills/orchestrator/sprint-retro.js` compares equal to
+ * the bare repo-relative form Bun.Glob produces and EXCLUDED_FILES uses.
+ * Only the explicit `files` argument to runCheck can carry this prefix —
+ * findDefaultFiles's glob output never does — but exclusion matching must
+ * be uniform regardless of how a file was targeted (see runCheck below).
+ *
+ * @param {string} file
+ * @returns {string}
+ */
+function normalizeRelativePath(file) {
+  return file.replace(/^(?:\.\/)+/, '');
+}
+
+/**
  * Find non-Latin-script Letter characters in a single string.
  * Pure function — no I/O, fully testable.
  *
@@ -281,7 +296,7 @@ export function formatFileViolations(file, violations) {
  * }>}
  */
 export async function runCheck({ cwd = process.cwd(), files } = {}) {
-  const candidateFiles = files ?? (await findDefaultFiles({ cwd }));
+  const candidateFiles = (files ?? (await findDefaultFiles({ cwd }))).map(normalizeRelativePath);
   const targetFiles = candidateFiles.filter((f) => !isExcludedFile(f));
   const violations = [];
   const offenders = new Set();
