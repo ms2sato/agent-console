@@ -19,7 +19,7 @@ Or individually:
 | `bun run lint:deps` | dependency-cruiser against baseline (`--ignore-known`) |
 | `bun run lint:deps:all` | dependency-cruiser, including known violations |
 | `bun run lint:deps:baseline` | regenerate `.dependency-cruiser-known-violations.json` |
-| `bun run lint:cycles` | same dependency-cruiser run as `lint:deps`, kept as a named entry point for anyone reaching for "just the cycle check" by habit |
+| `bun run lint:cycles` | same dependency-cruiser run as `lint:deps` — **name is narrower than what it runs**: it evaluates all 10 rules in `.dependency-cruiser.cjs`, not only `no-circular`. Kept as a separate script (rather than deleted) so an existing caller reaching for "just the cycle check" by name — `worktree-delete-job-handler.ts`'s doc comment names it explicitly — doesn't silently break; failure direction is safe either way, since a caller gets every rule's worth of coverage, never less than the cycle check alone |
 | `bun run lint:unused` | knip dead-code / unused-deps |
 | `bun run graph:deps` | render the dependency graph to `dependency-graph.svg` (requires Graphviz `dot`) |
 
