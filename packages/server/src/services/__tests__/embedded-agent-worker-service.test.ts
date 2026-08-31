@@ -18,6 +18,7 @@ import {
   resolveEmbeddedAgentEntryPath,
   hasUndeliveredInitialPrompt,
   fatalLeavesHarnessAlive,
+  isEvictableEngine,
 } from '../embedded-agent-worker-service.js';
 import {
   ProviderKeyStoreError,
@@ -3062,6 +3063,16 @@ describe('EmbeddedAgentWorkerService — fatalLeavesHarnessAlive (#1414)', () =>
 
   it('does NOT route openai-api, whose every fatal takes the harness down with it', () => {
     expect(fatalLeavesHarnessAlive('openai-api')).toBe(false);
+  });
+});
+
+describe('EmbeddedAgentWorkerService — isEvictableEngine (#1502)', () => {
+  it('is evictable for claude-sdk', () => {
+    expect(isEvictableEngine('claude-sdk')).toBe(true);
+  });
+
+  it('is evictable for openai-api', () => {
+    expect(isEvictableEngine('openai-api')).toBe(true);
   });
 });
 
