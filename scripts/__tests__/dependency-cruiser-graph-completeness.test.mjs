@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const DEPCRUISE_BIN = resolve(REPO_ROOT, 'node_modules/.bin/depcruise');
+const SUBPROCESS_TIMEOUT_MS = 30000;
 
 // The only files this pin tolerates being absent from the graph. This list
 // is DELIBERATELY independent of `.dependency-cruiser.cjs`'s own
@@ -22,11 +23,33 @@ const KNOWN_INTENTIONAL_EXCLUSIONS = new Set([
   'packages/server/vitest.config.ts',
 ]);
 
-function gitLsFiles() {
-  const result = spawnSync('git', ['ls-files', 'packages/**/*.ts', 'packages/**/*.tsx'], {
+// spawnSync blocks Node's event loop for the life of the child process, so
+// bun:test's per-test timeout (the `it(..., 30000)` argument below) cannot
+// interrupt a hung child -- it can only fire once control returns to the
+// loop, which a blocked spawnSync never yields. The subprocess-level
+// `timeout` option is the only thing that can actually bound a hang; a
+// timed-out or signal-killed child must be treated as a hard failure of its
+// own, distinct from "produced no/bad output".
+function runOrThrow(cmd, args) {
+  const result = spawnSync(cmd, args, {
     cwd: REPO_ROOT,
     encoding: 'utf8',
+    timeout: SUBPROCESS_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024 * 128,
   });
+  if (result.error) {
+    throw new Error(`${cmd} failed to spawn or was killed: ${result.error.message}`);
+  }
+  if (result.signal) {
+    throw new Error(
+      `${cmd} was terminated by signal ${result.signal} (likely a ${SUBPROCESS_TIMEOUT_MS}ms timeout)`,
+    );
+  }
+  return result;
+}
+
+function gitLsFiles() {
+  const result = runOrThrow('git', ['ls-files', 'packages/**/*.ts', 'packages/**/*.tsx']);
   if (result.status !== 0) {
     throw new Error(`git ls-files failed (exit ${result.status}): ${result.stderr}`);
   }
@@ -34,28 +57,38 @@ function gitLsFiles() {
 }
 
 function cruiseModuleGraph() {
-  const result = spawnSync(
-    DEPCRUISE_BIN,
-    ['--config', '.dependency-cruiser.cjs', '--output-type', 'json', 'packages'],
-    { cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 1024 * 1024 * 128 },
-  );
+  const result = runOrThrow(DEPCRUISE_BIN, [
+    '--config',
+    '.dependency-cruiser.cjs',
+    '--output-type',
+    'json',
+    'packages',
+  ]);
   if (!result.stdout) {
     throw new Error(`depcruise produced no output (exit ${result.status}): ${result.stderr}`);
   }
   return JSON.parse(result.stdout);
 }
 
+// Membership is built ONLY from `graph.modules[].source` -- the set of files
+// dependency-cruiser actually visited and analyzed as nodes. An earlier
+// draft also added every `dependencies[].resolved` path, on the reasoning
+// that a file referenced by an importer must exist; that conflates "some
+// module's import specifier resolved to this path" with "dependency-cruiser
+// analyzed this path as a module", which are different claims -- the whole
+// point of this pin is to verify the second one, not the first. Measured
+// directly against this repo's pinned dependency-cruiser@17.3.10 (four
+// scenarios: a bare JS pair, a JS pair with a real rule set, this project's
+// full graph with a heavily-imported file excluded, and a synthetic
+// type-only-only edge to an excluded file): `options.exclude.path` drops the
+// edge from the importer's `dependencies` array entirely, so `resolved`
+// never actually retains an excluded path in this codebase's usage today.
+// The simplification is kept anyway -- it is the more directly correct
+// definition of "in the graph", and it removes a dependency on that
+// specific (and not distro/version-guaranteed) tool behavior rather than
+// relying on it.
 function graphModuleSet(graph) {
-  const modules = new Set();
-  for (const mod of graph.modules) {
-    modules.add(mod.source);
-    for (const dep of mod.dependencies) {
-      if (dep.resolved) {
-        modules.add(dep.resolved);
-      }
-    }
-  }
-  return modules;
+  return new Set(graph.modules.map((mod) => mod.source));
 }
 
 describe('dependency-cruiser graph completeness', () => {
@@ -72,7 +105,7 @@ describe('dependency-cruiser graph completeness', () => {
   // a fast machine; bun:test's default 5000ms per-test timeout is too tight
   // on a slower CI runner (observed: 5022ms on GitHub Actions).
   it(
-    'includes every lint-scoped TS/TSX source file as a graph node or a resolved dependency target',
+    'includes every lint-scoped TS/TSX source file as a graph node',
     async () => {
       const gitFiles = gitLsFiles().filter((file) => !KNOWN_INTENTIONAL_EXCLUSIONS.has(file));
 
