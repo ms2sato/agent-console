@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Readable } from 'node:stream';
+import { execSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   createStdinReader,
   getSteps,
@@ -166,6 +170,66 @@ describe('getSteps', () => {
     expect(text).toContain('Implicit knowledge');
     expect(text).toContain('Name-reality mismatches');
     expect(text).toContain('Owner-dependent discoveries');
+  });
+});
+
+// The known-set-building command below is extracted from the PRODUCTION
+// instruction text and actually executed in bash. This is not a duplicate
+// of the logic -- it IS the logic: the literal string a human copies out of
+// Step 8 and runs. Executing it here is what "test production code" means
+// when the artifact under test is a shell one-liner embedded in prose,
+// rather than a JS function.
+//
+// An earlier version of this line used an unquoted
+// `printf '%s\n' $SPRINT_PR_NUMBERS <retro-pr-number>` alone, which never
+// splits on commas -- SPRINT_PR_NUMBERS is documented as whitespace- OR
+// comma-separated, and the script's own parser splits on `/[\s,]+/`. A
+// comma-separated SPRINT_PR_NUMBERS silently reintroduced the defect this
+// step exists to fix: nearly every sprint PR reads as a gap candidate again.
+function extractKnownSetCommand() {
+  const steps = getSteps();
+  const gapScan = steps.find(s => s.key === 'memory_gap_scan');
+  const line = gapScan.instructions.find(l => l.includes('/tmp/known.txt') && l.includes('printf'));
+  if (!line) throw new Error('known-set command line not found in Step 8 instructions');
+  return line.trim();
+}
+
+function runKnownSetCommand(sprintPrNumbersRaw, retroPrNumber = '1514') {
+  const rawCmd = extractKnownSetCommand().replace('<retro-pr-number>', String(retroPrNumber));
+  const dir = mkdtempSync(join(tmpdir(), 'sprint-retro-known-set-'));
+  const knownPath = join(dir, 'known.txt');
+  const cmd = rawCmd.replace('/tmp/known.txt', knownPath);
+  try {
+    execSync(cmd, {
+      shell: '/bin/bash',
+      env: { ...process.env, SPRINT_PR_NUMBERS: sprintPrNumbersRaw },
+    });
+    return readFileSync(knownPath, 'utf-8').trim().split('\n').filter(Boolean);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('memory_gap_scan Step 8 instructions: known-set command (executed, not duplicated)', () => {
+  it('normalizes comma-separated SPRINT_PR_NUMBERS, matching the script\'s own .split(/[\\s,]+/) contract', () => {
+    // Reach: reverting the fix (dropping `| tr \', \' \'\\n\' | sed \'/^$/d\'`)
+    // makes this fail -- the output would be ["1392,1393", "1514"] instead
+    // of ["1392", "1393", "1514"]. Confirmed by hand: reverted to the
+    // pre-fix line, this test failed with exactly that output; restored,
+    // it passes. (No other test in this suite would have caught it --
+    // the prose-content tests only check for substrings, not behavior.)
+    const known = runKnownSetCommand('1392,1393');
+    expect(known).toEqual(['1392', '1393', '1514']);
+  });
+
+  it('still handles whitespace-separated SPRINT_PR_NUMBERS (regression control)', () => {
+    const known = runKnownSetCommand('1392 1393');
+    expect(known).toEqual(['1392', '1393', '1514']);
+  });
+
+  it('handles a mixed comma-and-space separated value', () => {
+    const known = runKnownSetCommand('1392, 1393, 1395');
+    expect(known).toEqual(['1392', '1393', '1395', '1514']);
   });
 });
 
