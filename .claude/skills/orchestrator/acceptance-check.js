@@ -706,6 +706,22 @@ async function runWizard(prNumber, { stdin = process.stdin, autoDetection: injec
   const ciRetrievalFailed = ciEvidence === 'retrieval-failed';
   const ciNoChecksYet = ciEvidence === 'no-checks-yet';
 
+  // EXIT-CODE CONTRACT (canonical; Architect-ruled after a CodeRabbit
+  // finding argued red-but-retrieved CI should also gate this exit code —
+  // rejected, see below):
+  //
+  // The exit code gates whether the walk PRODUCED its information, not
+  // whether the information is good. Red-but-retrieved CI (ciEvidence ===
+  // 'has-evidence' && !autoDetection.ciStatus.allGreen) exits 0 because its
+  // failure mode is loud (the ⛔ instruction on the same screen, printed
+  // above by printAutoDetection) — unlike the silent-toward-clean shapes
+  // D1/D2 close, where the failure was invisible without this fix.
+  //
+  // PREMISE: the exit code's only consumer is the interactive human who
+  // sees that screen (verified 2026-08-31: no CI workflow or script gates
+  // on it; preflight-check.js's own caller uses `|| true`). The moment any
+  // automated consumer of this exit code appears, red CI MUST become a
+  // non-zero exit — automation cannot see the ⛔.
   if (unanswered.length > 0 || ciRetrievalFailed || ciNoChecksYet) {
     const reasons = [];
     if (unanswered.length > 0) {

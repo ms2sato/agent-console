@@ -1152,6 +1152,12 @@ describe('runWizard — D1 self-answer + D2 CI status', () => {
   // CI status must not by itself fail the run through the D2 mechanism —
   // only retrieval failure does. (allGreen: false here to prove the
   // distinction; D2 does not gate on allGreen, only on retrieval success.)
+  //
+  // This is also the test-side record of an Architect-ruled Major
+  // rejection: a CodeRabbit review argued red-but-retrieved CI should also
+  // exit non-zero. See the EXIT-CODE CONTRACT comment directly above the
+  // exit gate in runWizard (acceptance-check.js) for the canonical
+  // rationale and its re-arming condition.
   it('CI status retrieved but not all green: exitCode still driven by answers, not by allGreen', async () => {
     const answers = Array.from({ length: 12 }, (_, i) => `real answer ${i + 1}`);
     const stdin = createMockStdin(answers);
