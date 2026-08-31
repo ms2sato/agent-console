@@ -13,7 +13,7 @@ function readKnownViolations() {
 }
 
 describe('dependency-cruiser baseline no-circular ratchet', () => {
-  // Ratchet against Issue #1535: the baseline must never again absorb a
+  // Ratchet against baseline re-absorption: the baseline must never again absorb a
   // `no-circular` violation. A future `lint:deps` failure caused by a new
   // cycle must be fixed at the source, not silenced by re-running
   // `lint:deps:baseline` and committing the cycle into the known-violations
