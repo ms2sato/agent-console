@@ -94,6 +94,14 @@ In any real environment with multiple users, mounted volumes, or sandboxes, "per
 
 `gh pr edit --body-file` and `gh issue edit --body-file` fail on this repository with a GraphQL `projectCards` error. The workaround is `gh api ... -X PATCH` — and there is a second trap waiting inside it.
 
+**The failure is loud and gets swallowed anyway, so read the body back before believing the edit landed.** `gh pr edit` does exit non-zero here, but what it prints is a *deprecation notice* — text that reads as a warning next to output that looks like it worked. Chain it with `;` instead of `&&`, or follow it with an unconditional `echo`, and the status disappears entirely while a success line prints. Two agents hit this within one hour on 2026-08-31: one had the remote body 19 lines shorter than the local file, the other had an `echo` fire after a command that had already failed. Both caught it by re-reading; neither would have otherwise.
+
+Check a marker string that exists **only** in the new body — the first lines are usually identical between revisions and will confirm a no-op:
+
+```bash
+gh pr view <N> --json body --jq .body | grep -c '<marker unique to the new text>'
+```
+
 **`-f` does not expand `@file`.** It is the raw-string field flag, so `-f body=@/tmp/body.md` stores the eleven-character literal `@/tmp/body.md` as the entire body. Nothing errors: exit code 0, and the PR now says `@/tmp/body.md`. You find out by re-reading the PR, or you do not find out at all.
 
 Use `-F` (capital), the typed-field flag, which does read the file:
