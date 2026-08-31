@@ -103,8 +103,13 @@ describe('getSteps', () => {
     const steps = getSteps();
     const gapScan = steps.find(s => s.key === 'memory_gap_scan');
     const text = gapScan.instructions.join('\n');
-    expect(text).not.toContain('comm');
-    expect(text).not.toContain('sort');
+    // Anchored on the command form, not the bare substring -- "comm" and
+    // "sort" alone also match inside ordinary prose ("command", "recommend",
+    // "sorted"), which would fail this pin on a wording change that never
+    // reintroduced either shell command.
+    expect(text).not.toMatch(/\bcomm\s+-\d+/);
+    expect(text).not.toMatch(/\bsort\s+-n\b/);
+    expect(text).not.toMatch(/<\(sort /);
     expect(text).not.toContain('tr -s');
     expect(text).not.toContain('/tmp/known.txt');
     expect(text).not.toContain('/tmp/window.txt');
@@ -310,7 +315,7 @@ describe('memory_gap_scan Step 8 instructions: gap-candidates pipeline (executed
     // the identical result as the comma- and space-joined forms above.
     const output = runGapCandidatesPipeline({
       windowPrNumbers: [1392, 1393, 1400],
-      sprintPrNumbers: '1392 1393',
+      sprintPrNumbers: '1392\u00A01393',
       retroPrNumber: '1514',
     });
     expect(candidatesOf(output)).toEqual(['1400']);
@@ -1127,7 +1132,7 @@ describe('parsePrNumberList', () => {
     expect(parsePrNumberList('1392 1393')).toEqual([1392, 1393]);
     expect(parsePrNumberList('1392\t1393')).toEqual([1392, 1393]);
     expect(parsePrNumberList('1392\r1393')).toEqual([1392, 1393]);
-    expect(parsePrNumberList('1392 1393')).toEqual([1392, 1393]);
+    expect(parsePrNumberList('1392\u00A01393')).toEqual([1392, 1393]);
   });
 
   it('collapses mixed runs of separators and drops non-numeric tokens', () => {

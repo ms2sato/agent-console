@@ -483,11 +483,18 @@ export async function runGapCandidatesMode({
     throw new MissingSprintPrNumbersError();
   }
 
+  const retroNumber = Number.parseInt(retroPrNumber, 10);
+  if (!Number.isFinite(retroNumber)) {
+    throw new Error(
+      `--gap-candidates requires the retro PR number, e.g. --gap-candidates 1514 (got: ${JSON.stringify(retroPrNumber)})`
+    );
+  }
+
   const windowInput = await readAllStdin(stdin);
   const windowPrNumbers = parsePrNumberList(windowInput);
   const knownPrNumbers = [
     ...parsePrNumberList(env.SPRINT_PR_NUMBERS),
-    Number.parseInt(retroPrNumber, 10),
+    retroNumber,
   ];
 
   const candidates = compute({ windowPrNumbers, knownPrNumbers });
