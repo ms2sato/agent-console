@@ -7,10 +7,11 @@ import type { UseWorktreeCreationTasksReturn } from '../useWorktreeCreationTasks
 import type { CreateWorktreeFormRequest } from '../../components/worktrees/CreateWorktreeForm';
 
 // useCreateWorktree resolves its task-list callbacks from WorktreeCreationTasksContext
-// (re-exported by routes/__root). The test provides a REAL context value via
-// WorktreeCreationTasksContext.Provider instead of `mock.module`-ing routes/__root --
-// mock.module is process-global in bun:test and would poison every other test file
-// that real-imports routes/__root in the same process (testing.md Anti-Pattern #2).
+// (contexts/root-contexts, the context's actual source module). The test provides a
+// REAL context value via WorktreeCreationTasksContext.Provider instead of
+// `mock.module`-ing that module -- mock.module is process-global in bun:test and would
+// poison every other test file that real-imports contexts/root-contexts in the same
+// process (testing.md Anti-Pattern #2).
 const mockAddTask = mock<UseWorktreeCreationTasksReturn['addTask']>(() => {});
 const mockRemoveTask = mock<UseWorktreeCreationTasksReturn['removeTask']>(() => {});
 
