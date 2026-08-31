@@ -68,13 +68,20 @@ describe('dependency-cruiser graph completeness', () => {
   // `options.exclude.path` -- so this pin asserts every OTHER lint-scoped
   // source file resolves into the graph, catching any future exclusion
   // (madge-shaped or not) that tries to reintroduce this blind spot.
-  it('includes every lint-scoped TS/TSX source file as a graph node or a resolved dependency target', async () => {
-    const gitFiles = gitLsFiles().filter((file) => !KNOWN_INTENTIONAL_EXCLUSIONS.has(file));
+  // Cruising ~950 modules across the whole `packages/` tree takes 2.5-3s on
+  // a fast machine; bun:test's default 5000ms per-test timeout is too tight
+  // on a slower CI runner (observed: 5022ms on GitHub Actions).
+  it(
+    'includes every lint-scoped TS/TSX source file as a graph node or a resolved dependency target',
+    async () => {
+      const gitFiles = gitLsFiles().filter((file) => !KNOWN_INTENTIONAL_EXCLUSIONS.has(file));
 
-    const graph = cruiseModuleGraph();
-    const moduleSet = graphModuleSet(graph);
+      const graph = cruiseModuleGraph();
+      const moduleSet = graphModuleSet(graph);
 
-    const missing = gitFiles.filter((file) => !moduleSet.has(file));
-    expect(missing).toEqual([]);
-  });
+      const missing = gitFiles.filter((file) => !moduleSet.has(file));
+      expect(missing).toEqual([]);
+    },
+    30000,
+  );
 });
