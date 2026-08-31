@@ -91,18 +91,43 @@
  *      also literally the pre-fix bug Issue #1502 is about, so this polarity
  *      mode doubles as the required "confirm the apparatus reaches the
  *      defect" check.
- *   2. The zero-tool-call recall pin. Measured by temporarily NOT deleting
- *      the nonce file (a one-line comment-out, restored immediately after):
- *      the recall turn's reply still contains the nonce, but with a
- *      `tool-call` event in its slice -- i.e. the recall pin fails exactly
- *      when the second route is left open, which is what makes "zero
- *      tool-call" a real assertion about provenance rather than a tautology.
- *   3. `restoredMessageCount > 0` / `sdkResumed === undefined`. Measured by
- *      swapping A's engine to `claude-sdk` in a throwaway run of the same
- *      script logic against a `claude-sdk` definition: `sdkResumed` comes
- *      back `true`, which the assertion (`=== undefined`) correctly rejects
- *      -- confirming this pin actually distinguishes the two revival
- *      mechanisms rather than passing on any restore outcome.
+ *   2. The zero-tool-call recall pin. Measured (once) by temporarily leaving
+ *      the nonce file in place instead of deleting it, then restoring the
+ *      deletion: the recall turn still recalled the nonce AND still emitted
+ *      no `tool-call` -- this run's model answered from the reconstructed
+ *      conversation (the planting turn's tool-result is already IN that
+ *      conversation, per `restoredMessageCount`) without bothering to
+ *      re-invoke a tool it did not need. So on this one sample the mutation
+ *      was not caught, and per `test-trigger.md`'s own closing lesson on
+ *      recall assertions ("a green run there was a fact about one sampling
+ *      of a non-deterministic answer, not a fact about the assertion"), this
+ *      is recorded as an inconclusive single sample, not as "the pin has no
+ *      reach for this mutation". Deleting the file remains the correct,
+ *      structural closure of the second route regardless of this result --
+ *      it removes the route rather than relying on this particular model
+ *      choosing not to take it.
+ *   3. `sdkResumed === undefined`. Verified structurally rather than by a
+ *      runtime mutation (a `claude-sdk`-shaped run needs a real, separately
+ *      authenticated `claude` CLI, disproportionate to what this citation
+ *      needs): `embedded-agent-worker-service.ts` only ever includes the
+ *      `sdkResumed` key when `definition.engine === 'claude-sdk'` (the
+ *      success-path construction sites, `sdkResumedField`), so for
+ *      `openai-api` the key is structurally absent from the object --
+ *      `undefined` by construction, not by omission of a check. A future
+ *      change that made `openai-api` set `sdkResumed` would have to touch
+ *      one of those same construction sites, which is where this citation
+ *      points a reader who needs to re-verify it.
+ *   4. `waitForReady`'s baseline scoping (CodeRabbit finding on this PR,
+ *      addressed after the initial version shipped `events.some(e => e.type
+ *      === 'ready')` unscoped -- exactly the unsafe spelling
+ *      `test-trigger.md` names). Mutation-measured, twice, against a real
+ *      run: reverting to the unscoped form does NOT fail either of A's or
+ *      B's current calls, because both baselines are 0 on a fresh session
+ *      and there is no earlier `ready` for the unscoped form to be
+ *      vacuously satisfied by yet. The scoping is a forward guard against a
+ *      future call after a revival, not a regression these two call sites
+ *      can currently exercise -- recorded honestly rather than claiming a
+ *      reach this script's current shape does not have.
  *
  * COST: real HTTP turns against a real OpenAI-compatible endpoint --
  * a handful of small requests (plant, recall x2, control x1, plus growth is
@@ -390,10 +415,33 @@ async function main(): Promise<void> {
       return sub?.pid ?? null;
     };
 
-    const waitForReady = async (sessionId: string, workerId: string): Promise<boolean> => {
+    // `from` is REQUIRED, not defaulted to 0 -- a default would silently
+    // reintroduce the unsafe unscoped spelling `test-trigger.md` names
+    // (`events.some(e => e.type === 'ready')`) at any future call site that
+    // forgets to pass it, especially one added after a revival, where an
+    // earlier incarnation's `ready` would satisfy the check having observed
+    // nothing about the incarnation actually being waited on. Both current
+    // call sites pass the event count captured immediately before the
+    // activation they are waiting on, which happens to be 0 today (brand-new
+    // sessions) but does not rely on that -- the baseline is a fact about
+    // WHEN the wait started, not about the session being fresh.
+    //
+    // Mutation-measured (two real runs, reverting this line to the unscoped
+    // `.some((e) => e.type === 'ready')` with no slice): both of A's and B's
+    // waitForReady calls still returned true correctly in both runs -- the
+    // mutation does NOT fail either current call site, because both
+    // baselines are 0 on a fresh session and there is no earlier `ready` for
+    // the unscoped form to be vacuously satisfied by yet. (Both runs later
+    // aborted on an unrelated real upstream 503 from the provider, after
+    // getting well past both waitForReady calls -- that failure is
+    // orthogonal to this measurement.) The scoping is therefore a forward
+    // guard against the call shape CodeRabbit flagged (a future call after a
+    // revival), not a regression this PR's own two call sites can currently
+    // exercise.
+    const waitForReady = async (sessionId: string, workerId: string, from: number): Promise<boolean> => {
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
-        if ((await readEvents(sessionId, workerId)).some((e) => e.type === 'ready')) return true;
+        if ((await readEvents(sessionId, workerId)).slice(from).some((e) => e.type === 'ready')) return true;
         await delay(200);
       }
       return false;
@@ -415,8 +463,9 @@ async function main(): Promise<void> {
     // --- Subject A: activate, plant the nonce through a tool-using turn.
     console.log('==> subject A: activate + plant nonce');
     const a = await makeWorker('A');
+    const aActivateMarker = (await readEvents(a.sessionId, a.workerId)).length;
     await ctx.sessionManager.activateEmbeddedAgentWorker(a.sessionId, a.workerId);
-    if (!(await waitForReady(a.sessionId, a.workerId))) throw new Error('A never reported ready');
+    if (!(await waitForReady(a.sessionId, a.workerId, aActivateMarker))) throw new Error('A never reported ready');
     const aHarness = harnessPid(a.sessionId, a.workerId);
     if (aHarness === null) throw new Error('A has no subprocess after activation');
 
@@ -457,8 +506,9 @@ async function main(): Promise<void> {
     // countdown elapses, B is still inside its own.
     console.log('==> negative control B: activate (no nonce)');
     const b = await makeWorker('B');
+    const bActivateMarker = (await readEvents(b.sessionId, b.workerId)).length;
     await ctx.sessionManager.activateEmbeddedAgentWorker(b.sessionId, b.workerId);
-    if (!(await waitForReady(b.sessionId, b.workerId))) throw new Error('B never reported ready');
+    if (!(await waitForReady(b.sessionId, b.workerId, bActivateMarker))) throw new Error('B never reported ready');
     const bHarness = harnessPid(b.sessionId, b.workerId);
     if (bHarness === null) throw new Error('B has no subprocess after activation');
     console.log(`  B harness pid: ${bHarness}`);
