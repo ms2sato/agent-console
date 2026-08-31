@@ -435,7 +435,9 @@ describe('create_html_artifact', () => {
   describe('broadcast (realtime refresh trigger, Issue #1520)', () => {
     it('emits exactly one artifact-created trigger with the ruled payload shape after a successful create', async () => {
       const mockBroadcastToApp = mock(() => {});
-      await mountMcpApp({ broadcastToApp: mockBroadcastToApp });
+      // mcpAuthMode pinned explicitly (not left to the ambient default) so
+      // this test's pass/fail doesn't depend on AGENT_CONSOLE_MCP_AUTH.
+      await mountMcpApp({ mcpAuthMode: 'off', broadcastToApp: mockBroadcastToApp });
       const { sessionId } = await createOwnedSession();
 
       const response = await callTool(app, mcpSessionId, 'create_html_artifact', { content: '<html></html>', sessionId }, nextId++);
