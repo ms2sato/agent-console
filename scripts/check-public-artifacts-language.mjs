@@ -12,6 +12,21 @@
  * French, German, Vietnamese, ...) and rejects everything else,
  * including Greek and Cyrillic.
  *
+ * Scope: the target file set is root-based, not extension-based. Every
+ * file under `docs/`, `.claude/`, `scripts/`, and the top-level
+ * `CLAUDE.md` is scanned, regardless of extension. Roots are the
+ * Language Policy's own subject and stay stable; an extension list is an
+ * enumeration of instances that silently misses new instances (this is
+ * exactly the gap this scope closes — shell scripts under `.claude/hooks`
+ * and `.mjs` scripts under `scripts` were never scanned by the previous
+ * extension list).
+ * Binary / non-UTF-8 files are excluded by CONTENT (a fatal UTF-8 decode
+ * failure in findViolationsInFile), never by an extension list — see
+ * that function. Files whose non-Latin content is intentional data
+ * (fixtures, or Language Policy's own "User-facing artifacts" carve-out)
+ * are excluded by explicit, reasoned entry in EXCLUDED_FILES below —
+ * distinct from the binary skip, because these files ARE readable text.
+ *
  * Greek and Cyrillic used to be blanket-allowed (Greek for math notation,
  * Cyrillic for quoted diff-name identifiers), but that allowance let a
  * whole Cyrillic word substituted for its English look-alike inside
@@ -63,11 +78,109 @@ const ESCAPE_MARKER = 'lang-check:allow';
 
 const DEFAULT_PATTERNS = [
   'CLAUDE.md',
-  'docs/**/*.md',
-  '.claude/rules/**/*.md',
-  '.claude/skills/**/*.md',
-  '.claude/agents/**/*.md',
+  'docs/**',
+  '.claude/**',
+  'scripts/**',
 ];
+
+/**
+ * Files intentionally excluded from the language scan, with a mandatory
+ * stated reason per entry (enforced by a sibling test — an entry without
+ * a reason fails review). Every file listed here is fully readable text;
+ * it is excluded because of what its content IS, not because it cannot
+ * be decoded (that is the separate binary skip in findViolationsInFile).
+ *
+ * Two reason classes appear below:
+ *
+ * - "checker fixture": the file is this language checker's OWN test
+ *   data. Its non-Latin content is deliberately the thing under test,
+ *   not prose that should be English.
+ * - "user-facing carve-out": workflow.md's Language Policy explicitly
+ *   distinguishes "Public artifacts" (code, comments, docs — must be
+ *   English) from "User-facing artifacts" ("Review annotations, memos,
+ *   and other content visible only to the user" — follows the user's
+ *   preferred language). A letter-based whole-file scan cannot separate
+ *   those two layers when both live in the same source file; the policy
+ *   itself already permits the split, this list just names where it
+ *   currently occurs.
+ */
+export const EXCLUDED_FILES = [
+  {
+    file: 'scripts/__tests__/check-public-artifacts-language.test.mjs',
+    reason:
+      "checker fixture: this file's own test cases deliberately contain " +
+      'Greek, Cyrillic, Han, Hangul, Arabic, Hebrew, Devanagari, Thai, ' +
+      'Hiragana, and Katakana sample text to exercise ' +
+      'findViolationsInText detection paths across scripts. The ' +
+      'non-Latin content is the thing under test, not a policy violation.',
+  },
+  {
+    file: '.claude/skills/orchestrator/__tests__/check-utils.test.js',
+    reason:
+      "checker fixture: exercises runLanguageCheck's violation-reporting " +
+      'path end-to-end via a fixture file whose content includes a ' +
+      'two-character Japanese sample word; deliberate test data for ' +
+      'this checker family, not a policy violation.',
+  },
+  {
+    file: '.claude/skills/orchestrator/acceptance-check.js',
+    reason:
+      "user-facing carve-out: getQuestions()'s review-question text is " +
+      'displayed interactively to the owner during an Orchestrator PR ' +
+      'acceptance-review session — workflow.md Language Policy ' +
+      '"User-facing artifacts" (content visible only to the user follows ' +
+      "the user's preferred language), not public documentation. " +
+      "Residual, accepted: this whole-file exclusion also hides this " +
+      "file's own code comments and identifiers from the scan — a real " +
+      'non-English comment landing here today would not be caught. ' +
+      're-arm condition: if that ships, the fix is NOT a per-line pragma ' +
+      '— extract the user-facing strings into a separate excluded data ' +
+      'module and let this logic file re-join the scanned set (structure ' +
+      'over convention, matching design-principles.md).',
+  },
+  {
+    file: '.claude/skills/orchestrator/sprint-retro.js',
+    reason:
+      "user-facing carve-out: getSteps()'s retro step instructions are " +
+      'displayed interactively to the owner during an Orchestrator retro ' +
+      "session — same workflow.md \"User-facing artifacts\" carve-out as " +
+      "acceptance-check.js's entry above. Residual, accepted, and " +
+      're-arm condition: identical to that entry — extract to a data ' +
+      'module rather than adding a pragma if a real comment/identifier ' +
+      'violation ships here.',
+  },
+  {
+    file: '.claude/skills/orchestrator/__tests__/acceptance-check.test.js',
+    reason:
+      'user-facing carve-out: asserts the exact Japanese review-question ' +
+      "substrings defined in acceptance-check.js's q2Extra text; " +
+      'necessarily carries the same excluded content as the file it ' +
+      'tests.',
+  },
+];
+
+/**
+ * @param {string} file repo-relative path, as returned by findDefaultFiles
+ * @returns {boolean}
+ */
+export function isExcludedFile(file) {
+  return EXCLUDED_FILES.some((entry) => entry.file === file);
+}
+
+/**
+ * Strip a leading `./` (or repeated `./`) so an explicit CLI-supplied path
+ * like `./.claude/skills/orchestrator/sprint-retro.js` compares equal to
+ * the bare repo-relative form Bun.Glob produces and EXCLUDED_FILES uses.
+ * Only the explicit `files` argument to runCheck can carry this prefix —
+ * findDefaultFiles's glob output never does — but exclusion matching must
+ * be uniform regardless of how a file was targeted (see runCheck below).
+ *
+ * @param {string} file
+ * @returns {string}
+ */
+function normalizeRelativePath(file) {
+  return file.replace(/^(?:\.\/)+/, '');
+}
 
 /**
  * Find non-Latin-script Letter characters in a single string.
@@ -126,6 +239,16 @@ export async function findDefaultFiles({ cwd = process.cwd() } = {}) {
 /**
  * Read a file and find its violations.
  *
+ * Binary / non-UTF-8 files are excluded by CONTENT here: the raw bytes
+ * are decoded with a fatal UTF-8 TextDecoder, and a decode failure is
+ * treated as "not scannable text" and returns no violations. This is
+ * deliberately NOT an extension-based skip (R2) — a text file that
+ * merely contains a stray NUL byte (e.g. a poisoner test fixture) still
+ * decodes as valid UTF-8 and is fully scanned; `Bun.file().text()` is
+ * NOT used here because it silently mis-decodes invalid byte sequences
+ * (e.g. UTF-16-looking garbage) instead of throwing, which would let
+ * genuine binary content pass through unnoticed.
+ *
  * @param {string} file repo-relative path
  * @param {object} [options]
  * @param {string} [options.cwd]
@@ -133,7 +256,13 @@ export async function findDefaultFiles({ cwd = process.cwd() } = {}) {
  */
 export async function findViolationsInFile(file, { cwd = process.cwd() } = {}) {
   const abs = `${cwd}/${file}`;
-  const text = await Bun.file(abs).text();
+  const bytes = await Bun.file(abs).arrayBuffer();
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return [];
+  }
   return findViolationsInText(text);
 }
 
@@ -153,6 +282,10 @@ export function formatFileViolations(file, violations) {
 /**
  * Run the full check across the default file set (or an explicit list).
  *
+ * EXCLUDED_FILES is applied here — uniformly, regardless of whether the
+ * file list came from the default glob or was passed explicitly — so an
+ * excluded file is never flagged no matter how it was targeted.
+ *
  * @param {object} [options]
  * @param {string} [options.cwd]
  * @param {string[]} [options.files] explicit file list (skips glob)
@@ -163,7 +296,12 @@ export function formatFileViolations(file, violations) {
  * }>}
  */
 export async function runCheck({ cwd = process.cwd(), files } = {}) {
-  const targetFiles = files ?? (await findDefaultFiles({ cwd }));
+  const candidateFiles = files ?? (await findDefaultFiles({ cwd }));
+  // normalizeRelativePath is applied only to the exclusion predicate, not
+  // to the paths used for scanning or reporting — a non-excluded caller
+  // path like `./docs/a.md` must still be scanned and reported verbatim
+  // as `./docs/a.md`, not silently rewritten to `docs/a.md`.
+  const targetFiles = candidateFiles.filter((f) => !isExcludedFile(normalizeRelativePath(f)));
   const violations = [];
   const offenders = new Set();
   for (const file of targetFiles) {

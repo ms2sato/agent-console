@@ -424,7 +424,10 @@ describe('runLanguageCheck', () => {
       const result = runLanguageCheck({ repoRoot: root });
       expect(result.spawnFailed).toBe(false);
       expect(result.exitCode).toBe(0);
-      expect(result.stdout.trim().endsWith('language check clean (2 files scanned).')).toBe(true);
+      // 3, not 2: root-based scope also scans the copied checker script
+      // itself under scripts/ — it is clean, so it still counts toward
+      // "scanned" without adding a violation.
+      expect(result.stdout.trim().endsWith('language check clean (3 files scanned).')).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
