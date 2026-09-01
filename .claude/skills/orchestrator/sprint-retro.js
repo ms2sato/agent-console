@@ -24,6 +24,7 @@ import {
   formatMetricsReport,
   defaultExec,
   createCache,
+  computeGapCandidates,
 } from './sprint-metrics.js';
 
 // --- STDIN reading (null-byte delimited) ---
@@ -287,32 +288,33 @@ function getSteps() {
         '     project_sprint_status.md front-matter / Sprint Start memo),',
         '     end = current timestamp.',
         '  2. List all PRs merged in the window. Filter CLIENT-SIDE, not with',
-        '     --search: `gh pr list` SILENTLY IGNORES the search query\'s date',
-        '     qualifiers when --json is also passed, so the window is not applied',
-        '     at all and the result is just "the last N merged PRs".',
+        '     --search: `gh pr list` IGNORES the search query\'s date qualifiers',
+        '     UNCONDITIONALLY — with or without --json, with or without',
+        '     --state merged (measured 2026-09-01, gh version 2.45.0; positive',
+        '     control proving the range and repo are fine: `gh search prs',
+        '     --merged-at 2026-01-01..2026-01-31` returns #238/#236/#235 while',
+        '     the --search form above returns nothing from that range — re-verify',
+        '     after any `gh` upgrade). Dates are ISO-8601 and compare',
+        '     lexicographically, so a plain "2026-08-25" bound works against a',
+        '     full "2026-08-25T12:41:08Z" value. Raise --limit if the window',
+        '     could hold more than 100 merged PRs.',
+        '  3. Pipe the window straight into the gap-candidates mode — it builds',
+        '     the KNOWN set and diffs it, through the script\'s OWN parser, so',
+        '     Step 8 never re-states the SPRINT_PR_NUMBERS delimiter contract in',
+        '     shell. The KNOWN set is this sprint\'s SPRINT_PR_NUMBERS env var',
+        '     (re-export it in this shell if it is not already set — it is the',
+        '     same value this retro started with) plus <retro-pr-number>, which',
+        '     is not in SPRINT_PR_NUMBERS because the retro PR did not exist when',
+        '     that variable was set, before Step 1:',
         '       gh pr list --state merged --limit 100 \\',
         '         --json number,mergedAt \\',
         '         --jq \'.[] | select(.mergedAt >= "<start>" and .mergedAt <= "<end>") | .number\' \\',
-        '         | sort -n > /tmp/window.txt',
-        '     Dates are ISO-8601 and compare lexicographically, so a plain',
-        '     "2026-08-25" bound works against a full "2026-08-25T12:41:08Z" value.',
-        '     Raise --limit if the window could hold more than 100 merged PRs.',
-        '  3. Build the KNOWN set: this sprint\'s SPRINT_PR_NUMBERS env var plus the',
-        '     retro PR\'s own number. The retro PR is not in SPRINT_PR_NUMBERS —',
-        '     it did not exist when that variable was set, before Step 1.',
-        '     SPRINT_PR_NUMBERS is whitespace- OR comma-separated (the contract\'s',
-        '     single writer is this script\'s own parser, `.split(/[\\s,]+/)`, which',
-        '     matches ANY whitespace — space, tab, newline, carriage return, not',
-        '     just the space character). Quote the variable and translate the full',
-        '     [:space:] class plus commas, squeezing runs of separators:',
-        '       printf \'%s\\n\' "$SPRINT_PR_NUMBERS" <retro-pr-number> | tr -s \'[:space:],\' \'\\n\' | sed \'/^$/d\' | sort -n > /tmp/known.txt',
-        '  4. Diff the two:',
-        '       comm -13 /tmp/known.txt /tmp/window.txt',
-        '     Every line in the output is a CANDIDATE, not a confirmed gap. The',
-        '     known set is a hypothesis at Step 8 execution time — the same principle',
-        '     as "an enumeration is a hypothesis" — so a non-empty diff is a duty to',
+        '         | SPRINT_PR_NUMBERS="$SPRINT_PR_NUMBERS" node .claude/skills/orchestrator/sprint-retro.js --gap-candidates <retro-pr-number>',
+        '     Every printed line is a CANDIDATE, not a confirmed gap. The known',
+        '     set is a hypothesis at Step 8 execution time — the same principle',
+        '     as "an enumeration is a hypothesis" — so any output is a duty to',
         '     write a one-line disposition per candidate, not an automatic gap verdict.',
-        '  5. One recurring, explainable candidate: the PREVIOUS sprint\'s own retro',
+        '  4. One recurring, explainable candidate: the PREVIOUS sprint\'s own retro',
         '     PR. The window\'s start bound is inclusive and lands on (or near) the',
         '     day the previous retro concluded, so that PR sits inside THIS window',
         '     while belonging to the PREVIOUS sprint\'s SPRINT_PR_NUMBERS, not this',
@@ -320,7 +322,7 @@ function getSteps() {
         '     before the window\'s start — and dispose of it as "previous sprint\'s',
         '     retro PR — inclusive lower bound artifact", not a gap. Name it',
         '     explicitly in your report so the next retro does not re-investigate it.',
-        '  6. For every REMAINING candidate (after step 5\'s disposition), grep the',
+        '  5. For every REMAINING candidate (after step 4\'s disposition), grep the',
         '     memory files — narrowly, scoped to just that candidate, which is where',
         '     the grep is actually informative:',
         '       grep -l "#<NUM>" \\',
@@ -331,14 +333,14 @@ function getSteps() {
         '       improvement, brewing-log batch) → add the missing entries',
         '     - unrelated (someone else\'s PR that happened to merge in window,',
         '       or off-sprint maintenance) → note and skip',
-        '  7. Apply additions if any.',
+        '  6. Apply additions if any.',
         '',
         'This converts "did I remember everything?" (LLM-weak) into "scan + diff"',
         '(mechanical), while keeping the per-PR memory grep as a narrow tool applied',
         'only to the small candidate set — never to all merged PRs in the window.',
-        'Run the scan even if Step 7 already ran — the cost is one gh call plus a',
-        '`comm` diff. The scan is also valuable as a Sprint Start opening check for',
-        'the previous sprint\'s closure.',
+        'Run the scan even if Step 7 already ran — the cost is one gh call plus the',
+        'gap-candidates mode. The scan is also valuable as a Sprint Start opening',
+        'check for the previous sprint\'s closure.',
         '',
         'Report each candidate with its one-line disposition, and any applied',
         'additions (or "no candidates").',
@@ -405,6 +407,34 @@ function defaultProgressReporter(write = process.stderr.write.bind(process.stder
   };
 }
 
+// A whole token of digits, nothing else. `Number.parseInt` silently accepts
+// a leading numeric prefix ("1514oops", "1514.5", and "1514e2" all parse to
+// 1514), which would let a typo drop a PR out of the KNOWN set without any
+// error -- exactly the silent-wrong-candidate failure mode this file exists
+// to close. Reject the token instead of truncating it.
+const PR_NUMBER_TOKEN = /^\d+$/;
+
+// Single writer for the SPRINT_PR_NUMBERS delimiter contract: whitespace
+// (any of it -- space, tab, newline, carriage return, and non-breaking
+// space, since `\s` is Unicode-aware) or commas, runs collapsed. Both the
+// metrics block and the gap-candidates mode below call this instead of
+// each re-stating the split rule.
+function parsePrNumberList(raw) {
+  return String(raw)
+    .split(/[\s,]+/)
+    .filter(s => PR_NUMBER_TOKEN.test(s))
+    .map(s => Number.parseInt(s, 10));
+}
+
+function readAllStdin(stdin = process.stdin) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stdin.on('data', chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    stdin.on('end', () => resolve(Buffer.concat(chunks).toString('utf-8')));
+    stdin.on('error', reject);
+  });
+}
+
 async function runMetricsBlock({
   readResponse,
   exec = defaultExec,
@@ -421,10 +451,7 @@ async function runMetricsBlock({
 
   const sprintLabel = env.SPRINT_LABEL || isoDate(now);
 
-  const prNumbers = env.SPRINT_PR_NUMBERS
-    .split(/[\s,]+/)
-    .map(s => Number.parseInt(s, 10))
-    .filter(n => Number.isFinite(n));
+  const prNumbers = parsePrNumberList(env.SPRINT_PR_NUMBERS);
 
   if (prNumbers.length === 0) {
     throw new MissingSprintPrNumbersError();
@@ -436,6 +463,52 @@ async function runMetricsBlock({
   console.log('Continue to retro questions? [Y/n]');
   const answer = await readResponse();
   return { prNumbers, proceed: isAffirmative(answer) };
+}
+
+// --- Gap-candidates mode (Step 8) ---
+
+/**
+ * Step 8's instruction text used to re-implement the SPRINT_PR_NUMBERS
+ * delimiter split in shell so it could build the KNOWN set for a `comm -13`
+ * diff. Each attempt at that re-statement (comma-only, then space-or-comma,
+ * then the full POSIX whitespace class) was narrower than this file's own
+ * `parsePrNumberList` and had to be widened again. This mode removes the
+ * second writer instead of widening it a fourth time: it reads the window's
+ * PR numbers from stdin, builds the KNOWN set from SPRINT_PR_NUMBERS plus
+ * the retro PR's own number through parsePrNumberList, and prints the gap
+ * candidates -- so Step 8's instructions pipe into the parser rather than
+ * imitating it.
+ */
+export async function runGapCandidatesMode({
+  retroPrNumber,
+  stdin = process.stdin,
+  env = process.env,
+  compute = computeGapCandidates,
+  write = process.stdout.write.bind(process.stdout),
+} = {}) {
+  if (!env.SPRINT_PR_NUMBERS) {
+    throw new MissingSprintPrNumbersError();
+  }
+
+  if (!PR_NUMBER_TOKEN.test(String(retroPrNumber ?? ''))) {
+    throw new Error(
+      `--gap-candidates requires the retro PR number, e.g. --gap-candidates 1514 (got: ${JSON.stringify(retroPrNumber)})`
+    );
+  }
+  const retroNumber = Number.parseInt(retroPrNumber, 10);
+
+  const windowInput = await readAllStdin(stdin);
+  const windowPrNumbers = parsePrNumberList(windowInput);
+  const knownPrNumbers = [
+    ...parsePrNumberList(env.SPRINT_PR_NUMBERS),
+    retroNumber,
+  ];
+
+  const candidates = compute({ windowPrNumbers, knownPrNumbers });
+  for (const candidate of candidates) {
+    write(`${candidate}\n`);
+  }
+  return candidates;
 }
 
 // --- Main flow ---
@@ -482,6 +555,7 @@ export {
   runRetro,
   runMetricsBlock,
   isAffirmative,
+  parsePrNumberList,
 };
 
 // --- Main ---
@@ -490,8 +564,13 @@ const isMainModule = import.meta.url === `file://${process.argv[1]}` || process.
 if (!isMainModule) {
   // Module is being imported for testing — do not execute main logic
 } else {
+  const gapFlagIdx = process.argv.indexOf('--gap-candidates');
   try {
-    await runRetro();
+    if (gapFlagIdx !== -1) {
+      await runGapCandidatesMode({ retroPrNumber: process.argv[gapFlagIdx + 1] });
+    } else {
+      await runRetro();
+    }
     process.exit(0);
   } catch (err) {
     if (err instanceof MissingSprintPrNumbersError) {
