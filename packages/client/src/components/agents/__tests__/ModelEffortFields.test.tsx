@@ -3,6 +3,7 @@ import { render, screen, waitFor, cleanup, fireEvent } from '@testing-library/re
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AgentDefinition, AgentParameterCapabilities } from '@agent-console/shared';
 import { ModelEffortFields } from '../ModelEffortFields';
+import { agentKeys } from '../../../lib/query-keys';
 
 // Save original fetch and set up mock
 const originalFetch = globalThis.fetch;
@@ -18,11 +19,7 @@ afterEach(() => {
 });
 
 function createMockResponse(body: unknown) {
-  return {
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve(body),
-  } as unknown as Response;
+  return new Response(JSON.stringify(body), { status: 200 });
 }
 
 /** Agent whose commandTemplate consumes {{model...}} but not {{effort...}}. */
@@ -53,14 +50,34 @@ function mockAgentsResponse(agents: unknown[]) {
   mockFetch.mockResolvedValue(createMockResponse({ agents }));
 }
 
-function TestWrapper({ children }: { children: React.ReactNode }) {
-  const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
+function TestWrapper({
+  children,
+  queryClient,
+}: {
+  children: React.ReactNode;
+  queryClient: QueryClient;
+}) {
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
+/**
+ * Waits until the shared agent-list query has actually settled (success or
+ * error), not merely until `fetch` was invoked. Asserting an absence
+ * immediately after `mockFetch` is called proves the request *started*, not
+ * that TanStack Query received and resolved it -- the component could still
+ * be mid-flight and the negative assertion would pass vacuously.
+ */
+async function waitForAgentsQuerySettled(queryClient: QueryClient) {
+  await waitFor(() => {
+    const status = queryClient.getQueryState(agentKeys.all())?.status;
+    expect(status === 'success' || status === 'error').toBe(true);
+  });
+}
+
 function renderModelEffortFields(props: Partial<React.ComponentProps<typeof ModelEffortFields>> = {}) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   const defaultProps: React.ComponentProps<typeof ModelEffortFields> = {
     agentId: undefined,
     model: undefined,
@@ -71,11 +88,12 @@ function renderModelEffortFields(props: Partial<React.ComponentProps<typeof Mode
   const mergedProps = { ...defaultProps, ...props };
   return {
     ...render(
-      <TestWrapper>
+      <TestWrapper queryClient={queryClient}>
         <ModelEffortFields {...mergedProps} />
       </TestWrapper>
     ),
     props: mergedProps,
+    queryClient,
   };
 }
 
@@ -92,12 +110,10 @@ describe('ModelEffortFields', () => {
 
   it('does not render the Model input for a model-incapable agent', async () => {
     mockAgentsResponse([incapableAgent]);
-    renderModelEffortFields({ agentId: 'plain-agent' });
+    const { queryClient } = renderModelEffortFields({ agentId: 'plain-agent' });
 
-    // Wait for the agent list fetch to resolve, then confirm nothing renders.
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalled();
-    });
+    // Wait for the agent list query to actually settle, then confirm nothing renders.
+    await waitForAgentsQuerySettled(queryClient);
     expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
     expect(screen.queryByPlaceholderText('e.g. high')).toBeNull();
   });
@@ -124,22 +140,18 @@ describe('ModelEffortFields', () => {
 
   it('renders neither input when agentId is undefined (embedded agent selected)', async () => {
     mockAgentsResponse([modelCapableAgent, effortCapableAgent]);
-    renderModelEffortFields({ agentId: undefined });
+    const { queryClient } = renderModelEffortFields({ agentId: undefined });
 
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalled();
-    });
+    await waitForAgentsQuerySettled(queryClient);
     expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
     expect(screen.queryByPlaceholderText('e.g. high')).toBeNull();
   });
 
   it('renders neither input when the resolved agent is not found in the loaded list (still loading / unknown)', async () => {
     mockAgentsResponse([modelCapableAgent]);
-    renderModelEffortFields({ agentId: 'not-in-list' });
+    const { queryClient } = renderModelEffortFields({ agentId: 'not-in-list' });
 
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalled();
-    });
+    await waitForAgentsQuerySettled(queryClient);
     expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
     expect(screen.queryByPlaceholderText('e.g. high')).toBeNull();
   });
@@ -176,11 +188,12 @@ describe('ModelEffortFields', () => {
         reasoningEffort: false,
       });
 
-      renderModelEffortFields({ agentId: 'model-agent', getCapabilitiesImpl: neverCapable });
-
-      await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalled();
+      const { queryClient } = renderModelEffortFields({
+        agentId: 'model-agent',
+        getCapabilitiesImpl: neverCapable,
       });
+
+      await waitForAgentsQuerySettled(queryClient);
       expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
       expect(screen.queryByPlaceholderText('e.g. high')).toBeNull();
     });

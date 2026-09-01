@@ -567,5 +567,73 @@ describe('QuickSessionForm', () => {
       const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
       expect(submitCall[0].model).toBeUndefined();
     });
+
+    it('omits model from the submitted request when the field contains only whitespace', async () => {
+      // Regression guard: CreateQuickSessionRequestSchema trims model before
+      // its minLength(1) check, but onModelChange only collapsed a fully
+      // empty string to undefined -- a whitespace-only value reached the
+      // resolver un-trimmed and failed validation instead of being treated
+      // as empty.
+      mockAgentsWithCapabilities();
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const pathInput = screen.getByPlaceholderText(/Path.*e\.g\./);
+      await user.clear(pathInput);
+      await user.type(pathInput, '/path/to/project');
+
+      const modelInput = screen.getByPlaceholderText('e.g. opus');
+      await user.type(modelInput, '   ');
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].model).toBeUndefined();
+    });
+
+    it('clears a previously-typed model value when the agent selection switches to a model-incapable agent', async () => {
+      // Regression guard: ModelEffortFields hides the Model input the
+      // moment the newly-selected agent is incapable, but the underlying
+      // form value survived the switch and rode along silently in the
+      // submitted request for an agent that doesn't support it.
+      mockAgentsWithCapabilities();
+      const user = userEvent.setup();
+      const { props } = renderQuickSessionForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const pathInput = screen.getByPlaceholderText(/Path.*e\.g\./);
+      await user.clear(pathInput);
+      await user.type(pathInput, '/path/to/project');
+
+      const modelInput = screen.getByPlaceholderText('e.g. opus');
+      await user.type(modelInput, 'opus');
+
+      const agentSelect = screen.getByRole('combobox');
+      await user.selectOptions(agentSelect, 'terminal:plain-agent');
+
+      await waitFor(() => {
+        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
+      });
+
+      await user.click(screen.getByText('Start'));
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].model).toBeUndefined();
+    });
   });
 });

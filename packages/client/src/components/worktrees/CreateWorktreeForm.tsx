@@ -328,14 +328,25 @@ export function CreateWorktreeForm({
                 agentId={resolvedAgentId}
                 embeddedAgentId={resolvedEmbeddedAgentId}
                 onChange={(selection) => {
+                  // model/reasoningEffort are terminal-agent-only and gated
+                  // by the NEWLY selected agent's capability
+                  // (ModelEffortFields hides the input the moment the agent
+                  // switch makes it inapplicable). Clear both here so a
+                  // stale value from the previous agent never rides along
+                  // in a submit for a field the user can no longer see or
+                  // edit.
                   switch (selection.kind) {
                     case 'embedded':
                       setValue('embeddedAgentId', selection.embeddedAgentId, { shouldDirty: true });
                       setValue('agentId', undefined, { shouldDirty: true });
+                      setValue('model', undefined, { shouldDirty: true });
+                      setValue('reasoningEffort', undefined, { shouldDirty: true });
                       return;
                     case 'terminal':
                       setValue('agentId', selection.agentId, { shouldDirty: true });
                       setValue('embeddedAgentId', undefined, { shouldDirty: true });
+                      setValue('model', undefined, { shouldDirty: true });
+                      setValue('reasoningEffort', undefined, { shouldDirty: true });
                       return;
                   }
                 }}

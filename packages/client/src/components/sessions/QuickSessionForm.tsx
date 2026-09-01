@@ -56,14 +56,23 @@ export function QuickSessionForm({
   const reasoningEffort = watch('reasoningEffort');
 
   const handleAgentSelectionChange = (selection: AgentSelection) => {
+    // model/reasoningEffort are terminal-agent-only and gated by the
+    // NEWLY selected agent's capability (ModelEffortFields hides the input
+    // the moment the agent switch makes it inapplicable). Clear both here
+    // so a stale value from the previous agent never rides along in a
+    // submit for a field the user can no longer see or edit.
     switch (selection.kind) {
       case 'terminal':
         setValue('agentId', selection.agentId);
         setValue('embeddedAgentId', undefined);
+        setValue('model', undefined);
+        setValue('reasoningEffort', undefined);
         return;
       case 'embedded':
         setValue('embeddedAgentId', selection.embeddedAgentId);
         setValue('agentId', undefined);
+        setValue('model', undefined);
+        setValue('reasoningEffort', undefined);
         return;
     }
   };
@@ -119,11 +128,13 @@ export function QuickSessionForm({
             // CreateQuickSessionRequestSchema (used directly as this form's
             // resolver -- there is no looser client-only schema here, unlike
             // CreateWorktreeForm) requires model/reasoningEffort to be
-            // non-empty-after-trim WHEN PRESENT. Collapse a fully-cleared
-            // input to `undefined` immediately so a blank field never fails
-            // that constraint at submit time.
-            onModelChange={(value) => setValue('model', value || undefined)}
-            onReasoningEffortChange={(value) => setValue('reasoningEffort', value || undefined)}
+            // non-empty-after-trim WHEN PRESENT. Collapse a fully-cleared OR
+            // whitespace-only input to `undefined` immediately so a blank
+            // field never fails that constraint at submit time -- trimming
+            // here (not just at submit) keeps the value the schema sees in
+            // sync with what onModelChange decided to pass through.
+            onModelChange={(value) => setValue('model', value.trim() || undefined)}
+            onReasoningEffortChange={(value) => setValue('reasoningEffort', value.trim() || undefined)}
           />
           {sharedAccountsAvailable && (
             <label className="flex items-center gap-2 text-sm text-gray-400">

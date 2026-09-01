@@ -1435,5 +1435,44 @@ describe('CreateWorktreeForm', () => {
       expect(submitCall[0].model).toBeUndefined();
       expect(submitCall[0].reasoningEffort).toBeUndefined();
     });
+
+    it('clears a previously-typed model value when the agent selection switches to a model-incapable agent', async () => {
+      // Regression guard: ModelEffortFields hides the Model input the
+      // moment the newly-selected agent is incapable, but the underlying
+      // form value survived the switch and rode along silently in the
+      // submitted request for an agent that doesn't support it.
+      mockAgentsWithCapabilities();
+      const user = userEvent.setup();
+      const { props } = renderCreateWorktreeForm();
+
+      await waitFor(() => {
+        expect(screen.getByText('Claude Code (built-in)')).toBeTruthy();
+      });
+
+      const modelInput = screen.getByPlaceholderText('e.g. opus');
+      await user.type(modelInput, 'opus');
+
+      const agentSelect = screen.getByRole('combobox');
+      await user.selectOptions(agentSelect, 'terminal:plain-agent');
+
+      await waitFor(() => {
+        expect(screen.queryByPlaceholderText('e.g. opus')).toBeNull();
+      });
+
+      const customRadio = screen.getByLabelText(/Custom name \(new branch\)/);
+      await user.click(customRadio);
+      const branchInput = screen.getByPlaceholderText('New branch name');
+      await user.type(branchInput, 'feature/agent-switch-clears-model');
+
+      const submitButton = screen.getByText('Create & Start Session');
+      await user.click(submitButton);
+
+      await waitFor(() => {
+        expect(props.onSubmit).toHaveBeenCalledTimes(1);
+      });
+
+      const submitCall = (props.onSubmit as ReturnType<typeof mock>).mock.calls[0];
+      expect(submitCall[0].model).toBeUndefined();
+    });
   });
 });
