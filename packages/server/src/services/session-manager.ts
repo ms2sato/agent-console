@@ -98,6 +98,28 @@ export type { SessionLifecycleCallbacks } from './session-lifecycle-types.js';
 export type { RestoreWorkerResult } from './worker-lifecycle-manager.js';
 
 /**
+ * One worker's outcome from {@link SessionManager.restartAllAgentWorkers}.
+ * `workerType` intentionally omits `'git-diff'`: git-diff workers run
+ * in-process (no PTY, no subprocess) and are silently excluded from this
+ * bulk operation, same as before this type existed.
+ */
+export interface RestartAllAgentWorkersResultEntry {
+  sessionId: string;
+  workerId: string;
+  workerType: 'agent' | 'terminal' | 'embedded-agent';
+  outcome: 'restarted' | 'failed' | 'skipped';
+  error?: string;
+}
+
+/** Aggregate result of {@link SessionManager.restartAllAgentWorkers}. */
+export interface RestartAllAgentWorkersResult {
+  restarted: number;
+  failed: number;
+  skipped: number;
+  results: RestartAllAgentWorkersResultEntry[];
+}
+
+/**
  * Default path existence checker using fs.access
  */
 async function defaultPathExists(path: string): Promise<boolean> {
@@ -1509,45 +1531,95 @@ export class SessionManager {
   // ========== Bulk Operations ==========
 
   /**
-   * Restart all active agent workers across all in-memory sessions.
-   * Executes sequentially to avoid resource spikes.
+   * Restart all workers across all in-memory sessions that have a live
+   * process: PTY-based agent workers, and embedded-agent workers that are
+   * currently active. Executes sequentially to avoid resource spikes.
    * Each failure is logged and recorded but doesn't block other restarts.
+   *
+   * Terminal workers are always `skipped` -- they have no restart concept.
+   * A dormant (idle-evicted, `subprocess === null`) embedded-agent worker is
+   * also `skipped`: reactivating it would defeat the point of idle eviction.
+   * A worker whose eviction is currently in flight
+   * (`embeddedAgentWorkerService.isEvicting`) is treated the same as
+   * dormant, for the same reason -- see that accessor's doc comment for the
+   * TOCTOU window this check-then-act still leaves open, and why it is an
+   * accepted, bounded gap rather than a new synchronization mechanism.
+   *
+   * An active embedded-agent worker is restarted through the existing
+   * ordinary deactivate/activate path (same as a manual restart), which
+   * already carries Transcript Restore -- no new restart mechanism is
+   * introduced for this worker kind.
    */
-  async restartAllAgentWorkers(): Promise<{
-    restarted: number;
-    failed: number;
-    results: Array<{ sessionId: string; workerId: string; success: boolean; error?: string }>;
-  }> {
-    const results: Array<{ sessionId: string; workerId: string; success: boolean; error?: string }> = [];
+  async restartAllAgentWorkers(): Promise<RestartAllAgentWorkersResult> {
+    const results: RestartAllAgentWorkersResultEntry[] = [];
 
     for (const session of this.sessions.values()) {
       for (const worker of session.workers.values()) {
-        if (worker.type !== 'agent') continue;
+        if (worker.type === 'terminal') {
+          results.push({ sessionId: session.id, workerId: worker.id, workerType: 'terminal', outcome: 'skipped' });
+          continue;
+        }
+
+        if (worker.type === 'agent') {
+          try {
+            // 'fresh' matches this bulk operation's existing behaviour exactly
+            // (previously the hardcoded boolean `false`). A future
+            // continue-by-default change belongs behind its own preference
+            // value, not here.
+            const restarted = await this.restartAgentWorker(session.id, worker.id, 'fresh');
+            if (restarted) {
+              results.push({ sessionId: session.id, workerId: worker.id, workerType: 'agent', outcome: 'restarted' });
+            } else {
+              results.push({
+                sessionId: session.id,
+                workerId: worker.id,
+                workerType: 'agent',
+                outcome: 'failed',
+                error: 'restart returned null',
+              });
+            }
+          } catch (err) {
+            const message = err instanceof Error ? err.message : 'Unknown error';
+            logger.error({ sessionId: session.id, workerId: worker.id, err }, 'Failed to restart agent worker in bulk operation');
+            results.push({ sessionId: session.id, workerId: worker.id, workerType: 'agent', outcome: 'failed', error: message });
+          }
+          continue;
+        }
+
+        if (worker.type === 'git-diff') {
+          // git-diff workers run in-process (no PTY, no subprocess) and were
+          // never included in this bulk operation's results before this
+          // change; preserved as a silent skip rather than newly surfaced,
+          // since they have no restart concept at all (unlike terminal
+          // workers, which do have a live PTY process but are intentionally
+          // excluded from restart).
+          continue;
+        }
+
+        // worker.type === 'embedded-agent'
+        if (worker.subprocess === null || this.embeddedAgentWorkerService.isEvicting(worker.id)) {
+          results.push({ sessionId: session.id, workerId: worker.id, workerType: 'embedded-agent', outcome: 'skipped' });
+          continue;
+        }
 
         try {
-          // 'fresh' matches this bulk operation's existing behaviour exactly
-          // (previously the hardcoded boolean `false`). A future
-          // continue-by-default change belongs behind its own preference
-          // value, not here.
-          const restarted = await this.restartAgentWorker(session.id, worker.id, 'fresh');
-          if (restarted) {
-            results.push({ sessionId: session.id, workerId: worker.id, success: true });
-          } else {
-            results.push({ sessionId: session.id, workerId: worker.id, success: false, error: 'restart returned null' });
-          }
+          await this.deactivateEmbeddedAgentWorker(session.id, worker.id);
+          await this.activateEmbeddedAgentWorker(session.id, worker.id);
+          results.push({ sessionId: session.id, workerId: worker.id, workerType: 'embedded-agent', outcome: 'restarted' });
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Unknown error';
-          logger.error({ sessionId: session.id, workerId: worker.id, err }, 'Failed to restart agent worker in bulk operation');
-          results.push({ sessionId: session.id, workerId: worker.id, success: false, error: message });
+          logger.error({ sessionId: session.id, workerId: worker.id, err }, 'Failed to restart embedded-agent worker in bulk operation');
+          results.push({ sessionId: session.id, workerId: worker.id, workerType: 'embedded-agent', outcome: 'failed', error: message });
         }
       }
     }
 
-    const restarted = results.filter((r) => r.success).length;
-    const failed = results.filter((r) => !r.success).length;
+    const restarted = results.filter((r) => r.outcome === 'restarted').length;
+    const failed = results.filter((r) => r.outcome === 'failed').length;
+    const skipped = results.filter((r) => r.outcome === 'skipped').length;
 
-    logger.info({ restarted, failed }, 'Bulk restart all agent workers completed');
+    logger.info({ restarted, failed, skipped }, 'Bulk restart all agent workers completed');
 
-    return { restarted, failed, results };
+    return { restarted, failed, skipped, results };
   }
 }

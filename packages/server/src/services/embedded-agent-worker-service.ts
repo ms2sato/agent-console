@@ -591,6 +591,45 @@ export class EmbeddedAgentWorkerService {
   }
 
   /**
+   * Read-only query: is `workerId`'s idle eviction currently in flight?
+   * `runtime.evicting` is set synchronously at {@link onIdleExpired}'s commit
+   * point and only cleared once `deactivate`'s shutdown sequence completes
+   * (`handleExit` runs and the runtime is dropped) -- so `subprocess !==
+   * null` alone is not sufficient to mean "safe to act on this worker as
+   * active": there is a window where an eviction has committed but the
+   * subprocess handle has not yet gone `null`. Callers that need to treat a
+   * mid-eviction worker as unavailable (e.g. bulk restart) should check both.
+   *
+   * This is a query, not a new transition: it reads state the eviction path
+   * already maintains for its own commit-point re-check, and does not add
+   * any new synchronization of its own.
+   *
+   * Known residual gap: there is a TOCTOU window between a caller reading
+   * this accessor and then acting on the answer (e.g. calling `deactivate`)
+   * -- checking `!isEvicting()` and then calling `deactivate()` is not one
+   * atomic operation, the same shape `onIdleExpired`'s own doc comment
+   * describes for its check-then-act. This is intentionally left as a query
+   * rather than folded into a synchronous "classify and initiate" commit
+   * point inside this service, because the residual harm is measured and
+   * bounded: `runActivation`'s exit observer is wired exactly once per
+   * activation, so no matter how many `deactivate()` calls race in during
+   * this window, `handleExit` still runs exactly once (no double-free, no
+   * crash) and a redundant `deactivate()` call is simply idempotent. The
+   * only observable effect of losing the race is that `handleExit`'s
+   * `reason: runtime.evicting ? 'evicted' : ...` may label the resulting
+   * `exited` event as `'evicted'` even when a caller other than eviction
+   * also initiated the deactivation -- a mislabeling, not a data-loss bug,
+   * and not even straightforwardly "wrong" since eviction's check did win
+   * the race first. If this residual window is ever found to cause real
+   * harm, move the check-and-initiate into one synchronous section inside
+   * this service (mirroring `onIdleExpired`'s own atomic check+set pattern)
+   * instead of leaving it as a separate query a caller can race against.
+   */
+  isEvicting(workerId: string): boolean {
+    return this.runtimes.get(workerId)?.evicting ?? false;
+  }
+
+  /**
    * Spawn the loop subprocess, deliver the init handshake over stdin, and start
    * streaming its NDJSON events. Every failure path throws with a clear message
    * surfaced to the client. Idempotent when the subprocess is already live.

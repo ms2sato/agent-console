@@ -1911,9 +1911,12 @@ export function createMcpApp(deps: McpDependencies): Hono {
 
   mcpServer.tool(
     'restart_all_agents',
-    'Restart all active agent workers across all sessions. ' +
+    'Restart all workers with a live process across all sessions: PTY-based agent ' +
+      'workers and active embedded-agent workers. ' +
       'Useful when agents have been updated and need to be restarted in bulk. ' +
-      'Only agent workers are restarted; terminal workers are left untouched.',
+      'Terminal workers are always left untouched. A dormant (idle-evicted) ' +
+      'embedded-agent worker is reported as skipped rather than restarted, since ' +
+      'reactivating it would defeat the point of idle eviction.',
     {},
     async () => {
       try {

@@ -29,4 +29,5 @@ export const EMBEDDED_AGENT_OPERATIONS = {
     reason:
       'not-exposed via MCP: definition CRUD is an owner/console concern, not a delegation concern (same MCP endpoint, same restriction)',
   },
+  restart: { exposed: true, via: 'MCP endpoint (shared) — restart_all_agents' },
 } satisfies Record<AgentOperation, SurfaceExposure>;

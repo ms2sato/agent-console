@@ -5764,7 +5764,7 @@ describe('SessionManager', () => {
       expect(result.restarted).toBe(2);
       expect(result.failed).toBe(0);
       expect(result.results).toHaveLength(2);
-      expect(result.results.every((r: { success: boolean }) => r.success)).toBe(true);
+      expect(result.results.every((r: { outcome: string }) => r.outcome === 'restarted')).toBe(true);
       // Each restart should create a new PTY
       expect(ptyFactory.instances.length).toBe(ptyCountBefore + 2);
 
@@ -5797,7 +5797,7 @@ describe('SessionManager', () => {
       expect(newestPty!.writtenData.join('')).not.toContain('claude -c');
     });
 
-    it('should only restart agent workers, not terminal workers', async () => {
+    it('should restart the agent worker and report the terminal worker as skipped', async () => {
       const manager = await getSessionManager();
 
       const session = await manager.createSession({
@@ -5807,14 +5807,25 @@ describe('SessionManager', () => {
       });
 
       // Add a terminal worker
-      await manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
+      const terminalWorker = await manager.createWorker(session.id, { type: 'terminal', name: 'Shell' });
 
       const result = await manager.restartAllAgentWorkers();
 
-      // Only the agent worker should be restarted (not terminal, not git-diff)
+      // The agent worker is restarted; the terminal worker is now visible in
+      // the results as `skipped` rather than silently absent.
       expect(result.restarted).toBe(1);
-      expect(result.results).toHaveLength(1);
-      expect(result.results[0].success).toBe(true);
+      expect(result.skipped).toBe(1);
+      expect(result.results).toHaveLength(2);
+      expect(result.results).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ workerType: 'agent', outcome: 'restarted' }),
+          expect.objectContaining({
+            workerId: terminalWorker.id,
+            workerType: 'terminal',
+            outcome: 'skipped',
+          }),
+        ]),
+      );
     });
 
     it('should return empty results when no sessions exist', async () => {
@@ -5824,6 +5835,7 @@ describe('SessionManager', () => {
 
       expect(result.restarted).toBe(0);
       expect(result.failed).toBe(0);
+      expect(result.skipped).toBe(0);
       expect(result.results).toHaveLength(0);
     });
 
@@ -5862,10 +5874,201 @@ describe('SessionManager', () => {
       expect(result.results).toHaveLength(2);
       expect(result.results).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ sessionId: session1.id, success: false }),
-          expect.objectContaining({ sessionId: session2.id, success: true }),
+          expect.objectContaining({ sessionId: session1.id, outcome: 'failed' }),
+          expect.objectContaining({ sessionId: session2.id, outcome: 'restarted' }),
         ]),
       );
+    });
+
+    // Issue #1519: restart-all now includes embedded-agent workers. These
+    // tests use the same fake-spawn DI pattern as the "threads the
+    // spawnAsUserFn option through" test above (mints a fresh fake subprocess
+    // per spawn so a worker can be restarted -- i.e. spawn again -- within a
+    // single test).
+    describe('embedded-agent workers (Issue #1519)', () => {
+      const STUB_DEF = {
+        id: 'stub-def',
+        name: 'Stub Model',
+        provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+        createdBy: 'test-user-id',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      };
+
+      function makeFakeSubprocess() {
+        let stdoutCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        let stderrCtrl!: ReadableStreamDefaultController<Uint8Array>;
+        const stdout = new ReadableStream<Uint8Array>({
+          start(c) {
+            stdoutCtrl = c;
+          },
+        });
+        const stderr = new ReadableStream<Uint8Array>({
+          start(c) {
+            stderrCtrl = c;
+          },
+        });
+        let resolveExited!: (code: number) => void;
+        const exited = new Promise<number>((resolve) => {
+          resolveExited = resolve;
+        });
+        let exitSimulated = false;
+        const simulateExit = (code: number) => {
+          if (exitSimulated) return;
+          exitSimulated = true;
+          resolveExited(code);
+          stdoutCtrl.close();
+          stderrCtrl.close();
+        };
+        const stdin = { write: () => 0, end: () => {}, flush: () => 0 };
+        const subprocess = { pid: 4242, exited, stdin, stdout, stderr, kill: () => {} };
+        return { subprocess, stdin, simulateExit };
+      }
+
+      async function createManagerWithFakeSpawn() {
+        let current = makeFakeSubprocess();
+        const fakeSpawnAsUserFn = mock(() => {
+          current = makeFakeSubprocess();
+          return { subprocess: current.subprocess, stdin: current.stdin, elevated: false };
+        });
+
+        const module = await import(`../session-manager.js?v=${++importCounter}`);
+        const manager = await module.SessionManager.create({
+          userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+          pathExists: mockPathExists,
+          jobQueue: testJobQueue,
+          agentManager,
+          mcpTokenRegistry: new McpTokenRegistry(),
+          embeddedAgentManager: { getEmbeddedAgent: (id: string) => (id === 'stub-def' ? STUB_DEF : undefined) },
+          repositoryLookup: defaultRepositoryLookup,
+          repositoryEnvLookup: defaultRepositoryEnvLookup,
+          spawnAsUserFn: fakeSpawnAsUserFn as unknown as SpawnAsUserFn,
+        });
+
+        return { manager, fakeSpawnAsUserFn, current: () => current };
+      }
+
+      it('restarts an ACTIVE embedded-agent worker via deactivate then activate', async () => {
+        const { manager, fakeSpawnAsUserFn, current } = await createManagerWithFakeSpawn();
+
+        // embeddedAgentId (not agentId) makes the session's initial worker
+        // itself embedded-agent, so no separate PTY-based agent worker is
+        // created alongside it -- restartAllAgentWorkers would otherwise also
+        // restart that PTY worker (a real spawn via ptyFactory), which is an
+        // orthogonal concern to what these tests assert.
+        const session = await manager.createSession(
+          { type: 'quick', locationPath: '/test/path', embeddedAgentId: 'stub-def' },
+          { createdBy: 'test-user-id' },
+        );
+        const worker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+        expect(worker).not.toBeUndefined();
+
+        await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+        expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+
+        // restartAllAgentWorkers awaits deactivate (writes `shutdown` and races
+        // the current incarnation's `exited`) then activate, sequentially.
+        // Simulating exit synchronously right after issuing the call -- before
+        // awaiting it -- resolves that race via the real exit path, matching
+        // the "threads the spawnAsUserFn option through" test's pattern above.
+        const restartPromise = manager.restartAllAgentWorkers();
+        current().simulateExit(0);
+
+        const result = await restartPromise;
+
+        // One deactivate (the original incarnation) + one activate (the fresh
+        // incarnation) = a second spawn call.
+        expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(2);
+        expect(result.restarted).toBe(1);
+        expect(result.results).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              sessionId: session.id,
+              workerId: worker!.id,
+              workerType: 'embedded-agent',
+              outcome: 'restarted',
+            }),
+          ]),
+        );
+
+        // Teardown: deactivate the fresh incarnation so nothing outlives the test.
+        const teardown = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+        current().simulateExit(0);
+        await teardown;
+      });
+
+      it('skips a DORMANT (never-activated) embedded-agent worker rather than restarting it', async () => {
+        const { manager, fakeSpawnAsUserFn } = await createManagerWithFakeSpawn();
+
+        // embeddedAgentId (not agentId) makes the session's initial worker
+        // itself embedded-agent, so no separate PTY-based agent worker is
+        // created alongside it -- restartAllAgentWorkers would otherwise also
+        // restart that PTY worker (a real spawn via ptyFactory), which is an
+        // orthogonal concern to what these tests assert.
+        const session = await manager.createSession(
+          { type: 'quick', locationPath: '/test/path', embeddedAgentId: 'stub-def' },
+          { createdBy: 'test-user-id' },
+        );
+        const worker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+        expect(worker).not.toBeUndefined();
+
+        // Never activated: subprocess stays null.
+        const result = await manager.restartAllAgentWorkers();
+
+        expect(fakeSpawnAsUserFn).not.toHaveBeenCalled();
+        expect(result.restarted).toBe(0);
+        expect(result.skipped).toBe(1);
+        expect(result.results).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              sessionId: session.id,
+              workerId: worker!.id,
+              workerType: 'embedded-agent',
+              outcome: 'skipped',
+            }),
+          ]),
+        );
+      });
+
+      it('skips a DEACTIVATED (previously active, now dormant) embedded-agent worker rather than restarting it', async () => {
+        const { manager, fakeSpawnAsUserFn, current } = await createManagerWithFakeSpawn();
+
+        // embeddedAgentId (not agentId) makes the session's initial worker
+        // itself embedded-agent, so no separate PTY-based agent worker is
+        // created alongside it -- restartAllAgentWorkers would otherwise also
+        // restart that PTY worker (a real spawn via ptyFactory), which is an
+        // orthogonal concern to what these tests assert.
+        const session = await manager.createSession(
+          { type: 'quick', locationPath: '/test/path', embeddedAgentId: 'stub-def' },
+          { createdBy: 'test-user-id' },
+        );
+        const worker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+        expect(worker).not.toBeUndefined();
+
+        await manager.activateEmbeddedAgentWorker(session.id, worker!.id);
+        expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+
+        const deactivatePromise = manager.deactivateEmbeddedAgentWorker(session.id, worker!.id);
+        current().simulateExit(0);
+        await deactivatePromise;
+
+        const result = await manager.restartAllAgentWorkers();
+
+        // No second spawn: the dormant worker was skipped, not reactivated.
+        expect(fakeSpawnAsUserFn).toHaveBeenCalledTimes(1);
+        expect(result.restarted).toBe(0);
+        expect(result.skipped).toBe(1);
+        expect(result.results).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              sessionId: session.id,
+              workerId: worker!.id,
+              workerType: 'embedded-agent',
+              outcome: 'skipped',
+            }),
+          ]),
+        );
+      });
     });
   });
 

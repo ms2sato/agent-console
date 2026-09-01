@@ -4943,21 +4943,33 @@ describe('MCP Server Tools', () => {
       });
 
       const response = await callTool(app, mcpSessionId, 'restart_all_agents', {}, nextId++);
-      const data = parseToolResult(response) as { restarted: number; failed: number; results: unknown[] };
+      const data = parseToolResult(response) as {
+        restarted: number;
+        failed: number;
+        skipped: number;
+        results: unknown[];
+      };
 
       expect(response.result?.isError).toBeUndefined();
       expect(data.restarted).toBe(1);
       expect(data.failed).toBe(0);
+      expect(data.skipped).toBe(0);
       expect(data.results).toHaveLength(1);
     });
 
     it('should return empty results when no sessions exist', async () => {
       const response = await callTool(app, mcpSessionId, 'restart_all_agents', {}, nextId++);
-      const data = parseToolResult(response) as { restarted: number; failed: number; results: unknown[] };
+      const data = parseToolResult(response) as {
+        restarted: number;
+        failed: number;
+        skipped: number;
+        results: unknown[];
+      };
 
       expect(response.result?.isError).toBeUndefined();
       expect(data.restarted).toBe(0);
       expect(data.failed).toBe(0);
+      expect(data.skipped).toBe(0);
       expect(data.results).toHaveLength(0);
     });
   });

@@ -402,6 +402,44 @@ describe('idle eviction — the countdown and its commit point', () => {
     await waitFor(() => h.worker.subprocess === null, 2000);
   });
 
+  it('isEvicting reports true only while an eviction has committed but the subprocess has not yet exited (Issue #1519)', async () => {
+    // Restart-all (SessionManager.restartAllAgentWorkers) treats
+    // `subprocess !== null` as "has a live process", but that alone is not
+    // enough to mean "safe to act on as active" -- there is a window where
+    // eviction has committed (onIdleExpired set `evicting = true` and wrote
+    // `shutdown`) but the subprocess has not gone `null` yet. `isEvicting` is
+    // the read-only query that lets a caller like restart-all distinguish
+    // that window from a genuinely active, restartable worker.
+    const h = setup({
+      idleEvictionMs: 25,
+      exitOnShutdown: false,
+      shutdownGraceMs: 600,
+      sigtermTimeoutMs: 600,
+    });
+    await activateAndReady(h);
+
+    // Genuinely active and not evicting.
+    expect(h.worker.subprocess).not.toBeNull();
+    expect(h.service.isEvicting(h.workerId)).toBe(false);
+
+    const first = h.spawn.incarnations[0];
+    const shutdowns = (): number =>
+      first.stdinWrites.filter((w) => w.includes('"type":"shutdown"')).length;
+    await waitFor(() => shutdowns() === 1, 2000);
+
+    // Eviction has committed (shutdown written), but the incarnation has not
+    // exited yet -- the exact window `isEvicting` exists to surface.
+    expect(h.worker.subprocess).not.toBeNull();
+    expect(h.service.isEvicting(h.workerId)).toBe(true);
+
+    // Let the eviction finish so nothing outlives the test.
+    first.simulateExit(0);
+    await waitFor(() => h.worker.subprocess === null, 2000);
+
+    // Once dormant, there is nothing left to be "evicting".
+    expect(h.service.isEvicting(h.workerId)).toBe(false);
+  });
+
   it('is the commit-point re-check, not the arm, that prevents a mid-turn kill', async () => {
     // The turn starts AFTER the countdown was armed, so the arm-side decision
     // was already made on a worker that looked idle. Only the re-check at fire

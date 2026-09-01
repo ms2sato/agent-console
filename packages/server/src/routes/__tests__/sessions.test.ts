@@ -300,9 +300,15 @@ describe('Sessions API - Pause/Resume', () => {
 
       expect(res.status).toBe(200);
 
-      const body = (await res.json()) as { restarted: number; failed: number; results: unknown[] };
+      const body = (await res.json()) as {
+        restarted: number;
+        failed: number;
+        skipped: number;
+        results: unknown[];
+      };
       expect(body.restarted).toBe(2);
       expect(body.failed).toBe(0);
+      expect(body.skipped).toBe(0);
       expect(body.results).toHaveLength(2);
     });
 
@@ -313,9 +319,15 @@ describe('Sessions API - Pause/Resume', () => {
 
       expect(res.status).toBe(200);
 
-      const body = (await res.json()) as { restarted: number; failed: number; results: unknown[] };
+      const body = (await res.json()) as {
+        restarted: number;
+        failed: number;
+        skipped: number;
+        results: unknown[];
+      };
       expect(body.restarted).toBe(0);
       expect(body.failed).toBe(0);
+      expect(body.skipped).toBe(0);
       expect(body.results).toHaveLength(0);
     });
   });
