@@ -24,10 +24,27 @@ export interface AgentParameterCapabilities {
 const MODEL_VAR_PATTERN = /\{\{model(?::|\})/;
 const REASONING_EFFORT_VAR_PATTERN = /\{\{effort(?::|\})/;
 
+/**
+ * Raw-string primitives behind the two capability checks. Exported so a
+ * caller that has already resolved a SPECIFIC template string (e.g. the
+ * template actually selected for an activation -- commandTemplate vs
+ * continueTemplate) can test that string directly, without re-deriving it
+ * from an AgentDefinition. `getAgentParameterCapabilities` below delegates
+ * to these so the `{{model` / `{{effort` regex patterns keep exactly one
+ * home in the file (see the sibling sweep test).
+ */
+export function templateSupportsModel(template: string): boolean {
+  return MODEL_VAR_PATTERN.test(template);
+}
+
+export function templateSupportsReasoningEffort(template: string): boolean {
+  return REASONING_EFFORT_VAR_PATTERN.test(template);
+}
+
 export function getAgentParameterCapabilities(agent: AgentDefinition): AgentParameterCapabilities {
   return {
-    model: MODEL_VAR_PATTERN.test(agent.commandTemplate),
-    reasoningEffort: REASONING_EFFORT_VAR_PATTERN.test(agent.commandTemplate),
+    model: templateSupportsModel(agent.commandTemplate),
+    reasoningEffort: templateSupportsReasoningEffort(agent.commandTemplate),
   };
 }
 

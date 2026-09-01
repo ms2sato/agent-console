@@ -365,6 +365,60 @@ describe('WorkerManager', () => {
       expect(commandWrite).not.toContain('--model');
     });
 
+    it("does not substitute the worker's model override when the ACTUALLY-SELECTED continueTemplate has no {{model...}} placeholder, even though commandTemplate does (Issue #1545 CodeRabbit finding)", async () => {
+      const customAgent = await agentManager.registerAgent({
+        name: 'Continue No Model Agent',
+        commandTemplate: 'claude {{model:+--model}}{{prompt}}',
+        continueTemplate: 'claude -c',
+      });
+
+      const worker = workerManager.initializeAgentWorker({
+        id: 'agent-continue-no-model',
+        name: 'Test Agent',
+        createdAt: new Date().toISOString(),
+        agentId: customAgent.id,
+      });
+      worker.model = 'claude-opus-4-6';
+
+      await workerManager.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        agentId: customAgent.id,
+        startupIntent: 'continue',
+      });
+
+      const mockPty = ptyFactory.instances[0];
+      const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWrite).toBeDefined();
+      expect(commandWrite).not.toContain('--model');
+    });
+
+    it("substitutes the worker's model override when the ACTUALLY-SELECTED continueTemplate also declares {{model...}} (positive control for the gate above, Issue #1545)", async () => {
+      const customAgent = await agentManager.registerAgent({
+        name: 'Continue With Model Agent',
+        commandTemplate: 'claude {{model:+--model}}{{prompt}}',
+        continueTemplate: 'claude -c {{model:+--model}}',
+      });
+
+      const worker = workerManager.initializeAgentWorker({
+        id: 'agent-continue-with-model',
+        name: 'Test Agent',
+        createdAt: new Date().toISOString(),
+        agentId: customAgent.id,
+      });
+      worker.model = 'claude-opus-4-6';
+
+      await workerManager.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        agentId: customAgent.id,
+        startupIntent: 'continue',
+      });
+
+      const mockPty = ptyFactory.instances[0];
+      const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWrite).toBeDefined();
+      expect(commandWrite).toContain("--model 'claude-opus-4-6'");
+    });
+
     it("worker.model overrides context.templateVars' own 'model' key (worker override wins)", async () => {
       const worker = createTestAgentWorker('agent-precedence');
       worker.model = 'worker-level-model';

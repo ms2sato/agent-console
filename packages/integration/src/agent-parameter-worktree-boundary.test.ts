@@ -48,6 +48,7 @@ import { resetGitMocks, mockGit } from '@agent-console/server/src/__tests__/util
 import { createTestApp } from '@agent-console/server/src/__tests__/test-utils';
 import { createTestContext, shutdownAppContext } from '@agent-console/server/src/app-context';
 import type { AppContext } from '@agent-console/server/src/app-context';
+import type { AppServerMessage } from '@agent-console/shared';
 import { SingleUserMode } from '@agent-console/server/src/services/user-mode';
 import type { RunAsUserOpts, RunAsUserResult } from '@agent-console/server/src/services/privilege-elevation';
 import { WorktreeService } from '@agent-console/server/src/services/worktree-service';
@@ -57,7 +58,7 @@ import { SqliteSessionRepository } from '@agent-console/server/src/repositories/
 const TEST_REPO_PATH = '/test/repo';
 const TEST_CONFIG_DIR = '/test/config';
 const ptyFactory = createMockPtyFactory();
-const broadcasts: unknown[] = [];
+const broadcasts: AppServerMessage[] = [];
 
 async function waitFor(check: () => boolean, timeoutMs = 2000): Promise<void> {
   const start = Date.now();
@@ -225,7 +226,8 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
     // pipeline to finish (success broadcast) before asserting.
     await waitFor(() => broadcasts.length > 0);
     expect(broadcasts).toHaveLength(1);
-    expect((broadcasts[0] as { type: string }).type).toBe('worktree-creation-completed');
+    const broadcast = broadcasts[0]!;
+    expect(broadcast.type).toBe('worktree-creation-completed');
 
     const sessions = ctx.sessionManager.getAllSessions();
     expect(sessions).toHaveLength(1);
@@ -292,8 +294,11 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
 
     await waitFor(() => broadcasts.length > 0);
     expect(broadcasts).toHaveLength(1);
-    const failure = broadcasts[0] as { type: string; error: string };
+    const failure = broadcasts[0]!;
     expect(failure.type).toBe('worktree-creation-failed');
+    if (failure.type !== 'worktree-creation-failed') {
+      throw new Error('unreachable: narrowed by the assertion above');
+    }
     expect(failure.error).toContain('model');
 
     // No session was ever created for the rejected request -- the real,

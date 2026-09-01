@@ -21,7 +21,11 @@ import type {
   AgentActivityState,
   ExitReason,
 } from '@agent-console/shared';
-import { buildAgentParameterTemplateVars } from '@agent-console/shared';
+import {
+  buildAgentParameterTemplateVars,
+  templateSupportsModel,
+  templateSupportsReasoningEffort,
+} from '@agent-console/shared';
 import type {
   PersistedWorker,
   PersistedAgentWorker,
@@ -574,9 +578,24 @@ export class WorkerManager {
       // revival -- all three paths call activateAgentWorkerPty with
       // worker.model/worker.reasoningEffort already populated from their
       // respective sources.
+      //
+      // Gated on the ACTUALLY-SELECTED `template` (not agent.commandTemplate):
+      // a 'continue' startupIntent may select agent.continueTemplate, which
+      // for the builtin Claude Code agent has no model template placeholder
+      // even though commandTemplate does. Substituting an override into a
+      // template that doesn't reference the variable is a silent no-op either
+      // way, but
+      // gating here keeps the merge honest about what actually reaches the
+      // spawned command -- this is an internal template-selection detail, not
+      // a user-supplied incapable-agent case, so it must NOT throw (that
+      // validation already happened once, at creation time, against
+      // commandTemplate -- see WorkerLifecycleManager.createWorker).
       const effectiveTemplateVars = {
         ...context?.templateVars,
-        ...buildAgentParameterTemplateVars({ model: worker.model, reasoningEffort: worker.reasoningEffort }),
+        ...buildAgentParameterTemplateVars({
+          model: templateSupportsModel(template) ? worker.model : null,
+          reasoningEffort: templateSupportsReasoningEffort(template) ? worker.reasoningEffort : null,
+        }),
       };
 
       const { command, env: templateEnv } = expandTemplate({

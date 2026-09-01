@@ -856,10 +856,9 @@ describe('Worktrees API', () => {
       await captured; // resolves as soon as createSession is invoked -- no sleep needed
 
       expect(createSessionMock).toHaveBeenCalledTimes(1);
-      const sessionRequest = createSessionMock.mock.calls[0]![0] as unknown as {
-        model?: string;
-        reasoningEffort?: string;
-      };
+      const sessionRequest = createSessionMock.mock.calls[0]![0] as Parameters<
+        SessionManager['createSession']
+      >[0];
       expect(sessionRequest.model).toBe('claude-opus-4-6');
       expect(sessionRequest.reasoningEffort).toBe('high');
     });

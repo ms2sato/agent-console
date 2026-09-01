@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import {
   getAgentParameterCapabilities,
   buildAgentParameterTemplateVars,
+  templateSupportsModel,
+  templateSupportsReasoningEffort,
 } from '../agent-parameter-capabilities.js';
 import type { AgentDefinition } from '../agent.js';
 
@@ -92,6 +94,26 @@ describe('getAgentParameterCapabilities', () => {
       );
       expect(capabilities).toEqual({ model: true, reasoningEffort: true });
     });
+  });
+});
+
+describe('templateSupportsModel', () => {
+  it('returns true for a template containing {{model...}}', () => {
+    expect(templateSupportsModel('claude {{model:+--model}}{{prompt}}')).toBe(true);
+  });
+
+  it('returns false for a template with no {{model...}} placeholder (e.g. a continueTemplate)', () => {
+    expect(templateSupportsModel('claude -c')).toBe(false);
+  });
+});
+
+describe('templateSupportsReasoningEffort', () => {
+  it('returns true for a template containing {{effort...}}', () => {
+    expect(templateSupportsReasoningEffort('cli {{effort:+--effort}}{{prompt}}')).toBe(true);
+  });
+
+  it('returns false for a template with no {{effort...}} placeholder (e.g. a continueTemplate)', () => {
+    expect(templateSupportsReasoningEffort('claude -c')).toBe(false);
   });
 });
 

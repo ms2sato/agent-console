@@ -859,6 +859,81 @@ describe('SessionManager', () => {
     });
   });
 
+  describe('createSession embeddedAgentId + model/reasoningEffort rejection (Issue #1541 CodeRabbit finding)', () => {
+    const STUB_EMBEDDED_DEF = {
+      id: 'stub-embedded-agent',
+      name: 'Stub Model',
+      provider: { baseUrl: 'http://localhost:11434/v1', model: 'qwen3:32b' },
+      createdBy: 'test-user-id',
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    };
+
+    async function getSessionManagerWithEmbedded() {
+      const module = await import(`../session-manager.js?v=${++importCounter}`);
+      return module.SessionManager.create({
+        userMode: new SingleUserMode(ptyFactory.provider, { id: 'test-user-id', username: 'testuser', homeDir: '/home/testuser' }),
+        pathExists: mockPathExists,
+        jobQueue: testJobQueue,
+        agentManager,
+        mcpTokenRegistry: new McpTokenRegistry(),
+        embeddedAgentManager: {
+          getEmbeddedAgent: (id: string) => (id === STUB_EMBEDDED_DEF.id ? STUB_EMBEDDED_DEF : undefined),
+        },
+        repositoryLookup: defaultRepositoryLookup,
+        repositoryEnvLookup: defaultRepositoryEnvLookup,
+      });
+    }
+
+    it('rejects embeddedAgentId + model with a loud error naming the capability', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      await expect(
+        manager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          embeddedAgentId: STUB_EMBEDDED_DEF.id,
+          model: 'opus',
+        }),
+      ).rejects.toThrow(/"model"/);
+
+      // Not silently dropped and not silently succeeded -- no ghost session.
+      expect(manager.getAllSessions()).toHaveLength(0);
+      const persisted = await manager.getSessionRepository().findAll();
+      expect(persisted).toHaveLength(0);
+    });
+
+    it('rejects embeddedAgentId + reasoningEffort with a loud error naming the capability', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      await expect(
+        manager.createSession({
+          type: 'quick',
+          locationPath: '/test/path',
+          embeddedAgentId: STUB_EMBEDDED_DEF.id,
+          reasoningEffort: 'high',
+        }),
+      ).rejects.toThrow(/"reasoningEffort"/);
+
+      expect(manager.getAllSessions()).toHaveLength(0);
+      const persisted = await manager.getSessionRepository().findAll();
+      expect(persisted).toHaveLength(0);
+    });
+
+    it('still succeeds when embeddedAgentId is set alone (no model/reasoningEffort) -- regression guard', async () => {
+      const manager = await getSessionManagerWithEmbedded();
+
+      const session = await manager.createSession({
+        type: 'quick',
+        locationPath: '/test/path',
+        embeddedAgentId: STUB_EMBEDDED_DEF.id,
+      });
+
+      const embeddedWorker = session.workers.find((w: Worker) => w.type === 'embedded-agent');
+      expect(embeddedWorker).toBeDefined();
+    });
+  });
+
   describe('createWorker', () => {
     it('should create a terminal worker in existing session', async () => {
       const manager = await getSessionManager();
