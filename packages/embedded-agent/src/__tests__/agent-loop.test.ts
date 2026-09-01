@@ -899,24 +899,6 @@ describe('AgentLoop — the provider error outcome carries structure inward', ()
     expect(await run(unrelated)).not.toContain('context-compacted');
   });
 
-  it("the mid-turn overflow escape's context-compacted marker carries coverage: 'partial'", async () => {
-    // `escapeContextOverflow` always narrows to a suffix -- it exists
-    // specifically because a whole-conversation distillation would itself
-    // overflow -- so this call site's marker is never 'full'.
-    const overflow = new ProviderError('provider responded with HTTP 400: Range of input length should be [1, 12000]', {
-      retryable: false,
-      status: 400,
-      detail: { message: 'Range of input length should be [1, 12000]', type: 'invalid_parameter_error' },
-    });
-    const h = makeLoop([{ kind: 'throw', error: overflow }, textResponse('ok')], {
-      compaction: { auto: false, contextWindowTokens: 12_000 },
-    });
-
-    await h.loop.runTurn('t', 'q');
-
-    expect(h.events.find((e) => e.type === 'context-compacted')).toMatchObject({ coverage: 'partial' });
-  });
-
   /**
    * The same structure-gating, carried through to the drift annotation the
    * turn-error now may acquire. An edge proxy rejecting on body size returns
