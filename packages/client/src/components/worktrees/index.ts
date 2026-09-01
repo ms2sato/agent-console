@@ -1,4 +1,7 @@
-// consumers import this barrel; files inside this directory import siblings directly (a self-barrel import re-creates this Issue's cycles).
+// Consumers import this barrel — EXCEPT any module that files in this
+// directory depend on (directly or transitively): those import specific
+// source files, or they re-create the cycles the no-circular ratchet test
+// guards against.
 export { CreateWorktreeForm } from './CreateWorktreeForm';
 export type { CreateWorktreeFormProps, CreateWorktreeFormRequest, CreateWorktreeFormPrefill } from './CreateWorktreeForm';
 export { QuickWorktreeDialog } from './QuickWorktreeDialog';
