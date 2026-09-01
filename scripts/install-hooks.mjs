@@ -8,13 +8,15 @@
  * `git rev-parse --git-path hooks` so it works correctly inside linked
  * worktrees (which share the common dir's hooks/).
  *
- * Installation strategy: symlink first, copy on failure (per Issue #719).
- * If the target already exists and matches our source (symlink target
- * identical, or file content identical), the script reports "already
- * installed" and exits 0. If it exists with different content, the script
- * refuses to overwrite and asks the user to remove it explicitly.
+ * Installation strategy: symlink first, copy on failure — some filesystems
+ * / sandboxes reject symlink creation, so a real-file copy is the fallback
+ * rather than a hard failure. If the target already exists and matches our
+ * source (symlink target identical, or file content identical), the
+ * script reports "already installed" and exits 0. If it exists with
+ * different content, the script refuses to overwrite and asks the user to
+ * remove it explicitly.
  *
- * Soft-fail ownership (Issue #1214): when no git repository is resolvable at
+ * Soft-fail ownership: when no git repository is resolvable at
  * all (`git rev-parse --git-common-dir` fails — no `.git`, e.g. a Docker bind
  * mount of a worktree without its main repo, or a non-git checkout), this
  * script exits 0 with a stderr warning rather than exit 1. This is the same
@@ -85,9 +87,9 @@ function resolveHooksDir() {
 }
 
 function installOne({ name, source }, hooksDir, repoRoot) {
-  // Resolve the source against the main worktree root rather than cwd.
-  // Issue #728: `resolve(source)` was cwd-bound, so running from a linked
-  // worktree embedded that ephemeral worktree's path into the symlink
+  // Resolve the source against the main worktree root rather than cwd:
+  // `resolve(source)` alone is cwd-bound, so running from a linked
+  // worktree would embed that ephemeral worktree's path into the symlink
   // target, silently disabling the hook once the worktree was removed.
   const sourceAbs = join(repoRoot, source);
   if (!existsSync(sourceAbs)) {

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { Glob } from 'bun';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';

@@ -116,8 +116,8 @@ function printIntegrationTestCoverage(integrationTestNeeds) {
 
 /**
  * Select the coverage-check verdict line. Pure function so the
- * comment-only-exemption wording (Issue #1189) can be unit tested without
- * driving `run()`'s `process.exit()` side effect.
+ * comment-only-exemption wording can be unit tested without driving
+ * `run()`'s `process.exit()` side effect.
  */
 export function formatCoverageVerdict({ hasUnitGaps, gapsCount, hasIntegrationGap, hasCommentOnlyExemptions }) {
   if (hasUnitGaps) return `**${gapsCount} production file(s) missing test coverage.**`;
