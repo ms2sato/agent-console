@@ -74,6 +74,7 @@ describe('Cross-Package Boundary: model/reasoningEffort worker override through 
   let ctx: AppContext;
 
   beforeEach(async () => {
+    capturedWorktreePath = undefined;
     setupMemfs({
       [`${TEST_REPO_PATH}/.git/HEAD`]: 'ref: refs/heads/main',
       [`${TEST_CONFIG_DIR}/.keep`]: '',
