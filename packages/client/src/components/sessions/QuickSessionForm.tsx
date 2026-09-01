@@ -1,6 +1,7 @@
 import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { FormField, Input } from '../ui/FormField';
+import { ModelEffortFields } from '../agents/ModelEffortFields';
 import {
   UnifiedAgentSelector,
   useResolvedEmbeddedAgentId,
@@ -37,6 +38,8 @@ export function QuickSessionForm({
       locationPath: '/tmp',
       agentId: undefined,
       embeddedAgentId: undefined,
+      model: undefined,
+      reasoningEffort: undefined,
     },
     mode: 'onBlur',
   });
@@ -49,6 +52,8 @@ export function QuickSessionForm({
   // what it defaults to -- embedded agents must never auto-select).
   const resolvedAgentId = useResolvedAgentId(agentId);
   const resolvedEmbeddedAgentId = useResolvedEmbeddedAgentId(embeddedAgentId);
+  const model = watch('model');
+  const reasoningEffort = watch('reasoningEffort');
 
   const handleAgentSelectionChange = (selection: AgentSelection) => {
     switch (selection.kind) {
@@ -70,7 +75,12 @@ export function QuickSessionForm({
         resolvedEmbeddedAgentId
           ? { agentId: undefined, embeddedAgentId: resolvedEmbeddedAgentId }
           : { agentId: resolvedAgentId, embeddedAgentId: undefined };
-      await onSubmit({ ...data, ...agentFields });
+      await onSubmit({
+        ...data,
+        ...agentFields,
+        model: data.model?.trim() || undefined,
+        reasoningEffort: data.reasoningEffort?.trim() || undefined,
+      });
     } catch (err) {
       setError('root', {
         message: err instanceof Error ? err.message : 'Failed to start session',
@@ -102,6 +112,19 @@ export function QuickSessionForm({
               className="flex-1"
             />
           </div>
+          <ModelEffortFields
+            agentId={resolvedEmbeddedAgentId ? undefined : resolvedAgentId}
+            model={model}
+            reasoningEffort={reasoningEffort}
+            // CreateQuickSessionRequestSchema (used directly as this form's
+            // resolver -- there is no looser client-only schema here, unlike
+            // CreateWorktreeForm) requires model/reasoningEffort to be
+            // non-empty-after-trim WHEN PRESENT. Collapse a fully-cleared
+            // input to `undefined` immediately so a blank field never fails
+            // that constraint at submit time.
+            onModelChange={(value) => setValue('model', value || undefined)}
+            onReasoningEffortChange={(value) => setValue('reasoningEffort', value || undefined)}
+          />
           {sharedAccountsAvailable && (
             <label className="flex items-center gap-2 text-sm text-gray-400">
               <input

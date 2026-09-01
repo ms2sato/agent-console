@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form';
 import { valibotResolver } from '@hookform/resolvers/valibot';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { FormField, Input, Textarea } from '../ui/FormField';
+import { ModelEffortFields } from '../agents/ModelEffortFields';
 import { UnifiedAgentSelector, useResolvedEmbeddedAgentId } from '../AgentSelector';
 import { useResolvedAgentId } from '../../hooks/useAgents';
 import { Spinner } from '../ui/Spinner';
@@ -85,6 +86,8 @@ export function CreateWorktreeForm({
       sessionTitle: prefillValues?.sessionTitle ?? '',
       agentId: defaultAgentId ?? undefined,
       embeddedAgentId: undefined,
+      model: undefined,
+      reasoningEffort: undefined,
     },
     mode: 'onBlur',
     shouldUnregister: true,
@@ -189,6 +192,8 @@ export function CreateWorktreeForm({
 
   const branchNameMode = watch('branchNameMode');
   const initialPrompt = watch('initialPrompt');
+  const model = watch('model');
+  const reasoningEffort = watch('reasoningEffort');
 
   // Auto-switch branchNameMode based on initialPrompt content
   // Keeps the radio selection consistent with available options
@@ -251,6 +256,8 @@ export function CreateWorktreeForm({
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
           shared: data.shared || undefined,
+          model: data.model?.trim() || undefined,
+          reasoningEffort: data.reasoningEffort?.trim() || undefined,
         };
       case 'custom':
         return {
@@ -264,6 +271,8 @@ export function CreateWorktreeForm({
           title: data.sessionTitle?.trim() || undefined,
           useRemote,
           shared: data.shared || undefined,
+          model: data.model?.trim() || undefined,
+          reasoningEffort: data.reasoningEffort?.trim() || undefined,
         };
       case 'existing':
         return {
@@ -275,6 +284,8 @@ export function CreateWorktreeForm({
           initialPrompt: data.initialPrompt?.trim() || undefined,
           title: data.sessionTitle?.trim() || undefined,
           shared: data.shared || undefined,
+          model: data.model?.trim() || undefined,
+          reasoningEffort: data.reasoningEffort?.trim() || undefined,
         };
     }
     // Exhaustiveness check - compile error if new mode is added
@@ -331,6 +342,13 @@ export function CreateWorktreeForm({
                 priorityAgentId={defaultAgentId ?? undefined}
               />
             </div>
+            <ModelEffortFields
+              agentId={resolvedEmbeddedAgentId ? undefined : resolvedAgentId}
+              model={model}
+              reasoningEffort={reasoningEffort}
+              onModelChange={(value) => setValue('model', value, { shouldDirty: true })}
+              onReasoningEffortChange={(value) => setValue('reasoningEffort', value, { shouldDirty: true })}
+            />
           </div>
 
           {sharedAccountsAvailable && (

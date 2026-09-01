@@ -40,6 +40,12 @@ export const CreateWorktreeFormSchema = v.pipe(
     agentId: v.optional(v.string()),
     embeddedAgentId: v.optional(v.string()),
     shared: v.optional(v.boolean()),
+    // Non-empty validation (reject blank-after-trim) is enforced server-side
+    // by CreateWorktreeBaseSchema; the client only needs to omit the field
+    // from the submitted request when blank (see buildRequest in
+    // CreateWorktreeForm.tsx).
+    model: v.optional(v.string()),
+    reasoningEffort: v.optional(v.string()),
   }),
   // Validate initialPrompt is required when mode is 'prompt'
   v.forward(
