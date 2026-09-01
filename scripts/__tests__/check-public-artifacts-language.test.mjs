@@ -603,6 +603,33 @@ describe('findDefaultFiles + runCheck (integration with a temp tree)', () => {
   });
 });
 
+describe('findDefaultFiles — live-tree scanned-file-count regression pin (R4, mirrors #1538 R2)', () => {
+  it('scans strictly more files than a dot-excluding glob would, and finds a known .claude/ file', async () => {
+    // Reach: reverting `dot: true` in findDefaultFiles makes this fail --
+    // Bun.Glob excludes dot-directories by default, so `.claude/**` would
+    // silently scan 0 files while the check still reports "OK" (the same
+    // #1487/#1538 shape: an exclusion mechanism hides an entire scanned
+    // root, and the violation count alone cannot tell the difference from
+    // genuine cleanliness). This checker's `dot: true` was already correct
+    // since #1491/PR #1531 -- this test is the missing regression pin for
+    // that correctness, not a behavior change.
+    const files = await findDefaultFiles({ cwd: REPO_ROOT });
+    expect(files).toContain('.claude/rules/workflow.md');
+
+    // Independent control: the file count a dot-excluding scan of the same
+    // roots would produce, computed here with Bun.Glob's own default
+    // (dot: false) rather than by importing anything from production.
+    let withoutDot = 0;
+    for (const pattern of ['CLAUDE.md', 'docs/**', '.claude/**', 'scripts/**']) {
+      const glob = new Glob(pattern);
+      for await (const _file of glob.scan({ cwd: REPO_ROOT, onlyFiles: true })) {
+        withoutDot++;
+      }
+    }
+    expect(files.length).toBeGreaterThan(withoutDot);
+  });
+});
+
 describe('checkStdinText (pure function — stdin-mode core)', () => {
   it('returns no violations for empty input (vacuous truth boundary)', () => {
     const result = checkStdinText('');
