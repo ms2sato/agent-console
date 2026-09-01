@@ -1143,6 +1143,18 @@ describe('parsePrNumberList', () => {
     expect(parsePrNumberList('')).toEqual([]);
     expect(parsePrNumberList('   ,  ')).toEqual([]);
   });
+
+  it('rejects partially-numeric tokens instead of silently truncating them', () => {
+    // Reach: reverting to `Number.parseInt(s, 10)` + `Number.isFinite(n)`
+    // (without the PR_NUMBER_TOKEN pre-filter) makes this fail -- parseInt
+    // truncates at the first non-digit character instead of rejecting the
+    // whole token, so '1514oops' silently becomes the number 1514.
+    expect(parsePrNumberList('1514oops')).toEqual([]);
+    expect(parsePrNumberList('1514.5')).toEqual([]);
+    expect(parsePrNumberList('1514e2')).toEqual([]);
+    expect(parsePrNumberList('-1514')).toEqual([]);
+    expect(parsePrNumberList('1392,1514oops,1393')).toEqual([1392, 1393]);
+  });
 });
 
 describe('runGapCandidatesMode', () => {
@@ -1178,5 +1190,27 @@ describe('runGapCandidatesMode', () => {
     });
     expect(candidates).toEqual([]);
     expect(written).toEqual([]);
+  });
+
+  it('throws instead of silently truncating a partially-numeric retro PR number', async () => {
+    // Reach: reverting to bare `Number.parseInt` + `Number.isFinite` makes
+    // this fail -- '1514oops' would silently become 1514 and get accepted.
+    await expect(
+      runGapCandidatesMode({
+        retroPrNumber: '1514oops',
+        stdin: stdinOf('1400\n'),
+        env: { SPRINT_PR_NUMBERS: '1392' },
+      })
+    ).rejects.toThrow('--gap-candidates requires the retro PR number');
+  });
+
+  it('throws when --gap-candidates is invoked with no following argument', async () => {
+    await expect(
+      runGapCandidatesMode({
+        retroPrNumber: undefined,
+        stdin: stdinOf('1400\n'),
+        env: { SPRINT_PR_NUMBERS: '1392' },
+      })
+    ).rejects.toThrow('--gap-candidates requires the retro PR number');
   });
 });

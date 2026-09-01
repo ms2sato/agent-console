@@ -407,6 +407,13 @@ function defaultProgressReporter(write = process.stderr.write.bind(process.stder
   };
 }
 
+// A whole token of digits, nothing else. `Number.parseInt` silently accepts
+// a leading numeric prefix ("1514oops", "1514.5", and "1514e2" all parse to
+// 1514), which would let a typo drop a PR out of the KNOWN set without any
+// error -- exactly the silent-wrong-candidate failure mode this file exists
+// to close. Reject the token instead of truncating it.
+const PR_NUMBER_TOKEN = /^\d+$/;
+
 // Single writer for the SPRINT_PR_NUMBERS delimiter contract: whitespace
 // (any of it -- space, tab, newline, carriage return, and non-breaking
 // space, since `\s` is Unicode-aware) or commas, runs collapsed. Both the
@@ -415,8 +422,8 @@ function defaultProgressReporter(write = process.stderr.write.bind(process.stder
 function parsePrNumberList(raw) {
   return String(raw)
     .split(/[\s,]+/)
-    .map(s => Number.parseInt(s, 10))
-    .filter(n => Number.isFinite(n));
+    .filter(s => PR_NUMBER_TOKEN.test(s))
+    .map(s => Number.parseInt(s, 10));
 }
 
 function readAllStdin(stdin = process.stdin) {
@@ -483,12 +490,12 @@ export async function runGapCandidatesMode({
     throw new MissingSprintPrNumbersError();
   }
 
-  const retroNumber = Number.parseInt(retroPrNumber, 10);
-  if (!Number.isFinite(retroNumber)) {
+  if (!PR_NUMBER_TOKEN.test(String(retroPrNumber ?? ''))) {
     throw new Error(
       `--gap-candidates requires the retro PR number, e.g. --gap-candidates 1514 (got: ${JSON.stringify(retroPrNumber)})`
     );
   }
+  const retroNumber = Number.parseInt(retroPrNumber, 10);
 
   const windowInput = await readAllStdin(stdin);
   const windowPrNumbers = parsePrNumberList(windowInput);
