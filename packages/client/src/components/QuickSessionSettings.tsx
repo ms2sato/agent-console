@@ -1,10 +1,7 @@
 import { useState } from 'react';
-import {
-  QuickSessionSettingsMenu,
-  InitialPromptDialog,
-  EndSessionDialog,
-  type QuickMenuAction,
-} from './sessions';
+import { QuickSessionSettingsMenu, type QuickMenuAction } from './sessions/QuickSessionSettingsMenu';
+import { InitialPromptDialog } from './sessions/InitialPromptDialog';
+import { EndSessionDialog } from './sessions/EndSessionDialog';
 import type { Session, AgentActivityState } from '@agent-console/shared';
 
 interface QuickSessionSettingsProps {
