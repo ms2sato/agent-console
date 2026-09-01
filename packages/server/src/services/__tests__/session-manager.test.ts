@@ -460,6 +460,52 @@ describe('SessionManager', () => {
       expect(session.workers.some((w: Worker) => w.type === 'git-diff')).toBe(true);
     });
 
+    it('forwards model to the initial agent worker when the resolved agent supports it (Issue #1541)', async () => {
+      const manager = await getSessionManager();
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: CLAUDE_CODE_AGENT_ID,
+        model: 'claude-opus-4-6',
+      };
+
+      const session = await manager.createSession(request);
+
+      const agentWorker = session.workers.find((w: Worker) => w.type === 'agent');
+      expect(agentWorker).toBeDefined();
+
+      // model is not part of the public Worker/AgentWorker wire shape (it
+      // drives PTY spawn, not client display) -- verify the persisted
+      // representation instead of the public session response.
+      const persisted = await manager.getSessionRepository().findById(session.id);
+      const persistedAgentWorker = persisted!.workers.find((w: PersistedWorker) => w.type === 'agent');
+      expect(persistedAgentWorker).toBeDefined();
+      expect(persistedAgentWorker && persistedAgentWorker.type === 'agent' ? persistedAgentWorker.model : undefined).toBe('claude-opus-4-6');
+    });
+
+    it('rejects model for the initial agent worker when the resolved agent does not support it (Issue #1541)', async () => {
+      const manager = await getSessionManager();
+
+      // The builtin's real commandTemplate ('claude {{model:+--model}}{{prompt}}')
+      // supports model but not reasoningEffort -- register an agent with
+      // neither to prove the validation reaches session creation's initial
+      // worker, not just the add-worker path.
+      const incapableAgent = await agentManager.registerAgent({
+        name: 'Incapable Agent',
+        commandTemplate: 'echo {{prompt}}',
+      });
+
+      const request: CreateSessionRequest = {
+        type: 'quick',
+        locationPath: '/test/path',
+        agentId: incapableAgent.id,
+        reasoningEffort: 'high',
+      };
+
+      await expect(manager.createSession(request)).rejects.toThrow(/reasoningEffort/);
+    });
+
     it('should create a worktree session with parentSessionId and parentWorkerId', async () => {
       const manager = await getSessionManager();
 

@@ -226,6 +226,42 @@ describe('CreateWorktreePromptRequestSchema', () => {
     }
   });
 
+  it('should accept model and reasoningEffort (Issue #1541)', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+      agentId: 'agent-123',
+      model: 'claude-opus-4-6',
+      reasoningEffort: 'high',
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.output.model).toBe('claude-opus-4-6');
+      expect(result.output.reasoningEffort).toBe('high');
+    }
+  });
+
+  it('should reject an empty-string model (boundary: empty is invalid, not absent)', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+      model: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('should reject a whitespace-only reasoningEffort (boundary)', () => {
+    const result = v.safeParse(CreateWorktreePromptRequestSchema, {
+      taskId: validTaskId,
+      mode: 'prompt',
+      initialPrompt: 'Fix login bug',
+      reasoningEffort: '   ',
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('should trim whitespace from initialPrompt', () => {
     const result = v.safeParse(CreateWorktreePromptRequestSchema, {
       taskId: validTaskId,

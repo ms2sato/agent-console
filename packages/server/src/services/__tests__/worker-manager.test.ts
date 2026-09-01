@@ -157,6 +157,32 @@ describe('WorkerManager', () => {
 
       expect(worker.deliverInitialPromptOnActivation).toBe(true);
     });
+
+    it('defaults model/reasoningEffort to null when omitted (Issue #1541)', () => {
+      const worker = workerManager.initializeAgentWorker({
+        id: 'w-no-override',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+      });
+
+      expect(worker.model).toBeNull();
+      expect(worker.reasoningEffort).toBeNull();
+    });
+
+    it('threads model/reasoningEffort through to the worker (Issue #1541)', () => {
+      const worker = workerManager.initializeAgentWorker({
+        id: 'w-with-override',
+        name: 'Agent',
+        createdAt: new Date().toISOString(),
+        agentId: CLAUDE_CODE_AGENT_ID,
+        model: 'claude-opus-4-6',
+        reasoningEffort: 'high',
+      });
+
+      expect(worker.model).toBe('claude-opus-4-6');
+      expect(worker.reasoningEffort).toBe('high');
+    });
   });
 
   describe('initializeTerminalWorker', () => {
@@ -309,6 +335,49 @@ describe('WorkerManager', () => {
       // Should fall back to default agent and record its actual id
       expect(worker.agentId).toBe(CLAUDE_CODE_AGENT_ID);
       expect(worker.pty).not.toBeNull();
+    });
+
+    it("merges the worker's model/reasoningEffort override into the spawned command (Issue #1541)", async () => {
+      const worker = createTestAgentWorker('agent-override');
+      worker.model = 'claude-opus-4-6';
+      worker.reasoningEffort = 'high';
+
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWrite).toBeDefined();
+      // The builtin's real commandTemplate is 'claude {{model:+--model}}{{prompt}}',
+      // which has no {{effort...}} placeholder -- only --model is expected
+      // to be present; --effort silently has nowhere to land, matching
+      // expandTemplate's pass-through contract for an unconsumed var.
+      expect(commandWrite).toContain("--model 'claude-opus-4-6'");
+    });
+
+    it('does not add a --model flag when the worker has no override (Issue #1541)', async () => {
+      const worker = createTestAgentWorker('agent-no-override');
+
+      await workerManager.activateAgentWorkerPty(worker, defaultAgentActivationParams);
+
+      const mockPty = ptyFactory.instances[0];
+      const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWrite).toBeDefined();
+      expect(commandWrite).not.toContain('--model');
+    });
+
+    it("worker.model overrides context.templateVars' own 'model' key (worker override wins)", async () => {
+      const worker = createTestAgentWorker('agent-precedence');
+      worker.model = 'worker-level-model';
+
+      await workerManager.activateAgentWorkerPty(worker, {
+        ...defaultAgentActivationParams,
+        context: { templateVars: { model: 'context-level-model' } },
+      });
+
+      const mockPty = ptyFactory.instances[0];
+      const commandWrite = mockPty.writtenData.find((d) => d.endsWith('\r'));
+      expect(commandWrite).toContain("--model 'worker-level-model'");
+      expect(commandWrite).not.toContain('context-level-model');
     });
 
     it('should set initial activity state to idle and fire global callback', async () => {
@@ -1339,6 +1408,32 @@ describe('WorkerManager', () => {
   // ========== toPersistedWorker Conversion ==========
 
   describe('toPersistedWorker', () => {
+    it("round-trips an agent worker's model/reasoningEffort override (Issue #1541)", () => {
+      const worker = createTestAgentWorker('persist-model');
+      worker.model = 'claude-opus-4-6';
+      worker.reasoningEffort = 'high';
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('agent');
+      if (persisted.type === 'agent') {
+        expect(persisted.model).toBe('claude-opus-4-6');
+        expect(persisted.reasoningEffort).toBe('high');
+      }
+    });
+
+    it('persists null for an agent worker with no override (Issue #1541)', () => {
+      const worker = createTestAgentWorker('persist-no-model');
+
+      const persisted = workerManager.toPersistedWorker(worker);
+
+      expect(persisted.type).toBe('agent');
+      if (persisted.type === 'agent') {
+        expect(persisted.model).toBeNull();
+        expect(persisted.reasoningEffort).toBeNull();
+      }
+    });
+
     it('round-trips an embedded-agent worker\'s autoCompaction, so a deliberate OFF survives a restart', () => {
       // Without this the toggle would silently re-enable itself every time
       // the server restarted -- the one direction a user would notice and
@@ -1577,6 +1672,41 @@ describe('WorkerManager', () => {
         expect(worker.activityState).toBe('unknown');
         expect(worker.activityDetector).toBeNull();
         expect(worker.connectionCallbacks.size).toBe(0);
+      }
+    });
+
+    it("should restore an agent worker's model/reasoningEffort override across a server restart (Issue #1541)", () => {
+      const persistedWorkers: PersistedAgentWorker[] = [
+        buildPersistedAgentWorker({
+          id: 'restored-agent-model',
+          agentId: 'claude-code',
+          model: 'claude-opus-4-6',
+          reasoningEffort: 'high',
+        }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-agent-model')!;
+      expect(worker.type).toBe('agent');
+      if (worker.type === 'agent') {
+        expect(worker.model).toBe('claude-opus-4-6');
+        expect(worker.reasoningEffort).toBe('high');
+      }
+    });
+
+    it('should restore an agent worker with model/reasoningEffort null when no override was persisted (Issue #1541)', () => {
+      const persistedWorkers: PersistedAgentWorker[] = [
+        buildPersistedAgentWorker({ id: 'restored-agent-no-model', agentId: 'claude-code' }),
+      ];
+
+      const workers = workerManager.restoreWorkersFromPersistence(persistedWorkers);
+
+      const worker = workers.get('restored-agent-no-model')!;
+      expect(worker.type).toBe('agent');
+      if (worker.type === 'agent') {
+        expect(worker.model).toBeNull();
+        expect(worker.reasoningEffort).toBeNull();
       }
     });
 
