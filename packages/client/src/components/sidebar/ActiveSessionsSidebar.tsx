@@ -3,7 +3,7 @@ import { useRef, useCallback, useEffect, useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import type { AgentActivityState, WorktreeCreationTask, WorktreeDeletionTask, Session } from '@agent-console/shared';
 import type { SessionFilterMode } from '../../types/session-filter';
-import { restartAllAgentWorkers } from '../../lib/api';
+import { restartAllAgentWorkers, type RestartAllAgentsResult } from '../../lib/api';
 import { useAuth } from '../../lib/auth';
 import { logger } from '../../lib/logger';
 import { ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, AlertCircleIcon, RefreshIcon } from '../Icons';
@@ -44,6 +44,35 @@ interface ActiveSessionsSidebarProps {
     mode: SessionFilterMode;
     onChange: (mode: SessionFilterMode) => void;
   };
+}
+
+/**
+ * Format the "Restart All Agents" result into a human-readable status message.
+ *
+ * `skipped` must be distinguished from the empty-database case:
+ * `restarted === 0 && failed === 0` no longer implies "no agent workers
+ * exist" -- it can also mean every candidate worker was skipped (e.g.
+ * all-terminal sessions, or dormant/idle-evicted embedded agents).
+ * These two cases must not render byte-identical text.
+ */
+export function formatRestartMessage(data: RestartAllAgentsResult): string {
+  const { restarted, failed, skipped } = data;
+  if (restarted === 0 && failed === 0 && skipped === 0) {
+    return 'No agent workers found.';
+  }
+  if (restarted === 0 && failed === 0) {
+    return `No workers needed restarting (${skipped} skipped).`;
+  }
+  if (failed === 0 && skipped === 0) {
+    return `Restarted ${restarted} agent${restarted > 1 ? 's' : ''}.`;
+  }
+  if (failed === 0) {
+    return `Restarted ${restarted}, skipped ${skipped}.`;
+  }
+  if (skipped === 0) {
+    return `Restarted ${restarted}, failed ${failed}.`;
+  }
+  return `Restarted ${restarted}, failed ${failed}, skipped ${skipped}.`;
 }
 
 /**
@@ -562,13 +591,7 @@ export function ActiveSessionsSidebar({
     mutationFn: restartAllAgentWorkers,
     onSuccess: (data) => {
       setRestartConfirmOpen(false);
-      if (data.restarted === 0 && data.failed === 0) {
-        setRestartMessage('No active agent workers found.');
-      } else if (data.failed === 0) {
-        setRestartMessage(`Restarted ${data.restarted} agent${data.restarted > 1 ? 's' : ''}.`);
-      } else {
-        setRestartMessage(`Restarted ${data.restarted}, failed ${data.failed}.`);
-      }
+      setRestartMessage(formatRestartMessage(data));
       setTimeout(() => setRestartMessage(null), 3000);
     },
     onError: (err) => {

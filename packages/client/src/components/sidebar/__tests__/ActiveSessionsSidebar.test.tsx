@@ -2,7 +2,7 @@ import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { renderWithRouter } from '../../../test/renderWithRouter';
-import { ActiveSessionsSidebar } from '../ActiveSessionsSidebar';
+import { ActiveSessionsSidebar, formatRestartMessage } from '../ActiveSessionsSidebar';
 import { QUICK_SESSIONS_GROUP_KEY } from '../group-sessions-by-repository';
 import {
   SIDEBAR_COLLAPSED_WIDTH,
@@ -1059,7 +1059,7 @@ describe('ActiveSessionsSidebar', () => {
     let restartAllResponse: unknown;
 
     beforeEach(() => {
-      restartAllResponse = { restarted: 0, failed: 0, results: [] };
+      restartAllResponse = { restarted: 0, failed: 0, skipped: 0, results: [] };
       globalThis.fetch = Object.assign(
         mock(async (input: RequestInfo | URL): Promise<Response> => {
           const url = input instanceof Request ? input.url : String(input);
@@ -1102,7 +1102,7 @@ describe('ActiveSessionsSidebar', () => {
     });
 
     it('should call API and show result message on confirm', async () => {
-      restartAllResponse = { restarted: 3, failed: 0, results: [] };
+      restartAllResponse = { restarted: 3, failed: 0, skipped: 0, results: [] };
       await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
 
       const user = userEvent.setup();
@@ -1117,6 +1117,84 @@ describe('ActiveSessionsSidebar', () => {
       await waitFor(() => {
         expect(screen.getByText('Restarted 3 agents.')).toBeTruthy();
       });
+    });
+
+    // Issue #1519: `restarted === 0 && failed === 0` used to always mean "no
+    // agent workers exist". After the fix it can also mean "every candidate
+    // worker was skipped" (all-terminal sessions, or dormant/idle-evicted
+    // embedded agents). These two cases must render distinguishable text.
+    it('should distinguish "all skipped" from "no targets at all" when nothing was restarted or failed', async () => {
+      restartAllResponse = { restarted: 0, failed: 0, skipped: 2, results: [] };
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByTitle('Restart all agents'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Restart All')).toBeTruthy();
+      });
+
+      await user.click(screen.getByText('Restart All'));
+
+      const noTargetsMessage = formatRestartMessage({ restarted: 0, failed: 0, skipped: 0, results: [] });
+      const allSkippedMessage = formatRestartMessage({ restarted: 0, failed: 0, skipped: 2, results: [] });
+
+      await waitFor(() => {
+        expect(screen.getByText(allSkippedMessage)).toBeTruthy();
+        expect(allSkippedMessage).not.toBe(noTargetsMessage);
+        expect(screen.queryByText(noTargetsMessage)).toBeNull();
+      });
+    });
+
+    it('should show a distinct message when there are no agent workers at all', async () => {
+      restartAllResponse = { restarted: 0, failed: 0, skipped: 0, results: [] };
+      await renderWithRouter(<ActiveSessionsSidebar {...defaultProps()} />);
+
+      const user = userEvent.setup();
+      await user.click(screen.getByTitle('Restart all agents'));
+
+      await waitFor(() => {
+        expect(screen.getByText('Restart All')).toBeTruthy();
+      });
+
+      await user.click(screen.getByText('Restart All'));
+
+      const noTargetsMessage = formatRestartMessage({ restarted: 0, failed: 0, skipped: 0, results: [] });
+
+      await waitFor(() => {
+        expect(screen.getByText(noTargetsMessage)).toBeTruthy();
+      });
+    });
+  });
+
+  describe('formatRestartMessage', () => {
+    it('reports "no agent workers found" when restarted, failed, and skipped are all zero', () => {
+      expect(formatRestartMessage({ restarted: 0, failed: 0, skipped: 0, results: [] })).toBe(
+        'No agent workers found.'
+      );
+    });
+
+    it('reports a distinct skipped-only message when nothing restarted or failed but some were skipped', () => {
+      const message = formatRestartMessage({ restarted: 0, failed: 0, skipped: 2, results: [] });
+      expect(message).not.toBe('No agent workers found.');
+      expect(message).toContain('skipped');
+      expect(message).toContain('2');
+    });
+
+    it('reports a simple restarted-count message when nothing failed or was skipped', () => {
+      expect(formatRestartMessage({ restarted: 1, failed: 0, skipped: 0, results: [] })).toBe(
+        'Restarted 1 agent.'
+      );
+      expect(formatRestartMessage({ restarted: 3, failed: 0, skipped: 0, results: [] })).toBe(
+        'Restarted 3 agents.'
+      );
+    });
+
+    it('includes failed and skipped counts when both are nonzero alongside restarted', () => {
+      const message = formatRestartMessage({ restarted: 1, failed: 2, skipped: 3, results: [] });
+      expect(message).toContain('Restarted 1');
+      expect(message).toContain('failed 2');
+      expect(message).toContain('skipped 3');
     });
   });
 

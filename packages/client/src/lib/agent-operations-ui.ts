@@ -23,4 +23,8 @@ export const UI_AGENT_OPERATIONS = {
   createSessionWithAgent: { exposed: true, via: 'CreateWorktreeForm' },
   addWorkerToSession: { exposed: true, via: 'AddAgentWorkerMenu' },
   manageDefinitions: { exposed: true, via: '/agents page + settings' },
+  restart: {
+    exposed: true,
+    via: 'ActiveSessionsSidebar restart-all button (title="Restart all agents")',
+  },
 } satisfies Record<AgentOperation, SurfaceExposure>;

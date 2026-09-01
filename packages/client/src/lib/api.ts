@@ -220,7 +220,14 @@ export async function updateEmbeddedAgentWorker(
 export interface RestartAllAgentsResult {
   restarted: number;
   failed: number;
-  results: Array<{ sessionId: string; workerId: string; success: boolean; error?: string }>;
+  skipped: number;
+  results: Array<{
+    sessionId: string;
+    workerId: string;
+    workerType: 'agent' | 'terminal' | 'embedded-agent';
+    outcome: 'restarted' | 'failed' | 'skipped';
+    error?: string;
+  }>;
 }
 
 export async function restartAllAgentWorkers(): Promise<RestartAllAgentsResult> {
