@@ -1,18 +1,36 @@
 /**
  * Job handler for the worktree:delete job type.
  *
- * Kept in a dedicated module rather than `jobs/handlers.ts` -- this handler
- * needs `deleteWorktree` from `services/worktree-deletion-service.js` at
- * runtime (a real value import, not `import type`), and that module in turn
- * pulls in `services/session-manager.js`, which imports `JobQueue`'s type
- * from `jobs/index.js`. `jobs/index.js` re-exports `jobs/handlers.js`, so
- * adding the value import directly to `handlers.ts` closes a circular
- * dependency (`handlers.ts` -> `worktree-deletion-service.ts` ->
- * `session-manager.ts` -> `jobs/index.ts` -> `handlers.ts`), which
- * `bun run lint:cycles` (madge) rejects with no allowlist mechanism. This
- * module is intentionally NOT re-exported from `jobs/index.ts`, so no edge
- * leads back to it and the cycle does not close. See job-types.ts for
- * available job types and their payloads.
+ * Kept in a separate module and registered separately from
+ * `registerJobHandlers` -- see `WorktreeDeleteHandlerDeps`'s doc comment
+ * below for why: its dependencies (`worktreeService` / `sessionManager` /
+ * `repositoryManager` / `findOpenPullRequest` / `getCurrentBranch`) do not
+ * exist yet at the point `registerJobHandlers` runs in `app-context.ts`.
+ * That registration-timing constraint is this module's live, independent
+ * reason for staying separate.
+ *
+ * A cycle concern also used to apply here, historically. This handler needs
+ * `deleteWorktree` from `services/worktree-deletion-service.js` at runtime
+ * (a real value import, not `import type`), and that module in turn imports
+ * `session-manager.ts` (type-only), which imports `JobQueue`'s type from
+ * `jobs/index.js` (also type-only). `jobs/index.js` re-exports
+ * `jobs/handlers.js`, so adding the value import directly to `handlers.ts`
+ * would close a ring: `handlers.ts` -> `worktree-deletion-service.ts` ->
+ * `session-manager.ts` -> `jobs/index.ts` -> `handlers.ts`. The
+ * circularity linter formerly used in CI rejected that ring outright, with
+ * no allowlist mechanism, because it parsed imports syntactically and could
+ * not distinguish the ring's two type-only hops above from its two value
+ * hops. That linter has since been retired; dependency-cruiser's `no-circular`
+ * rule permits this ring today, because it is not an all-value cycle -- its
+ * `viaOnly` clause (see `.dependency-cruiser.cjs`) only flags a ring whose
+ * every edge is a value import, the same shape as the `RestoreInfo` case
+ * documented in `worker-types.ts`'s doc comment. So merging this handler
+ * into `handlers.ts` is mechanically possible now; doing so is simply out
+ * of scope here. The registration-timing reason above is what actually
+ * keeps this module separate, independent of the retired linter's blind
+ * spot.
+ *
+ * See job-types.ts for available job types and their payloads.
  */
 import type { AppServerMessage, WorktreeDeletePayload } from '@agent-console/shared';
 import type { JobQueue } from './job-queue.js';
